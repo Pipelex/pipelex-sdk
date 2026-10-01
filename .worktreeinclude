@@ -1,0 +1,7 @@
+# .worktreeinclude — the gitignored files a fresh worktree of this repository needs.
+# Claude Code reads it when it creates a worktree, and so does `wt`. A pattern copies a file
+# only when it matches and is gitignored, so nothing tracked is ever duplicated. A pattern with
+# no slash, or one opening with **/, matches at any depth, which is what reaches each package
+# directory's own env files and local settings.
+.env*
+**/.claude/settings.local.json

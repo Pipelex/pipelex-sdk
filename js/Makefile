@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install check c test t test-e2e te clean build rebuild dev pack all depcruise use-local use-npm ul un
+.PHONY: help install install-if-missing check c test t test-e2e te clean build rebuild dev pack all depcruise agent-check agent-test use-local use-npm ul un
 
 # Sibling repo for live mthds development (see use-local / use-npm).
 MTHDS_JS_DIR := ../mthds-js
@@ -30,6 +30,8 @@ make all        - Clean, check, and test
 make check      - Run quality checks, excluding tests
 make test       - Run the test suite
 make test-e2e   - Run e2e tests against a live pipelex-api [PIPELEX_E2E_BASE_URL=...]
+make agent-check - Run the quality checks, installing first when node_modules is missing
+make agent-test - Run the test suite, silent on success, installing first when node_modules is missing
 make dev        - Watch mode: auto rebuild on changes
 
 make build      - Build the project
@@ -58,6 +60,11 @@ install:
 	$(call PRINT_TITLE,"Installing Dependencies")
 	@npm install
 	@echo "$(GREEN)✓ Installation complete$(NC)"
+
+# The agent targets install the package first when node_modules is missing, so a fresh
+# checkout can run them directly.
+install-if-missing:
+	@[ -d node_modules ] || $(MAKE) --no-print-directory install
 
 build:
 	$(call PRINT_TITLE,"Building Project")
@@ -117,6 +124,14 @@ check:
 	@echo "$(GREEN)✓ All checks passed$(NC)"
 
 c: check
+
+agent-check: install-if-missing
+	@npm run check
+	@echo "$(GREEN)✓ All checks passed$(NC)"
+
+agent-test: install-if-missing
+	@OUTPUT=$$(npx vitest run 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
+	@echo "• All tests passed."
 
 clean:
 	$(call PRINT_TITLE,"Cleaning Build Artifacts")

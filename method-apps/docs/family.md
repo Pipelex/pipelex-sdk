@@ -14,16 +14,14 @@ GitHub's **Use this template** button is not the way in. It copies a whole repos
 Makefile                         the root gate: family checks, then each template's targets
 VERSION                          the family's version, one line
 CHANGELOG.md                     the family's changelog
-.claude/skills/release/          the one release skill
-.claude/skills/bump-mthds-form/  moves every template onto a newer @pipelex/mthds-form
-.claude/skills/bump-sdk/         moves every template onto a newer @pipelex/sdk
 .github/workflows/               the root twins of each template's workflows, family-check.yml and release.yml
-.husky/pre-commit                runs each touched template's own hook from inside it
 scripts/                         the root's own tooling (workflows.mjs, versions.mjs, the create contract) and its tests
 initializers/js/                 @pipelex/create-method-app, the npm initializer that writes the Node templates
 initializers/cases.json          the cases every initializer's suite executes
 webapp-js/                       the Next.js web app template — a complete project on its own
 ```
+
+The repository's root, one level up, carries what serves every package of `pipelex-sdk`, the family included: the git hooks (`.githooks/`), the skills that move every template onto a newer form kernel or SDK (`.claude/skills/bump-mthds-form/`, `.claude/skills/bump-sdk/`), and the release.
 
 Planned directories, not here yet: `cli-js/`, `cli-python/` and `webapp-python/`, and `initializers/python/`, the initializer of the Python templates.
 
@@ -71,17 +69,17 @@ make -C my-app serve
 
 ## The version and the release
 
-`VERSION` is the family's version, and the release reads it. The release skill, `.claude/skills/release/SKILL.md`, bumps `VERSION`, every template's manifest and every initializer's together, re-locks each template, writes the entry in the root `CHANGELOG.md`, and runs `make all`.
+`VERSION` is the family's version, and the release reads it. A release of the family is a release of the whole `pipelex-sdk` repository, cut from its root, and it bumps `VERSION`, every template's manifest and every initializer's together, re-locks each template, writes the entry in the root `CHANGELOG.md`, and runs `make all`.
 
-The merge to `main` publishes the initializer. `.github/workflows/release.yml`, hand-written rather than a twin, runs on the push: it reads the version from `initializers/js/package.json`, does nothing when npm already has it, asserts the changelog's entry, packs the templates with `--publish`, runs `make test-family`, publishes through npm trusted publishing with provenance, and tags the commit `vX.Y.Z`. It publishes with npm 11, the npm `family-check.yml` also installs, so the release never runs an npm the pull request checks have not: a new npm major reaches it only by an edit to both workflows. A later run that finds the version published but untagged backfills the tag on the commit npm recorded as the version's source, its `gitHead`, never on the commit that run stands on, and one run of the workflow goes at a time. npm authenticates the publish as the package's trusted publisher, registered on npmjs.com for `release.yml` by its filename, so renaming the workflow means registering it again; the release skill says how to recognise a publish npm refused and restore the registration. The templates themselves are never published: every template's manifest is private, and a template reaches a project through the initializer.
+The merge to `main` publishes the initializer. `.github/workflows/release.yml`, hand-written rather than a twin, runs on the push: it reads the version from `initializers/js/package.json`, does nothing when npm already has it, asserts the changelog's entry, packs the templates with `--publish`, runs `make test-family`, publishes through npm trusted publishing with provenance, and tags the commit `vX.Y.Z`. It publishes with npm 11, the npm `family-check.yml` also installs, so the release never runs an npm the pull request checks have not: a new npm major reaches it only by an edit to both workflows. A later run that finds the version published but untagged backfills the tag on the commit npm recorded as the version's source, its `gitHead`, never on the commit that run stands on, and one run of the workflow goes at a time. npm authenticates the publish as the package's trusted publisher, registered on npmjs.com for `release.yml` by its filename, so renaming the workflow means registering it again; npm answers a refused publish with an `E404` on the `PUT`, and the cure is restoring that registration. The templates themselves are never published: every template's manifest is private, and a template reaches a project through the initializer.
 
 A template's own `CHANGELOG.md` only points at the root's. Its bootstrap replaces it with a project's first entry.
 
 ## The pre-commit hook
 
-A template wires its hook with Husky's `prepare` script, which needs the repository's `.git` in the directory it runs in. Here, a template's `npm install` prints Husky's `.git can't be found` notice instead, and wires nothing. The root's `make install` runs Husky from the root, which sets git's hooks path to `.husky/_`, the same path a template sets when it is a repository of its own. The root's `.husky/pre-commit` then runs, for each template the commit touches, that template's own `.husky/pre-commit` from inside its directory, where lint-staged only sees that template's staged files.
+A template wires its hook with Husky's `prepare` script, which needs the repository's `.git` in the directory it runs in. Here, a template's `npm install` prints Husky's `.git can't be found` notice instead, and wires nothing. The repository root's `make install` points git at the root's `.githooks/`, whose `pre-commit` runs, for each template the commit touches, that template's own `.husky/pre-commit` from inside its directory, where lint-staged only sees that template's staged files.
 
-The root's own files pass through no hook; `make check-family` holds them to Prettier, locally and in `family-check.yml`.
+The family root's own files pass through no hook; `make check-family` holds them to Prettier, locally and in `family-check.yml`.
 
 ## The sibling packages
 
@@ -91,7 +89,7 @@ The names are the family's and not a registry's, so every template answers the s
 
 ## Moving the templates onto a newer package
 
-`@pipelex/mthds-form` and `@pipelex/sdk` sit in a template's manifest as pre-1.0 caret ranges, which npm never resolves across a minor, so moving either is a deliberate edit. Each is moved from the root, the kernel by `.claude/skills/bump-mthds-form/` and the SDK by `.claude/skills/bump-sdk/`: a skill moves every template whose manifest lists its package in one change, runs the root gate, and writes the entry in the root changelog. Which files of a template a release can reach is the template's own knowledge, so a root skill reads it from that template — the kernel's from its `bump-mthds-form` skill, the SDK's from its `bump-sdk` skill and the call path its `CLAUDE.md` names. Those template skills travel into every project made from one, and are what a project runs. What stays at the root is the seam no project has: the code the scaffold emits, which is text in a template and compiled only once a project has been created from it.
+`@pipelex/mthds-form` and `@pipelex/sdk` sit in a template's manifest as pre-1.0 caret ranges, which npm never resolves across a minor, so moving either is a deliberate edit. Each is moved from the repository's root, the kernel by its `.claude/skills/bump-mthds-form/` and the SDK by its `.claude/skills/bump-sdk/`, which move every template of the repository, this family's and the starters alike: a skill moves every template whose manifest lists its package in one change, runs each moved template's gate, and writes the entry in each moved package's changelog, this family's `CHANGELOG.md` for `webapp-js`. Which files of a template a release can reach is the template's own knowledge, so a root skill reads it from that template — the kernel's from its `bump-mthds-form` skill, the SDK's from its `bump-sdk` skill and the call path its `CLAUDE.md` names. Those template skills travel into every project made from one, and are what a project runs. What stays at the root is the seam no project has: the code the scaffold emits, which is text in a template and compiled only once a project has been created from it.
 
 ## The create contract
 
@@ -106,6 +104,6 @@ A new template is a directory that works on its own, then joins the family:
 3. `make workflows` renders its twins, and the renderer's refusals say what to change in its workflows if it cannot. The renderer carries an npm cache and a setup-uv step into the template's directory; a template caching through anything else needs the renderer taught its lock file first.
 4. Its `make create` forwards the shared variables as the other templates do, and its extras are declared in `scripts/create-contract.mjs`.
 5. It joins the `templates.json` of its ecosystem's initializer, with the same extras, and exactly one initializer serves it; a template of an ecosystem with no initializer yet waits for one. A Node template also needs a plain `engines.node` floor (`">=22.12.0"`), which the initializer's preflight reads.
-6. The release skill names its manifest under **Version files and the lock**, and the root `README.md` lists it.
-7. If its hook is not a Husky hook, `.husky/pre-commit` learns to run it.
+6. The repository's release names its manifest among its version files, and the root `README.md` lists it.
+7. If its hook is not a Husky hook, the repository root's `.githooks/pre-commit` learns to run it.
 8. `make all` at the root is green.

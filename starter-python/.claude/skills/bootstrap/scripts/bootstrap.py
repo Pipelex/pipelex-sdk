@@ -16,8 +16,6 @@ is exactly what a script is for. It is also safe to run with --dry-run, which is
 what makes it testable, and it hard-fails if any placeholder token survives the
 substitution.
 
-Besides transforming files, it deletes the template's own maintenance files
-(MAINTAINER_ONLY_PATHS), which no project made from the template has a use for.
 It does NOT commit, run `uv lock`, run the checks, or remove the bootstrap skill
 — the SKILL.md orchestrates those so each step stays reviewable and the script
 stays an idempotent transform.
@@ -46,23 +44,6 @@ TEMPLATE_TITLE = "Widget"  # human-facing display name (README H1)
 # The bootstrap's own test file, excluded from the sweep and removed with the skill
 # it tests. See gather_target_files().
 BOOTSTRAP_TEST_FILE = Path("tests") / "unit" / "test_bootstrap_script.py"
-
-# The template's own maintenance, which run() deletes: the CLA assistant, the branch-flow
-# guard, the release version and changelog checks, the GitHub Release job, and the `release`
-# skill that drives them. They encode Pipelex's contributor agreement and release discipline,
-# not a project's. Every job in those workflows is also guarded to the template's own
-# repository, so a project made from the template without running the bootstrap inherits them
-# inert. The workflows a project does want — lint, tests and the lock check — are not listed.
-# tests/unit/test_bootstrap_script.py holds this list against the guards in the workflows on
-# disk, so the two cannot drift apart.
-MAINTAINER_ONLY_PATHS = (
-    Path(".github") / "workflows" / "changelog-check.yml",
-    Path(".github") / "workflows" / "cla.yml",
-    Path(".github") / "workflows" / "github-release.yml",
-    Path(".github") / "workflows" / "guard-branches.yml",
-    Path(".github") / "workflows" / "version-check.yml",
-    Path(".claude") / "skills" / "release",
-)
 
 PACKAGE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 # PEP 503/508 distribution name: alphanumerics separated by single '.', '-' or
@@ -465,22 +446,6 @@ def move(root: Path, src: Path, dst: Path, opts: "Options") -> None:
     print(f"  renamed {rel_src} -> {rel_dst}")
 
 
-def remove(root: Path, rel: Path, opts: "Options") -> bool:
-    """Delete a file or directory with a plain delete, so the deletion stays unstaged like the edits."""
-    path = root / rel
-    if not path.exists():
-        return False
-    if opts.dry_run:
-        print(f"  remove  {rel}")
-        return True
-    if path.is_dir():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
-    print(f"  removed {rel}")
-    return True
-
-
 # --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
@@ -660,15 +625,8 @@ def run(root: Path, names: Names, opts: Options) -> None:
         print("  (no content changes)")
     print()
 
-    # 3. The template's own maintenance files. After the edits, so a run the survivor
-    #    check aborts has deleted nothing; and idempotent, since a re-run finds them gone.
-    print("Removals:")
-    removed = sum(remove(root, rel, opts) for rel in MAINTAINER_ONLY_PATHS)
-    if removed == 0:
-        print("  (nothing to remove)")
-    print()
     would_be = "would be " if opts.dry_run else ""
-    print(f"Done. {changed} file(s) {would_be}edited, {removed} path(s) {would_be}removed.")
+    print(f"Done. {changed} file(s) {would_be}edited.")
     if not opts.dry_run:
         print("\nNext: regenerate the lock file (uv.lock pins the project name) and run the checks:")
         print("  make li && make agent-check && make agent-test")

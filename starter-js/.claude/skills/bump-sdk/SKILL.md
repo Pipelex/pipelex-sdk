@@ -9,7 +9,7 @@ description: Bump the @pipelex/sdk dependency in pipelex-starter-js to a newer p
 
 This repo is a **reference template** — treat it as if the sibling `../pipelex-sdk-js` checkout this workspace happens to have might not exist for whoever runs this skill. Always have a working fallback that only needs the published npm package and the public GitHub repo.
 
-Guides the user through 8 steps. Every step that changes files or runs `npm install` should be visible to the user before moving on — this mirrors the `release` skill's style (staged confirmations, never push or commit without explicit approval), but the interesting judgment calls here are in reading the changelog and deciding what's safe to auto-fix, so lean on explaining rather than just executing.
+Guides the user through 8 steps. Every step that changes files or runs `npm install` should be visible to the user before moving on, with staged confirmations and no push or commit without explicit approval. The interesting judgment calls here are in reading the changelog and deciding what's safe to auto-fix, so lean on explaining rather than just executing.
 
 ## Step 1 — Gather State
 
@@ -70,7 +70,7 @@ Run `make all` (lint + format-check + typecheck + unit tests + build, per this r
 - **On success**: report and continue.
 - **On failure**: show the errors. If they trace back to one of the "needs manual review" items from Step 4, connect the dots for the user rather than just dumping the error. Ask how to proceed (fix, skip, abort) — don't guess at a fix for a behavior change you flagged as needing human judgment.
 
-A `@pipelex/sdk` bump always touches the SDK call path by definition, so — unlike the `release` skill, which only offers this conditionally — **always** offer `make test-e2e` here too (it exercises the real API against the new SDK version, which `make all`'s mocked unit tests can't). It costs an LLM call per run and needs `PIPELEX_API_KEY` set, so only run it with explicit user approval.
+A `@pipelex/sdk` bump always touches the SDK call path by definition, so **always** offer `make test-e2e` here too (it exercises the real API against the new SDK version, which `make all`'s mocked unit tests can't). It costs an LLM call per run and needs `PIPELEX_API_KEY` set, so only run it with explicit user approval.
 
 **If the SDK changelog entries mention codegen, crates, locks, or `runCodegenCheck`, also offer `make codegen-verify`** (needs a key and a base URL serving `/v1/codegen`, but no LLM call). `make all` already re-runs the offline check after the bump; `codegen-verify` additionally asks the live engine whether the committed generated trees are still semantically current under the new SDK, which is exactly the surface such a release could have moved.
 
@@ -98,7 +98,7 @@ Ask the user to confirm. On confirmation:
 2. Commit with message: `Bump @pipelex/sdk to {TARGET_VERSION}` (add a short body line if Step 4 applied migrations, naming them).
 3. Show the commit result.
 
-Then offer (but do not automatically execute) pushing and opening a PR, same as the `release` skill — target branch `dev` per this repo's `CLAUDE.md`. Wait for explicit approval before either.
+Then offer (but do not automatically execute) pushing and opening a PR — target branch `dev` per this repo's `CLAUDE.md`. Wait for explicit approval before either.
 
 ## Rules
 

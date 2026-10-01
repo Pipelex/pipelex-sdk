@@ -361,6 +361,7 @@ Enforced via Husky + lint-staged on commit.
 | `make add-method`         | Scaffold a method into the app — `METHOD=<bundle path \| mt_… \| address>` (needs a key)                    |
 | `make test`               | Vitest single pass                                                                                          |
 | `make agent-test`         | Vitest, silent on success (preferred for AI agents)                                                         |
+| `make agent-check`        | `check`, installing first when `node_modules` is missing (for AI agents)                                    |
 | `make test-e2e`           | Optional Playwright e2e (live specs cost an LLM call; prompts first, auto-skip without a key)               |
 | `make check`              | lint + format-check + typecheck + codegen-check                                                             |
 | `make all`                | check + test + build (does **not** include e2e, `codegen`, or `codegen-verify`)                             |

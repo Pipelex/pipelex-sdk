@@ -115,7 +115,7 @@ Ask the user to confirm. On confirmation:
 2. Commit with message: `Bump @pipelex/mthds-form to {TARGET_VERSION}` (add a short body line if Step 4 applied migrations or Step 6 regenerated trees, naming them).
 3. Show the commit result.
 
-Then offer (but do not automatically execute) pushing and opening a PR, same as the `release` skill — target branch `dev` per this repo's `CLAUDE.md`. Wait for explicit approval before either.
+Then offer (but do not automatically execute) pushing and opening a PR — target branch `dev` per this repo's `CLAUDE.md`. Wait for explicit approval before either.
 
 ## Rules
 

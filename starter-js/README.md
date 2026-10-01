@@ -16,13 +16,13 @@ Starting from zero? Use this template (next section). Adding Pipelex to an app y
 
 This is a template repository — don't clone it directly. Click the green **Use this template** button at the top-right of the GitHub page to create your own repo, then clone that.
 
-**Make it yours.** The fastest path is the bundled `/bootstrap` skill: open your new repo in [Claude Code](https://claude.com/claude-code) and run `/bootstrap`. It renames the template identity (`pipelex-starter-js` / `Pipelex Starter`) across `package.json`, `package-lock.json`, README, CLAUDE.md, the app title, metadata, release skill, and license text, then runs the checks.
+**Make it yours.** The fastest path is the bundled `/bootstrap` skill: open your new repo in [Claude Code](https://claude.com/claude-code) and run `/bootstrap`. It renames the template identity (`pipelex-starter-js` / `Pipelex Starter`) across `package.json`, `package-lock.json`, README, CLAUDE.md, the app title, metadata, and license text, then runs the checks.
 
 Prefer to do it by hand? The manual equivalent:
 
 1. Replace `pipelex-starter-js` in `package.json` with your npm package name, and update the description, author, repository, and license metadata.
 2. Replace `Pipelex Starter` in `src/app/layout.tsx` and `src/app/page.tsx` with your app title.
-3. Update README.md, CLAUDE.md, LICENSE, and `.claude/skills/release/SKILL.md` so they describe your project instead of the template.
+3. Update README.md, CLAUDE.md and LICENSE so they describe your project instead of the template.
 4. Run `npm install --package-lock-only` so `package-lock.json` matches the new package name and version.
 
 ## Stack
