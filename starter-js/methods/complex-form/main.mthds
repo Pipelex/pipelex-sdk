@@ -1,0 +1,52 @@
+domain      = "complex_form"
+description = "Extract entities from a text and frame them for a chosen audience."
+main_pipe   = "extract_brief"
+
+[concept.ExtractionFocus]
+description = "How to narrow the extraction."
+
+# No field here is `required = true`, and that is a design choice rather than
+# a constraint: narrowing the extraction means picking an audience, leaving a
+# note, or both. A required field inside an *optional* input is expressible
+# since `@pipelex/mthds-form` 0.3.0 — an untouched optional structure now stays
+# absent instead of being judged as an empty shell — so a method that wants
+# "if you narrow it, you must pick an audience" can say so.
+[concept.ExtractionFocus.structure]
+audience = { description = "Who the extraction is for", choices = [
+  "general",
+  "legal",
+  "technical",
+] }
+notes = { type = "text", description = "Anything else the extractor should keep in mind" }
+
+[concept.ExtractionBrief]
+description = "Entities pulled from a text, framed for a chosen audience."
+
+[concept.ExtractionBrief.structure]
+summary = { type = "text", description = "One sentence framing the findings for the chosen audience", required = true }
+people  = { type = "list", item_type = "text", description = "Names of people mentioned in the text", required = true }
+orgs    = { type = "list", item_type = "text", description = "Names of organizations mentioned in the text", required = true }
+dates   = { type = "list", item_type = "text", description = "Dates or time references mentioned in the text", required = true }
+
+[pipe.extract_brief]
+type = "PipeLLM"
+description = "Extract named entities and summarize them for the requested audience."
+inputs = { text = "Text", focus = "ExtractionFocus?", must_include = "Text[]" }
+output = "ExtractionBrief"
+prompt = """
+Extract named entities from the text below, then write a one-sentence summary of what the text is about.
+
+Return:
+- summary: one sentence framing the findings.
+- people: full names of individual people mentioned.
+- orgs: organizations, companies, agencies, or institutions mentioned.
+- dates: dates or explicit time references (e.g. "March 5th, 2026", "last Tuesday").
+
+If a category has no matches, return an empty list.
+
+{% if focus and focus.audience %}Write the summary for a {{ focus.audience }} audience.{% endif %}{% if focus and focus.notes %} Also keep in mind: {{ focus.notes }}{% endif %}
+{% if must_include %}Pay particular attention to these terms if they appear: {% for term in must_include %}{{ term.text }}{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}
+
+Text:
+@text
+"""

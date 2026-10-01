@@ -1,0 +1,11 @@
+domain      = "generate_image"
+description = "Generate an image from a text prompt."
+main_pipe   = "generate_image"
+
+[pipe.generate_image]
+type        = "PipeImgGen"
+description = "Generate an image from a user-provided text prompt"
+inputs      = { image_prompt = "Text" }
+output      = "Image"
+model       = "gpt-image-2"
+prompt      = "$image_prompt"

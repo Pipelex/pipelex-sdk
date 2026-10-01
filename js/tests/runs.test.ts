@@ -1,0 +1,805 @@
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import type { InputForm, OutputForm, PipeIOContracts } from "mthds/protocol";
+import { PipelexApiClient } from "../src/client.js";
+import {
+  ApiResponseError,
+  MissingMainStuffError,
+  RunFailedError,
+  RunLifecycleUnavailableError,
+  RunTimeoutError,
+} from "../src/errors.js";
+import { isTerminalRunStatus, isSuccessRunStatus, RUN_RESULT_ARTIFACTS } from "../src/runs.js";
+import type { RunResultArtifact, RunResults, TokensUsageRecord } from "../src/runs.js";
+import * as sdk from "../src/index.js";
+
+const BASE_URL = "http://localhost:8081";
+
+function makeClient(): PipelexApiClient {
+  return new PipelexApiClient({
+    baseUrl: BASE_URL,
+    apiKey: "test-token",
+  });
+}
+
+function jsonResponse(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...headers },
+  });
+}
+
+function emptyResponse(status: number, headers: Record<string, string> = {}): Response {
+  return new Response(null, { status, headers });
+}
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("run status helpers", () => {
+  it("classifies terminal vs non-terminal statuses", () => {
+    expect(isTerminalRunStatus("COMPLETED")).toBe(true);
+    expect(isTerminalRunStatus("FAILED")).toBe(true);
+    expect(isTerminalRunStatus("TIMED_OUT")).toBe(true);
+    expect(isTerminalRunStatus("RUNNING")).toBe(false);
+    expect(isTerminalRunStatus("PENDING")).toBe(false);
+  });
+
+  it("treats only COMPLETED as success", () => {
+    expect(isSuccessRunStatus("COMPLETED")).toBe(true);
+    expect(isSuccessRunStatus("FAILED")).toBe(false);
+    expect(isSuccessRunStatus("CANCELLED")).toBe(false);
+  });
+});
+
+describe("PipelexApiClient.getRunStatus", () => {
+  it("GETs /v1/runs/{id}/status and returns the run", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse(200, { pipeline_run_id: "run-1", status: "RUNNING", degraded: false }),
+      );
+
+    const run = await client.getRunStatus("run-1");
+
+    expect(run.status).toBe("RUNNING");
+    expect(run.degraded).toBe(false);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe("http://localhost:8081/v1/runs/run-1/status");
+    expect(init).toMatchObject({ method: "GET" });
+  });
+
+  it("attaches retry_after_seconds from the Retry-After header on a degraded read", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(
+        200,
+        { pipeline_run_id: "run-1", status: "RUNNING", degraded: true },
+        { "Retry-After": "7" },
+      ),
+    );
+    const run = await client.getRunStatus("run-1");
+    expect(run.degraded).toBe(true);
+    expect(run.retry_after_seconds).toBe(7);
+  });
+
+  it("url-encodes the run id", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse(200, { pipeline_run_id: "a/b", status: "RUNNING", degraded: false }),
+      );
+    await client.getRunStatus("a/b");
+    expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/runs/a%2Fb/status");
+  });
+
+  it("maps a route-absent 404 (no `code` field) to RunLifecycleUnavailableError", async () => {
+    // A bare runner serves Starlette's default `{"detail": "Not Found"}` — no
+    // structured `code` — meaning the lifecycle routes are simply not there.
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(404, { detail: "Not Found" }));
+    const err = await client.getRunStatus("run-1").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RunLifecycleUnavailableError);
+    expect((err as RunLifecycleUnavailableError).apiUrl).toBe(BASE_URL);
+    expect((err as RunLifecycleUnavailableError).message).toContain("bare runner");
+  });
+
+  it("leaves a structured run-not-found 404 (with `code`) as ApiResponseError", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(404, { detail: "Run not found", code: "run_not_found" }),
+    );
+    const err = await client.getRunStatus("run-1").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect(err).not.toBeInstanceOf(RunLifecycleUnavailableError);
+  });
+});
+
+describe("PipelexApiClient.getRunResult", () => {
+  it("maps 202 to a running state with the retry hint", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(emptyResponse(202, { "Retry-After": "5" }));
+    const state = await client.getRunResult("run-1");
+    expect(state).toEqual({ state: "running", pipeline_run_id: "run-1", retry_after_seconds: 5 });
+  });
+
+  it("hits /v1/runs/{id}/results and maps 200 to a completed state carrying the artifacts", async () => {
+    const client = makeClient();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        pipeline_run_id: "run-1",
+        main_stuff: { answer: 42 },
+        graph_spec: { nodes: [] },
+      }),
+    );
+    const state = await client.getRunResult("run-1");
+    expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/runs/run-1/results");
+    expect(state.state).toBe("completed");
+    if (state.state === "completed") {
+      expect(state.result.main_stuff).toEqual({ answer: 42 });
+      expect(state.result.graph_spec).toEqual({ nodes: [] });
+    }
+  });
+
+  it("reads the graph pair off the results body", async () => {
+    const client = makeClient();
+    // The hosted body relays no `graph_assembly_error` today, so the field is absent — the
+    // declaration is what makes it readable, unchanged, the day the platform writes the key.
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          pipeline_run_id: "run-1",
+          main_stuff: { answer: 42 },
+          graph_spec: { nodes: [] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          pipeline_run_id: "run-2",
+          main_stuff: { answer: 42 },
+          graph_spec: null,
+          graph_assembly_error: "failed to assemble the graph for the run",
+        }),
+      );
+
+    const state = await client.getRunResult("run-1");
+    expect(state.state).toBe("completed");
+    if (state.state === "completed") {
+      expect(state.result.graph_assembly_error).toBeUndefined();
+    }
+
+    const relayed = await client.getRunResult("run-2");
+    expect(relayed.state).toBe("completed");
+    if (relayed.state === "completed") {
+      expect(relayed.result.graph_spec).toBeNull();
+      expect(relayed.result.graph_assembly_error).toBe("failed to assemble the graph for the run");
+    }
+  });
+
+  it("reads the three I/O artifacts off the results body", async () => {
+    const client = makeClient();
+    // What the platform relays once it carries the keys: the validate report's own artifacts,
+    // keyed by `pipe_ref` over the library the run executed against. Then a run delivered before
+    // the relay existed, where all three are simply absent.
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          pipeline_run_id: "run-1",
+          main_stuff: { text: "hello" },
+          graph_spec: { nodes: [] },
+          pipe_io_contracts: CONTRACTS,
+          input_form: INPUT_FORM,
+          output_form: OUTPUT_FORM,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          pipeline_run_id: "run-2",
+          main_stuff: { text: "hello" },
+          graph_spec: { nodes: [] },
+        }),
+      );
+
+    const state = await client.getRunResult("run-1");
+    expect(state.state).toBe("completed");
+    if (state.state === "completed") {
+      expect(state.result.pipe_io_contracts).toEqual(CONTRACTS);
+      expect(state.result.output_form).toEqual(OUTPUT_FORM);
+      // The renderer takes the contracts and the output form together or neither, so the pair
+      // has to be keyed over the same pipe refs to be usable at all.
+      expect(Object.keys(state.result.output_form ?? {})).toEqual(
+        Object.keys(state.result.pipe_io_contracts ?? {}),
+      );
+      expect(state.result.input_form?.["x.greet"]?.fields[0]?.name).toBe("subject");
+    }
+
+    const preRelay = await client.getRunResult("run-2");
+    expect(preRelay.state).toBe("completed");
+    if (preRelay.state === "completed") {
+      // Absent, not null: the key is not on the wire yet, and a consumer that compares with
+      // `!= null` keeps working unchanged the day it is.
+      expect(preRelay.result.pipe_io_contracts).toBeUndefined();
+      expect(preRelay.result.input_form).toBeUndefined();
+      expect(preRelay.result.output_form).toBeUndefined();
+    }
+  });
+
+  it("reads the working memory off the results body as it arrives", async () => {
+    const client = makeClient();
+    const workingMemory = {
+      root: { answer: { concept: "native.Number", content: { value: 42 } } },
+      aliases: {},
+    };
+    // A delivered artifact, then a body delivered before the artifact was written, which the
+    // platform relays as `null`.
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          pipeline_run_id: "run-1",
+          main_stuff: { value: 42 },
+          working_memory: workingMemory,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          pipeline_run_id: "run-2",
+          main_stuff: { value: 42 },
+          working_memory: null,
+        }),
+      );
+
+    const state = await client.getRunResult("run-1");
+    expect(state.state).toBe("completed");
+    if (state.state === "completed") {
+      expect(state.result.working_memory).toEqual(workingMemory);
+      expect(state.result.working_memory!.root.answer!.concept).toBe("native.Number");
+    }
+
+    const midWrite = await client.getRunResult("run-2");
+    expect(midWrite.state).toBe("completed");
+    if (midWrite.state === "completed") {
+      expect(midWrite.result.working_memory).toBeNull();
+    }
+  });
+
+  it("maps 409 to a failed state, with the status from its `run_status` member", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(409, {
+        type: "https://pipelex.com/errors/conflict",
+        code: "conflict",
+        detail: "Run finished with status TIMED_OUT; no result available",
+        run_status: "TIMED_OUT",
+        error: null,
+      }),
+    );
+    const state = await client.getRunResult("run-1");
+    expect(state.state).toBe("failed");
+    if (state.state === "failed") {
+      expect(state.status).toBe("TIMED_OUT");
+      expect(state.message).toContain("TIMED_OUT");
+      expect(state.error).toBeNull();
+    }
+  });
+
+  it("treats 503 (Temporal degraded) as a running/retry state, never an error", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(emptyResponse(503, { "Retry-After": "5" }));
+    const state = await client.getRunResult("run-1");
+    expect(state.state).toBe("running");
+  });
+
+  it("defaults the degraded retry when no Retry-After header is present", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(emptyResponse(202));
+    const state = await client.getRunResult("run-1");
+    if (state.state === "running") {
+      expect(state.retry_after_seconds).toBe(5);
+    }
+  });
+
+  it("maps a route-absent 404 (bare runner) to RunLifecycleUnavailableError", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(404, { detail: "Not Found" }));
+    const err = await client.getRunResult("run-1").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RunLifecycleUnavailableError);
+    expect((err as RunLifecycleUnavailableError).message).toContain("/v1/runs");
+  });
+
+  it("surfaces a structured 404 (run not found) as ApiResponseError", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(404, { detail: "Run not found", code: "run_not_found" }),
+    );
+    await expect(client.getRunResult("run-1")).rejects.toBeInstanceOf(ApiResponseError);
+  });
+});
+
+describe("PipelexApiClient.getRunResult artifact selection", () => {
+  const RESULTS_URL = `${BASE_URL}/v1/runs/run-1/results`;
+
+  it("names the seven selectable artifacts, exported from the entry point", () => {
+    expect(RUN_RESULT_ARTIFACTS).toEqual([
+      "graph_spec",
+      "pipe_io_contracts",
+      "input_form",
+      "output_form",
+      "main_stuff",
+      "working_memory",
+      "tokens_usages",
+    ]);
+    expect(sdk.RUN_RESULT_ARTIFACTS).toBe(RUN_RESULT_ARTIFACTS);
+    expectTypeOf<RunResultArtifact>().toEqualTypeOf<(typeof RUN_RESULT_ARTIFACTS)[number]>();
+  });
+
+  it("sends no artifacts parameter when there is no selection", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { pipeline_run_id: "run-1", main_stuff: {} }));
+    await client.getRunResult("run-1");
+    expect(fetchSpy.mock.calls[0]![0]).toBe(RESULTS_URL);
+  });
+
+  it("sends the selection as one comma-separated parameter, deduplicated, in the caller's order", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { pipeline_run_id: "run-1", main_stuff: {} }));
+    await client.getRunResult("run-1", {
+      artifacts: ["working_memory", "main_stuff", "working_memory"],
+    });
+    expect(fetchSpy.mock.calls[0]![0]).toBe(`${RESULTS_URL}?artifacts=working_memory,main_stuff`);
+  });
+
+  it("keeps an unselected artifact absent and a selected unwritten one null", async () => {
+    const client = makeClient();
+    // The platform's body for `?artifacts=main_stuff,graph_spec` on a run with no graph.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { pipeline_run_id: "run-1", main_stuff: { ok: true }, graph_spec: null }),
+    );
+    const state = await client.getRunResult("run-1", { artifacts: ["main_stuff", "graph_spec"] });
+    expect(state.state).toBe("completed");
+    if (state.state !== "completed") return;
+    expect(state.result.main_stuff).toEqual({ ok: true });
+    expect(state.result.graph_spec).toBeNull();
+    expect("working_memory" in state.result).toBe(false);
+    expect(state.result.working_memory).toBeUndefined();
+    expect(state.result.tokens_usages).toBeUndefined();
+  });
+
+  it("owes no main stuff to a selection that left it out", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        pipeline_run_id: "run-1",
+        tokens_usages: [],
+        usage_assembly_error: null,
+      }),
+    );
+    const state = await client.getRunResult("run-1", { artifacts: ["tokens_usages"] });
+    expect(state.state).toBe("completed");
+    if (state.state !== "completed") return;
+    expect(state.result.main_stuff).toBeUndefined();
+    expect(state.result.tokens_usages).toEqual([]);
+    expect(state.result.usage_assembly_error).toBeNull();
+  });
+
+  it.each([
+    ["no selection", undefined],
+    ["a selection naming main_stuff", ["graph_spec", "main_stuff"] as RunResultArtifact[]],
+  ])(
+    "throws MissingMainStuffError for %s when main_stuff comes back null",
+    async (_n, artifacts) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        jsonResponse(200, { pipeline_run_id: "run-1", main_stuff: null, graph_spec: null }),
+      );
+      await expect(
+        client.getRunResult("run-1", artifacts === undefined ? {} : { artifacts }),
+      ).rejects.toBeInstanceOf(MissingMainStuffError);
+    },
+  );
+
+  it.each([
+    ["an empty selection", []],
+    ["an unknown name", ["graphspec"]],
+  ])("refuses %s with a RangeError before any request", async (_name, artifacts) => {
+    const client = makeClient();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await expect(
+      client.getRunResult("run-1", { artifacts: artifacts as RunResultArtifact[] }),
+    ).rejects.toBeInstanceOf(RangeError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("waitForResult sends the selection on every poll", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(emptyResponse(202, { "Retry-After": "0" }))
+      .mockResolvedValueOnce(jsonResponse(200, { pipeline_run_id: "run-1", working_memory: null }));
+
+    const result = await client.waitForResult("run-1", {
+      intervalMs: 0,
+      artifacts: ["working_memory"],
+    });
+
+    expect(result.working_memory).toBeNull();
+    expect(result.main_stuff).toBeUndefined();
+    for (const [url] of fetchSpy.mock.calls) {
+      expect(url).toBe(`${RESULTS_URL}?artifacts=working_memory`);
+    }
+  });
+
+  it("startAndWaitForResult refuses an empty selection before starting the run", async () => {
+    const client = makeClient();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await expect(
+      client.startAndWaitForResult({ pipe_code: "p" }, { artifacts: [] }),
+    ).rejects.toBeInstanceOf(RangeError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("startAndWaitForResult polls the hosted results with the selection", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          protocol_version: "0.6.0",
+          implementation: "pipelex-hosted",
+          implementation_version: "0.9.0",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(202, { pipeline_run_id: "run-1", state: "STARTED", created_at: "t0" }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, { pipeline_run_id: "run-1", main_stuff: { ok: true } }),
+      );
+
+    const result = await client.startAndWaitForResult(
+      { pipe_code: "p" },
+      { artifacts: ["main_stuff"] },
+    );
+
+    expect(result.main_stuff).toEqual({ ok: true });
+    expect(fetchSpy.mock.calls[2]![0]).toBe(`${RESULTS_URL}?artifacts=main_stuff`);
+  });
+});
+
+describe("PipelexApiClient.waitForResult", () => {
+  it("polls until the run completes and returns the result", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(emptyResponse(202, { "Retry-After": "0" }))
+      .mockResolvedValueOnce(emptyResponse(202, { "Retry-After": "0" }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, { pipeline_run_id: "run-1", main_stuff: { ok: true } }),
+      );
+
+    const result = await client.waitForResult("run-1", { intervalMs: 0 });
+    expect(result.main_stuff).toEqual({ ok: true });
+  });
+
+  it("throws RunFailedError when the run reaches a terminal failure", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(emptyResponse(202, { "Retry-After": "0" }))
+      .mockResolvedValueOnce(
+        jsonResponse(409, {
+          type: "https://pipelex.com/errors/conflict",
+          code: "conflict",
+          detail: "Run finished with status FAILED; no result available",
+          run_status: "FAILED",
+          error: null,
+        }),
+      );
+
+    const error = await client.waitForResult("run-1", { intervalMs: 0 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RunFailedError);
+    expect((error as RunFailedError).runId).toBe("run-1");
+    expect((error as RunFailedError).status).toBe("FAILED");
+  });
+
+  it("throws RunTimeoutError when the deadline elapses before terminal", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(emptyResponse(202, { "Retry-After": "0" }));
+    const error = await client
+      .waitForResult("run-1", { intervalMs: 0, timeoutMs: 0 })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RunTimeoutError);
+    expect((error as RunTimeoutError).runId).toBe("run-1");
+  });
+
+  it("does not issue a poll once the deadline has passed (timeout checked before fetch)", async () => {
+    // With the deadline already elapsed, the loop must throw before calling the
+    // result endpoint — no late, wasted poll.
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(emptyResponse(202, { "Retry-After": "0" }));
+    await client.waitForResult("run-1", { intervalMs: 0, timeoutMs: 0 }).catch(() => {});
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("stops polling when the abort signal fires", async () => {
+    const client = makeClient();
+    const controller = new AbortController();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      controller.abort();
+      return emptyResponse(202, { "Retry-After": "0" });
+    });
+    const error = await client
+      .waitForResult("run-1", { intervalMs: 50, signal: controller.signal })
+      .catch((e: unknown) => e);
+    expect((error as Error).name).toBe("AbortError");
+  });
+
+  it("invokes onPoll with attempt + elapsed while running", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(emptyResponse(202, { "Retry-After": "0" }))
+      .mockResolvedValueOnce(jsonResponse(200, { pipeline_run_id: "run-1", main_stuff: {} }));
+    const polls: number[] = [];
+    await client.waitForResult("run-1", {
+      intervalMs: 0,
+      onPoll: (info) => polls.push(info.attempt),
+    });
+    expect(polls).toEqual([1]);
+  });
+
+  it.each([
+    ["intervalMs", { intervalMs: Number.NaN }],
+    ["timeoutMs", { timeoutMs: Number.NaN }],
+  ])("refuses a NaN %s before polling", async (_name, options) => {
+    const client = makeClient();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    await expect(client.waitForResult("run-1", options)).rejects.toBeInstanceOf(RangeError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("sleeps no shorter than asked when the interval is past what a timer honours", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeClient();
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async () => emptyResponse(202));
+      const controller = new AbortController();
+
+      const pending = client
+        .waitForResult("run-1", {
+          intervalMs: 2 ** 31,
+          timeoutMs: Number.POSITIVE_INFINITY,
+          signal: controller.signal,
+        })
+        .catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // An overflowing timer would fire every millisecond and poll thousands of times.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      controller.abort();
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("propagates RunLifecycleUnavailableError out of the poll loop (bare runner)", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(404, { detail: "Not Found" }));
+    await expect(client.waitForResult("run-1", { intervalMs: 0 })).rejects.toBeInstanceOf(
+      RunLifecycleUnavailableError,
+    );
+  });
+});
+
+describe("TokensUsageRecord", () => {
+  // A record in the shape the current runtime emits: every contract field present, absent
+  // values sent as explicit nulls. Mirrors the shared conformance seed corpus, which is
+  // what the platform arm asserts on the wire, and the pipelex-sdk-python mirror's
+  // fixtures.
+  const RATED_RECORD: TokensUsageRecord = {
+    model_type: "llm",
+    inference_model_name: "test-model",
+    inference_model_id: "test-model-2026-01-01",
+    pipe_code: "test_domain.summarize",
+    job_category: "llm_job",
+    unit_job_id: "llm_gen_text",
+    nb_tokens_by_category: { input: 15, input_cached: 5, output: 4 },
+    cost: 0.000105,
+    started_at: "2026-06-20T10:00:01+00:00",
+    completed_at: "2026-06-20T10:00:03+00:00",
+  };
+
+  // A durable artifact written BEFORE the wire contract shipped, relayed verbatim ever
+  // since: a dump of the runtime's internal reporting model, carrying the nested
+  // `job_metadata` and the `unit_costs` rate table, and lacking the computed `cost`. Old
+  // artifacts are never migrated, so the mirror must accept this — that it type-checks at
+  // all is the assertion (the fields are optional and the index signature is open).
+  const PRE_CONTRACT_RECORD: TokensUsageRecord = {
+    model_type: "llm",
+    inference_model_name: "legacy-model",
+    inference_model_id: "legacy-model-v0",
+    nb_tokens_by_category: { input: 20, output: 6 },
+    unit_costs: { input: 3.0, output: 15.0 },
+    job_metadata: {
+      pipe_code: "legacy_domain.summarize",
+      job_category: "llm_job",
+      session_id: "legacy-session",
+      user_id: "legacy-user",
+    },
+  };
+
+  it("reads every contract field off a current-shape record", () => {
+    expect(RATED_RECORD.model_type).toBe("llm");
+    expect(RATED_RECORD.inference_model_name).toBe("test-model");
+    expect(RATED_RECORD.inference_model_id).toBe("test-model-2026-01-01");
+    expect(RATED_RECORD.pipe_code).toBe("test_domain.summarize");
+    expect(RATED_RECORD.job_category).toBe("llm_job");
+    expect(RATED_RECORD.unit_job_id).toBe("llm_gen_text");
+    expect(RATED_RECORD.nb_tokens_by_category).toEqual({ input: 15, input_cached: 5, output: 4 });
+    expect(RATED_RECORD.cost).toBe(0.000105);
+    expect(RATED_RECORD.started_at).toBe("2026-06-20T10:00:01+00:00");
+    expect(RATED_RECORD.completed_at).toBe("2026-06-20T10:00:03+00:00");
+  });
+
+  it("tolerates a pre-contract record: contract fields absent, legacy fields carried", () => {
+    // `cost` is server-computed and did not exist when this artifact was written;
+    // `pipe_code` was still nested inside `job_metadata` rather than flattened onto the record.
+    expect(PRE_CONTRACT_RECORD.cost).toBeUndefined();
+    expect(PRE_CONTRACT_RECORD.pipe_code).toBeUndefined();
+    // The legacy fields survive on the index signature — relayed, never reshaped. A client
+    // must not read them as contract fields, but the mirror must not reject them either.
+    expect(PRE_CONTRACT_RECORD["unit_costs"]).toEqual({ input: 3.0, output: 15.0 });
+    expect(PRE_CONTRACT_RECORD["job_metadata"]).toEqual({
+      pipe_code: "legacy_domain.summarize",
+      job_category: "llm_job",
+      session_id: "legacy-session",
+      user_id: "legacy-user",
+    });
+  });
+
+  it("keeps an unrated call's null cost distinct from a rate table pricing it at zero", () => {
+    const unrated: TokensUsageRecord = { ...RATED_RECORD, cost: null };
+    const pricedAtZero: TokensUsageRecord = { ...RATED_RECORD, cost: 0 };
+
+    expect(unrated.cost).toBeNull();
+    expect(pricedAtZero.cost).toBe(0);
+    expect(pricedAtZero.cost).not.toBeNull();
+  });
+
+  it("keeps the usage null semantics distinct on RunResults", () => {
+    // Null (assembly off, broke, or pre-artifact) vs [] (assembly ran, no inference).
+    const assemblyOff: RunResults = {
+      pipeline_run_id: "run-1",
+      main_stuff: {},
+      tokens_usages: null,
+    };
+    const assemblyBroke: RunResults = {
+      pipeline_run_id: "run-1",
+      main_stuff: {},
+      tokens_usages: null,
+      usage_assembly_error: "failed to read usage events for the run",
+    };
+    const noInference: RunResults = { pipeline_run_id: "run-1", main_stuff: {}, tokens_usages: [] };
+
+    expect(assemblyOff.tokens_usages).toBeNull();
+    expect(noInference.tokens_usages).toEqual([]);
+    // `usage_assembly_error` is the ONLY field separating a broken assembly from an off one.
+    expect(assemblyOff.usage_assembly_error).toBeUndefined();
+    expect(assemblyBroke.usage_assembly_error).toBe("failed to read usage events for the run");
+  });
+});
+
+/**
+ * The three I/O artifacts of one single-input pipe, as a run carries them — the validate
+ * report's own shapes, keyed by `pipe_ref` over the library the run executed against.
+ */
+const CONTRACTS: PipeIOContracts = {
+  "x.greet": {
+    inputs: {
+      subject: {
+        concept_ref: "native.Text",
+        json_schema: { type: "object", properties: { text: { type: "string" } } },
+        presence: "plain",
+        multiplicity: "single",
+        item_count: null,
+      },
+    },
+    output: {
+      concept_ref: "native.Text",
+      multiplicity: "single",
+      item_count: null,
+      optional: false,
+      json_schema: { type: "object", properties: { text: { type: "string" } } },
+    },
+  },
+};
+
+const INPUT_FORM: InputForm = {
+  "x.greet": {
+    fields: [
+      {
+        name: "subject",
+        kind: "prose",
+        concept_ref: "native.Text",
+        required: true,
+        presence: "plain",
+        gating: true,
+      },
+    ],
+  },
+};
+
+const OUTPUT_FORM: OutputForm = {
+  "x.greet": { field: { name: "text", kind: "prose", concept_ref: "native.Text", required: true } },
+};
+
+describe("RunResults graph fields", () => {
+  it("keeps the graph null semantics distinct", () => {
+    // A run with no graph and a run whose graph assembly broke both carry a null `graph_spec`.
+    const noGraph: RunResults = { pipeline_run_id: "run-1", main_stuff: {}, graph_spec: null };
+    const assemblyBroke: RunResults = {
+      pipeline_run_id: "run-1",
+      main_stuff: {},
+      graph_spec: null,
+      graph_assembly_error: "failed to assemble the graph for the run",
+    };
+
+    expect(noGraph.graph_spec).toBeNull();
+    // `graph_assembly_error` is the ONLY field that tells the two apart.
+    expect(noGraph.graph_assembly_error).toBeUndefined();
+    expect(assemblyBroke.graph_assembly_error).toBe("failed to assemble the graph for the run");
+  });
+});
+
+describe("RunResults I/O artifact fields", () => {
+  it("types the three as the standard's artifacts, imported rather than restated", () => {
+    // Compile-time, and `npm run typecheck:test` is where they bite: a later widening back to
+    // `unknown` or a bare record would still pass vitest. Optional AND nullable — absent on a
+    // path that does not relay the key, null on a run that carries no artifacts.
+    expectTypeOf<RunResults["pipe_io_contracts"]>().toEqualTypeOf<
+      PipeIOContracts | null | undefined
+    >();
+    expectTypeOf<RunResults["input_form"]>().toEqualTypeOf<InputForm | null | undefined>();
+    expectTypeOf<RunResults["output_form"]>().toEqualTypeOf<OutputForm | null | undefined>();
+    expect(Object.keys(CONTRACTS)).toEqual(Object.keys(OUTPUT_FORM));
+  });
+
+  it("keeps the artifact null semantics distinct", () => {
+    // A run that described no data and a run whose artifact build broke both carry all three null.
+    const undescribed: RunResults = {
+      pipeline_run_id: "run-1",
+      main_stuff: {},
+      pipe_io_contracts: null,
+      input_form: null,
+      output_form: null,
+    };
+    const buildBroke: RunResults = {
+      ...undescribed,
+      pipe_io_artifacts_error: "failed to build the I/O artifacts for the run",
+    };
+
+    expect(undescribed.pipe_io_contracts).toBeNull();
+    // `pipe_io_artifacts_error` is the ONLY field that tells the two apart, exactly as
+    // `graph_assembly_error` does for the graph.
+    expect(undescribed.pipe_io_artifacts_error).toBeUndefined();
+    expect(buildBroke.pipe_io_artifacts_error).toBe(
+      "failed to build the I/O artifacts for the run",
+    );
+  });
+});

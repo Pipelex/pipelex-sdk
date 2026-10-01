@@ -1,0 +1,492 @@
+# Changelog
+
+## [v0.28.1] - 2026-10-01
+
+### Added
+
+- **The `User-Agent` builder is public**: the package entry now exports `buildUserAgent(appInfo?)`, which returns exactly the value a `PipelexApiClient` constructed with that `appInfo` sends (or `undefined` in a browser), together with `validateAppInfo` and `MAX_USER_AGENT_LENGTH` (512) and the `RuntimeInfo` type. A program that makes some of its API requests with its own `fetch`, such as a web app's hand-rolled routes, now sends the same header and checks an `appInfo` against the grammar and the ceiling without re-implementing the format. Documented on `docs/client-identification.md`.
+
+## [v0.28.0] - 2026-10-01
+
+### Added
+
+- **`getRunResult`'s `artifacts` option, with `RUN_RESULT_ARTIFACTS` and `RunResultArtifact`**: `getRunResult(runId, { artifacts })` reads only the named result artifacts (`graph_spec`, `pipe_io_contracts`, `input_form`, `output_form`, `main_stuff`, `working_memory`, `tokens_usages`, the last bringing `usage_assembly_error`), sent as one comma-separated `?artifacts=` parameter; an unselected artifact is absent from the result and a selected one the run never wrote is `null`. `waitForResult` and `startAndWaitForResult` take the same option in their poll options, `downloadArtifacts` given a `run_id` now asks for its scope's artifact alone, and an empty selection or an unknown name is a `RangeError` before any request. It needs a platform serving `?artifacts=`, and `GetRunResultOptions` is exported.
+
+### Changed
+
+- **`listRuns` and `iterateRuns` return `RunHistoryItem` rows (Breaking)**: a run-history row is now exactly `pipeline_run_id`, `status`, `created_at`, `finished_at`, `pipe_code` and `error`, matching the platform's slimmed `GET /v1/runs`, and `RunPage.items` is `RunHistoryItem[]` instead of `PipelineRun[]`. Code that read `org_id`, `created_by_user_id`, `method_id`, `workflow_id` or `result_url` off a history row now reads them from `getRunDetail(runId)`, which still returns the whole `PipelineRun` record.
+- **`RunResults.main_stuff` is optional, and `MissingMainStuffError` fires only when it was asked for (Breaking)**: a results read whose `artifacts` selection leaves `main_stuff` out returns no main stuff and throws nothing, while a read with no selection, or one naming `main_stuff`, still throws `MissingMainStuffError` when the main stuff comes back null.
+
+## [v0.27.0] - 2026-09-30
+
+### Added
+
+- **`pipeIo()` and its types**: `client.pipeIo(request)` calls `POST /v1/pipe-io`, which returns a method's pipe I/O contracts, input form and output form with no dry run, beside the resolved `pipe_ref`, the method's own `default_pipe_ref`, `pending_signatures` and `is_runnable`, and the closure's `.mthds` files when `include_files: true` is passed. It takes the crate routes' `files`, `method_ref` or hosted `method_id` selector with an optional qualified `pipe_ref` and `all_pipes`, and `PipeIORequest`, `PipeIOValidReport` and `PipeIOResponse` are exported, the three artifacts typed from `mthds/protocol`. It needs a server serving `POST /v1/pipe-io`, which `pipelex-api` does from v0.33.1; at this release the hosted dev API serves it and the production API does not yet.
+
+### Changed
+
+- **`prepareInputs` reads `POST /v1/pipe-io`, and the route selects the pipe (Breaking)**: preparation calls `pipeIo` instead of `validate`, so it runs no dry run and needs a server serving `POST /v1/pipe-io` with its selection refusals typed, as `pipelex-api` does from v0.33.1 (at this release the hosted dev API serves it and the production API does not yet); against one that does not serve it, the route's `404` or `403` propagates as an `ApiResponseError`. The route's entry pipe replaces the helper's own default chain and its blueprint and single-pipe fallbacks, so a method whose domains declare several `main_pipe`s now needs `pipe_ref` where the first declaration used to be taken, and a selection the route refuses (a `422` typed `EntryPipeNotFoundError` or `EntryPipeAmbiguousError`) is an `InputPreparationError` carrying the server's detail instead of a list of candidates the client built.
+
+## [v0.26.0] - 2026-09-27
+
+### Added
+
+- **`ApiResponseError` carries every member of the problem document**: `type`, `title`, `instance`, `requestId` (the body's `request_id`, else the `X-Request-ID` header), `errorDomain`, `errorCategory`, `retryable`, `userAction`, `model`, `provider`, `providerMetadata`, `migration`, the platform's field-level `errors[]`, and the decoded document whole as `problemDocument`, beside the fields it kept. A member of the wrong type reads as absent. The members `mthds`'s `ApiResponseError` carries have the same names and types here, and the types `ProblemDetails`, `FieldError`, `UserAction` and `ApiResponseErrorOptions` are exported.
+- **`docs/errors.md`**: a reference page for a failed run's report and a refused request's `ApiResponseError`, with the fields to branch on, and for the validation items either can carry.
+- **An unknown model's validation item keeps the model and its close matches**: `ValidationErrorItem` declares `model_reference` (the reference as the author wrote it), `model_type` (the kind of model the field takes) and `suggestions` (the close matches), the members `mthds`'s item carries, so a refusal for a model the deck does not know reaches a TypeScript caller with the model it named and what to write instead, beside its `rename-model` suggested fix. `FixValue` is exported as the standard's name for `TomlValue`, and a type-level test pins the item and the fix vocabulary to `mthds`'s declarations.
+
+### Changed
+
+- **A failed run carries its report (Breaking)**: the `failed` arm of `getRunResult` gains `error`, the run's stored report or `null`, and `RunFailedError`, thrown by `waitForResult`, `startAndWaitForResult` and `downloadArtifacts`, gains the same `error`, so the reason, the next step and the retry advice reach the caller. Its `status` is now typed `RunStatus` and is read from the results read's `run_status` member, the `detail` sentence serving only for a platform that does not send it yet. Code that builds a `failed` state by hand now sets `error`.
+- **A failed run's stored error report, typed whole (Breaking)**: `RunErrorReport` now declares every field of the runner's report (`error_type`, `message`, `title`, `type_uri`, `error_domain`, `error_category`, `retryable`, `user_action`, `model`, `provider`, `provider_metadata`, `caller_facing_message`, `validation_errors`, `migration`), all optional and each admitting `null`, and `RunRead` declares it as `error`. `message` and `error_type`, typed `string` until now, are `string | null`, so code reading them under `strictNullChecks`, as on `PipelineRun.error` from `listRuns`, `iterateRuns` and `getRunDetail`, now handles `null`. `ProviderErrorMetadata` and `MigrationErrorBlock` are exported with it.
+- **Branch on `errorDomain` and `type`**: the README and `docs/architecture.md` now point consumers at `errorDomain` and `type`, the hosted envelope's branch fields, rather than at the platform's native `code`, which stays on the error and is one-to-one with `type`.
+- **The `mthds` floor moves from `^0.25.0` to `^0.28.0`**: `mthds` 0.28.0 is the release whose `ApiResponseError` carries the problem members and whose `ValidationErrorItem` carries `model_reference`, `model_type` and `suggestions`, the declarations this SDK's error and validation-item types are pinned to.
+
+## [v0.25.1] - 2026-09-25
+
+### Fixed
+
+- **The README and `docs/architecture.md` no longer list a gateway key**: their account of the Pipelex product routes still named the gateway key surface that v0.25.0 removed, so the package page and the shipped architecture doc now describe the client as it is.
+
+## [v0.25.0] - 2026-09-25
+
+### Fixed
+
+- **The `.mthds` check hook finds the file a Codex shell patch wrote**: for a patch Codex runs through the shell, the hook built by `npm run build:hook` follows the script's `cd`s, branches and scopes before resolving the patch's relative paths, where it used to read them against the session directory. It checks and formats such a file only when it holds the lines the patch added, as the shell passed them, so it no longer rewrites a same-named file the patch never touched, nor a file named by an absolute path in a patch the script only stored or never reached, and it names the files it could not check in a non-blocking note asking for an absolute path or the `apply_patch` tool. Relative paths now resolve against the payload's `cwd` rather than the hook's working directory.
+
+### Removed
+
+- **The Pipelex Gateway key surface (Breaking)**: `createGatewayApiKey`, `getGatewayApiKey` and the `GatewayApiKey` / `GatewayApiKeyStatus` types are gone, along with the `POST` and `GET /v1/gateway-api-key` routes behind them, which the hosted plane no longer serves. A consumer that provisioned an LLM inference key through the SDK now has the user bring their own provider keys, or call the hosted API with a Pipelex API key (`listPipelexApiKeys`, `createPipelexApiKey`, …), which is untouched.
+
+## [v0.24.0] - 2026-09-24
+
+### Added
+
+- **`UploadTransportError.code` and `UploadTransportCode`**: an upload's transport failure now says which it was in a closed vocabulary — `timeout`, `unreachable`, `server_error` and `unexpected` from `uploadFile` and `uploadWithGrant`, and `storage_timeout`, `conflict`, `redirected` and `invalid_grant_url` from `uploadWithGrant` — so a caller tells a timeout from an unreachable host or a `5xx` by a field rather than by the message or the error's `name`. The type is exported from the main entry and from `@pipelex/sdk/upload`.
+
+### Changed
+
+- **`uploadWithGrant` bounds its `PUT` to storage, and takes `timeoutMs` (Breaking)**: a call now fails with an `UploadTransportError` whose `code` is `timeout` once 60 s plus 1 s for every started 128 KiB of the file have passed — 460 s for a 50 MiB file — instead of waiting forever when no signal was passed, so a caller no longer needs a timeout formula of its own. `timeoutMs` replaces the default, for a link slower than about 1 Mbit/s, and a caller's `signal` can still end the upload sooner. Only the first 16 KiB of storage's error body are read, and when the limit runs out while that body is still arriving the call settles as storage's answer, classified from its status.
+- **`uploadWithGrant` reports storage's `409 ConditionalRequestConflict` as an `UploadTransportError` (Breaking)**: the conflict S3 answers when two uploads with one grant overlap was a `RejectedAssetError` advising a new grant; it is now an `UploadTransportError` whose `code` is `conflict`, advising a retry with the same grant, which either stores the file or reports the grant as used.
+
+### Fixed
+
+- **`uploadWithGrant`'s messages on an unknown outcome**: an unreachable storage now also gives the same-grant retry advice, since the connection may have failed after the file went out, a `5xx` whose storage message ends with a period no longer prints two, and a successful upload no longer waits on the cancellation of storage's response body, which a `fetch` wrapper keeping a clone of the response could hold open indefinitely.
+- **The client's own timeout is `ABORT_TIMEOUT` in a browser too**: when the request timeout ran out while a response body was still arriving, Chrome and Firefox error the body with a generic `AbortError`, so the resulting `ApiUnreachableError` carried no `code`; it now carries `ABORT_TIMEOUT` in every runtime, and `uploadFile` reports it as a `timeout`.
+- **A `timeoutMs` no timer can honour is refused instead of failing at once**: a delay above 2147483647 overflowed `setTimeout`, which then fired almost at once as a false timeout. `validate`, `validateFiles` and `buildRunner` now throw a `RangeError` for such a `timeoutMs`, and for `Infinity`, zero, a negative or `NaN`; `fetchArtifact` and `downloadArtifacts` throw an `ArtifactOperationError`; and `waitForResult` refuses a `NaN` `intervalMs` or `timeoutMs` and caps its sleep, so it no longer polls in a tight loop. `startAndWaitForResult` refuses such a poll option before it starts the run.
+- **The `.mthds` check hook's lint engine accepts the expanded input-slot form and intent hints**: the bundle built by `npm run build:hook` now embeds `@pipelex/tools-wasm` 0.3.0, whose MTHDS schema carries `inputs = { x = { concept = "…", hints = { … } } }` and `hints` on concepts and structure fields, so the hook no longer blocks those valid forms with a schema error; malformed hints are still refused. The engine is pinned exactly, so the bundle's provenance line, the manifest and the lockfile name the same version.
+
+## [v0.23.0] - 2026-09-24
+
+### Added
+
+- **`locateArtifacts` and `ArtifactLocation`**: `locateArtifacts(value)` is the artifact walk with its paths — every `pipelex-storage://` reference in a JSON value, deduplicated in discovery order exactly as `collectArtifacts` returns them, each with `found_at`, every `$`-rooted path at which it sits (`$.rooms[3].staged_photo.url`, `$.items[0].url`, `$["a key"].url`).
+
+### Changed
+
+- **`downloadArtifacts` names each file after the field it fills, and `artifactFilename` takes a location (Breaking)**: a saved file is named after the first path at which its reference sits — `$.rooms[3].staged_photo.url` is saved as `rooms-3-staged_photo.png`, and an output that is one image as `main_stuff.png` — instead of after the last segment of its storage key, which now supplies only the extension. `artifactFilename(location, contentType, scope)` replaces `artifactFilename(uri, contentType, index)` and throws `ArtifactOperationError` for a location whose first path is not in the walk's notation; a field whose name Windows reserves for a device (`aux`, `nul`, `com1` and the like) is saved with a trailing `_` (`aux_.png`); the full rule is on `docs/artifact-download.md`.
+- **`DownloadedArtifact` items carry a required `found_at` (Breaking)**: every item of a `downloadArtifacts` verdict carries its reference's `found_at`, on the saved arm and the error arm alike, so a file that was not saved still says which field it would have filled. The field is required, so code that builds `DownloadedArtifact` values — a test fake standing in for `downloadArtifacts` — must now supply it.
+
+### Fixed
+
+- **`downloadArtifacts` refuses an unknown `scope`**: a scope other than `main_stuff` or `working_memory` used to walk the working memory while reporting the unknown name back; it is now an `ArtifactOperationError`, raised before anything is read.
+
+## [v0.22.0] - 2026-09-23
+
+### Added
+
+- **`requestUploadGrant`, and the browser-safe `@pipelex/sdk/upload` entry with `uploadWithGrant`**: `PipelexApiClient.requestUploadGrant({ filename, content_type, size })` calls `POST /v1/upload/grant` and returns an `UploadGrant` — a presigned, create-only `PUT` for one new object, its signed headers, the `pipelex-storage://` URI the object will carry, its expiry and the service's `max_bytes`. The standalone `uploadWithGrant(grant, file)` sends a `Blob` or `File` straight to storage with it and returns `{ uri }`, so a browser page that holds a file but no API key can store it without the bytes crossing a server or the API gateway's size ceiling; storage's refusals map onto `RejectedAssetError` (a used grant's `412`, a signature mismatch's `403`, an expired grant) and `UploadTransportError` (a `5xx`, storage's `400 RequestTimeout`, no response, or a grant `url` that is not an absolute `http(s)` URL free of user info, refused before anything is sent). No error it throws carries the grant's URL, the bearer credential: an unreachable storage is described by its origin and the error names and codes, never by the runtime's message or error, which can name the whole URL. It ships from the new `@pipelex/sdk/upload` subpath, which reaches no Node builtin and bundles for the browser with nothing marked external, as well as from the main entry. Documented on `docs/input-preparation.md`.
+- **`RejectedAssetError.code` and `UploadTransportError.status`**: a rejected asset now says why in a closed `RejectedAssetCode` vocabulary — `too_large` for `uploadFile`'s `413`, and `grant_used`, `grant_expired`, `signature_mismatch`, `unsigned_header` or `store_refused` for storage refusing an upload with a grant — so a caller branches on a field rather than on the message. `UploadTransportError` carries the HTTP status when a response produced it. Both are set through the options bag, so existing constructor calls still compile.
+
+### Fixed
+
+- **A caller's abort now reaches it as its own reason in a browser too**: when an abort cut short a response body that was still arriving, the client rethrew the runtime's error, and Chrome and Firefox error that body with a generic `AbortError` rather than the signal's reason — so a caller comparing the rejection to its reason, or using `AbortSignal.timeout()`, saw the wrong error. The client's request pipeline and `fetchArtifact` (whose returned body is read after the call resolves) now throw `signal.reason` whenever the caller's signal has aborted. Node's `fetch` already passed the reason through.
+
+## [v0.21.0] - 2026-09-23
+
+### Added
+
+- **`User-Agent` on every API request, and the `appInfo` option**: `PipelexApiClient` now identifies itself as `pipelex-sdk-js/<version> <runtime>/<version> (<os>; <arch>)` on every request to the API, the `health()` probe included, following the workspace's client-identification convention, and sets no header in a browser; the fetch of a presigned object-store link is unchanged. `PipelexApiClientOptions.appInfo` (the exported `AppInfo`: `name`, optional `version`, `url` and `details`) puts the caller's own product token in front, and an invalid field is refused at construction with a `TypeError`. Documented on `docs/client-identification.md`.
+- **The bundled `.mthds` check hook names itself**: the hook's validate calls carry `pipelex-mthds-check/<version>` in front of the SDK's token, so the platform attributes them to the hook.
+
+## [v0.20.1] - 2026-09-22
+
+### Added
+
+- **`resultsFromExecute`, the lift from a blocking result onto `RunResults`, made public**: `resultsFromExecute(result)` turns a `PipelexExecuteResult` into the `RunResults` the durable path hands back, lifting the usage pair, the graph pair, the working memory and the three I/O artifacts off the runner's extension-open `pipe_output` onto their declared fields. It is the same mapping `startAndWaitForResult` has always applied on its bare-runner fallback, which until now was private: a caller driving the blocking `execute()` itself had to re-read `pipe_output`'s extension fields by hand to reach `summarizeUsage`, `collectArtifacts` or any parity field. `execute()` still returns `PipelexExecuteResult`, since that object carries the runner's whole typed envelope. The function is pure — no client, no network — and is documented in `docs/run-results.md` and `docs/run-usage.md`.
+
+## [v0.20.0] - 2026-09-22
+
+### Highlights
+
+**A run now describes its own data.** Beside the graph it already carried, `RunResults` hands back the three I/O artifacts that say what that graph's nodes hold — which is what lets a renderer show a run's actual values instead of the concepts' structure tables.
+
+### Added
+
+- **`RunResults` carries the three I/O artifacts that describe a run's data**: `pipe_io_contracts`, `input_form` and `output_form`, typed as the standard's `PipeIOContracts`, `InputForm` and `OutputForm` imported from `mthds/protocol` rather than restated, built over the library the run executed against and keyed by namespaced `pipe_ref`. They are what makes `@pipelex/mthds-ui`'s `GraphViewer` show a data node's value instead of the concept's structure table, which it does only when it holds `contracts` and `outputForm` together. The blocking path unwraps the runner's `pipe_io_artifacts` envelope onto the three fields so each has one accessor whichever path ran, while on the hosted path they read `undefined` until the platform relays the keys; documented on `docs/run-results.md`.
+- **`RunResults.pipe_io_artifacts_error`** — the artifacts' twin of `graph_assembly_error`: non-null when the runner's build of the three failed, which is the only thing that separates a broken build from a run that described no data. Lifted off `pipe_output` on the blocking path; absent on the hosted path until the platform relays it.
+
+## [v0.19.0] - 2026-09-21
+
+### Changed
+
+- **`prepareInputs` stops at a stated `default_pipe_ref: null` (Breaking)**: a report stating the field as `null` is the server saying it determined no entry pipe — no blueprint declares a `main_pipe`, or the package manifest names a pipe the closure does not declare or declares in several domains — and a run naming no pipe is refused in exactly those cases, so preparation now refuses with an `InputPreparationError` naming the candidates instead of falling through to the bundle's `main_pipe` or to the only declared pipe. Pass `pipe_ref`. A stated ref the report's `input_form` does not describe is refused for the same reason, and only an ABSENT field — a runner predating it — still leaves the blueprint and single-pipe fallbacks standing.
+
+### Fixed
+
+- **`PipelexValidationReport.default_pipe_ref` is documented as what it carries**: its TSDoc, and the v0.17.0 entry announcing the field, both said `null` meant the closure declares "none or several" `main_pipe` — the build routes' stricter rule, never the one the API shipped. The field carries the RUN default, so a closure whose domains each declare a `main_pipe` gets the first declaring blueprint's ref — the pipe `execute` would take — and `null` means no entry pipe was determined at all. The three-arm reading a consumer applies (string / stated `null` / absent) is stated there and on `docs/input-preparation.md`.
+
+## [v0.18.2] - 2026-09-21
+
+### Fixed
+
+- **The documentation pages ship with the package**: `files` carried `dist/` alone, so every `docs/*.md` page stayed behind in the repository and the README's links to them resolved to nothing in an installed tree. `docs/` now joins the tarball, a developer who has only installed `@pipelex/sdk` reads the pages under `node_modules/@pipelex/sdk/docs/` at the version they are calling, and the README gained a table naming each page and what it covers.
+
+## [v0.18.1] - 2026-09-20
+
+### Fixed
+
+- **`main_stuff`'s documented shape is the shape it has**: the TSDoc on `RunResults.main_stuff`, which ships in the type declarations and is what an editor shows on hover, and `docs/run-results.md` beside it, both said a list output arrives as a top-level array. It arrives as `{ items: [...] }`, the runtime's `ListContent` serialised, and every content type serialises to an object — natives included — so a guard written for a bare `""` or `0` never fires. The page now says to read `items` off the object and map the generated per-concept parser over its members, and warns that a schema whose fields are all optional swallows the envelope into `{}` rather than rejecting it, since the generated schemas are not strict.
+
+## [v0.18.0] - 2026-09-20
+
+### Added
+
+- **`collectArtifacts` and `resolveArtifacts`**: the reading half of the artifact stack, the download twin of `prepareInputs`. `collectArtifacts(value)` is a pure, exported walk of any JSON value for the strings that are `pipelex-storage://` references, deduplicated and in discovery order, so a consumer can count a run's produced files without touching the network. `client.resolveArtifacts(uris)` mints fresh links for a whole list through the platform's new bulk route (`POST /v1/resolve-storage-url/bulk`, exposed raw as `client.resolveStorageUrls`), chunked at the route's bound of 100 references, answering one `ResolvedArtifact` per reference in request order with a refused reference as a value on its item rather than a thrown error.
+- **`fetchArtifact` and `downloadArtifacts`**: `client.fetchArtifact(uri)` returns one reference as a bounded `Response` — resolved fresh, a timeout, redirects refused, the byte cap enforced mid-stream, no credentials forwarded, plain `http:` refused unless `allowHttp`, and the store's headers relayed (less a `Content-Encoding` the fetch already decoded) so a same-origin proxy sets its own. `client.downloadArtifacts({ run_id | results, dir, scope? })` is Node-only and saves a run's produced files under a directory — by run id days after the run, or from a `RunResults` in hand — walking `main_stuff` by default or `working_memory` on request, never using the embedded `public_url`, with a bounded pool of workers that re-resolve a link expired by the time they reach it, filenames derived from the storage key and never overwritten, and partial files unlinked on failure or abort. It returns a produced verdict (`scope`, one `artifacts` entry per reference with `path` or `error`, `saved_paths`, `all_saved`, `aborted?`) and throws only when no verdict exists, through the new `ScopeUnavailableError`, `ArtifactAuthenticationError` (carrying the verdict so far), `ArtifactFetchError` and their base `ArtifactOperationError`, beside the existing run-lifecycle and transport errors. Defaults: `maxBytes` 1 GiB, `timeoutMs` 120 s, `maxTotalBytes` 4 GiB, `concurrency` 4, `allowHttp` false. Both operations need a platform serving the bulk route; `undici` joins the runtime dependencies for the dispatcher timeouts the Node fetch runs under. Documented on `docs/artifact-download.md`.
+- **`RunResults.graph_assembly_error`** — the graph's twin of `usage_assembly_error`: non-null when the runner's graph assembly failed, which is the only thing that tells a broken graph apart from a run that produced none. It is lifted off `pipe_output` on the blocking path; the hosted results body relays no such key, so on that path the key is absent and the field reads `undefined` until the platform writes and relays it, and the field is declared ahead of that so consumers have one accessor to write against.
+- **`summarizeUsage(results)`**: a pure helper that folds a run's `tokens_usages` / `usage_assembly_error` pair into one `UsageSummary` — a `state` of `records`, `no_inference` or `unavailable`, the total cost with a `cost_partial` flag, the `input` and `output` token totals, the call count, the assembly error, and a `by_pipe` rollup sorted by cost with unattributed calls grouped under a `null` `pipe_code`. Cost stays null-aware (`null` is unrated, `0` is priced at zero), and a run that did no inference totals `0` rather than `null`; `docs/run-usage.md` documents it.
+- **`RunResults.working_memory`**: every named stuff of the run as `{ root, aliases }`, typed `DictWorkingMemory`, which reads the same on both paths — the hosted results body relays the `working_memory.json` artifact, and the blocking path lifts it off `pipe_output`. Read it rather than `pipe_output.working_memory`, which exists on the blocking path only; a run from a runtime older than pipelex 0.60.0 still carries each `concept` as an object.
+- **`docs/run-results.md`** — "Reading a run's results", a page walking every field of `RunResults`: the run id as the durable handle, `main_stuff` with a worked `getRunResult` example, `working_memory` and how it relates to `main_stuff`, what `graph_spec` is and how to render it with `@pipelex/mthds-ui`'s `GraphViewer` or keep it as JSON, the usage pair, and the produced files whose signed `public_url` is short-lived and must be re-minted with `resolveStorageUrl` rather than stored.
+
+### Changed
+
+- **The blocking path stops dropping the executed graph.** Against a bare runner, `startAndWaitForResult` now lifts `pipe_output.graph_spec` onto `RunResults.graph_spec` instead of writing `null` — the runner has always returned the graph there — so the field carries the same document whichever path ran.
+
+## [v0.17.0] - 2026-09-02
+
+### Added
+
+- **`PipelexValidationReport.output_form`** — the standard's `OutputForm`, imported from `mthds/protocol` rather than restated, exactly as its `input_form` twin and `pipe_io_contracts` already are. The report typed the artifact describing a pipe's INPUTS and had no typed route to the one describing its RESULT, which is the artifact a result renderer actually needs. Optional for the same reason its twin is: presence is a function of the request (`views: ["output_form"]`), so a required field would lie about every verdict that did not ask for it.
+
+  Requires `mthds` 0.25.0, where `OutputForm` exists — and where `json_schema` becomes required on `PipeOutputContract`, a closed shape, so a verdict from a runner predating the output payload schema now fails the parse rather than being read half-way.
+- **`prepareInputs` takes the method three ways.** Beside inline `files`, it accepts a `method_ref` address (resolved by the runner) or a stored `method_id` (resolved by the hosted platform) — exactly one per call, all three server-resolved, nothing expanded client-side. `PrepareInputsRequest` is a discriminated union pinning the unused selectors to `never`, so a second one is a compile error; empty is absent (`files: []`, a blank `method_ref` / `method_id`), and an untyped caller giving none or several gets an `InputPreparationError` naming the three forms. `PrepareInputsBase` and `PrepareInputsClosure` are exported from the barrel.
+- **`PipelexValidationReport.default_pipe_ref`** — the qualified `pipe_ref` a caller gets by omitting the pipe selector, or `null` when the closure declares none or several. Optional and read leniently: a runner that predates the field sends nothing, and `prepareInputs` falls back to the opaque `bundle_blueprint.main_pipe`.
+
+### Changed
+
+- **Breaking: `prepareInputs` reads its signature from the input-form descriptor, not the inputs template.** It composes one `POST /v1/validate` with `views: ["input_form"]` and `allow_signatures: true`, and walks the standard's `InputForm` artifact — `document` / `image` mark a file position, `object` recurses through `fields`, `list` through `item`, everything else passes through. Source-compatible for every caller passing `files`; the SDK no longer calls `/v1/build/inputs` at runtime.
+- **Breaking: a canonical file dict nested inside a `Dynamic` input is no longer uploaded.** Such an input is `kind: "unknown"` in the descriptor — the standard's escape hatch — and the walk does not enter it. Uploading on the strength of a `url` key is the value-shape guess this change removes; a caller with a Dynamic input uploads with `uploadFile` first and passes the storage URI, which `docs/input-preparation.md` has always prescribed.
+- **`ValidateMethodSelector` moved to `src/models.ts`**, beside the other wire shapes, and is re-exported from `src/client.ts` — the import path is unchanged for every consumer.
+- **The documentation is rewritten around the descriptor.** `docs/input-preparation.md`, `docs/architecture.md` and `docs/build-routes.md` now describe the three call shapes, the signature call, pipe selection and its manifest-only `main_pipe` gap, and `getMethodClosure` reduced to what it is — the explicit expansion utility for the routes that still have no by-id form. They previously generalised the build-route freeze to the address form.
+
+### Security
+
+- **An optional nested file field is now uploaded.** The required-only inputs template never rendered one, so its file position was invisible and the caller's local path travelled to the runner as a literal string. The descriptor states `required: false` and the walk enters it.
+- **A text field merely *named* `url` is no longer read from disk.** The template marked a file position by rendering a `url`-bearing dict — a side effect of the field's *name*, not of its concept — so a path-shaped text value was uploaded. `kind: "text"` ends that.
+
+## [v0.16.0] - 2026-08-29
+
+### Added
+
+- **`method_ref` is a typed run source.** `execute`, `start`, and `startAndWaitForResult` take a published method's address — `github.com/<owner>/<repo>[/<selector>][@<tag>]` — through the new `PipelexApiRunExtensions` interface, beside the protocol's inline sources. It is a layer-2 Pipelex-API argument the RUNNER resolves (git fetch at the tag, package located by manifest identity), deliberately separate from the hosted-only `method_id`: an address is meaningful against a bare runner, a catalog id is not. Served by pipelex-api >= 0.21.0; on `api.pipelex.com` availability follows the platform deploy that forwards it. An empty string is treated as absent, `extra: { method_ref }` is rejected (the key joins the reserved set), and the selector survives `startAndWaitForResult`'s blocking fallback.
+- **Provenance comes back typed.** A `method_ref` run's start ack is the new `PipelexRunResultStart`, carrying `method_provenance` — the new `MethodProvenance` shape `{address, tag, commit_sha}`, the SHA being what keeps the run explainable when a tag moves — and `PipelexExecuteResult` declares the same field on the blocking path. Both are `null` or absent for inline-source and bundle runs.
+- **Client-side exclusivity guards mirroring the server's 422s.** A `method_ref` is a complete run source, so it pairs with nothing: combining it with inline `mthds_contents`, with a method bundle (`files` / `bundle_b64`), or with `method_id` fails fast with a `PipelineRequestError` whose wording mirrors the server's validator — before anything hits the wire. The documented run-route exception is untouched: inline source + `method_id` stays legal (the inline source runs; the id demotes to run-history linkage), and `pipe_code` beside a `method_ref` stays legal (it overrides the manifest's `main_pipe`).
+- **`validate` takes method selectors.** Its first argument now accepts, in place of the inline `string[]`, a `ValidateMethodSelector` — `{ method_ref }` (runner-resolved by address, the package's real file names feeding the diagnostics' source labels) or `{ method_id }` (hosted-only, platform-resolved) — under the tooling routes' strict three-way XOR: exactly one selector, no linkage exception, `mthds_sources` legal only beside inline contents. A selector-resolution failure (fetch failure, no package at the address, an unknown id) is a non-2xx `ApiResponseError`, never an `is_valid: false` verdict.
+- **Typed `method_id` on `resolve` and `codegen`.** Both crate routes take the hosted catalog id as a third closure form through the new `PipelexHostedToolingExtensions` — a pure server pass-through the platform resolves, meaningless against a bare runner. An unknown or foreign-org id is a `404` (indistinguishable by design); a stored method with no MTHDS source is a `422`. The `method_ref` field on the same envelope is no longer reserved for the address form, which pipelex-api resolves as of 0.21.0; the registry form keeps its `501`.
+- **A `method_ref` request gets a fetch-sized budget.** Resolving an address can make the server clone a repository before it answers, and the server-side clone timeout runs well past the client's 30s management budget on a cold cache — an abort there would report a healthy, still-cloning server as unreachable. A `method_ref`-carrying `start` uses the blocking-execute ceiling (like a bundle-carrying one), and a `method_ref`-carrying `resolve`, `codegen`, `buildInputs`, or `buildOutput` uses an internal 3-minute budget (`buildRunner`'s own five-minute default already clears it); both are internal (no new caller-facing parameters) and inert behind the hosted gateway's own cap.
+
+### Changed
+
+- **Breaking: the client-side by-id expansion legs are deleted.** `buildInputs({ method_id })` (the `BuildInputsByMethodId` request form) and `prepareInputs({ method_id })` no longer exist: both routes take `files` only, and `BuildRequestBase` pins `method_id` to `never` — the `/v1/build/*` projections are deliberately excluded from the hosted tooling selector. The rule is now uniform: a `method_id` option is always a server pass-through, and client-side expansion is the caller's own explicit `getMethodClosure` call, which stays public as the local expansion utility. An untyped caller still passing `method_id` to either route gets a teaching error naming the migration (`prepareInputs({ files: await client.getMethodClosure(methodId), … })`).
+- **`start` returns `PipelexRunResultStart`.** A widening of the previous `RunResultStart` return type (one typed optional field over the extension index signature) — no caller change needed.
+- **`extra` now also rejects `method_ref`**, for the same reason it rejects every named request option: `extra` merges last into the body, so a smuggled copy would overwrite the validated named option and bypass the selector-exclusivity checks.
+
+## [v0.15.0] - 2026-08-28
+
+### Added
+
+- **Compile-time type assertions:** `tests/validate-report-types.test.ts` pins `pipe_io_contracts` and `input_form` to their exact `mthds/protocol` types, so a later edit cannot silently widen either field back to a bare record. The assertions bite in `npm run typecheck:test`, which `make check` runs.
+- **Architecture documentation:** `docs/architecture.md` gains a "Standard artifacts on the validate report" section recording which fields are imported from the standard, which stay opaque, and why importing enforces the same boundary the opaque typing was reaching for.
+
+### Changed
+
+- **Breaking: the validate report types its standard artifacts by importing them.** `PipelexValidationReport.pipe_io_contracts` and `PipelexValidationReport.input_form` are now `PipeIOContracts` and `InputForm` from `mthds/protocol`, in place of the `Record<string, unknown>` they were. Reading a slot's presence, a field descriptor's kind, or a contract's JSON Schema no longer needs a cast, and a consumer walking either artifact gets exhaustiveness checking over the discriminated unions. The wire is unchanged, so a consumer that only reads and forwards these payloads needs no edit; one that assigned a hand-rolled shape or indexed them as bare records must update. `bundle_blueprint` and `graph_spec` stay opaque, because the standard declares neither.
+- **The `mthds` floor moves from `^0.22.0` to `^0.24.0`.** The floor spans two releases: `0.23.0` first carried `mthds/protocol`'s `input_form` and `pipe_io_contracts` modules, and `0.24.0` then tightened `InputFormTopLevelField` into a discriminated union on `required`, so the standard's pairing rules are enforced by the compiler rather than left as prose. Because the barrel re-exports `mthds/protocol` unchanged, every type the two artifacts are built from is reachable from `@pipelex/sdk` with no second import.
+- **Test payloads:** the mocked validation payloads in `tests/client.test.ts` now use realistic, fully typed contract and descriptor pairs instead of placeholder objects, matching the new strict types.
+- **Internal tooling:** the `bump-required-versions` Claude skill is renamed `bump-mthds`, with its prompts and the `check-min-versions` documentation updated to match.
+
+### Fixed
+
+- **Dev-scope security refresh:** `package-lock.json` was regenerated to move four transitive lint- and test-toolchain dependencies past their patched versions — `brace-expansion`, `js-yaml`, `nanoid` and `postcss`. None of them reaches the published package.
+
+## [v0.14.0] - 2026-08-25
+
+### Added
+
+- **The validate report's valid arm mirrors the wire field-for-field.** `PipelexValidationReport` gained three fields that had been riding through untyped, so reaching them no longer needs a cast. `warnings` carries the advisory lints on a valid bundle — the same item shape as `validation_errors[]`, so one parser serves both channels, but they never flip `is_valid`. `liftable_pipes` lists the pipes the runtime may skip when an optional slot resolves absent, through the new `LiftablePipeEntry` type. `input_form` is an optional structured view of per-pipe input-form descriptors, derived from authored facts rather than the emitted JSON Schema, so a renderer can build a fill-in form from the verdict alone; its payload stays opaque because `@pipelex/mthds-form` owns that descriptor vocabulary and a second copy here would be free to drift.
+- **`views`, the structured-view opt-in, on `validate` and `validateFiles`.** A sibling to `render`: `render` asks for rendered text, `views` asks for a structured view — today only `input_form`. Unlike `render`, which this client always populates, `views` is sent only when a caller names a token, so a response with no tokens stays byte-identical to previous versions. Unknown tokens are lenient-ignored rather than a `422`.
+- **Deterministic repair proposals on `ValidationErrorItem`.** The item gained `missing_pipe_code` (symmetrical with the `missing_concept_code` already there) and `suggested_fix`, the server's repair proposal, along with the `SuggestedFix` / `FixOp` / `FixSafety` vocabulary it carries — a discriminated union over the patch kinds, so narrowing on `kind` reaches each op's own members without a cast. These are semantic patches over the `.mthds` document rather than a text diff, which is what lets an applier preserve the author's formatting.
+- **`method_id` is a typed run option.** `execute`, `start`, and `startAndWaitForResult` now take the hosted platform's `method_id` as a named option, through the new `PipelexRunOptions` / `PipelexStartOptions` types. It is a pure pass-through — the platform resolves the id against the org's catalog and nothing is expanded client-side. Alone it is a run source; alongside an inline source the inline source is what runs and the id is recorded as run-history linkage. An empty string is treated as absent.
+- **`deleteMethod`.** `DELETE /v1/methods/{id}` had always existed on the platform and simply was not exposed. It returns the platform's acceptance as the new `MethodDeletionAccepted` (`method_id`, `deletion_state`, `deletion_job_id`), so the asynchronous erasure is honest in the type: a resolved promise means "accepted", never "gone" — completion is the row disappearing from `listMethods`. A double-clicked delete is a `409 conflict` rather than a second cascade over the same runs.
+
+### Changed
+
+- **Breaking: `validate()` takes `views` as its fifth argument**, moving the trailing options bag to sixth. Callers passing that bag positionally must add an argument; `validateFiles` is unaffected, taking `views` as a named option like `render`.
+- **Breaking: every optional member of `ValidationErrorItem` widened from `T` to `T | null`.** The two channels serialize an unset locator differently and one type has to be honest about both: the invalid arm drops the key, while the valid arm — which is what carries `warnings[]` — emits an explicit `null`. A truthiness check reads both and needs no change; an `=== undefined` check was already wrong on one of them and now fails to compile.
+- **Breaking: `extra` now rejects `method_id`.** It joins the reserved keys because the client now names it itself, and one argument must not arrive by two paths with different validation. Callers passing `extra: { method_id }` — an undocumented but working path — must pass the named option instead. The guard is deliberately per layer: `method_id` must never become reserved in the protocol clients, which have no business rejecting another vendor's arguments.
+- **The client-side run-source precondition counts `method_id`.** A `method_id`-only run is accepted and sent, where previously only an `extra` entry made such a body pass. The error message when nothing at all is supplied now names the hosted selector.
+
+### Fixed
+
+- **Documentation: no more citations a reader cannot open.** This package is public, and several docstrings, comments and doc passages cited internal specs and the conformance suite by bare repo-relative path — paths that resolve to nothing for anyone who clones this repo, so they read as rot rather than as a deliberate boundary. Each site now states the rule it was citing instead: the layered extension policy behind `PipelexHostedRunExtensions` and the reserved-`extra` guard, and the fact that `TokensUsageRecord` is a Pipelex runtime extension rather than an MTHDS Protocol contract. No behaviour changed.
+- **Documentation: the crate routes are hosted everywhere now.** `docs/crate-routes.md` and the crate-extensions comment in `src/client.ts` announced a partial hosted exposure — dev yes, prod not yet — which stopped being true when `api.pipelex.com` picked up `POST /v1/resolve` and `POST /v1/codegen`; both were re-measured with a real key on 2026-08-23. `lint` and `format` are still `403` on every hosted origin, and both places now say why that blocks nothing: linting and formatting `.mthds` are toolchain capabilities, run offline by the post-edit hook this repo builds (`npm run build:hook`) through `@pipelex/tools-wasm`, with `client.lint` / `client.format` as the published package's documented fallback.
+
+## [v0.13.0] - 2026-08-20
+
+### Added
+
+- **Offline codegen drift check**: Added `runCodegenCheck`, a pure helper that verifies a committed codegen tree still matches its `codegen.lock` — no filesystem, no network, no API key, and no `PipelexApiClient`. The caller walks its own tree and passes the lock text plus the files; the SDK returns a structured `CodegenCheckReport` (`drifts[]`, `isCurrent`, and the lock header's `crateFingerprint` / `engineVersion`). It is a port of pipelex's `codegen check`, so a verdict computed here equals the one the CLI computes over the same bytes, down to the drift `detail` sentences. This is the CI half of the codegen trust chain: regeneration needs the engine, checking needs only hashes.
+- **Codegen check types**: Exported `CodegenCheckInput`, `CodegenCheckReport`, `CodegenDrift`, `CodegenDriftCategory`, `CodegenTreeFile`, and the `CodegenLockError` raised for a no-verdict condition (a malformed lock or an unsafe artifact path). `CodegenTreeFile` is structurally identical to `GeneratedArtifact`, so a `codegen()` response's `artifacts` feed the check with no mapping.
+- **Tree-walk filter**: Exported `isStampableArtifactPath` and `STAMPABLE_ARTIFACT_SUFFIXES`, mirrors of pipelex's `STAMPABLE_SUFFIXES`, so a consumer's directory walk picks up exactly the files the check considers. An incomplete walk yields a false `isCurrent`, so filtering identically is part of the contract.
+- **`codegen.lock` format version**: `runCodegenCheck` now reads the `lock_version` key pipelex writes at the head of every lock, mirroring the reference's evolution policy. A lock with no key is version 1 by definition, so every lock written before the field existed keeps working untouched; a version this build does not know is refused with a message naming the version found and which side to upgrade. The version is read **before** the key set is validated, so a lock from a newer codegen reports its version rather than an opaque complaint about whichever key it happens to carry — which is the whole reason the field exists, since the reader is otherwise strict enough to turn any added key into a hard no-verdict.
+- **Dependency**: Added `smol-toml` (`^1.6.0`) to `dependencies` for parsing `codegen.lock`. It installs no new package — `mthds` already depends on the same range, so the two dedupe to one copy.
+- **Tests**: Added `tests/codegen-check.test.ts` with vendored real codegen output under `tests/fixtures/codegen/` (artifacts and lock from an actual `pipelex codegen types` run, committed beside their source bundle), and extended `tests/e2e/crate.e2e.ts` to run the check over artifacts a live server just emitted — verbatim, then mutated once per drift category, for both a TypeScript and a Python target. A `.gitattributes` rule (`tests/fixtures/** -text`) freezes those bytes: the fixtures exist to pin hashes, and a line-ending rewrite on checkout would invalidate every one of them on the platforms most likely to run CI.
+- **Documentation**: `docs/crate-routes.md` gains an offline-check section covering the algorithm, the drift taxonomy, the caller's obligations, what the check deliberately does not verify, and the two places it knowingly differs from the CLI. `docs/architecture.md` gains `codegen-check.ts` in the module map, records why the check is a standalone pure helper rather than a client method, and describes the two-layer testing strategy behind it; `README.md` points at it from the overview.
+
+### Changed
+
+- **Packaging**: `package.json` now declares `"sideEffects"`, so bundlers can tree-shake unused modules out of a consumer's client bundle. It is the array form rather than a blanket `false`, naming `./dist/hooks/claude-mthds-check.js` — the Claude Code hook entry self-executes at module scope (`main()` … `process.exit(0)`) and ships in the tarball, so a blanket `false` would be a false claim about the published package. Every module reachable from the `.` export is genuinely side-effect-free.
+- **Repository hygiene**: `.gitignore` now ignores `.env` and every `.env.*` variant, keeping `!.env.example` tracked, in place of the lone `.env.local` rule. `make test-e2e` reads `PIPELEX_E2E_BASE_URL` and `PIPELEX_API_KEY` from `.env`, so the very file the E2E loop asks you to create was one `git add -A` away from committing an API key.
+
+### Fixed
+
+- **An uncommented line inside a stamp header is now `hand-edited`**, closing a gap where an injected statement verified as pristine. Every line the emitter writes between the stamp fences carries the comment prefix, so anything else there was injected by hand — and the content hash covers only the body *below* the fence, so such a line changed nothing the check looked at and the file reported current. The parser now rejects a header region containing any unprefixed line, matching the reference. The line-boundary set this gate splits on is load-bearing rather than incidental: U+2028 and U+2029 terminate a `//` comment in ECMAScript, so a narrower split would read an injected statement as one commented line while the JavaScript engine reads two and runs it.
+- **Stamp-header parsing now matches Python's text rules**, closing four places where `runCodegenCheck` and `pipelex codegen check` reached different verdicts on the same bytes. The header is split on the boundaries `str.splitlines()` breaks on rather than `\n` alone (a U+2028 inside a field value truncates it upstream, so the SDK used to report a tree current that the CLI reported `hand-edited`, and a header whose lines were joined by one flipped the other way); field values are stripped with Python's `str.isspace()` set rather than JavaScript's `trim()`, which strips U+FEFF where Python does not and skips U+001C-U+001F and U+0085 where Python does not; and a Windows drive prefix is now any single leading character before `:`, as `PureWindowsPath` sees one, so `1:models.py` and `_:models.py` are rejected like the reference rejects them instead of being accepted. Each is pinned by a test that fails without it.
+
+## [v0.12.0] - 2026-08-19
+
+### Added
+
+- **Crate Routes API**: Added `resolve()` and `codegen()` to `PipelexApiClient` for the new `POST /v1/resolve` and `POST /v1/codegen` endpoints. `resolve()` returns the normalized library crate (MTHDS Library Crate Format) with fully qualified refs and materialized natives; `codegen()` projects a crate into stamped typed artifacts and a `codegen.lock` file (supporting the `types` kind and `ts-zod`, `python-pydantic`, or `python-structures` targets).
+- **Crate Route Types**: Exported new TypeScript models: `CrateRequestBase`, `ResolveRequest`, `ResolveValidReport`, `ResolveResponse`, `CodegenKind`, `CodegenTarget`, `CodegenRequest`, `CodegenValidReport`, and `CodegenResponse`.
+- **Crate Route Tests**: Added unit (`tests/crate-routes.test.ts`) and E2E (`tests/e2e/crate.e2e.ts`) suites validating the new crate routes against live servers.
+- **Crate Route Documentation**: Added `docs/crate-routes.md`, covering the shared envelope, the verdict discipline, and the codegen trust chain.
+
+### Changed
+
+- **Unified Request Envelopes**: `BuildRequestBase` now extends the new `CrateRequestBase`, unifying the `files` / `method_ref` closure selector across the build and crate route families to prevent structural drift. `docs/build-routes.md` documents the split.
+- **E2E Pipeline**: `make test-e2e` now runs a fast-failing `curl` preflight probe (against `/v1/version`) before handing off to Vitest, exiting immediately with a clear one-line error if the server is unreachable. The Makefile also loads `.env` variables (`PIPELEX_E2E_BASE_URL`, `PIPELEX_API_KEY`) via standard dotenv precedence and strips trailing slashes from `PIPELEX_E2E_BASE_URL` to avoid malformed probe URLs.
+- **Documentation**: Updated `README.md` and `docs/architecture.md` for the v0.11.0 pagination API, replacing outdated array-return examples with the `MethodPage`, `iterateMethods`, `RunPage`, and `iterateRuns` patterns.
+
+### Fixed
+
+- **E2E Reachability Probe**: Moved the reachability check from the origin-level `/health` endpoint to `/v1/version`, fixing a false-negative where hosted origins (which do not serve the bare runner `/health` route) were reported as unreachable.
+
+### Removed
+
+- **Lockfile**: Removed `pnpm-lock.yaml` from the repository.
+
+## [v0.11.0] - 2026-08-18
+
+### Changed
+
+- **Breaking: `listMethods` returns one PAGE of summaries, not the whole catalog.** The signature is now `listMethods(query?) -> MethodPage` (`{items, nextCursor}`) instead of `listMethods() -> MethodData[]`, matching the platform's reshaped `GET /v1/methods`.
+
+  This one is a **data-loss fix**, not a scaling improvement. The old endpoint issued a single DynamoDB query with no `LastEvaluatedKey` loop, and every row carried the method's whole `.mthds` bundle plus its generated Python. DynamoDB caps a query page at 1 MB, so the response stopped at roughly 200–300 methods — and stopped *silently*: no error, no truncation flag, just a shorter array than the org actually owned. Methods disappeared from the UI and nothing said so. The endpoint is now served from a narrow index projection, so a page costs the same whether the org has 50 methods or 100,000.
+
+  **Migrating:** code that rendered the returned array directly should read `page.items` (accepting the first 50) or follow `page.nextCursor`. Callers that genuinely want everything can drain the new `iterateMethods`, but it is O(catalog) by construction and should not back a user-facing list.
+
+  `query.q` searches server-side over name + description across the whole catalog — filtering a single page client-side would be searching 50 of 10,000 and calling it a search.
+
+- **Breaking (types): list rows are `MethodSummary`, not `MethodData`.** `mthds`, `python` and `updated_at` are absent, because none of them is in the index projection — and putting `mthds` back is what restored the truncation bug. Use `getMethod(id)` when you need a method's source. `updated_at`'s absence is deliberate too: the catalog is ordered by `created_at` (immutable — over a mutable sort key a cursor duplicates and skips rows), and displaying a timestamp other than the one it sorts by makes "newest first" unreadable.
+
+### Added
+
+- **`iterateMethods(query?)`** — an async iterator that follows the cursor **past empty pages**. A filtered page can legitimately come back empty with a live cursor: the platform applies `q` as a post-read filter over a bounded slice of the index per request, so `{items: [], next_cursor: "…"}` means "nothing matched in the slice I just read, keep going". Stopping there would silently drop every later match. It gives up only when the server stops advancing its cursor — a runaway ceiling on total pages exists but sits far beyond any real catalog, and **throws** rather than returning, because a caller that asked for everything and got a partial answer with no error is the very bug this release removes. (`iterateRuns` may stop on an empty page: its date bounds are index key conditions, so a run page is never empty-with-a-cursor. The difference is the server, not the client.) It is an iterator, for callers that genuinely want the whole catalog: `for await (const m of client.iterateMethods())`. Deliberately **not** a `listAllMethods(): Promise<MethodSummary[]>`, for the same reason `iterateRuns` is an iterator: an all-at-once helper needs a page cap, and a cap means silently returning a truncated list — the exact failure paging exists to remove.
+- `MethodSummary`, `MethodPage`, `ListMethodsQuery` and `MethodDeletionState` are exported.
+- **`MethodSummary.deletion_state`** is surfaced on list rows. It was already on the wire but missing from the SDK's types, so consumers were relying on structural assignment to reach it. A method mid-erasure stays in the list — so the UI can render it as "Deleting…" — while `getMethod` refuses it with a 409.
+
+## [v0.10.0] - 2026-08-12
+
+### Changed
+
+- **Breaking: `listRuns` returns one PAGE, not the whole history.** The signature is now `listRuns(methodId, query?) -> RunPage` (`{items, nextCursor}`) instead of `listRuns(methodId) -> PipelineRun[]`, matching the platform's reshaped `GET /v1/runs`. The old call read the method's entire run history on every invocation — the API paged a DynamoDB partition to exhaustion and sorted in memory, which cost ~150 sequential round trips at 5,000 runs and would not complete at 100k. The endpoint is now served from a time-ordered index, so a page costs the same whether the method has 50 runs or 100,000.
+
+  **Migrating:** code that rendered the returned array directly should read `page.items` (accepting the first 50) or follow `page.nextCursor`. Callers that genuinely want everything — an export, a report — can drain the new `iterateRuns`, but it is O(history) by construction and should not back a user-facing list.
+
+  `query.createdFrom` / `query.createdTo` filter server-side as index key conditions, so a bounded page genuinely reads less. They are **instants, not days**: ISO-8601 with a UTC offset, and a naive timestamp is a 400. Only the caller knows which timezone's day it means — it is the one rendering the rows — so it converts its own day boundaries rather than having the API guess, which is what made a bare `YYYY-MM-DD` ambiguous.
+
+### Added
+
+- **`iterateRuns(methodId, query?)`** — an async iterator that follows the cursor, for callers that genuinely want the whole history: `for await (const run of client.iterateRuns(id))`. Deliberately **not** a `listAllRuns(): Promise<PipelineRun[]>`. An all-at-once helper needs a page cap so a misbehaving server cannot spin it forever, and a cap means silently returning a truncated list — 6,000 runs quietly yielding 5,000, from a method called "all". That is the same failure paging was introduced to remove. Streaming has no cliff: it yields until the server says there is no more, the caller `break`s whenever it likes (a search that hits on page one never fetches page two), and only one page is ever in memory. `Array.fromAsync` makes materialising the lot an explicit choice.
+- **`getRunDetail(runId)` — `GET /v1/runs/{id}`**, the only call that returns `mthds_contents` (what the run actually executed) and `inputs`. It is deliberately not on the status read, which pollers hit every few seconds, nor on the list, where the bundle would be multiplied by the page size. The bundle matters because a run is not reproducible from its `method_id`: a caller may run an editor buffer that was never saved.
+- `RunPage`, `RunDetail`, `RunErrorReport` and `ListRunsQuery` are exported.
+- **Breaking (types): `PipelineRun.method_id` and `.pipe_code` are now `string | null`.** Both are `str | None` on the API and both really are null in practice — an ad-hoc run (started from an inline bundle) belongs to no stored method, and `pipe_code` is null when the runner resolved the pipe from the bundle's `main_pipe`. The old required types could not represent a real response, so consumers narrow instead of trusting a promise the wire never made.
+
+## [v0.9.0] - 2026-07-24
+
+### Fixed
+
+- **`prepareInputs` now accepts the explicit `{ concept, content }` input envelope, not only compact values.** An agent that fills the explicit template `buildInputs({ explicit: true })` returns — the default template shape the hosted console and MCP hand out — can now hand it straight back to `prepareInputs`. Previously every file-bearing envelope position threw `InputPreparationError: Unsupported value at a file input … got object`, breaking the `buildInputs(explicit) → fill → prepareInputs` round-trip. Per input, the caller may submit either the compact value or the `{ concept, content }` envelope (a plain object whose keys are exactly `concept` + `content`, matching the runtime's `_is_explicit`); the envelope's `content` is interpreted identically and preserved on output, so the concept annotation rides through to the run — the runtime accepts it. Nested / list / structured file positions and mixed compact+envelope inputs are all handled. See [`docs/input-preparation.md`](./docs/input-preparation.md).
+
+## [v0.8.0] - 2026-07-24
+
+### Added
+
+- **`python` on the methods catalog model.** `MethodData` and `MethodWriteInput` gain an optional `python` field — the custom PipeFunc Python that travels with a stored method — typed as `MethodFile[]` (`{ name, content }`), so a `method_id`-run client can round-trip stored Python. On the wire it is the serialized `[{ name, content }]` catalog string; the client (de)serializes it at the boundary via `mthds/protocol`'s canonical `parseMethodFiles`/`serializeMethodFiles` (one owner of the format, no per-consumer parser mirror). Three-way on a `PUT`: **omit** preserves the stored Python (nothing sent), an **empty array** `[]` clears it (serialized to the `""` sentinel), a **non-empty array** replaces it. Raises the `mthds` floor to `^0.22.0` (the release that exports the `MethodFile` serialization).
+
+## [v0.7.0] - 2026-07-24
+
+### Added
+
+- **Method-bundle transport on `execute` / `start`: run a method whose custom PipeFunc Python travels with it.** A run can now carry the whole method — the `.mthds` plus its `funcs/*.py`, `structures/*.py` and an optional `requirements.txt` — instead of only the inline `mthds_contents` text, so a method with custom Python is runnable through this SDK. Two equivalent, mutually exclusive encodings on the run options: `files` (a `{ relativePath: text }` map) and `bundle_b64` (the same bundle as a base64 zip). A bundle is self-contained, so it satisfies the "something to run" precondition on its own — neither `pipe_code` nor `mthds_contents` is required beside it, and a bundle-only call is now accepted rather than rejected as under-specified. The bundle is forwarded on the durable `start` path **and** on the blocking `execute` fallback, so a bare runner reached through `startAndWaitForResult` runs the same method as a hosted one.
+
+  Run-source rules are enforced from the standard rather than restated here: `assertExclusiveRunSources` and `hasBundlePayload` are imported from `mthds/protocol` (new in `mthds` 0.21.0), so this client and the MTHDS runners cannot drift on which combinations they reject. Combining the two encodings, or either encoding with non-empty `mthds_contents`, raises `PipelineRequestError`. Exclusivity keys off **presence** (supplying `files: {}` alongside `bundle_b64` is still two encodings) while the run-source precondition keys off **runnability** (an empty encoding carries no method, so it is neither shipped on the wire nor counted as something to run). `files`, `bundle_b64`, and the client-only `bundleMain` entrypoint hint are all reserved keys on the `extra` passthrough — `extra` merges last into the body, so smuggling one through it would overwrite the validated fields, bypass the exclusivity check, or leak a never-serialized hint onto the wire; `buildExtensions` rejects any of them. `buildExtensions` also strips prototype-pollution keys (`__proto__` / `constructor` / `prototype`) so an `extra` populated from untrusted JSON never carries a pollution gadget on the wire. A bundle-carrying `start` is given the blocking path's upload timeout rather than the short poll timeout, so a large bundle can't time out on the durable path yet succeed on the fallback.
+
+  Because the barrel re-exports `mthds/protocol`, both predicates are also available to consumers directly from `@pipelex/sdk`.
+
+### Changed
+
+- **Raised the `mthds` floor to `^0.21.0`** (was `^0.19.0`), adopting the method-bundle run-source surface and the protocol-level run-source predicates the transport above is built on.
+
+## [v0.6.0] - 2026-07-23
+
+### Added
+
+- **By-id closure resolution: prepare and build inputs from a stored `method_id`.** `prepareInputs` and `buildInputs` now accept the method closure as a stored catalog `method_id` in place of inline `files` — `client.prepareInputs({ method_id, pipe_ref?, inputs })` and `client.buildInputs({ method_id, pipe_ref?, format?, explicit? })`. `method_id` is a client-side convenience, not a wire field: it is resolved to inline `files` via the new `getMethodClosure` before the request reaches the network, so a by-id call produces exactly the same result as the equivalent inline-`files` call and `method_id` never travels on the wire (it is distinct from the reserved `BuildRequestBase.method_ref` registry reference — that one still 501s). Supply `files` or `method_id`, never both — the either/or is a compile-time invariant (`PrepareInputsRequest` and `BuildInputsRequest` both forbid the over-specified `{ files, method_id }`), backed by runtime guards that reject both the degenerate neither-given and the over-specified both-given cases before any closure is resolved (so an untyped caller never silently gets `method_id` preferred over inline `files`). By-id resolution requires an API key (the catalog is org-scoped to the key's org). New exported client param type `BuildInputsByMethodId`. See [`docs/input-preparation.md`](./docs/input-preparation.md).
+- **`getMethodClosure(methodId)` on `PipelexApiClient`** — resolve a stored method's id into its runnable, provenance-labelled MTHDS closure (`MthdsFileItem[]`, each file's `source` set to the method id). A client-side semantic layer over `getMethod` (the platform has no route that returns a parsed closure): it fetches the method, parses its polymorphic `mthds` source, and labels each file. An unknown or foreign-org id surfaces as the `getMethod` `404` (`ApiResponseError`, `code: "not_found"`); a real in-org method whose source parses to nothing throws the new `EmptyMethodSourceError`.
+- **`methodSourceToContents(mthds)` — exported canonical source parser.** Turns a stored method's polymorphic `mthds` field — raw single-bundle text XOR a JSON `{ name, content }[]` file array — into a flat list of file contents, dropping blank entries. A verbatim port of the platform's `_method_source_to_contents`, so the SDK and the runtime read a stored source identically. Exported from the barrel for consumers that need the parse without the fetch (`getMethodClosure` is the fetch-and-parse convenience over it, and `pipelex-mcp` can retire its own parser mirror once it adopts this).
+- **`EmptyMethodSourceError`** (extends `InputPreparationError`, carries `methodId`) — a by-id closure resolution found the stored method but its source parses to no runnable content (the row exists, no runnable source yet). It joins the input-preparation failure family (catch `InputPreparationError` to handle any preparation failure), and is deliberately distinct from the `ApiResponseError` `404` raised for an unknown or foreign-org id.
+- **`MethodData` read-model fields: `org_id`, `created_by_user_id`, and a server-derived `description`.** The methods read model now carries the org and creator ids present on every `GET`/list response, plus `description` — parsed read-side by the platform from the bundle's top-level `description` key (present on reads, absent from the write contract, so typed `string | null | undefined`). Additive; the `MethodWriteInput` create/update payload is unchanged.
+
+### Changed
+
+- **Removed `deleteMethod` (breaking).** The client method wrapped `DELETE /v1/methods/{id}`, a route the hosted platform does not have and will not add by design — deletion of a saved method is an explicit product decision, not a default the SDK should imply. Callers relying on it must drop it; there is no replacement route.
+
+## [v0.5.1] - 2026-07-22
+
+### Security
+
+- **Bumped the transitive dev dependency `brace-expansion` to a patched release (CVE-2026-13149 / GHSA-3jxr-9vmj-r5cp).** The vulnerable `5.0.6` copy pulled in via `@typescript-eslint` — exponential-time expansion of consecutive non-expanding `{}` groups, a DoS that can stall the calling thread — is updated to `5.0.7`; the unaffected top-level `1.x` copy moves to its latest patch in the same lockfile update. Lockfile-only change with no effect on the published runtime surface: `brace-expansion` is dev-only and is never shipped in `@pipelex/sdk`.
+
+## [v0.5.0] - 2026-07-22
+
+### Added
+
+- **Input preparation: `uploadFile` and `prepareInputs` (hosted upload capability).** Two higher-level operations over the raw `upload()` wire call. `client.uploadFile(asset, options?)` uploads one local asset — `Blob`/`File`/`ArrayBuffer`/`Uint8Array` in every runtime, a filesystem path string in Node only (it fails instructively elsewhere) — and returns an `UploadRecord` (`uri`, `contentType`, `size`, `filename`) assembled client-side. `client.prepareInputs({ files, pipe_ref?, inputs })` resolves the target pipe's declared signature from the explicit inputs template, interprets the caller's compact `inputs` top-down against it (the file signal is the canonical Image/Document content shape — a `{url:…}` dict — mirroring the runtime's `input_normalizer`), uploads the file-bearing values, and returns `PreparedInputs`: a copy-on-write rewrite of `inputs` with each asset reference replaced by canonical content carrying `pipelex-storage://` in `url`, plus one `UploadRecord` per prepared asset. HTTP(S) URLs and existing `pipelex-storage://` URIs pass through unchanged; data URLs and local/byte sources are uploaded; the same source referenced twice uploads once (dedup by source identity); all failures are raised before any run is created. Failures are typed per category: `InvalidLocalSourceError`, `RejectedAssetError`, `UnsupportedUploadCapabilityError`, `UploadAuthenticationError`, `UploadTransportError` (all extend `InputPreparationError`). `prepareInputs` takes the method closure as inline `files`; catalog `method_id` resolution and opt-in `http(s)` ingest are deferred and additive. See [`docs/input-preparation.md`](./docs/input-preparation.md).
+- **Typed run usage: `RunResults.tokens_usages` + `RunResults.usage_assembly_error`.** The per-call usage records a run produces — token counts by category, the server-computed `cost` in USD, model name and id, the pipe that made the call, job-kind fields and timing, for LLM and img-gen/extract/search calls alike — are now first-class typed fields. Records are typed by a new exported `TokensUsageRecord` interface (`src/runs.ts`) mirroring the wire contract specified in the MTHDS protocol spec. Both paths populate the pair: the hosted durable path reads it off `GET /v1/runs/{id}/results` (which unpacks the runner's `tokens_usages.json` artifact), and the blocking fallback lifts the same pair out of the execute response's extension-open `pipe_output` — so `result.tokens_usages` reads the same regardless of which path ran.
+
+  Note that the rate table (`unit_costs`) no longer crosses the wire: a record now carries the computed `cost` for the call instead, which is null when the model has no rate table at all (own-GPU, mock, dry run) and `0` when a rate table priced it at zero. There is no run-level aggregate — sum the records.
+
+  `tokens_usages` is null whenever usage assembly produced no list (it was off, it broke, or the run was delivered before the artifact existed) and `[]` when assembly ran and no inference happened; `usage_assembly_error` is the only field separating a broken assembly from an off one. `TokensUsageRecord` keeps every field optional and carries an index signature, so durable artifacts written before the contract shipped — relayed verbatim, never migrated — still type-check: `cost` and `pipe_code` arrive absent, and the legacy `job_metadata` / `unit_costs` stay reachable. Enum-ish fields (`model_type`, `job_category`, `unit_job_id`) are open sets typed as plain `string`, so runtime enum churn stays non-breaking.
+
+### Changed
+
+- **`RunResults.pipe_output` is now `DictPipeOutput | null`, was `Record<string, unknown> | null` (breaking).** The blocking path already had the concrete shape and widened it away; it now carries the typed value straight through. Read the working memory as properties — `result.pipe_output!.working_memory.root["out"]!.content` — rather than casting. The durable path still leaves it null.
+- **`DictPipeOutput` is now extension-open** (gains `[extension: string]: unknown`), matching its Python counterpart `DictPipeOutputAbstract`, which has always been `extra="allow"`. The runner rides Pipelex extension fields on the pipe output — the usage pair is the current example — so a closed type forced every reader to cast the whole value away and left the two SDK mirrors of one wire shape disagreeing on whether it was closed. Widening only; existing reads are unaffected.
+
+## [v0.4.0] - 2026-07-15
+
+### Added
+
+- **Tools routes (`lint` and `format`)**: Added `PipelexApiClient.lint(content, source?)` and `PipelexApiClient.format(content, options?)` for the new `/v1/lint` and `/v1/format` endpoints, providing single-file static diagnostics and canonical formatting without a full bundle load or dry-run. Both follow `validate`'s discipline: malformed content is a produced verdict on a `200` carrying `diagnostics[]` — never a thrown error — while a no-verdict condition (malformed body, malformed formatter `options`, auth, a server fault) is non-2xx and surfaces as the typed `ApiResponseError`. New exported wire types: `Diagnostic`, `DiagnosticKind`, `DiagnosticRange`, `LintResponse`, `FormatResponse`. `lint` is the cheap single-file check and does not replace `validate`, which loads the bundle, resolves across files, and dry-runs the pipes.
+- **PostToolUse hook bundle**: Introduced a dependency-free ESM hook bundle (`dist-hooks/check.mjs`, built via `npm run build:hook` from new `src/hooks/` sources) that agent plugins (first consumer: `pipelex-plugins`) vendor as a static hook asset. It runs local lint/format via `@pipelex/tools-wasm` (offline, credential-free, format writes back in place), then fetches the full bundle verdict from `POST /v1/validate` through this SDK, forwarding the server-rendered Markdown as the block reason, subject to the hook's output cap. Bundle files are gathered recursively from parent directories with caps — on overflow the validate stage reads as unavailable rather than risking a false block on an under-supplied bundle. Fail-open posture throughout: a missing `PIPELEX_API_KEY`, network faults, timeouts, or any non-2xx silently skip the validate stage while the local lint/format verdicts still apply. To bundle an unreleased engine build, point `PIPELEX_TOOLS_WASM_PATH` at a `vscode-pipelex/js/tools-wasm` checkout.
+- **Live E2E testing pipeline**: Added an E2E test suite (`tests/e2e/*.e2e.ts`, own `vitest.e2e.config.ts`) that runs against a live `pipelex-api` server via `make test-e2e` (or `make te`), excluded from `make test` so CI never needs a server; target a specific instance with `PIPELEX_E2E_BASE_URL` (default `http://localhost:8081`). It verifies the real endpoint contracts the unit mocks cannot: `lint` / `format` / `validate` verdicts on clean and malformed bundles, and the full build-route surface (`tests/e2e/build.e2e.ts`) — selector defaulting and both un-defaultable arms, source-label threading, the `format`→field mapping, the stamped structures projection, the `200` invalid arm, and the `422` / `501` no-verdict arms — reusing the server's own build-route fixtures so both sides test one closure.
+- **Documentation**: Added `docs/build-routes.md` detailing the shared envelope, discriminated verdicts, and format-specific payloads of the `/v1/build/*` routes. Updated `docs/architecture.md` to reflect the new testing layers, tools routes, and hook bundle.
+- **Cooperative cancellation on the build/tools and validate routes**: `buildRunner` (and the whole extension tier it shares — `lint`, `format`, `buildInputs`, `buildOutput`, `concept`, `pipeSpec`) accepts `signal?: AbortSignal` alongside `timeoutMs`, and `validate` / `validateFiles` gain the same `{ timeoutMs, signal }` options — a caller that abandons a long dry-run sweep or bundle validation cancels the request instead of waiting out the timeout. A caller abort propagates its reason untouched, matching the run-lifecycle routes. The post-edit hook now bounds its validate call through these options, so a timed-out hook actually aborts the in-flight request.
+
+### Changed
+
+- **Raised the `mthds` dependency floor to `^0.19.0` (Breaking)**: That release is where the MTHDS side of the `/v1/build/*` migration landed — the `files[]` envelope, the qualified `pipe_ref`, and the discriminated build verdicts this SDK implements below — so an older `mthds` no longer satisfies the protocol surface the client's route shapes are typed against.
+- **Build routes use the `files[]` envelope (Breaking)**: `buildInputs`, `buildOutput`, and `buildRunner` now accept the closure as `files: [{content, source?}]` XOR a reserved `method_ref`, plus an optional qualified `pipe_ref` (`domain.pipe_code`) that defaults to the closure's `main_pipe` — replacing the retired `mthds_contents` and bare `pipe_code`. `allow_signatures` survives only on `buildRunner`, the one build route that still dry-runs the closure. The per-file `source` label rides through to the diagnostics, so an invalid verdict can name the file that caused it when attribution is available. _Migration_: change `{mthds_contents: [src], pipe_code: "echo"}` to `{files: [{content: src}], pipe_ref: "smoke.echo"}` (or drop `pipe_ref` to default to `main_pipe`).
+- **Build routes return discriminated 200 verdicts (Breaking)**: Following `validate`'s discipline, an unresolvable closure is the successful product of the call — a `200` with `is_valid: false` and `validation_errors[]` — instead of throwing. Consumers must branch on `is_valid` before reading the payload arm. `BuildRunnerResponse` is now the union `BuildRunnerValidReport | CrateInvalidReport` (its valid arm carries `python_code` plus the stamped `structures` projection, replacing the old flat `{python_code, pipe_code, success, message}`), and `buildInputs` / `buildOutput` — previously typed `Promise<unknown>` — get the same treatment. New exported types: `InputsTemplateFormat`, `MthdsFileItem`, `BuildRequestBase`, `CrateInvalidReport`, `BuildInputsValidReport`, `BuildOutputValidReport`, `BuildRunnerValidReport`, `GeneratedArtifact`, `RunnerStructures`, `BuildInputsResponse`, `BuildOutputResponse`.
+- **Build payloads follow the requested `format` (Breaking)**: `buildInputs` populates `inputs` for `format: "json"` (the default) and `inputs_toml` for `format: "toml"`; `buildOutput` populates `output` for `format: "schema"`/`"json"` and `output_python` for `format: "python"`. Unselected format fields are absent from the body rather than `null` — so the valid reports are discriminated unions on `format`, not interfaces with optional fields: narrowing on `format` hands you the selected field as required and makes the other statically unreachable. `buildInputs` also gains an `explicit` request flag that opts into the ceremonial `{concept, content}` envelope per input instead of the default light shape.
+
+### Fixed
+
+- **`buildRunner` timeout**: `buildRunner` no longer inherits the standard 30-second management timeout, which previously caused a false `ApiUnreachableError` for large closures that legitimately exceed 30s during dry-run — blaming the caller's network for a perfectly healthy server. It now has a dedicated 5-minute default, overridable per-call via `buildRunner(request, { timeoutMs })`; `lint`, `format`, `buildInputs`, `buildOutput`, `concept` and `pipeSpec` keep the 30s default, which is right for them.
+- **Request timeout now covers the response body read**: the transport previously disarmed its timeout as soon as the response headers arrived, so a server that stalled mid-body could hang a request indefinitely past the advertised ceiling — and a failed body read was silently swallowed into an empty body. The timer and abort signal now stay armed until the body has fully arrived, and an aborted or failed read surfaces as the typed timeout/abort error. Applies to every route.
+- **Build route error taxonomy**: Non-2xx responses on build routes (e.g., `422` for an unresolvable pipe selector — an unknown `pipe_ref`, or an omitted one on a closure that declares no `main_pipe`, or several — `501` for the reserved `method_ref`) now throw a typed `ApiResponseError` instead of a bare `Error` string, letting callers branch reliably on `ApiResponseError.status` instead of matching on prose. `concept` and `pipeSpec` ride the same helper and pick this up too.
+
+## [v0.3.1] - 2026-07-10
+
+### Changed
+
+- Bumped the `mthds` dependency floor to `^0.18.0` (was `^0.16.0`), keeping it current with the latest published `mthds`. The intervening `mthds` releases are CLI/tooling changes — `0.17.0` adds the `mthds-agent inputs upload` subcommand and an `MthdsApiClient.uploadFile()` method; `0.18.0` adds Codex version detection and turns hook-disabling config keys into hard errors — none of which touch the `mthds/protocol` wire types `@pipelex/sdk` imports. The SDK's own code is unchanged, so this is a coordination floor; the green `make check` / `make test` run confirms the route shapes still type-check against `mthds@0.18.0`.
+
+## [v0.3.0] - 2026-07-05
+
+### Changed
+
+- **One output accessor across both execution modes: `result.main_stuff` (Breaking).** `RunResults.main_stuff` was optional (`main_stuff?: unknown`) and callers had to fall back to `pipe_output` and shape-guess the main output on the blocking path. Leaning on the pipelex >= 0.37 main-stuff invariant (every completed run delivers a main stuff), the SDK now delivers a resolved, non-null main output on **both** paths under the same accessor. The durable path returns a `RunResults` whose `main_stuff` is the `main_stuff.json` S3 artifact; `execute()` now returns a **`PipelexExecuteResult`** (a `DictRunResultExecute` subtype) whose `.main_stuff` getter resolves the output out of the returned working memory via the response's `main_stuff_name`. Consumers read `result.main_stuff` directly on either path — no `main_stuff ?? pipe_output` fallback, no shape-guessing, no branching on which path ran. The full working memory still rides `pipe_output` (blocking path only) for consumers that want it. _(Migration: read `result.main_stuff` instead of `result.main_stuff ?? result.pipe_output`.)_
+
+### Added
+
+- **`PipelexExecuteResult`.** The blocking `execute()` result type — a `DictRunResultExecute` with a resolved `.main_stuff` accessor, so a blocking result reads its output the same way as a durable `RunResults`. `main_stuff_name` is declared as a typed field on this Pipelex-branded subtype (the neutral `mthds` wire model leaves it in its extension index signature).
+- **`MissingMainStuffError`.** A completed run that cannot deliver a main stuff now throws this typed error (extends `PipelineRequestError`, carries `runId`) instead of silently yielding a null output: the hosted results endpoint answered a `200` with a null `main_stuff`, or a blocking `execute` response named a `main_stuff_name` absent from its working-memory root. A falsy-but-present main stuff (empty array, `0`) is a valid output and does not throw.
+
+## [v0.2.1] - 2026-07-03
+
+### Fixed
+
+- **CJS consumers can now `require("@pipelex/sdk")`.** The package is ESM-only (`"type": "module"`), but its `exports` map only declared `import` and `types` conditions, so `require()` failed with `No "exports" main defined`. Added a `default` condition pointing at the existing ESM build (`dist/index.js`) — Node's `require(ESM)` support (stable since Node 20.19 / 22.12) loads it without a separate CJS build. Also reordered the `exports` conditions so `types` precedes `import`/`default`, matching TypeScript/Node's condition-ordering convention.
+- Raised the `engines.node` floor to `>=22.12.0` (was `>=22`) — the earliest Node 22.x release with unflagged `require(ESM)`, which the fix above depends on.
+
+## [v0.2.0] - 2026-07-02
+
+### Changed
+
+- **Breaking — `PipelexApiClient` constructor option renamed `apiToken` → `apiKey`.** Aligns the option name with the `PIPELEX_API_KEY` environment variable it falls back to (matching the same rename in `mthds`'s `MthdsApiClient`). Update `new PipelexApiClient({ apiToken })` call sites to `new PipelexApiClient({ apiKey })`. The wire (the `Authorization: Bearer` header) and the env-var fallback are unchanged.
+- **Breaking — API base URL env var renamed `PIPELEX_API_URL` → `PIPELEX_BASE_URL`.** For consistency with the internal `baseUrl` naming and coordinated with the `MTHDS_API_URL` → `MTHDS_BASE_URL` rename in the `mthds` clients. There is no read alias — update any environment or deployment that sets `PIPELEX_API_URL`.
+- Bumped the `mthds` dependency floor to `^0.16.0` (was `^0.15.0`), adopting its `MthdsApiClient` `apiToken` → `apiKey` and `MTHDS_API_URL` → `MTHDS_BASE_URL` renames — the source of the two breaking renames above.
+
+## [v0.1.5] - 2026-06-30
+
+### Changed
+
+- Bumped the `mthds` dependency floor to `^0.15.0` (was `^0.14.0`). `mthds@0.15.0` removes the Pipelex-API `/v1/validate` narrowing from its surface (`MthdsApiClient.validate()` now returns the standard's neutral `ValidationResult`), making `@pipelex/sdk` the sole owner of `PipelexValidationResult` and its arms. The SDK's own code is unchanged — it imports only the `mthds/protocol` wire types, which are identical across the bump — so this is a coordination floor that keeps the brand boundary unambiguous (only one package exports the Pipelex narrowing).
+
+## [v0.1.4] - 2026-06-30
+
+### Changed
+
+- Bumped the `mthds` dependency floor to `^0.14.0` (was `^0.13.1`), picking up the latest published MTHDS protocol wire types.
+
+### Added
+
+- `make use-local` / `make use-npm` (shorthands `make ul` / `make un`) to switch the `mthds` dependency between a file link to the sibling `../mthds-js` checkout for live development and the published npm package (latest by default, or a pinned `VERSION=x.y.z`).
+
+## [v0.1.3] - 2026-06-28
+
+### Changed
+
+- Raised the minimum supported Node.js to 22 (`engines.node: ">=22"`). Node 18 (end-of-life April 2025) and Node 20 (end-of-life April 2026) are past maintenance and are no longer supported; the floor now matches the `@types/node` major the SDK is built against. npm only warns on an engine mismatch unless the consumer sets `engine-strict`, so this is a support-policy change rather than a hard install gate.
+- Bumped the `mthds` dependency floor to `^0.13.1` (was `^0.13.0`); its `0.13.1` release raises its own Node.js floor to 22 in lockstep with this SDK.
+- CI now builds and tests on Node.js 22 (was Node.js 20).
+- Migrated the remaining workflow actions off the deprecated Node.js 20 runtime so they run on Node.js 24 natively: `actions/create-github-app-token` (v1 → v3), `actions/upload-artifact` (v4 → v7), and `actions/download-artifact` (v4 → v8). The third-party `contributor-assistant/github-action` still ships a Node.js 20 runtime and will emit the deprecation warning until an upstream release migrates it.
+
+## [v0.1.2] - 2026-06-28
+
+### Changed
+
+- CI: bumped `actions/checkout` and `actions/setup-node` from v4 to v5 across all workflows. The v4 releases bundle the deprecated Node.js 20 runtime (force-run on Node.js 24 with a deprecation warning); v5 targets Node.js 24 natively. The SHA-pinned release checkout now points to the v5.0.1 commit.
+
+### Fixed
+
+- The exported `SDK_VERSION` constant was stale (`0.1.0`) because the release flow never bumped it — consumers reading it for diagnostics or compatibility checks saw a version that disagreed with the published npm version. It is now bumped in lockstep with `package.json` and guarded by a test that asserts the two stay equal.
+
+## [v0.1.1] - 2026-06-28
+
+### Changed
+
+- The `mthds` dependency is now consumed from npm as a published version (`^0.13.0`) instead of a GitHub branch ref. This pins the upstream MTHDS protocol types to a released package rather than a moving branch.
+
+## [v0.1.0] - 2026-06-27
+
+### Added
+
+- Initial release of `@pipelex/sdk` — the TypeScript SDK for the Pipelex hosted API. House-style toolchain mirrored from `mthds-js`: ESM-only `tsc` build (NodeNext, strict), Vitest 4 with v8 coverage, ESLint 9 flat config, Prettier 3, dependency-cruiser boundary enforcement (`@pipelex/sdk → mthds` only via the `mthds/protocol` subpath), and a `Makefile` task surface. CI parity (quality checks, npm OIDC trusted publishing, changelog/version guards).
+- `PipelexApiClient` — the Pipelex product client. Owns its own `request()` pipeline (auth, base URL, timeouts/abort, RFC 7807 problem-details parsing) and implements the MTHDS protocol-execution routes using `mthds/protocol` types (`implements MTHDSProtocol<DictPipeOutput>`): `execute`, `start`, `validate` (returns the `PipelexValidationResult` 200-diagnostic union), `validateFiles`, `models`, `version`. Adds the Pipelex build helpers (`/v1/build/*`) and the durable run lifecycle (`getRunStatus` / `getRunResult` / `waitForResult` / `startAndWaitForResult`, with hosted-vs-bare runner self-healing). Env vars `PIPELEX_API_KEY` / `PIPELEX_API_URL`; default base URL `https://api.pipelex.com`.
+- Typed errors (`ApiResponseError`, `ApiUnreachableError`, `PipelineExecuteTimeoutError`, run-lifecycle errors), all deriving from the protocol-base `PipelineRequestError` re-exported from `mthds/protocol`. `ApiResponseError` carries the product routes' stable RFC 9457 `code` discriminant.
+- Pipelex product routes on `PipelexApiClient` — the hosted management surface (user profile, methods catalog CRUD, organizations, billing, Pipelex API keys, gateway API key, onboarding, storage, runs list/update). All ride the shared `requestProduct<T>` helper (30s management timeout, empty-body tolerant) and the same `{base}/v1/*` + `Authorization: Bearer` + org-from-JWT contract; non-2xx `problem+json` maps to `ApiResponseError` with the structured `code`. Thin snake_case wire models in `product-models.ts`.

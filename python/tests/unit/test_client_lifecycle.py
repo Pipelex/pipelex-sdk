@@ -1,0 +1,754 @@
+"""Tests for `PipelexAPIClient`'s durable run-lifecycle surface (start/status/results/wait), httpx mocked."""
+
+import asyncio
+from typing import Any
+
+import httpx
+import pytest
+from mthds.protocol.exceptions import PipelineRequestError
+from pytest_mock import MockerFixture
+
+from pipelex_sdk.client import PipelexAPIClient
+from pipelex_sdk.errors import (
+    ApiResponseError,
+    MissingMainStuffError,
+    RunFailedError,
+    RunLifecycleUnavailableError,
+    RunStillRunningError,
+    RunTimeoutError,
+)
+from pipelex_sdk.runs import (
+    PollInfo,
+    RunArtifact,
+    RunResultCompleted,
+    RunResultFailed,
+    RunResultRunning,
+    RunResults,
+    RunStatus,
+    TokensUsageRecord,
+    WaitForResultOptions,
+)
+
+_BASE_URL = "http://localhost:8081"
+
+# A runner `ErrorReport` in its VERBOSE form, as the platform stores it on the run row and serves it
+# on the status read and in the results read's 409 — here the gateway refusing a model, the case
+# recorded live on the dev API: every inference field of the report is set.
+_MODEL_REFUSED_REPORT: dict[str, Any] = {
+    "error_type": "LLMCompletionError",
+    "message": "Error code: 400 - model 'gpt-6-astra' is not enabled for this organization",
+    "title": "LLM completion",
+    "type_uri": "https://docs.pipelex.com/latest/errors/llm-completion-error/",
+    "error_category": "configuration",
+    "error_domain": "config",
+    "retryable": False,
+    "user_action": {"kind": "change_input", "detail": "The provider rejected the request — review the prompt, parameters, and inputs."},
+    "model": "gpt-6-astra",
+    "provider": "pipelex_gateway",
+    "provider_metadata": {
+        "provider": "pipelex_gateway",
+        "sdk_exception_type": "BadRequestError",
+        "message": "Error code: 400 - model 'gpt-6-astra' is not enabled for this organization",
+        "status_code": 400,
+        "request_id": "req_provider_1",
+        "provider_error_code": "model_not_enabled",
+    },
+}
+
+# A bundle fault, the report's other shape: caller-facing, with the structured validation items.
+_BUNDLE_FAULT_REPORT: dict[str, Any] = {
+    "error_type": "ValidateBundleError",
+    "message": "Pipe 'summarize' names an unknown concept 'Sumary'.",
+    "title": "Bundle validation",
+    "type_uri": "https://docs.pipelex.com/latest/errors/validate-bundle-error/",
+    "error_domain": "input",
+    "retryable": False,
+    "caller_facing_message": True,
+    "validation_errors": [
+        {
+            "category": "pipe_validation",
+            "message": "Pipe 'summarize' names an unknown concept 'Sumary'.",
+            "error_type": "unknown_concept",
+            "pipe_code": "summarize",
+            "missing_concept_code": "Sumary",
+        }
+    ],
+}
+
+
+def _failed_results_problem(run_status: str, error: dict[str, Any] | None) -> dict[str, Any]:
+    """The results read's 409 exactly as the platform renders it for a run that ended without completing."""
+    if error is not None:
+        detail = f"Run finished with status {run_status}: {error['message']}"
+    else:
+        detail = f"Run finished with status {run_status}; no result available"
+    return {
+        "type": "https://pipelex.com/errors/conflict",
+        "title": "Conflict",
+        "status": 409,
+        "code": "conflict",
+        "detail": detail,
+        "instance": "urn:pipelex:request:req-409",
+        "request_id": "req-409",
+        "errors": [],
+        "run_status": run_status,
+        "error": error,
+    }
+
+
+def _response(status_code: int, *, json: object = None, headers: dict[str, str] | None = None) -> httpx.Response:
+    """Build a constructed httpx.Response with a request attached (so raise_for_status works)."""
+    request = httpx.Request("GET", f"{_BASE_URL}/x")
+    if json is None:
+        return httpx.Response(status_code, headers=headers or {}, request=request)
+    return httpx.Response(status_code, json=json, headers=headers or {}, request=request)
+
+
+class TestClientLifecycle:
+    def _client(self) -> PipelexAPIClient:
+        return PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
+
+    # ── start (inherited body-building + bare-runner 404 translation) ──
+
+    def test_start_targets_v1_url_and_returns_run_result_start(self, mocker: MockerFixture) -> None:
+        """Start posts to <base>/v1/start; a 202 parses into RunResultStart with the authoritative id."""
+        client = PipelexAPIClient(api_key="t", base_url=f"{_BASE_URL}/")
+        body = {"pipeline_run_id": "run_1", "state": "RUNNING", "created_at": "2026-06-10T00:00:00Z"}
+        send_mock = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(202, json=body)))
+
+        started = asyncio.run(client.start(pipe_code="answer"))
+        assert client.base_url == _BASE_URL
+        assert send_mock.call_args.args[1] == f"{_BASE_URL}/v1/start"
+        assert started.pipeline_run_id == "run_1"
+
+    def test_start_request_prunes_absent_fields_and_carries_extra(self, mocker: MockerFixture) -> None:
+        """Absent fields are pruned (exclude_none); extension args ride the body as top-level properties."""
+        client = self._client()
+        body = {"pipeline_run_id": "run_1", "state": "RUNNING", "created_at": "2026-06-10T00:00:00Z"}
+        send_mock = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(202, json=body)))
+
+        asyncio.run(client.start(pipe_code="answer", extra={"some_vendor_arg": {"nested": True}}))
+        sent = send_mock.call_args.kwargs["content"].decode("utf-8")
+        assert '"pipe_code":"answer"' in sent
+        assert '"some_vendor_arg":{"nested":true}' in sent
+        assert "output_name" not in sent
+
+    def test_start_extra_rejects_protocol_args(self) -> None:
+        """`extra` is for extension args only — a protocol arg inside it raises a clear client-side error
+        (raised by the inherited body-builder, before any request, so the override passes it through).
+        """
+        client = self._client()
+        with pytest.raises(PipelineRequestError, match="pipe_code"):
+            asyncio.run(client.start(mthds_contents=['domain = "answer"'], extra={"pipe_code": "smuggled"}))
+
+    def test_start_bare_runner_missing_route_404_is_lifecycle_unavailable(self, mocker: MockerFixture) -> None:
+        """A bare-runner 404 with Starlette's default body (no `code`) becomes RunLifecycleUnavailableError."""
+        client = self._client()
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(404, json={"detail": "Not Found"})))
+
+        with pytest.raises(RunLifecycleUnavailableError) as exc_info:
+            asyncio.run(client.start(pipe_code="answer"))
+        assert exc_info.value.api_url == _BASE_URL
+        assert f"{_BASE_URL}/v1/start returned 404" in str(exc_info.value)
+        # Translated from the typed error the inherited route raised, which stays reachable.
+        assert isinstance(exc_info.value.__context__, ApiResponseError)
+        assert exc_info.value.__context__.status == 404
+
+    def test_start_runner_refusal_404_stays_api_response_error(self, mocker: MockerFixture) -> None:
+        """A runner's 404 relayed by the platform (`error_type`, no `code`) is a refusal, not a missing run store."""
+        client = self._client()
+        # The runner's answer to a `method_ref` with no package behind it, as the platform relays it.
+        body = {
+            "type": "https://docs.pipelex.com/latest/errors/method-package-not-found-error/",
+            "title": "Method package not found",
+            "status": 404,
+            "detail": "No method package at github.com/x/y/z.",
+            "instance": "/v1/start",
+            "request_id": "req-404",
+            "error_type": "MethodPackageNotFoundError",
+            "error_domain": "input",
+        }
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(404, json=body)))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(client.start(pipe_code="p", method_ref="github.com/x/y/z"))
+        assert not isinstance(exc_info.value, RunLifecycleUnavailableError)
+        assert exc_info.value.error_type == "MethodPackageNotFoundError"
+        assert str(exc_info.value) == "API POST /v1/start failed (404): No method package at github.com/x/y/z."
+
+    def test_start_structured_404_stays_api_response_error(self, mocker: MockerFixture) -> None:
+        """A structured platform 404 (carries `code`) is a normal API error, not lifecycle-unavailable."""
+        client = self._client()
+        body = {"code": "NOT_FOUND", "detail": "The requested resource does not exist."}
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(404, json=body)))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(client.start(pipe_code="answer"))
+        assert not isinstance(exc_info.value, RunLifecycleUnavailableError)
+        assert exc_info.value.status == 404
+        assert exc_info.value.code == "NOT_FOUND"
+        assert str(exc_info.value) == "API POST /v1/start failed (404): The requested resource does not exist."
+
+    # ── get_run_status ───────────────────────────────────────────
+
+    def test_get_run_status_populates_degraded_and_retry_after(self, mocker: MockerFixture) -> None:
+        """get_run_status hits /v1/runs/{id}/status, parses RunRead, and lifts Retry-After."""
+        client = self._client()
+        body = {"pipeline_run_id": "run_1", "status": "RUNNING", "created_at": "2026-06-10T00:00:00Z", "degraded": True}
+        send_mock = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body, headers={"Retry-After": "7"})))
+
+        run = asyncio.run(client.get_run_status("run_1"))
+        assert send_mock.call_args.args[1] == f"{_BASE_URL}/v1/runs/run_1/status"
+        assert run.degraded is True
+        assert run.retry_after_seconds == 7
+
+    def test_get_run_status_types_the_stored_report(self, mocker: MockerFixture) -> None:
+        """A status read whose body carries `error` exposes the stored report on `RunRead.error`, typed whole."""
+        client = self._client()
+        body = {
+            "pipeline_run_id": "run_1",
+            "status": "FAILED",
+            "created_at": "2026-06-10T00:00:00Z",
+            "finished_at": "2026-06-10T00:01:00Z",
+            "error": _BUNDLE_FAULT_REPORT,
+            "degraded": False,
+        }
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        run = asyncio.run(client.get_run_status("run_1"))
+        assert run.status == RunStatus.FAILED
+        assert run.error is not None
+        assert run.error.error_type == "ValidateBundleError"
+        assert run.error.error_domain == "input"
+        assert run.error.caller_facing_message is True
+        assert run.error.validation_errors is not None
+        assert run.error.validation_errors[0].pipe_code == "summarize"
+        assert run.error.validation_errors[0].missing_concept_code == "Sumary"
+        assert run.error.model_dump(exclude_none=True) == _BUNDLE_FAULT_REPORT
+        assert run.model_extra == {}
+
+    def test_get_run_status_with_a_report_from_another_runner_version_still_answers(self, mocker: MockerFixture) -> None:
+        """A stored report whose known fields drifted keeps what fits: the status read never fails on its report."""
+        client = self._client()
+        drifted: dict[str, Any] = {
+            "error_type": "ValidateBundleError",
+            "message": "Pipe 'summarize' is invalid.",
+            "error_domain": "input",
+            "retryable": "perhaps",
+            "user_action": "Fix the bundle.",
+            "provider_metadata": {"provider": "openai", "status_code": "unknown"},
+            "validation_errors": [{"category": "a_category_from_a_newer_runner", "message": "x"}],
+        }
+        body = {"pipeline_run_id": "run_1", "status": "FAILED", "created_at": "2026-06-10T00:00:00Z", "error": drifted}
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        run = asyncio.run(client.get_run_status("run_1"))
+        assert run.status == RunStatus.FAILED
+        assert run.error is not None
+        assert run.error.error_type == "ValidateBundleError"
+        assert run.error.message == "Pipe 'summarize' is invalid."
+        assert run.error.error_domain == "input"
+        assert run.error.retryable is None
+        assert run.error.user_action is None
+        assert run.error.provider_metadata is not None
+        assert run.error.provider_metadata.provider == "openai"
+        assert run.error.provider_metadata.status_code is None
+        assert run.error.validation_errors is None
+
+    def test_get_run_status_without_error_reads_none(self, mocker: MockerFixture) -> None:
+        """A run that has not failed carries no report: `error` is None, whether absent or null."""
+        client = self._client()
+        body = {"pipeline_run_id": "run_1", "status": "RUNNING", "created_at": "2026-06-10T00:00:00Z", "error": None}
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        run = asyncio.run(client.get_run_status("run_1"))
+        assert run.error is None
+
+    def test_get_run_status_lifecycle_unavailable_on_missing_route(self, mocker: MockerFixture) -> None:
+        """A bare-runner 404 on the status route becomes RunLifecycleUnavailableError."""
+        client = self._client()
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(404, json={"detail": "Not Found"})))
+
+        with pytest.raises(RunLifecycleUnavailableError):
+            asyncio.run(client.get_run_status("run_1"))
+
+    def test_get_run_status_run_not_found_is_api_response_error(self, mocker: MockerFixture) -> None:
+        """The platform's structured run-not-found 404 raises the typed error, naming the read and the problem's code."""
+        client = self._client()
+        body = {
+            "type": "https://pipelex.com/errors/run_not_found",
+            "title": "Not found",
+            "status": 404,
+            "code": "run_not_found",
+            "detail": "Run not found.",
+        }
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(404, json=body)))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(client.get_run_status("run 1"))
+        exc = exc_info.value
+        assert not isinstance(exc, RunLifecycleUnavailableError)
+        assert exc.code == "run_not_found"
+        assert exc.type_uri == "https://pipelex.com/errors/run_not_found"
+        assert exc.request_url == f"{_BASE_URL}/v1/runs/run%201/status"
+        assert str(exc) == "API GET /v1/runs/run%201/status failed (404): Run not found."
+
+    # ── get_run_result status mapping ────────────────────────────
+
+    def test_get_run_result_completed_keeps_polymorphic_main_stuff(self, mocker: MockerFixture) -> None:
+        """A 200 maps to RunResultCompleted; a list main_stuff stays a top-level array; graph_spec is parsed."""
+        client = self._client()
+        body: dict[str, object] = {
+            "pipeline_run_id": "run_1",
+            "main_stuff": [{"color": "red"}, {"color": "blue"}],
+            "graph_spec": {"nodes": []},
+        }
+        send_mock = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert send_mock.call_args.args[1] == f"{_BASE_URL}/v1/runs/run_1/results"
+        assert isinstance(state, RunResultCompleted)
+        assert state.result.main_stuff == [{"color": "red"}, {"color": "blue"}]
+        assert state.result.graph_spec == {"nodes": []}
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param({"pipeline_run_id": "run_1"}, id="main_stuff_key_omitted"),
+            pytest.param({"pipeline_run_id": "run_1", "main_stuff": None}, id="main_stuff_null"),
+        ],
+    )
+    def test_get_run_result_completed_without_main_stuff_raises_typed_error(self, mocker: MockerFixture, body: dict[str, object]) -> None:
+        """A 200 that omits main_stuff (or sends it null) raises MissingMainStuffError, not a raw Pydantic error."""
+        client = self._client()
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        with pytest.raises(MissingMainStuffError) as exc_info:
+            asyncio.run(client.get_run_result("run_1"))
+        assert exc_info.value.run_id == "run_1"
+
+    def test_get_run_result_completed_keeps_falsy_main_stuff(self, mocker: MockerFixture) -> None:
+        """A present-but-falsy main_stuff (an empty list) is a valid output and does NOT raise."""
+        client = self._client()
+        body: dict[str, object] = {"pipeline_run_id": "run_1", "main_stuff": []}
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert isinstance(state, RunResultCompleted)
+        assert state.result.main_stuff == []
+
+    # ── get_run_result artifact selection ────────────────────────
+
+    @pytest.mark.parametrize(
+        ("artifacts", "expected_query"),
+        [
+            pytest.param([RunArtifact.MAIN_STUFF], "artifacts=main_stuff", id="one"),
+            pytest.param(
+                [RunArtifact.TOKENS_USAGES, RunArtifact.MAIN_STUFF, RunArtifact.GRAPH_SPEC],
+                "artifacts=graph_spec,main_stuff,tokens_usages",
+                id="declaration_order",
+            ),
+            pytest.param([RunArtifact.MAIN_STUFF, RunArtifact.MAIN_STUFF], "artifacts=main_stuff", id="deduplicated"),
+            pytest.param(list(RunArtifact), "artifacts=" + ",".join(RunArtifact), id="all_named"),
+        ],
+    )
+    def test_get_run_result_sends_the_selection_as_one_comma_separated_param(
+        self, mocker: MockerFixture, artifacts: list[RunArtifact], expected_query: str
+    ) -> None:
+        """A selection is one `artifacts` param, in declaration order, each name once, commas unescaped."""
+        client = self._client()
+        body: dict[str, object] = {"pipeline_run_id": "run_1", "main_stuff": {"text": "hi"}}
+        send_mock = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        asyncio.run(client.get_run_result("run_1", artifacts=artifacts))
+        assert send_mock.call_args.args[1] == f"{_BASE_URL}/v1/runs/run_1/results?{expected_query}"
+
+    def test_get_run_result_without_a_selection_sends_no_query(self, mocker: MockerFixture) -> None:
+        """No selection reads everything, exactly as before: the URL carries no `artifacts` param."""
+        client = self._client()
+        body: dict[str, object] = {"pipeline_run_id": "run_1", "main_stuff": {"text": "hi"}}
+        send_mock = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert send_mock.call_args.args[1] == f"{_BASE_URL}/v1/runs/run_1/results"
+        assert isinstance(state, RunResultCompleted)
+        assert state.result.carries(RunArtifact.MAIN_STUFF) is True
+
+    def test_get_run_result_refuses_an_empty_selection_before_sending(self, mocker: MockerFixture) -> None:
+        """An empty selection names nothing; it is refused client-side and no request is made."""
+        client = self._client()
+        send_mock = mocker.patch.object(client, "_send", mocker.AsyncMock())
+
+        with pytest.raises(PipelineRequestError, match="at least one RunArtifact"):
+            asyncio.run(client.get_run_result("run_1", artifacts=[]))
+        send_mock.assert_not_called()
+
+    def test_get_run_result_selection_without_main_stuff_does_not_require_one(self, mocker: MockerFixture) -> None:
+        """A selection that leaves `main_stuff` out reads a body without it, and that is the answer, not a fault."""
+        client = self._client()
+        body: dict[str, object] = {"pipeline_run_id": "run_1", "graph_spec": {"nodes": []}, "output_form": None}
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1", artifacts=[RunArtifact.GRAPH_SPEC, RunArtifact.OUTPUT_FORM]))
+        assert isinstance(state, RunResultCompleted)
+        result = state.result
+        assert result.graph_spec == {"nodes": []}
+        assert result.main_stuff is None
+        assert result.carries(RunArtifact.GRAPH_SPEC) is True
+        assert result.carries(RunArtifact.OUTPUT_FORM) is True
+        assert result.output_form is None
+        assert result.carries(RunArtifact.MAIN_STUFF) is False
+        assert result.carries(RunArtifact.WORKING_MEMORY) is False
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param({"pipeline_run_id": "run_1"}, id="main_stuff_key_omitted"),
+            pytest.param({"pipeline_run_id": "run_1", "main_stuff": None}, id="main_stuff_null"),
+        ],
+    )
+    def test_get_run_result_selection_naming_main_stuff_still_requires_one(self, mocker: MockerFixture, body: dict[str, object]) -> None:
+        """A selection that asks for `main_stuff` keeps the invariant: none delivered is `MissingMainStuffError`."""
+        client = self._client()
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        with pytest.raises(MissingMainStuffError) as exc_info:
+            asyncio.run(client.get_run_result("run_1", artifacts=[RunArtifact.MAIN_STUFF, RunArtifact.TOKENS_USAGES]))
+        assert exc_info.value.run_id == "run_1"
+
+    def test_get_run_result_carries_the_usage_pair_only_when_both_fields_came(self, mocker: MockerFixture) -> None:
+        """`TOKENS_USAGES` names the envelope: it is carried when the body holds both of its fields."""
+        client = self._client()
+        body: dict[str, object] = {"pipeline_run_id": "run_1", "main_stuff": {"text": "hi"}, "tokens_usages": None, "usage_assembly_error": None}
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1", artifacts=[RunArtifact.MAIN_STUFF, RunArtifact.TOKENS_USAGES]))
+        assert isinstance(state, RunResultCompleted)
+        assert state.result.carries(RunArtifact.TOKENS_USAGES) is True
+        assert state.result.tokens_usages is None
+        partial = RunResults.model_validate({"pipeline_run_id": "run_1", "tokens_usages": []})
+        assert partial.carries(RunArtifact.TOKENS_USAGES) is False
+
+    def test_get_run_result_with_a_selection_maps_a_202_to_running(self, mocker: MockerFixture) -> None:
+        """The in-flight body names the selected fields as null; the client still reads it as running."""
+        client = self._client()
+        body: dict[str, object] = {"pipeline_run_id": "run_1", "main_stuff": None}
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(202, json=body, headers={"Retry-After": "4"})))
+
+        state = asyncio.run(client.get_run_result("run_1", artifacts=[RunArtifact.MAIN_STUFF]))
+        assert isinstance(state, RunResultRunning)
+        assert state.retry_after_seconds == 4
+
+    def test_get_run_result_completed_parses_usage_pair(self, mocker: MockerFixture) -> None:
+        """A 200 carrying the hosted usage pair validates the relayed records into
+        `TokensUsageRecord`s; a body without them (older platform / pre-artifact run) defaults both
+        to None.
+        """
+        client = self._client()
+        tokens_usages = [
+            {
+                "model_type": "llm",
+                "inference_model_name": "test-model",
+                "inference_model_id": "test-model-2026-01-01",
+                "pipe_code": "test_domain.summarize",
+                "job_category": "llm_job",
+                "unit_job_id": "llm_gen_text",
+                "nb_tokens_by_category": {"input": 15, "output": 4},
+                "cost": 0.000105,
+                "started_at": "2026-06-20T10:00:01+00:00",
+                "completed_at": "2026-06-20T10:00:03+00:00",
+            }
+        ]
+        body: dict[str, object] = {
+            "pipeline_run_id": "run_1",
+            "main_stuff": {"answer": "42"},
+            "tokens_usages": tokens_usages,
+            "usage_assembly_error": None,
+        }
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert isinstance(state, RunResultCompleted)
+        assert state.result.tokens_usages is not None
+        record = state.result.tokens_usages[0]
+        assert isinstance(record, TokensUsageRecord)
+        assert record.inference_model_name == "test-model"
+        assert record.pipe_code == "test_domain.summarize"
+        assert record.nb_tokens_by_category == {"input": 15, "output": 4}
+        assert record.cost == 0.000105
+        assert state.result.usage_assembly_error is None
+
+        bare = RunResults(pipeline_run_id="run_1", main_stuff={"answer": "42"})
+        assert bare.tokens_usages is None
+        assert bare.usage_assembly_error is None
+
+    def test_get_run_result_running_honors_retry_after(self, mocker: MockerFixture) -> None:
+        """A 202 maps to RunResultRunning with the server's Retry-After hint."""
+        client = self._client()
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(202, headers={"Retry-After": "3"})))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert isinstance(state, RunResultRunning)
+        assert state.retry_after_seconds == 3
+
+    def test_get_run_result_degraded_503_defaults_retry(self, mocker: MockerFixture) -> None:
+        """A 503 (DynamoDB/Temporal degraded) maps to running with the default retry, never a failure."""
+        client = self._client()
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(503)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert isinstance(state, RunResultRunning)
+        assert state.retry_after_seconds == 5
+
+    def test_get_run_result_failed_carries_the_typed_report(self, mocker: MockerFixture) -> None:
+        """A 409 carrying the run's status and its stored report maps to RunResultFailed with the whole report, typed."""
+        client = self._client()
+        body = _failed_results_problem("FAILED", _MODEL_REFUSED_REPORT)
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(409, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert isinstance(state, RunResultFailed)
+        assert state.status == RunStatus.FAILED
+        assert state.message == f"Run finished with status FAILED: {_MODEL_REFUSED_REPORT['message']}"
+        report = state.error
+        assert report is not None
+        assert report.error_type == "LLMCompletionError"
+        assert report.title == "LLM completion"
+        assert report.type_uri == "https://docs.pipelex.com/latest/errors/llm-completion-error/"
+        assert report.error_domain == "config"
+        assert report.error_category == "configuration"
+        assert report.retryable is False
+        assert report.user_action is not None
+        assert report.user_action.kind == "change_input"
+        assert report.model == "gpt-6-astra"
+        assert report.provider == "pipelex_gateway"
+        assert report.provider_metadata is not None
+        assert report.provider_metadata.status_code == 400
+        assert report.provider_metadata.provider_error_code == "model_not_enabled"
+        # Nothing is stripped: the typed report dumps back to exactly what the platform stored.
+        assert report.model_dump(exclude_none=True) == _MODEL_REFUSED_REPORT
+
+    @pytest.mark.parametrize("run_status", [RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TERMINATED, RunStatus.TIMED_OUT])
+    def test_get_run_result_failed_without_a_report_reads_its_status(self, mocker: MockerFixture, run_status: RunStatus) -> None:
+        """A 409 whose `error` is null is a report-less failure with the status the `run_status` member names."""
+        client = self._client()
+        body = _failed_results_problem(run_status, None)
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(409, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert isinstance(state, RunResultFailed)
+        assert state.status == run_status
+        assert state.error is None
+        assert state.message == f"Run finished with status {run_status}; no result available"
+
+    def test_get_run_result_failed_reads_the_status_member_not_the_sentence(self, mocker: MockerFixture) -> None:
+        """The status comes from `run_status`; the sentence is never parsed, so a detail naming another word does not win."""
+        client = self._client()
+        body = _failed_results_problem("CANCELLED", None)
+        body["detail"] = "Run finished with status TIMED_OUT; no result available"
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(409, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert isinstance(state, RunResultFailed)
+        assert state.status == RunStatus.CANCELLED
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"code": "conflict", "detail": "Run finished with status TIMED_OUT; no result available"},
+            {"code": "conflict", "detail": "refused", "run_status": "SOMETHING_NEW"},
+            {"code": "conflict", "detail": "refused", "run_status": 7},
+        ],
+    )
+    def test_get_run_result_failed_without_a_known_status_member_reads_failed(self, mocker: MockerFixture, body: dict[str, Any]) -> None:
+        """A 409 without a `run_status` this SDK knows reads as FAILED, the status every such answer shares."""
+        client = self._client()
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(409, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert isinstance(state, RunResultFailed)
+        assert state.status == RunStatus.FAILED
+        assert state.message == body["detail"]
+        assert state.error is None
+
+    def test_get_run_result_failed_with_a_drifted_report_keeps_what_fits(self, mocker: MockerFixture) -> None:
+        """A report field that does not fit its type reads as None and the rest of the report stands; the failure survives."""
+        client = self._client()
+        body = _failed_results_problem("FAILED", {"message": "boom", "error_domain": "runtime", "validation_errors": "not a list"})
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(409, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert isinstance(state, RunResultFailed)
+        assert state.status == RunStatus.FAILED
+        assert state.message == "Run finished with status FAILED: boom"
+        assert state.error is not None
+        assert state.error.message == "boom"
+        assert state.error.error_domain == "runtime"
+        assert state.error.validation_errors is None
+
+    def test_get_run_result_failed_with_an_error_that_is_not_a_report_reads_none(self, mocker: MockerFixture) -> None:
+        """An `error` member that is not an object reads as None; the failed arm still answers."""
+        client = self._client()
+        body = _failed_results_problem("FAILED", None)
+        body["error"] = "the runner crashed"
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(409, json=body)))
+
+        state = asyncio.run(client.get_run_result("run_1"))
+        assert isinstance(state, RunResultFailed)
+        assert state.status == RunStatus.FAILED
+        assert state.error is None
+
+    def test_get_run_result_lifecycle_unavailable_on_missing_route(self, mocker: MockerFixture) -> None:
+        """A bare-runner 404 on the results route becomes RunLifecycleUnavailableError."""
+        client = self._client()
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(404, json={"detail": "Not Found"})))
+
+        with pytest.raises(RunLifecycleUnavailableError):
+            asyncio.run(client.get_run_result("run_1"))
+
+    def test_get_run_result_server_fault_is_api_response_error(self, mocker: MockerFixture) -> None:
+        """A non-2xx the poll does not map to a state (here a 500) raises the typed error."""
+        client = self._client()
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(500, json={"detail": "boom", "request_id": "req-500"})))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(client.get_run_result("run_1"))
+        assert exc_info.value.status == 500
+        assert exc_info.value.request_id == "req-500"
+        assert str(exc_info.value) == "API GET /v1/runs/run_1/results failed (500): boom"
+
+    # ── execute 202 degrade → re-exported RunStillRunningError ────
+
+    def test_execute_202_raises_re_exported_still_running(self, mocker: MockerFixture) -> None:
+        """A 202 on execute raises RunStillRunningError (re-exported from mthds) carrying run_id + hints."""
+        client = self._client()
+        body = {"pipeline_run_id": "run_1", "state": "RUNNING", "created_at": "2026-06-10T00:00:00Z"}
+        headers = {"Retry-After": "10", "Location": "/v1/runs/run_1/results"}
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(202, json=body, headers=headers)))
+
+        with pytest.raises(RunStillRunningError) as exc_info:
+            asyncio.run(client.execute(pipe_code="answer"))
+        assert exc_info.value.run_id == "run_1"
+        assert exc_info.value.retry_after_seconds == 10
+
+    # ── wait_for_result poll loop ────────────────────────────────
+
+    def test_wait_for_result_polls_until_completed(self, mocker: MockerFixture) -> None:
+        """The loop polls past a running state and returns the completed result; on_poll fires per wait."""
+        client = self._client()
+        result = RunResults(pipeline_run_id="run_1", main_stuff={"answer": "42"})
+        mocker.patch.object(
+            client,
+            "get_run_result",
+            mocker.AsyncMock(
+                side_effect=[
+                    RunResultRunning(pipeline_run_id="run_1", retry_after_seconds=0),
+                    RunResultCompleted(pipeline_run_id="run_1", result=result),
+                ]
+            ),
+        )
+        mocker.patch("pipelex_sdk.client.asyncio.sleep", mocker.AsyncMock())
+        polls: list[PollInfo] = []
+
+        returned = asyncio.run(client.wait_for_result("run_1", WaitForResultOptions(interval_seconds=0.0, on_poll=polls.append)))
+        assert returned.main_stuff == {"answer": "42"}
+        assert len(polls) == 1
+        assert polls[0].attempt == 1
+
+    def test_wait_for_result_threads_the_selection_to_every_poll(self, mocker: MockerFixture) -> None:
+        """Every results read of the loop carries the caller's selection."""
+        client = self._client()
+        result = RunResults(pipeline_run_id="run_1", main_stuff={"answer": "42"})
+        get_mock = mocker.patch.object(
+            client,
+            "get_run_result",
+            mocker.AsyncMock(
+                side_effect=[
+                    RunResultRunning(pipeline_run_id="run_1", retry_after_seconds=0),
+                    RunResultCompleted(pipeline_run_id="run_1", result=result),
+                ]
+            ),
+        )
+        mocker.patch("pipelex_sdk.client.asyncio.sleep", mocker.AsyncMock())
+
+        asyncio.run(client.wait_for_result("run_1", WaitForResultOptions(interval_seconds=0.0), artifacts=[RunArtifact.MAIN_STUFF]))
+        assert [call.kwargs["artifacts"] for call in get_mock.call_args_list] == [[RunArtifact.MAIN_STUFF], [RunArtifact.MAIN_STUFF]]
+
+    def test_wait_for_result_refuses_an_empty_selection_before_polling(self, mocker: MockerFixture) -> None:
+        """An empty selection fails at once rather than after a poll."""
+        client = self._client()
+        get_mock = mocker.patch.object(client, "get_run_result", mocker.AsyncMock())
+
+        with pytest.raises(PipelineRequestError):
+            asyncio.run(client.wait_for_result("run_1", artifacts=[]))
+        get_mock.assert_not_called()
+
+    def test_start_and_wait_threads_the_selection_to_the_wait(self, mocker: MockerFixture) -> None:
+        """On the hosted path the selection reaches `wait_for_result`; an empty one never starts a run."""
+        client = self._client()
+        mocker.patch.object(client, "_supports_run_lifecycle", mocker.AsyncMock(return_value=True))
+        start_mock = mocker.patch.object(client, "start", mocker.AsyncMock(return_value=mocker.Mock(pipeline_run_id="run_1")))
+        result = RunResults(pipeline_run_id="run_1", main_stuff={"answer": "42"})
+        wait_mock = mocker.patch.object(client, "wait_for_result", mocker.AsyncMock(return_value=result))
+
+        returned = asyncio.run(client.start_and_wait(pipe_code="p", artifacts=[RunArtifact.MAIN_STUFF]))
+        assert returned is result
+        assert wait_mock.call_args.kwargs["artifacts"] == [RunArtifact.MAIN_STUFF]
+
+        with pytest.raises(PipelineRequestError):
+            asyncio.run(client.start_and_wait(pipe_code="p", artifacts=[]))
+        assert start_mock.call_count == 1
+
+    def test_wait_for_result_raises_run_failed(self, mocker: MockerFixture) -> None:
+        """A terminal non-COMPLETED state raises RunFailedError carrying the typed status."""
+        client = self._client()
+        mocker.patch.object(
+            client,
+            "get_run_result",
+            mocker.AsyncMock(return_value=RunResultFailed(pipeline_run_id="run_1", status=RunStatus.CANCELLED, message="cancelled")),
+        )
+
+        with pytest.raises(RunFailedError) as exc_info:
+            asyncio.run(client.wait_for_result("run_1"))
+        assert exc_info.value.run_id == "run_1"
+        assert exc_info.value.status == RunStatus.CANCELLED
+
+    def test_wait_for_result_raises_run_failed_with_the_report(self, mocker: MockerFixture) -> None:
+        """Over the recorded 409, wait_for_result raises RunFailedError carrying the status, the detail and the whole report."""
+        client = self._client()
+        body = _failed_results_problem("FAILED", _MODEL_REFUSED_REPORT)
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(409, json=body)))
+
+        with pytest.raises(RunFailedError) as exc_info:
+            asyncio.run(client.wait_for_result("run_1"))
+        err = exc_info.value
+        assert err.run_id == "run_1"
+        assert err.status == RunStatus.FAILED
+        assert str(err) == f"Run finished with status FAILED: {_MODEL_REFUSED_REPORT['message']}"
+        assert err.error is not None
+        assert err.error.error_domain == "config"
+        assert err.error.user_action is not None
+        assert err.error.user_action.detail == _MODEL_REFUSED_REPORT["user_action"]["detail"]
+        assert err.error.model_dump(exclude_none=True) == _MODEL_REFUSED_REPORT
+
+    def test_wait_for_result_times_out(self, mocker: MockerFixture) -> None:
+        """When the run never terminates and the timeout elapses, RunTimeoutError is raised (run survives)."""
+        client = self._client()
+        mocker.patch.object(
+            client,
+            "get_run_result",
+            mocker.AsyncMock(return_value=RunResultRunning(pipeline_run_id="run_1", retry_after_seconds=0)),
+        )
+
+        with pytest.raises(RunTimeoutError) as exc_info:
+            asyncio.run(client.wait_for_result("run_1", WaitForResultOptions(timeout_seconds=0.0)))
+        assert exc_info.value.run_id == "run_1"
+        assert exc_info.value.timeout_seconds == 0.0
+
+    def test_wait_for_result_propagates_cancellation(self, mocker: MockerFixture) -> None:
+        """Cancellation surfaces as asyncio.CancelledError (the loop never swallows it; run stays resumable)."""
+        client = self._client()
+        mocker.patch.object(client, "get_run_result", mocker.AsyncMock(side_effect=asyncio.CancelledError()))
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(client.wait_for_result("run_1"))

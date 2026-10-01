@@ -1,0 +1,16 @@
+# The root's own ignores. Each template carries its own .gitignore, which git
+# applies inside that template's directory and which travels into the projects
+# created from it.
+
+# dependencies, should a tool be run at the root by mistake
+node_modules/
+
+# misc
+.DS_Store
+
+# env files
+.env
+.env*.local
+
+# claude code local settings (per-user, never commit)
+.claude/settings.local.json

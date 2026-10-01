@@ -1,0 +1,111 @@
+# The template's own maintenance, not a project's: every job runs only in
+# Pipelex/pipelex-starter-python, so a repository made with "Use this template" inherits
+# this file inert, and /bootstrap deletes it. A workflow added for the template's own
+# maintenance carries the same guard on every job and joins MAINTAINER_ONLY_PATHS in the
+# bootstrap script; tests/unit/test_bootstrap_script.py holds the two together.
+name: Guard branch flow
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  # ───────────────────────────────────────────────────────────────
+  # 1) Only release/vX.Y.Z → main
+  # ───────────────────────────────────────────────────────────────
+  gate-main:
+    if: github.repository == 'Pipelex/pipelex-starter-python' && github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify source branch is a Release
+        env:
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          echo "PR → main from $HEAD"
+          if [[ ! "$HEAD" =~ ^release\/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Only release/vX.Y.Z branches may merge into main."
+            exit 1
+          fi
+
+  # ───────────────────────────────────────────────────────────────
+  # 2) Only work-branches → release/vX.Y.Z
+  # ───────────────────────────────────────────────────────────────
+  gate-release:
+    if: github.repository == 'Pipelex/pipelex-starter-python' && (startsWith(github.event.pull_request.base.ref, 'release/v') || github.event.pull_request.base.ref == 'dev')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify source branch uses allowed prefix
+        env:
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          echo "PR → ${{ github.event.pull_request.base.ref }} from $HEAD"
+          if [[ "$HEAD" == "dev" ]]; then
+            exit 0
+          fi
+          if [[ ! "$HEAD" =~ ^(fix|feature|refactor|chore|docs|ci-cd|changelog|codex)\/[A-Za-z0-9._\/\<\>\=\-]+$ ]]; then
+            echo "::error::Branch must start with fix/, feature/, refactor/, chore/, docs/, or ci-cd/."
+            exit 1
+          fi
+
+  # ───────────────────────────────────────────────────────────────
+  # 3) Prevent forks from editing your workflows
+  # ───────────────────────────────────────────────────────────────
+  protect-workflows:
+    if: github.repository == 'Pipelex/pipelex-starter-python'
+    runs-on: ubuntu-latest
+    # Least privilege: reading the author's permission and the pull request's files needs read only.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # Trust hinges on the author's effective repository permission, not author_association:
+      # the association is a social label that misses first-time authors entirely, and an org
+      # member can hold read-only access. Only write, maintain and admin are trusted.
+      - name: Resolve author repository permission
+        id: perm
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const username = context.payload.pull_request.user.login;
+            let data = { permission: 'none', role_name: 'none' };
+            try {
+              ({ data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username,
+              }));
+            } catch (error) {
+              // A 404 means the author is not a resolvable collaborator: untrusted, so the
+              // workflow check runs. Anything else is rethrown, so an API failure fails closed.
+              if (error.status !== 404) throw error;
+            }
+            // The legacy `permission` field folds maintain into "write" and triage into "read".
+            const trusted = data.permission === 'admin' || data.permission === 'write';
+            core.info(`Author ${username}: permission=${data.permission} role=${data.role_name} trusted=${trusted}`);
+            core.setOutput('trusted', trusted ? 'true' : 'false');
+
+      # The pull request's own files, read from the API rather than from a checkout: under
+      # pull_request_target the default checkout is the default branch, not the pull request,
+      # so a local diff never sees what it changes. The API lists exactly the pull request's
+      # changes against its merge base, and nothing of its head is checked out or executed.
+      - name: Detect workflow changes
+        if: steps.perm.outputs.trusted != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            // The API stops listing at 3000 files, so a list that long may hide a workflow change.
+            if (files.length >= 3000) {
+              core.setFailed(`The pull request changes ${files.length} or more files, too many to check for workflow changes.`);
+              return;
+            }
+            const workflow = /^\.github\/workflows\/.*\.ya?ml$/;
+            const changed = [...new Set(files.flatMap((file) => [file.filename, file.previous_filename]))]
+              .filter((name) => name && workflow.test(name));
+            if (changed.length > 0) {
+              core.setFailed(`External contributors may not modify workflow files: ${changed.join(', ')}`);
+            }

@@ -1,0 +1,13 @@
+# codegen.lock — generated artifact set (Pipelex codegen). Do not edit by hand.
+
+lock_version = 1
+crate_fingerprint = "0c688d0aae772f9b0d2e1d923da0b3e26ef53d7eff93672aa4f519a6f2dce6fd"
+engine_version = "0.56.0"
+
+[[artifacts]]
+path = "binder.ts"
+content_hash = "aac1c387e6b7a9a541b2dcea265bc1b713c42f0ce2efb3528af84ffc707e97d5"
+
+[[artifacts]]
+path = "types.ts"
+content_hash = "df9c3f887f623e103077e56a1c1dafc634422fe24c30336104a7f7f19f5f5158"

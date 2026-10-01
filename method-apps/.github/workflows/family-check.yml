@@ -1,0 +1,37 @@
+# The family's own checks: its one version, the root twins of the templates'
+# workflows, the formatting of the root's own files, and the tests of the root's
+# scripts. Each template's checks run in its own twins beside this file.
+name: Family check
+
+on:
+  pull_request:
+
+jobs:
+  family:
+    name: Family
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: webapp-js/package-lock.json
+
+      # The npm release.yml publishes with, so the initializer's tests meet it
+      # here before a release does.
+      - name: Install the release's npm
+        run: npm install -g npm@11
+
+      # The root's tooling borrows the first template's Prettier.
+      - name: Install the first template's dependencies
+        working-directory: webapp-js
+        run: npm ci
+
+      - name: Check the family (version, workflow twins, formatting)
+        run: make check-family
+
+      - name: Test the root's scripts
+        run: make test-family

@@ -1,0 +1,125 @@
+# The family's release: a push to `main` that moves the version publishes the
+# initializer, @pipelex/create-method-app, which carries the templates at that
+# version, then tags the commit vX.Y.Z. Hand-written, not a twin: no template
+# carries it, since no project publishes the family's initializer.
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+# One run at a time, so two pushes cannot race the publish or the tag. A run
+# is never cancelled for a newer one: a run that has published must tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish the initializer
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # npm trusted publishing needs a newer npm than Node 22 ships with. The
+      # major is pinned, and family-check.yml installs the same one, so the
+      # release runs the npm every pull request ran: a new major is an edit.
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@11
+
+      - name: Read the version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./initializers/js/package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "The initializer's version is $VERSION"
+
+      # Idempotent by design: a push to `main` that does not move the version
+      # is a no-op, not a failure, so a documentation commit reaches `main`
+      # without a release.
+      - name: Check whether the version is already published
+        id: published
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if npm view "@pipelex/create-method-app@$VERSION" version 2>/dev/null | grep -q .; then
+            echo "@pipelex/create-method-app@$VERSION is already on npm"
+            echo "already=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "@pipelex/create-method-app@$VERSION is not on npm yet"
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The release play's changelog rule, held at the last moment before the
+      # irreversible step: npm never gives a version number back.
+      - name: Assert the changelog has an entry for this version
+        if: steps.published.outputs.already == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! grep -qE "^## \[v${VERSION//./\\.}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [v$VERSION]' heading, so $VERSION is not published."
+            exit 1
+          fi
+          echo "CHANGELOG.md has an entry for v$VERSION."
+
+      # --publish refuses a template with uncommitted changes and a VERSION
+      # that is not the package's, so what is published is the templates at
+      # this commit and this version.
+      - name: Pack the templates
+        if: steps.published.outputs.already == 'false'
+        run: node initializers/js/scripts/pack-templates.mjs --publish
+
+      - name: Test the family's scripts and the initializer
+        if: steps.published.outputs.already == 'false'
+        run: make test-family
+
+      # --ignore-scripts skips `prepack`, so the packs published are the ones
+      # the step above made and the tests read. Provenance is npm's own and is
+      # unaffected. npm authenticates the publish as the package's trusted
+      # publisher, registered on npmjs.com for this file: an E404 on the PUT
+      # means npm refused it, and the release skill says how to restore it.
+      - name: Publish to npm
+        id: publish
+        if: steps.published.outputs.already == 'false'
+        working-directory: initializers/js
+        run: npm publish --ignore-scripts --access public --provenance
+
+      # Not gated on the publish: a run that published but failed before the
+      # tag must be able to backfill it when re-run. The tag goes on the commit
+      # the version was published from: this one when this run published it,
+      # and otherwise the gitHead npm recorded, never the commit a later push
+      # that did not move the version happens to stand on.
+      - name: Tag the release if the tag is missing
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PUBLISHED_HERE: ${{ steps.publish.outcome == 'success' }}
+        run: |
+          if git ls-remote --exit-code origin "refs/tags/v$VERSION" > /dev/null 2>&1; then
+            echo "The tag v$VERSION exists already"
+            exit 0
+          fi
+          if [ "$PUBLISHED_HERE" = "true" ]; then
+            SOURCE="$GITHUB_SHA"
+          else
+            SOURCE=$(npm view "@pipelex/create-method-app@$VERSION" gitHead 2>/dev/null || true)
+            if [ -z "$SOURCE" ]; then
+              echo "::error::v$VERSION is published but untagged, and npm records no gitHead for it, so the commit it came from is unknown: tag that commit by hand."
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "$SOURCE"
+          fi
+          git tag "v$VERSION" "$SOURCE"
+          git push origin "v$VERSION"
+          echo "Tagged $SOURCE as v$VERSION"

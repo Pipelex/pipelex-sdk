@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    // Node's type stripping resolves relative imports by their real on-disk
+    // extension, so `./codegenShared.mts` is written literally. Type-check only
+    // (--noEmit), which is what this flag requires.
+    "allowImportingTsExtensions": true
+  },
+  "include": ["scripts/**/*.mts"],
+  "exclude": ["node_modules"]
+}

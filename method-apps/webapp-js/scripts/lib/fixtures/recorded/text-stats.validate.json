@@ -1,0 +1,84 @@
+{
+  "is_valid": true,
+  "pipe_io_contracts": {
+    "text_stats.analyze_text": {
+      "inputs": {
+        "text": {
+          "concept_ref": "native.Text",
+          "presence": "plain",
+          "multiplicity": "single",
+          "item_count": null,
+          "json_schema": {
+            "description": "A text",
+            "properties": {
+              "text": {
+                "description": "The text",
+                "title": "Text",
+                "type": "string"
+              }
+            },
+            "required": ["text"],
+            "title": "native.Text",
+            "type": "object"
+          }
+        }
+      },
+      "output": {
+        "concept_ref": "native.Text",
+        "multiplicity": "single",
+        "item_count": null,
+        "optional": false,
+        "json_schema": {
+          "description": "A text",
+          "properties": {
+            "text": {
+              "description": "The text",
+              "title": "Text",
+              "type": "string"
+            }
+          },
+          "required": ["text"],
+          "title": "native.Text",
+          "type": "object"
+        }
+      }
+    }
+  },
+  "input_form": {
+    "text_stats.analyze_text": {
+      "fields": [
+        {
+          "kind": "prose",
+          "name": "text",
+          "concept_ref": "native.Text",
+          "description": "A text",
+          "required": true,
+          "presence": "plain",
+          "gating": true
+        }
+      ]
+    }
+  },
+  "output_form": {
+    "text_stats.analyze_text": {
+      "field": {
+        "kind": "prose",
+        "name": "output",
+        "concept_ref": "native.Text",
+        "description": "A text",
+        "required": true
+      }
+    }
+  },
+  "default_pipe_ref": "text_stats.analyze_text",
+  "bundle_blueprint": {
+    "domain": "text_stats",
+    "description": "Deterministic text statistics: counts, vocabulary richness, most frequent words, and estimated reading and speaking times — computed by a sandboxed Python function, no LLM involved.",
+    "main_pipe": "analyze_text",
+    "pipe": {
+      "analyze_text": {
+        "description": "Compute deterministic statistics about the input text (counts, averages, top words, reading time) and format them as a Markdown report."
+      }
+    }
+  }
+}

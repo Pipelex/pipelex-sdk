@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+/* The select popover's and the tooltip's enter and exit transitions, which the
+ * form kernel's controls use. Under Tailwind v3 this was the
+ * `tailwindcss-animate` plugin loaded from the JS config; v4 has no JS config,
+ * and `tw-animate-css` is the same utility set as a plain stylesheet. */
+@import "tw-animate-css";
+
+/* The form kernel's controls ship as compiled JavaScript: their Tailwind
+ * classes live in the package bundle, outside every source tree Tailwind scans
+ * by default. Without this directive the form still renders — only the classes
+ * unique to the controls are purged, which reads as a broken design system
+ * rather than a missing line. `docs/input-form.md` has the deterministic check.
+ *
+ * The directive names the compiled JS specifically, never the bare `dist`
+ * directory. `dist` also carries the package's sourcemaps, and Tailwind reads a
+ * .map as a source like any other file — including the TypeScript comments
+ * inside its sourcesContent — so pointing at the directory makes this app's
+ * stylesheet a function of a dependency's sourcemaps, which a routine repack
+ * could drop. (The glob cannot be written in this comment: the star-slash it
+ * contains would close the comment early.)
+ *
+ * By convention the directive sits after the whole run of `@import`s. An
+ * `@source` placed between two imports was once seen to make the bundler drop
+ * the imports that follow, with a warning rather than an error; that did not
+ * reproduce here on Tailwind 4.3.3 — Next/Turbopack, `@tailwindcss/cli` and
+ * raw PostCSS each produced an identical bundle either way — so treat the
+ * placement as a convention worth keeping, not a rule to rely on. */
+@source "../../node_modules/@pipelex/mthds-form/dist/**/*.js";
+
+/* Dark mode is the `.dark` class convention, matching the kernel's theme.css.
+ * This app's own chrome is light-only today; this is here so a consumer who
+ * adds a dark theme gets the kernel's controls with it. */
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * The shadcn semantic token contract the kernel's controls are written
+ * against, mapped onto the token names Tailwind v4 resolves. This is the
+ * `theme.extend.colors` and `theme.extend.borderRadius` blocks of the retired
+ * `tailwind.config.ts`, restated in CSS — key for key with the kernel's own `src/styles/tailwind-entry.css`,
+ * which is the reference for this mapping. The values come from
+ * `@pipelex/mthds-form/theme.css`, imported in `src/app/layout.tsx`.
+ *
+ * Two things here are load-bearing:
+ *
+ * `inline` — a plain `@theme` would resolve `var(--border)` once, at `:root`,
+ * and freeze it there, so a `.dark` (or any other) wrapper redefining a token
+ * lower in the tree would never move the utility. `inline` makes each utility
+ * carry `var(--border)` itself, resolved where it is used.
+ *
+ * The bare `var()` — under v3 these were written `hsl(var(--border))`, because
+ * the token held an HSL triplet and that wrapper was how v3 composed an alpha
+ * channel onto it. Since `@pipelex/mthds-form` 0.8.0 each token holds a WHOLE
+ * colour (`hsl(240 5.9% 90%)`), which v4 composes an opacity modifier onto
+ * with `color-mix()`. Re-wrapping one now yields `hsl(hsl(...))`, which is not
+ * a colour: the browser discards the declaration and the element falls back to
+ * transparent, silently.
+ */
+@theme inline {
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+@layer base {
+  /* v4's preflight gives a button `cursor: default`, where v3's left it a
+   * pointer. The kernel's controls (copy, download, the list row toggles, the
+   * optional-slot toggle) carry no cursor class because a button used to be a
+   * pointer by default, so a Tailwind host restores it — see the package's
+   * docs/theming.md. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+html,
+body {
+  background-color: #f8fafc;
+  color: #0f172a;
+}

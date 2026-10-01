@@ -1,0 +1,219 @@
+{
+  "is_valid": true,
+  "pipe_io_contracts": {
+    "receipt_review.review_receipts": {
+      "inputs": {
+        "receipts": {
+          "concept_ref": "native.Document",
+          "presence": "plain",
+          "multiplicity": "variable",
+          "item_count": null,
+          "json_schema": {
+            "type": "array",
+            "items": {
+              "description": "A document",
+              "properties": {
+                "url": {
+                  "description": "The document URL: a storage URI, an HTTP(S) URL, or a base64 data URL",
+                  "title": "Url",
+                  "type": "string"
+                },
+                "public_url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The public HTTPS URL of the document",
+                  "title": "Public Url"
+                },
+                "mime_type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The MIME type of the document",
+                  "title": "Mime Type"
+                },
+                "filename": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The original filename of the document",
+                  "title": "Filename"
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The title of the document or source",
+                  "title": "Title"
+                },
+                "snippet": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "A text snippet or excerpt from the document",
+                  "title": "Snippet"
+                }
+              },
+              "required": ["url"],
+              "title": "native.Document",
+              "type": "object"
+            }
+          }
+        }
+      },
+      "output": {
+        "concept_ref": "receipt_review.ReceiptSummary",
+        "multiplicity": "variable",
+        "item_count": null,
+        "optional": false,
+        "json_schema": {
+          "$defs": {
+            "receipt_review__ReceiptSummary": {
+              "description": "The key facts of one receipt",
+              "properties": {
+                "merchant": {
+                  "description": "Who issued the receipt",
+                  "title": "Merchant",
+                  "type": "string"
+                },
+                "date": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The date printed on the receipt, when there is one",
+                  "title": "Date"
+                },
+                "total": {
+                  "description": "The total amount paid",
+                  "title": "Total",
+                  "type": "number"
+                }
+              },
+              "required": ["merchant", "total"],
+              "title": "receipt_review__ReceiptSummary",
+              "type": "object"
+            }
+          },
+          "properties": {
+            "items": {
+              "items": {
+                "$ref": "#/$defs/receipt_review__ReceiptSummary"
+              },
+              "title": "Items",
+              "type": "array"
+            }
+          },
+          "required": ["items"],
+          "title": "ListContent[receipt_review__ReceiptSummary]",
+          "type": "object"
+        }
+      }
+    }
+  },
+  "input_form": {
+    "receipt_review.review_receipts": {
+      "fields": [
+        {
+          "kind": "list",
+          "name": "receipts",
+          "concept_ref": "native.Document",
+          "description": "A document",
+          "required": true,
+          "presence": "plain",
+          "gating": false,
+          "item": {
+            "kind": "document",
+            "concept_ref": "native.Document",
+            "description": "A document",
+            "required": true
+          }
+        }
+      ]
+    }
+  },
+  "output_form": {
+    "receipt_review.review_receipts": {
+      "field": {
+        "kind": "list",
+        "name": "output",
+        "concept_ref": "receipt_review.ReceiptSummary",
+        "description": "The key facts of one receipt",
+        "required": true,
+        "item": {
+          "kind": "object",
+          "concept_ref": "receipt_review.ReceiptSummary",
+          "description": "The key facts of one receipt",
+          "required": true,
+          "fields": [
+            {
+              "kind": "text",
+              "name": "merchant",
+              "description": "Who issued the receipt",
+              "required": true
+            },
+            {
+              "kind": "text",
+              "name": "date",
+              "description": "The date printed on the receipt, when there is one",
+              "required": false
+            },
+            {
+              "kind": "number",
+              "name": "total",
+              "description": "The total amount paid",
+              "required": true,
+              "integer": false
+            }
+          ]
+        }
+      }
+    }
+  },
+  "default_pipe_ref": "receipt_review.review_receipts",
+  "bundle_blueprint": {
+    "domain": "receipt_review",
+    "description": "Read a batch of receipts and list, for each one, who issued it, when, and the total paid.",
+    "main_pipe": "review_receipts",
+    "pipe": {
+      "review_receipts": {
+        "description": "Read every receipt and summarize each one: the merchant, the date and the total."
+      }
+    }
+  }
+}

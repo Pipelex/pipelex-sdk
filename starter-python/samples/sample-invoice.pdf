@@ -1,0 +1,66 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 1671 >>
+stream
+BT /F2 24 Tf 72 740 Td (INVOICE) Tj ET
+BT /F1 10 Tf 72 712 Td (Northwind Traders  -  123 Market Street, Springfield, IL 62704) Tj ET
+BT /F2 11 Tf 72 686 Td (Bill To) Tj ET
+BT /F1 10 Tf 72 670 Td (Acme Corporation, 500 Industrial Way, Dayton, OH 45402) Tj ET
+BT /F2 11 Tf 370 686 Td (Invoice Details) Tj ET
+BT /F1 10 Tf 370 670 Td (Invoice #: INV-2026-0042) Tj ET
+BT /F1 10 Tf 370 656 Td (Issue date: May 12, 2026) Tj ET
+BT /F1 10 Tf 370 642 Td (Due date: June 11, 2026) Tj ET
+BT /F2 10 Tf 72 606 Td (Description) Tj ET
+BT /F2 10 Tf 340 606 Td (Qty) Tj ET
+BT /F2 10 Tf 400 606 Td (Unit Price) Tj ET
+BT /F2 10 Tf 500 606 Td (Amount) Tj ET
+BT /F1 10 Tf 72 586 Td (Cloud hosting subscription \(May 2026\)) Tj ET
+BT /F1 10 Tf 340 586 Td (1) Tj ET
+BT /F1 10 Tf 400 586 Td ($1,200.00) Tj ET
+BT /F1 10 Tf 500 586 Td ($1,200.00) Tj ET
+BT /F1 10 Tf 72 570 Td (Priority support add-on) Tj ET
+BT /F1 10 Tf 340 570 Td (1) Tj ET
+BT /F1 10 Tf 400 570 Td ($300.00) Tj ET
+BT /F1 10 Tf 500 570 Td ($300.00) Tj ET
+BT /F1 10 Tf 72 554 Td (Data egress overage \(250 GB\)) Tj ET
+BT /F1 10 Tf 340 554 Td (250) Tj ET
+BT /F1 10 Tf 400 554 Td ($0.40) Tj ET
+BT /F1 10 Tf 500 554 Td ($100.00) Tj ET
+BT /F1 10 Tf 370 518 Td (Subtotal: $1,600.00) Tj ET
+BT /F1 10 Tf 370 504 Td (Tax \(8%\): $128.00) Tj ET
+BT /F2 11 Tf 370 488 Td (Total Due: $1,728.00) Tj ET
+BT /F1 10 Tf 72 450 Td (Payment terms: Net 30. Reference invoice INV-2026-0042 with payment.) Tj ET
+BT /F1 10 Tf 72 436 Td (Late payments accrue interest at 1.5% per month.) Tj ET
+BT /F1 10 Tf 72 408 Td (Questions? Contact billing@northwind-traders.example or \(555\) 010-2390.) Tj ET
+BT /F1 9 Tf 72 380 Td (Thank you for your business.) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000251 00000 n 
+0000001974 00000 n 
+0000002044 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+2119
+%%EOF

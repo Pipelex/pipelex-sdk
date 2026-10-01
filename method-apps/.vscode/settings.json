@@ -1,0 +1,7 @@
+{
+  // Opened at the family's root, the editor resolves TypeScript from the first
+  // template's install, so its IntelliSense matches that template's `make check`.
+  // Opening a template directory on its own uses that directory's settings instead.
+  "js/ts.tsdk.path": "webapp-js/node_modules/typescript/lib",
+  "js/ts.tsdk.promptToUseWorkspaceVersion": true
+}

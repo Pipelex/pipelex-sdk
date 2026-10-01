@@ -1,0 +1,41 @@
+{
+  "name": "@pipelex/create-method-app",
+  "version": "0.5.7",
+  "description": "Start a Pipelex method app: npm create @pipelex/method-app@latest my-app -- --method <bundle | mt_… | address>",
+  "keywords": [
+    "pipelex",
+    "mthds",
+    "create",
+    "template"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "create-method-app": "bin/create-method-app.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "templates/",
+    "templates.json"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pipelex/pipelex-method-apps.git",
+    "directory": "initializers/js"
+  },
+  "homepage": "https://github.com/Pipelex/pipelex-method-apps/tree/main/initializers/js#readme",
+  "bugs": "https://github.com/Pipelex/pipelex-method-apps/issues",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "pack-templates": "node scripts/pack-templates.mjs",
+    "prepack": "node scripts/pack-templates.mjs --publish",
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

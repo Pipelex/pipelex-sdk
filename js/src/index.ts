@@ -1,0 +1,272 @@
+/**
+ * `@pipelex/sdk` — TypeScript SDK for the Pipelex hosted API.
+ *
+ * One import source for consumers: this barrel re-exports the pure MTHDS Protocol
+ * surface (from the `mthds/protocol` subpath) alongside the Pipelex product client
+ * (`PipelexApiClient`), its wire models, the run-lifecycle types, and the typed
+ * errors. Consumers should import everything they need from `@pipelex/sdk`.
+ */
+
+/** Package version. Kept in sync with `package.json` — enforced by `tests/index.test.ts`. */
+export { SDK_VERSION } from "./version.js";
+
+// ── Pure MTHDS Protocol surface (re-exported from the `mthds/protocol` subpath) ──
+// The standard's interface, wire models, request/options surface, abstract domain
+// shapes, and the protocol-base `PipelineRequestError`. Re-exported so apps have a
+// single import source.
+export * from "mthds/protocol";
+
+// ── Pipelex product client ───────────────────────────────────────────
+export { PipelexApiClient, DEFAULT_API_BASE_URL } from "./client.js";
+// Client identification: the `User-Agent` the client sends, exported so a caller that
+// makes its own raw requests to the API sends the same value, and can check an `appInfo`
+// against the grammar and the length ceiling before constructing a client.
+export { buildUserAgent, validateAppInfo, MAX_USER_AGENT_LENGTH } from "./user-agent.js";
+export type { AppInfo, RuntimeInfo } from "./user-agent.js";
+export type {
+  MthdsFile,
+  PipelexApiRunExtensions,
+  PipelexHostedRunExtensions,
+  PipelexRunOptions,
+  PipelexStartOptions,
+  ValidateMethodSelector,
+  ValidateFilesOptions,
+  PipelexApiClientOptions,
+} from "./client.js";
+
+// Canonical parser: a stored method's polymorphic `MethodData.mthds` source → bundle contents.
+export { methodSourceToContents } from "./method-source.js";
+
+// The blocking `execute()` result — a `DictRunResultExecute` with a resolved `.main_stuff` — and
+// the lift from it onto `RunResults`, for a caller who drives `execute()` itself.
+export { PipelexExecuteResult, resultsFromExecute } from "./execute-result.js";
+
+// ── Input preparation (client.uploadFile / client.prepareInputs — hosted upload capability) ──
+// The operations are client methods; only their public types travel with the barrel.
+export type { UploadableAsset, UploadFileOptions, UploadRecord } from "./upload.js";
+// Except the upload grant's sender, which is standalone so the holder of the bytes needs
+// no client. It is also the browser-safe `@pipelex/sdk/upload` entry.
+export { uploadWithGrant } from "./upload-grant.js";
+export type { GrantedUpload, UploadWithGrantOptions } from "./upload-grant.js";
+export type {
+  PrepareInputsBase,
+  PrepareInputsClosure,
+  PrepareInputsRequest,
+  PreparedInputs,
+} from "./prepare-inputs.js";
+
+// ── Artifacts (the download twin of input preparation) ──────────────
+// `locateArtifacts`, `collectArtifacts` and `artifactFilename` are pure and standalone;
+// the network operations (`resolveArtifacts` / `fetchArtifact` / `downloadArtifacts`) are
+// client methods, and only their public types and bounds travel with the barrel.
+export {
+  locateArtifacts,
+  collectArtifacts,
+  artifactFilename,
+  PIPELEX_STORAGE_SCHEME,
+  BULK_RESOLVE_MAX_URIS,
+  DEFAULT_ARTIFACT_MAX_BYTES,
+  DEFAULT_ARTIFACT_TIMEOUT_MS,
+  DEFAULT_DOWNLOAD_MAX_TOTAL_BYTES,
+  DEFAULT_DOWNLOAD_CONCURRENCY,
+} from "./artifacts.js";
+export type {
+  ArtifactItemError,
+  ArtifactLocation,
+  ArtifactScope,
+  BulkResolveStorageUrlsInput,
+  BulkResolvedStorageUrls,
+  DownloadArtifactsOptions,
+  DownloadArtifactsRequest,
+  DownloadArtifactsResult,
+  DownloadedArtifact,
+  FetchArtifactOptions,
+  ResolvedArtifact,
+} from "./artifacts.js";
+
+// ── Wire models (Dict concretes, validate surface, tools + build + crate routes) ──
+export type {
+  DiagnosticKind,
+  DiagnosticRange,
+  Diagnostic,
+  LintResponse,
+  FormatResponse,
+  DictStuff,
+  DictWorkingMemory,
+  DictPipeOutput,
+  DictRunResultExecute,
+  MethodProvenance,
+  PipelexRunResultStart,
+  PipelexHostedToolingExtensions,
+  DryRunStatus,
+  ValidatedPipeEntry,
+  LiftablePipeEntry,
+  PipelexValidationReport,
+  PipelexInvalidReport,
+  PipelexValidationResult,
+  ValidationErrorCategory,
+  ValidationErrorItem,
+  FixSafety,
+  FixOpKind,
+  TomlScalar,
+  TomlValue,
+  FixValue,
+  SetKeyOp,
+  EnsureTableOp,
+  DeleteKeyOp,
+  DeleteTableOp,
+  RenameTableKeyOp,
+  MoveKeyOp,
+  RemapValueOp,
+  FixOp,
+  SuggestedFix,
+  ConceptRepresentationFormat,
+  InputsTemplateFormat,
+  MthdsFileItem,
+  CrateRequestBase,
+  BuildRequestBase,
+  BuildInputsRequest,
+  BuildOutputRequest,
+  BuildRunnerRequest,
+  ConceptRequest,
+  PipeSpecRequest,
+  CrateInvalidReport,
+  BuildInputsValidReport,
+  BuildOutputValidReport,
+  BuildRunnerValidReport,
+  GeneratedArtifact,
+  RunnerStructures,
+  BuildInputsResponse,
+  BuildOutputResponse,
+  BuildRunnerResponse,
+  ConceptResponse,
+  PipeSpecResponse,
+  ResolveRequest,
+  ResolveValidReport,
+  ResolveResponse,
+  CodegenKind,
+  CodegenTarget,
+  CodegenRequest,
+  CodegenValidReport,
+  CodegenResponse,
+  PipeIORequest,
+  PipeIOValidReport,
+  PipeIOResponse,
+} from "./models.js";
+
+// ── Offline codegen drift check (pure — no filesystem, no network, no key) ──
+// The CI half of the codegen trust chain: hand it a committed tree plus its
+// `codegen.lock` and it returns the structured drift verdict. Regeneration needs
+// the engine (a dev action); the check needs only hashes (the CI action).
+export {
+  runCodegenCheck,
+  isStampableArtifactPath,
+  STAMPABLE_ARTIFACT_SUFFIXES,
+  CodegenLockError,
+} from "./codegen-check.js";
+export type {
+  CodegenCheckInput,
+  CodegenCheckReport,
+  CodegenDrift,
+  CodegenDriftCategory,
+  CodegenTreeFile,
+} from "./codegen-check.js";
+
+// ── Pipelex product surface (hosted management routes) ───────────────
+export type {
+  UserProfile,
+  ListMethodsQuery,
+  MethodData,
+  MethodDeletionAccepted,
+  MethodDeletionState,
+  MethodPage,
+  MethodSummary,
+  MethodWriteInput,
+  Membership,
+  MembershipsResponse,
+  SubscriptionResponse,
+  PlanView,
+  InvoiceView,
+  CheckoutResponse,
+  ChangePlanResponse,
+  BillingPortalResponse,
+  PipelexApiKey,
+  PipelexApiKeyCreated,
+  PipelexApiKeyList,
+  OnboardingRole,
+  OnboardingCurrentTool,
+  OnboardingInputType,
+  OnboardingHeardFrom,
+  OnboardingSubmission,
+  ResolvedStorageUrl,
+  UploadInput,
+  UploadedFile,
+  UploadGrantInput,
+  UploadGrant,
+  PipeStatus,
+  ListRunsQuery,
+  PipelineRun,
+  RunDetail,
+  RunHistoryItem,
+  RunPage,
+  UpdateRunInput,
+} from "./product-models.js";
+
+// ── Run lifecycle (hosted extension — NOT part of the protocol) ──────
+export { isTerminalRunStatus, isSuccessRunStatus, RUN_RESULT_ARTIFACTS } from "./runs.js";
+export type {
+  GetRunResultOptions,
+  RunResultArtifact,
+  RunStatus,
+  RunPublic,
+  RunRead,
+  RunResults,
+  RunResultState,
+  TokensUsageRecord,
+  WaitForResultOptions,
+} from "./runs.js";
+
+// ── Usage summary (pure — folds a run's usage pair into one null-aware reading) ──
+export { summarizeUsage } from "./usage.js";
+export type {
+  PipeUsageSummary,
+  RunUsagePair,
+  UsageSummary,
+  UsageSummaryState,
+  UsageTokenTotals,
+} from "./usage.js";
+
+// ── Typed errors (PipelineRequestError rides the protocol re-export above) ──
+export {
+  ApiResponseError,
+  ApiUnreachableError,
+  ClientAuthenticationError,
+  MissingMainStuffError,
+  PipelineExecuteTimeoutError,
+  RunFailedError,
+  RunTimeoutError,
+  RunStillRunningError,
+  RunLifecycleUnavailableError,
+  InputPreparationError,
+  EmptyMethodSourceError,
+  InvalidLocalSourceError,
+  RejectedAssetError,
+  UnsupportedUploadCapabilityError,
+  UploadAuthenticationError,
+  UploadTransportError,
+  ArtifactOperationError,
+  ArtifactAuthenticationError,
+  ArtifactFetchError,
+  ScopeUnavailableError,
+} from "./errors.js";
+export type { ApiResponseErrorOptions, RejectedAssetCode, UploadTransportCode } from "./errors.js";
+
+// ── Error reports (a failed run's stored report, a problem document's typed members) ──
+export type {
+  FieldError,
+  MigrationErrorBlock,
+  ProblemDetails,
+  ProviderErrorMetadata,
+  RunErrorReport,
+  UserAction,
+} from "./error-models.js";

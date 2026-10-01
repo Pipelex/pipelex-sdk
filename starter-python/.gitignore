@@ -1,0 +1,33 @@
+
+# env
+.env
+
+# venv
+.venv
+venv/
+
+# reports
+reports/
+
+# pycache
+__pycache__
+
+# Python build artifacts
+build/*
+*.egg-info/
+dist/
+*.pyc
+
+# mypy
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
+
+# Results
+results/
+
+# Files the demos download from a run's produced artifacts
+downloads/
+
+temp/

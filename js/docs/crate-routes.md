@@ -1,0 +1,234 @@
+# Crate routes (`/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`)
+
+Three routes project a **closure** of MTHDS files into the artifacts downstream tooling actually consumes: `resolve` emits the **normalized library crate**, `codegen` projects that crate into **stamped typed artifacts** plus their lock, and `pipeIo` derives a method's **pipe I/O contracts, input form and output form** without a dry run. Like the [build routes](./build-routes.md), they are Pipelex API extensions rather than MTHDS Protocol operations — but note the ownership split: the _crate_ and the three I/O artifacts are standard-owned (the MTHDS Library Crate Format, and the standard's pipe I/O contracts and form descriptors), while the HTTP surface serving them, and every type projection on top of the crate, are ours.
+
+> **`resolve` and `codegen` are served on every hosted origin, and by any `pipelex-api` runner.** On the hosted plane a route is reachable only when the gateway's API-key allowlist and the platform's tooling proxy both list its path — each enumerates routes explicitly, and an unlisted path answers a gateway `403 {"message":"Forbidden"}`, refused before any service sees the request, so not even an RFC 7807 problem body. `resolve` and `codegen` are listed by both.
+>
+> Measured 2026-08-23 against `api.pipelex.com` (`pipelex-hosted@0.10.1`) with a real API key: an empty body to either route comes back as an RFC 7807 `422` naming the missing fields — a request-shape verdict only a route that reached the service can produce — and a real closure comes back as a `200` carrying the artifacts. `api-dev.pipelex.com` has served them since 2026-08-13. Use a key when re-measuring: unauthenticated, every path answers `401` whether or not it is allowlisted, so a keyless probe cannot tell the two states apart.
+>
+> **`pipe-io` is newer.** A runner serves it from `pipelex-api` v0.33.0, and types its pipe-selection refusals `EntryPipeNotFoundError` and `EntryPipeAmbiguousError` from v0.33.1, which is what `prepareInputs` branches on (see [What throws](#what-throws)); v0.33.0 typed them as the generic `ValidationError`. A hosted origin serves the route once the platform's tooling proxy and the gateway's allowlist both list it, and until then it answers the gateway's `403 {"message":"Forbidden"}`. `prepareInputs` reads this route, so it needs an origin that serves it.
+>
+> **`lint` / `format` are the exception and answer `403` on both origins.** That blocks nothing, because linting and formatting `.mthds` are toolchain capabilities rather than hosted ones: `plxt` carries both, and the post-edit hook this repo builds (`npm run build:hook`, vendored into `pipelex-plugins`) runs them offline through `@pipelex/tools-wasm` with no credentials — from the published package, `client.lint` / `client.format` are the documented fallback, against a runner. Exposing them on the hosted origins is a known, non-critical item on the platform's list, tracked in the workspace ledger as L-260929-b58f26.
+
+## The shared envelope
+
+All three take the same closure selector — inline `files`, a `method_ref`, or a hosted `method_id`, exactly one (the strict tooling XOR):
+
+```ts
+interface CrateRequestBase {
+  files?: MthdsFileItem[]; // [{ content, source? }] — `source` is the provenance label
+  method_ref?: string; // address form server-resolved (pipelex-api >= 0.21.0); registry form reserved → 501
+}
+
+interface PipelexHostedToolingExtensions {
+  method_id?: string; // hosted-only — the platform resolves the stored method server-side
+}
+```
+
+This is the same `MthdsFileItem` and the same `source` semantics the build routes use, so the [notes there](./build-routes.md#the-shared-envelope) apply verbatim: pass a filename per file and, when the engine can attribute a diagnostic to one, it comes back as `source` on the corresponding `validation_errors[]` item.
+
+An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is resolved by the server through the same fetch path as a `method_ref` run: the repository fetched at the tag, the package located by manifest identity, the package's real relative paths feeding the per-file `source` labels. Any non-address reference stays reserved and answers `501`.
+
+`method_id` is the hosted platform's selector, and it is a **pass-through**: nothing is expanded client-side — the platform resolves the id against the org's catalog and injects the stored source before the runner sees the request. It is meaningless against a bare runner (no catalog), and on `api.pipelex.com` its availability follows the platform deploy that adds the tooling-route transform. An unknown or foreign-org id is a `404` (indistinguishable by design); a stored method with no MTHDS source is a `422`.
+
+Supplying **no** selector or **more than one** is a request-shape `422` — the tooling routes are stateless, so there is no linkage exception; a second selector could only be ignored, which is the worst contract of the three. The SDK does not model the XOR in the type system — the union would force the overwhelmingly common `{ files }` call site to pick a branch for no gain, and the server's answer is a typed `ApiResponseError` either way.
+
+The old advice to expand a stored method client-side (`resolve({ files: await client.getMethodClosure(methodId) })`) remains valid — `getMethodClosure` stays public as the local expansion utility, and it is what a caller uses against a bare runner or on the routes with no by-id form (`/v1/build/*`).
+
+A `method_ref` makes the server fetch the repository before it answers, so the client gives a call carrying one a fetch-sized budget (three minutes) instead of the 30-second default. On the hosted API the gateway caps every request at about 30 seconds whatever the client allows, so a cold `method_ref` clone can answer a `502`; retrying clears it once the runner has cached the clone.
+
+## `resolve` — the normalized crate
+
+Resolution is a first-class language operation alongside validation: the closure is loaded and statically validated, then emitted with fully qualified refs, refinement flattened, natives materialized, and a fingerprint set.
+
+```ts
+const result = await client.resolve({ files: [{ content: src, source: "method.mthds" }] });
+
+if (!result.is_valid) {
+  for (const err of result.validation_errors) console.error(`${err.source ?? "?"}: ${err.message}`);
+  return;
+}
+
+console.log(result.crate.fingerprint); // rides INSIDE the crate, not beside it
+```
+
+Two things to internalize:
+
+- **`fingerprint` and `mthds_version` are crate members**, not siblings of `crate`.
+- **Compare `fingerprint` values; never hash the crate yourself.** The fingerprint is a property of the _logical_ crate, not of an encoding: the server hashes `{concepts, pipes, domains}` with provenance `source` stripped, excluding `source_map`, `mthds_version` and `fingerprint` itself. And these are not the bytes `pipelex resolve --format json` prints — the CLI pretty-prints, the route answers compact JSON. Same logical crate, different serialization. Hashing `JSON.stringify(result.crate)` and comparing it against `result.crate.fingerprint` will mismatch on every call, and will look like tampering.
+- **`crate` is typed as opaque transport** (`Record<string, unknown>`). Its schema belongs to the MTHDS standard; restating it here would be a second source of truth, free to drift from the one the server emits.
+
+`resolve` runs **no dry-run sweep**. A valid verdict says the library resolves, never that it runs — runnability is `validate`'s vocabulary.
+
+## `codegen` — stamped artifacts and the trust chain
+
+`codegen` resolves the same way, then projects the crate through **two explicit axes**:
+
+| Axis     | Values                                                  | Notes                                                          |
+| -------- | ------------------------------------------------------- | -------------------------------------------------------------- |
+| `kind`   | `types`                                                 | The crate's whole concept set. Per-pipe kinds are future work.  |
+| `target` | `ts-zod`, `python-pydantic`, `python-structures`         | `ts-zod` is the natural one for TypeScript consumers.           |
+
+```ts
+const result = await client.codegen({ files, kind: "types", target: "ts-zod" });
+if (!result.is_valid) return;
+
+for (const artifact of result.artifacts) await writeFile(artifact.path, artifact.content);
+await writeFile(result.lock_filename, result.lock); // "codegen.lock", beside the artifacts
+```
+
+**The trust chain is the reason the lock rides along.** Write every artifact at its `path` and the `lock` content as `lock_filename`, both **verbatim**, and the resulting tree is byte-identical to what a local `pipelex codegen types` run produces — same stamps, same lock — so the offline `pipelex codegen check` passes on it. Reformatting an artifact, or re-serializing the lock through your own TOML writer, breaks that chain. There is deliberately **no** server-side check route: the check is offline by design.
+
+`crate_fingerprint` and `engine_version` say what the artifacts were generated _from_ — the crate `resolve` would have returned for the same closure, and the pipelex engine that emitted them.
+
+The SDK stays transport-only: it hands you the artifacts and does not write files for you. Verifying a committed tree later is the other half of the chain, and that half needs no server at all — see [the offline check](#the-offline-check--runcodegencheck) below.
+
+### `pipe_ref` is rejected, not ignored
+
+`kind: "types"` is concept-set-wide, so passing `pipe_ref` alongside it is a request-shape **`422`**. Silently ignoring the selector would mislead a caller into believing the artifacts were narrowed to one pipe. The field exists on the request for the future per-pipe kinds.
+
+## `pipeIo` — a method's I/O artifacts, without a validation
+
+`pipeIo` resolves the closure the way `resolve` does, selects a pipe, and returns the method's three I/O artifacts — the standard's `PipeIOContracts`, `InputForm` and `OutputForm`, typed by importing them from `mthds/protocol` — with the selection and the runnability facts beside them. It runs **no dry-run sweep**, so it costs one load and one derivation where `validate` dry-runs every pipe. Read it to show a method, to prepare its inputs (`prepareInputs` does) or to generate types for it; stay on `validate` for the dry-run verdict or the dry-run graph.
+
+```ts
+const result = await client.pipeIo({ method_ref: "github.com/Pipelex/methods/documents" });
+if (!result.is_valid) return;
+
+const form = result.input_form[result.pipe_ref!]; // the entry pipe's input form
+```
+
+The request is the shared envelope plus three optional fields, posted verbatim:
+
+| Field           | Default | Meaning                                                                                                   |
+| --------------- | ------- | --------------------------------------------------------------------------------------------------------- |
+| `pipe_ref`      | none    | The qualified `domain.pipe_code` to describe. Omitted, the server's selection chain decides.              |
+| `all_pipes`     | `false` | Describe every pipe the closure loads instead of the selected one.                                        |
+| `include_files` | `false` | Echo the resolved closure's `.mthds` files as `files`, in the request's own `{ content, source? }` shape. |
+
+**Selection.** The request's `pipe_ref`; else a fetched package's manifest `main_pipe`; else the closure's `main_pipe`, when exactly one domain declares one. A `pipe_ref` that names no pipe, and — without `all_pipes` — a chain that finds no entry pipe or several, are refused with a `422` whose `errorType` names the refusal (see [What throws](#what-throws)). The server does not refuse a bare code yet: a bare ref that matches one pipe resolves across domains, and the answer reports the qualified ref. With `all_pipes: true` the route never refuses for want of an entry pipe, so a method that declares none is still describable.
+
+The valid arm (`PipeIOValidReport`):
+
+- `pipe_ref` — the qualified ref the selection resolved, read off the resolved pipe and never echoed from the request; `null` only under `all_pipes` when nothing resolves.
+- `pipe_io_contracts`, `input_form`, `output_form` — the three maps, sharing one key set: the resolved `pipe_ref` alone by default, every pipe under `all_pipes`. For a closure `validate` also accepts, each equals `validate`'s same-named field restricted to the same keys, null members such as a contract's `item_count: null` included.
+- `default_pipe_ref` — the method's own entry pipe, the selection chain without the request's `pipe_ref`, or `null` when that chain finds none or several. A request that omits `pipe_ref` always answers `pipe_ref === default_pipe_ref`. It is **not** `validate`'s field of the same name, which is the run default and names the first of several declaring domains where this route refuses to choose.
+- `pending_signatures`, `is_runnable` — what they mean on `validate`, read off the loaded library with no dry run, so a method whose dry run would fail is still reported runnable here.
+- `files` — present only with `include_files: true`: the request's files for inline `files`, the fetched package's `.mthds` files under their package-relative paths for a `method_ref`, the stored files under their stored names for a hosted `method_id`. Absent, not empty, otherwise.
+
+`is_valid: true` means what it means on `resolve`: the closure parsed, loaded and passed static validation. The invalid arm is the shared `CrateInvalidReport`, and it carries no artifacts, no selection and no files, whatever the request asked for.
+
+## The response is a verdict, not a payload
+
+All three routes return a **discriminated 200**, the same discipline as `validate` and the build routes: an unresolvable closure is the _successful product_ of the call (the request was well-formed; the library was not), so it rides a 200 with `is_valid: false` and the shared `CrateInvalidReport` — the very same invalid arm the build routes return, carrying the same structured `validation_errors[]`.
+
+**Branch on `is_valid` before reading the arm.** A consumer that only catches throws will render a success over an unusable result, because nothing threw.
+
+## What throws
+
+Only a **no-verdict** condition, as the typed `ApiResponseError` — branch on its `status` and `errorType`, never on its message:
+
+| Status        | Cause                                                                                                     |
+| ------------- | --------------------------------------------------------------------------------------------------------- |
+| `422`         | Request shape: no closure selector or more than one, an over-limit file, an unknown `kind`/`target`, a `pipe_ref` on `kind: "types"`, a fetched package with no `.mthds` file, a stored method with no MTHDS source. |
+| `422`         | On `pipeIo`, a pipe selection the route refuses: `errorType` `EntryPipeNotFoundError` for a `pipe_ref` that names no pipe or a method with no entry pipe, `EntryPipeAmbiguousError` for a code that matches pipes in several domains or several `main_pipe` declarations. The `serverMessage` names the candidates where there are some. |
+| `404`         | Unknown or foreign-org `method_id` (indistinguishable by design); no package at a `method_ref` address.     |
+| `501`         | Registry-form `method_ref` — reserved, not implemented (the address form resolves).                         |
+| `401` / `403` | Auth, or on a hosted origin a route the gateway does not list yet (`403 {"message":"Forbidden"}`).          |
+| `502`         | On a hosted origin, a cold `method_ref` clone that outran the gateway's 30-second cap; a retry clears it.   |
+| `5xx`         | Server fault, including on `pipeIo` a pipe whose artifacts cannot be derived.                               |
+
+Note the split, same as the build routes: a bad **closure** is a 200 verdict; a bad **request** throws.
+
+(The offline check below is not a route and throws its own `CodegenLockError` instead — it never reaches the network.)
+
+## The offline check — `runCodegenCheck`
+
+A consumer that commits the generated tree needs a CI gate over it. That gate is `runCodegenCheck`, and it is **pure**: no filesystem, no network, no API key, no `PipelexApiClient`. You walk your own tree and hand in the text; the SDK owns the verdict.
+
+The reason it is a separate, engine-free step is the same reason there is no server-side check route. Regeneration is a **dev action** — it needs the engine, so it is `codegen` above. The check is a **CI action** — it needs only a hash function. Keeping them apart is what stops an upstream template improvement from reddening a consumer's CI on a tree nobody touched.
+
+```ts
+import { isStampableArtifactPath, runCodegenCheck } from "@pipelex/sdk";
+
+const report = await runCodegenCheck({
+  lockContent: await readFile("src/generated/echo/codegen.lock", "utf8"),
+  // Every file under the lock's directory, recursively, with paths relative to it.
+  files: await readTree("src/generated/echo", isStampableArtifactPath),
+});
+
+if (!report.isCurrent) {
+  for (const drift of report.drifts) {
+    console.error(`${drift.category}: ${drift.path} — ${drift.detail}`);
+  }
+  process.exit(1);
+}
+```
+
+A `codegen()` response feeds straight in with no mapping — `GeneratedArtifact` and `CodegenTreeFile` are structurally identical on purpose, so `runCodegenCheck({ lockContent: result.lock, files: result.artifacts })` type-checks and reports `isCurrent`. That is worth doing right after a regeneration, before writing anything to disk.
+
+The function is `async` because it hashes through **WebCrypto** (`crypto.subtle`) rather than `node:crypto`, so the check adds no Node builtin to the barrel's import graph. (That is not the same as the barrel being browser-bundleable today: `upload.ts` still names `node:fs/promises`, so a browser-targeting bundler must mark `node:*` external.) One caveat that never bites a CI script but should not surprise anyone: `crypto.subtle` is secure-context-only, so a browser page must be served over https (or localhost).
+
+### The algorithm
+
+Each locked artifact is located in the supplied tree and the hash of the body **below its stamp** is recomputed. Absent is a drift; a body that no longer hashes to what the stamp or the lock records is a drift. Then, in the other direction, a stamped file the lock does not track is a drift — the stale-artifact class a per-file stamp can never catch on its own, and the reason the lock rides along with the artifacts at all.
+
+The verdict is a structured report, never an exit code alone: `drifts` enumerates the drifting artifacts by category, and `isCurrent` is exactly `drifts.length === 0`. Drift order is deterministic — locked-artifact drifts first, then orphans, each sorted by path — so a consumer can print it, snapshot it, or diff two runs.
+
+The report also carries `crateFingerprint` and `engineVersion`, read off the lock header. The check itself never compares them against anything (that would need the engine), but surfacing them is what lets a caller ask the question the check deliberately does not: _is this committed tree even from the crate my method resolves to today?_ — a live `codegen()` response's `crate_fingerprint` is the value to compare against.
+
+### The drift taxonomy
+
+| Category      | What it means                                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------------------- |
+| `missing`     | Listed in the lock, absent from the tree you handed in.                                               |
+| `modified`    | Present, stamp self-consistent, but the body no longer matches the **locked** hash — regenerate.      |
+| `hand-edited` | Present, but its stamp is gone, unparseable, or disagrees with the body below it — someone edited it. |
+| `orphan`      | A stamped file the lock does not track — yesterday's artifact, left behind. Remove or regenerate.     |
+
+Two properties of that table are load-bearing and are pinned by tests:
+
+- **At most one drift per locked path, and `hand-edited` outranks `modified`.** A hand edit trips both conditions; reporting it twice would print the same file under two contradictory categories.
+- **An orphan only has to _look_ stamped.** A stray whose stamp is corrupt below the begin-marker line still counts — using the stricter parse there would silently ignore exactly the stale file the lock exists to catch.
+
+The category values are the canonical strings `pipelex codegen check` uses, and so are the `detail` sentences, verbatim. A consumer switching between the CLI and this helper reads the same report.
+
+### Where it knowingly differs from the CLI
+
+Verdict parity is the design constraint, and the stamp-header text rules mirror Python's exactly — the line-boundary set, the strip set, the drive-prefix rule, and the comment-prefix gate over the header region are all matched deliberately, each pinned by a test. These differences remain:
+
+- **The projection line is shape-checked, not vocabulary-checked.** pipelex resolves `kind` and `target` against its own enums, which cannot lag its own emitter; an SDK copy can. So a stamp reading `projection: types / rust-serde` from a newer engine verifies here and would be `hand-edited` there. Tightening it would report every artifact of such a tree as a hand edit — the failure mode is worse than the gap, and it is pinned in both directions.
+- **The "not valid UTF-8" branch cannot arise.** `content` reaches the check already decoded, so the caller owns that verdict — see the decode obligation above.
+- **A TOML float is accepted as a lock version, where pipelex calls it malformed.** `lock_version = 1.0` is a float upstream and not an `int`, so the CLI refuses it; the TOML parser here decodes it to the same `1` as the integer, so this reader cannot tell them apart and reads version 1. Not deliberate so much as unavoidable, and unreachable with any emitter — the divergence is a no-verdict there against a verdict here, on a lock nothing writes.
+
+### The lock format version
+
+`codegen.lock` opens with `lock_version`, and this build reads version 1. The field exists because the reader is deliberately strict *within* a version — an unknown key is a malformed lock, not a field to ignore — and that strictness is unworkable *across* versions without it.
+
+Four rules, mirroring the CLI exactly:
+
+- **A lock with no `lock_version` key is version 1.** The field was introduced with version 1, so every lock written before it existed is already conformant and nothing on disk needs migrating.
+- **The version is read _before_ the key set is validated.** This is the load-bearing ordering. The other way round, a lock from a newer codegen is rejected over whichever new key it happens to carry — an opaque shape complaint about a key the writer was entitled to add, instead of a verdict naming the version and saying what to upgrade.
+- **A version this build does not know is refused**, with a message that names the version found and which side to upgrade. A version *greater* than the one read means the lock came from a newer codegen; anything else (`0`, negative, non-integer) is malformed rather than futuristic.
+- **Strictness within a known version stays.** An unexpected key in a version-1 lock is still a no-verdict.
+
+So the upgrade path is: publish an SDK that tolerates the new version *before* the pipelex release that starts writing it. A reader that has not learned a version yet fails loudly and actionably rather than silently guessing at a shape it was not written for.
+
+### The caller's obligations
+
+The pure input moves the tree-reading obligations onto you. Each one, unmet, produces a **wrong verdict** rather than an error — so none of them can be left implicit:
+
+- **Pass each file's text as read, without reformatting it.** The hash is over exact UTF-8 bytes, and the stamp parser requires the text to _start with_ the begin-marker line. Re-encoding, inserting a BOM, or running Prettier over a generated artifact all report `hand-edited`.
+- **Line endings are the one exception, and they are handled for you.** `\r\n` and lone `\r` are normalized to `\n` before anything is parsed or hashed, mirroring the universal-newline translation pipelex's own reader applies. A Windows checkout under `core.autocrlf=true` is therefore **not** a false hand-edit here, exactly as it is not one for the CLI. Committing generated artifacts with a `.gitattributes` entry (`src/generated/** -text`) is still worth doing for diff hygiene; it is not load-bearing for the verdict.
+- **Walk the whole tree, recursively, from the lock's directory**, and pass paths relative to it. An incomplete list yields a wrong verdict in either direction: an omitted _locked_ file is reported `missing` though it sits on disk, and an omitted _orphan_ is never seen at all — `isCurrent: true`, a false negative on precisely the drift class orphan detection exists for. Filter your walk with `isStampableArtifactPath` (or `STAMPABLE_ARTIFACT_SUFFIXES`) so it picks up exactly what the check considers; a file of any other type is skipped rather than rejected, which is what lets you park a sidecar such as `sources.json` beside the lock. Pruning vendor and VCS directories and skipping symlinks is walk policy and stays with you — moot for a per-method generated directory, which holds nothing else.
+- **Decode the bytes yourself.** `content` is already a `string`, so pipelex's "not valid UTF-8, therefore not generated output" branch cannot arise here. A file you could not decode is not generated output: report it yourself, or leave it out and accept the `missing` drift.
+
+### What it deliberately does not verify
+
+It never compares a stamp's `crate_fingerprint` against the lock's, and it never re-resolves the crate. Both need the engine, which is the whole point of the offline split — and both are questions the caller can ask itself with `crateFingerprint` in hand.
+
+### What the check throws
+
+`CodegenLockError`, and only for a **no-verdict** condition: a malformed lock, a lock format version this build cannot read, an unknown key in it, or a path — in the lock or in your `files` — that is not a safe canonical artifact path (absolute, drive-prefixed, backslashed, control-charactered, `..`-bearing, empty, duplicated, or, for a locked path, of a type codegen does not stamp). None of these is a drift: the check could not produce a verdict at all, which is a distinct outcome and typically a distinct exit code. It deliberately does not derive from `PipelineRequestError` — nothing was requested over the wire.
+
+A `"./types.ts"` spelling is worth calling out, because it is the one a hand-rolled walk produces by accident: left to resolve as-is it would report both a `missing` and an `orphan` for the same file, so it throws instead.

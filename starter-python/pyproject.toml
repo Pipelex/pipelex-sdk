@@ -1,0 +1,265 @@
+[project]
+name = "widget"
+version = "0.2.1"
+description = "Replace this with your project description"
+# authors = [{ name = "Your Name", email = "your.email@example.com" }]
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Operating System :: OS Independent",
+]
+
+# Every package imported at module level by `widget/` is declared here, including the two that also
+# arrive transitively: `mthds` comes with `pipelex-sdk` and `rich` comes with `typer`, and both are
+# imported directly (`mthds.protocol.exceptions` in the error layer and each mode CLI, `rich` in the
+# cost report). A transitive dependency is not a contract, so a release that dropped either would
+# break a fresh install of a template every new project is cloned from. The `mthds` floor is the
+# version `pipelex-sdk` pins exactly today, which is a floor and not a second pin: the SDK's exact
+# pin always satisfies it, so bumping the SDK never has to be matched here. `httpx` is not among
+# them: since `pipelex-sdk` 0.14.0 every route raises the SDK's typed `ApiResponseError` on a
+# non-2xx answer, so nothing here imports it, and it arrives only as the SDK's own transport.
+dependencies = [
+  "mthds>=0.17.0",
+  "pipelex-sdk>=0.14.0",
+  "python-dotenv>=1.0.0",
+  "rich>=13.0.0",
+  "typer>=0.15.0",
+]
+
+[project.scripts]
+widget = "widget.cli:app"
+
+[tool.setuptools]
+include-package-data = true
+
+# Discovered rather than listed. A method used to be named one by one here, in the codegen-check
+# recipe and in tests/unit/test_generated_clients.py, so adding one meant remembering three sites
+# and `make add-method` would have had to edit this file. All three now derive what they need from
+# widget/methods/ and widget/generated/, and the only site that still names a method by hand is the
+# CLI_INPUTS map in that test — which cannot go stale unnoticed, because
+# `test_every_method_declares_its_cli_inputs` holds it against the bundles actually on disk.
+[tool.setuptools.packages.find]
+include = ["widget", "widget.*"]
+
+[tool.setuptools.package-data]
+# A method ships its source — a bundle, or the manifest naming where the method lives — because a
+# wheel that ships the call site must ship what that call site loads or names at run time.
+widget = ["py.typed", "methods/*/*.mthds", "methods/*/method.json"]
+# Ship each codegen.lock alongside its models.py so the offline drift check works on an installed copy.
+"*" = ["codegen.lock"]
+
+[project.optional-dependencies]
+# `httpx` is here because the tests import it to fake the SDK's transport (`tests/conftest.py`), which
+# `widget/` never does.
+dev = [
+  "httpx>=0.27.0",
+  "mypy==1.19.1",
+  "pipelex-tools>=0.7.2",
+  "pyright>=1.1.411",
+  "pytest>=9.0.3",
+  "pytest-mock>=3.14.0",
+  "pytest-sugar>=1.0.0",
+  "pytest_asyncio>=0.24.0",
+  "ruff==0.16.4",
+]
+
+[project.urls]
+Homepage = "https://pipelex.com"
+Repository = "https://github.com/yourusername/widget" # Replace with your repository URL
+Documentation = "https://docs.pipelex.com/"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+required-version = ">=0.7.2"
+
+[tool.mypy]
+packages = ["widget", "scripts"]
+check_untyped_defs = true
+exclude = "^.*\\.venv/.*$"
+mypy_path = "."
+plugins = ["pydantic.mypy"]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.11"
+include = ["widget", "scripts", "tests"]
+analyzeUnannotatedFunctions = true
+deprecateTypingAliases = false
+disableBytesTypePromotions = true
+enableExperimentalFeatures = false
+enableTypeIgnoreComments = true
+exclude = [
+  "**/__pycache__",
+  ".venv",
+  ".git",
+  "build",
+  "dist",
+  "**/node_modules",
+  "**/.*",
+]
+extraPaths = ["./tests"]
+reportAbstractUsage = "error"
+reportArgumentType = "error"
+reportAssertAlwaysTrue = "error"
+reportAssertTypeFailure = "error"
+reportAssignmentType = "error"
+reportAttributeAccessIssue = "error"
+reportCallInDefaultInitializer = true
+reportCallIssue = "error"
+reportConstantRedefinition = "error"
+reportDeprecated = "error"
+reportDuplicateImport = "error"
+reportFunctionMemberAccess = "error"
+reportGeneralTypeIssues = "error"
+reportImplicitOverride = true
+reportImplicitStringConcatenation = false
+reportImportCycles = true
+reportIncompatibleMethodOverride = "error"
+reportIncompatibleVariableOverride = "error"
+reportIncompleteStub = "error"
+reportInconsistentConstructor = "error"
+reportInconsistentOverload = "error"
+reportIndexIssue = "error"
+reportInvalidStringEscapeSequence = "error"
+reportInvalidStubStatement = "error"
+reportInvalidTypeArguments = "error"
+reportInvalidTypeForm = "error"
+reportInvalidTypeVarUse = "error"
+reportMatchNotExhaustive = "error"
+reportMissingImports = "error"
+reportMissingModuleSource = "warning"
+reportMissingParameterType = "error"
+reportMissingSuperCall = "none"
+reportMissingTypeArgument = "error"
+reportMissingTypeStubs = false
+reportNoOverloadImplementation = "error"
+reportOperatorIssue = "error"
+reportOptionalCall = "error"
+reportOptionalContextManager = "error"
+reportOptionalIterable = "error"
+reportOptionalMemberAccess = "error"
+reportOptionalOperand = "error"
+reportOptionalSubscript = "error"
+reportOverlappingOverload = "error"
+reportPossiblyUnboundVariable = "error"
+reportPrivateImportUsage = "error"
+reportPrivateUsage = "error"
+reportPropertyTypeMismatch = true
+reportRedeclaration = "error"
+reportReturnType = "error"
+reportSelfClsParameterName = "error"
+reportTypeCommentUsage = "error"
+reportTypedDictNotRequiredAccess = "error"
+reportUnboundVariable = "error"
+reportUndefinedVariable = "error"
+reportUninitializedInstanceVariable = "none"
+reportUnknownArgumentType = "error"
+reportUnknownLambdaType = "error"
+reportUnknownMemberType = "error"
+reportUnknownParameterType = "error"
+reportUnknownVariableType = "error"
+reportUnnecessaryCast = "error"
+reportUnnecessaryComparison = "error"
+reportUnnecessaryContains = "error"
+reportUnnecessaryIsInstance = "error"
+reportUnnecessaryTypeIgnoreComment = "none"
+reportUnsupportedDunderAll = "error"
+reportUntypedBaseClass = "error"
+reportUntypedClassDecorator = "error"
+reportUntypedFunctionDecorator = "error"
+reportUntypedNamedTuple = "error"
+reportUnusedCallResult = "none"
+reportUnusedClass = "error"
+reportUnusedCoroutine = "error"
+reportUnusedExcept = "error"
+reportUnusedExpression = "error"
+reportUnusedFunction = "error"
+reportUnusedImport = "none"
+reportUnusedVariable = "error"
+reportWildcardImportFromLibrary = "error"
+strictDictionaryInference = true
+strictListInference = true
+strictParameterNoneValue = true
+strictSetInference = true
+typeCheckingMode = "strict"
+
+[tool.pytest]
+minversion = "9.0"
+addopts = [
+  "--import-mode=importlib",
+  "-ra",
+  "-m",
+  "not (inference or llm or img_gen or extract or needs_output or pipelex_api)",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+xfail_strict = true
+filterwarnings = [
+  "ignore:Support for class-based `config` is deprecated:DeprecationWarning",
+  "ignore:websockets.*is deprecated:DeprecationWarning",
+  "ignore:typing\\.io is deprecated:DeprecationWarning",
+  "ignore:typing\\.re is deprecated:DeprecationWarning",
+  "ignore:.*has been moved to cryptography.*",
+  "ignore:Use.*Types instead",
+]
+markers = [
+  "needs_output: tests that need output to be displayed",
+  "inference: slow and costly due to inference calls",
+  "llm: slow and costly due to llm inference calls",
+  "img_gen: slow and costly due to image generation inference calls",
+  "extract: slow and costly due to doc extraction inference calls",
+  "gha_disabled: tests that should not run in GitHub Actions",
+  "codex_disabled: tests that should not run in Codex",
+  "dry_runnable: tests that can be run in dry-run mode",
+  "pipelex_api: tests that require access to the Pipelex API",
+]
+
+[tool.ruff]
+exclude = [
+  ".cursor",
+  ".git",
+  ".github",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".venv",
+  ".vscode",
+  "widget/generated", # generated by `pipelex codegen` — reformatting would trip the codegen.lock drift check
+  "trigger_pipeline",
+]
+line-length = 150
+target-version = "py311"
+
+[tool.ruff.format]
+
+[tool.ruff.lint]
+ignore = ["F401"]
+external = ["F401"]
+select = [
+  "E4",
+  "E7",
+  "E9",
+  "F",
+  "A001",
+  "A002",
+  "A003",
+  "RUF008",
+  "RUF009",
+  "RUF012",
+  "RUF013",
+  "RUF100",
+  "E501",
+  "I",
+]

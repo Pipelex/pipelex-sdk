@@ -1,0 +1,30 @@
+{
+  "ecosystem": "js",
+  "default": "webapp-js",
+  "templates": {
+    "webapp-js": {
+      "extras": ["METHOD_NAME", "LABEL"]
+    }
+  },
+  "create": {
+    "required": "METHOD",
+    "shared": [
+      "METHOD",
+      "NAME",
+      "TITLE",
+      "DESCRIPTION",
+      "PIPE",
+      "AUTHOR_NAME",
+      "AUTHOR_EMAIL",
+      "REPO_URL",
+      "LICENSE",
+      "LICENSE_HOLDER",
+      "LICENSE_YEAR",
+      "DRY_RUN"
+    ],
+    "switches": ["DRY_RUN"]
+  },
+  "otherEcosystems": {
+    "python": "uvx create-pipelex-method-app"
+  }
+}

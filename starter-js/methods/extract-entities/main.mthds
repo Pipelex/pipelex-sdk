@@ -1,0 +1,30 @@
+domain      = "extract_entities"
+description = "Extract people, organizations, and dates from a piece of text."
+main_pipe   = "extract_entities"
+
+[concept.ExtractedEntities]
+description = "Named entities extracted from a piece of text."
+
+[concept.ExtractedEntities.structure]
+people = { type = "list", item_type = "text", description = "Names of people mentioned in the text", required = true }
+orgs   = { type = "list", item_type = "text", description = "Names of organizations mentioned in the text", required = true }
+dates  = { type = "list", item_type = "text", description = "Dates or time references mentioned in the text", required = true }
+
+[pipe.extract_entities]
+type = "PipeLLM"
+description = "Extract people, organizations, and dates from the input text."
+inputs = { text = "Text" }
+output = "ExtractedEntities"
+prompt = """
+Extract named entities from the following text.
+
+Return three lists:
+- people: full names of individual people mentioned.
+- orgs: organizations, companies, agencies, or institutions mentioned.
+- dates: dates or explicit time references (e.g. "March 5th, 2026", "last Tuesday").
+
+If a category has no matches, return an empty list.
+
+Text:
+@text
+"""

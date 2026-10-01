@@ -1,0 +1,11 @@
+# Generated codegen artifacts are committed and hashed against their stamps.
+# `-text` disables git's newline translation so a checkout on any platform holds
+# the bytes the API emitted. Diff hygiene rather than correctness — the SDK's
+# offline check normalizes line endings before hashing — but worth pinning.
+src/generated/** -text
+
+# Bundle sources are hashed into each tree's `sources.json`. Same story as
+# above: `hashSource` normalizes line endings before hashing, so this pin is
+# hygiene rather than correctness — it keeps a Windows checkout holding the
+# bytes the hashes were taken over.
+methods/** text eol=lf
