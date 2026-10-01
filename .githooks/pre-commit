@@ -9,6 +9,7 @@ for hook in "$root"/*/.husky/pre-commit "$root"/*/*/.husky/pre-commit; do
   [ -f "$hook" ] || continue
   dir=$(dirname "$(dirname "$hook")")
   name=${dir#"$root"/}
+  case "$name" in */node_modules | */node_modules/*) continue ;; esac
   git diff --cached --quiet -- "$dir" && continue
   # A directory installs itself the first time its checks run, so one a worktree never checked
   # has no lint-staged to run. Installing from inside a hook could rewrite a lock file in the
