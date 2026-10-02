@@ -1,59 +1,66 @@
 ---
 name: contract-check
-description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the release the SDK last shipped in, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the protocol and validation specs in the workspace root's docs/specs/ (../../docs/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
+description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the release the SDK last shipped in, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the protocol, validation, platform, envelope, codegen and client-identification specs in the workspace root's docs/specs/ (../../docs/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
 ---
 
 # Contract Check
 
 Detects discrepancies between the wire surface `@pipelex/sdk` implements and the specs that document it. The SDK's `PipelexApiClient` is a client of the Pipelex hosted API: it re-implements the official MTHDS protocol routes (`execute` / `start` / `validate` / `models` / `version`) using `mthds/protocol` types, and adds the Pipelex-product routes (methods catalog, organizations, billing, API keys, storage, onboarding). A discrepancy means the code and the spec disagree — but this skill does NOT presume which side is wrong. The code may need fixing, the spec may need updating, or both. That judgment belongs to the human reviewing the report.
 
+Run this skill's commands from `js/`, the SDK's directory in `Pipelex/pipelex-sdk`: the spec paths below and the paths Step 2 diffs are relative to it.
+
 ## Prerequisites: Locate the Specs
 
 The specs live in the workspace root's `docs/specs/`, which is `../../docs/specs/` relative to `js/`: the workspace root is the parent of this repository's root, whether that root is the main checkout or a worktree, since worktrees sit flat at the workspace root. Before doing anything else:
 
 1. Check that the directory `../../docs/specs/` exists.
-2. Check that it contains `pipelex-mthds-protocol.md` and `pipelex-validation-api.md`.
+2. Check that it contains every spec of the table below.
 
 If the directory is missing or does not contain the expected spec files, **stop immediately** and tell the user the specs directory was not found and they need access to the workspace-root `docs`/`specs`.
 
 ### The spec set in scope
 
-Only these touch `@pipelex/sdk` code:
+These are the specs that touch `@pipelex/sdk` code:
 
 | Spec | The SDK's relationship |
 |---|---|
-| `pipelex-mthds-protocol.md` | **implements/consumes** — `PipelexApiClient` is a protocol client; the wire shapes (validate report + model deck, version handshake, RFC 7807 errors, `pipe_ref` identity) are this spec |
+| `pipelex-mthds-protocol.md` | **implements/consumes** — `PipelexApiClient` is a protocol client; the wire shapes (validate report + model deck, version handshake, RFC 7807 errors, `pipe_ref` identity, and the records on run artifacts: concept refs, absence records, `TokensUsage`) are this spec |
 | `pipelex-validation-api.md` | **implements/consumes** — the `/v1/validate` verdict surface (`PipelexValidationResult` discriminated on `is_valid`, presentation-vs-contract) |
+| `pipelex-platform-api.md` | **consumes** — the hosted routes beyond the protocol, whose Rule 5 names the SDKs as their clients: the run state, the status poll and the results fetch with its 202/200/409 matrix and `?artifacts=` (`runs.ts`), the failed run's 409 (`errors.ts`), storage resolve and bulk resolve with its bound (`artifacts.ts`), the identity probe `GET /v1/me` and the run history (`product-models.ts`) |
+| `pipelex-hosted-envelope.md` | **consumes** — the error envelope and the native codes of the platform's problem documents (`errors.ts`, `error-models.ts`) |
+| `pipelex-codegen.md` | **consumes/implements** — the pipe I/O route (`prepare-inputs.ts`), and the lock format and offline check algorithm (`codegen-check.ts`) |
+| `mthds-input-form-descriptor.md` | **consumes** — the input-form descriptor as the pipe I/O route carries it (`prepare-inputs.ts`) |
+| `client-identification.md` | **implements** — the `User-Agent` every request carries (`user-agent.ts`) |
 
-`command-surface-map.md` gives the cross-repo view; consult it for context but the two specs above are the ones the SDK rides.
+The product routes with no spec — the methods catalog, organizations, billing, API keys, onboarding, `/v1/upload` and `/v1/upload/grant` — have nothing to drift from: a contract-visible change there is reported as unspecified, under the unmatched additions, never as a discrepancy. `command-surface-map.md` gives the cross-repo view; consult it for context.
 
 ## Step 1 — Identify the Baseline
 
-Run this skill's commands from `js/`, the SDK's directory in `Pipelex/pipelex-sdk`.
-
-If the user specified a baseline (e.g. "compare to v0.29.0"), use it. Otherwise default to the release the SDK last shipped in: the tag `v<version>` of the version `package.json` carries, since a release moves that version only when it ships `@pipelex/sdk`. The newest tag of the repository is not that release whenever a later one held the SDK back, and taking it would skip the wire changes the SDK has not shipped yet. While that tag does not exist, which is the case before the repository's first release, the baseline is the import commit `e64f53500b5ba9c6ed0d5b413039eb8b13a7d49e`, whose `js/` is `@pipelex/sdk` 0.28.1 verbatim. Fetch the tags first, so that a checkout that has not seen the latest release does not fall back to an older baseline:
+If the user specified a baseline (e.g. "compare to v0.29.0"), use it. Otherwise default to the release the SDK last shipped in: the tag `v<version>` of the version `package.json` carries, since a release moves that version only when it ships `@pipelex/sdk`. The newest tag of the repository is not that release whenever a later one held the SDK back, and taking it would skip the wire changes the SDK has not shipped yet. While that tag does not exist, which is the case before the repository's first release, the baseline is the import commit `e64f53500b5ba9c6ed0d5b413039eb8b13a7d49e`, whose `js/` is `@pipelex/sdk` 0.28.1 verbatim. Fetch the tags first, so that a checkout that has not seen the latest release does not fall back to an older baseline; the snippet stops when it cannot read the version, and says why when it falls back:
 
 ```bash
-git fetch --tags --quiet origin
-version=$(node -p "require('./package.json').version")
-if git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
+git fetch --tags --quiet origin || echo "could not fetch the tags: a release this checkout has not seen is missed" >&2
+if ! version=$(node -p "require('./package.json').version"); then
+  echo "no package.json here: run this from js/" >&2
+elif git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
   echo "v$version"
 else
+  echo "no tag v$version, so the SDK has not shipped from this repository yet: the baseline is the import commit, @pipelex/sdk 0.28.1" >&2
   echo e64f53500b5ba9c6ed0d5b413039eb8b13a7d49e
 fi
 ```
 
-Confirm the baseline with the user before proceeding.
+On a release branch after its bump, `package.json` carries a version no tag names yet, and the fallback is wrong there: name the previous release's tag instead. Confirm the baseline with the user before proceeding.
 
 ## Step 2 — Detect Contract-Affecting Changes
 
 Diff the baseline against HEAD over the SDK's sources and its changelog:
 
 ```bash
-git diff <baseline> HEAD --name-only -- src/ CHANGELOG.md
+git diff --relative <baseline> HEAD --name-only -- src/ CHANGELOG.md
 ```
 
-The whole of `src/` is diffed rather than a list of files, because the wire surface spans most of its modules — `client.ts` (the routes), `models.ts` and `product-models.ts` (the request and response models), `errors.ts` and `error-models.ts` (the typed errors and the problem documents), `runs.ts` (the run lifecycle), the upload and artifact modules, and `index.ts` (what the package exports) — and a list goes stale as soon as a module is added. Step 3 separates the contract-visible changes from the internal ones.
+The whole of `src/` is diffed rather than a list of files, because the wire surface spans most of its modules — `client.ts` (the routes), `models.ts` and `product-models.ts` (the request and response models), `errors.ts` and `error-models.ts` (the typed errors and the problem documents), `runs.ts` (the run lifecycle), the upload and artifact modules, and `index.ts` (what the package exports) — and a list goes stale as soon as a module is added. Step 3 separates the contract-visible changes from the internal ones. `--relative` prints the paths relative to `js/`, as Step 3 takes them back.
 
 If **no files changed**, report that no contract-affecting changes were detected and stop. Otherwise proceed.
 
@@ -76,8 +83,12 @@ For each contract-visible change, read the relevant spec and determine:
 
 | What changed | Spec to check |
 |---|---|
-| Protocol routes — validate report/result union, model deck, version handshake, request/response models, HTTP status semantics, RFC 7807 error bodies, `pipe_ref` identity | `../../docs/specs/pipelex-mthds-protocol.md` |
+| Protocol routes — validate report/result union, model deck, version handshake, request/response models, HTTP status semantics, RFC 7807 error bodies, `pipe_ref` identity; the records on run artifacts (concept refs, absence records, `TokensUsage`) | `../../docs/specs/pipelex-mthds-protocol.md` |
 | The `/v1/validate` verdict (`PipelexValidationResult`, `is_valid` discriminant, presentation-vs-contract) | `../../docs/specs/pipelex-validation-api.md` |
+| The run lifecycle (`runs.ts`: run state, status poll, results fetch, `?artifacts=`, the failed run's 409), storage resolve and bulk resolve (`artifacts.ts`), `GET /v1/me`, the run history models (`product-models.ts`) | `../../docs/specs/pipelex-platform-api.md` |
+| The platform's problem documents and native codes (`errors.ts`, `error-models.ts`) | `../../docs/specs/pipelex-hosted-envelope.md` |
+| The pipe I/O route (`prepare-inputs.ts`), the codegen lock and its offline check (`codegen-check.ts`) | `../../docs/specs/pipelex-codegen.md`, and `../../docs/specs/mthds-input-form-descriptor.md` for the descriptor the route carries |
+| The `User-Agent` (`user-agent.ts`) | `../../docs/specs/client-identification.md` |
 
 **When citing a spec surface, note its conformance status.** Each verified surface carries a `> Verified by:` line pointing at the `conformance/` test that exercises it (or an explicit unverified marker). Include that target so the reviewer knows whether a test already guards it.
 
