@@ -134,9 +134,10 @@ ledger list --owner pipelex-sdk --origin pipelex-sdk --status open
 
 `ledger inbound` lists every member of `pipelex-sdk` together and leaves out what
 was filed from inside the repository, such as the parity item `js/`'s own
-`bump-mthds` files for this package; the third command lists those. Read past
-the rows owned by another member: a row owned by `pipelex` or `pipelex-sdk/js` is
-a sibling piece of the same cascade you will be filing into at step 10. Claim
+`bump-mthds` files for this package; the third command lists those. Read beyond
+this package's own rows: a row owned by the `pipelex` repository or by the
+`pipelex-sdk/js` member is a sibling piece of the same cascade you will be filing
+into at step 10. Claim
 (`ledger claim <id>`) any item that describes the adaptation you are about to do.
 
 ### 2. Resolve the target version
