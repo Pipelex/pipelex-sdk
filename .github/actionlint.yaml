@@ -1,0 +1,7 @@
+# Configuration of the actionlint that `make lint-workflows` runs (docs/ci.md).
+paths:
+  .github/workflows/protect-workflows.yml:
+    ignore:
+      # actions/checkout added this input in v5.1.0 (2026-07-20), after the newest actionlint,
+      # 1.7.12, recorded checkout's inputs. Remove the entry once the pinned actionlint knows it.
+      - 'input "allow-unsafe-pr-checkout" is not defined in action "actions/checkout@v5"'

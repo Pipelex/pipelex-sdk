@@ -139,7 +139,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tarball"
           npm pack --pack-destination "$RUNNER_TEMP/tarball"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: steps.check.outputs.publish == 'true'
         with:
           name: npm-sdk-tarball
@@ -183,7 +183,7 @@ jobs:
         if: steps.check.outputs.publish == 'true'
         run: npm install -g npm@11
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: steps.check.outputs.publish == 'true'
         with:
           name: npm-sdk-tarball
@@ -250,7 +250,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tarball"
           npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/tarball"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: steps.check.outputs.publish == 'true'
         with:
           name: npm-initializer-tarball
@@ -291,7 +291,7 @@ jobs:
         if: steps.check.outputs.publish == 'true'
         run: npm install -g npm@11
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: steps.check.outputs.publish == 'true'
         with:
           name: npm-initializer-tarball
@@ -334,7 +334,7 @@ jobs:
         id: check
         run: node scripts/publish.mjs check --tag "$TAG" --package pipelex-sdk
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: steps.check.outputs.publish == 'true'
         with:
           python-version: "3.x"
@@ -346,7 +346,7 @@ jobs:
           python3 -m pip install --user build
           python3 -m build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: steps.check.outputs.publish == 'true'
         with:
           name: pypi-distributions
@@ -381,7 +381,7 @@ jobs:
         with:
           node-version: "22"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pypi-distributions
           path: dist/
@@ -456,7 +456,7 @@ jobs:
       - name: Mint the export App's token for the two mirrors
         id: app
         if: steps.plan.outputs.any == 'true'
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.MIRROR_EXPORT_APP_ID }}
           private-key: ${{ secrets.MIRROR_EXPORT_APP_PRIVATE_KEY }}
@@ -572,7 +572,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tarball"
           npm pack --pack-destination "$RUNNER_TEMP/tarball"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: sprint-tarball
           path: ${{ runner.temp }}/tarball/
@@ -613,7 +613,7 @@ jobs:
         if: steps.check.outputs.publish == 'true'
         run: npm install -g npm@11
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: steps.check.outputs.publish == 'true'
         with:
           name: sprint-tarball
