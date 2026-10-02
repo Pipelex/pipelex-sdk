@@ -1,6 +1,6 @@
 ---
 name: contract-check
-description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the release the SDK last shipped in, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the protocol, validation, platform, envelope, codegen and client-identification specs in the workspace root's docs/specs/ (../../docs/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
+description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the release the SDK last shipped in, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the specs that govern it in the workspace root's docs/specs/ — the protocol, validation, platform API, hosted envelope, codegen, tools, package-reference and client-identification specs (../../docs/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
 ---
 
 # Contract Check
@@ -20,19 +20,21 @@ If the directory is missing or does not contain the expected spec files, **stop 
 
 ### The spec set in scope
 
-These are the specs that touch `@pipelex/sdk` code:
+This table is the one map from the SDK's code to the specs that govern it; Step 4 reads it.
 
-| Spec | The SDK's relationship |
+| Spec | What it governs in the SDK |
 |---|---|
-| `pipelex-mthds-protocol.md` | **implements/consumes** — `PipelexApiClient` is a protocol client; the wire shapes (validate report + model deck, version handshake, RFC 7807 errors, `pipe_ref` identity, and the records on run artifacts: concept refs, absence records, `TokensUsage`) are this spec |
+| `pipelex-mthds-protocol.md` | **implements/consumes** — the protocol routes `client.ts` re-implements (`execute`, `start`, `validate`, `models`, `version`): the validation report and its union, the model deck, the version handshake, the RFC 7807 errors, `pipe_ref` identity, and the records on run artifacts (concept refs, absence records, `TokensUsage`, in `models.ts` and `runs.ts`) |
 | `pipelex-validation-api.md` | **implements/consumes** — the `/v1/validate` verdict surface (`PipelexValidationResult` discriminated on `is_valid`, presentation-vs-contract) |
-| `pipelex-platform-api.md` | **consumes** — the hosted routes beyond the protocol, whose Rule 5 names the SDKs as their clients: the run state, the status poll and the results fetch with its 202/200/409 matrix and `?artifacts=` (`runs.ts`), the failed run's 409 (`errors.ts`), storage resolve and bulk resolve with its bound (`artifacts.ts`), the identity probe `GET /v1/me` and the run history (`product-models.ts`) |
+| `pipelex-platform-api.md` | **consumes** — the hosted routes beyond the protocol, whose Rule 5 names the SDKs as their clients: the typed hosted options and the reserved-keys guard (`client.ts`, `RESERVED_EXTRA_KEYS` and `buildExtensions`); the method-selection law, one selector among inline, `method_ref` and `method_id`, which `client.ts` enforces before sending; run creation and the two starts; the run state, the status poll and the results fetch with its 202/200/409 matrix and `?artifacts=` (`runs.ts`); the failed run's 409 (`errors.ts`); storage resolve and bulk resolve with its bound (`artifacts.ts`); the identity probe `GET /v1/me`; and the run history, `GET` and `PUT /v1/runs/{id}` (`client.ts`, `product-models.ts`) |
 | `pipelex-hosted-envelope.md` | **consumes** — the error envelope and the native codes of the platform's problem documents (`errors.ts`, `error-models.ts`) |
-| `pipelex-codegen.md` | **consumes/implements** — the pipe I/O route (`prepare-inputs.ts`), and the lock format and offline check algorithm (`codegen-check.ts`) |
+| `pipelex-codegen.md` | **consumes/implements** — the route envelopes of `/v1/resolve`, `/v1/codegen`, `/v1/pipe-io` and `/v1/build/{inputs,output,runner}` (`client.ts`, and `prepare-inputs.ts`, which reads the pipe I/O response), and the lock format and offline check algorithm (`codegen-check.ts`) |
+| `pipelex-api-mthds-tools.md` | **consumes** — `/v1/lint` and `/v1/format` and their shared diagnostic contract (`client.ts`, `models.ts`) |
 | `mthds-input-form-descriptor.md` | **consumes** — the input-form descriptor as the pipe I/O route carries it (`prepare-inputs.ts`) |
-| `client-identification.md` | **implements** — the `User-Agent` every request carries (`user-agent.ts`) |
+| `mthds-package-references.md` | **consumes** — the `method_ref` address form the SDK passes through, and the provenance triple a run's start and execute responses carry (`MethodProvenance` in `models.ts`) |
+| `client-identification.md` | **implements** — the `User-Agent` every request carries (`user-agent.ts`), and the hook's own `pipelex-mthds-check` token (`hooks/validate-client.ts`) |
 
-The product routes with no spec — the methods catalog, organizations, billing, API keys, onboarding, `/v1/upload` and `/v1/upload/grant` — have nothing to drift from: a contract-visible change there is reported as unspecified, under the unmatched additions, never as a discrepancy. `command-surface-map.md` gives the cross-repo view; consult it for context.
+The routes with no spec — the methods catalog, organizations, billing, API keys, onboarding, `/v1/upload`, `/v1/upload/grant`, `/v1/build/concept` and `/v1/build/pipe-spec` — have nothing to drift from: a contract-visible change there is reported as unspecified, under the unmatched additions, never as a discrepancy. **Before reporting a change as unspecified, search the specs for it**, since a route or field this table does not place may still be specified: `grep -rln "<the route or the field>" ../../docs/specs/`. `command-surface-map.md` gives the cross-repo view; consult it for context.
 
 ## Step 1 — Identify the Baseline
 
@@ -68,8 +70,8 @@ If **no files changed**, report that no contract-affecting changes were detected
 
 For each changed file, get the diff (`git diff <baseline> HEAD -- <file>`) and classify each change as:
 
-- **Contract-visible**: changes to route paths, request/response models, wire-shape fields, HTTP status semantics, error shapes/types, or the validate verdict discriminant.
-- **Internal-only**: refactors, logging, cosmetic changes that don't affect the wire.
+- **Contract-visible**: changes to route paths, request/response models, wire-shape fields, request headers (the `User-Agent` and its tokens), HTTP status semantics, error shapes/types, or the validate verdict discriminant; changes to a client-side guard that enforces a spec clause, such as the reserved-keys guard, the method-selector checks or the bulk-resolve bound; and changes to the codegen lock's format or to the offline check's verdicts, which never touch the wire.
+- **Internal-only**: refactors, logging, cosmetic changes that change none of the above.
 
 Also scan CHANGELOG entries since the baseline for mentions of new/removed/renamed routes or fields, changed verdict/error protocol, or HTTP status semantics.
 
@@ -81,14 +83,7 @@ For each contract-visible change, read the relevant spec and determine:
 2. **Does the change contradict the spec?**
 3. **Is the change absent from the spec?**
 
-| What changed | Spec to check |
-|---|---|
-| Protocol routes — validate report/result union, model deck, version handshake, request/response models, HTTP status semantics, RFC 7807 error bodies, `pipe_ref` identity; the records on run artifacts (concept refs, absence records, `TokensUsage`) | `../../docs/specs/pipelex-mthds-protocol.md` |
-| The `/v1/validate` verdict (`PipelexValidationResult`, `is_valid` discriminant, presentation-vs-contract) | `../../docs/specs/pipelex-validation-api.md` |
-| The run lifecycle (`runs.ts`: run state, status poll, results fetch, `?artifacts=`, the failed run's 409), storage resolve and bulk resolve (`artifacts.ts`), `GET /v1/me`, the run history models (`product-models.ts`) | `../../docs/specs/pipelex-platform-api.md` |
-| The platform's problem documents and native codes (`errors.ts`, `error-models.ts`) | `../../docs/specs/pipelex-hosted-envelope.md` |
-| The pipe I/O route (`prepare-inputs.ts`), the codegen lock and its offline check (`codegen-check.ts`) | `../../docs/specs/pipelex-codegen.md`, and `../../docs/specs/mthds-input-form-descriptor.md` for the descriptor the route carries |
-| The `User-Agent` (`user-agent.ts`) | `../../docs/specs/client-identification.md` |
+The spec to read is the one the table under **The spec set in scope** maps the changed module, route or field to, under `../../docs/specs/`; a change it does not place is searched for there before it is reported as unspecified.
 
 **When citing a spec surface, note its conformance status.** Each verified surface carries a `> Verified by:` line pointing at the `conformance/` test that exercises it (or an explicit unverified marker). Include that target so the reviewer knows whether a test already guards it.
 
