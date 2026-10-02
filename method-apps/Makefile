@@ -1,10 +1,11 @@
-.PHONY: help install install-if-missing check check-family check-versions check-workflows workflows lint format format-check typecheck test test-family agent-check agent-test build all lock clean use-local use-local-form use-published use-published-form local-status ul un
+.PHONY: help install install-if-missing check check-family lint format format-check typecheck test test-family agent-check agent-test build all lock clean use-local use-local-form use-published use-published-form local-status ul un
 
 # The family's root gate. Each template is a directory with its own Makefile,
 # copied out whole into the projects created from it, so every target here
-# either belongs to the family — its one version, the root twins of the
-# templates' workflows, the formatting of the root's own files — or runs the
-# same target in every template directory, stopping at the first failure.
+# either belongs to the family — the formatting of the family root's own
+# files, the tests of its scripts and initializers — or runs the same target
+# in every template directory, stopping at the first failure. The version and
+# the workflow twins are the repository's: its root Makefile checks them.
 #
 # A new template joins the family by being named here. docs/family.md says what
 # else it needs.
@@ -18,8 +19,8 @@ $(if $(filter-out $(TEMPLATES),$(FORM_TEMPLATES)),$(error FORM_TEMPLATES names $
 # The family's initializers, each a package that writes the templates of its
 # ecosystem into a new project (docs/family.md, "The initializers"). They are
 # not templates: no project is a copy of one, so no template target runs in
-# them, but each carries the family's version and its tests run with the
-# root's.
+# them, but their tests run with the family's, and the repository's root
+# Makefile holds each one's version with the templates' (its UNITS).
 INITIALIZERS := initializers/js
 
 # The family root's own tooling borrows the first template's installed Prettier,
@@ -54,18 +55,9 @@ install-if-missing: ## Install each template whose node_modules is missing
 check: check-family ## Check the family, then run every template's check (lint, format, typecheck, codegen)
 	$(call each,check)
 
-check-family: check-versions check-workflows ## Check what belongs to the family: its version, the workflow twins, the root's formatting (initializers included)
+check-family: ## Check the formatting of the family root's own files, the initializers' included
 	@[ -x $(TOOLS)/prettier ] || { echo "Prettier is not installed: run make install first."; exit 1; }
 	$(TOOLS)/prettier --check $(ROOT_FORMATTED)
-
-check-versions: ## Check that every template and initializer carries the version in VERSION
-	@node scripts/versions.mjs $(TEMPLATES) $(INITIALIZERS)
-
-check-workflows: ## Check that the root twin of every template workflow is current
-	@node scripts/workflows.mjs --check $(TEMPLATES)
-
-workflows: ## Render the root twin of every template workflow into .github/workflows/
-	@node scripts/workflows.mjs $(TEMPLATES)
 
 lint: ## Run every template's linter
 	$(call each,lint)
@@ -81,10 +73,12 @@ format-check: ## Check the formatting of the root's own files, then every templa
 typecheck: ## Run every template's type checks
 	$(call each,typecheck)
 
-# The root's scripts and every initializer, each suite in its own test file.
+# The family's own scripts, which hold the templates to the create contract and
+# to the initializers' tables, and every initializer, each suite in its own
+# test file.
 FAMILY_TESTS := "scripts/*.test.mjs" $(foreach i,$(INITIALIZERS),"$(i)/test/*.test.mjs")
 
-test-family: ## Run the tests of the root's own scripts and of every initializer
+test-family: ## Run the tests of the family's own scripts and of every initializer
 	node --test $(FAMILY_TESTS)
 
 test: test-family ## Run the family's tests, then every template's

@@ -208,7 +208,7 @@ describe("a run", () => {
     }
   });
 
-  it("makes the pristine commit with the family version and the source the pack names", async () => {
+  it("makes the pristine commit with the version and the source the pack names", async () => {
     const { root, work } = workspace();
     await runInitializer(["app", "--no-create"], { cwd: work, env: runEnv(root) });
     const pack = decodePack(fs.readFileSync(path.join(packs(), "webapp-js.pack")));

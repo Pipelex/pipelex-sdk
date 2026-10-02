@@ -22,23 +22,22 @@ make -C my-app serve                                   # the URL, once the page 
 
 ## Working on the templates
 
-Each template is self-contained: it has its own `Makefile`, its own `CLAUDE.md` and its own checks, and works from inside its directory exactly as it will in a project. The root carries what belongs to the family, and runs every template's gate at once:
+Each template is self-contained: it has its own `Makefile`, its own `CLAUDE.md` and its own checks, and works from inside its directory exactly as it will in a project. The family root carries what belongs to the family, and runs every template's gate at once:
 
 | Target                    | Purpose                                                                                                   |
 | ------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `make install`            | Install every template's dependencies, and wire the pre-commit hook                                       |
 | `make check`              | The family's own checks, then every template's `make check`                                               |
-| `make test`               | The tests of the root's scripts and of the initializer, then every template's tests                       |
+| `make test`               | The tests of the family's scripts and of the initializer, then every template's tests                     |
 | `make all`                | `check`, `test`, then every template's build                                                              |
-| `make workflows`          | Render the root twin of every template's CI workflows — needed after editing one                          |
-| `make check-family`       | Check the family's one version, the workflow twins, and the formatting of the root's own files            |
+| `make check-family`       | Check the formatting of the family root's own files                                                       |
 | `make use-local`          | Install each template's Pipelex packages from the workspace's checkouts                                   |
 | `make use-local-form`     | Install the workspace's `mthds-form` checkout alone into every template that uses the form kernel         |
 | `make use-published`      | Restore the Pipelex packages each template's lock file pins                                               |
 | `make use-published-form` | Restore the `@pipelex/mthds-form` version the lock file pins, in every template that uses the form kernel |
 | `make local-status`       | Say, for every template, whether each Pipelex package comes from a sibling checkout or from its registry  |
 
-`make help` lists them all. [`docs/family.md`](docs/family.md) explains the layout: why the root twins each template's workflows, how the initializer carries the templates, how the family carries one version and publishes it, and what a new template needs to join.
+`make help` lists them all. [`docs/family.md`](docs/family.md) explains the layout: why the repository's root twins each template's workflows, how the initializer carries the templates, how the family ships at the repository's version, and what a new template needs to join. The workflow twins and the version are checked at the repository's root, by its `make check-workflows` and `make check-versions`.
 
 ## License
 

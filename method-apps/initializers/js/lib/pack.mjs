@@ -14,8 +14,8 @@
  *   {"format":1,"template":"webapp-js","version":"0.4.0","source":"<sha>",
  *    "files":[{"path":"package.json","mode":"100644","size":2345}, …]}
  *
- * `version` is the family's, and `source` the commit the tree was packed from,
- * both named by the pristine commit. `mode` is git's: a plain or an executable
+ * `version` is the repository's, from `VERSION` at its root, and `source` the
+ * commit the tree was packed from, both named by the pristine commit. `mode` is git's: a plain or an executable
  * file, and nothing else. A path is relative to the template's directory.
  */
 
