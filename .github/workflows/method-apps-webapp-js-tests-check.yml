@@ -14,7 +14,7 @@ jobs:
       run:
         working-directory: ../standalone/method-apps-webapp-js
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Extract method-apps/webapp-js as the export ships it
         working-directory: .
@@ -27,7 +27,7 @@ jobs:
           git -c user.name=ci -c user.email=ci@localhost commit -q -m "method-apps/webapp-js, as a project made from it starts"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: "npm"
