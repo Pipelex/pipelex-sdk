@@ -18,29 +18,31 @@ The source repositories are the five whose trees were copied at the import (see 
 
 | Source | Old check | New job | Aggregate | Verified on |
 | --- | --- | --- | --- | --- |
-| `pipelex-sdk-js` | `quality-checks.yml`: `make install`, then `make all` | `js (make all)` | `Tests (all)` | |
-| `pipelex-sdk-js` | `version-check.yml`: the version against `main` and the release branch | `Release version`, reading `VERSION` | `Lint (all)` | |
-| `pipelex-sdk-js` | `changelog-check.yml`: the release's changelog entry | `Release version`, `make check-release-versions` | `Lint (all)` | |
-| `pipelex-sdk-js` | `guard-branches.yml` | `Branch flow` | `Lint (all)` | |
-| `pipelex-sdk-js` | `cla.yml` | the root `cla.yml` | reported | |
-| `pipelex-sdk-python` | `lint-check.yml`: `TEST_PROFILE=ci make install` and the four merge checks, Python 3.11 to 3.14, then `Lint (all versions)` | `python lint (<version>)` | `Lint (all)` | |
-| `pipelex-sdk-python` | `tests-check.yml`: `make install`, then `make gha-tests`, Python 3.11 to 3.14, then `Tests (all)` | `python tests (py<version>)` | `Tests (all)` | |
-| `pipelex-sdk-python` | `package-check.yml`: `uv lock --locked` leaves `uv.lock` unchanged | `python package-check` | `Lint (all)` | |
-| `pipelex-sdk-python` | `version-check.yml`, `changelog-check.yml` | `Release version` | `Lint (all)` | |
-| `pipelex-sdk-python` | `guard-branches.yml`: the branch flow | `Branch flow` | `Lint (all)` | |
-| `pipelex-sdk-python` | `guard-branches.yml`: `protect-workflows` | the root `protect-workflows.yml` | reported | |
-| `pipelex-sdk-python` | `cla.yml` | the root `cla.yml` | reported | |
-| `pipelex-starter-js` | `lint-check.yml`: `npm ci`, then `make check` | `starter-js-lint`, the standalone twin `starter-js-lint-check.yml` | `Lint (all)` | |
-| `pipelex-starter-js` | `tests-check.yml`: `npm ci`, `make agent-test`, `make build` | `starter-js-tests`, the standalone twin `starter-js-tests-check.yml` | `Tests (all)` | |
-| `pipelex-starter-python` | `lint-check.yml`: `make install` and the four merge checks, Python 3.11 to 3.13 | `starter-python-lint`, the standalone twin `starter-python-lint-check.yml` | `Lint (all)` | |
-| `pipelex-starter-python` | `tests-check.yml`: `make install`, then `make gha-tests`, Python 3.11 to 3.13 | `starter-python-tests`, the standalone twin `starter-python-tests-check.yml` | `Tests (all)` | |
-| `pipelex-starter-python` | `package-check.yml`: `uv lock --locked` | `starter-python-package`, the standalone twin `starter-python-package-check.yml` | `Lint (all)` | |
-| `pipelex-starter-python` | `version-check.yml`, `changelog-check.yml` | `Release version` | `Lint (all)` | |
-| `pipelex-starter-python` | `guard-branches.yml` | `Branch flow` | `Lint (all)` | |
-| `pipelex-starter-python` | `cla.yml` | the root `cla.yml` | reported | |
-| `pipelex-method-apps` | `family-check.yml`: the family's version, the workflow twins, Prettier on the family's files, the root's scripts and the initializers' tests | `method-apps family` for Prettier, the family's scripts and the initializers; `Root` for the versions and the twins, now the repository's | `Tests (all)`, `Lint (all)` | |
-| `pipelex-method-apps` | `webapp-js-lint-check.yml`, the twin of `webapp-js`'s `lint-check.yml` | `method-apps-webapp-js-lint`, the standalone twin `method-apps-webapp-js-lint-check.yml` | `Lint (all)` | |
-| `pipelex-method-apps` | `webapp-js-tests-check.yml`, the twin of `webapp-js`'s `tests-check.yml` | `method-apps-webapp-js-tests`, the standalone twin `method-apps-webapp-js-tests-check.yml` | `Tests (all)` | |
+| `pipelex-sdk-js` | `quality-checks.yml`: `make install`, then `make all` | `js (make all)` | `Tests (all)` | pipelex-sdk#2, #3 |
+| `pipelex-sdk-js` | `version-check.yml`: the version against `main` and the release branch | `Release version`, reading `VERSION` | `Lint (all)` | not yet: it runs on a pull request into `main` or a release branch |
+| `pipelex-sdk-js` | `changelog-check.yml`: the release's changelog entry | `Release version`, `make check-release-versions` | `Lint (all)` | not yet: it runs on a pull request into `main` or a release branch |
+| `pipelex-sdk-js` | `guard-branches.yml` | `Branch flow` | `Lint (all)` | pipelex-sdk#2, #3 |
+| `pipelex-sdk-js` | `cla.yml` | the root `cla.yml` | reported | first runs on pipelex-sdk#4, from `dev`'s copy |
+| `pipelex-sdk-python` | `lint-check.yml`: `TEST_PROFILE=ci make install` and the four merge checks, Python 3.11 to 3.14, then `Lint (all versions)` | `python lint (<version>)` | `Lint (all)` | pipelex-sdk#2, #3 |
+| `pipelex-sdk-python` | `tests-check.yml`: `make install`, then `make gha-tests`, Python 3.11 to 3.14, then `Tests (all)` | `python tests (py<version>)` | `Tests (all)` | pipelex-sdk#2, #3 |
+| `pipelex-sdk-python` | `package-check.yml`: `uv lock --locked` leaves `uv.lock` unchanged | `python package-check` | `Lint (all)` | pipelex-sdk#2, #3 |
+| `pipelex-sdk-python` | `version-check.yml`, `changelog-check.yml` | `Release version` | `Lint (all)` | not yet: it runs on a pull request into `main` or a release branch |
+| `pipelex-sdk-python` | `guard-branches.yml`: the branch flow | `Branch flow` | `Lint (all)` | pipelex-sdk#2, #3 |
+| `pipelex-sdk-python` | `guard-branches.yml`: `protect-workflows` | the root `protect-workflows.yml` | reported | first runs on pipelex-sdk#4, from `dev`'s copy |
+| `pipelex-sdk-python` | `cla.yml` | the root `cla.yml` | reported | first runs on pipelex-sdk#4, from `dev`'s copy |
+| `pipelex-starter-js` | `lint-check.yml`: `npm ci`, then `make check` | `starter-js-lint`, the standalone twin `starter-js-lint-check.yml` | `Lint (all)` | pipelex-sdk#2, #3 |
+| `pipelex-starter-js` | `tests-check.yml`: `npm ci`, `make agent-test`, `make build` | `starter-js-tests`, the standalone twin `starter-js-tests-check.yml` | `Tests (all)` | pipelex-sdk#2, #3 |
+| `pipelex-starter-python` | `lint-check.yml`: `make install` and the four merge checks, Python 3.11 to 3.13 | `starter-python-lint`, the standalone twin `starter-python-lint-check.yml` | `Lint (all)` | pipelex-sdk#2 |
+| `pipelex-starter-python` | `tests-check.yml`: `make install`, then `make gha-tests`, Python 3.11 to 3.13 | `starter-python-tests`, the standalone twin `starter-python-tests-check.yml` | `Tests (all)` | pipelex-sdk#2 |
+| `pipelex-starter-python` | `package-check.yml`: `uv lock --locked` | `starter-python-package`, the standalone twin `starter-python-package-check.yml` | `Lint (all)` | pipelex-sdk#2 |
+| `pipelex-starter-python` | `version-check.yml`, `changelog-check.yml` | `Release version` | `Lint (all)` | not yet: it runs on a pull request into `main` or a release branch |
+| `pipelex-starter-python` | `guard-branches.yml` | `Branch flow` | `Lint (all)` | pipelex-sdk#2, #3 |
+| `pipelex-starter-python` | `cla.yml` | the root `cla.yml` | reported | first runs on pipelex-sdk#4, from `dev`'s copy |
+| `pipelex-method-apps` | `family-check.yml`: the family's version, the workflow twins, Prettier on the family's files, the root's scripts and the initializers' tests | `method-apps family` for Prettier, the family's scripts and the initializers; `Root` for the versions and the twins, now the repository's | `Tests (all)`, `Lint (all)` | pipelex-sdk#2, #3 |
+| `pipelex-method-apps` | `webapp-js-lint-check.yml`, the twin of `webapp-js`'s `lint-check.yml` | `method-apps-webapp-js-lint`, the standalone twin `method-apps-webapp-js-lint-check.yml` | `Lint (all)` | pipelex-sdk#2, #3 |
+| `pipelex-method-apps` | `webapp-js-tests-check.yml`, the twin of `webapp-js`'s `tests-check.yml` | `method-apps-webapp-js-tests`, the standalone twin `method-apps-webapp-js-tests-check.yml` | `Tests (all)` | pipelex-sdk#2, #3 |
+
+**How the rows were verified.** pipelex-sdk#2 changed the root's machinery, so every package's jobs ran on it, and all of them passed on its last commit (CI run 36948799380, at `19d2588`). pipelex-sdk#3 changed `js/`, `python/`, `starter-js/` and `method-apps/` but not `starter-python/`, and its CI run 36950586917 ran every job of the four it changed and skipped the Python starter's three, as the path filter intends; one test of the web app template failed on the first attempt and passed on the re-run, a flake tracked in the ledger. On both pull requests the next-SDK twins ran beside `ci.yml` and passed, the Python starter's on #3 because `python/` changed although the starter did not (runs 36950568136 and 36950568283).
 
 The source repositories' publish workflows (`publish.yml` in both SDKs, `release.yml` in the method apps, `github-release.yml` in the Python starter) gated no pull request. The repository's release workflow replaces them and is not written yet.
 
