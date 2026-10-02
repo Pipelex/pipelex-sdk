@@ -23,9 +23,8 @@
 #   export                   each starter carrying the version, pushed to its template repository,
 #                            under the `mirrors` environment
 #
-# Each package is built in a job that cannot publish and published by a job that installs and
-# builds nothing of the repository or its dependencies: it runs only the dependency-free
-# scripts/publish.mjs, from the tag, to check the built artifact, then uploads it. So no
+# Each package is built in a job that cannot publish and published by a job that runs nothing
+# of the repository's code or dependencies: it checks the built artifact and uploads it. So no
 # install or build script ever runs where the publishers' id-token can be minted, and the
 # environments guard exactly the jobs that can mint it or read the export App's key; the build,
 # tag and Release jobs hold none.
