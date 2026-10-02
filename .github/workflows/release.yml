@@ -24,11 +24,11 @@
 #                            under the `mirrors` environment
 #
 # Each package is built in a job that cannot publish and published by a job that installs and
-# builds nothing of the repository or its dependencies: it runs only the dependency-free
-# scripts/publish.mjs, from the tag, to check the built artifact, then uploads it. So no
-# install or build script ever runs where the publishers' id-token can be minted, and the
-# environments guard exactly the jobs that can mint it or read the export App's key; the build,
-# tag and Release jobs hold none.
+# builds nothing of the repository or its dependencies: it runs only scripts/publish.mjs and the
+# scripts/versions.mjs it imports, both dependency-free, from the tag, to check the built
+# artifact, then uploads it. So no install or build script ever runs where the publishers'
+# id-token can be minted, and the environments guard exactly the jobs that can mint it or read
+# the export App's key; the build, tag and Release jobs hold none.
 #
 # A run that fails part-way is finished by re-running it, "Re-run failed jobs" or all of them:
 # the tag is found where it was put, a package its registry has in full is skipped, the Release
