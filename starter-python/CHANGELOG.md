@@ -5,6 +5,7 @@
 ### Changed
 
 - **The tests workflow no longer grants an OIDC token**: `.github/workflows/tests-check.yml` asks for `contents: read` alone, since the tests never use OIDC and run the pull request's own code.
+- **The workflows run on Node 24 actions**: `.github/workflows/lint-check.yml`, `tests-check.yml` and `package-check.yml` use `actions/checkout@v5`, `actions/setup-python@v6` and `astral-sh/setup-uv@v7` instead of `actions/checkout@v4`, `actions/setup-python@v4` and `astral-sh/setup-uv@v3`, whose Node runtimes GitHub Actions has retired, so a project made from the template no longer starts with a deprecation warning on every job; a project made earlier makes the same changes in those three files.
 
 ## [v0.2.1] - 2026-10-01
 
