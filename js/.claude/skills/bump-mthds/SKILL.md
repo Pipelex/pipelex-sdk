@@ -27,6 +27,15 @@ node -p "require('./package.json').dependencies?.mthds ?? '(not yet a dependency
 
 Until the client phase lands, `mthds` may not be a dependency yet — in that case there is nothing to bump; tell the user and stop.
 
+Then ask the ledger what it already knows, before anything is edited: the items open for this package, the Python SDK's own `bump-mthds` filing its parity items here among others, and the items open for its twin. A parity item usually names the symbol and the version, which is what step 2 needs. `--owner` takes the repository's key alone, and `pipelex-sdk/js` matches nothing there, so both select the member with `jq`:
+
+```bash
+ledger list --owner pipelex-sdk --status open --json | jq -r '.[] | select(.owner == "pipelex-sdk/js") | "\(.id)  \(.title)"'
+ledger list --owner pipelex-sdk --status open --json | jq -r '.[] | select(.owner == "pipelex-sdk/python") | "\(.id)  \(.title)"'
+```
+
+Claim (`ledger claim <id>`) any item of the first list that describes the bump you are about to make.
+
 ### 2. Confirm the target
 
 Ask for the new version/range if the user didn't specify it. For a published `mthds`, the format is a semver range (`">=X.Y.Z"`); while dev-linked, it is a git/branch ref (e.g. `github:mthds-ai/mthds-js#<branch>`). Verify the new floor is not a downgrade unless the user explicitly intends one.
@@ -50,11 +59,4 @@ Do not commit or create a release — leave that to the user (or the repository 
 
 ### 6. Square the ledger
 
-Two readings first: the items open for this package, the Python SDK's own `bump-mthds` filing its parity items here among others, and the items open for its twin. `--owner` takes the repository's key alone, and `pipelex-sdk/js` matches nothing there, so both select the member with `jq`:
-
-```bash
-ledger list --owner pipelex-sdk --status open --json | jq -r '.[] | select(.owner == "pipelex-sdk/js") | "\(.id)  \(.title)"'
-ledger list --owner pipelex-sdk --status open --json | jq -r '.[] | select(.owner == "pipelex-sdk/python") | "\(.id)  \(.title)"'
-```
-
-Claim (`ledger claim <id>`) the items of the first list that this bump answers, and close them once the change lands. **File the parity item** when the bump adopted a protocol model the Python SDK mirrors. `pipelex-sdk`, in this repository's `python/` (ledger member `pipelex-sdk/python`), is this package's twin and consumes the `mthds` PyPI package, so when a protocol model moves it usually moves in both languages. Its move waits on the matching `mthds` release on PyPI and runs `python/`'s own gate and changelog, so it is a change of its own rather than part of this one. Note the symbol and the version on an open item that already covers the move, since `ledger new` files a duplicate without refusing it; otherwise file it (`ledger new --owner pipelex-sdk/python …`) naming both. Then `ledger validate` and `ledger commit`, which commit the ledger and nothing in this repository.
+Close the items you claimed at step 1 once the change lands, with evidence. **File the parity item** when the bump adopted a protocol model the Python SDK mirrors. `pipelex-sdk`, in this repository's `python/` (ledger member `pipelex-sdk/python`), is this package's twin and consumes the `mthds` PyPI package, so when a protocol model moves it usually moves in both languages. Its move waits on the matching `mthds` release on PyPI and runs `python/`'s own gate and changelog, so it is a change of its own rather than part of this one. Note the symbol and the version on an open item of step 1's second list that already covers the move, since `ledger new` files a duplicate without refusing it; otherwise file it (`ledger new --owner pipelex-sdk/python …`) naming both. Then `ledger validate` and `ledger commit`, which commit the ledger and nothing in this repository.
