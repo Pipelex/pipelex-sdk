@@ -343,19 +343,35 @@ jobs:
   # part-way: `check` reads a version as published only with both its wheel and its sdist.
   pypi-publish:
     name: Publish pipelex-sdk
-    needs: pypi-build
+    needs: [tag, pypi-build]
     if: needs.pypi-build.outputs.publish == 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/pipelex-sdk
     permissions:
+      contents: read
       id-token: write
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
     steps:
+      # The tag's scripts only: nothing here is installed or built.
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
       - uses: actions/download-artifact@v4
         with:
           name: pypi-distributions
           path: dist/
+
+      - name: Check that the distributions are pipelex-sdk at the release's version
+        run: node scripts/publish.mjs distributions --dir dist --package pipelex-sdk --version "$VERSION"
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

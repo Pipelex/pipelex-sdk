@@ -23,6 +23,10 @@
  *       Refuse an npm tarball that is not that package at that version: the
  *       job that publishes checks what the unprivileged build handed it.
  *
+ *   node scripts/publish.mjs distributions --dir <dist> --package <name> --version <version>
+ *       The same for Python: exactly one sdist and one wheel of that package
+ *       at that version, by filename and by the metadata inside them.
+ *
  *   node scripts/publish.mjs release --tag <vX.Y.Z>
  *       Create the GitHub Release from the shipped packages' changelog
  *       entries, unless it exists already.
@@ -474,6 +478,53 @@ export function checkTarball({ file, name, version }) {
   return manifest;
 }
 
+/** A Python distribution name as PEP 503 normalizes it, for comparing names. */
+const normalizedName = (name) => name.toLowerCase().replace(/[-_.]+/g, "-");
+
+/** The `Name` and `Version` a distribution's core metadata declares. */
+function coreMetadata(text) {
+  const field = (key) => new RegExp(`^${key}: *(.+)$`, "m").exec(text)?.[1]?.trim() ?? null;
+  return { name: field("Name"), version: field("Version") };
+}
+
+/**
+ * Refuse a directory of Python distributions that is not exactly one sdist and
+ * one wheel of the package at the version, by their filenames and by the core
+ * metadata inside them (the wheel's `METADATA`, the sdist's `PKG-INFO`). The
+ * distributions are built in a job without publishing rights, and PyPI's
+ * trusted publisher accepts any version of the project, so the job that
+ * uploads checks what it was handed.
+ */
+export function checkDistributions({ dir, name, version }) {
+  const stem = name.replace(/[-.]/g, "_");
+  const files = fs.readdirSync(dir).sort();
+  const sdist = `${stem}-${version}.tar.gz`;
+  const wheelName = new RegExp(`^${stem}-${version.replace(/\./g, "\\.")}-[^-]+-[^-]+-[^-]+\\.whl$`);
+  const wheels = files.filter((file) => wheelName.test(file));
+  const unexpected = files.filter((file) => file !== sdist && !wheelName.test(file));
+  if (!files.includes(sdist) || wheels.length !== 1 || unexpected.length > 0) {
+    throw new ReleaseError(
+      `the distributions to upload are ${files.join(", ") || "none"}, and the release uploads exactly ${sdist} and one ${stem}-${version} wheel`,
+    );
+  }
+  const read = (command, args) => {
+    const result = spawnSync(command, args, { encoding: "utf8" });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new ReleaseError(`${args.at(-2) ?? args[0]}: ${result.stderr.trim()}`);
+    return result.stdout;
+  };
+  const declared = [
+    [wheels[0], coreMetadata(read("unzip", ["-p", path.join(dir, wheels[0]), `${stem}-${version}.dist-info/METADATA`]))],
+    [sdist, coreMetadata(read("tar", ["-xzOf", path.join(dir, sdist), `${stem}-${version}/PKG-INFO`]))],
+  ];
+  for (const [file, meta] of declared) {
+    if (normalizedName(meta.name ?? "") !== normalizedName(name) || meta.version !== version) {
+      throw new ReleaseError(`${file} declares ${meta.name} ${meta.version}, and the release uploads ${name} ${version}`);
+    }
+  }
+  return [...wheels, sdist];
+}
+
 /**
  * Write a version into the SDK's `SDK_VERSION` constant, which the client
  * stamps on its user agent: a sprint prerelease takes its own version there as
@@ -509,6 +560,7 @@ const USAGE = `usage:
   node scripts/publish.mjs tag --sha <commit>
   node scripts/publish.mjs check --tag <vX.Y.Z> --package <name>
   node scripts/publish.mjs tarball --file <tgz> --package <name> --version <version>
+  node scripts/publish.mjs distributions --dir <dist> --package <name> --version <version>
   node scripts/publish.mjs release --tag <vX.Y.Z>
   node scripts/publish.mjs sprint --sha <commit> --ref <GITHUB_REF> --head <GITHUB_SHA> [--package <name>] [--version <version>]
   node scripts/publish.mjs stamp --file <js/src/version.ts> --version <version>`;
@@ -574,6 +626,13 @@ export async function main(argv, { repo = ROOT, registry = liveRegistry(), relea
       if (!args?.file || !args.package || !args.version) return usage();
       checkTarball({ file: args.file, name: args.package, version: args.version });
       console.log(`${path.basename(args.file)} carries ${args.package}@${args.version}.`);
+      return 0;
+    }
+    if (command === "distributions") {
+      const args = parseArgs(rest, ["dir", "package", "version"]);
+      if (!args?.dir || !args.package || !args.version) return usage();
+      const files = checkDistributions({ dir: args.dir, name: args.package, version: args.version });
+      console.log(`${files.join(" and ")} are ${args.package} ${args.version}.`);
       return 0;
     }
     if (command === "stamp") {

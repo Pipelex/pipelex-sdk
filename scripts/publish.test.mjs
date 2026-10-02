@@ -15,6 +15,7 @@ import {
   applyTag,
   changelogEntry,
   checkDispatch,
+  checkDistributions,
   checkTarball,
   commitOf,
   git,
@@ -341,6 +342,56 @@ describe("checkTarball", () => {
     const file = path.join(tmp("tarball"), "not.tgz");
     fs.writeFileSync(file, "not a tarball");
     assert.throws(() => checkTarball({ file, name: "@pipelex/sdk", version: "0.29.0" }), ReleaseError);
+  });
+});
+
+describe("checkDistributions", () => {
+  const metadata = (name, version) => `Metadata-Version: 2.4\nName: ${name}\nVersion: ${version}\n`;
+  const run = (command, args, cwd) => assert.equal(spawnSync(command, args, { cwd }).status, 0, `${command} ${args.join(" ")}`);
+
+  /** A dist/ directory with an sdist and a wheel built by hand, declaring the metadata given. */
+  function dists({ version = "0.29.0", sdistMeta = metadata("pipelex-sdk", version), wheelMeta = metadata("pipelex-sdk", version), extra = [] } = {}) {
+    const root = tmp("dists");
+    const dist = path.join(root, "dist");
+    fs.mkdirSync(dist);
+    const stem = `pipelex_sdk-${version}`;
+    fs.mkdirSync(path.join(root, stem));
+    fs.writeFileSync(path.join(root, stem, "PKG-INFO"), sdistMeta);
+    run("tar", ["-czf", path.join(dist, `${stem}.tar.gz`), stem], root);
+    fs.mkdirSync(path.join(root, `${stem}.dist-info`));
+    fs.writeFileSync(path.join(root, `${stem}.dist-info`, "METADATA"), wheelMeta);
+    run("zip", ["-q", "-r", path.join(dist, `${stem}-py3-none-any.whl`), `${stem}.dist-info`], root);
+    for (const file of extra) fs.writeFileSync(path.join(dist, file), "");
+    return dist;
+  }
+
+  it("accepts one sdist and one wheel of the package at the version", () => {
+    assert.deepEqual(checkDistributions({ dir: dists(), name: "pipelex-sdk", version: "0.29.0" }), [
+      "pipelex_sdk-0.29.0-py3-none-any.whl",
+      "pipelex_sdk-0.29.0.tar.gz",
+    ]);
+  });
+
+  it("refuses distributions of another version, and an extra file", () => {
+    assert.throws(
+      () => checkDistributions({ dir: dists({ version: "99.0.0" }), name: "pipelex-sdk", version: "0.29.0" }),
+      /the release uploads exactly pipelex_sdk-0\.29\.0\.tar\.gz/,
+    );
+    assert.throws(
+      () => checkDistributions({ dir: dists({ extra: ["pipelex_sdk-99.0.0-py3-none-any.whl"] }), name: "pipelex-sdk", version: "0.29.0" }),
+      /are pipelex_sdk-0\.29\.0-py3-none-any\.whl, pipelex_sdk-0\.29\.0\.tar\.gz, pipelex_sdk-99\.0\.0/,
+    );
+  });
+
+  it("refuses a distribution whose metadata declares another version than its name", () => {
+    assert.throws(
+      () => checkDistributions({ dir: dists({ wheelMeta: metadata("pipelex-sdk", "99.0.0") }), name: "pipelex-sdk", version: "0.29.0" }),
+      /declares pipelex-sdk 99\.0\.0/,
+    );
+    assert.throws(
+      () => checkDistributions({ dir: dists({ sdistMeta: metadata("another-package", "0.29.0") }), name: "pipelex-sdk", version: "0.29.0" }),
+      /declares another-package 0\.29\.0/,
+    );
   });
 });
 
