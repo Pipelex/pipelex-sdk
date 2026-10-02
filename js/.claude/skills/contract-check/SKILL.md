@@ -1,6 +1,6 @@
 ---
 name: contract-check
-description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the last release tag, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the protocol and validation specs in ../docs/specs/. Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
+description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the last release tag, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the protocol and validation specs in the workspace root's docs/specs/ (../../docs/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
 ---
 
 # Contract Check
@@ -9,9 +9,9 @@ Detects discrepancies between the wire surface `@pipelex/sdk` implements and the
 
 ## Prerequisites: Locate the Specs
 
-The specs live at `../docs/specs/` (relative to this repo root, i.e. the sibling workspace-root `docs` directory). Before doing anything else:
+The specs live in the workspace root's `docs/specs/`, which is `../../docs/specs/` relative to `js/`: the workspace root is the parent of this repository's root, whether that root is the main checkout or a worktree, since worktrees sit flat at the workspace root. Before doing anything else:
 
-1. Check that the directory `../docs/specs/` exists.
+1. Check that the directory `../../docs/specs/` exists.
 2. Check that it contains `pipelex-mthds-protocol.md` and `pipelex-validation-api.md`.
 
 If the directory is missing or does not contain the expected spec files, **stop immediately** and tell the user the specs directory was not found and they need access to the workspace-root `docs`/`specs`.
@@ -68,8 +68,8 @@ For each contract-visible change, read the relevant spec and determine:
 
 | What changed | Spec to check |
 |---|---|
-| Protocol routes — validate report/result union, model deck, version handshake, request/response models, HTTP status semantics, RFC 7807 error bodies, `pipe_ref` identity | `../docs/specs/pipelex-mthds-protocol.md` |
-| The `/v1/validate` verdict (`PipelexValidationResult`, `is_valid` discriminant, presentation-vs-contract) | `../docs/specs/pipelex-validation-api.md` |
+| Protocol routes — validate report/result union, model deck, version handshake, request/response models, HTTP status semantics, RFC 7807 error bodies, `pipe_ref` identity | `../../docs/specs/pipelex-mthds-protocol.md` |
+| The `/v1/validate` verdict (`PipelexValidationResult`, `is_valid` discriminant, presentation-vs-contract) | `../../docs/specs/pipelex-validation-api.md` |
 
 **When citing a spec surface, note its conformance status.** Each verified surface carries a `> Verified by:` line pointing at the `conformance/` test that exercises it (or an explicit unverified marker). Include that target so the reviewer knows whether a test already guards it.
 

@@ -1,6 +1,6 @@
 # pipelex-sdk-python
 
-This file guides Claude Code when working in this repo. It is self-contained: the repo overview below, then the Python coding standards (mirroring `../mthds-python/CLAUDE.md`, the relevant standard for this package). The workspace-root `CLAUDE.md` and `.claude/rules/python-standards.md` also apply.
+This file guides Claude Code when working in this repo. It is self-contained: the repo overview below, then the Python coding standards (mirroring `../../mthds-python/CLAUDE.md`, the workspace's `mthds-python` checkout, the relevant standard for this package). The workspace-root `CLAUDE.md` and `.claude/rules/python-standards.md` also apply.
 
 ## What this repo is
 

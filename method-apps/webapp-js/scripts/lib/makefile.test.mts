@@ -109,17 +109,17 @@ describe("the Makefile's sibling checkouts", SPAWNS, () => {
   }
 
   it("looks in the parent directory by default", () => {
-    expect(builtDirs("use-local", [])).toEqual(["'../pipelex-sdk-js'", "'../mthds-form'"]);
+    expect(builtDirs("use-local", [])).toEqual(["'../pipelex-sdk/js'", "'../mthds-form'"]);
     expect(builtDirs("use-local-form", [])).toEqual(["'../mthds-form'"]);
   });
 
   it("looks where SIBLINGS_DIR says, quoted exactly as typed", () => {
     expect(builtDirs("use-local", ["SIBLINGS_DIR=../.."])).toEqual([
-      "'../../pipelex-sdk-js'",
+      "'../../pipelex-sdk/js'",
       "'../../mthds-form'",
     ]);
     expect(builtDirs("use-local", ["SIBLINGS_DIR=$(touch pwned) x"])).toEqual([
-      "'$(touch pwned) x/pipelex-sdk-js'",
+      "'$(touch pwned) x/pipelex-sdk/js'",
       "'$(touch pwned) x/mthds-form'",
     ]);
     expect(builtDirs("use-local-form", ["SIBLINGS_DIR=it's"])).toEqual(["'it'\\''s/mthds-form'"]);
@@ -127,11 +127,11 @@ describe("the Makefile's sibling checkouts", SPAWNS, () => {
 
   it("ignores a SIBLINGS_DIR the shell exports, and a blank one", () => {
     expect(builtDirs("use-local", [], { SIBLINGS_DIR: "/elsewhere" })).toEqual([
-      "'../pipelex-sdk-js'",
+      "'../pipelex-sdk/js'",
       "'../mthds-form'",
     ]);
     expect(builtDirs("use-local", ["SIBLINGS_DIR="])).toEqual([
-      "'../pipelex-sdk-js'",
+      "'../pipelex-sdk/js'",
       "'../mthds-form'",
     ]);
   });

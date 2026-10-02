@@ -1021,7 +1021,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *    other extension route rides the static core (`crate_ops.py` is explicit that
    *    `build/runner` "is the exception — it needs the dry-run sweep"). Giving one
    *    static route an override while its siblings lack one is the inconsistency.
-   * 2. The input is **bounded server-side** — `pipelex-api/api/limits.py` caps a request
+   * 2. The input is **bounded server-side** — the runner's `pipelex_api/limits.py` caps a request
    *    at 16 `.mthds` files of 1 MiB each — and none of these routes runs inference.
    * 3. On the hosted path an override would be **inert**: the gateway caps responses at
    *    ~30s (see `POLL_REQUEST_TIMEOUT_MS` above), so raising `timeoutMs` would still be

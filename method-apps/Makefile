@@ -102,16 +102,21 @@ lock: ## Regenerate every template's lock file without installing
 clean: ## Remove every template's build artifacts and caches
 	$(call each,clean)
 
-# The sibling packages sit in the workspace this repository is checked out in,
-# two levels above a template's directory. A template's own `make use-local`
-# takes SIBLINGS_DIR for exactly this; to use siblings anywhere else, run the
-# target inside the template directory with SIBLINGS_DIR set there. The names
-# are the family's, whatever registry a template's packages come from.
-use-local: ## Install each template's Pipelex packages from the workspace's checkouts
-	$(call each,use-local SIBLINGS_DIR=../..)
+# A template's own `make use-local` looks for the checkouts beside a project,
+# `pipelex-sdk` and `mthds-form`, and here none of them is there. The SDK is
+# this repository's own `js/`, which no SIBLINGS_DIR reaches from a worktree,
+# so `use-local` is the repository root's, narrowed to the family's templates
+# (docs/family.md, "The sibling packages"). The form kernel alone comes from
+# the workspace's `mthds-form` checkout, which sits beside the repository's
+# root, three levels above a template's directory, whether that root is the
+# main checkout or a worktree. To use checkouts anywhere else, run the target
+# inside the template directory with SIBLINGS_DIR set there. The names are the
+# family's, whatever registry a template's packages come from.
+use-local: ## Install this repository's js/ and the workspace's mthds-form checkout into every template
+	@$(MAKE) --no-print-directory -C .. use-local IN=method-apps
 
 use-local-form: ## Install the workspace's mthds-form checkout alone into every template that uses the form kernel
-	$(call each_of,$(FORM_TEMPLATES),use-local-form SIBLINGS_DIR=../..)
+	$(call each_of,$(FORM_TEMPLATES),use-local-form SIBLINGS_DIR=../../..)
 
 use-published: ## Restore the Pipelex packages each template's lock file pins
 	$(call each,use-published)
