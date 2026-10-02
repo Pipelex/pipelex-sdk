@@ -129,11 +129,14 @@ which is faster and more reliable than rediscovering it from a pyright error:
 ```bash
 ledger inbound
 ledger list --origin mthds-python --status open
+ledger list --owner pipelex-sdk --origin pipelex-sdk --status open
 ```
 
-Read past the rows owned by this package: a row owned by `pipelex` or
-`pipelex-sdk/js` is a sibling piece of the same cascade you will be filing into
-at step 10. Claim
+`ledger inbound` lists every member of `pipelex-sdk` together and leaves out what
+was filed from inside the repository, such as the parity item `js/`'s own
+`bump-mthds` files for this package; the third command lists those. Read past
+the rows owned by another member: a row owned by `pipelex` or `pipelex-sdk/js` is
+a sibling piece of the same cascade you will be filing into at step 10. Claim
 (`ledger claim <id>`) any item that describes the adaptation you are about to do.
 
 ### 2. Resolve the target version
@@ -387,8 +390,18 @@ loud ones harder to spot.
   member `pipelex-sdk/js`), is this package's twin and consumes the `mthds` npm
   package; when a protocol model moves, it usually moves in both languages. Its
   move waits on the matching `mthds` release on npm and runs `js/`'s own gate and
-  changelog, so it is a change of its own rather than part of this one — file it
-  (`ledger new --owner pipelex-sdk/js …`) naming the symbol and the version.
+  changelog, so it is a change of its own rather than part of this one. Look for
+  an open one first, since `ledger new` files a duplicate without refusing it;
+  `--owner` takes the repository's key alone, and `pipelex-sdk/js` matches
+  nothing there:
+
+  ```bash
+  ledger list --owner pipelex-sdk --status open --json \
+    | jq -r '.[] | select(.owner == "pipelex-sdk/js") | "\(.id)  \(.title)"'
+  ```
+
+  Note the symbol and the version on an item that already covers the move;
+  otherwise file it (`ledger new --owner pipelex-sdk/js …`) naming both.
 - **File the engine item if the pins have diverged.** If `pipelex` names a
   different exact `mthds` after this, the two packages no longer co-install at
   all — that is not a latent gap but a live break, and it belongs to that repo.
