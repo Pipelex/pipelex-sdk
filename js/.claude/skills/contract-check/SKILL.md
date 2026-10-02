@@ -1,6 +1,6 @@
 ---
 name: contract-check
-description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the last release tag, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the protocol and validation specs in the workspace root's docs/specs/ (../../docs/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
+description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the release the SDK last shipped in, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the protocol and validation specs in the workspace root's docs/specs/ (../../docs/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
 ---
 
 # Contract Check
@@ -29,29 +29,37 @@ Only these touch `@pipelex/sdk` code:
 
 ## Step 1 — Identify the Baseline
 
-If the user specified a baseline (e.g. "compare to v0.1.3"), use it. Otherwise default to the latest release tag:
+Run this skill's commands from `js/`, the SDK's directory in `Pipelex/pipelex-sdk`.
+
+If the user specified a baseline (e.g. "compare to v0.29.0"), use it. Otherwise default to the release the SDK last shipped in: the tag `v<version>` of the version `package.json` carries, since a release moves that version only when it ships `@pipelex/sdk`. The newest tag of the repository is not that release whenever a later one held the SDK back, and taking it would skip the wire changes the SDK has not shipped yet. While that tag does not exist, which is the case before the repository's first release, the baseline is the import commit `e64f53500b5ba9c6ed0d5b413039eb8b13a7d49e`, whose `js/` is `@pipelex/sdk` 0.28.1 verbatim. Fetch the tags first, so that a checkout that has not seen the latest release does not fall back to an older baseline:
 
 ```bash
-git tag --sort=-v:refname | head -1
+git fetch --tags --quiet origin
+version=$(node -p "require('./package.json').version")
+if git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
+  echo "v$version"
+else
+  echo e64f53500b5ba9c6ed0d5b413039eb8b13a7d49e
+fi
 ```
 
 Confirm the baseline with the user before proceeding.
 
 ## Step 2 — Detect Contract-Affecting Changes
 
-Diff the baseline against HEAD, scoped to the client wire surface:
+Diff the baseline against HEAD over the SDK's sources and its changelog:
 
 ```bash
-git diff <baseline-tag> HEAD --name-only -- src/client/ src/models/ src/errors/ src/protocol/ CHANGELOG.md
+git diff <baseline> HEAD --name-only -- src/ CHANGELOG.md
 ```
 
-(Adjust the paths to the actual client layout. `src/protocol/` is the re-exported MTHDS surface; `src/client/`, `src/models/`, `src/errors/` carry the request pipeline, request/response models, and typed errors.)
+The whole of `src/` is diffed rather than a list of files, because the wire surface spans most of its modules — `client.ts` (the routes), `models.ts` and `product-models.ts` (the request and response models), `errors.ts` and `error-models.ts` (the typed errors and the problem documents), `runs.ts` (the run lifecycle), the upload and artifact modules, and `index.ts` (what the package exports) — and a list goes stale as soon as a module is added. Step 3 separates the contract-visible changes from the internal ones.
 
 If **no files changed**, report that no contract-affecting changes were detected and stop. Otherwise proceed.
 
 ## Step 3 — Classify the Changes
 
-For each changed file, get the diff (`git diff <baseline-tag> HEAD -- <file>`) and classify each change as:
+For each changed file, get the diff (`git diff <baseline> HEAD -- <file>`) and classify each change as:
 
 - **Contract-visible**: changes to route paths, request/response models, wire-shape fields, HTTP status semantics, error shapes/types, or the validate verdict discriminant.
 - **Internal-only**: refactors, logging, cosmetic changes that don't affect the wire.
