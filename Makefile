@@ -7,8 +7,9 @@
 # hooks, the repository's version and the workflow twins, or runs the same target in every
 # package directory, stopping at the first failure.
 #
-# Nothing here installs a package but `use-local`, which installs the directories it
-# switches. A worktree is provisioned with `make install`, which only wires the hooks, and
+# Nothing here installs a package but `use-local` and `use-published`, which install into the
+# templates they switch, `use-local` installing `js/` first when it was never installed. A
+# worktree is provisioned with `make install`, which only wires the hooks, and
 # each directory's `agent-check` and `agent-test` install that directory first when its
 # node_modules or .venv is missing, so a worktree pays only for the directories its work
 # touches. The root's own targets need only Node: its scripts have no dependency. To check
