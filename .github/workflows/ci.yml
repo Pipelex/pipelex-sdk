@@ -14,6 +14,10 @@ name: CI
 
 on:
   pull_request:
+    # `edited` is how GitHub reports a retargeted base, which changes what the branch-flow and
+    # release checks must say; it also fires on a title or body edit, which re-runs everything,
+    # since a run that skipped the packages would replace the aggregates' earlier verdicts.
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -42,7 +46,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          changed=$(git diff --name-only "$BASE_SHA" HEAD)
+          # --no-renames lists both ends of a move, so a file moved out of a package counts too.
+          changed=$(git diff --no-renames --name-only "$BASE_SHA" HEAD)
           printf '%s\n' "$changed"
           # A change to the root's machinery runs every package's jobs.
           everything='^(\.github/workflows/ci\.yml|Makefile|VERSION|scripts/)'
@@ -68,6 +73,40 @@ jobs:
 
       - name: Check every manifest against VERSION, the workflow twins, and the root's scripts
         run: make check-versions check-workflows test-scripts
+
+  branch-flow:
+    name: Branch flow
+    runs-on: ubuntu-latest
+    env:
+      BASE: ${{ github.base_ref }}
+      HEAD: ${{ github.head_ref }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Check the flow, a topic branch into dev, dev into release/vX.Y.Z, release/vX.Y.Z into main
+        run: |
+          echo "Pull request into $BASE from $HEAD ($HEAD_REPO)"
+          if [ "$BASE" = "main" ]; then
+            if [ "$HEAD_REPO" != "$REPO" ] || [[ ! "$HEAD" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Only a release/vX.Y.Z branch of this repository may merge into main."
+              exit 1
+            fi
+          elif [[ "$BASE" == release/* ]]; then
+            if [[ ! "$BASE" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::A release branch is named release/vX.Y.Z."
+              exit 1
+            fi
+            if [ "$HEAD_REPO" != "$REPO" ] || [ "$HEAD" != "dev" ]; then
+              echo "::error::Only this repository's dev branch may merge into a release branch."
+              exit 1
+            fi
+          elif [ "$BASE" = "dev" ] && [ "$HEAD_REPO" = "$REPO" ]; then
+            # The naming convention binds the maintainers' branches; a fork names its own.
+            if [[ ! "$HEAD" =~ ^(fix|feature|refactor|chore|docs|ci-cd|changelog|codex)/[A-Za-z0-9._/=-]+$ ]]; then
+              echo "::error::A branch into dev starts with fix/, feature/, refactor/, chore/, docs/, ci-cd/, changelog/ or codex/."
+              exit 1
+            fi
+          fi
 
   release-version:
     name: Release version
@@ -245,11 +284,6 @@ jobs:
   starter-python-tests:
     needs: changes
     if: needs.changes.outputs.starter-python == 'true'
-    # The template's tests job asks for an OIDC token, and a called workflow can never hold
-    # more than its caller grants.
-    permissions:
-      contents: read
-      id-token: write
     uses: ./.github/workflows/starter-python-tests-check.yml
 
   starter-python-package:
@@ -299,6 +333,7 @@ jobs:
     needs:
       - changes
       - root
+      - branch-flow
       - release-version
       - python-lint
       - python-package

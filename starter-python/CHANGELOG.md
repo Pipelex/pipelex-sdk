@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The tests workflow no longer grants an OIDC token**: `.github/workflows/tests-check.yml` asks for `contents: read` alone, since the tests never use OIDC and run the pull request's own code.
+
 ## [v0.2.1] - 2026-10-01
 
 ### Fixed
