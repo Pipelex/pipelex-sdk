@@ -1,0 +1,53 @@
+# Rendered by `make workflows` from starter-python/.github/workflows/tests-check.yml — edit that file and re-render.
+# It runs starter-python extracted exactly as the export ships it, installed from the registry
+# with its own lockfile, as a project made from it would be. The root CI calls it.
+name: Tests check (starter-python)
+
+on:
+  workflow_call:
+
+jobs:
+  matrix-test:
+    name: Tests check (starter-python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ../standalone/starter-python
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    permissions:
+      contents: read
+    env:
+      VIRTUAL_ENV: ${{ github.workspace }}/../standalone/starter-python/.venv
+      ENV: dev
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Extract starter-python as the export ships it
+        working-directory: .
+        run: |
+          rm -rf ../standalone/starter-python && mkdir -p ../standalone/starter-python
+          git archive HEAD:starter-python | tar -x -C ../standalone/starter-python
+          cd ../standalone/starter-python
+          git init -q -b main
+          git add -A -f
+          git -c user.name=ci -c user.email=ci@localhost commit -q -m "starter-python, as a project made from it starts"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Check UV installation
+        run: make check-uv
+
+      - name: Verify UV installation
+        run: uv --version
+
+      - name: Install dependencies
+        run: PYTHON_VERSION=${{ matrix.python-version }} make install
+
+      - name: Run tests
+        run: make gha-tests

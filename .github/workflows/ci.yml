@@ -1,0 +1,382 @@
+# The repository's pull-request checks. Each package's jobs run only when the pull request
+# changes that package's directory, or the root's own machinery (this file, the root Makefile,
+# VERSION, scripts/), and two aggregates, which always run, are the only required checks:
+# a path-filtered job never posts on a pull request that does not touch its directory, so
+# requiring it directly would leave that pull request waiting forever. docs/ci.md maps every
+# check the source repositories ran to its job here.
+#
+# A template is checked here through its standalone twins, the reusable workflows that
+# `make workflows` renders from the template's own workflows: each one extracts the template
+# exactly as the export ships it and installs it from the registry with its own lockfile. The
+# next-SDK twins, which test a template against the SDK built from the same commit, are
+# separate workflows, reported and kept out of the aggregates.
+name: CI
+
+on:
+  pull_request:
+    # `edited` is how GitHub reports a retargeted base, which changes what the branch-flow and
+    # release checks must say; it also fires on a title or body edit, which re-runs everything,
+    # since a run that skipped the packages would replace the aggregates' earlier verdicts.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    outputs:
+      js: ${{ steps.filter.outputs.js }}
+      python: ${{ steps.filter.outputs.python }}
+      starter-js: ${{ steps.filter.outputs.starter-js }}
+      starter-python: ${{ steps.filter.outputs.starter-python }}
+      method-apps: ${{ steps.filter.outputs.method-apps }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Read which directories the pull request changes
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # --no-renames lists both ends of a move, so a file moved out of a package counts too.
+          changed=$(git diff --no-renames --name-only "$BASE_SHA" HEAD)
+          printf '%s\n' "$changed"
+          # A change to the root's machinery runs every package's jobs.
+          everything='^(\.github/workflows/ci\.yml|Makefile|VERSION|scripts/)'
+          for dir in js python starter-js starter-python method-apps; do
+            slug=${dir//\//-}
+            if printf '%s\n' "$changed" | grep -qE "^$dir/|^\.github/workflows/$slug-|$everything"; then
+              echo "$dir=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$dir=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+  root:
+    name: Root (versions, workflows, scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install the actionlint and shellcheck the Makefile pins, each checked against its SHA-256
+        run: |
+          make install-linters LINTERS_DIR="$RUNNER_TEMP/workflow-linters"
+          echo "$RUNNER_TEMP/workflow-linters" >> "$GITHUB_PATH"
+
+      - name: Check every manifest against VERSION, the workflow twins, every workflow's lint, and the root's scripts
+        run: make check-versions check-workflows lint-workflows test-scripts
+
+  branch-flow:
+    name: Branch flow
+    runs-on: ubuntu-latest
+    env:
+      BASE: ${{ github.base_ref }}
+      HEAD: ${{ github.head_ref }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Check the flow, a topic branch into dev, dev into release/vX.Y.Z, release/vX.Y.Z into main
+        run: |
+          echo "Pull request into $BASE from $HEAD ($HEAD_REPO)"
+          if [ "$BASE" = "main" ]; then
+            if [ "$HEAD_REPO" != "$REPO" ] || [[ ! "$HEAD" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Only a release/vX.Y.Z branch of this repository may merge into main."
+              exit 1
+            fi
+          elif [[ "$BASE" == release/* ]]; then
+            if [[ ! "$BASE" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::A release branch is named release/vX.Y.Z."
+              exit 1
+            fi
+            if [ "$HEAD_REPO" != "$REPO" ] || [ "$HEAD" != "dev" ]; then
+              echo "::error::Only this repository's dev branch may merge into a release branch."
+              exit 1
+            fi
+          elif [ "$BASE" = "dev" ] && [ "$HEAD_REPO" = "$REPO" ]; then
+            # The naming convention binds the maintainers' branches; a fork names its own.
+            if [[ ! "$HEAD" =~ ^(fix|feature|refactor|chore|docs|ci-cd|changelog|codex)/[A-Za-z0-9._/=-]+$ ]]; then
+              echo "::error::A branch into dev starts with fix/, feature/, refactor/, chore/, docs/, ci-cd/, changelog/ or codex/."
+              exit 1
+            fi
+          fi
+
+  release-version:
+    name: Release version
+    if: github.base_ref == 'main' || startsWith(github.base_ref, 'release/v') || startsWith(github.head_ref, 'release/v')
+    runs-on: ubuntu-latest
+    env:
+      BASE_BRANCH: ${{ github.base_ref }}
+      SOURCE_BRANCH: ${{ github.head_ref }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Check VERSION against main and the release branch's name
+        run: |
+          VERSION=$(cat VERSION)
+          echo "VERSION: $VERSION"
+          if [ "$BASE_BRANCH" = "main" ]; then
+            if MAIN_VERSION=$(git show "origin/main:VERSION" 2>/dev/null); then
+              echo "main's VERSION: $MAIN_VERSION"
+              if [ "$(printf '%s\n%s\n' "$MAIN_VERSION" "$VERSION" | sort -V | tail -n1)" != "$VERSION" ] || [ "$MAIN_VERSION" = "$VERSION" ]; then
+                echo "::error::VERSION ($VERSION) must be greater than main's ($MAIN_VERSION)."
+                exit 1
+              fi
+            else
+              echo "main carries no VERSION yet, so there is nothing to be above."
+            fi
+          fi
+          for branch in "$BASE_BRANCH" "$SOURCE_BRANCH"; do
+            if [[ "$branch" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+)$ ]] && [ "${BASH_REMATCH[1]}" != "$VERSION" ]; then
+              echo "::error::VERSION ($VERSION) does not match the release branch $branch."
+              exit 1
+            fi
+          done
+
+      - name: Check that the release ships a package, each with its changelog entry
+        run: make check-release-versions
+
+  js:
+    name: js (make all)
+    needs: changes
+    if: needs.changes.outputs.js == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: js/package-lock.json
+
+      - name: Install dependencies
+        run: make install
+
+      - name: Run quality checks and tests
+        run: make all
+
+  python-lint:
+    name: python lint (${{ matrix.python-version }})
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      VIRTUAL_ENV: ${{ github.workspace }}/python/.venv
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Check UV installation
+        run: make check-uv
+
+      - name: Verify UV installation
+        run: uv --version
+
+      - name: Install dependencies
+        run: PYTHON_VERSION=${{ matrix.python-version }} TEST_PROFILE=ci make install
+
+      - name: Run ruff format merge check
+        run: make merge-check-ruff-format
+
+      - name: Run ruff lint merge check
+        run: make merge-check-ruff-lint
+
+      - name: Run pyright merge check
+        run: make merge-check-pyright
+
+      - name: Run mypy merge check
+        run: make merge-check-mypy
+
+  python-tests:
+    name: python tests (py${{ matrix.python-version }})
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      VIRTUAL_ENV: ${{ github.workspace }}/python/.venv
+      ENV: dev
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: PYTHON_VERSION=${{ matrix.python-version }} make install
+
+      - name: Run tests
+        run: make gha-tests
+
+  python-package:
+    name: python package-check
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Check if uv.lock is up to date
+        run: |
+          uv lock --locked
+          if ! git diff --exit-code uv.lock; then
+            echo "::error::python/uv.lock is out of date: run 'uv lock' in python/."
+            exit 1
+          fi
+          echo "python/uv.lock is up to date."
+
+  starter-js-lint:
+    needs: changes
+    if: needs.changes.outputs.starter-js == 'true'
+    uses: ./.github/workflows/starter-js-lint-check.yml
+
+  starter-js-tests:
+    needs: changes
+    if: needs.changes.outputs.starter-js == 'true'
+    uses: ./.github/workflows/starter-js-tests-check.yml
+
+  starter-python-lint:
+    needs: changes
+    if: needs.changes.outputs.starter-python == 'true'
+    uses: ./.github/workflows/starter-python-lint-check.yml
+
+  starter-python-tests:
+    needs: changes
+    if: needs.changes.outputs.starter-python == 'true'
+    uses: ./.github/workflows/starter-python-tests-check.yml
+
+  starter-python-package:
+    needs: changes
+    if: needs.changes.outputs.starter-python == 'true'
+    uses: ./.github/workflows/starter-python-package-check.yml
+
+  method-apps-family:
+    name: method-apps family (formatting, scripts, initializers)
+    needs: changes
+    if: needs.changes.outputs.method-apps == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: method-apps/webapp-js/package-lock.json
+
+      # The initializer is published with npm 11, so its tests run under the npm it ships with.
+      - name: Install the release's npm
+        run: npm install -g npm@11
+
+      - name: Install the first template's dependencies, whose Prettier the family uses
+        working-directory: method-apps/webapp-js
+        run: npm ci
+
+      - name: Check the family's own files and test its scripts and initializers
+        run: make -C method-apps check-family test-family
+
+  method-apps-webapp-js-lint:
+    needs: changes
+    if: needs.changes.outputs.method-apps == 'true'
+    uses: ./.github/workflows/method-apps-webapp-js-lint-check.yml
+
+  method-apps-webapp-js-tests:
+    needs: changes
+    if: needs.changes.outputs.method-apps == 'true'
+    uses: ./.github/workflows/method-apps-webapp-js-tests-check.yml
+
+  lint-all:
+    name: Lint (all)
+    if: always()
+    needs:
+      - changes
+      - root
+      - branch-flow
+      - release-version
+      - python-lint
+      - python-package
+      - starter-js-lint
+      - starter-python-lint
+      - starter-python-package
+      - method-apps-webapp-js-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail when a needed job failed or was cancelled
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s' "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if printf '%s' "$NEEDS" | jq -e 'any(.[]; .result == "failure" or .result == "cancelled")' > /dev/null; then
+            echo "::error::A lint job failed or was cancelled."
+            exit 1
+          fi
+
+  tests-all:
+    name: Tests (all)
+    if: always()
+    needs:
+      - changes
+      - js
+      - python-tests
+      - starter-js-tests
+      - starter-python-tests
+      - method-apps-family
+      - method-apps-webapp-js-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail when a needed job failed or was cancelled
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s' "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if printf '%s' "$NEEDS" | jq -e 'any(.[]; .result == "failure" or .result == "cancelled")' > /dev/null; then
+            echo "::error::A test job failed or was cancelled."
+            exit 1
+          fi

@@ -1,37 +1,20 @@
 # CI/CD
 
-The GitHub Actions workflows under `.github/workflows/` mirror the `mthds-python` set, adapted to this repo's identity (the `Pipelex` GitHub org and the `pipelex-sdk` PyPI distribution). They split into PR gates that run on every pull request and a publish pipeline that runs when `main` advances.
+This package has no workflows of its own any more: GitHub runs workflows only from the repository root's `.github/workflows/`, so the Python SDK's checks are jobs of the root's `ci.yml`, which run when a pull request changes `python/` or the root's own machinery. The root's [`docs/ci.md`](../../docs/ci.md) maps each check this package ran in its own repository to its job there.
 
-## PR gates
+| Root job | What it runs, in `python/` |
+| --- | --- |
+| `python lint (<version>)` | `PYTHON_VERSION=<version> TEST_PROFILE=ci make install`, then `make merge-check-ruff-format`, `merge-check-ruff-lint`, `merge-check-pyright` and `merge-check-mypy`, across Python 3.11 to 3.14. |
+| `python tests (py<version>)` | `PYTHON_VERSION=<version> make install`, then `make gha-tests`, across the same versions. |
+| `python package-check` | `uv lock --locked` must leave `uv.lock` unchanged. |
 
-| Workflow | Trigger | What it enforces |
-| --- | --- | --- |
-| `lint-check.yml` | `pull_request` | Runs `make merge-check-ruff-format`, `merge-check-ruff-lint`, `merge-check-pyright`, `merge-check-mypy` across the full Python matrix (3.11–3.14). A `lint-all` aggregator is the single required status check. |
-| `tests-check.yml` | `pull_request` | Runs `make gha-tests` across the same matrix; `tests-all` aggregates. Concurrency-cancels superseded runs on the same branch. |
-| `package-check.yml` | `pull_request` | `uv lock --locked` must leave `uv.lock` unchanged. |
-| `changelog-check.yml` | `pull_request → main` | `CHANGELOG.md` must contain a `## [v<version>] - …` entry matching `pyproject.toml`'s `version`. |
-| `version-check.yml` | `pull_request → main` | For `release/vX.Y.Z` source branches, the `pyproject.toml` version must equal the branch's version. |
-| `guard-branches.yml` | `pull_request_target` | Branch-flow policy: only `release/vX.Y.Z → main`; only `fix|feature|refactor|chore|docs|ci-cd|… → release/*`, `pre-release/*`, or `dev`; external contributors may not edit workflow files. |
-| `cla.yml` | `pull_request_target`, `issue_comment` | Contributor License Agreement check against the `Pipelex/cla-signatures` registry. Points at this repo's root `CLA.md`. |
+Every matrix leg uses this directory's `Makefile` targets, which honor `PYTHON_VERSION`, so each leg provisions its own interpreter through `uv venv --python <version>`. The root's `Lint (all)` and `Tests (all)` aggregates are the required checks, and the branch guard, the contributor agreement and the version checks are the repository's, described in the root's `docs/ci.md`.
 
-The lint and test matrices use the repo `Makefile` targets, which honor `PYTHON_VERSION`, so each matrix leg provisions its own interpreter via `uv venv --python <version>`.
+## Publishing
 
-## Publish pipeline
+The repository's release workflow, the root's `.github/workflows/release.yml`, publishes `pipelex-sdk` to PyPI when a release that ships it merges into `main`: it reads the root `VERSION`, builds the sdist and the wheel from the release's tag, and uploads them through PyPI's trusted publishing. The root's [`docs/release-model.md`](../../docs/release-model.md) describes the model. Releases up to 0.16.0 were published from `Pipelex/pipelex-sdk-python`, whose publish workflow is disabled.
 
-`publish.yml` runs on `push` to `main` (every merge of a `release/vX.Y.Z` PR, which `guard-branches.yml` is what restricts what can land there). Three sequential jobs:
+Two facts about that workflow:
 
-1. **build** — `python3 -m build` produces the sdist + wheel (`pipelex_sdk-<version>.{tar.gz,whl}`), uploaded as an artifact.
-2. **publish-to-pypi** — Trusted Publishing (OIDC, `id-token: write`) to PyPI via `pypa/gh-action-pypi-publish`. The `pypi` environment is pinned to `https://pypi.org/p/pipelex-sdk`.
-3. **github-release** — extracts the current version's notes from `CHANGELOG.md`, Sigstore-signs the artifacts, creates the `v<version>` GitHub Release (auto-flagged pre-release for PEP 440 `a`/`b`/`rc` suffixes), and uploads the signed artifacts.
-
-## Required org/repo configuration
-
-- **PyPI Trusted Publishing**: register `Pipelex/pipelex-sdk-python` as a trusted publisher for the `pipelex-sdk` project, environment `pypi`. No API token secret is needed.
-- **CLA secrets** (org-level, shared with the other `Pipelex` Python repos): `CLA_GH_APP_ID`, `CLA_GH_APP_PRIVATE_KEY`. The GitHub App must have access to `cla-signatures` and this repo.
-- **Actions allowlist**: third-party actions are allowlisted at the *enterprise* level, above both the `Pipelex` and `mthds-ai` organizations, and the allowlist keys on the exact commit SHA. `sigstore/gh-action-sigstore-python` is allowlisted at `790bc6befb9d733738f18d8f895854b453640ec9` (v3.5.0), which is why the publish workflow pins that SHA rather than a tag. Moving it to any other version needs an enterprise admin to add the new SHA first, or the `github-release` job fails before it runs.
-
-## Release flow (summary)
-
-1. Branch `release/vX.Y.Z` off the integration branch; set `pyproject.toml` `version = "X.Y.Z"` and add a `## [vX.Y.Z] - YYYY-MM-DD` entry to `CHANGELOG.md`.
-2. Open a PR into `main`. `version-check`, `changelog-check`, `lint-check`, `tests-check`, and `package-check` must pass.
-3. Merge. The push to `main` triggers `publish.yml` → PyPI + a signed GitHub Release.
+- **PyPI Trusted Publishing** names this repository, the workflow filename `release.yml` and the environment `pypi` for the `pipelex-sdk` project, so the publish job holds that environment, which allows `main` alone, and no API token secret exists.
+- **The Actions allowlist** sits at the enterprise level, above the `Pipelex` and `mthds-ai` organizations, and some of its entries key on an exact commit SHA. `sigstore/gh-action-sigstore-python` was allowlisted at `790bc6befb9d733738f18d8f895854b453640ec9` (v3.5.0) for the old publish workflow's signed GitHub Release; any other version of a pinned action needs an enterprise admin to add its SHA first.

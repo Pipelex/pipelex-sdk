@@ -126,9 +126,6 @@ describe("bootstrap.mjs anchors", () => {
 
     expect(read(root, "src/lib/errors.ts")).not.toMatch(/the starter/i);
     expect(read(root, "Makefile")).not.toMatch(/the starter/i);
-    const releaseSkill = read(root, ".claude/skills/release/SKILL.md");
-    expect(releaseSkill).not.toContain(TEMPLATE_NAME);
-    expect(releaseSkill).not.toMatch(/this starter/i);
   });
 
   it("keeps $-patterns in user values literal instead of expanding them", () => {

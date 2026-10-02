@@ -8,6 +8,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { describe, it } from "node:test";
 
+import { compareVersions } from "../lib/main.mjs";
 import { decodePack, encodePack, PackError } from "../lib/pack.mjs";
 import { loadTable } from "../lib/templates.mjs";
 import { writeTree } from "../lib/write.mjs";
@@ -60,9 +61,10 @@ describe("the packed webapp-js", () => {
     }
   });
 
-  it("names the family's version and the commit it was packed from", () => {
+  it("names the repository's version and the commit it was packed from", () => {
     const pack = decodePack(fs.readFileSync(path.join(packs(), "webapp-js.pack")));
-    assert.equal(pack.version, fs.readFileSync(path.join(FAMILY_ROOT, "VERSION"), "utf8").trim());
+    const version = fs.readFileSync(path.resolve(FAMILY_ROOT, "..", "VERSION"), "utf8").trim();
+    assert.equal(pack.version, version);
     const head = execFileSync("git", ["-C", FAMILY_ROOT, "rev-parse", "HEAD"], {
       encoding: "utf8",
     }).trim();
@@ -70,10 +72,13 @@ describe("the packed webapp-js", () => {
     assert.equal(pack.source, dirty ? `${head}-dirty` : head);
   });
 
-  it("carries the version the initializer's package carries", () => {
+  it("is packed by an initializer whose version is at or below the repository's", () => {
     const own = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     const pack = decodePack(fs.readFileSync(path.join(packs(), "webapp-js.pack")));
-    assert.equal(own.version, pack.version);
+    assert.ok(
+      compareVersions(own.version, pack.version) <= 0,
+      `the initializer's ${own.version} is above the repository's ${pack.version}`,
+    );
   });
 });
 
@@ -163,13 +168,18 @@ describe("the pack format", () => {
 });
 
 describe("pack-templates", () => {
-  /** A throwaway family: VERSION, and a template `t-js` committed with the files given. */
-  function family(files, { floor = ">=22.12.0" } = {}) {
+  /**
+   * A throwaway repository: VERSION at its root, and a family whose template
+   * `t-js` is committed with the files given. The family is the repository's
+   * root, or, when `nested`, a directory below it, as in this repository.
+   */
+  function family(files, { floor = ">=22.12.0", version = "9.9.9", nested = false } = {}) {
     const root = tempRoot("create-method-app-family-");
     const env = setupEnv(root);
-    const repo = path.join(root, "family");
+    const top = path.join(root, "repository");
+    const repo = nested ? path.join(top, "family") : top;
     fs.mkdirSync(path.join(repo, "t-js"), { recursive: true });
-    fs.writeFileSync(path.join(repo, "VERSION"), "9.9.9\n");
+    fs.writeFileSync(path.join(top, "VERSION"), `${version}\n`);
     const manifest = {
       name: "t",
       version: "9.9.9",
@@ -180,9 +190,9 @@ describe("pack-templates", () => {
       fs.mkdirSync(path.dirname(path.join(repo, "t-js", rel)), { recursive: true });
       fs.writeFileSync(path.join(repo, "t-js", rel), text);
     }
-    git(repo, ["init", "-q", "-b", "main"], env);
-    git(repo, ["add", "-A"], env);
-    git(repo, ["commit", "-q", "-m", "family"], env);
+    git(top, ["init", "-q", "-b", "main"], env);
+    git(top, ["add", "-A"], env);
+    git(top, ["commit", "-q", "-m", "family"], env);
     return { repo, env };
   }
 
@@ -234,11 +244,25 @@ describe("pack-templates", () => {
     assert.throws(() => packTemplate(repo, "t-js", { publish: true }), PackRefusal);
   });
 
-  it("refuses to publish when VERSION is not the package's version", () => {
-    const { repo } = family({});
+  it("names the version in VERSION at the root of the repository the family is in", () => {
+    const { repo } = family({}, { nested: true });
+    assert.equal(fs.existsSync(path.join(repo, "VERSION")), false);
+    assert.equal(decodePack(packTemplate(repo, "t-js")).version, "9.9.9");
+  });
+
+  it("refuses to publish unless the repository's VERSION is the package's version", () => {
+    const own = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     const table = { ...loadTable(), templates: { "t-js": { extras: [] } } };
     const outDir = tempRoot();
-    assert.throws(() => packAll(repo, { publish: true, outDir, table }), /one version/);
-    assert.deepEqual(packAll(repo, { outDir, table }), [path.join(outDir, "t-js.pack")]);
+    const ahead = family({}, { nested: true }).repo;
+    assert.throws(
+      () => packAll(ahead, { publish: true, outDir, table }),
+      /the repository's VERSION says 9\.9\.9 and this package says/,
+    );
+    assert.deepEqual(packAll(ahead, { outDir, table }), [path.join(outDir, "t-js.pack")]);
+    const released = family({}, { nested: true, version: own.version }).repo;
+    assert.deepEqual(packAll(released, { publish: true, outDir, table }), [
+      path.join(outDir, "t-js.pack"),
+    ]);
   });
 });

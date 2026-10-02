@@ -1,0 +1,80 @@
+# Fails a pull request that changes a workflow when its author cannot write to this repository.
+# Every check here runs from the pull request's own copy of its workflow, so a pull request that
+# edits ci.yml or a rendered twin could change what it is checked by; this workflow runs on
+# pull_request_target instead, which GitHub always takes from the default branch, main, so the
+# pull request cannot edit it, and which therefore runs only once main carries this file.
+# It never runs the pull request's code: it only diffs the head against the base. The branch
+# flow itself is the Branch flow job of ci.yml, inside the required Lint (all).
+name: Protect workflows
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  protect-workflows:
+    runs-on: ubuntu-latest
+    # Least privilege: querying the author's permission and diffing the head only needs read.
+    permissions:
+      contents: read
+    steps:
+      # Trust must hinge on the author's EFFECTIVE repository permission, not author_association.
+      # author_association is a social label: an org MEMBER or a COLLABORATOR can hold read-only
+      # access, so an association allow-list would let a read-only insider's workflow edits slip
+      # past this guard. Resolve the real permission and treat only write/maintain/admin as trusted.
+      - name: Resolve author repository permission
+        id: perm
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const username = context.payload.pull_request.user.login;
+            let data = { permission: 'none', role_name: 'none' };
+            try {
+              ({ data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username,
+              }));
+            } catch (error) {
+              // A 404 means the author is not a resolvable collaborator (deleted/renamed
+              // account, or no access) — treat as untrusted and let the workflow-diff
+              // check run. Re-throw anything else so a transient API failure fails closed.
+              if (error.status !== 404) throw error;
+            }
+            // The legacy `permission` field collapses roles: admin → "admin",
+            // maintain & write → "write", triage & read → "read", none → "none".
+            const trusted = data.permission === 'admin' || data.permission === 'write';
+            core.info(`Author ${username}: permission=${data.permission} role=${data.role_name} trusted=${trusted}`);
+            core.setOutput('trusted', trusted ? 'true' : 'false');
+
+      - name: Checkout code
+        if: steps.perm.outputs.trusted != 'true'
+        uses: actions/checkout@v5
+        with:
+          # In pull_request_target the default checkout is the default branch, not the pull
+          # request; without this the diff below would never see the fork's changes. We only
+          # diff and grep here — the untrusted head is never executed — so checking out the
+          # pull request's head SHA is safe. The full history gives the diff its merge base.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          # checkout refuses a fork's head under pull_request_target unless told otherwise,
+          # which is every pull request reaching this step, since an author without write access
+          # can only open one from a fork. Nothing from the head runs, and the token, read-only,
+          # is not left in the checkout's git config.
+          allow-unsafe-pr-checkout: true
+          persist-credentials: false
+      - name: Detect workflow changes
+        if: steps.perm.outputs.trusted != 'true'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # From the merge base, so a branch cut before a workflow changed on the base is not
+          # reported as changing it; without renames, so a workflow moved out of the directory
+          # is reported by its old path.
+          CHANGED=$(git diff --no-renames --name-only "origin/$BASE_REF...HEAD" | grep -E '^\.github/workflows/.*\.ya?ml$' || true)
+          if [ -n "$CHANGED" ]; then
+            echo "::error::External contributors may not modify workflow files: $CHANGED"
+            exit 1
+          fi

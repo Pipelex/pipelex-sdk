@@ -1,6 +1,6 @@
 # Chrome lineage: where this gallery's shared code comes from
 
-This repository is the gallery: an app that presents several demo methods as tabs. [`pipelex-method-apps`](https://github.com/Pipelex/pipelex-method-apps) holds the demo-free template that was extracted from it, `webapp-js/`, which is the app `/pipelex-scaffold` creates for one method. The two share the code every method needs, which this document calls the chrome. **The template holds the reference copy of the chrome, and this gallery keeps a copy by hand.** No tool keeps the two in sync.
+This repository is the gallery: an app that presents several demo methods as tabs. The method-app family, [`method-apps/`](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps) in `Pipelex/pipelex-sdk`, holds the demo-free template that was extracted from it, `webapp-js/`, which is the app `/pipelex-scaffold` creates for one method. The two share the code every method needs, which this document calls the chrome. **The template holds the reference copy of the chrome, and this gallery keeps a copy by hand.** No tool keeps the two in sync.
 
 ## The rule
 
@@ -8,7 +8,7 @@ This repository is the gallery: an app that presents several demo methods as tab
 - **Before fixing the chrome here, look at the template.** If the template already carries the fix, port it rather than writing a second one, so that the two copies stay easy to compare.
 - **A chrome fix made here first needs its twin in the template.** A defect is often found in the gallery, because the gallery has the most methods to exercise the chrome. Fix it here if that is where you are, and make sure the template receives the same fix, so that the next scaffolded app does not ship the defect.
 
-The template's [`webapp-js/docs/chrome-lineage.md`](https://github.com/Pipelex/pipelex-method-apps/blob/main/webapp-js/docs/chrome-lineage.md) is the detailed account from the other side: the commit the extraction started from, and each file it carried unchanged, adapted or left behind.
+The template's [`method-apps/webapp-js/docs/chrome-lineage.md`](https://github.com/Pipelex/pipelex-sdk/blob/main/method-apps/webapp-js/docs/chrome-lineage.md) is the detailed account from the other side: the commit the extraction started from, and each file it carried unchanged, adapted or left behind.
 
 ## What the chrome is
 

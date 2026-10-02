@@ -23,8 +23,7 @@ Prefer to do it by hand? The manual equivalent:
 2. Rename the `widget/` directory to your package name (underscores).
 3. Update the imports across `widget/` and `tests/` to match.
 4. Rewrite this README with your own project details.
-5. Delete the template's own maintenance: `cla.yml`, `guard-branches.yml`, `version-check.yml`, `changelog-check.yml` and `github-release.yml` under `.github/workflows/`, and the `.claude/skills/release/` skill. Their jobs run only in `Pipelex/pipelex-starter-python`, so they do nothing in your repository, but they are Pipelex's contributor agreement and release discipline rather than yours. Keep `lint-check.yml`, `tests-check.yml` and `package-check.yml`: they are your project's CI.
-6. Delete the bootstrap skill, `.claude/skills/bootstrap/`, and its test, `tests/unit/test_bootstrap_script.py`, as the skill does once it has run. The steps above replace it, and the test holds the workflows to the template's own layout, which yours need not follow.
+5. Delete the bootstrap skill, `.claude/skills/bootstrap/`, and its test, `tests/unit/test_bootstrap_script.py`, as the skill does once it has run. The steps above replace it, and the test holds the files to the template's own layout, which yours need not follow.
 
 ## Prerequisites
 

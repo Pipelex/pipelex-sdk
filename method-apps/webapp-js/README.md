@@ -8,7 +8,7 @@ Looking for worked examples instead? [`pipelex-starter-js`](https://github.com/P
 
 ## Use this template
 
-This template is the `webapp-js/` directory of the [`pipelex-method-apps`](https://github.com/Pipelex/pipelex-method-apps) repository, which holds one template per shape and language. A project starts as a copy of this directory alone. The family's initializer writes it into a new directory, commits it as it came, and runs `make create` there with the method you have:
+This template is the `webapp-js/` directory of the [method-app family](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps), `method-apps/` in the `Pipelex/pipelex-sdk` repository, which holds one template per shape and language. A project starts as a copy of this directory alone. The family's initializer writes it into a new directory, commits it as it came, and runs `make create` there with the method you have:
 
 ```bash
 export PIPELEX_API_KEY=…                               # from app.pipelex.com
@@ -16,7 +16,7 @@ npm create @pipelex/method-app@latest my-app -- --method path/to/my_method.mthds
 make -C my-app serve                                   # the URL, once the page answers
 ```
 
-`make serve` starts the dev server in the background, prints its URL once the page answers, and `make stop` stops it; `make dev` runs the same server in this terminal instead, on http://127.0.0.1:4300. The initializer's [README](https://github.com/Pipelex/pipelex-method-apps/tree/main/initializers/js#readme) lists its options, one per `make create` variable below.
+`make serve` starts the dev server in the background, prints its URL once the page answers, and `make stop` stops it; `make dev` runs the same server in this terminal instead, on http://127.0.0.1:4300. The initializer's [README](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/initializers/js#readme) lists its options, one per `make create` variable below.
 
 `--method`, which the initializer hands to `make create` as `METHOD`, is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, from [app.pipelex.com](https://app.pipelex.com)), or a published package address (`github.com/Pipelex/methods/text_stats@v0.1.1`).
 
@@ -94,7 +94,7 @@ Widen the host only on a network you trust, for a container or to open the app o
 | `make test-e2e`           | **Optional** Playwright e2e — a live spec costs an LLM call (prompts first; auto-skips without a key)                               |
 | `make check`              | lint + format-check + typecheck + codegen-check                                                                                     |
 | `make all`                | check + test + build                                                                                                                |
-| `make use-local`          | Install the sibling `../pipelex-sdk-js` and `../mthds-form` checkouts into `node_modules` (`SIBLINGS_DIR=` names another directory) |
+| `make use-local`          | Install the sibling `../pipelex-sdk/js` and `../mthds-form` checkouts into `node_modules` (`SIBLINGS_DIR=` names another directory) |
 | `make use-local-form`     | Install the sibling `../mthds-form` checkout alone                                                                                  |
 | `make use-published`      | Restore the `@pipelex/sdk` and `@pipelex/mthds-form` versions the lockfile pins                                                     |
 | `make use-published-form` | Restore the `@pipelex/mthds-form` version the lockfile pins                                                                         |

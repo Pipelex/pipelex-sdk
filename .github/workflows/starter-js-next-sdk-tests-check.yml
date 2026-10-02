@@ -1,0 +1,53 @@
+# Rendered by `make workflows` from starter-js/.github/workflows/tests-check.yml — edit that file and re-render.
+# It tests starter-js, extracted as the export ships it, against @pipelex/sdk built from the
+# same commit, installed over the registry's copy. It is reported, not required.
+name: Tests check (starter-js, next SDK)
+
+on:
+  pull_request:
+    paths:
+      - "starter-js/**"
+      - "js/**"
+      - ".github/workflows/starter-js-next-sdk-tests-check.yml"
+
+jobs:
+  tests:
+    name: Tests (starter-js, next SDK)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ../standalone/starter-js
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Extract starter-js as the export ships it
+        working-directory: .
+        run: |
+          rm -rf ../standalone/starter-js && mkdir -p ../standalone/starter-js
+          git archive HEAD:starter-js | tar -x -C ../standalone/starter-js
+          cd ../standalone/starter-js
+          git init -q -b main
+          git add -A -f
+          git -c user.name=ci -c user.email=ci@localhost commit -q -m "starter-js, as a project made from it starts"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: starter-js/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install @pipelex/sdk built from this commit
+        run: |
+          mkdir -p "$RUNNER_TEMP/next-sdk"
+          (cd "$GITHUB_WORKSPACE/js" && make install && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")
+          npm install --no-save "$RUNNER_TEMP"/next-sdk/*.tgz
+
+      - name: Run unit tests
+        run: make agent-test
+
+      - name: Build
+        run: make build

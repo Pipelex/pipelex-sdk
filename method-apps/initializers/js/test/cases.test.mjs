@@ -62,7 +62,7 @@ function within(root, kind) {
   git(repo, ["commit", "-q", "-m", "Their first commit"], env);
   const origin =
     kind === "template-checkout"
-      ? "https://github.com/Pipelex/pipelex-method-apps.git"
+      ? "https://github.com/Pipelex/pipelex-sdk.git"
       : "https://github.com/someone/theirs.git";
   git(repo, ["remote", "add", "origin", origin], env);
   const parent = path.join(repo, under);
@@ -197,7 +197,7 @@ describe("initializers/cases.json", () => {
       }
 
       const pristine =
-        /^Start from Pipelex\/pipelex-method-apps\/webapp-js \d+\.\d+\.\d+ \([0-9a-f]{40}(-dirty)?\)$/;
+        /^Start from Pipelex\/pipelex-sdk\/method-apps\/webapp-js \d+\.\d+\.\d+ \([0-9a-f]{40}(-dirty)?\)$/;
       switch (expect.git) {
         case "initialized":
           assert.equal(git(dest, ["rev-parse", "--show-prefix"], env), "");

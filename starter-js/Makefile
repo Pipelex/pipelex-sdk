@@ -1,4 +1,4 @@
-.PHONY: help run dev build start port-check lint format format-check typecheck codegen codegen-check codegen-verify add-method test test-watch test-e2e test-e2e-ui confirm-live-e2e agent-test check clean install lock all use-local use-npm ul un
+.PHONY: help run dev build start port-check lint format format-check typecheck codegen codegen-check codegen-verify add-method test test-watch test-e2e test-e2e-ui confirm-live-e2e agent-test agent-check install-if-missing check clean install lock all use-local use-npm ul un
 
 # ── Arguments ──────────────────────────────────────────────────────────────
 # A gesture takes its values as make variables (`make add-method METHOD=…
@@ -189,15 +189,23 @@ test-e2e: confirm-live-e2e port-check ## Run OPTIONAL Playwright e2e (LIVE API �
 test-e2e-ui: confirm-live-e2e port-check ## Same as test-e2e, with the Playwright UI runner
 	npm run test:e2e:ui
 
-agent-test: ## Run tests, silent on success (for agents)
+agent-test: install-if-missing ## Run tests, silent on success, installing first when node_modules is missing (for agents)
 	@OUTPUT=$$(npm run test --silent 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
 check: lint format-check typecheck codegen-check ## Run lint, format check, type check, and the offline codegen check
+
+agent-check: install-if-missing ## Run check, installing first when node_modules is missing (for agents)
+	@$(MAKE) --no-print-directory check
 
 all: check test build ## Full validation: check + test + build (excludes e2e — see test-e2e)
 
 install: ## Install dependencies
 	npm install
+
+# The agent targets install the project first when node_modules is missing, so a fresh
+# checkout can run them directly.
+install-if-missing:
+	@[ -d node_modules ] || $(MAKE) --no-print-directory install
 
 lock: ## Regenerate package-lock.json without installing
 	npm install --package-lock-only
@@ -208,9 +216,10 @@ clean: ## Remove build artifacts and caches
 # ── Local Pipelex package development ──────────────────────────────────────
 # By default, `make install` fetches the published `@pipelex/sdk` and
 # `@pipelex/mthds-form` packages from npm. `make use-local` packs and installs
-# the siblings ../pipelex-sdk-js and ../mthds-form so you can develop them and
-# the starter side-by-side. `make use-npm` restores the latest published
-# versions and re-pins package.json to them.
+# the sibling checkouts of `Pipelex/pipelex-sdk`, whose `js/` directory is the
+# SDK, and `Pipelex/mthds-form` — ../pipelex-sdk/js and ../mthds-form — so you
+# can develop them and the starter side-by-side. `make use-npm` restores the
+# latest published versions and re-pins package.json to them.
 #
 # We use `npm pack` + tarball install rather than a symlink because Next.js
 # 16's Turbopack does not follow symlinked workspace packages — `npm run dev`
@@ -227,26 +236,28 @@ clean: ## Remove build artifacts and caches
 # script re-runs its build during `npm pack`, and mthds-form's build (tsup)
 # prints to stdout — which would corrupt the captured tarball filename. We
 # build explicitly just before packing, so skipping `prepare` loses nothing.
+SDK_DIR := ../pipelex-sdk/js
+FORM_DIR := ../mthds-form
 
-use-local: ## Pack and install ../pipelex-sdk-js and ../mthds-form into node_modules for local development
-	@if [ ! -d ../pipelex-sdk-js ]; then \
-		echo "ERROR: ../pipelex-sdk-js not found — expected as a sibling directory."; exit 1; \
+use-local: ## Pack and install ../pipelex-sdk/js and ../mthds-form into node_modules for local development
+	@if [ ! -d $(SDK_DIR) ]; then \
+		echo "ERROR: $(SDK_DIR) not found — expected as the js/ directory of a sibling pipelex-sdk checkout."; exit 1; \
 	fi
-	@if [ ! -d ../mthds-form ]; then \
-		echo "ERROR: ../mthds-form not found — expected as a sibling directory."; exit 1; \
+	@if [ ! -d $(FORM_DIR) ]; then \
+		echo "ERROR: $(FORM_DIR) not found — expected as a sibling directory."; exit 1; \
 	fi
-	@echo "Building ../pipelex-sdk-js so dist/ is up-to-date..."
-	cd ../pipelex-sdk-js && npm run build
-	@echo "Packing ../pipelex-sdk-js into a tarball..."
-	@cd ../pipelex-sdk-js && rm -f pipelex-sdk-*.tgz && TARBALL=$$(npm pack --silent --ignore-scripts) && mv $$TARBALL /tmp/pipelex-sdk-local.tgz
-	@echo "Building ../mthds-form so dist/ is up-to-date..."
-	cd ../mthds-form && npm run build
-	@echo "Packing ../mthds-form into a tarball..."
-	@cd ../mthds-form && rm -f pipelex-mthds-form-*.tgz && TARBALL=$$(npm pack --silent --ignore-scripts) && mv $$TARBALL /tmp/pipelex-mthds-form-local.tgz
+	@echo "Building $(SDK_DIR) so dist/ is up-to-date..."
+	cd $(SDK_DIR) && npm run build
+	@echo "Packing $(SDK_DIR) into a tarball..."
+	@cd $(SDK_DIR) && rm -f pipelex-sdk-*.tgz && TARBALL=$$(npm pack --silent --ignore-scripts) && mv $$TARBALL /tmp/pipelex-sdk-local.tgz
+	@echo "Building $(FORM_DIR) so dist/ is up-to-date..."
+	cd $(FORM_DIR) && npm run build
+	@echo "Packing $(FORM_DIR) into a tarball..."
+	@cd $(FORM_DIR) && rm -f pipelex-mthds-form-*.tgz && TARBALL=$$(npm pack --silent --ignore-scripts) && mv $$TARBALL /tmp/pipelex-mthds-form-local.tgz
 	rm -rf node_modules/@pipelex/sdk node_modules/@pipelex/mthds-form
 	npm install /tmp/pipelex-sdk-local.tgz /tmp/pipelex-mthds-form-local.tgz --no-save --silent
 	@rm -f /tmp/pipelex-sdk-local.tgz /tmp/pipelex-mthds-form-local.tgz
-	@echo "Now using local ../pipelex-sdk-js and ../mthds-form (tarball installs). Re-run after every edit. 'make use-npm' to switch back."
+	@echo "Now using local $(SDK_DIR) and $(FORM_DIR) (tarball installs). Re-run after every edit. 'make use-npm' to switch back."
 
 # The `@latest` tag is load-bearing. A bare `npm install @pipelex/sdk` re-resolves
 # the range already in package.json, so coming off `make use-local` with a stale

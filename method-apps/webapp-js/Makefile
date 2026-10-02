@@ -1,4 +1,4 @@
-.PHONY: help run dev serve stop build start port-check lint format format-check typecheck codegen codegen-check codegen-verify add-method test test-watch test-e2e test-e2e-ui confirm-live-e2e agent-test check clean install lock all use-local use-local-form use-published use-published-form local-status ul un
+.PHONY: help run dev serve stop build start port-check lint format format-check typecheck codegen codegen-check codegen-verify add-method test test-watch test-e2e test-e2e-ui confirm-live-e2e agent-test agent-check install-if-missing check clean install lock all use-local use-local-form use-published use-published-form local-status ul un
 
 # ── Arguments ──────────────────────────────────────────────────────────────
 # The gestures take their values as make variables (`make add-method
@@ -228,15 +228,23 @@ test-e2e: confirm-live-e2e port-check ## Run OPTIONAL Playwright e2e (LIVE API �
 test-e2e-ui: confirm-live-e2e port-check ## Same as test-e2e, with the Playwright UI runner
 	npm run test:e2e:ui
 
-agent-test: ## Run tests, silent on success (for agents)
+agent-test: install-if-missing ## Run tests, silent on success, installing first when node_modules is missing (for agents)
 	@OUTPUT=$$(npm run test --silent 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
 check: lint format-check typecheck codegen-check ## Run lint, format check, type check, and the offline codegen check
+
+agent-check: install-if-missing ## Run check, installing first when node_modules is missing (for agents)
+	@$(MAKE) --no-print-directory check
 
 all: check test build ## Full validation: check + test + build (excludes e2e — see test-e2e)
 
 install: ## Install dependencies
 	npm install
+
+# The agent targets install the project first when node_modules is missing, so a fresh
+# checkout can run them directly.
+install-if-missing:
+	@[ -d node_modules ] || $(MAKE) --no-print-directory install
 
 lock: ## Regenerate package-lock.json without installing
 	npm install --package-lock-only
@@ -247,9 +255,10 @@ clean: ## Remove build artifacts and caches
 # ── Local Pipelex package development ──────────────────────────────────────
 # By default, `make install` fetches the published `@pipelex/sdk` and
 # `@pipelex/mthds-form` packages from npm. `make use-local` packs and installs
-# the sibling pipelex-sdk-js and mthds-form checkouts so you can develop them
-# and the app side-by-side, and `make use-local-form` does the same for the form
-# kernel alone. `make use-published` and `make use-published-form` switch back,
+# the sibling pipelex-sdk and mthds-form checkouts so you can develop them and
+# the app side-by-side, and `make use-local-form` does the same for the form
+# kernel alone. The SDK is the `js/` directory of a `Pipelex/pipelex-sdk`
+# checkout. `make use-published` and `make use-published-form` switch back,
 # and `make local-status` says which mode node_modules is in.
 #
 # The siblings are looked for in the parent directory. SIBLINGS_DIR=<dir> names
@@ -288,7 +297,7 @@ clean: ## Remove build artifacts and caches
 # packages share. A kernel on a sibling branch that needs an unpublished `mthds`
 # fails loudly at the install, naming the version it could not find.
 SIBLINGS = $(or $(call given,SIBLINGS_DIR),..)
-SDK_DIR = $(call shq,$(SIBLINGS)/pipelex-sdk-js)
+SDK_DIR = $(call shq,$(SIBLINGS)/pipelex-sdk/js)
 FORM_DIR = $(call shq,$(SIBLINGS)/mthds-form)
 
 # `$(call install_local,<sibling dirs>,<package names>)` builds and packs each
@@ -323,9 +332,9 @@ define refuse_while_sdk_local
 	fi
 endef
 
-use-local: ## Pack and install the sibling pipelex-sdk-js and mthds-form checkouts into node_modules (from .., or SIBLINGS_DIR=<dir>)
+use-local: ## Pack and install the sibling pipelex-sdk (its js/) and mthds-form checkouts into node_modules (from .., or SIBLINGS_DIR=<dir>)
 	$(call install_local,$(SDK_DIR) $(FORM_DIR),@pipelex/sdk @pipelex/mthds-form)
-	@echo "Now using the local pipelex-sdk-js and mthds-form (tarball installs). Re-run after every edit. 'make use-published' to switch back."
+	@echo "Now using the local pipelex-sdk and mthds-form (tarball installs). Re-run after every edit. 'make use-published' to switch back."
 
 use-local-form: ## Pack and install the sibling mthds-form checkout alone into node_modules (from .., or SIBLINGS_DIR=<dir>)
 	$(call refuse_while_sdk_local,use-local)

@@ -1,10 +1,11 @@
-.PHONY: help install hooks check check-family check-versions check-workflows workflows lint format format-check typecheck test test-family agent-test build all lock clean use-local use-local-form use-published use-published-form local-status ul un
+.PHONY: help install install-if-missing check check-family lint format format-check typecheck test test-family agent-check agent-test build all lock clean use-local use-local-form use-published use-published-form local-status ul un
 
 # The family's root gate. Each template is a directory with its own Makefile,
 # copied out whole into the projects created from it, so every target here
-# either belongs to the family — its one version, the root twins of the
-# templates' workflows, the formatting of the root's own files — or runs the
-# same target in every template directory, stopping at the first failure.
+# either belongs to the family — the formatting of the family root's own
+# files, the tests of its scripts and initializers — or runs the same target
+# in every template directory, stopping at the first failure. The version and
+# the workflow twins are the repository's: its root Makefile checks them.
 #
 # A new template joins the family by being named here. docs/family.md says what
 # else it needs.
@@ -18,12 +19,12 @@ $(if $(filter-out $(TEMPLATES),$(FORM_TEMPLATES)),$(error FORM_TEMPLATES names $
 # The family's initializers, each a package that writes the templates of its
 # ecosystem into a new project (docs/family.md, "The initializers"). They are
 # not templates: no project is a copy of one, so no template target runs in
-# them, but each carries the family's version and its tests run with the
-# root's.
+# them, but their tests run with the family's, and the repository's root
+# Makefile holds each one's version with the templates' (its UNITS).
 INITIALIZERS := initializers/js
 
-# The root's own tooling borrows the first template's installed Prettier and
-# Husky, so the root needs no package manager of its own.
+# The family root's own tooling borrows the first template's installed Prettier,
+# so the family root needs no package manager of its own.
 TOOLS := webapp-js/node_modules/.bin
 
 # The root's own Markdown, scripts and JSON, with every template left out: a
@@ -43,33 +44,20 @@ each = $(call each_of,$(TEMPLATES),$(1))
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-install: ## Install every template's dependencies, then wire the pre-commit hook
+install: ## Install every template's dependencies
 	$(call each,install)
-	@$(MAKE) --no-print-directory hooks
 
-# Husky, run from the root, points git at .husky/_ here — the same hooks path a
-# template sets when it is a repository of its own, so the setting agrees with
-# every checkout of this repository. The root's .husky/pre-commit runs each
-# template's own hook from inside that template.
-hooks: ## Wire the root pre-commit hook, which runs each template's own
-	@[ -x $(TOOLS)/husky ] || { echo "Husky is not installed: run make install first."; exit 1; }
-	$(TOOLS)/husky
+# The git hooks belong to the repository's root, whose `make install` wires them
+# and whose pre-commit hook runs each template's own hook from inside it.
+install-if-missing: ## Install each template whose node_modules is missing
+	$(call each,install-if-missing)
 
 check: check-family ## Check the family, then run every template's check (lint, format, typecheck, codegen)
 	$(call each,check)
 
-check-family: check-versions check-workflows ## Check what belongs to the family: its version, the workflow twins, the root's formatting (initializers included)
+check-family: ## Check the formatting of the family root's own files, the initializers' included
 	@[ -x $(TOOLS)/prettier ] || { echo "Prettier is not installed: run make install first."; exit 1; }
 	$(TOOLS)/prettier --check $(ROOT_FORMATTED)
-
-check-versions: ## Check that every template and initializer carries the version in VERSION
-	@node scripts/versions.mjs $(TEMPLATES) $(INITIALIZERS)
-
-check-workflows: ## Check that the root twin of every template workflow is current
-	@node scripts/workflows.mjs --check $(TEMPLATES)
-
-workflows: ## Render the root twin of every template workflow into .github/workflows/
-	@node scripts/workflows.mjs $(TEMPLATES)
 
 lint: ## Run every template's linter
 	$(call each,lint)
@@ -85,16 +73,21 @@ format-check: ## Check the formatting of the root's own files, then every templa
 typecheck: ## Run every template's type checks
 	$(call each,typecheck)
 
-# The root's scripts and every initializer, each suite in its own test file.
+# The family's own scripts, which hold the templates to the create contract and
+# to the initializers' tables, and every initializer, each suite in its own
+# test file.
 FAMILY_TESTS := "scripts/*.test.mjs" $(foreach i,$(INITIALIZERS),"$(i)/test/*.test.mjs")
 
-test-family: ## Run the tests of the root's own scripts and of every initializer
+test-family: ## Run the tests of the family's own scripts and of every initializer
 	node --test $(FAMILY_TESTS)
 
 test: test-family ## Run the family's tests, then every template's
 	$(call each,test)
 
-agent-test: ## Run every test, silent on success (for agents)
+agent-check: install-if-missing ## Check the family, then every template, installing first what was never installed (for agents)
+	@$(MAKE) --no-print-directory check
+
+agent-test: install-if-missing ## Run every test, silent on success, installing first what was never installed (for agents)
 	@OUTPUT=$$(node --test $(FAMILY_TESTS) 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 	$(call each,agent-test)
 
@@ -109,16 +102,21 @@ lock: ## Regenerate every template's lock file without installing
 clean: ## Remove every template's build artifacts and caches
 	$(call each,clean)
 
-# The sibling packages sit in the workspace this repository is checked out in,
-# two levels above a template's directory. A template's own `make use-local`
-# takes SIBLINGS_DIR for exactly this; to use siblings anywhere else, run the
-# target inside the template directory with SIBLINGS_DIR set there. The names
-# are the family's, whatever registry a template's packages come from.
-use-local: ## Install each template's Pipelex packages from the workspace's checkouts
-	$(call each,use-local SIBLINGS_DIR=../..)
+# A template's own `make use-local` looks for the checkouts beside a project,
+# `pipelex-sdk` and `mthds-form`, and here none of them is there. The SDK is
+# this repository's own `js/`, which no SIBLINGS_DIR reaches from a worktree,
+# so `use-local` is the repository root's, narrowed to the family's templates
+# (docs/family.md, "The sibling packages"). The form kernel alone comes from
+# the workspace's `mthds-form` checkout, which sits beside the repository's
+# root, three levels above a template's directory, whether that root is the
+# main checkout or a worktree. To use checkouts anywhere else, run the target
+# inside the template directory with SIBLINGS_DIR set there. The names are the
+# family's, whatever registry a template's packages come from.
+use-local: ## Install this repository's js/ and the workspace's mthds-form checkout into every template
+	@$(MAKE) --no-print-directory -C .. use-local IN=method-apps
 
 use-local-form: ## Install the workspace's mthds-form checkout alone into every template that uses the form kernel
-	$(call each_of,$(FORM_TEMPLATES),use-local-form SIBLINGS_DIR=../..)
+	$(call each_of,$(FORM_TEMPLATES),use-local-form SIBLINGS_DIR=../../..)
 
 use-published: ## Restore the Pipelex packages each template's lock file pins
 	$(call each,use-published)

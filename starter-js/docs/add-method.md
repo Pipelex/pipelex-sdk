@@ -187,7 +187,7 @@ Then `make all`. `tsc` names most dangling references itself; the ones it cannot
 
 ## Where the scaffold comes from
 
-The demo-free [`pipelex-method-apps`](https://github.com/Pipelex/pipelex-method-apps) template holds the reference copy of this scaffold and of the run chrome it writes against, and this gallery keeps a copy by hand: a fix lands in the template first. [`docs/chrome-lineage.md`](chrome-lineage.md) states the rule and lists the differences the gallery keeps on purpose — for the scaffold, the registry it writes into (`ExampleTabs.tsx`) and the execution-mode switch the scaffolded form keeps.
+The demo-free method-app template, [`method-apps/webapp-js/`](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/webapp-js) in `Pipelex/pipelex-sdk`, holds the reference copy of this scaffold and of the run chrome it writes against, and this gallery keeps a copy by hand: a fix lands in the template first. [`docs/chrome-lineage.md`](chrome-lineage.md) states the rule and lists the differences the gallery keeps on purpose — for the scaffold, the registry it writes into (`ExampleTabs.tsx`) and the execution-mode switch the scaffolded form keeps.
 
 ## References
 

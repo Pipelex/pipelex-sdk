@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.29.0] - 2026-10-02
+
+### Changed
+
+- **Version 0.29.0, shared with the SDKs**: the template is now developed in the `starter-python/` directory of `Pipelex/pipelex-sdk` and exported to `Pipelex/pipelex-starter-python` at each release that ships it, under the one version number it shares with `pipelex-sdk`, `@pipelex/sdk`, the JavaScript starter and `@pipelex/create-method-app`, so its number jumped from 0.2.1 to 0.29.0 for that reason alone, and its later versions may skip numbers.
+- **The tests workflow no longer grants an OIDC token**: `.github/workflows/tests-check.yml` asks for `contents: read` alone, since the tests never use OIDC and run the pull request's own code.
+- **The workflows run on Node 24 actions**: `.github/workflows/lint-check.yml`, `tests-check.yml` and `package-check.yml` use `actions/checkout@v5`, `actions/setup-python@v6` and `astral-sh/setup-uv@v7` instead of `actions/checkout@v4`, `actions/setup-python@v4` and `astral-sh/setup-uv@v3`, whose Node runtimes GitHub Actions has retired, so a project made from the template no longer starts with a deprecation warning on every job; a project made earlier makes the same changes in those three files.
+
 ## [v0.2.1] - 2026-10-01
 
 ### Fixed

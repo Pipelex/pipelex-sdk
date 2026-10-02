@@ -126,7 +126,7 @@ The full client surface is documented in [`docs/architecture.md`](./docs/archite
 
 ## Documentation
 
-These pages ship inside the published package, so a reader who has only installed it opens them under `node_modules/@pipelex/sdk/docs/` — at the version being called, rather than whatever the repository's default branch says today. They are also browsable at [`Pipelex/pipelex-sdk-js/tree/main/docs`](https://github.com/Pipelex/pipelex-sdk-js/tree/main/docs), which is the address to give someone who has not installed the package.
+These pages ship inside the published package, so a reader who has only installed it opens them under `node_modules/@pipelex/sdk/docs/` — at the version being called, rather than whatever the repository's default branch says today. They are also browsable at [`Pipelex/pipelex-sdk/tree/main/js/docs`](https://github.com/Pipelex/pipelex-sdk/tree/main/js/docs), which is the address to give someone who has not installed the package.
 
 | Page | What it covers |
 | --- | --- |

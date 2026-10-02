@@ -1,0 +1,43 @@
+# Rendered by `make workflows` from starter-python/.github/workflows/package-check.yml — edit that file and re-render.
+# It runs starter-python extracted exactly as the export ships it, installed from the registry
+# with its own lockfile, as a project made from it would be. The root CI calls it.
+name: package-check (starter-python)
+
+on:
+  workflow_call:
+
+jobs:
+  uv-lock-check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ../standalone/starter-python
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Extract starter-python as the export ships it
+        working-directory: .
+        run: |
+          rm -rf ../standalone/starter-python && mkdir -p ../standalone/starter-python
+          git archive HEAD:starter-python | tar -x -C ../standalone/starter-python
+          cd ../standalone/starter-python
+          git init -q -b main
+          git add -A -f
+          git -c user.name=ci -c user.email=ci@localhost commit -q -m "starter-python, as a project made from it starts"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Check if uv.lock is up to date
+        run: |
+          uv lock --locked
+          if ! git diff --exit-code uv.lock; then
+            echo "❌ uv.lock is out of date!"
+            echo "Please run 'uv lock' to update the lock file."
+            exit 1
+          else
+            echo "✅ uv.lock is up to date!"
+          fi

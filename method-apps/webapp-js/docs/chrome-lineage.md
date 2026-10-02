@@ -10,7 +10,7 @@ Decided on 2026-09-17, after weighing a published package and a one-way sync ges
 - **A fix the gallery makes first comes back as an item against this repository**, so that the next app created from the template does not ship the defect.
 - **Before filing either, compare the two copies and look for an open item.** The port may be owed already, or made already.
 
-The gallery's own [`docs/chrome-lineage.md`](https://github.com/Pipelex/pipelex-starter-js/blob/main/docs/chrome-lineage.md) states the same rule from its side, with its own deliberate differences.
+The gallery's own [`docs/chrome-lineage.md`](https://github.com/Pipelex/pipelex-sdk/blob/main/starter-js/docs/chrome-lineage.md) states the same rule from its side, with its own deliberate differences.
 
 ## What the chrome is
 
@@ -35,7 +35,7 @@ Any other difference between the two copies is a port that has not been made yet
 
 ## The history of the extraction
 
-This part is frozen: it records the extraction as it stood on 2026-09-17, when the rule above was decided, and nothing is added to it afterwards. A later change to the chrome is described in the family's `CHANGELOG.md`, at the root of `pipelex-method-apps`, and in a ledger item when it owes the gallery a port. Several differences recorded here have since been carried to the gallery, so this part says nothing about what the gallery holds today; compare the two copies for that.
+This part is frozen: it records the extraction as it stood on 2026-09-17, when the rule above was decided, and nothing is added to it afterwards. A later change to the chrome is described in the family's `CHANGELOG.md`, `method-apps/CHANGELOG.md` in `Pipelex/pipelex-sdk`, and in a ledger item when it owes the gallery a port. Several differences recorded here have since been carried to the gallery, so this part says nothing about what the gallery holds today; compare the two copies for that.
 
 ### The source
 

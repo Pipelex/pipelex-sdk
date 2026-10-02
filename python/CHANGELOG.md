@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.29.0] - 2026-10-02
+
+### Changed
+
+- **Version 0.29.0, shared with `@pipelex/sdk`**: `pipelex-sdk` is now developed and released from the `python/` directory of `Pipelex/pipelex-sdk`, together with the TypeScript SDK `@pipelex/sdk`, the starter templates and `@pipelex/create-method-app`, under one version number, so its number jumped from 0.16.0 to 0.29.0 for that reason alone, and its later versions may skip numbers. When both SDKs ship in the same release they carry the same number, which says they cover the same API. The jump changes no API.
+- **The project's links on PyPI**: the repository and documentation links now point at the `python/` directory of `Pipelex/pipelex-sdk`, where the SDK's source lives, the changelog link at `python/CHANGELOG.md` there, and a new `Issues` link at that repository's issues.
+
 ## [v0.16.0] - 2026-10-01
 
 ### Added

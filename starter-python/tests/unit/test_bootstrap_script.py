@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import dataclasses
 import importlib.util
-import re
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -13,8 +11,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP_SCRIPT = ROOT / ".claude" / "skills" / "bootstrap" / "scripts" / "bootstrap.py"
 WORKFLOWS_DIR = Path(".github") / "workflows"
-# The condition that keeps a maintainer-only job from running in a project made from the template.
-TEMPLATE_REPOSITORY_GUARD = "github.repository == 'Pipelex/pipelex-starter-python'"
 
 
 def load_bootstrap() -> Any:
@@ -26,56 +22,6 @@ def load_bootstrap() -> Any:
     sys.modules[spec.name] = module
     loader.exec_module(module)
     return module
-
-
-def job_conditions(workflow: Path) -> dict[str, str | None]:
-    """Each job of a workflow, mapped to its job-level `if:` with any trailing comment dropped.
-
-    Read from the layout every workflow here shares — job keys two spaces in under `jobs:`, their
-    fields four — rather than parsed, which keeps a YAML library out of the dependencies for one
-    test. A job whose `if:` sits anywhere else reads as unguarded, which fails loudly below, and a
-    line two spaces in that is neither a job key nor a comment fails here: skipped, it would hide
-    a job or hand it the `if:` of the job above."""
-    jobs: dict[str, str | None] = {}
-    in_jobs = False
-    current = ""
-    for line in workflow.read_text(encoding="utf-8").splitlines():
-        if line.startswith("jobs:"):
-            in_jobs = True
-        elif in_jobs and line and not line[0].isspace() and not line.startswith("#"):
-            in_jobs = False
-        elif in_jobs and (job := re.match(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$", line)):
-            current = job.group(1)
-            jobs[current] = None
-        elif in_jobs and re.match(r"^  [^\s#]", line):
-            pytest.fail(f"{workflow.name}: cannot read {line.strip()!r} under `jobs:` as a job key")
-        elif in_jobs and current and (condition := re.match(r"^    if:\s*(.+)$", line)):
-            jobs[current] = re.sub(r"\s+#.*$", "", condition.group(1)).strip()
-    return jobs
-
-
-def is_guarded_to_the_template(condition: str | None) -> bool:
-    """True when the condition can only hold in the template's own repository.
-
-    That is the guard alone, or the guard joined by `&&` to a remainder with no top-level `||`:
-    `&&` binds tighter, so `guard && a || b` runs `b` anywhere."""
-    if condition is None:
-        return False
-    if condition == TEMPLATE_REPOSITORY_GUARD:
-        return True
-    prefix = f"{TEMPLATE_REPOSITORY_GUARD} && "
-    if not condition.startswith(prefix):
-        return False
-    remainder = condition[len(prefix) :]
-    depth = 0
-    for index, char in enumerate(remainder):
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-        elif depth == 0 and remainder.startswith("||", index):
-            return False
-    return True
 
 
 def write_template(root: Path, *, extra_pyproject: str = "") -> None:
@@ -401,101 +347,15 @@ def test_survivor_check_still_rejects_unhandled_template_tokens(tmp_path: Path) 
     assert 'custom = "run widget somewhere"' in str(exc_info.value)
 
 
-def test_run_removes_the_templates_own_maintenance_files(tmp_path: Path) -> None:
-    # The CLA assistant, the branch-flow guard, the release checks and the release skill are the
-    # template's own. In a project made from it, the CLA job either fails every pull request for
-    # want of the CLA app's secrets or asks the project's contributors to sign Pipelex's CLA. The
-    # workflows a project does want stay, and the deletion is left unstaged like the edits.
-    bootstrap = load_bootstrap()
-    write_template(tmp_path)
-    for rel in bootstrap.MAINTAINER_ONLY_PATHS:
-        if rel.suffix:
-            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
-            (tmp_path / rel).write_text("name: maintainer-only\n", encoding="utf-8")
-        else:
-            (tmp_path / rel).mkdir(parents=True)
-            (tmp_path / rel / "SKILL.md").write_text("---\nname: release\n---\n", encoding="utf-8")
-    kept = tmp_path / WORKFLOWS_DIR / "lint-check.yml"
-    kept.write_text("name: Lint check\n", encoding="utf-8")
-
-    names = bootstrap.Names(dist="invoice-extractor", package="invoice_extractor", title="Invoice Extractor")
-    opts = bootstrap.Options(
-        description="Extract invoice fields",
-        author_name=None,
-        author_email=None,
-        repo_url=None,
-        lic=bootstrap.License(kind="mit", spdx="MIT", holder=None, year=2026),
-        clean=False,
-        dry_run=True,
-        use_git=False,
-    )
-
-    bootstrap.run(tmp_path, names, opts)
-    assert all((tmp_path / rel).exists() for rel in bootstrap.MAINTAINER_ONLY_PATHS)
-
-    real_opts = dataclasses.replace(opts, dry_run=False)
-    bootstrap.run(tmp_path, names, real_opts)
-    assert not any((tmp_path / rel).exists() for rel in bootstrap.MAINTAINER_ONLY_PATHS)
-    assert kept.read_text(encoding="utf-8") == "name: Lint check\n"
-
-    # A re-run finds nothing left to remove rather than failing on what is gone.
-    bootstrap.run(tmp_path, names, real_opts)
-
-
-def test_the_workflows_the_bootstrap_removes_are_exactly_the_guarded_ones() -> None:
-    # Both halves of the fix have to agree. A workflow the bootstrap removes but that is not
-    # guarded runs in every project whose owner has not bootstrapped yet, which is how the
-    # CLA assistant reached projects made from the template. A guarded workflow the bootstrap
-    # keeps is dead weight in the project. A job that is guarded by half — one job of a
-    # workflow and not its siblings, or a guard an `||` escapes — is the first case again.
-    bootstrap = load_bootstrap()
-    listed = {rel.name for rel in bootstrap.MAINTAINER_ONLY_PATHS if rel.parent == WORKFLOWS_DIR}
-
-    guarded: set[str] = set()
+def test_the_template_carries_no_maintenance_of_its_own() -> None:
+    # Every file of this directory reaches every project made from the template, so Pipelex's own
+    # maintenance — its contributor agreement, its branch-flow guard, its release checks and its
+    # release skill — lives at the root of the repository the template is developed in, never here.
+    # A workflow guarded to one repository is the shape that maintenance took when it lived here,
+    # and the CLA assistant reached projects made from the template that way.
     for workflow in sorted((ROOT / WORKFLOWS_DIR).glob("*.y*ml")):
-        conditions = job_conditions(workflow)
-        assert conditions, f"{workflow.name}: no job found under `jobs:`"
-        verdicts = {job: is_guarded_to_the_template(condition) for job, condition in conditions.items()}
-        if any(verdicts.values()) or workflow.name in listed:
-            unguarded = sorted(job for job, verdict in verdicts.items() if not verdict)
-            assert not unguarded, f"{workflow.name}: jobs not guarded with `if: {TEMPLATE_REPOSITORY_GUARD} && …`: {unguarded}"
-            guarded.add(workflow.name)
-
-    assert guarded == {name for name in listed if (ROOT / WORKFLOWS_DIR / name).exists()}, (
-        "every guarded workflow belongs in MAINTAINER_ONLY_PATHS, and every workflow listed there must be guarded"
-    )
-
-
-@pytest.mark.parametrize(
-    ("condition", "expected"),
-    [
-        (TEMPLATE_REPOSITORY_GUARD, True),
-        (f"{TEMPLATE_REPOSITORY_GUARD} && github.event.pull_request.base.ref == 'main'", True),
-        (f"{TEMPLATE_REPOSITORY_GUARD} && (startsWith(github.head_ref, 'release/v') || github.head_ref == 'dev')", True),
-        (f"{TEMPLATE_REPOSITORY_GUARD} && startsWith(github.head_ref, 'release/v') || github.head_ref == 'dev'", False),
-        (f"github.head_ref == 'dev' && {TEMPLATE_REPOSITORY_GUARD}", False),
-        ("github.event.pull_request.base.ref == 'main'", False),
-        (None, False),
-    ],
-)
-def test_the_guard_reading_refuses_a_guard_an_or_escapes(condition: str | None, expected: bool) -> None:
-    assert is_guarded_to_the_template(condition) is expected
-
-
-def test_the_job_reading_sees_a_commented_key_and_refuses_an_unreadable_one(tmp_path: Path) -> None:
-    workflow = tmp_path / "workflow.yml"
-    workflow.write_text(
-        f"""jobs:
-  # ── a banner between jobs ──
-  first:
-    if: {TEMPLATE_REPOSITORY_GUARD}
-  notify:  # a comment on the key
-    runs-on: ubuntu-latest
-""",
-        encoding="utf-8",
-    )
-    assert job_conditions(workflow) == {"first": TEMPLATE_REPOSITORY_GUARD, "notify": None}
-
-    workflow.write_text('jobs:\n  "quoted":\n    runs-on: ubuntu-latest\n', encoding="utf-8")
-    with pytest.raises(pytest.fail.Exception, match="cannot read"):
-        job_conditions(workflow)
+        text = workflow.read_text(encoding="utf-8")
+        assert "github.repository ==" not in text, (
+            f"{workflow.name} is guarded to one repository, so it is maintenance and belongs at the repository root"
+        )
+    assert not (ROOT / ".claude" / "skills" / "release").exists(), "the template's release is the repository root's, not a project's"

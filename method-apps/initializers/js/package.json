@@ -1,6 +1,6 @@
 {
   "name": "@pipelex/create-method-app",
-  "version": "0.5.7",
+  "version": "0.29.0",
   "description": "Start a Pipelex method app: npm create @pipelex/method-app@latest my-app -- --method <bundle | mt_… | address>",
   "keywords": [
     "pipelex",
@@ -24,11 +24,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Pipelex/pipelex-method-apps.git",
-    "directory": "initializers/js"
+    "url": "git+https://github.com/Pipelex/pipelex-sdk.git",
+    "directory": "method-apps/initializers/js"
   },
-  "homepage": "https://github.com/Pipelex/pipelex-method-apps/tree/main/initializers/js#readme",
-  "bugs": "https://github.com/Pipelex/pipelex-method-apps/issues",
+  "homepage": "https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/initializers/js#readme",
+  "bugs": {
+    "url": "https://github.com/Pipelex/pipelex-sdk/issues"
+  },
   "publishConfig": {
     "access": "public",
     "provenance": true

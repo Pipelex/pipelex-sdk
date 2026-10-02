@@ -16,7 +16,8 @@ description: >
   protocol model, or a `uv lock` saying mthds is unsatisfiable. This is the
   **`mthds` PyPI package** (the MTHDS standard's Python client, from the sibling
   `mthds-python` repo) — not the MTHDS spec pages, not the `mthds` npm package,
-  and not releasing `pipelex-sdk` itself, which is the `release` skill.
+  and not releasing `pipelex-sdk` itself, which is the repository root's
+  `/release` skill.
 ---
 
 # Bump the `mthds` dependency
@@ -59,7 +60,7 @@ written, ledger squared. **Stop before committing** — the user stages and comm
 | `docs/architecture.md` | Only when the inherited surface or the brand boundary moved — that document names both explicitly |
 
 Do **not** touch `[project].version`. That is `pipelex-sdk`'s own version and it
-moves only at release time, via the `release` skill.
+moves only at release time, via the repository root's `/release` skill.
 
 ## The pin is exact, and it always tracks latest
 
@@ -95,7 +96,7 @@ in the same sentence of an upstream changelog.
 | The **`mthds` package version** | `mthds-python/pyproject.toml`, PyPI | The Python client's own release number. **This is what you are bumping.** |
 | The **MTHDS standard version** | `MTHDS_STANDARD_VERSION` in `mthds.package.manifest.schema` | The version of the *standard* that client implements. This repo never reads it — it stamps no crates and ships no manifest — so unlike in `pipelex`, there is nothing here to check when it moves. |
 | The **spec site's release number** | the `mthds/` repo's own CHANGELOG | The documentation site's release. Coincidentally close to the package number; unrelated to it. |
-| **`pipelex-sdk`'s own version** | `[project].version` here | This package's release number. Not yours to move — that is the `release` skill. |
+| **`pipelex-sdk`'s own version** | `[project].version` here | This package's release number. Not yours to move — that is the repository root's `/release` skill. |
 
 Read every version reference in the upstream notes against this table before
 repeating it in ours.
@@ -128,10 +129,15 @@ which is faster and more reliable than rediscovering it from a pyright error:
 ```bash
 ledger inbound
 ledger list --origin mthds-python --status open
+ledger list --owner pipelex-sdk --origin pipelex-sdk --status open
 ```
 
-Read past the rows owned by this repo: a row owned by `pipelex` or `pipelex-sdk-js`
-is a sibling piece of the same cascade you will be filing into at step 10. Claim
+`ledger inbound` lists every member of `pipelex-sdk` together and leaves out what
+was filed from inside the repository, such as the parity item `js/`'s own
+`bump-mthds` files for this package; the third command lists those. Read beyond
+this package's own rows: a row owned by the `pipelex` repository or by the
+`pipelex-sdk/js` member is a sibling piece of the same cascade you will be filing
+into at step 10. Claim
 (`ledger claim <id>`) any item that describes the adaptation you are about to do.
 
 ### 2. Resolve the target version
@@ -167,12 +173,12 @@ turns a pyright cascade into a set of expected edits:
 .venv/bin/python .claude/skills/bump-mthds/scripts/upstream_notes.py 0.9.0 0.11.0
 ```
 
-The helper reads `../mthds-python/CHANGELOG.md` and prints the released sections
-strictly after the old pin up to and including the new one. It skips
-`## [Unreleased]` — that section describes work that is *not* in the version you
-are adopting, and this repo's changelog is read by people deciding whether an
-upgrade will break them. If the checkout predates the target release the script
-says so; fall back to:
+The helper reads `../../mthds-python/CHANGELOG.md`, the workspace's checkout two
+levels above `python/`, and prints the released sections strictly after the old
+pin up to and including the new one. It skips `## [Unreleased]` — that section
+describes work that is *not* in the version you are adopting, and this repo's
+changelog is read by people deciding whether an upgrade will break them. If the
+checkout predates the target release the script says so; fall back to:
 
 ```bash
 gh release view v0.11.0 --repo mthds-ai/mthds-python
@@ -201,7 +207,8 @@ One line in `pyproject.toml`. Make it a substring edit — replace `==0.11.0` wi
 `==0.11.1` on that line and leave every other character alone. Use your editor
 rather than a shell one-liner: `sed -i` takes a separate empty argument on macOS
 and an attached suffix on GNU/Linux, so no single invocation is portable, and
-the `release` skill edits this same file the same way.
+the repository root's `/release` skill edits this same file, on its `version`
+line.
 
 Confirm with `grep -n '"mthds' pyproject.toml` before moving on. That grep
 returns four hits, not one: the pin, plus the three dotted `mthds.protocol`
@@ -380,10 +387,22 @@ loud ones harder to spot.
 - **Close what you actually landed**, with evidence — the file and line you
   changed, and the check that went green. `Closes <id>` goes in the PR body when
   the user opens one.
-- **File the parity item.** `pipelex-sdk-js` is this package's twin and consumes
-  the `mthds` npm package; when a protocol model moves, it usually moves in both
-  languages. That repo's move is not yours to make from here — file it
-  (`ledger new --owner pipelex-sdk-js …`) naming the symbol and the version.
+- **File the parity item.** `@pipelex/sdk`, in this repository's `js/` (ledger
+  member `pipelex-sdk/js`), is this package's twin and consumes the `mthds` npm
+  package; when a protocol model moves, it usually moves in both languages. Its
+  move waits on the matching `mthds` release on npm and runs `js/`'s own gate and
+  changelog, so it is a change of its own rather than part of this one. Look for
+  an open one first, since `ledger new` files a duplicate without refusing it;
+  `--owner` takes the repository's key alone, and `pipelex-sdk/js` matches
+  nothing there:
+
+  ```bash
+  ledger list --owner pipelex-sdk --status open --json \
+    | jq -r '.[] | select(.owner == "pipelex-sdk/js") | "\(.id)  \(.title)"'
+  ```
+
+  Note the symbol and the version on an item that already covers the move;
+  otherwise file it (`ledger new --owner pipelex-sdk/js …`) naming both.
 - **File the engine item if the pins have diverged.** If `pipelex` names a
   different exact `mthds` after this, the two packages no longer co-install at
   all — that is not a latent gap but a live break, and it belongs to that repo.
@@ -445,4 +464,4 @@ and PRs target `dev`.
   onto crates and has to track it; this SDK never reads it. Don't port that step
   over from the engine's version of this skill.
 - **`[project].version` is `pipelex-sdk`'s own version.** Bumping it is the
-  `release` skill's job, not this one's.
+  repository root's `/release` skill's job, not this one's.

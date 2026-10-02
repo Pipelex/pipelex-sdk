@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11, <3.15"
 
 [[package]]
@@ -629,7 +629,7 @@ wheels = [
 
 [[package]]
 name = "widget"
-version = "0.2.1"
+version = "0.29.0"
 source = { editable = "." }
 dependencies = [
     { name = "mthds" },

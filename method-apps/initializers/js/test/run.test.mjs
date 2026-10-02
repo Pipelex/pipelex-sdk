@@ -208,14 +208,14 @@ describe("a run", () => {
     }
   });
 
-  it("makes the pristine commit with the family version and the source the pack names", async () => {
+  it("makes the pristine commit with the version and the source the pack names", async () => {
     const { root, work } = workspace();
     await runInitializer(["app", "--no-create"], { cwd: work, env: runEnv(root) });
     const pack = decodePack(fs.readFileSync(path.join(packs(), "webapp-js.pack")));
     const env = runEnv(root);
     assert.equal(
       git(path.join(work, "app"), ["log", "-1", "--format=%s"], env),
-      `Start from Pipelex/pipelex-method-apps/webapp-js ${pack.version} (${pack.source})`,
+      `Start from Pipelex/pipelex-sdk/method-apps/webapp-js ${pack.version} (${pack.source})`,
     );
     assert.equal(
       git(path.join(work, "app"), ["log", "-1", "--format=%an <%ae>"], env),
@@ -373,7 +373,7 @@ describe("a run", () => {
     assert.ok(said.startsWith(expected), said);
     assert.match(
       said,
-      /as [0-9a-f]{12}, "Start from Pipelex\/pipelex-method-apps\/webapp-js .*"\.$/,
+      /as [0-9a-f]{12}, "Start from Pipelex\/pipelex-sdk\/method-apps\/webapp-js .*"\.$/,
     );
   });
 

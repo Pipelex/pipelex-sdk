@@ -7,9 +7,9 @@ description: Bump the @pipelex/sdk dependency in pipelex-starter-js to a newer p
 
 `@pipelex/sdk` is pre-1.0, so its `^0.x.y` range in `package.json` only auto-resolves patch bumps (npm treats the leading `0` as the major for caret purposes) — a new minor like `0.1.5 → 0.2.0` needs this repo's `package.json` edited by hand. This skill does that deliberately: read what changed, apply what can be applied mechanically, verify, then hand the user a reviewable commit.
 
-This repo is a **reference template** — treat it as if the sibling `../pipelex-sdk-js` checkout this workspace happens to have might not exist for whoever runs this skill. Always have a working fallback that only needs the published npm package and the public GitHub repo.
+This repo is a **reference template** — treat it as if the sibling `../pipelex-sdk` checkout (whose `js/` directory is the SDK) this workspace happens to have might not exist for whoever runs this skill. Always have a working fallback that only needs the published npm package and the public GitHub repo.
 
-Guides the user through 8 steps. Every step that changes files or runs `npm install` should be visible to the user before moving on — this mirrors the `release` skill's style (staged confirmations, never push or commit without explicit approval), but the interesting judgment calls here are in reading the changelog and deciding what's safe to auto-fix, so lean on explaining rather than just executing.
+Guides the user through 8 steps. Every step that changes files or runs `npm install` should be visible to the user before moving on, with staged confirmations and no push or commit without explicit approval. The interesting judgment calls here are in reading the changelog and deciding what's safe to auto-fix, so lean on explaining rather than just executing.
 
 ## Step 1 — Gather State
 
@@ -39,8 +39,8 @@ Store the result as `TARGET_VERSION` (no `v` prefix, e.g. `0.2.0`). Warn if it's
 
 You need the SDK's `CHANGELOG.md` entries for every version strictly after the current one, up to and including `TARGET_VERSION`. Get it from whichever source is available, in this order:
 
-1. **Local sibling checkout**, if this workspace has one: `../pipelex-sdk-js/CHANGELOG.md`. Fast, no network, and it's the canonical source when present.
-2. **GitHub raw**, otherwise: fetch `https://raw.githubusercontent.com/Pipelex/pipelex-sdk-js/main/CHANGELOG.md` (the repo is `Pipelex/pipelex-sdk-js`, confirmed via `npm view @pipelex/sdk repository.url`). The published npm tarball does **not** ship a `CHANGELOG.md`, so this is the only network-only fallback — don't assume `node_modules/@pipelex/sdk/` has it.
+1. **Local sibling checkout**, if this workspace has one: `../pipelex-sdk/js/CHANGELOG.md`, the SDK's changelog in a checkout of `Pipelex/pipelex-sdk`. Fast and needs no network, but only when it is current: a checkout whose changelog has no `## [v<TARGET_VERSION>]` heading is behind, so read the GitHub copy below instead.
+2. **GitHub raw**, otherwise: fetch `https://raw.githubusercontent.com/Pipelex/pipelex-sdk/main/js/CHANGELOG.md` (the SDK is the `js/` directory of `Pipelex/pipelex-sdk`, confirmed via `npm view @pipelex/sdk repository`). The published npm tarball does **not** ship a `CHANGELOG.md`, so this is the only network-only fallback — don't assume `node_modules/@pipelex/sdk/` has it.
 
 Extract the entries between `## [v{CURRENT}]` (exclusive) and `## [v{TARGET_VERSION}]` (inclusive) and present them to the user, grouped by version, newest first.
 
@@ -70,7 +70,7 @@ Run `make all` (lint + format-check + typecheck + unit tests + build, per this r
 - **On success**: report and continue.
 - **On failure**: show the errors. If they trace back to one of the "needs manual review" items from Step 4, connect the dots for the user rather than just dumping the error. Ask how to proceed (fix, skip, abort) — don't guess at a fix for a behavior change you flagged as needing human judgment.
 
-A `@pipelex/sdk` bump always touches the SDK call path by definition, so — unlike the `release` skill, which only offers this conditionally — **always** offer `make test-e2e` here too (it exercises the real API against the new SDK version, which `make all`'s mocked unit tests can't). It costs an LLM call per run and needs `PIPELEX_API_KEY` set, so only run it with explicit user approval.
+A `@pipelex/sdk` bump always touches the SDK call path by definition, so **always** offer `make test-e2e` here too (it exercises the real API against the new SDK version, which `make all`'s mocked unit tests can't). It costs an LLM call per run and needs `PIPELEX_API_KEY` set, so only run it with explicit user approval.
 
 **If the SDK changelog entries mention codegen, crates, locks, or `runCodegenCheck`, also offer `make codegen-verify`** (needs a key and a base URL serving `/v1/codegen`, but no LLM call). `make all` already re-runs the offline check after the bump; `codegen-verify` additionally asks the live engine whether the committed generated trees are still semantically current under the new SDK, which is exactly the surface such a release could have moved.
 
@@ -98,12 +98,12 @@ Ask the user to confirm. On confirmation:
 2. Commit with message: `Bump @pipelex/sdk to {TARGET_VERSION}` (add a short body line if Step 4 applied migrations, naming them).
 3. Show the commit result.
 
-Then offer (but do not automatically execute) pushing and opening a PR, same as the `release` skill — target branch `dev` per this repo's `CLAUDE.md`. Wait for explicit approval before either.
+Then offer (but do not automatically execute) pushing and opening a PR — target branch `dev` per this repo's `CLAUDE.md`. Wait for explicit approval before either.
 
 ## Rules
 
 - Never use `git add .` or `git add -A` — stage only the files this bump actually touches.
 - Never push or create PRs without explicit user approval.
 - Never guess at a fix for a non-mechanical breaking change (behavior changes, removed APIs) — flag it and let the user decide.
-- Don't assume the sibling `../pipelex-sdk-js` checkout exists — always have the GitHub-raw fallback ready.
+- Don't assume the sibling `../pipelex-sdk` checkout exists — always have the GitHub-raw fallback ready.
 - If any step fails or the user wants to abort, stop immediately — do not continue the workflow.

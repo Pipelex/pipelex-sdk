@@ -166,9 +166,9 @@ export function applyNameTokens(text, names) {
 /**
  * Soften the template's self-references in prose ("the starter ...") — these
  * appear in user-facing error messages (errors.ts), a Makefile comment, e2e
- * spec comments, and "this starter" asides in CLAUDE.md and the release
- * skill. A bootstrapped project is not a starter, and the errors.ts strings
- * are shown to the app's end users at runtime.
+ * spec comments, and "this starter" asides in CLAUDE.md. A bootstrapped
+ * project is not a starter, and the errors.ts strings are shown to the app's
+ * end users at runtime.
  */
 export function applyStarterProse(text) {
   return text
@@ -386,10 +386,6 @@ export const TARGETS = [
   { rel: "CHANGELOG.md", transform: (text, _names, opts) => resetChangelog(text, opts) },
   { rel: "src/app/layout.tsx", transform: transformLayout },
   { rel: "src/app/page.tsx", transform: transformPage },
-  {
-    rel: ".claude/skills/release/SKILL.md",
-    transform: (text, names) => applyNameTokens(applyStarterProse(text), names),
-  },
   { rel: "src/lib/errors.ts", transform: (text) => applyStarterProse(text) },
   { rel: "Makefile", transform: (text) => applyStarterProse(text) },
 ];

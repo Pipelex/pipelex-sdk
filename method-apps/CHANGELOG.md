@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.29.0] - 2026-10-02
+
+### Changed
+
+- **Version 0.29.0, shared with the SDKs**: `@pipelex/create-method-app` and the templates it carries are now developed in the `method-apps/` directory of `Pipelex/pipelex-sdk` and released from there under the one version number they share with `@pipelex/sdk`, `pipelex-sdk` and the starter templates, so the family's number jumped from 0.5.7 to 0.29.0 for that reason alone, and its later versions may skip numbers.
+- **The family's home in `Pipelex/pipelex-sdk`**: `@pipelex/create-method-app`'s repository, homepage and issue links now point at the `method-apps/initializers/js/` directory of `Pipelex/pipelex-sdk` and at that repository's issues; the README and changelog a bootstrapped project starts with link to the template's directory there, and the template's `/bump-sdk` reads the SDK's changelog from the repository's `js/` directory. The initializer refuses to write a project inside a checkout of `Pipelex/pipelex-sdk`, as it still does inside one of `Pipelex/pipelex-method-apps`.
+- **The web app template's `make use-local` takes the SDK from a `pipelex-sdk` checkout**: the target now builds `@pipelex/sdk` from `pipelex-sdk/js`, the `js/` directory of a `Pipelex/pipelex-sdk` checkout, in the parent directory or the one `SIBLINGS_DIR` names, where it looked for a `pipelex-sdk-js` checkout, and the template's `/bump-sdk` reads a local changelog from the same place. The form kernel is still `mthds-form` there.
+- **The pristine commit's subject**: the commit the initializer makes in a new project now reads `Start from Pipelex/pipelex-sdk/method-apps/webapp-js <version> (<sha>)`, where it read `Start from Pipelex/pipelex-method-apps/webapp-js <version> (<sha>)`, so a tool that finds a project's first commit by its subject has to accept both.
+- **The web app template's workflows run on Node 24 actions**: the template's `.github/workflows/lint-check.yml` and `tests-check.yml` use `actions/checkout@v5` and `actions/setup-node@v5` instead of `actions/checkout@v4` and `actions/setup-node@v4`, whose Node 20 runtime GitHub Actions has retired, so a project the initializer creates no longer starts with a deprecation warning on every job; a project created earlier makes the same changes in those two files.
+
+### Fixed
+
+- **The web app template's serve test no longer interrupts the server too early**: the cases of `scripts/lib/serve.test.mts` that stop `make serve` with SIGINT or SIGHUP sent the signal as soon as the dev server was announced, sometimes before the fake server had forked its child, and then failed on finding one process where two were expected. They now wait until both processes have started, so a project's `make test` no longer fails at random on a busy machine.
+
 ## [v0.5.7] - 2026-10-01
 
 ### Security

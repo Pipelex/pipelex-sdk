@@ -1,0 +1,14 @@
+# The root's own ignores. Each package directory carries its own .gitignore, which git applies
+# inside that directory and which a template carries into every project made from it.
+
+# Dependencies, should a tool be run at the root by mistake: the root installs nothing.
+node_modules/
+.venv/
+
+# Local env files and settings, per user and never committed.
+.env
+.env*.local
+.claude/settings.local.json
+
+# Misc
+.DS_Store

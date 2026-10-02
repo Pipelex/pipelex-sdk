@@ -58,7 +58,7 @@ const sdkSha = (() => {
 })();
 
 const banner = `// check.mjs — .mthds PostToolUse hook (lint/format local via WASM, validate via Pipelex API)
-// GENERATED FILE — do not edit. Rebuild with \`npm run build:hook\` in pipelex-sdk-js.
+// GENERATED FILE — do not edit. Rebuild with \`npm run build:hook\` in the js/ directory of Pipelex/pipelex-sdk.
 // Provenance: @pipelex/sdk ${sdkVersion} (${sdkSha}) + @pipelex/tools-wasm ${toolsWasmProvenance}`;
 
 await build({
