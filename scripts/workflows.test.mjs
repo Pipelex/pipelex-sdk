@@ -433,7 +433,7 @@ describe("renderNextSdkTwin", () => {
       - name: Install @pipelex/sdk built from this commit
         run: |
           mkdir -p "$RUNNER_TEMP/next-sdk"
-          (cd "$GITHUB_WORKSPACE/js" && npm ci && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")
+          (cd "$GITHUB_WORKSPACE/js" && make install && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")
           npm install --no-save "$RUNNER_TEMP"/next-sdk/*.tgz
 
       - name: Run check

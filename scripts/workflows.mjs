@@ -344,7 +344,11 @@ function extractionStep(template, dash) {
   ];
 }
 
-/** The step that installs the SDK built from this commit over the registry's copy. */
+/**
+ * The step that installs the SDK built from this commit over the registry's copy. The SDK is
+ * installed the way its own CI job installs it, `make install` in its directory, rather than
+ * with `npm ci`, which the runner's bundled npm refuses on the SDK's lockfile.
+ */
 function nextSdkStep(sdk, dash) {
   const at = " ".repeat(dash);
   const name = `${at}- name: Install ${sdk.package} built from this commit`;
@@ -353,7 +357,7 @@ function nextSdkStep(sdk, dash) {
       name,
       `${at}  run: |`,
       `${at}    mkdir -p "$RUNNER_TEMP/next-sdk"`,
-      `${at}    (cd "$GITHUB_WORKSPACE/${sdk.dir}" && npm ci && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")`,
+      `${at}    (cd "$GITHUB_WORKSPACE/${sdk.dir}" && make install && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")`,
       `${at}    npm install --no-save "$RUNNER_TEMP"/next-sdk/*.tgz`,
     ];
   }
