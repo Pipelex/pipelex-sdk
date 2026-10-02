@@ -24,7 +24,7 @@ jobs:
       VIRTUAL_ENV: ${{ github.workspace }}/../standalone/starter-python/.venv
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Extract starter-python as the export ships it
         working-directory: .
@@ -37,7 +37,7 @@ jobs:
           git -c user.name=ci -c user.email=ci@localhost commit -q -m "starter-python, as a project made from it starts"
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 

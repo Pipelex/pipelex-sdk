@@ -14,7 +14,7 @@ jobs:
         working-directory: ../standalone/starter-python
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Extract starter-python as the export ships it
         working-directory: .
@@ -27,7 +27,7 @@ jobs:
           git -c user.name=ci -c user.email=ci@localhost commit -q -m "starter-python, as a project made from it starts"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
