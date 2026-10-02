@@ -30,6 +30,8 @@ Everything that serves only the maintainers lives at the root instead:
 - `VERSION`, the repository's one version (see [`release-model.md`](release-model.md));
 - `LICENSE` and `CLA.md`, the repository's license and the contributor agreement its pull requests are signed under;
 - `.githooks/`, the git hooks;
+- `.github/workflows/`, the pull-request checks, which [`ci.md`](ci.md) describes, with the rendered twins of each template's own workflows;
+- `scripts/`, which checks every manifest against `VERSION` and renders the twins;
 - `.claude/skills/`, the maintainers' skills: `bump-sdk` and `bump-mthds-form` move every template onto a newer published SDK or form kernel in one change;
 - `docs/`, this documentation.
 
