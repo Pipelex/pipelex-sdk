@@ -582,3 +582,34 @@ describe("the environments that guard publishing and the export", () => {
     assert.deepEqual(elsewhere, []);
   });
 });
+
+// npm reads a package argument shaped like `owner/repo` as a GitHub shorthand before it considers
+// a file (npm-package-arg), so `npm publish tarball/x.tgz` tries to clone
+// github.com/tarball/x.tgz.git and never reaches the registry: that is how both npm publishes of
+// v0.29.0 failed. An argument npm reads as a file starts with `./`, `../`, `/` or `~/`.
+describe("the npm publish commands", () => {
+  const workflow = fs.readFileSync(path.join(ROOT, ".github/workflows/release.yml"), "utf8");
+  const commands = workflow.split("\n").filter((line) => /^\s+(?:run: )?npm publish /.test(line));
+
+  it("hands every npm publish a path npm reads as a file", () => {
+    assert.ok(commands.length > 0, "release.yml runs npm publish");
+    for (const command of commands) {
+      const argument = command.match(/npm publish (\S+)/)[1].replace(/^"(.*)"$/, "$1");
+      assert.match(argument, /^(?:\.\.?\/|\/|~\/)/, `\`${command.trim()}\` names its tarball as a path`);
+    }
+  });
+
+  // `./$TARBALL` is a path only while TARBALL is relative, which it is when the check step takes
+  // it from the job's own `tarball/` directory, where the artifact was downloaded.
+  it("takes the tarball each job publishes from that job's relative tarball/ directory", () => {
+    const jobs = workflow.slice(workflow.indexOf("\njobs:\n")).split(/^(?=  [\w-]+:\n)/m).slice(1);
+    const publishing = jobs.filter((block) => /^\s+(?:run: )?npm publish /m.test(block));
+    assert.equal(publishing.length, commands.length, "each publishing job runs npm publish once");
+    for (const block of publishing) {
+      const id = block.match(/^  ([\w-]+):/)[1];
+      assert.match(block, /^ {10}set -- tarball\/\*\.tgz$/m, `${id} lists the tarball under tarball/`);
+      assert.match(block, /^ {10}echo "TARBALL=\$1" >> "\$GITHUB_ENV"$/m, `${id} publishes the tarball it checked`);
+      assert.match(block, /npm publish "\.\/\$TARBALL" /, `${id} publishes ./$TARBALL`);
+    }
+  });
+});
