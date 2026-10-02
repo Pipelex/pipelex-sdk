@@ -12,7 +12,7 @@ The Pipelex client surface in one repository: the TypeScript and Python clients 
 | `starter-python/` | The Python starter template, published as `Pipelex/pipelex-starter-python` | `pipelex-sdk/starter-python` |
 | `method-apps/` | The method-app family: the `webapp-js/` template and the `initializers/js/` initializer, `@pipelex/create-method-app` (npm) | `pipelex-sdk/method-apps` |
 
-**Work inside a directory follows that directory's own `CLAUDE.md`**, and its gate runs from inside it. The root holds only what serves the maintainers: the `Makefile`, `VERSION`, the license and contributor agreement, the git hooks (`.githooks/`), the maintainers' skills (`.claude/skills/`), the CI (`.github/workflows/`, described in [`docs/ci.md`](docs/ci.md)), the scripts that check versions, render the workflow twins and select a release's packages (`scripts/`) and `docs/`.
+**Work inside a directory follows that directory's own `CLAUDE.md`**, and its gate runs from inside it. The root holds only what serves the maintainers: the `Makefile`, `VERSION`, the license and contributor agreement, the git hooks (`.githooks/`), the maintainers' skills (`.claude/skills/`), the CI (`.github/workflows/`, described in [`docs/ci.md`](docs/ci.md)), the scripts that check versions, render the workflow twins, select a release's packages and take the release workflow's decisions (`scripts/`) and `docs/`.
 
 ## Rules
 
@@ -23,4 +23,4 @@ The Pipelex client surface in one repository: the TypeScript and Python clients 
 - **The repository has one version**, the root `VERSION`, and each package's manifest carries the version that package last shipped as, never above it. Only a release moves `VERSION` or a manifest's `version` ([`docs/release-model.md`](docs/release-model.md)).
 - **A template's workflow twins at the root are rendered, never edited**: after changing a workflow in a template's `.github/workflows/`, run `make workflows` at the root and commit the twins with it; `make check-workflows`, part of the root's `agent-check` and of CI, fails on a stale twin.
 - **Changelog entries go in the package's own `CHANGELOG.md`**, under `## [Unreleased]`; the method apps' templates use the family's `method-apps/CHANGELOG.md`. There is no root changelog.
-- **Pull requests target `dev`**; a `release/vX.Y.Z` branch targets `main`, and only the root `/release` skill cuts one, its packages selected by `make release-selection`. The release workflow is not written yet, so nothing here publishes.
+- **Pull requests target `dev`**; a `release/vX.Y.Z` branch targets `main`, and only the root `/release` skill cuts one, its packages selected by `make release-selection`. Its merge publishes: `.github/workflows/release.yml` tags `vX.Y.Z` on the merge commit before anything else, then publishes each shipped package and exports each shipped starter from that tag ([`docs/release-model.md`](docs/release-model.md)). Never push to `main` by other means, and never move a `v*` tag.

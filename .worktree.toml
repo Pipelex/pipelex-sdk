@@ -1,0 +1,12 @@
+# Read by the workspace's `wt` alone (docs/workspace/worktrees.md in the workspace). A fresh
+# worktree is provisioned with `make install`, the default, so only the sprint prerelease is
+# declared here.
+#
+# `@pipelex/sdk` is built in js/, and npm cannot point a git source at a subdirectory, so a
+# sprint pins it through the prerelease this repository publishes from the commit (design DB6):
+# `X.Y.Z-sprint.g<full sha>` on the `sprint` dist-tag. `wt pin` never runs this command, since
+# a publish is permanent and a person's to start; it prints it, with `{sha}`, `{package}` and
+# `{version}` filled in, when the prerelease it needs is not on npm yet. The dispatch runs the
+# release workflow from `dev`, never from `main` (docs/release-model.md), and the workflow
+# refuses any package but `@pipelex/sdk` and any version other than the one it computes.
+prerelease = "gh workflow run release.yml --repo Pipelex/pipelex-sdk --ref dev -f sha={sha} -f package={package} -f version={version}"
