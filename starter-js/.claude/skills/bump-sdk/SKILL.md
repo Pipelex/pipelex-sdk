@@ -40,7 +40,7 @@ Store the result as `TARGET_VERSION` (no `v` prefix, e.g. `0.2.0`). Warn if it's
 You need the SDK's `CHANGELOG.md` entries for every version strictly after the current one, up to and including `TARGET_VERSION`. Get it from whichever source is available, in this order:
 
 1. **Local sibling checkout**, if this workspace has one: `../pipelex-sdk-js/CHANGELOG.md`. Fast, no network, and it's the canonical source when present.
-2. **GitHub raw**, otherwise: fetch `https://raw.githubusercontent.com/Pipelex/pipelex-sdk-js/main/CHANGELOG.md` (the repo is `Pipelex/pipelex-sdk-js`, confirmed via `npm view @pipelex/sdk repository.url`). The published npm tarball does **not** ship a `CHANGELOG.md`, so this is the only network-only fallback — don't assume `node_modules/@pipelex/sdk/` has it.
+2. **GitHub raw**, otherwise: fetch `https://raw.githubusercontent.com/Pipelex/pipelex-sdk/main/js/CHANGELOG.md` (the SDK is the `js/` directory of `Pipelex/pipelex-sdk`, confirmed via `npm view @pipelex/sdk repository`). The published npm tarball does **not** ship a `CHANGELOG.md`, so this is the only network-only fallback — don't assume `node_modules/@pipelex/sdk/` has it.
 
 Extract the entries between `## [v{CURRENT}]` (exclusive) and `## [v{TARGET_VERSION}]` (inclusive) and present them to the user, grouped by version, newest first.
 

@@ -2,7 +2,7 @@
 
 Minimal Next.js 16 starter that calls the [Pipelex](https://pipelex.com) API via the [`@pipelex/sdk`](https://www.npmjs.com/package/@pipelex/sdk) SDK to run AI methods (`.mthds` bundles) from a TypeScript app.
 
-This repo is a **reference template**. Keep it small, clear, and high-quality — clarity beats features. When adding anything, ask: "would I want every consumer of this template to inherit this?" It is also the gallery of the demo-free [`pipelex-method-apps`](https://github.com/Pipelex/pipelex-method-apps) template, whose `webapp-js/` holds **the reference copy of the run chrome and the codegen kit** — the hooks, the run helpers in `src/lib/`, the shared components, `scripts/` with `make add-method`, and the Makefile's gestures — and this repo carries a copy kept by hand. A fix to any of them lands in the template first and reaches this gallery as a port; before fixing one here, check whether the template already has the fix, and when a fix is made here first, make sure the template gets its twin. [`docs/chrome-lineage.md`](docs/chrome-lineage.md) lists the shared files and the differences that are deliberate.
+This repo is a **reference template**. Keep it small, clear, and high-quality — clarity beats features. When adding anything, ask: "would I want every consumer of this template to inherit this?" It is also the gallery of the demo-free method-app template, [`method-apps/webapp-js/`](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/webapp-js) in `Pipelex/pipelex-sdk`, which holds **the reference copy of the run chrome and the codegen kit** — the hooks, the run helpers in `src/lib/`, the shared components, `scripts/` with `make add-method`, and the Makefile's gestures — and this repo carries a copy kept by hand. A fix to any of them lands in the template first and reaches this gallery as a port; before fixing one here, check whether the template already has the fix, and when a fix is made here first, make sure the template gets its twin. [`docs/chrome-lineage.md`](docs/chrome-lineage.md) lists the shared files and the differences that are deliberate.
 
 ## Tech Stack
 
@@ -355,7 +355,7 @@ Other targets that matter:
 ## Anti-patterns to Avoid
 
 - **No bundle TOML inlined in `.ts` files** — bundles live in `methods/<name>/main.mthds`.
-- **No raw `fetch()` to the Pipelex API** — always go through `PipelexApiClient`. (If you find a missing capability in the SDK, fix it upstream in `pipelex-sdk-js`, don't bypass it here.)
+- **No raw `fetch()` to the Pipelex API** — always go through `PipelexApiClient`. (If you find a missing capability in the SDK, fix it upstream in `@pipelex/sdk`, don't bypass it here.)
 - **No `as ExtractedEntities` casts on SDK output** — go through the `parseXxx()` narrower instead.
 - **No hand-written output shapes** — the `.mthds` bundle declares them and `npm run codegen` projects them. If a type in `src/types/` lists fields, it is duplicating the bundle.
 - **No hand-rolled input markup for method inputs** — no `<textarea>`, `<input>`, or file picker for something a method declares. The bundle declares it, `contracts.ts` carries it, and `<RunInputsForm>` renders it. App chrome (mode toggle, submit button, the sample-file shortcut) is still hand-written, as it should be.

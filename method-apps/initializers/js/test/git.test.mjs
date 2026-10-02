@@ -9,7 +9,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 import { nearestExisting } from "../lib/destination.mjs";
-import { readGit } from "../lib/git.mjs";
+import { TEMPLATE_ORIGINS, readGit } from "../lib/git.mjs";
 import { git, isolatedEnv, setupEnv, tempRoot } from "./support.mjs";
 
 /** A repository with a commit, and what the enclosing `.gitignore` holds. */
@@ -128,5 +128,31 @@ describe("readGit inside another repository's work tree", () => {
       kind: "inside",
       toplevel: repo,
     });
+  });
+});
+
+describe("TEMPLATE_ORIGINS", () => {
+  it("reads a checkout of the repository the family lives in, or lived in, or of a starter, as a template's", () => {
+    for (const origin of [
+      "https://github.com/Pipelex/pipelex-sdk.git",
+      "https://github.com/Pipelex/pipelex-sdk",
+      "git@github.com:Pipelex/pipelex-sdk.git",
+      "https://github.com/Pipelex/pipelex-method-apps.git",
+      "git@github.com:Pipelex/pipelex-starter-js.git",
+      "https://github.com/Pipelex/pipelex-starter-python/",
+      "https://github.com/mthds-ai/mthds-starter-js.git",
+    ]) {
+      assert.ok(TEMPLATE_ORIGINS.test(origin), origin);
+    }
+  });
+
+  it("reads a repository that holds no template as not one, even under a name like a template's", () => {
+    for (const origin of [
+      "https://github.com/Pipelex/pipelex-sdk-js.git",
+      "git@github.com:Pipelex/pipelex-sdk-python.git",
+      "https://github.com/someone/pipelex-sdk.git",
+    ]) {
+      assert.ok(!TEMPLATE_ORIGINS.test(origin), origin);
+    }
   });
 });

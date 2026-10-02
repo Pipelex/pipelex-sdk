@@ -8,7 +8,7 @@ npm create @pipelex/method-app@latest my-app -- --method ./receipt_review.mthds
 make -C my-app serve
 ```
 
-The first command writes the [`webapp-js`](https://github.com/Pipelex/pipelex-method-apps/tree/main/webapp-js) template of [`pipelex-method-apps`](https://github.com/Pipelex/pipelex-method-apps) into `my-app/`, commits it as it came, and runs the copy's own `make create`, which scaffolds the method, names the project after it and runs `make all`. The second starts the dev server in the background, proves that the page answers, and prints its URL; `make stop` stops it. `make dev` runs the same server in the foreground instead.
+The first command writes the [`webapp-js`](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/webapp-js) template of the [method-app family](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps), the `method-apps/` directory of `Pipelex/pipelex-sdk`, into `my-app/`, commits it as it came, and runs the copy's own `make create`, which scaffolds the method, names the project after it and runs `make all`. The second starts the dev server in the background, proves that the page answers, and prints its URL; `make stop` stops it. `make dev` runs the same server in the foreground instead.
 
 `--method` takes a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`), or a published package address (`github.com/Pipelex/methods/text_stats@v0.1.1`). A path is read from where you typed the command.
 
@@ -48,13 +48,13 @@ The initializer reads git before it writes anything:
 | A repository with commits, holding only `.git`                                                   | Refused: every tracked file would show as deleted, and the commit would record that                                              |
 | Inside another repository's work tree, at a path it ignores                                      | A new repository on `main`, then the pristine commit: that repository does not see the project                                   |
 | Inside another repository's work tree                                                            | No repository and no commit: the project is new files in that repository. `--no-create` lets you commit the template there first |
-| Inside a checkout of `pipelex-method-apps` or of a starter                                       | Refused, `--no-git` included whenever git is on the PATH                                                                         |
+| Inside a checkout of `pipelex-sdk`, of `pipelex-method-apps` or of a starter                     | Refused, `--no-git` included whenever git is on the PATH                                                                         |
 
 A path the enclosing repository ignores, such as a `tmp/` its `.gitignore` lists or anywhere under a home directory kept as a repository that ignores `*`, is one it does not version, so a project there gets a repository of its own rather than no version control at all. Every source git reads counts: the enclosing repository's `.gitignore` files, its `.git/info/exclude`, and your `core.excludesFile`. What counts is the directory itself, which a missing destination is made for a moment to let git read: a directory the enclosing repository does not ignore gets no repository even when every file in it is ignored, as under `*` followed by `!*/`, since a repository there would still show in the enclosing one's `git status`, and the `git:` line then says the project is under no version control. A destination that is a symlink is read where it points: the repository whose work tree holds its target is the one whose ignores count.
 
 A commit needs a git identity, and a missing one is refused before anything is written. When git shows none outside a repository, the initializer asks again inside a throwaway repository at the destination, which it removes before going on, so an identity given only by an `includeIf "gitdir:…"` section is found. At a path another repository ignores, it always asks inside that throwaway repository, since an identity set in the enclosing repository's own configuration does not reach the new one.
 
-The pristine commit reads `Start from Pipelex/pipelex-method-apps/webapp-js <version> (<sha>)`, so `make create`'s changes are a diff you can read before committing them. `make create` itself commits nothing.
+The pristine commit reads `Start from Pipelex/pipelex-sdk/method-apps/webapp-js <version> (<sha>)`, so `make create`'s changes are a diff you can read before committing them. `make create` itself commits nothing.
 
 ## What it prints
 

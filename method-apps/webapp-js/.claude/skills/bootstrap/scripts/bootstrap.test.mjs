@@ -236,7 +236,7 @@ describe.skipIf(!IS_TEMPLATE)("bootstrap.mjs against the template's files", SPAW
       // The charter paragraph goes too: `make create` always passes --clean.
       if (rel === "CLAUDE.md") kept = stripTemplateParagraph(kept);
       return (
-        /make create|npm run create|scripts\/create\.mts|lib\/create\.mts|pipelex-method-apps|mono-repo/.test(
+        /make create|npm run create|scripts\/create\.mts|lib\/create\.mts|pipelex-method-apps|method-apps\/|mono-repo/.test(
           kept,
         ) || removedPattern.test(kept)
       );
