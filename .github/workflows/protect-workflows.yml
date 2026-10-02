@@ -53,17 +53,20 @@ jobs:
         if: steps.perm.outputs.trusted != 'true'
         uses: actions/checkout@v4
         with:
-          # In pull_request_target the default checkout is the BASE branch; without this the
-          # diff below would compare base-against-base and never see the fork's changes. We
-          # only fetch/diff/grep here — the untrusted head is never executed — so checking
-          # out the PR head SHA is safe.
+          # In pull_request_target the default checkout is the default branch, not the pull
+          # request; without this the diff below would never see the fork's changes. We only
+          # diff and grep here — the untrusted head is never executed — so checking out the
+          # pull request's head SHA is safe. The full history gives the diff its merge base.
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - name: Detect workflow changes
         if: steps.perm.outputs.trusted != 'true'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
-          CHANGED=$(git diff --name-only FETCH_HEAD HEAD | grep -E '^\.github/workflows/.*\.ya?ml$' || true)
+          # From the merge base, so a branch cut before a workflow changed on the base is not
+          # reported as changing it.
+          CHANGED=$(git diff --name-only "origin/$BASE_REF...HEAD" | grep -E '^\.github/workflows/.*\.ya?ml$' || true)
           if [ -n "$CHANGED" ]; then
             echo "::error::External contributors may not modify workflow files: $CHANGED"
             exit 1
