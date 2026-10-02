@@ -71,10 +71,10 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install the actionlint the Makefile pins, checked against its SHA-256
+      - name: Install the actionlint and shellcheck the Makefile pins, each checked against its SHA-256
         run: |
-          make install-actionlint ACTIONLINT_DIR="$RUNNER_TEMP/actionlint"
-          echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
+          make install-linters LINTERS_DIR="$RUNNER_TEMP/workflow-linters"
+          echo "$RUNNER_TEMP/workflow-linters" >> "$GITHUB_PATH"
 
       - name: Check every manifest against VERSION, the workflow twins, every workflow's lint, and the root's scripts
         run: make check-versions check-workflows lint-workflows test-scripts

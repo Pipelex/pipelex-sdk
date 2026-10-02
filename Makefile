@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install hooks agent-check agent-test workflows check-workflows lint-workflows install-actionlint check-versions check-release-versions release-selection test-scripts
+.PHONY: help install hooks agent-check agent-test workflows check-workflows lint-workflows install-linters check-versions check-release-versions release-selection test-scripts
 
 # The root gate. Each package directory is a project of its own, with its own Makefile,
 # manifest and lockfile, installed from the registries exactly as its standalone repository
@@ -54,27 +54,36 @@ check-workflows: ## Check that every root twin of a template workflow is current
 
 # actionlint reads every workflow, the root's and each template's own, so a broken expression
 # or step in a workflow no pull request runs, such as release.yml or mirrors.yml, is caught on
-# the pull request that makes it (docs/ci.md). It runs shellcheck over the `run:` scripts when
-# shellcheck is on the PATH. CI runs exactly ACTIONLINT_VERSION, which `install-actionlint`
-# fetches from the release and checks against the SHA-256 the release publishes for it; a
-# maintainer's own actionlint is used as it is, and a different version is named.
+# the pull request that makes it (docs/ci.md). It runs the shellcheck it finds on the PATH over
+# the `run:` scripts. CI runs exactly the versions pinned here, which `install-linters`
+# fetches from each project's release and checks against the SHA-256 recorded here, so a new
+# runner image cannot change the verdict; a maintainer's own tools are used as they are, and a
+# version that differs is named.
 ACTIONLINT_VERSION := 1.7.12
 ACTIONLINT_LINUX_AMD64_SHA256 := 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-WORKFLOW_FILES = $(wildcard .github/workflows/*.yml) $(foreach t,$(TEMPLATES),$(wildcard $(t)/.github/workflows/*.yml))
+SHELLCHECK_VERSION := 0.11.0
+SHELLCHECK_LINUX_AMD64_SHA256 := b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+WORKFLOW_FILES = $(wildcard .github/workflows/*.yml .github/workflows/*.yaml) $(foreach t,$(TEMPLATES),$(wildcard $(t)/.github/workflows/*.yml $(t)/.github/workflows/*.yaml))
 
-lint-workflows: ## Lint the root's workflows and every template's own with actionlint
-	@command -v actionlint >/dev/null 2>&1 || { echo "actionlint is not installed: brew install actionlint, or on Linux x86-64 make install-actionlint ACTIONLINT_DIR=<dir>"; exit 1; }
+lint-workflows: ## Lint the root's workflows and every template's own with actionlint and shellcheck
+	@command -v actionlint >/dev/null 2>&1 || { echo "actionlint is not installed: brew install actionlint shellcheck, or on Linux x86-64 make install-linters LINTERS_DIR=<dir>"; exit 1; }
 	@version=$$(actionlint -version | head -n 1); [ "$$version" = "$(ACTIONLINT_VERSION)" ] || echo "note: this is actionlint $$version, and CI runs $(ACTIONLINT_VERSION)"
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		version=$$(shellcheck --version | sed -n 's/^version: //p'); [ "$$version" = "$(SHELLCHECK_VERSION)" ] || echo "note: this is shellcheck $$version, and CI runs $(SHELLCHECK_VERSION)"; \
+	else echo "note: shellcheck is not installed, so the run: scripts are not checked here, and CI checks them"; fi
 	@actionlint $(WORKFLOW_FILES)
 
-install-actionlint: ## Install the actionlint CI runs, for Linux x86-64, into ACTIONLINT_DIR, checked against its published SHA-256
-	@test -n "$(ACTIONLINT_DIR)" || { echo "name the directory: make install-actionlint ACTIONLINT_DIR=<dir>"; exit 1; }
-	@mkdir -p "$(ACTIONLINT_DIR)"
-	@curl -fsSL -o "$(ACTIONLINT_DIR)/actionlint.tar.gz" "https://github.com/rhysd/actionlint/releases/download/v$(ACTIONLINT_VERSION)/actionlint_$(ACTIONLINT_VERSION)_linux_amd64.tar.gz"
-	@echo "$(ACTIONLINT_LINUX_AMD64_SHA256)  $(ACTIONLINT_DIR)/actionlint.tar.gz" | sha256sum --check --quiet -
-	@tar -xzf "$(ACTIONLINT_DIR)/actionlint.tar.gz" -C "$(ACTIONLINT_DIR)" actionlint
-	@rm "$(ACTIONLINT_DIR)/actionlint.tar.gz"
-	@echo "actionlint $$("$(ACTIONLINT_DIR)/actionlint" -version | head -n 1) installed in $(ACTIONLINT_DIR)"
+install-linters: ## Install the actionlint and shellcheck CI runs, for Linux x86-64, into LINTERS_DIR, each checked against its SHA-256
+	@test -n "$(LINTERS_DIR)" || { echo "name the directory: make install-linters LINTERS_DIR=<dir>"; exit 1; }
+	@mkdir -p "$(LINTERS_DIR)"
+	@curl -fsSL -o "$(LINTERS_DIR)/actionlint.tar.gz" "https://github.com/rhysd/actionlint/releases/download/v$(ACTIONLINT_VERSION)/actionlint_$(ACTIONLINT_VERSION)_linux_amd64.tar.gz"
+	@echo "$(ACTIONLINT_LINUX_AMD64_SHA256)  $(LINTERS_DIR)/actionlint.tar.gz" | sha256sum --check --quiet -
+	@tar -xzf "$(LINTERS_DIR)/actionlint.tar.gz" -C "$(LINTERS_DIR)" actionlint
+	@curl -fsSL -o "$(LINTERS_DIR)/shellcheck.tar.gz" "https://github.com/koalaman/shellcheck/releases/download/v$(SHELLCHECK_VERSION)/shellcheck-v$(SHELLCHECK_VERSION).linux.x86_64.tar.gz"
+	@echo "$(SHELLCHECK_LINUX_AMD64_SHA256)  $(LINTERS_DIR)/shellcheck.tar.gz" | sha256sum --check --quiet -
+	@tar -xzf "$(LINTERS_DIR)/shellcheck.tar.gz" -C "$(LINTERS_DIR)" --strip-components=1 "shellcheck-v$(SHELLCHECK_VERSION)/shellcheck"
+	@rm "$(LINTERS_DIR)/actionlint.tar.gz" "$(LINTERS_DIR)/shellcheck.tar.gz"
+	@echo "actionlint $$("$(LINTERS_DIR)/actionlint" -version | head -n 1) and shellcheck $$("$(LINTERS_DIR)/shellcheck" --version | sed -n 's/^version: //p') installed in $(LINTERS_DIR)"
 
 check-versions: ## Check that every unit's manifests carry one version, at or below VERSION
 	@node scripts/versions.mjs $(UNITS)
