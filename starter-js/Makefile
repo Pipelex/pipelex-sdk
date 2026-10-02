@@ -194,7 +194,8 @@ agent-test: install-if-missing ## Run tests, silent on success, installing first
 
 check: lint format-check typecheck codegen-check ## Run lint, format check, type check, and the offline codegen check
 
-agent-check: install-if-missing check ## Run check, installing first when node_modules is missing (for agents)
+agent-check: install-if-missing ## Run check, installing first when node_modules is missing (for agents)
+	@$(MAKE) --no-print-directory check
 
 all: check test build ## Full validation: check + test + build (excludes e2e — see test-e2e)
 

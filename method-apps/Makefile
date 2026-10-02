@@ -90,7 +90,8 @@ test-family: ## Run the tests of the root's own scripts and of every initializer
 test: test-family ## Run the family's tests, then every template's
 	$(call each,test)
 
-agent-check: install-if-missing check ## Check the family, then every template, installing first what was never installed (for agents)
+agent-check: install-if-missing ## Check the family, then every template, installing first what was never installed (for agents)
+	@$(MAKE) --no-print-directory check
 
 agent-test: install-if-missing ## Run every test, silent on success, installing first what was never installed (for agents)
 	@OUTPUT=$$(node --test $(FAMILY_TESTS) 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi

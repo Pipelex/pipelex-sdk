@@ -140,10 +140,11 @@ install: env-verbose
 	uv sync --all-extras && \
 	echo "Installed $(PROJECT_NAME) dependencies in ${VIRTUAL_ENV} with all extras.";
 
-# The agent targets install the project first when its virtual environment is missing, so a
-# fresh checkout can run them directly.
+# The agent targets install the project first when it was never installed, so a fresh checkout
+# can run them directly. The test reads a tool rather than the virtual environment, because `env`
+# creates an empty one for every target that depends on it, and an interrupted sync leaves one too.
 install-if-missing:
-	@[ -d "$(VIRTUAL_ENV)" ] || $(MAKE) --no-print-directory install
+	@[ -x "$(VIRTUAL_ENV)/bin/pytest" ] || $(MAKE) --no-print-directory install
 
 lock: env
 	$(call PRINT_TITLE,"Resolving dependencies without update")
@@ -222,7 +223,7 @@ gha-tests: env
 	$(call PRINT_TITLE,"Unit testing for GitHub Actions")
 	$(VENV_PYTEST) --exitfirst --quiet
 
-agent-test: install-if-missing env
+agent-test: install-if-missing
 	@echo "• Running unit tests..."
 	@tmpfile=$$(mktemp); \
 	$(VENV_PYTEST) -o log_level=WARNING --tb=short -q > "$$tmpfile" 2>&1; \
@@ -313,7 +314,8 @@ cc: cleanderived c
 check: cc check-unused-imports pylint
 	@echo "> done: check"
 
-agent-check: install-if-missing fix-unused-imports format lint pyright mypy
+agent-check: install-if-missing
+	@$(MAKE) --no-print-directory fix-unused-imports format lint pyright mypy
 	@echo "> done: agent-check"
 
 li: lock install
