@@ -69,11 +69,11 @@ make -C my-app serve
 
 ## The version and the release
 
-`VERSION` is the family's version, and the release reads it. A release of the family is a release of the whole `pipelex-sdk` repository, cut from its root, and it bumps `VERSION`, every template's manifest and every initializer's together, re-locks each template, writes the entry in the root `CHANGELOG.md`, and runs `make all`.
+`VERSION` is the family's version, and the release reads it. A release of the family is a release of the whole `pipelex-sdk` repository, cut from its root, and it bumps `VERSION`, every template's manifest and every initializer's together, re-locks each template, writes the entry in the family's `CHANGELOG.md`, the one in this directory, and runs `make all`.
 
 The merge to `main` publishes the initializer. `.github/workflows/release.yml`, hand-written rather than a twin, runs on the push: it reads the version from `initializers/js/package.json`, does nothing when npm already has it, asserts the changelog's entry, packs the templates with `--publish`, runs `make test-family`, publishes through npm trusted publishing with provenance, and tags the commit `vX.Y.Z`. It publishes with npm 11, the npm `family-check.yml` also installs, so the release never runs an npm the pull request checks have not: a new npm major reaches it only by an edit to both workflows. A later run that finds the version published but untagged backfills the tag on the commit npm recorded as the version's source, its `gitHead`, never on the commit that run stands on, and one run of the workflow goes at a time. npm authenticates the publish as the package's trusted publisher, registered on npmjs.com for `release.yml` by its filename, so renaming the workflow means registering it again; npm answers a refused publish with an `E404` on the `PUT`, and the cure is restoring that registration. The templates themselves are never published: every template's manifest is private, and a template reaches a project through the initializer.
 
-A template's own `CHANGELOG.md` only points at the root's. Its bootstrap replaces it with a project's first entry.
+A template's own `CHANGELOG.md` only points at the family's. Its bootstrap replaces it with a project's first entry.
 
 ## The pre-commit hook
 
@@ -104,6 +104,6 @@ A new template is a directory that works on its own, then joins the family:
 3. `make workflows` renders its twins, and the renderer's refusals say what to change in its workflows if it cannot. The renderer carries an npm cache and a setup-uv step into the template's directory; a template caching through anything else needs the renderer taught its lock file first.
 4. Its `make create` forwards the shared variables as the other templates do, and its extras are declared in `scripts/create-contract.mjs`.
 5. It joins the `templates.json` of its ecosystem's initializer, with the same extras, and exactly one initializer serves it; a template of an ecosystem with no initializer yet waits for one. A Node template also needs a plain `engines.node` floor (`">=22.12.0"`), which the initializer's preflight reads.
-6. The repository's release names its manifest among its version files, and the root `README.md` lists it.
+6. The repository's release names its manifest among its version files, and the family's `README.md` lists it.
 7. If its hook is not a Husky hook, the repository root's `.githooks/pre-commit` learns to run it.
-8. `make all` at the root is green.
+8. `make all` at the family root is green.

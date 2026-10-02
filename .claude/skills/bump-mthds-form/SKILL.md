@@ -22,22 +22,22 @@ A template added later joins this table when its `package.json` lists `@pipelex/
 
 Reading is free in the main checkout, so this step and the next two run wherever the session stands.
 
-For each template on the kernel, show the range, what is installed and where it was installed from:
+For each template on the kernel, show the range and the version its lockfile pins. Both are read from tracked files, so they answer in a checkout where the template was never installed:
 
 ```bash
 node -p "require('./<template>/package.json').dependencies['@pipelex/mthds-form']"
-node -p "require('./<template>/node_modules/@pipelex/mthds-form/package.json').version"
+node -p "require('./<template>/package-lock.json').packages['node_modules/@pipelex/mthds-form'].version"
 ```
 
-`make local-status` in `method-apps/` covers the second line for the family's templates. Then, once, the latest published version: `npm view @pipelex/mthds-form version`.
+Then, once, the latest published version: `npm view @pipelex/mthds-form version`.
 
-- **A template is running a local build** (`make local-status` says `local`, or its `make use-local` was run): a bump must not be measured against it, and the version cannot show it, since a local build carries the published version string. `make use-published-form` in the family root restores the kernel the lockfile pins in every family template, and refuses while the SDK is local too, in which case `make use-published` restores both; `make use-npm` in `starter-js` restores both packages there. None of them rewrites a manifest, except that `starter-js`'s `use-npm` moves both packages to `@latest`, so check its diff before going on.
+- **A template that is installed may be running a local build** (`make local-status` in `method-apps/` says `local`, or the template's `make use-local` was run): a bump must not be measured against it, and the version cannot show it, since a local build carries the published version string. Running `npm ci` in the template puts back exactly what its lockfile pins, for the kernel and the SDK alike; in the family, `make use-published-form` restores the kernel alone and refuses while the SDK is local too, in which case `make use-published` restores both. Never reach for `starter-js`'s `make use-npm` here: it installs both packages at `@latest` and saves them, so a kernel bump would carry an SDK bump nobody read the changelog of.
 - **The templates are on different versions**: they move to one version together here, and the lowest of them sets where the changelog reading in Step 3 starts.
 - **Every template is already on the latest**: say so and stop, unless the user named another version.
 
 ## Step 2 — Pick the target
 
-The target is the latest published version unless the invocation named another, so do not ask when there is no choice to make. A named version may be ahead of what `npm view` reports (published but not yet indexed) or behind it, as long as no template has already installed something newer. A version below what a template has installed is a downgrade, and a downgrade is not a bump: say so and stop. Undoing a release means reading its changelog backwards and reversing its migrations, which none of these steps does, so a rollback is planned by a person. Call it `TARGET`, without a `v`.
+The target is the latest published version unless the invocation named another, so do not ask when there is no choice to make. A named version may be ahead of what `npm view` reports (published but not yet indexed) or behind it, as long as no template's lockfile already pins something newer. A version below what a template pins is a downgrade, and a downgrade is not a bump: say so and stop. Undoing a release means reading its changelog backwards and reversing its migrations, which none of these steps does, so a rollback is planned by a person. Call it `TARGET`, without a `v`.
 
 ## Step 3 — Read what changed, against each template's seams
 
@@ -72,7 +72,7 @@ In each template this skill moves:
 
 ## Step 6 — Run the gates
 
-Run each moved template's own gate from the worktree, `make -C <template> all`: its `check` (lint, format check, type check, offline codegen check), `test` and `build`. When iterating on a failure, `make -C <template> agent-test` runs the tests alone and stays quiet on success. Each template's own `bump-mthds-form` skill names the tests a kernel bump most often turns red. On a red gate, connect the failure to the Step 3 entry that caused it before proposing a fix. A red type check on `VALIDATION_MESSAGES` is the seam working as designed: a new message key needs that template's English wording, not a looser type.
+Run each moved package's gate from the worktree: `make -C starter-js all`, which runs the template's `check` (lint, format check, type check, offline codegen check), `test` and `build`, and `make -C method-apps all`, which runs the family's own checks first, the formatting of `method-apps/CHANGELOG.md` that Step 7 edits among them, then the same three for every template in the family. When iterating on a failure, `make -C <template> agent-test` runs one template's tests alone and stays quiet on success. Each template's own `bump-mthds-form` skill names the tests a kernel bump most often turns red. On a red gate, connect the failure to the Step 3 entry that caused it before proposing a fix. A red type check on `VALIDATION_MESSAGES` is the seam working as designed: a new message key needs that template's English wording, not a looser type.
 
 `method-apps/webapp-js` ships no method, so one proof lives outside its gate. **Run the live `make create` proof** when `PIPELEX_API_KEY` is set and Step 3 found an entry that reaches the controls, the theme or its tokens, the gate, or the contract types. The offline scaffold test type-checks what is emitted, but it renders no form and replays responses recorded from an earlier engine. The live run scaffolds from today's engine, runs `make all` inside the new project, and serves a page with a real form on it. Follow `method-apps/webapp-js/docs/ci.md`, section "The live half of the proof for `make create`": fresh copies of the template, never the worktree itself, discarded afterwards. It spends no model call. When there is no key, say that the proof was skipped and which entry made it relevant. In `starter-js`, whose demo methods render real forms, `make test-e2e` is the live proof instead, and it costs a model call, so ask first.
 
