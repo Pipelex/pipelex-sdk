@@ -59,14 +59,21 @@ jobs:
           # pull request's head SHA is safe. The full history gives the diff its merge base.
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          # checkout refuses a fork's head under pull_request_target unless told otherwise,
+          # which is every pull request reaching this step, since an author without write access
+          # can only open one from a fork. Nothing from the head runs, and the token, read-only,
+          # is not left in the checkout's git config.
+          allow-unsafe-pr-checkout: true
+          persist-credentials: false
       - name: Detect workflow changes
         if: steps.perm.outputs.trusted != 'true'
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           # From the merge base, so a branch cut before a workflow changed on the base is not
-          # reported as changing it.
-          CHANGED=$(git diff --name-only "origin/$BASE_REF...HEAD" | grep -E '^\.github/workflows/.*\.ya?ml$' || true)
+          # reported as changing it; without renames, so a workflow moved out of the directory
+          # is reported by its old path.
+          CHANGED=$(git diff --no-renames --name-only "origin/$BASE_REF...HEAD" | grep -E '^\.github/workflows/.*\.ya?ml$' || true)
           if [ -n "$CHANGED" ]; then
             echo "::error::External contributors may not modify workflow files: $CHANGED"
             exit 1
