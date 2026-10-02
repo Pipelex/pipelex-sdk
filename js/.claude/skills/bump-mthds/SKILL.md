@@ -45,5 +45,6 @@ Summarise `OLD → NEW`, then remind the user to:
 
 - **Add a CHANGELOG.md entry** describing the bump and why (e.g., a protocol surface the SDK now relies on).
 - **Coordinate consumer floors** if downstream repos pin a minimum `@pipelex/sdk` — that is the job of the equivalent floor-bump skill in those repos, not here.
+- **File the parity item** when the bump adopted a protocol model the Python SDK mirrors. `pipelex-sdk`, in this repository's `python/` (ledger member `pipelex-sdk/python`), is this package's twin and consumes the `mthds` PyPI package, so when a protocol model moves it usually moves in both languages. Its move waits on the matching `mthds` release on PyPI and runs `python/`'s own gate and changelog, so it is a change of its own: check `ledger list --owner pipelex-sdk/python --status open` for an item that already covers it, otherwise file it (`ledger new --owner pipelex-sdk/python …`) naming the symbol and the version, then `ledger validate` and `ledger commit`.
 
 Do not commit or create a release — leave that to the user (or the repository root's `/release` skill).
