@@ -1,9 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [v0.29.0] - 2026-10-02
 
 ### Changed
 
+- **One version line with `pipelex-sdk` and the templates**: `@pipelex/sdk` is now developed and released from the `js/` directory of `Pipelex/pipelex-sdk`, together with the Python SDK `pipelex-sdk`, the starter templates and `@pipelex/create-method-app`, under one version number; when both SDKs ship in the same release they carry the same number, which says they cover the same API. This minor changes no API.
 - **The package's repository, homepage and issue links**: the npm page now sends a reader to the `js/` directory of `Pipelex/pipelex-sdk`, where the SDK's source lives, and to that repository's issues; `package.json`'s `repository` names the new repository with the directory `js`, as npm provenance requires.
 
 ## [v0.28.1] - 2026-10-01

@@ -1,6 +1,6 @@
 [project]
 name = "widget"
-version = "0.2.1"
+version = "0.29.0"
 description = "Replace this with your project description"
 # authors = [{ name = "Your Name", email = "your.email@example.com" }]
 license = "MIT"
