@@ -1,24 +1,44 @@
-name: Lint check
+# Rendered by `make workflows` from starter-python/.github/workflows/lint-check.yml — edit that file and re-render.
+# It tests starter-python, extracted as the export ships it, against pipelex-sdk built from the
+# same commit, installed over the registry's copy. It is reported, not required.
+name: Lint check (starter-python, next SDK)
 
 on:
   pull_request:
+    paths:
+      - "starter-python/**"
+      - "python/**"
+      - ".github/workflows/starter-python-next-sdk-lint-check.yml"
 
 jobs:
 # --------------------------------------------------------------------------
 # 1.  Matrix job — one runner *per* Python version
 # --------------------------------------------------------------------------
   lint:
-    name: Lint (${{ matrix.python-version }})
+    name: Lint (${{ matrix.python-version }}) (starter-python, next SDK)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ../standalone/starter-python
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13"]
     env:
-      VIRTUAL_ENV: ${{ github.workspace }}/.venv
+      VIRTUAL_ENV: ${{ github.workspace }}/../standalone/starter-python/.venv
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Extract starter-python as the export ships it
+        working-directory: .
+        run: |
+          rm -rf ../standalone/starter-python && mkdir -p ../standalone/starter-python
+          git archive HEAD:starter-python | tar -x -C ../standalone/starter-python
+          cd ../standalone/starter-python
+          git init -q -b main
+          git add -A -f
+          git -c user.name=ci -c user.email=ci@localhost commit -q -m "starter-python, as a project made from it starts"
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
@@ -32,7 +52,12 @@ jobs:
         run: uv --version
 
       - name: Install dependencies
-        run: PYTHON_VERSION=${{ matrix.python-version }} TEST_PROFILE=ci make install
+        run: PYTHON_VERSION=${{ matrix.python-version }} make install
+
+      - name: Install pipelex-sdk built from this commit
+        run: |
+          uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/python"
+          uv pip install --python .venv/bin/python --reinstall-package pipelex-sdk "$RUNNER_TEMP"/next-sdk/*.whl
 
       - name: Run ruff format merge check
         run: make merge-check-ruff-format
@@ -50,7 +75,7 @@ jobs:
 # 2.  Aggregator job — the *single* required status check
 # --------------------------------------------------------------------------
   lint-all:
-    name: Lint (all versions)
+    name: Lint (all versions) (starter-python, next SDK)
     runs-on: ubuntu-latest
     needs: lint        # wait for every matrix leg
     if: always()       # run even if one leg already failed

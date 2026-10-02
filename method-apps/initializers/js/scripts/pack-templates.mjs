@@ -14,12 +14,17 @@
  * the working tree lacks, and a template whose `engines.node` is not a plain
  * `>=` floor, which the initializer's preflight reads.
  *
+ * A pack names the repository's version, `VERSION` at the root of the git
+ * repository the family is checked out in, and the commit it was packed from.
+ *
  * `--publish` is what `npm pack` and `npm publish` run (the package's
- * `prepack`). It refuses a template with uncommitted changes, and a family
- * whose `VERSION` is not this package's version, so that what reaches the
- * registry is the template at the commit and the version the pristine commit
- * will name. Without it, a template with uncommitted changes is packed as it
- * stands, and its source is named `<sha>-dirty`. The packs are gitignored.
+ * `prepack`). It refuses a template with uncommitted changes, and a
+ * repository whose `VERSION` is not this package's version, so that what
+ * reaches the registry is the template at the commit and the version the
+ * pristine commit will name. Between releases the package's version may sit
+ * below `VERSION`, and a release that ships the initializer makes the two
+ * equal. Without `--publish`, a template with uncommitted changes is packed as
+ * it stands, and its source is named `<sha>-dirty`. The packs are gitignored.
  */
 
 import { execFileSync } from "node:child_process";
@@ -31,7 +36,10 @@ import { fileURLToPath } from "node:url";
 import { encodePack, MODES } from "../lib/pack.mjs";
 import { loadTable, PACKAGE_ROOT } from "../lib/templates.mjs";
 
-/** The family's repository: `initializers/js/` is two levels below it. */
+/**
+ * The family's directory, where its templates are: `initializers/js/` is two
+ * levels below it.
+ */
 export const FAMILY_ROOT = path.resolve(PACKAGE_ROOT, "..", "..");
 
 export const PACKS_DIR = path.join(PACKAGE_ROOT, "templates");
@@ -72,9 +80,13 @@ export function hasUncommittedChanges(root, template) {
   return git(root, ["status", "--porcelain", "-z", "--untracked-files=no", "--", template]) !== "";
 }
 
-/** The family's version, from `VERSION` at the repository's root. */
-export function familyVersion(root) {
-  return fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
+/**
+ * The repository's version, from `VERSION` at the root of the git repository
+ * the family is checked out in, which serves every package of the repository.
+ */
+export function repositoryVersion(root) {
+  const top = git(root, ["rev-parse", "--show-toplevel"]).trim();
+  return fs.readFileSync(path.join(top, "VERSION"), "utf8").trim();
 }
 
 /** One template's pack, as a Buffer. */
@@ -123,7 +135,7 @@ export function packTemplate(root, template, { publish = false } = {}) {
   const head = git(root, ["rev-parse", "HEAD"]).trim();
   return encodePack({
     template,
-    version: familyVersion(root),
+    version: repositoryVersion(root),
     source: dirty ? `${head}-dirty` : head,
     files,
   });
@@ -135,10 +147,10 @@ export function packAll(root, { publish = false, outDir = PACKS_DIR, table = loa
     const own = JSON.parse(
       fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf8"),
     ).version;
-    const family = familyVersion(root);
-    if (own !== family) {
+    const version = repositoryVersion(root);
+    if (own !== version) {
       throw new PackRefusal(
-        `VERSION says ${family} and this package says ${own}: the family has one version`,
+        `the repository's VERSION says ${version} and this package says ${own}: a published initializer carries the version of the release that ships it, which sets both`,
       );
     }
   }

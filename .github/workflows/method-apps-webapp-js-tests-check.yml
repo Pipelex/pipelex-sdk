@@ -1,0 +1,43 @@
+# Rendered by `make workflows` from method-apps/webapp-js/.github/workflows/tests-check.yml — edit that file and re-render.
+# It runs method-apps/webapp-js extracted exactly as the export ships it, installed from the registry
+# with its own lockfile, as a project made from it would be. The root CI calls it.
+name: Tests check (method-apps/webapp-js)
+
+on:
+  workflow_call:
+
+jobs:
+  tests:
+    name: Tests (method-apps/webapp-js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ../standalone/method-apps-webapp-js
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract method-apps/webapp-js as the export ships it
+        working-directory: .
+        run: |
+          rm -rf ../standalone/method-apps-webapp-js && mkdir -p ../standalone/method-apps-webapp-js
+          git archive HEAD:method-apps/webapp-js | tar -x -C ../standalone/method-apps-webapp-js
+          cd ../standalone/method-apps-webapp-js
+          git init -q -b main
+          git add -A -f
+          git -c user.name=ci -c user.email=ci@localhost commit -q -m "method-apps/webapp-js, as a project made from it starts"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: method-apps/webapp-js/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: make agent-test
+
+      - name: Build
+        run: make build

@@ -1,49 +1,18 @@
-name: Guard branch flow
+# Fails a pull request that changes a workflow when its author cannot write to this repository.
+# Every check here runs from the pull request's own copy of its workflow, so a pull request that
+# edits ci.yml or a rendered twin could change what it is checked by; this workflow runs on
+# pull_request_target instead, from the base branch's copy, which the pull request cannot edit.
+# It never runs the pull request's code: it only diffs the head against the base. The branch
+# flow itself is the Branch flow job of ci.yml, inside the required Lint (all).
+name: Protect workflows
+
 on:
   pull_request_target:
     types: [opened, edited, synchronize, reopened]
 
+permissions: {}
+
 jobs:
-  # ───────────────────────────────────────────────────────────────
-  # 1) Only release/vX.Y.Z → main
-  # ───────────────────────────────────────────────────────────────
-  gate-main:
-    if: github.event.pull_request.base.ref == 'main'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify source branch is a Release
-        env:
-          HEAD: ${{ github.event.pull_request.head.ref }}
-        run: |
-          echo "PR → main from $HEAD"
-          if [[ ! "$HEAD" =~ ^release\/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Only release/vX.Y.Z branches may merge into main."
-            exit 1
-          fi
-
-  # ───────────────────────────────────────────────────────────────
-  # 2) Only work-branches → release/vX.Y.Z, pre-release/vX.Y.Z..., or dev
-  # ───────────────────────────────────────────────────────────────
-  gate-release:
-    if: startsWith(github.event.pull_request.base.ref, 'release/v') || startsWith(github.event.pull_request.base.ref, 'pre-release/v') || github.event.pull_request.base.ref == 'dev'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify source branch uses allowed prefix
-        env:
-          HEAD: ${{ github.event.pull_request.head.ref }}
-        run: |
-          echo "PR → ${{ github.event.pull_request.base.ref }} from $HEAD"
-          if [[ "$HEAD" == "dev" ]]; then
-            exit 0
-          fi
-          if [[ ! "$HEAD" =~ ^(fix|feature|refactor|chore|docs|ci-cd|changelog|codex)\/[A-Za-z0-9._\/\<\>\=\-]+$ ]]; then
-            echo "::error::Branch must start with fix/, feature/, refactor/, chore/, docs/, or ci-cd/."
-            exit 1
-          fi
-
-  # ───────────────────────────────────────────────────────────────
-  # 3) Prevent forks from editing your workflows
-  # ───────────────────────────────────────────────────────────────
   protect-workflows:
     runs-on: ubuntu-latest
     # Least privilege: querying the author's permission and diffing the head only needs read.

@@ -1,0 +1,43 @@
+# Rendered by `make workflows` from starter-js/.github/workflows/tests-check.yml — edit that file and re-render.
+# It runs starter-js extracted exactly as the export ships it, installed from the registry
+# with its own lockfile, as a project made from it would be. The root CI calls it.
+name: Tests check (starter-js)
+
+on:
+  workflow_call:
+
+jobs:
+  tests:
+    name: Tests (starter-js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ../standalone/starter-js
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract starter-js as the export ships it
+        working-directory: .
+        run: |
+          rm -rf ../standalone/starter-js && mkdir -p ../standalone/starter-js
+          git archive HEAD:starter-js | tar -x -C ../standalone/starter-js
+          cd ../standalone/starter-js
+          git init -q -b main
+          git add -A -f
+          git -c user.name=ci -c user.email=ci@localhost commit -q -m "starter-js, as a project made from it starts"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: starter-js/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: make agent-test
+
+      - name: Build
+        run: make build
