@@ -105,7 +105,7 @@ A release pull request changes `VERSION`, which runs every package's jobs, so it
 
 - **`Branch flow`** — only this repository's `release/vX.Y.Z` may merge into `main`.
 - **`Release version`** — `VERSION` is above `main`'s and equals the branch's version, and `make check-release-versions` holds: at least one unit carries `VERSION`, each with its `## [vX.Y.Z]` changelog heading.
-- **`Root`** — `make check-versions check-workflows test-scripts`, the selection's tests among them.
+- **`Root`** — `make check-versions check-workflows lint-workflows test-scripts`: actionlint over every workflow, `release.yml` among them, and the selection's tests among the scripts'.
 - **Every package's lint and tests**, the templates' standalone twins included, inside the two required aggregates `Lint (all)` and `Tests (all)`. The next-SDK twins run beside them and are reported, not required.
 - **`cla.yml` and `protect-workflows.yml`**, reported, run from `main`'s copy.
 

@@ -61,7 +61,7 @@ jobs:
           done
 
   root:
-    name: Root (versions, workflow twins, scripts)
+    name: Root (versions, workflows, scripts)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -71,8 +71,13 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Check every manifest against VERSION, the workflow twins, and the root's scripts
-        run: make check-versions check-workflows test-scripts
+      - name: Install the actionlint and shellcheck the Makefile pins, each checked against its SHA-256
+        run: |
+          make install-linters LINTERS_DIR="$RUNNER_TEMP/workflow-linters"
+          echo "$RUNNER_TEMP/workflow-linters" >> "$GITHUB_PATH"
+
+      - name: Check every manifest against VERSION, the workflow twins, every workflow's lint, and the root's scripts
+        run: make check-versions check-workflows lint-workflows test-scripts
 
   branch-flow:
     name: Branch flow
