@@ -8,6 +8,10 @@
 - **The web app template's `make use-local` takes the SDK from a `pipelex-sdk` checkout**: the target now builds `@pipelex/sdk` from `pipelex-sdk/js`, the `js/` directory of a `Pipelex/pipelex-sdk` checkout, in the parent directory or the one `SIBLINGS_DIR` names, where it looked for a `pipelex-sdk-js` checkout, and the template's `/bump-sdk` reads a local changelog from the same place. The form kernel is still `mthds-form` there.
 - **The pristine commit's subject**: the commit the initializer makes in a new project now reads `Start from Pipelex/pipelex-sdk/method-apps/webapp-js <version> (<sha>)`, where it read `Start from Pipelex/pipelex-method-apps/webapp-js <version> (<sha>)`, so a tool that finds a project's first commit by its subject has to accept both.
 
+### Fixed
+
+- **The web app template's serve test no longer interrupts the server too early**: the cases of `scripts/lib/serve.test.mts` that stop `make serve` with SIGINT or SIGHUP sent the signal as soon as the dev server was announced, sometimes before the fake server had forked its child, and then failed on finding one process where two were expected. They now wait until both processes have started, so a project's `make test` no longer fails at random on a busy machine.
+
 ## [v0.5.7] - 2026-10-01
 
 ### Security
