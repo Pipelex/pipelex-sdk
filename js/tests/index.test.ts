@@ -14,7 +14,7 @@ describe("SDK_VERSION", () => {
   it("matches the version in package.json", () => {
     // The exported runtime constant must not drift from the published package
     // version — a stale value misreports the SDK to consumers doing diagnostics
-    // or compatibility checks. The /release skill bumps both together.
+    // or compatibility checks. The repository root's /release skill bumps both together.
     expect(SDK_VERSION).toBe(pkg.version);
   });
 });

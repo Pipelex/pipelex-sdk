@@ -46,4 +46,4 @@ Summarise `OLD → NEW`, then remind the user to:
 - **Add a CHANGELOG.md entry** describing the bump and why (e.g., a protocol surface the SDK now relies on).
 - **Coordinate consumer floors** if downstream repos pin a minimum `@pipelex/sdk` — that is the job of the equivalent floor-bump skill in those repos, not here.
 
-Do not commit or create a release — leave that to the user (or the `release` skill).
+Do not commit or create a release — leave that to the user (or the repository root's `/release` skill).

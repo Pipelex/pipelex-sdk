@@ -31,11 +31,11 @@ Everything that serves only the maintainers lives at the root instead:
 - `LICENSE` and `CLA.md`, the repository's license and the contributor agreement its pull requests are signed under;
 - `.githooks/`, the git hooks;
 - `.github/workflows/`, the pull-request checks, which [`ci.md`](ci.md) describes, with the rendered twins of each template's own workflows;
-- `scripts/`, which checks every manifest against `VERSION` and renders the twins;
-- `.claude/skills/`, the maintainers' skills: `bump-sdk` and `bump-mthds-form` move every template onto a newer published SDK or form kernel in one change;
+- `scripts/`, which checks every manifest against `VERSION`, renders the twins and selects the packages a release ships;
+- `.claude/skills/`, the maintainers' skills: `release` cuts a release of the repository, and `bump-sdk` and `bump-mthds-form` move every template onto a newer published SDK or form kernel in one change;
 - `docs/`, this documentation.
 
-The release skills that each source repository carried, the templates' own included, were removed from the package directories: the repository's release is cut from the root, and a person's project has no use for Pipelex's release procedure. The release workflow and the root `/release` skill that replace them are not written yet (see [`release-model.md`](release-model.md)).
+The release skills that each source repository carried, the templates' own included, were removed from the package directories: the repository's release is cut from the root, and a person's project has no use for Pipelex's release procedure. The root `/release` skill replaces them, and the release workflow that publishes is not written yet (see [`release-model.md`](release-model.md)).
 
 ## Installing
 

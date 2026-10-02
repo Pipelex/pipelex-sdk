@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install hooks agent-check agent-test workflows check-workflows check-versions check-release-versions test-scripts
+.PHONY: help install hooks agent-check agent-test workflows check-workflows check-versions check-release-versions release-selection test-scripts
 
 # The root gate. Each package directory is a project of its own, with its own Makefile,
 # manifest and lockfile, installed from the registries exactly as its standalone repository
@@ -55,6 +55,13 @@ check-versions: ## Check that every unit's manifests carry one version, at or be
 
 check-release-versions: ## Check versions as a release pull request must: a unit ships at VERSION, with its changelog entry
 	@node scripts/versions.mjs --release $(UNITS)
+
+# The units a release proposes, and the hold-backs it refuses (docs/release-model.md). The root
+# /release skill runs it with the open sprints' reading on stdin:
+#
+#     ledger sprint status --remote --json | make release-selection SPRINTS=- HOLD="starter-js"
+release-selection: ## Propose the units a release ships; SPRINTS=<file, or - for stdin> from `ledger sprint status --remote --json`, HOLD="<unit>..." to hold units back
+	@node scripts/release-selection.mjs $(if $(SPRINTS),--sprints $(SPRINTS)) $(foreach unit,$(HOLD),--hold $(unit)) $(UNITS)
 
 test-scripts: ## Run the tests of the root's scripts, silent on success
 	@OUTPUT=$$(node --test scripts/*.test.mjs 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
