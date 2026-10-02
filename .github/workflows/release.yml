@@ -1,11 +1,13 @@
 # The repository's release, and the sprint prereleases of @pipelex/sdk. This file's name and an
 # environment are what the trusted publishers name: npm's for @pipelex/sdk and
 # @pipelex/create-method-app name the environment `npm`, which allows main and dev alone, and
-# PyPI's for pipelex-sdk names `pypi`, which allows main alone. Only the publish jobs hold an
-# environment, so a workflow pushed on any other branch cannot obtain an id-token a registry
-# accepts. docs/release-model.md describes the model; every decision below is taken by
-# scripts/publish.mjs or scripts/export.mjs, which have tests, and the steps here carry out
-# their answers.
+# PyPI's for pipelex-sdk names `pypi`, which allows main alone. The export App's private key
+# lives in the secrets of the environment `mirrors`, which allows main alone, never in the
+# repository's. Only the publish jobs and the export hold an environment, so a workflow pushed
+# on any other branch can neither obtain an id-token a registry accepts nor read the key that
+# pushes to the mirrors. docs/release-model.md describes the model; every decision below is
+# taken by scripts/publish.mjs or scripts/export.mjs, which have tests, and the steps here
+# carry out their answers.
 #
 # A push to main is a release, the merge of a release/vX.Y.Z pull request:
 #
@@ -18,13 +20,14 @@
 #     -publish               provenance, under the `npm` environment       } the version and its
 #   pypi-build, -publish     pipelex-sdk on PyPI, under the `pypi` env.    } registry lacks it
 #   github-release           the GitHub Release vX.Y.Z, once no publish failed, unless it exists
-#   export                   each starter carrying the version, pushed to its template repository
+#   export                   each starter carrying the version, pushed to its template repository,
+#                            under the `mirrors` environment
 #
 # Each package is built in a job that cannot publish and published by a job that runs nothing
 # of the repository's code or dependencies: it checks the built artifact and uploads it. So no
 # install or build script ever runs where the publishers' id-token can be minted, and the
-# environments guard exactly the jobs that can mint it; the build, tag, Release and export jobs
-# hold none.
+# environments guard exactly the jobs that can mint it or read the export App's key; the build,
+# tag and Release jobs hold none.
 #
 # A run that fails part-way is finished by re-running it, "Re-run failed jobs" or all of them:
 # the tag is found where it was put, a package its registry has in full is skipped, the Release
@@ -419,11 +422,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: node scripts/publish.mjs release --tag "$TAG"
 
+  # The `mirrors` environment holds the App's private key and allows main alone, so only the
+  # release's run of this job can read it. The App's id is a repository variable, which grants
+  # nothing without the key.
   export:
     name: Export the starters
     needs: [tag, github-release]
     if: ${{ !cancelled() && needs.tag.result == 'success' && needs.github-release.result == 'success' }}
     runs-on: ubuntu-latest
+    environment:
+      name: mirrors
     permissions:
       contents: read
     env:
