@@ -1,7 +1,8 @@
 # Fails a pull request that changes a workflow when its author cannot write to this repository.
 # Every check here runs from the pull request's own copy of its workflow, so a pull request that
 # edits ci.yml or a rendered twin could change what it is checked by; this workflow runs on
-# pull_request_target instead, from the base branch's copy, which the pull request cannot edit.
+# pull_request_target instead, which GitHub always takes from the default branch, main, so the
+# pull request cannot edit it, and which therefore runs only once main carries this file.
 # It never runs the pull request's code: it only diffs the head against the base. The branch
 # flow itself is the Branch flow job of ci.yml, inside the required Lint (all).
 name: Protect workflows

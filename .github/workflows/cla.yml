@@ -1,8 +1,8 @@
 # Asks a pull request's author to sign the contributor license agreement, CLA.md at the
 # repository root, and records signatures in Pipelex/cla-signatures. It needs the org secrets
 # CLA_GH_APP_ID and CLA_GH_APP_PRIVATE_KEY and the CLA app's installation to include this
-# repository. A signature by comment runs from the default branch, as every issue_comment
-# workflow does, so it works once main carries this file.
+# repository. GitHub takes a pull_request_target or issue_comment workflow from the default
+# branch, main, so this one runs only once main carries it.
 name: "CLA Assistant bot"
 on:
   issue_comment:
