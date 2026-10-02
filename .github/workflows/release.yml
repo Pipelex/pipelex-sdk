@@ -1,25 +1,30 @@
-# The repository's release, and the sprint prereleases of @pipelex/sdk. This file's name is
-# what the trusted publishers name: npm's for @pipelex/sdk and @pipelex/create-method-app (no
-# environment) and PyPI's for pipelex-sdk (environment `pypi`). docs/release-model.md describes
-# the model; every decision below is taken by scripts/publish.mjs or scripts/export.mjs, which
-# have tests, and the steps here carry out their answers.
+# The repository's release, and the sprint prereleases of @pipelex/sdk. This file's name and an
+# environment are what the trusted publishers name: npm's for @pipelex/sdk and
+# @pipelex/create-method-app name the environment `npm`, which allows main and dev alone, and
+# PyPI's for pipelex-sdk names `pypi`, which allows main alone. Only the publish jobs hold an
+# environment, so a workflow pushed on any other branch cannot obtain an id-token a registry
+# accepts. docs/release-model.md describes the model; every decision below is taken by
+# scripts/publish.mjs or scripts/export.mjs, which have tests, and the steps here carry out
+# their answers.
 #
 # A push to main is a release, the merge of a release/vX.Y.Z pull request:
 #
 #   tag                      read VERSION and push the tag vX.Y.Z on the pushed commit before
 #                            anything publishes; find it there on a re-run; refuse a push whose
 #                            version another commit is tagged with
-#   npm-sdk-build, -publish  @pipelex/sdk on npm, with provenance          } each built from the
-#   npm-initializer-build,   @pipelex/create-method-app on npm, with       } tag, each only when
-#     -publish               provenance                                    } its manifest carries
-#   pypi-build, -publish     pipelex-sdk on PyPI, under the `pypi` env.    } the version and its
-#                                                                          } registry lacks it
+#   npm-sdk-build, -publish  @pipelex/sdk on npm, with provenance, under   } each built from the
+#                            the `npm` environment                         } tag, each only when
+#   npm-initializer-build,   @pipelex/create-method-app on npm, with       } its manifest carries
+#     -publish               provenance, under the `npm` environment       } the version and its
+#   pypi-build, -publish     pipelex-sdk on PyPI, under the `pypi` env.    } registry lacks it
 #   github-release           the GitHub Release vX.Y.Z, once no publish failed, unless it exists
 #   export                   each starter carrying the version, pushed to its template repository
 #
 # Each package is built in a job that cannot publish and published by a job that runs nothing
 # of the repository's code or dependencies: it checks the built artifact and uploads it. So no
-# install or build script ever runs where the publishers' id-token can be minted.
+# install or build script ever runs where the publishers' id-token can be minted, and the
+# environments guard exactly the jobs that can mint it; the build, tag, Release and export jobs
+# hold none.
 #
 # A run that fails part-way is finished by re-running it, "Re-run failed jobs" or all of them:
 # the tag is found where it was put, a package its registry has in full is skipped, the Release
@@ -28,10 +33,11 @@
 #
 # A manual dispatch publishes a sprint prerelease of @pipelex/sdk from a chosen commit as
 # X.Y.Z-sprint.g<full sha> on the dist-tag `sprint` (design DB6), which is what `wt pin` asks
-# for through the `prerelease` command of .worktree.toml. `ledger land` verifies a release from
-# the newest run of this file at the release's merge commit, so a dispatch is refused from main,
-# from a release branch, from a tag and from a branch standing on a release tag, where its run
-# would stand beside the release's.
+# for through the `prerelease` command of .worktree.toml. It is dispatched from dev alone: the
+# `npm` environment its publish job holds allows main and dev, and `ledger land` verifies a
+# release from the newest run of this file at the release's merge commit, so a dispatch is
+# refused from main, from any other branch, from a tag and while dev stands on a release tag,
+# where its run would stand beside the release's.
 name: Release
 
 on:
@@ -142,6 +148,9 @@ jobs:
     needs: [tag, npm-sdk-build]
     if: needs.npm-sdk-build.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@pipelex/sdk
     permissions:
       contents: read
       id-token: write
@@ -250,6 +259,9 @@ jobs:
     needs: [tag, npm-initializer-build]
     if: needs.npm-initializer-build.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@pipelex/create-method-app
     permissions:
       contents: read
       id-token: write
@@ -338,9 +350,10 @@ jobs:
           path: python/dist/
           if-no-files-found: error
 
-  # Its own job, so that only the upload holds the `pypi` environment and the id-token PyPI's
-  # trusted publisher accepts. skip-existing lets a re-run finish an upload that stopped
-  # part-way: `check` reads a version as published only with both its wheel and its sdist.
+  # Its own job, so that only the upload holds the `pypi` environment, which allows main alone,
+  # and the id-token PyPI's trusted publisher accepts. skip-existing lets a re-run finish an
+  # upload that stopped part-way: `check` reads a version as published only with both its wheel
+  # and its sdist.
   pypi-publish:
     name: Publish pipelex-sdk
     needs: [tag, pypi-build]
@@ -473,7 +486,9 @@ jobs:
 
   # The sprint prerelease is three jobs, for the same reason as a release's publish: the commit
   # asked for, which no review has passed, is installed and built in a job that cannot publish,
-  # and the job that can publish runs none of its code.
+  # and the job that can publish runs none of its code. Only that job holds the `npm`
+  # environment, which is why the dispatch runs from dev: a publish job on any other branch
+  # fails before it starts, so sprint-plan refuses one up front.
   sprint-plan:
     name: Plan the sprint prerelease of @pipelex/sdk
     if: github.event_name == 'workflow_dispatch'
@@ -559,6 +574,9 @@ jobs:
     name: Publish the sprint prerelease
     needs: [sprint-plan, sprint-build]
     runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@pipelex/sdk/v/${{ needs.sprint-plan.outputs.version }}
     permissions:
       contents: read
       id-token: write
