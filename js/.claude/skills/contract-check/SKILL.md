@@ -1,6 +1,6 @@
 ---
 name: contract-check
-description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the release the SDK last shipped in, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the specs that govern it in the workspace root's docs/specs/ — the protocol, validation, platform API, hosted envelope, codegen, tools, package-reference and client-identification specs (../../docs/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
+description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the release the SDK last shipped in, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the specs that govern it in the workspace root's docs/specs/, which the skill's spec table lists (../../docs/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
 ---
 
 # Contract Check
@@ -52,7 +52,7 @@ else
 fi
 ```
 
-On a release branch after its bump, `package.json` carries a version no tag names yet, and the fallback is wrong there: name the previous release's tag instead. Confirm the baseline with the user before proceeding.
+On a release branch after its bump, `package.json` carries a version no tag names yet, and the fallback is wrong there: name `v<the version package.json carried before the bump>` instead, which the base branch's `js/package.json` still carries, since the previous release's tag is not the SDK's last release whenever that release held the SDK back. Confirm the baseline with the user before proceeding.
 
 ## Step 2 — Detect Contract-Affecting Changes
 
