@@ -1,0 +1,37 @@
+# The scheduled comparison of each starter's template repository with what was exported to it
+# (docs/export.md): the mirror's main^{tree} against v<the starter's manifest version>:<directory>,
+# the release the starter last shipped in, so a starter held back at a later release is still
+# compared with the right tree, and a push made to a mirror by hand fails here loudly. A starter
+# whose version this repository never tagged has not been exported from here yet, and its
+# mirror still holds its own history: that is reported, not failed.
+#
+# Kept out of release.yml on purpose. `ledger land` verifies a release from the newest run of
+# release.yml at the release's merge commit, which a scheduled run on main would stand at too;
+# and this check reads public repositories, so it needs neither the publishers' id-token nor
+# the export App.
+name: Mirrors
+
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Compare each mirror with its starter's release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Compare each mirror's main with the starter's directory at its own release tag
+        run: node scripts/export.mjs check

@@ -1,0 +1,406 @@
+# The repository's release, and the sprint prereleases of @pipelex/sdk. This file's name is
+# what the trusted publishers name: npm's for @pipelex/sdk and @pipelex/create-method-app (no
+# environment) and PyPI's for pipelex-sdk (environment `pypi`). docs/release-model.md describes
+# the model; every decision below is taken by scripts/publish.mjs or scripts/export.mjs, which
+# have tests, and the steps here carry out their answers.
+#
+# A push to main is a release, the merge of a release/vX.Y.Z pull request:
+#
+#   tag            read VERSION and push the tag vX.Y.Z on the pushed commit, before anything
+#                  publishes; find it there on a re-run; refuse a push whose version another
+#                  commit is tagged with, so nothing is tagged twice or built from elsewhere
+#   npm-sdk        @pipelex/sdk on npm, with provenance            } each built from the tag,
+#   npm-initializer @pipelex/create-method-app on npm, with         } each only when its manifest
+#                  provenance                                      } carries the version and its
+#   pypi-build     pipelex-sdk's distributions, then               } registry does not have it
+#   pypi-publish   pipelex-sdk on PyPI, under the `pypi` environment
+#   github-release the GitHub Release vX.Y.Z, once no publish failed, unless it exists
+#   export         each starter carrying the version, pushed to its template repository
+#
+# A run that fails part-way is finished by re-running it, "Re-run failed jobs" or all of them:
+# the tag is found where it was put, a package the registry has is skipped, the Release is not
+# created twice and a mirror already exported is skipped. A fix that needs new code takes a new
+# version.
+#
+# A manual dispatch publishes a sprint prerelease of @pipelex/sdk from a chosen commit as
+# X.Y.Z-sprint.g<full sha> on the dist-tag `sprint` (design DB6), which is what `wt pin` asks
+# for through the `prerelease` command of .worktree.toml. It never runs from main, so the only
+# runs of this workflow at a release's merge commit are that release's own, which is what
+# `ledger land` reads.
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: The full 40-character commit to publish the sprint prerelease from, on a branch of this repository
+        required: true
+        type: string
+      package:
+        description: The package, which can only be @pipelex/sdk
+        required: false
+        default: "@pipelex/sdk"
+        type: string
+      version:
+        description: The version wt pin computed, X.Y.Z-sprint.g<sha>; checked against the one computed here when given
+        required: false
+        default: ""
+        type: string
+
+permissions: {}
+
+# One release at a time, never cancelled: a run that tagged or published must be left to
+# finish. Prereleases of different commits do not wait for each other.
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && format('sprint-{0}', inputs.sha) || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag the release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Tag the pushed commit vX.Y.Z from VERSION, or find the tag already on it
+        id: tag
+        run: node scripts/publish.mjs tag --sha "$GITHUB_SHA"
+
+  npm-sdk:
+    name: Publish @pipelex/sdk
+    needs: tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Decide from the tag whether @pipelex/sdk ships
+        id: check
+        run: node scripts/publish.mjs check --tag "$TAG" --package @pipelex/sdk
+
+      # npm trusted publishing needs npm 11.5.1 or later, and `npm ci` in js/ fails under the
+      # npm that Node 22 bundles, as the old pipelex-sdk-js publish workflow found.
+      - name: Upgrade npm
+        if: steps.check.outputs.publish == 'true'
+        run: npm install -g npm@11
+
+      - name: Install from the lockfile, which builds through `prepare`
+        if: steps.check.outputs.publish == 'true'
+        working-directory: js
+        run: npm ci
+
+      - name: Publish to npm with provenance
+        if: steps.check.outputs.publish == 'true'
+        working-directory: js
+        run: npm publish --access public --provenance
+
+  npm-initializer:
+    name: Publish @pipelex/create-method-app
+    needs: tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Decide from the tag whether @pipelex/create-method-app ships
+        id: check
+        run: node scripts/publish.mjs check --tag "$TAG" --package @pipelex/create-method-app
+
+      # The major the method apps' family check runs under, so the release runs the npm every
+      # pull request ran.
+      - name: Upgrade npm
+        if: steps.check.outputs.publish == 'true'
+        run: npm install -g npm@11
+
+      # --publish refuses a template with uncommitted changes and a VERSION other than the
+      # initializer's, so the packs are the templates at the tag, at the release's version.
+      - name: Pack the templates
+        if: steps.check.outputs.publish == 'true'
+        run: node method-apps/initializers/js/scripts/pack-templates.mjs --publish
+
+      - name: Test the family's scripts and the initializer
+        if: steps.check.outputs.publish == 'true'
+        run: make -C method-apps test-family
+
+      # --ignore-scripts skips `prepack`, so the packs published are the ones the tests read.
+      - name: Publish to npm with provenance
+        if: steps.check.outputs.publish == 'true'
+        working-directory: method-apps/initializers/js
+        run: npm publish --ignore-scripts --access public --provenance
+
+  pypi-build:
+    name: Build pipelex-sdk
+    needs: tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Decide from the tag whether pipelex-sdk ships
+        id: check
+        run: node scripts/publish.mjs check --tag "$TAG" --package pipelex-sdk
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.publish == 'true'
+        with:
+          python-version: "3.x"
+
+      - name: Build the wheel and the source distribution
+        if: steps.check.outputs.publish == 'true'
+        working-directory: python
+        run: |
+          python3 -m pip install --user build
+          python3 -m build
+
+      - uses: actions/upload-artifact@v4
+        if: steps.check.outputs.publish == 'true'
+        with:
+          name: pypi-distributions
+          path: python/dist/
+          if-no-files-found: error
+
+  # Its own job, so that only the upload holds the `pypi` environment and the id-token PyPI's
+  # trusted publisher accepts, and a re-run of a failed upload uploads what is missing.
+  pypi-publish:
+    name: Publish pipelex-sdk
+    needs: pypi-build
+    if: needs.pypi-build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pipelex-sdk
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+  github-release:
+    name: Create the GitHub Release
+    needs: [tag, npm-sdk, npm-initializer, pypi-build, pypi-publish]
+    # A publish that had nothing to do is skipped, not failed; a failed one holds the Release.
+    if: ${{ !cancelled() && needs.tag.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Create the Release from the shipped packages' changelog entries, unless it exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/publish.mjs release --tag "$TAG"
+
+  export:
+    name: Export the starters
+    needs: [tag, github-release]
+    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.github-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      # No persisted credentials: they would authenticate the pushes to the mirrors as this
+      # workflow's token, which cannot write there.
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Read which starters the release ships
+        id: plan
+        run: node scripts/export.mjs plan --tag "$TAG"
+
+      - name: Mint the export App's token for the two mirrors
+        id: app
+        if: steps.plan.outputs.any == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.MIRROR_EXPORT_APP_ID }}
+          private-key: ${{ secrets.MIRROR_EXPORT_APP_PRIVATE_KEY }}
+          owner: Pipelex
+          repositories: pipelex-starter-js,pipelex-starter-python
+          permission-contents: write
+          permission-workflows: write
+
+      # git asks the helper for a password on each push, and the helper reads the token from
+      # the environment, so it never sits in a URL, an argument or a file.
+      - name: Let git push to the mirrors as the App, and author as its bot
+        if: steps.plan.outputs.any == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          git config --global credential.https://github.com.helper ''
+          # shellcheck disable=SC2016 # the helper expands $EXPORT_TOKEN when git calls it, not here
+          git config --global --add credential.https://github.com.helper \
+            '!f() { test "$1" = get && printf "username=x-access-token\npassword=%s\n" "$EXPORT_TOKEN"; }; f'
+          bot="${APP_SLUG}[bot]"
+          id=$(gh api "users/${APP_SLUG}%5Bbot%5D" --jq .id)
+          {
+            echo "GIT_AUTHOR_NAME=$bot"
+            echo "GIT_AUTHOR_EMAIL=${id}+${bot}@users.noreply.github.com"
+            echo "GIT_COMMITTER_NAME=$bot"
+            echo "GIT_COMMITTER_EMAIL=${id}+${bot}@users.noreply.github.com"
+          } >> "$GITHUB_ENV"
+
+      - name: Export each starter, skipping a mirror already exported
+        if: steps.plan.outputs.any == 'true'
+        env:
+          EXPORT_TOKEN: ${{ steps.app.outputs.token }}
+        run: node scripts/export.mjs export --tag "$TAG"
+
+  sprint-prerelease:
+    name: Publish a sprint prerelease of @pipelex/sdk
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # A green run of this workflow at a release's merge commit must be that release's own,
+      # since `ledger land` verifies a release from the newest run at its merge commit. A
+      # dispatch from main could stand at one, so it fails here instead, publishing nothing.
+      - name: Refuse a dispatch from main
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "::error::Dispatch a sprint prerelease from dev or a topic branch, never from main: a run here would stand at a release's merge commit, beside the release's own run."
+          exit 1
+
+      # The scripts that decide come from the branch dispatched; the package is built from the
+      # commit asked for, checked out beside them.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Compute the prerelease's version, and decide whether it still has to publish
+        id: plan
+        env:
+          SHA: ${{ inputs.sha }}
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: node scripts/publish.mjs sprint --sha "$SHA" --package "$PACKAGE" --version "$VERSION"
+
+      - uses: actions/checkout@v5
+        if: steps.plan.outputs.publish == 'true'
+        with:
+          ref: ${{ steps.plan.outputs.commit }}
+          path: build
+          persist-credentials: false
+
+      - name: Upgrade npm
+        if: steps.plan.outputs.publish == 'true'
+        run: npm install -g npm@11
+
+      - name: Install from the lockfile
+        if: steps.plan.outputs.publish == 'true'
+        working-directory: build/js
+        run: npm ci
+
+      - name: Give the package the prerelease's version
+        if: steps.plan.outputs.publish == 'true'
+        working-directory: build/js
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version
+
+      # Without provenance: an attestation names the commit the workflow ran at, which for a
+      # dispatch is the branch's head, not the commit built. The version names that commit.
+      - name: Publish on the sprint dist-tag, leaving latest where it is
+        if: steps.plan.outputs.publish == 'true'
+        working-directory: build/js
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          npm publish --access public --tag sprint --provenance=false
+          latest=$(npm view @pipelex/sdk dist-tags.latest)
+          if [ "$latest" = "$VERSION" ]; then
+            echo "::error::latest now names $VERSION, which a sprint prerelease must never become."
+            exit 1
+          fi
+          echo "Published @pipelex/sdk@$VERSION on the sprint dist-tag; latest is still $latest."

@@ -30,12 +30,13 @@ Everything that serves only the maintainers lives at the root instead:
 - `VERSION`, the repository's one version (see [`release-model.md`](release-model.md));
 - `LICENSE` and `CLA.md`, the repository's license and the contributor agreement its pull requests are signed under;
 - `.githooks/`, the git hooks;
-- `.github/workflows/`, the pull-request checks, which [`ci.md`](ci.md) describes, with the rendered twins of each template's own workflows;
-- `scripts/`, which checks every manifest against `VERSION`, renders the twins and selects the packages a release ships;
+- `.github/workflows/`, the pull-request checks, which [`ci.md`](ci.md) describes, with the rendered twins of each template's own workflows, and the release workflow and the mirrors' scheduled comparison, which [`release-model.md`](release-model.md) and [`export.md`](export.md) describe;
+- `scripts/`, which checks every manifest against `VERSION`, renders the twins, selects the packages a release ships, takes the release workflow's decisions and exports the starters;
+- `.worktree.toml`, which tells the workspace's `wt` how to publish a sprint prerelease of `@pipelex/sdk`;
 - `.claude/skills/`, the maintainers' skills: `release` cuts a release of the repository, and `bump-sdk` and `bump-mthds-form` move every template onto a newer published SDK or form kernel in one change;
 - `docs/`, this documentation.
 
-The release skills that each source repository carried, the templates' own included, were removed from the package directories: the repository's release is cut from the root, and a person's project has no use for Pipelex's release procedure. The root `/release` skill replaces them, and the release workflow that publishes is not written yet (see [`release-model.md`](release-model.md)).
+The release skills that each source repository carried, the templates' own included, were removed from the package directories: the repository's release is cut from the root, and a person's project has no use for Pipelex's release procedure. The root `/release` skill replaces them, and the release workflow, `.github/workflows/release.yml`, publishes from the root (see [`release-model.md`](release-model.md)).
 
 ## Installing
 
