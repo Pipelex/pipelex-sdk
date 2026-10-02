@@ -530,7 +530,7 @@ describe("recovery at each publication boundary", () => {
   });
 });
 
-describe("the environments the trusted publishers name", () => {
+describe("the environments that guard publishing and the export", () => {
   const workflow = fs.readFileSync(path.join(ROOT, ".github/workflows/release.yml"), "utf8");
 
   /** Each job of `release.yml`, by its id, as the text of its block. */
@@ -550,7 +550,7 @@ describe("the environments the trusted publishers name", () => {
     }
   });
 
-  it("holds an environment on exactly the jobs that can mint the publishers' id-token", () => {
+  it("holds an environment on exactly the jobs that can mint the publishers' id-token, and on the export", () => {
     const held = [...releaseJobs()].map(([id, block]) => {
       const environment = block.match(/^    environment:(?: (\S+)|\n      name: (\S+))$/m);
       return [id, /^      id-token: write$/m.test(block), environment ? (environment[1] ?? environment[2]) : null];
@@ -561,8 +561,24 @@ describe("the environments the trusted publishers name", () => {
         ["npm-sdk-publish", true, SPRINT_ENVIRONMENT],
         ["npm-initializer-publish", true, SPRINT_ENVIRONMENT],
         ["pypi-publish", true, "pypi"],
+        ["export", false, "mirrors"],
         ["sprint-publish", true, SPRINT_ENVIRONMENT],
       ],
     );
+  });
+
+  // The App's private key is a secret of the `mirrors` environment, which allows main alone, so
+  // a job reads it only while it holds that environment; a repository secret would reach a
+  // workflow pushed on any branch.
+  it("reads the export App's key in the export job alone, and in no other workflow", () => {
+    const read = [...releaseJobs()]
+      .map(([id, block]) => [id, [...block.matchAll(/\$\{\{\s*secrets\.(\w+)/g)].map((match) => match[1])])
+      .filter(([, secrets]) => secrets.length > 0);
+    assert.deepEqual(read, [["export", ["MIRROR_EXPORT_APP_PRIVATE_KEY"]]]);
+    const dir = path.join(ROOT, ".github/workflows");
+    const elsewhere = fs
+      .readdirSync(dir)
+      .filter((file) => file !== "release.yml" && fs.readFileSync(path.join(dir, file), "utf8").includes("MIRROR_EXPORT_APP_PRIVATE_KEY"));
+    assert.deepEqual(elsewhere, []);
   });
 });
