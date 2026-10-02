@@ -84,6 +84,50 @@ describe("exportStarter", () => {
   });
 });
 
+describe("an export re-run after a later release", () => {
+  it("leaves a mirror that holds a later release, rather than put the older starter back", async () => {
+    const up = upstream(monorepo());
+    const first = checkout(up.origin, up.first);
+    applyTag({ repo: first, plan: planTag({ repo: first, sha: up.first }) });
+    const m = mirror();
+    m.reject(true);
+    const older = await exportStarter({
+      repo: checkout(up.origin, "refs/tags/v0.29.0"),
+      tag: "v0.29.0",
+      starter: starterJs,
+      url: m.url,
+      registry: served(),
+    }).catch((error) => ({ status: "failed", message: error.message }));
+    assert.equal(older.status, "failed");
+    m.reject(false);
+
+    const next = up.commit(monorepo({ version: "0.30.0" }), "The next release");
+    const second = checkout(up.origin, next);
+    applyTag({ repo: second, plan: planTag({ repo: second, sha: next }) });
+    const newer = await exportStarter({
+      repo: checkout(up.origin, "refs/tags/v0.30.0"),
+      tag: "v0.30.0",
+      starter: starterJs,
+      url: m.url,
+      registry: served(),
+    });
+    assert.equal(newer.status, "exported");
+    const exported = m.main();
+
+    const rerun = await exportStarter({
+      repo: checkout(up.origin, "refs/tags/v0.29.0"),
+      tag: "v0.29.0",
+      starter: starterJs,
+      url: m.url,
+      registry: served(),
+    });
+    assert.equal(rerun.status, "superseded");
+    assert.match(rerun.message, /already holds the later release v0\.30\.0/);
+    assert.equal(m.main(), exported);
+    assert.equal(m.tag("v0.29.0"), null);
+  });
+});
+
 describe("exportAll", () => {
   it("exports the starters that carry the release's version and holds back the others", async () => {
     const { repo, tree } = released(monorepo({ starterPython: "0.2.1" }));

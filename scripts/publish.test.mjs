@@ -4,6 +4,7 @@
 // boundary. Run with `node --test`; nothing here touches the network.
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -13,6 +14,8 @@ import {
   ReleaseError,
   applyTag,
   changelogEntry,
+  checkDispatch,
+  checkTarball,
   commitOf,
   git,
   liveRegistry,
@@ -25,6 +28,7 @@ import {
   releaseNotes,
   remoteTagCommit,
   sprintVersion,
+  stampSdkVersion,
 } from "./publish.mjs";
 import { checkout, mirror, monorepo, registry, releases, runRelease, tmp, upstream } from "./release.fixture.mjs";
 
@@ -251,6 +255,15 @@ describe("the sprint prerelease", () => {
     await assert.rejects(planSprint({ repo: ws, sha: local, registry: registry() }), /on no branch of this repository/);
   });
 
+  it("refuses a commit whose js/package.json names another package", async () => {
+    const up = upstream(monorepo({ version: "0.28.1" }));
+    const other = up.commit({ "js/package.json": '{ "name": "@pipelex/create-method-app", "version": "0.28.1" }\n' });
+    await assert.rejects(
+      planSprint({ repo: checkout(up.origin, "main"), sha: other, registry: registry() }),
+      /names "@pipelex\/create-method-app", not @pipelex\/sdk/,
+    );
+  });
+
   it("refuses a commit whose manifest is not a plain X.Y.Z", async () => {
     const up = upstream(monorepo({ version: "0.28.1" }));
     const odd = up.commit({ "js/package.json": '{ "name": "@pipelex/sdk", "version": "0.28.1-rc.1" }\n' });
@@ -260,9 +273,23 @@ describe("the sprint prerelease", () => {
     );
   });
 
+  it("is dispatched only from a branch whose run cannot be read as a release's", () => {
+    const { origin, ws, sprint, first } = sprintRepo();
+    assert.equal(checkDispatch({ repo: ws, ref: "refs/heads/dev", head: sprint }), "dev");
+    assert.equal(checkDispatch({ repo: ws, ref: "refs/heads/feature/Sprint-work", head: sprint }), "feature/Sprint-work");
+    assert.throws(() => checkDispatch({ repo: ws, ref: "refs/heads/main", head: sprint }), /never dispatched from main/);
+    assert.throws(() => checkDispatch({ repo: ws, ref: "refs/heads/release/v0.29.0", head: sprint }), /never dispatched from release\/v0\.29\.0/);
+    assert.throws(() => checkDispatch({ repo: ws, ref: "refs/tags/v0.28.1", head: first }), /is not one/);
+    // dev fast-forwarded onto a release's merge commit by the landing's back-merge.
+    applyTag({ repo: ws, plan: planTag({ repo: ws, sha: first }) });
+    const tagged = checkout(origin, "main");
+    assert.throws(() => checkDispatch({ repo: tagged, ref: "refs/heads/dev", head: first }), /the release v0\.28\.1/);
+  });
+
   it("writes the version, the commit and whether to publish", async () => {
     const { ws, sprint } = sprintRepo();
-    const result = await cli(["sprint", "--sha", sprint, "--package", "@pipelex/sdk", "--version", ""], {
+    const dispatch = ["--ref", "refs/heads/dev", "--head", sprint];
+    const result = await cli(["sprint", "--sha", sprint, "--package", "@pipelex/sdk", "--version", "", ...dispatch], {
       repo: ws,
       registry: registry(),
     });
@@ -270,22 +297,68 @@ describe("the sprint prerelease", () => {
       code: 0,
       outputs: { publish: "true", version: `0.28.2-sprint.g${sprint}`, commit: sprint },
     });
+    const refused = await cli(["sprint", "--sha", sprint, "--ref", "refs/heads/main", "--head", sprint], {
+      repo: ws,
+      registry: registry(),
+    });
+    assert.deepEqual(refused, { code: 1, outputs: {} });
+  });
+
+  it("stamps the prerelease's version on the SDK's own constant", () => {
+    const file = path.join(tmp("version"), "version.ts");
+    fs.writeFileSync(file, '/** The version. */\nexport const SDK_VERSION = "0.28.1";\n');
+    stampSdkVersion({ file, version: `0.28.2-sprint.g${SHA}` });
+    assert.equal(fs.readFileSync(file, "utf8"), `/** The version. */\nexport const SDK_VERSION = "0.28.2-sprint.g${SHA}";\n`);
+    fs.writeFileSync(file, "export const VERSION = 1;\n");
+    assert.throws(() => stampSdkVersion({ file, version: "0.28.2" }), /declares no SDK_VERSION/);
+  });
+});
+
+describe("checkTarball", () => {
+  function tarball(manifest) {
+    const dir = tmp("tarball");
+    fs.mkdirSync(path.join(dir, "package"));
+    fs.writeFileSync(path.join(dir, "package", "package.json"), JSON.stringify(manifest));
+    const file = path.join(dir, "pkg.tgz");
+    const made = spawnSync("tar", ["-czf", file, "-C", dir, "package"]);
+    assert.equal(made.status, 0);
+    return file;
+  }
+
+  it("accepts the package and version the job decided to publish", () => {
+    const file = tarball({ name: "@pipelex/sdk", version: "0.29.0" });
+    assert.equal(checkTarball({ file, name: "@pipelex/sdk", version: "0.29.0" }).name, "@pipelex/sdk");
+  });
+
+  it("refuses another package or another version", () => {
+    const file = tarball({ name: "@pipelex/create-method-app", version: "0.29.0" });
+    assert.throws(() => checkTarball({ file, name: "@pipelex/sdk", version: "0.29.0" }), /carries @pipelex\/create-method-app@0\.29\.0/);
+    const other = tarball({ name: "@pipelex/sdk", version: "1.0.0" });
+    assert.throws(() => checkTarball({ file: other, name: "@pipelex/sdk", version: "0.29.0" }), /carries @pipelex\/sdk@1\.0\.0/);
+  });
+
+  it("refuses a file that is not an npm tarball", () => {
+    const file = path.join(tmp("tarball"), "not.tgz");
+    fs.writeFileSync(file, "not a tarball");
+    assert.throws(() => checkTarball({ file, name: "@pipelex/sdk", version: "0.29.0" }), ReleaseError);
   });
 });
 
 describe("the live registry", () => {
-  const answering = (...statuses) => {
+  const answering = (...answers) => {
     const asked = [];
     return {
       asked,
       fetchImpl: async (url) => {
         asked.push(url);
-        const status = statuses.shift();
-        if (status instanceof Error) throw status;
-        return { status };
+        const answer = answers.shift();
+        if (answer instanceof Error) throw answer;
+        const { status, body = {} } = typeof answer === "number" ? { status: answer } : answer;
+        return { status, json: async () => body };
       },
     };
   };
+  const pypiFiles = (...kinds) => ({ status: 200, body: { urls: kinds.map((packagetype) => ({ packagetype })) } });
 
   it("asks npm and PyPI for one version", () => {
     assert.equal(registryUrl("npm", "@pipelex/sdk", "0.29.0"), "https://registry.npmjs.org/@pipelex%2fsdk/0.29.0");
@@ -295,6 +368,13 @@ describe("the live registry", () => {
   it("reads 200 as published and 404 as not", async () => {
     assert.equal(await liveRegistry(answering(200)).has("npm", "@pipelex/sdk", "0.29.0"), true);
     assert.equal(await liveRegistry(answering(404)).has("pypi", "pipelex-sdk", "0.29.0"), false);
+  });
+
+  it("reads a PyPI version as published only with both its wheel and its sdist", async () => {
+    const has = (...kinds) => liveRegistry(answering(pypiFiles(...kinds))).has("pypi", "pipelex-sdk", "0.29.0");
+    assert.equal(await has("bdist_wheel", "sdist"), true);
+    assert.equal(await has("bdist_wheel"), false, "an upload that stopped after the wheel still publishes");
+    assert.equal(await has("sdist"), false);
   });
 
   it("retries an unreadable answer, then refuses rather than guess", async () => {

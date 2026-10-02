@@ -16,17 +16,27 @@
  *   node scripts/publish.mjs check --tag <vX.Y.Z> --package <name>
  *       Whether one package ships from the tag: its manifest carries the
  *       release's version, its changelog has the entry, the checkout stands on
- *       the tag, and the registry does not have that version yet.
+ *       the tag, and the registry does not have that version yet (for PyPI, a
+ *       wheel and an sdist both, so a part-way upload is finished).
+ *
+ *   node scripts/publish.mjs tarball --file <tgz> --package <name> --version <version>
+ *       Refuse an npm tarball that is not that package at that version: the
+ *       job that publishes checks what the unprivileged build handed it.
  *
  *   node scripts/publish.mjs release --tag <vX.Y.Z>
  *       Create the GitHub Release from the shipped packages' changelog
  *       entries, unless it exists already.
  *
- *   node scripts/publish.mjs sprint --sha <commit> [--package <name>] [--version <version>]
+ *   node scripts/publish.mjs sprint --sha <commit> --ref <GITHUB_REF> --head <GITHUB_SHA> [--package <name>] [--version <version>]
  *       Whether to publish the sprint prerelease of `@pipelex/sdk` at a commit,
  *       and as which version: `X.Y.Z-sprint.g<full sha>`, `X.Y.Z` being the next
  *       patch above the version `js/package.json` carries at that commit
  *       (design DB6). `--version`, which `wt pin` passes, must be the same one.
+ *       The dispatch's own ref and head are refused where its run could be
+ *       read as a release's.
+ *
+ *   node scripts/publish.mjs stamp --file <js/src/version.ts> --version <version>
+ *       Write the prerelease's version into the SDK's `SDK_VERSION` constant.
  *
  * Each subcommand prints what it decided and, inside GitHub Actions, writes its
  * answers to `$GITHUB_OUTPUT`. It exits 0 on a decision, 1 on a refusal, and 2
@@ -173,18 +183,23 @@ export function changelogEntry(text, version) {
 }
 
 /**
- * The commit a remote's tag points at, peeled through an annotated tag, or
- * null when the remote has no such tag.
+ * The commit a remote ref points at, peeled through an annotated tag, or null
+ * when the remote has no such ref.
  */
-export function remoteTagCommit(repo, remote, tag) {
-  const out = git(repo, ["ls-remote", remote, `refs/tags/${tag}`, `refs/tags/${tag}^{}`]);
+export function remoteCommit(repo, remote, ref) {
+  const out = git(repo, ["ls-remote", remote, ref, `${ref}^{}`]);
   const lines = out
     .split("\n")
     .filter(Boolean)
     .map((line) => line.split("\t"));
-  const peeled = lines.find(([, ref]) => ref === `refs/tags/${tag}^{}`);
-  const plain = lines.find(([, ref]) => ref === `refs/tags/${tag}`);
+  const peeled = lines.find(([, name]) => name === `${ref}^{}`);
+  const plain = lines.find(([, name]) => name === ref);
   return (peeled ?? plain)?.[0] ?? null;
+}
+
+/** The commit a remote's tag points at, or null when the remote has no such tag. */
+export function remoteTagCommit(repo, remote, tag) {
+  return remoteCommit(repo, remote, `refs/tags/${tag}`);
 }
 
 /**
@@ -241,9 +256,17 @@ export function registryUrl(registry, name, version) {
 }
 
 /**
- * The live registry: `has` answers true on 200, false on 404, and refuses on
- * anything else after a few attempts, since a publish decided on an unread
- * registry could be wrong either way.
+ * The distributions a release of a Python package is complete with. PyPI
+ * creates a version on its first uploaded file, so a version that answers but
+ * lacks one of these was uploaded part-way, and still has to publish.
+ */
+export const PYPI_DISTRIBUTIONS = ["sdist", "bdist_wheel"];
+
+/**
+ * The live registry: `has` answers whether a version is published in full,
+ * true on 200 (for PyPI, with both of `PYPI_DISTRIBUTIONS` among its files),
+ * false on 404, and refuses on anything else after a few attempts, since a
+ * publish decided on an unread registry could be wrong either way.
  */
 export function liveRegistry({ fetchImpl = globalThis.fetch, attempts = 3, pauseMs = 2000 } = {}) {
   return {
@@ -253,7 +276,11 @@ export function liveRegistry({ fetchImpl = globalThis.fetch, attempts = 3, pause
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         try {
           const response = await fetchImpl(url, { headers: { accept: "application/json" } });
-          if (response.status === 200) return true;
+          if (response.status === 200 && registry !== "pypi") return true;
+          if (response.status === 200) {
+            const kinds = new Set(((await response.json()).urls ?? []).map((file) => file.packagetype));
+            return PYPI_DISTRIBUTIONS.every((kind) => kinds.has(kind));
+          }
           if (response.status === 404) return false;
           last = `HTTP ${response.status}`;
         } catch (error) {
@@ -356,10 +383,40 @@ export function sprintVersion(manifestVersion, sha) {
 }
 
 /**
+ * Refuse a dispatch whose run could be read as a release's. `ledger land`
+ * verifies a release from the newest run of `release.yml` at the release's
+ * merge commit or its release branch's head, so a sprint dispatch is taken
+ * only from a branch (`ref`, the run's `GITHUB_REF`) that is neither `main`
+ * nor a `release/` branch, and whose head (`head`, the run's `GITHUB_SHA`)
+ * carries no release tag `v*`, as `dev` does right after a landing
+ * fast-forwards it onto a release.
+ */
+export function checkDispatch({ repo, ref, head }) {
+  if (!ref.startsWith("refs/heads/")) {
+    throw new ReleaseError(`a sprint prerelease is dispatched from a branch, and ${ref} is not one`);
+  }
+  const branch = ref.slice("refs/heads/".length);
+  if (branch === "main" || branch.startsWith("release/")) {
+    throw new ReleaseError(
+      `a sprint prerelease is never dispatched from ${branch}, whose runs stand where a release's are read: dispatch it from dev or a topic branch`,
+    );
+  }
+  const tags = git(repo, ["tag", "--points-at", head, "--list", "v*"]).split("\n").filter(Boolean);
+  if (tags.length > 0) {
+    throw new ReleaseError(
+      `${branch} stands on ${head}, the release ${tags.join(", ")}, where a run of this workflow would be read as the release's: dispatch from another branch, or once ${branch} has moved on`,
+    );
+  }
+  return branch;
+}
+
+/**
  * Whether to publish the sprint prerelease of `@pipelex/sdk` at a commit, and
  * as which version. The commit must be a full SHA on a branch of this
  * repository (`refs/remotes/<remote>/`), so that a commit only a fork's pull
- * request carries is never published under the package's name.
+ * request carries is never published under the package's name, and its
+ * `js/package.json` must name the package, so a commit cannot steer the
+ * publish onto another one.
  */
 export async function planSprint({ repo, sha, name = SPRINT_PACKAGE, version = "", registry, remote = "origin" }) {
   if (name !== SPRINT_PACKAGE) {
@@ -375,7 +432,11 @@ export async function planSprint({ repo, sha, name = SPRINT_PACKAGE, version = "
   if (branches.length === 0) {
     throw new ReleaseError(`${sha} is on no branch of this repository, and a sprint prerelease is published from a pushed commit only`);
   }
-  const own = manifestVersionAt(repo, sha, SPRINT_MANIFEST);
+  const manifest = JSON.parse(fileAt(repo, sha, SPRINT_MANIFEST) ?? "{}");
+  if (manifest.name !== SPRINT_PACKAGE) {
+    throw new ReleaseError(`${SPRINT_MANIFEST} at ${sha} names ${JSON.stringify(manifest.name)}, not ${SPRINT_PACKAGE}`);
+  }
+  const own = manifest.version ?? null;
   const computed = sprintVersion(own ?? "", sha);
   if (computed === null) {
     throw new ReleaseError(
@@ -388,6 +449,42 @@ export async function planSprint({ repo, sha, name = SPRINT_PACKAGE, version = "
   const base = { name, commit: sha, version: computed, own };
   if (await registry.has("npm", name, computed)) return { ...base, action: "published" };
   return { ...base, action: "publish" };
+}
+
+/** The `package.json` an npm tarball carries, read without unpacking it. */
+export function tarballManifest(file) {
+  const result = spawnSync("tar", ["-xzOf", file, "package/package.json"], { encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new ReleaseError(`${file} is not an npm tarball: ${result.stderr.trim()}`);
+  return JSON.parse(result.stdout);
+}
+
+/**
+ * Refuse a tarball that is not the package and version the job decided to
+ * publish. The tarball is built in a job without publishing rights, so the job
+ * that publishes it checks what it carries rather than trusting the build.
+ */
+export function checkTarball({ file, name, version }) {
+  const manifest = tarballManifest(file);
+  if (manifest.name !== name || manifest.version !== version) {
+    throw new ReleaseError(
+      `${path.basename(file)} carries ${manifest.name}@${manifest.version}, and this job publishes ${name}@${version}`,
+    );
+  }
+  return manifest;
+}
+
+/**
+ * Write a version into the SDK's `SDK_VERSION` constant, which the client
+ * stamps on its user agent: a sprint prerelease takes its own version there as
+ * well as in `package.json`. A file without the constant is refused rather
+ * than published with a version it does not report.
+ */
+export function stampSdkVersion({ file, version }) {
+  const text = fs.readFileSync(file, "utf8");
+  const constant = /export const SDK_VERSION = "[^"]*";/;
+  if (!constant.test(text)) throw new ReleaseError(`${file} declares no SDK_VERSION constant to stamp`);
+  fs.writeFileSync(file, text.replace(constant, `export const SDK_VERSION = "${version}";`));
 }
 
 /** Write a step output, when running inside GitHub Actions. */
@@ -411,8 +508,10 @@ export function parseArgs(argv, known) {
 const USAGE = `usage:
   node scripts/publish.mjs tag --sha <commit>
   node scripts/publish.mjs check --tag <vX.Y.Z> --package <name>
+  node scripts/publish.mjs tarball --file <tgz> --package <name> --version <version>
   node scripts/publish.mjs release --tag <vX.Y.Z>
-  node scripts/publish.mjs sprint --sha <commit> [--package <name>] [--version <version>]`;
+  node scripts/publish.mjs sprint --sha <commit> --ref <GITHUB_REF> --head <GITHUB_SHA> [--package <name>] [--version <version>]
+  node scripts/publish.mjs stamp --file <js/src/version.ts> --version <version>`;
 
 export async function main(argv, { repo = ROOT, registry = liveRegistry(), releases = null } = {}) {
   const [command, ...rest] = argv;
@@ -452,8 +551,9 @@ export async function main(argv, { repo = ROOT, registry = liveRegistry(), relea
       return 0;
     }
     if (command === "sprint") {
-      const args = parseArgs(rest, ["sha", "package", "version"]);
-      if (!args?.sha) return usage();
+      const args = parseArgs(rest, ["sha", "package", "version", "ref", "head"]);
+      if (!args?.sha || !args.ref || !args.head) return usage();
+      checkDispatch({ repo, ref: args.ref, head: args.head });
       const plan = await planSprint({
         repo,
         sha: args.sha,
@@ -467,6 +567,20 @@ export async function main(argv, { repo = ROOT, registry = liveRegistry(), relea
           ? `${plan.name}@${plan.version} is not published yet: it ships from ${plan.commit} on the ${SPRINT_DIST_TAG} dist-tag.`
           : `${plan.name}@${plan.version} is published already, so there is nothing to do.`,
       );
+      return 0;
+    }
+    if (command === "tarball") {
+      const args = parseArgs(rest, ["file", "package", "version"]);
+      if (!args?.file || !args.package || !args.version) return usage();
+      checkTarball({ file: args.file, name: args.package, version: args.version });
+      console.log(`${path.basename(args.file)} carries ${args.package}@${args.version}.`);
+      return 0;
+    }
+    if (command === "stamp") {
+      const args = parseArgs(rest, ["file", "version"]);
+      if (!args?.file || !args.version) return usage();
+      stampSdkVersion({ file: args.file, version: args.version });
+      console.log(`${args.file} now reports ${args.version}.`);
       return 0;
     }
     return usage();

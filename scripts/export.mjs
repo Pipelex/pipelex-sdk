@@ -16,8 +16,9 @@
  *   node scripts/export.mjs export --tag <vX.Y.Z> [--mirror <dir>=<url>]...
  *       Export each starter the release ships. Per mirror: skip it when its
  *       `vX.Y.Z` already holds the directory's tree, fail loudly when that tag
- *       holds another tree, refuse when the SDK version the starter's lockfile
- *       pins is not on its registry, and otherwise push and compare.
+ *       holds another tree, leave it when it holds a later release already,
+ *       refuse when the SDK version the starter's lockfile pins is not on its
+ *       registry, and otherwise push and compare.
  *
  *   node scripts/export.mjs check [--ref <commit-ish>] [--mirror <dir>=<url>]...
  *       The scheduled comparison: each mirror's `main^{tree}` against
@@ -48,8 +49,10 @@ import {
   liveRegistry,
   manifestVersionAt,
   output,
+  remoteCommit,
   versionAt,
 } from "./publish.mjs";
+import { compareVersions } from "./versions.mjs";
 
 /** The repository the mirrors are exported from, named in each export commit. */
 export const SOURCE = "Pipelex/pipelex-sdk";
@@ -121,14 +124,12 @@ export function lockedSdk(repo, commitish, starter) {
   return { name, registry, version };
 }
 
-/** The commit a remote ref points at, peeled through an annotated tag, or null. */
-function remoteCommit(repo, url, ref) {
-  const out = git(repo, ["ls-remote", url, ref, `${ref}^{}`]);
-  const lines = out
+/** The release versions a mirror is tagged with, `vX.Y.Z` read as `X.Y.Z`. */
+function mirrorVersions(repo, url) {
+  return git(repo, ["ls-remote", "--tags", "--refs", url, "refs/tags/v*"])
     .split("\n")
-    .filter(Boolean)
-    .map((line) => line.split("\t"));
-  return (lines.find(([, name]) => name === `${ref}^{}`) ?? lines.find(([, name]) => name === ref))?.[0] ?? null;
+    .map((line) => /\trefs\/tags\/v(\d+\.\d+\.\d+)$/.exec(line)?.[1])
+    .filter(Boolean);
 }
 
 /** Fetch a remote ref into a ref of our own and answer its tree, or null when the remote lacks it. */
@@ -153,8 +154,9 @@ export function planExport({ repo, tag }) {
 
 /**
  * Export one starter at the tag. Answers `{ status, message }`, the status
- * being `exported` or `skipped` when the mirror ends as it should, and
- * `mismatch` or `unresolved` when it does not; nothing is pushed in those two.
+ * being `exported` or `skipped` when the mirror ends as it should,
+ * `superseded` when the mirror already holds a later release, and `mismatch`
+ * or `unresolved` when it does not; nothing is pushed in the last three.
  */
 export async function exportStarter({ repo, tag, starter, url, registry }) {
   const commit = commitOf(repo, `refs/tags/${tag}`);
@@ -171,6 +173,19 @@ export async function exportStarter({ repo, tag, starter, url, registry }) {
     return {
       status: "mismatch",
       message: `${starter.mirror}'s ${tag} holds the tree ${tagged}, and ${starter.dir} at ${tag} is ${tree}: the mirror's tag is not this release's, and nothing was pushed.`,
+    };
+  }
+
+  // A later release reached the mirror already: exporting this one now, a
+  // re-run of an older release's export, would put the older starter back on
+  // top of the newer one.
+  const version = tag.slice(1);
+  const later = mirrorVersions(repo, url).filter((each) => compareVersions(each, version) > 0);
+  if (later.length > 0) {
+    const newest = later.sort(compareVersions).at(-1);
+    return {
+      status: "superseded",
+      message: `${starter.mirror} already holds the later release v${newest}, so ${tag}'s export is superseded and nothing was pushed.`,
     };
   }
 
