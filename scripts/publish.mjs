@@ -36,8 +36,10 @@
  *       and as which version: `X.Y.Z-sprint.g<full sha>`, `X.Y.Z` being the next
  *       patch above the version `js/package.json` carries at that commit
  *       (design DB6). `--version`, which `wt pin` passes, must be the same one.
- *       The dispatch's own ref and head are refused where its run could be
- *       read as a release's.
+ *       The dispatch's own ref and head are refused unless they are `dev`'s,
+ *       the one branch beside `main` that the `npm` environment allows, and
+ *       while `dev` stands on a release tag, where its run could be read as
+ *       the release's.
  *
  *   node scripts/publish.mjs stamp --file <js/src/version.ts> --version <version>
  *       Write the prerelease's version into the SDK's `SDK_VERSION` constant.
@@ -110,6 +112,12 @@ export const UNITS = [
 export const SPRINT_PACKAGE = "@pipelex/sdk";
 export const SPRINT_MANIFEST = "js/package.json";
 export const SPRINT_DIST_TAG = "sprint";
+/**
+ * The one branch a sprint prerelease is dispatched from, and the environment
+ * its publish job holds, which allows `main` and this branch alone.
+ */
+export const SPRINT_BRANCH = "dev";
+export const SPRINT_ENVIRONMENT = "npm";
 
 /** A release's version: a plain `X.Y.Z`, which is what a `release/vX.Y.Z` branch can spell. */
 const RELEASE_VERSION = /^\d+\.\d+\.\d+$/;
@@ -387,28 +395,36 @@ export function sprintVersion(manifestVersion, sha) {
 }
 
 /**
- * Refuse a dispatch whose run could be read as a release's. `ledger land`
+ * Refuse a dispatch that could not publish, or whose run could be read as a
+ * release's. The sprint publish job holds the `npm` environment, whose
+ * deployment branch policy allows `main` and `dev` alone, and `ledger land`
  * verifies a release from the newest run of `release.yml` at the release's
  * merge commit or its release branch's head, so a sprint dispatch is taken
- * only from a branch (`ref`, the run's `GITHUB_REF`) that is neither `main`
- * nor a `release/` branch, and whose head (`head`, the run's `GITHUB_SHA`)
- * carries no release tag `v*`, as `dev` does right after a landing
- * fast-forwards it onto a release.
+ * only from `dev` (`ref`, the run's `GITHUB_REF`), and only while its head
+ * (`head`, the run's `GITHUB_SHA`) carries no release tag `v*`, as it does
+ * right after a landing fast-forwards it onto a release. Refusing here, before
+ * the build, says why; the environment would only fail the publish job after
+ * the commit was built.
  */
 export function checkDispatch({ repo, ref, head }) {
   if (!ref.startsWith("refs/heads/")) {
-    throw new ReleaseError(`a sprint prerelease is dispatched from a branch, and ${ref} is not one`);
+    throw new ReleaseError(`a sprint prerelease is dispatched from ${SPRINT_BRANCH}, and ${ref} is not a branch`);
   }
   const branch = ref.slice("refs/heads/".length);
   if (branch === "main" || branch.startsWith("release/")) {
     throw new ReleaseError(
-      `a sprint prerelease is never dispatched from ${branch}, whose runs stand where a release's are read: dispatch it from dev or a topic branch`,
+      `a sprint prerelease is never dispatched from ${branch}, whose runs stand where a release's are read: dispatch it from ${SPRINT_BRANCH}`,
+    );
+  }
+  if (branch !== SPRINT_BRANCH) {
+    throw new ReleaseError(
+      `a sprint prerelease is dispatched from ${SPRINT_BRANCH} alone, not ${branch}: the ${SPRINT_ENVIRONMENT} environment its publish job holds allows main and ${SPRINT_BRANCH}, so a run from ${branch} could not publish`,
     );
   }
   const tags = git(repo, ["tag", "--points-at", head, "--list", "v*"]).split("\n").filter(Boolean);
   if (tags.length > 0) {
     throw new ReleaseError(
-      `${branch} stands on ${head}, the release ${tags.join(", ")}, where a run of this workflow would be read as the release's: dispatch from another branch, or once ${branch} has moved on`,
+      `${branch} stands on ${head}, the release ${tags.join(", ")}, where a run of this workflow would be read as the release's: dispatch once ${branch} has moved on`,
     );
   }
   return branch;

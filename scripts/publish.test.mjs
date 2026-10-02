@@ -11,7 +11,9 @@ import process from "node:process";
 import { describe, it } from "node:test";
 
 import {
+  ROOT,
   ReleaseError,
+  SPRINT_ENVIRONMENT,
   applyTag,
   changelogEntry,
   checkDispatch,
@@ -274,13 +276,16 @@ describe("the sprint prerelease", () => {
     );
   });
 
-  it("is dispatched only from a branch whose run cannot be read as a release's", () => {
+  it("is dispatched only from dev, the branch the npm environment allows beside main", () => {
     const { origin, ws, sprint, first } = sprintRepo();
     assert.equal(checkDispatch({ repo: ws, ref: "refs/heads/dev", head: sprint }), "dev");
-    assert.equal(checkDispatch({ repo: ws, ref: "refs/heads/feature/Sprint-work", head: sprint }), "feature/Sprint-work");
+    assert.throws(
+      () => checkDispatch({ repo: ws, ref: "refs/heads/feature/Sprint-work", head: sprint }),
+      /from dev alone, not feature\/Sprint-work: the npm environment/,
+    );
     assert.throws(() => checkDispatch({ repo: ws, ref: "refs/heads/main", head: sprint }), /never dispatched from main/);
     assert.throws(() => checkDispatch({ repo: ws, ref: "refs/heads/release/v0.29.0", head: sprint }), /never dispatched from release\/v0\.29\.0/);
-    assert.throws(() => checkDispatch({ repo: ws, ref: "refs/tags/v0.28.1", head: first }), /is not one/);
+    assert.throws(() => checkDispatch({ repo: ws, ref: "refs/tags/v0.28.1", head: first }), /is not a branch/);
     // dev fast-forwarded onto a release's merge commit by the landing's back-merge.
     applyTag({ repo: ws, plan: planTag({ repo: ws, sha: first }) });
     const tagged = checkout(origin, "main");
@@ -522,5 +527,32 @@ describe("recovery at each publication boundary", () => {
     assert.equal(commitOf(m["starter-python"].url, "refs/heads/main^"), before.python);
     const tree = git(checkout(origin, "refs/tags/v0.29.0"), ["rev-parse", "HEAD:starter-python"]).trim();
     assert.equal(m["starter-python"].tree("refs/heads/main"), tree);
+  });
+});
+
+describe("the environments the trusted publishers name", () => {
+  /** Each job of `release.yml`, by its id, as the text of its block. */
+  function releaseJobs() {
+    const text = fs.readFileSync(path.join(ROOT, ".github/workflows/release.yml"), "utf8");
+    const jobs = text.slice(text.indexOf("\njobs:\n"));
+    const blocks = jobs.split(/^(?=  [\w-]+:\n)/m).slice(1);
+    return new Map(blocks.map((block) => [block.match(/^  ([\w-]+):/)[1], block]));
+  }
+
+  it("holds an environment on exactly the jobs that can mint the publishers' id-token", () => {
+    const held = [...releaseJobs()].map(([id, block]) => [
+      id,
+      /^      id-token: write$/m.test(block),
+      block.match(/^    environment:\n      name: (\S+)$/m)?.[1] ?? null,
+    ]);
+    assert.deepEqual(
+      held.filter(([, idToken, environment]) => idToken || environment !== null),
+      [
+        ["npm-sdk-publish", true, SPRINT_ENVIRONMENT],
+        ["npm-initializer-publish", true, SPRINT_ENVIRONMENT],
+        ["pypi-publish", true, "pypi"],
+        ["sprint-publish", true, SPRINT_ENVIRONMENT],
+      ],
+    );
   });
 });
