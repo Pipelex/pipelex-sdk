@@ -1090,8 +1090,10 @@ describe.skipIf(!CAN_SERVE)("the command that started it", SPAWNS, () => {
       // serve announces the group as soon as it has spawned the fake server's
       // parent, which forks its child only afterwards. The interruption is sent
       // once both have recorded themselves, so stopping is proven on the child
-      // the parent forked as well as on the parent.
-      while (pidsIn(checkout).length < 2 && Date.now() < deadline) await sleep(50);
+      // the parent forked as well as on the parent. The wait has a budget of its
+      // own, since the announcement may have spent most of the first one.
+      const forked = Date.now() + 10_000;
+      while (pidsIn(checkout).length < 2 && Date.now() < forked) await sleep(50);
       expect(pidsIn(checkout)).toHaveLength(2);
       started.child.kill(signal);
 
