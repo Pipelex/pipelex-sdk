@@ -116,7 +116,7 @@ beforeAll(async () => {
     await client.version();
   } catch (err) {
     throw new Error(
-      `No pipelex-api reachable at ${BASE_URL}. Start one (e.g. in ../pipelex-api) ` +
+      `No pipelex-api reachable at ${BASE_URL}. Start one (e.g. make -C ../../pipelex/api run, from js/) ` +
         `or point PIPELEX_E2E_BASE_URL (shell or .env) at a running instance.`,
       { cause: err },
     );

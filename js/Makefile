@@ -106,7 +106,7 @@ test-e2e:
 	$(call PRINT_TITLE,"Running E2E Tests against live pipelex-api")
 	@target="$(E2E_TARGET)"; curl -fs --max-time 5 -o /dev/null "$$target/v1/version" || { \
 		echo "$(RED)✗ No pipelex-api reachable at $$target$(NC)"; \
-		echo "  Start one: cd ../pipelex-api && make run — or point PIPELEX_E2E_BASE_URL (shell or .env) at a running instance."; \
+		echo "  Start one with make -C ../../pipelex/api run, the runner in the workspace's pipelex checkout — or point PIPELEX_E2E_BASE_URL (shell or .env) at a running instance."; \
 		exit 1; \
 	}
 	@echo "$(YELLOW)→ target: $(E2E_TARGET)$(NC)\n"

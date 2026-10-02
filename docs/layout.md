@@ -51,9 +51,10 @@ Inside this repository those paths name nothing. The SDK a maintainer wants a te
 
 - `make use-local` builds and packs `js/` and the workspace's `mthds-form` checkout, which is `../mthds-form` from the root of the main checkout and of every worktree alike, and installs both tarballs into every JavaScript template in one `npm install --no-save`, so no manifest or lockfile changes. It installs `js/` and each template first when they were never installed, and refuses to run when the `mthds-form` checkout is missing or was never installed. Re-run it after every edit to either package, since a tarball is a snapshot.
 - `make use-published` puts each template back on the versions its lockfile pins, `--no-save` too. A template's own way back is not for this repository: `starter-js`'s `make use-npm` moves its ranges to the latest releases, which is a bump.
-- `IN=<dir>` narrows either target to the templates at or under a directory (`IN=starter-js`, `IN=method-apps`), and `MTHDS_FORM_DIR=<dir>` takes the form kernel from another checkout, such as a worktree of `mthds-form`.
+- `make local-status` says, template by template, whether each package is a local tarball or npm's, which the version cannot tell since a local build carries the version it will be published as.
+- `IN=<dir>` narrows any of the three to the templates at or under a directory (`IN=starter-js`, `IN=method-apps`), and `MTHDS_FORM_DIR=<dir>` takes the form kernel from another checkout, such as a worktree of `mthds-form`.
 
-The method-app family's `make use-local` is the root's, run with `IN=method-apps`, and `make -C method-apps local-status` says whether the web app template runs a local build. A JavaScript template joins `JS_TEMPLATES` in the root's `Makefile`.
+The method-app family's `make use-local` is the root's, run with `IN=method-apps`. A JavaScript template joins `JS_TEMPLATES` in the root's `Makefile`.
 
 The other workspace checkouts a package's maintainers reach sit at the same place: the workspace root is the parent of this repository's root, so it is two levels above a package directory, in a worktree as in the main checkout. `js/`'s `make use-local` links `../../mthds-js`, `python/`'s `bump-mthds` skill reads `../../mthds-python/CHANGELOG.md`, and `js/`'s `contract-check` skill reads the workspace's specs in `../../docs/specs/`.
 

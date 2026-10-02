@@ -94,11 +94,14 @@ agent-test: ## Run every package directory's agent-test, installing a directory 
 # - `use-published` puts back the versions each template's lockfile pins, `--no-save`, so
 #   leaving local mode never rewrites a manifest or a lockfile: moving a range is the bump
 #   skills' work.
+# - `local-status` says, template by template, whether each package is a local tarball or
+#   npm's, read from npm's hidden lockfile: the version cannot tell, since a local build
+#   carries the version it will be published as.
 #
 # MTHDS_FORM_DIR=<dir> takes the form kernel from another checkout, such as a worktree of
 # `mthds-form`, and IN=<dir> narrows both targets to the templates at or under that
 # directory, as the method-app family's own `use-local` does with IN=method-apps.
-.PHONY: use-local use-published
+.PHONY: use-local use-published local-status
 # The templates that install `@pipelex/sdk` and `@pipelex/mthds-form` from npm.
 JS_TEMPLATES := starter-js method-apps/webapp-js
 MTHDS_FORM_DIR := ../mthds-form
@@ -106,6 +109,10 @@ LOCAL_PACKAGES := @pipelex/sdk @pipelex/mthds-form
 in_dir = $(patsubst %/,%,$(IN))
 switched = $(if $(in_dir),$(filter $(in_dir) $(in_dir)/%,$(JS_TEMPLATES)),$(JS_TEMPLATES))
 refuse_empty_switch = @$(if $(switched),:,echo "ERROR: IN=$(IN) names none of the JavaScript templates: $(JS_TEMPLATES)."; exit 2)
+# Where node_modules got each named package: `local` for a tarball, `npm` for the registry,
+# `missing` when it is not installed. The method-app template's own `local-status` reads it
+# the same way.
+SOURCE_OF = node -e 'let p = {}; try { p = require("./node_modules/.package-lock.json").packages; } catch {} for (const n of process.argv.slice(1)) { const e = p["node_modules/" + n]; const r = e?.resolved; console.log(n, !r ? "missing" : r.startsWith("file:") ? "local" : "npm", e?.version ?? ""); }'
 
 use-local: ## Install this tree's js/ and the workspace's mthds-form checkout into every JavaScript template (MTHDS_FORM_DIR=<dir>, IN=<dir> to change)
 	$(refuse_empty_switch)
@@ -132,3 +139,7 @@ use-published: ## Put every JavaScript template back on the @pipelex/sdk and @pi
 		for n in $(LOCAL_PACKAGES); do rm -rf "node_modules/$$n"; done && \
 		npm install $$specs --no-save --silent); \
 	done
+
+local-status: ## Say, for every JavaScript template, whether @pipelex/sdk and @pipelex/mthds-form are local tarballs or npm's (IN=<dir> to narrow)
+	$(refuse_empty_switch)
+	@for t in $(switched); do echo "── $$t"; (cd "$$t" && $(SOURCE_OF) $(LOCAL_PACKAGES)); done

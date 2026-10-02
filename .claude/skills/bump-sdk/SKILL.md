@@ -41,7 +41,7 @@ grep -A1 '^name = "pipelex-sdk"$' starter-python/uv.lock
 
 Then, once per SDK, the latest published version: `npm view @pipelex/sdk version` and `curl -s https://pypi.org/pypi/pipelex-sdk/json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])'`.
 
-- **A JavaScript template that is installed may be running a local build** (`make local-status` in `method-apps/` says `local`, or the template's `make use-local` was run): a bump must not be measured against it, and the version cannot show it, since a local build carries the version string it will be published as. Running `npm ci` in the template puts back exactly what its lockfile pins, for the SDK and the form kernel alike, and `make use-published` in `method-apps/` does the same for the family's templates. Never reach for `starter-js`'s `make use-npm` here: it installs both `@pipelex/sdk` and `@pipelex/mthds-form` at `@latest` and saves them, so an SDK bump would carry a form-kernel bump nobody read the changelog of.
+- **A JavaScript template that is installed may be running a local build** (`make local-status` at the repository's root says `local`, after the root's `make use-local` or a template's own): a bump must not be measured against it, and the version cannot show it, since a local build carries the version string it will be published as. The root's `make use-published` puts every JavaScript template back on exactly what its lockfile pins, for the SDK and the form kernel alike, as `npm ci` in one template does. Never reach for `starter-js`'s `make use-npm` here: it installs both `@pipelex/sdk` and `@pipelex/mthds-form` at `@latest` and saves them, so an SDK bump would carry a form-kernel bump nobody read the changelog of.
 - **The templates of one SDK are on different versions**: they move to one version together here, and the lowest of them sets where the changelog reading in Step 3 starts.
 - **Every template is already on the latest**: say so and stop, unless the user named another version.
 
@@ -127,5 +127,5 @@ This skill does not touch the root `VERSION` or any manifest's `version` field: 
 - Never push, open a pull request or merge without the user's explicit yes.
 - Flag a behavior change for the user rather than migrating it by guess.
 - Measure the gates against the published package, never against a local build of `js/` or `python/`.
-- Never point a template at the SDK in this tree: a template installs from the registry, which is what a project made from it gets. The pull request's next-SDK checks already test every template against the SDK built from the same commit.
+- Never point a template's manifest or lockfile at the SDK in this tree: a template installs from the registry, which is what a project made from it gets, and the root's `make use-local` is a `--no-save` trial that a bump is never measured against. The pull request's next-SDK checks already test every template against the SDK built from the same commit.
 - Stop as soon as a step fails or the user wants to abort, and say where the work was left: the worktree, the item and its claim.
