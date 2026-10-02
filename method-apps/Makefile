@@ -1,4 +1,4 @@
-.PHONY: help install hooks check check-family check-versions check-workflows workflows lint format format-check typecheck test test-family agent-test build all lock clean use-local use-local-form use-published use-published-form local-status ul un
+.PHONY: help install install-if-missing check check-family check-versions check-workflows workflows lint format format-check typecheck test test-family agent-check agent-test build all lock clean use-local use-local-form use-published use-published-form local-status ul un
 
 # The family's root gate. Each template is a directory with its own Makefile,
 # copied out whole into the projects created from it, so every target here
@@ -22,8 +22,8 @@ $(if $(filter-out $(TEMPLATES),$(FORM_TEMPLATES)),$(error FORM_TEMPLATES names $
 # root's.
 INITIALIZERS := initializers/js
 
-# The root's own tooling borrows the first template's installed Prettier and
-# Husky, so the root needs no package manager of its own.
+# The family root's own tooling borrows the first template's installed Prettier,
+# so the family root needs no package manager of its own.
 TOOLS := webapp-js/node_modules/.bin
 
 # The root's own Markdown, scripts and JSON, with every template left out: a
@@ -43,17 +43,13 @@ each = $(call each_of,$(TEMPLATES),$(1))
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-install: ## Install every template's dependencies, then wire the pre-commit hook
+install: ## Install every template's dependencies
 	$(call each,install)
-	@$(MAKE) --no-print-directory hooks
 
-# Husky, run from the root, points git at .husky/_ here — the same hooks path a
-# template sets when it is a repository of its own, so the setting agrees with
-# every checkout of this repository. The root's .husky/pre-commit runs each
-# template's own hook from inside that template.
-hooks: ## Wire the root pre-commit hook, which runs each template's own
-	@[ -x $(TOOLS)/husky ] || { echo "Husky is not installed: run make install first."; exit 1; }
-	$(TOOLS)/husky
+# The git hooks belong to the repository's root, whose `make install` wires them
+# and whose pre-commit hook runs each template's own hook from inside it.
+install-if-missing: ## Install each template whose node_modules is missing
+	$(call each,install-if-missing)
 
 check: check-family ## Check the family, then run every template's check (lint, format, typecheck, codegen)
 	$(call each,check)
@@ -94,7 +90,10 @@ test-family: ## Run the tests of the root's own scripts and of every initializer
 test: test-family ## Run the family's tests, then every template's
 	$(call each,test)
 
-agent-test: ## Run every test, silent on success (for agents)
+agent-check: install-if-missing ## Check the family, then every template, installing first what was never installed (for agents)
+	@$(MAKE) --no-print-directory check
+
+agent-test: install-if-missing ## Run every test, silent on success, installing first what was never installed (for agents)
 	@OUTPUT=$$(node --test $(FAMILY_TESTS) 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 	$(call each,agent-test)
 

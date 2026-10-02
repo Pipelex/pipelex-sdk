@@ -1,0 +1,23 @@
+#!/bin/sh
+# The repository's pre-commit hook. A template carries its own Husky hook, which travels into
+# every project made from it and wires itself there. Here, Husky finds no .git in a template's
+# directory and wires nothing, so this hook runs each template's own hook from inside that
+# template, for the templates the commit touches, where lint-staged sees only that template's
+# staged files. The root's `make install` points git at this directory.
+root=$(git rev-parse --show-toplevel)
+for hook in "$root"/*/.husky/pre-commit "$root"/*/*/.husky/pre-commit; do
+  [ -f "$hook" ] || continue
+  dir=$(dirname "$(dirname "$hook")")
+  name=${dir#"$root"/}
+  case "$name" in */node_modules | */node_modules/*) continue ;; esac
+  git diff --cached --quiet -- "$dir" && continue
+  # A directory installs itself the first time its checks run, so one a worktree never checked
+  # has no lint-staged to run. Installing from inside a hook could rewrite a lock file in the
+  # middle of a commit, so the hook says what to run instead.
+  if [ ! -d "$dir/node_modules" ]; then
+    echo "pre-commit: $name is not installed, so its hook cannot run. Run \`make -C $name install\`, then commit again." >&2
+    exit 1
+  fi
+  echo "pre-commit: $name"
+  (cd "$dir" && PATH="$dir/node_modules/.bin:$PATH" sh -e "$hook") || exit 1
+done

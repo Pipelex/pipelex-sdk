@@ -1,4 +1,4 @@
-.PHONY: help run dev build start port-check lint format format-check typecheck codegen codegen-check codegen-verify add-method test test-watch test-e2e test-e2e-ui confirm-live-e2e agent-test check clean install lock all use-local use-npm ul un
+.PHONY: help run dev build start port-check lint format format-check typecheck codegen codegen-check codegen-verify add-method test test-watch test-e2e test-e2e-ui confirm-live-e2e agent-test agent-check install-if-missing check clean install lock all use-local use-npm ul un
 
 # ── Arguments ──────────────────────────────────────────────────────────────
 # A gesture takes its values as make variables (`make add-method METHOD=…
@@ -189,15 +189,23 @@ test-e2e: confirm-live-e2e port-check ## Run OPTIONAL Playwright e2e (LIVE API �
 test-e2e-ui: confirm-live-e2e port-check ## Same as test-e2e, with the Playwright UI runner
 	npm run test:e2e:ui
 
-agent-test: ## Run tests, silent on success (for agents)
+agent-test: install-if-missing ## Run tests, silent on success, installing first when node_modules is missing (for agents)
 	@OUTPUT=$$(npm run test --silent 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
 check: lint format-check typecheck codegen-check ## Run lint, format check, type check, and the offline codegen check
+
+agent-check: install-if-missing ## Run check, installing first when node_modules is missing (for agents)
+	@$(MAKE) --no-print-directory check
 
 all: check test build ## Full validation: check + test + build (excludes e2e — see test-e2e)
 
 install: ## Install dependencies
 	npm install
+
+# The agent targets install the project first when node_modules is missing, so a fresh
+# checkout can run them directly.
+install-if-missing:
+	@[ -d node_modules ] || $(MAKE) --no-print-directory install
 
 lock: ## Regenerate package-lock.json without installing
 	npm install --package-lock-only

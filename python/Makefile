@@ -84,7 +84,7 @@ make li                       - Shorthand -> lock install
 endef
 export HELP
 
-.PHONY: all help env env-verbose check-uv check-uv-verbose lock install update build test e2e-test test-with-prints t tp gha-tests agent-test format lint pyright mypy pylint merge-check-ruff-format merge-check-ruff-lint merge-check-pyright merge-check-mypy merge-check-pylint check-unused-imports fix-unused-imports check-TODOs cleanderived cleanenv cleanall c cc li agent-check
+.PHONY: all help env env-verbose check-uv check-uv-verbose lock install install-if-missing update build test e2e-test test-with-prints t tp gha-tests agent-test format lint pyright mypy pylint merge-check-ruff-format merge-check-ruff-lint merge-check-pyright merge-check-mypy merge-check-pylint check-unused-imports fix-unused-imports check-TODOs cleanderived cleanenv cleanall c cc li agent-check
 
 all help:
 	@echo "$$HELP"
@@ -139,6 +139,12 @@ install: env-verbose
 	@. "$(VIRTUAL_ENV)/bin/activate" && \
 	uv sync --all-extras && \
 	echo "Installed $(PROJECT_NAME) dependencies in ${VIRTUAL_ENV} with all extras.";
+
+# The agent targets install the project first when it was never installed, so a fresh checkout
+# can run them directly. The test reads a tool rather than the virtual environment, because `env`
+# creates an empty one for every target that depends on it, and an interrupted sync leaves one too.
+install-if-missing:
+	@[ -x "$(VIRTUAL_ENV)/bin/pytest" ] || $(MAKE) --no-print-directory install
 
 lock: env
 	$(call PRINT_TITLE,"Resolving dependencies without update")
@@ -217,7 +223,7 @@ gha-tests: env
 	$(call PRINT_TITLE,"Unit testing for GitHub Actions")
 	$(VENV_PYTEST) --exitfirst --quiet
 
-agent-test: env
+agent-test: install-if-missing
 	@echo "• Running unit tests..."
 	@tmpfile=$$(mktemp); \
 	$(VENV_PYTEST) -o log_level=WARNING --tb=short -q > "$$tmpfile" 2>&1; \
@@ -308,7 +314,8 @@ cc: cleanderived c
 check: cc check-unused-imports pylint
 	@echo "> done: check"
 
-agent-check: fix-unused-imports format lint pyright mypy
+agent-check: install-if-missing
+	@$(MAKE) --no-print-directory fix-unused-imports format lint pyright mypy
 	@echo "> done: agent-check"
 
 li: lock install

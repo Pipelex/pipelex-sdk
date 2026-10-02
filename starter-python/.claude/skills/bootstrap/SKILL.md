@@ -65,7 +65,7 @@ python .claude/skills/bootstrap/scripts/bootstrap.py \
 
 Pass `--clean` because the user opted to strip the template-only scaffolding (the README "Use this template / Next steps" block; the bootstrap skill itself is removed separately in Step 6). Omit it only if the user changed their mind and wants the template block kept.
 
-The dry run prints the package-directory rename, the list of files that would be edited and the template's own maintenance files that would be removed. Present that summary and **get explicit confirmation** before the real run. Only pass `--dist` if the user wants a distribution name that isn't just the package with dashes.
+The dry run prints the package-directory rename and the list of files that would be edited. Present that summary and **get explicit confirmation** before the real run. Only pass `--dist` if the user wants a distribution name that isn't just the package with dashes.
 
 ## Step 4 — Run the replacement
 
@@ -75,9 +75,8 @@ Re-run the exact same command **without** `--dry-run`. The script:
 - fills in description, and (if given) author, repo URL
 - applies the license choice in all three places: the `LICENSE` body, `license = "..."` in `pyproject.toml`, and the README license line
 - strips the README template block
-- removes the template's own maintenance, listed in the script's `MAINTAINER_ONLY_PATHS`: the CLA assistant (`cla.yml`), the branch-flow guard (`guard-branches.yml`), the release checks (`version-check.yml`, `changelog-check.yml`), the GitHub Release job (`github-release.yml`) and the `release` skill. They encode Pipelex's contributor agreement and release discipline, not the user's; each of their jobs is guarded to `Pipelex/pipelex-starter-python`, so they were already inert in the new repository, and removing them keeps them out of it altogether. `lint-check.yml`, `tests-check.yml` and `package-check.yml` stay: they are the project's own CI. The removal is a plain delete, unstaged like the edits, and it happens after the survivor check, so an aborted run has removed nothing.
 
-It deliberately does **not** run the lock file, run the checks, commit, or touch `.venv/`, `uv.lock` or the workflows it keeps.
+It deliberately does **not** run the lock file, run the checks, commit, or touch `.venv/`, `uv.lock` or the workflows.
 
 **Heads-up — file state changed on disk.** The script rewrites `pyproject.toml`, `README.md`, and `LICENSE` (and `--clean` shifts README line numbers). If you find you need a manual `Edit` afterward, **re-read the file first** and re-derive any line numbers — a pre-run `grep` result is stale, and an `Edit` against an unread/old version will fail with "modified since read." In practice the script is meant to cover every placeholder so manual edits shouldn't be needed; if you reach for one, it's worth checking whether the script should handle that case instead.
 
@@ -110,7 +109,7 @@ Use a plain `rm` (not `git rm`) so the deletion stays unstaged, like the other c
 
 Finally, give the user a short summary:
 - the three name forms that were applied, and the license that was set
-- that the package directory was renamed, and that the template's own CLA, branch-flow and release workflows and its `release` skill were removed
+- that the package directory was renamed
 - that `uv.lock` was regenerated and `make agent-check` / `make agent-test` pass
 - that **nothing is committed**; the renames are staged (`R`) and the content edits are unstaged (`M`) — they should review with `git status` and `git diff`, then commit (a single `git add -A && git commit` captures everything)
 - a nudge to skim the new `README.md` and write real project content, and to update `CLAUDE.md` if the project's specifics have changed
@@ -121,5 +120,5 @@ Finally, give the user a short summary:
 - **Always dry-run before the real run** and get confirmation. This edits a brand-new repo and renames a directory; the preview is cheap insurance.
 - **Regenerate `uv.lock`.** Renaming the distribution name makes the lock stale; `make li` (or `uv lock`) is what keeps `package-check.yml` green. Don't skip it.
 - **Don't stop on a red check.** A failing `make agent-check` / `make agent-test` here means CI will fail too — fix the root cause and re-run.
-- **Don't edit the workflows the script keeps** (`lint-check.yml`, `tests-check.yml`, `package-check.yml`) — they're the project's own CI and hold no placeholder. Everything else under `.github/workflows/`, and the `release` skill, is the template's own and the script removes it.
+- **Don't edit the workflows** (`lint-check.yml`, `tests-check.yml`, `package-check.yml`) — they're the project's own CI and hold no placeholder.
 - If any step fails or the user wants to abort, stop immediately and leave the tree in a state they can inspect — don't push forward through errors.

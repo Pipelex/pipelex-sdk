@@ -100,7 +100,7 @@ endef
 export HELP
 
 .PHONY: \
-	all help env env-verbose check-uv check-uv-verbose lock install update build \
+	all help env env-verbose check-uv check-uv-verbose lock install install-if-missing update build \
 	export-requirements export-requirements-dev er erd \
 	format lint ruff-format ruff-lint plxt-format plxt-lint pyright mypy \
 	cleanderived cleanenv cleanall \
@@ -162,6 +162,12 @@ install: env-verbose
 	@. $(VIRTUAL_ENV)/bin/activate && \
 	uv sync --all-extras && \
 	echo "Installed dependencies in ${VIRTUAL_ENV}";
+
+# The agent targets install the project first when it was never installed, so a fresh checkout
+# can run them directly. The test reads a tool rather than the virtual environment, because `env`
+# creates an empty one for every target that depends on it, and an interrupted sync leaves one too.
+install-if-missing:
+	@[ -x "$(VIRTUAL_ENV)/bin/pytest" ] || $(MAKE) --no-print-directory install
 
 lock: env-verbose
 	$(call PRINT_TITLE,"Resolving dependencies without update")
@@ -360,7 +366,7 @@ test-inference: env
 ti: test-inference
 	@echo "> done: ti = test-inference"
 
-agent-test: env
+agent-test: install-if-missing
 	@echo "• Running unit tests..."
 	@tmpfile=$$(mktemp); \
 	$(VENV_PYTEST) -m $(USUAL_PYTEST_MARKERS) -o log_level=WARNING --tb=short -q > "$$tmpfile" 2>&1; \
@@ -451,7 +457,8 @@ cc: cleanderived c
 check: cleanderived check-unused-imports c
 	@echo "> done: check"
 
-agent-check: fix-unused-imports format lint pyright mypy
+agent-check: install-if-missing
+	@$(MAKE) --no-print-directory fix-unused-imports format lint pyright mypy
 	@echo "> done: agent-check"
 
 v: validate

@@ -1,11 +1,11 @@
 ---
 name: bootstrap
-description: Bootstrap this pipelex-starter-js template into a real project — replaces the template name (pipelex-starter-js / "Pipelex Starter") in package.json, README, CLAUDE.md, the app UI and the release skill, sets description, author, repo URL and license, resets the version and changelog, then syncs package-lock.json and runs the checks. Use this right after creating a repo from the template, or whenever the user says "bootstrap", "set up this template", "rename the project", "initialize the project", "replace the placeholders", "give this project a name", or "make this my own".
+description: Bootstrap this pipelex-starter-js template into a real project — replaces the template name (pipelex-starter-js / "Pipelex Starter") in package.json, README, CLAUDE.md and the app UI, sets description, author, repo URL and license, resets the version and changelog, then syncs package-lock.json and runs the checks. Use this right after creating a repo from the template, or whenever the user says "bootstrap", "set up this template", "rename the project", "initialize the project", "replace the placeholders", "give this project a name", or "make this my own".
 ---
 
 # Bootstrap Workflow
 
-This repo is a GitHub **template**. A fresh clone still carries the template's identity everywhere: the npm package name `pipelex-starter-js` (package.json, package-lock.json, README H1, CLAUDE.md H1, the release skill), the display title `Pipelex Starter` (the page H1 and the browser `<title>`), the template's own description, version history (CHANGELOG.md chronicling the template's releases), and the Evotis S.A.S. MIT license. This skill turns all of that into the user's real project identity in one reviewable pass, then proves the result still passes CI's gates.
+This repo is a GitHub **template**. A fresh clone still carries the template's identity everywhere: the npm package name `pipelex-starter-js` (package.json, package-lock.json, README H1, CLAUDE.md H1), the display title `Pipelex Starter` (the page H1 and the browser `<title>`), the template's own description, version history (CHANGELOG.md chronicling the template's releases), and the Evotis S.A.S. MIT license. This skill turns all of that into the user's real project identity in one reviewable pass, then proves the result still passes CI's gates.
 
 The mechanical replacement is done by a bundled script — `scripts/bootstrap.mjs` — because the same name appears in two spellings across config, docs, UI and skills, and the license choice touches LICENSE, package.json, and the README together. The script is deterministic, dependency-free (plain Node), and supports `--dry-run`, so you can show the plan before touching anything. **Your job in this skill is to collect good inputs, preview, run the script, and verify.** Walk the user through it; confirm before the steps that change files.
 
@@ -75,14 +75,14 @@ The dry run prints the list of files that would be edited. Present that summary 
 
 Re-run the exact same command **without** `--dry-run`. The script:
 
-- substitutes both name spellings across `package.json`, `README.md`, `CLAUDE.md`, `AGENTS.md`, `src/app/layout.tsx`, `src/app/page.tsx`, and the release skill's `SKILL.md`
-- softens the template's "the starter ..." / "this starter ..." prose self-references in `src/lib/errors.ts` (user-facing error messages), `CLAUDE.md`, the release skill, the `Makefile`, and the e2e spec comments
+- substitutes both name spellings across `package.json`, `README.md`, `CLAUDE.md`, `AGENTS.md`, `src/app/layout.tsx` and `src/app/page.tsx`
+- softens the template's "the starter ..." / "this starter ..." prose self-references in `src/lib/errors.ts` (user-facing error messages), `CLAUDE.md`, the `Makefile`, and the e2e spec comments
 - fills in the description (package.json, README intro, CLAUDE.md, layout metadata), and (if given) author and repository URL
 - resets `version` to `0.1.0` and rewrites `CHANGELOG.md` to a fresh v0.1.0 entry dated today
 - applies the license choice in all three places: the `LICENSE` body, the `license` field in `package.json`, and the README license line
 - strips CLAUDE.md's template charter paragraph (with `--clean`)
 
-It deliberately does **not** touch git, run `npm install`, run the checks, or modify `.github/`, `node_modules/`, `package-lock.json`, `methods/`, or the existing `release` skill's logic (only its name references).
+It deliberately does **not** touch git, run `npm install`, run the checks, or modify `.github/`, `node_modules/`, `package-lock.json` or `methods/`.
 
 **Heads-up — file state changed on disk.** The script rewrites `package.json`, `README.md`, `CLAUDE.md`, and `LICENSE` (and `--clean` shifts CLAUDE.md line numbers). If you find you need a manual `Edit` afterward, **re-read the file first** and re-derive any line numbers — a pre-run `grep` result is stale, and an `Edit` against an unread/old version will fail with "modified since read." In practice the script is meant to cover every placeholder so manual edits shouldn't be needed; if you reach for one, it's worth checking whether the script should handle that case instead.
 
@@ -123,5 +123,5 @@ Finally, give the user a short summary:
 - **Always dry-run before the real run.** This edits a brand-new repo; the preview is cheap insurance. Get confirmation when working interactively; when the user supplied every input up front and asked to proceed, the dry-run output still gets shown.
 - **Re-sync `package-lock.json`.** Renaming the package makes the lock stale; `npm install --package-lock-only` is what keeps CI's `npm ci` green. Don't skip it.
 - **Don't stop on a red check.** A failing `make all` here means CI will fail too — fix the root cause and re-run.
-- **Don't touch `.github/` workflows or the `release` skill's logic** — they're generic to the template, not placeholders (the script only updates the release skill's name references).
+- **Don't touch `.github/` workflows** — they're generic to the template, not placeholders.
 - If any step fails or the user wants to abort, stop immediately and leave the tree in a state they can inspect — don't push forward through errors.
