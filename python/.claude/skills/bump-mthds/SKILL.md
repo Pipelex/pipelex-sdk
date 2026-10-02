@@ -16,7 +16,8 @@ description: >
   protocol model, or a `uv lock` saying mthds is unsatisfiable. This is the
   **`mthds` PyPI package** (the MTHDS standard's Python client, from the sibling
   `mthds-python` repo) — not the MTHDS spec pages, not the `mthds` npm package,
-  and not releasing `pipelex-sdk` itself, which is the `release` skill.
+  and not releasing `pipelex-sdk` itself, which is the repository root's
+  `/release` skill.
 ---
 
 # Bump the `mthds` dependency
@@ -59,7 +60,7 @@ written, ledger squared. **Stop before committing** — the user stages and comm
 | `docs/architecture.md` | Only when the inherited surface or the brand boundary moved — that document names both explicitly |
 
 Do **not** touch `[project].version`. That is `pipelex-sdk`'s own version and it
-moves only at release time, via the `release` skill.
+moves only at release time, via the repository root's `/release` skill.
 
 ## The pin is exact, and it always tracks latest
 
@@ -95,7 +96,7 @@ in the same sentence of an upstream changelog.
 | The **`mthds` package version** | `mthds-python/pyproject.toml`, PyPI | The Python client's own release number. **This is what you are bumping.** |
 | The **MTHDS standard version** | `MTHDS_STANDARD_VERSION` in `mthds.package.manifest.schema` | The version of the *standard* that client implements. This repo never reads it — it stamps no crates and ships no manifest — so unlike in `pipelex`, there is nothing here to check when it moves. |
 | The **spec site's release number** | the `mthds/` repo's own CHANGELOG | The documentation site's release. Coincidentally close to the package number; unrelated to it. |
-| **`pipelex-sdk`'s own version** | `[project].version` here | This package's release number. Not yours to move — that is the `release` skill. |
+| **`pipelex-sdk`'s own version** | `[project].version` here | This package's release number. Not yours to move — that is the repository root's `/release` skill. |
 
 Read every version reference in the upstream notes against this table before
 repeating it in ours.
@@ -201,7 +202,8 @@ One line in `pyproject.toml`. Make it a substring edit — replace `==0.11.0` wi
 `==0.11.1` on that line and leave every other character alone. Use your editor
 rather than a shell one-liner: `sed -i` takes a separate empty argument on macOS
 and an attached suffix on GNU/Linux, so no single invocation is portable, and
-the `release` skill edits this same file the same way.
+the repository root's `/release` skill edits this same file, on its `version`
+line.
 
 Confirm with `grep -n '"mthds' pyproject.toml` before moving on. That grep
 returns four hits, not one: the pin, plus the three dotted `mthds.protocol`
@@ -445,4 +447,4 @@ and PRs target `dev`.
   onto crates and has to track it; this SDK never reads it. Don't port that step
   over from the engine's version of this skill.
 - **`[project].version` is `pipelex-sdk`'s own version.** Bumping it is the
-  `release` skill's job, not this one's.
+  repository root's `/release` skill's job, not this one's.
