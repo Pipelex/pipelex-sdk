@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install hooks agent-check agent-test workflows check-workflows check-versions check-release-versions release-selection test-scripts
+.PHONY: help install hooks agent-check agent-test workflows check-workflows lint-workflows install-actionlint check-versions check-release-versions release-selection test-scripts
 
 # The root gate. Each package directory is a project of its own, with its own Makefile,
 # manifest and lockfile, installed from the registries exactly as its standalone repository
@@ -52,6 +52,30 @@ workflows: ## Render the root twins of every template's workflows into .github/w
 check-workflows: ## Check that every root twin of a template workflow is current
 	@node scripts/workflows.mjs --check $(TEMPLATES)
 
+# actionlint reads every workflow, the root's and each template's own, so a broken expression
+# or step in a workflow no pull request runs, such as release.yml or mirrors.yml, is caught on
+# the pull request that makes it (docs/ci.md). It runs shellcheck over the `run:` scripts when
+# shellcheck is on the PATH. CI runs exactly ACTIONLINT_VERSION, which `install-actionlint`
+# fetches from the release and checks against the SHA-256 the release publishes for it; a
+# maintainer's own actionlint is used as it is, and a different version is named.
+ACTIONLINT_VERSION := 1.7.12
+ACTIONLINT_LINUX_AMD64_SHA256 := 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+WORKFLOW_FILES = $(wildcard .github/workflows/*.yml) $(foreach t,$(TEMPLATES),$(wildcard $(t)/.github/workflows/*.yml))
+
+lint-workflows: ## Lint the root's workflows and every template's own with actionlint
+	@command -v actionlint >/dev/null 2>&1 || { echo "actionlint is not installed: brew install actionlint, or on Linux x86-64 make install-actionlint ACTIONLINT_DIR=<dir>"; exit 1; }
+	@version=$$(actionlint -version | head -n 1); [ "$$version" = "$(ACTIONLINT_VERSION)" ] || echo "note: this is actionlint $$version, and CI runs $(ACTIONLINT_VERSION)"
+	@actionlint $(WORKFLOW_FILES)
+
+install-actionlint: ## Install the actionlint CI runs, for Linux x86-64, into ACTIONLINT_DIR, checked against its published SHA-256
+	@test -n "$(ACTIONLINT_DIR)" || { echo "name the directory: make install-actionlint ACTIONLINT_DIR=<dir>"; exit 1; }
+	@mkdir -p "$(ACTIONLINT_DIR)"
+	@curl -fsSL -o "$(ACTIONLINT_DIR)/actionlint.tar.gz" "https://github.com/rhysd/actionlint/releases/download/v$(ACTIONLINT_VERSION)/actionlint_$(ACTIONLINT_VERSION)_linux_amd64.tar.gz"
+	@echo "$(ACTIONLINT_LINUX_AMD64_SHA256)  $(ACTIONLINT_DIR)/actionlint.tar.gz" | sha256sum --check --quiet -
+	@tar -xzf "$(ACTIONLINT_DIR)/actionlint.tar.gz" -C "$(ACTIONLINT_DIR)" actionlint
+	@rm "$(ACTIONLINT_DIR)/actionlint.tar.gz"
+	@echo "actionlint $$("$(ACTIONLINT_DIR)/actionlint" -version | head -n 1) installed in $(ACTIONLINT_DIR)"
+
 check-versions: ## Check that every unit's manifests carry one version, at or below VERSION
 	@node scripts/versions.mjs $(UNITS)
 
@@ -68,9 +92,10 @@ release-selection: ## Propose the units a release ships; SPRINTS=<file, or - for
 test-scripts: ## Run the tests of the root's scripts, silent on success
 	@OUTPUT=$$(node --test scripts/*.test.mjs 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
-agent-check: ## Run every package directory's agent-check, installing a directory first when it was never installed, then check the versions and the workflow twins
+agent-check: ## Run every package directory's agent-check, installing a directory first when it was never installed, then check the versions, the workflow twins and, when actionlint is installed, the workflows' lint
 	$(call each,agent-check)
 	@$(MAKE) --no-print-directory check-workflows check-versions
+	@if command -v actionlint >/dev/null 2>&1; then $(MAKE) --no-print-directory lint-workflows; else echo "actionlint is not installed, so the workflows were not linted here; CI lints them"; fi
 
 agent-test: ## Run every package directory's agent-test, installing a directory first when it was never installed, then the root scripts' tests, all silent on success
 	$(call each,agent-test)
