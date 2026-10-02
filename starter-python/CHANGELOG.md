@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.29.1] - 2026-10-02
+
+### Fixed
+
+- **Exported to the template repository**: 0.29.0 was released in `Pipelex/pipelex-sdk` but never exported to `Pipelex/pipelex-starter-python`, because that release stopped before its export, so 0.29.1, which carries the same template, is the first version the template repository receives from `Pipelex/pipelex-sdk`.
+
 ## [v0.29.0] - 2026-10-02
 
 ### Changed

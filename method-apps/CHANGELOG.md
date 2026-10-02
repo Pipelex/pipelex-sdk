@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.29.1] - 2026-10-02
+
+### Fixed
+
+- **Published to npm**: `@pipelex/create-method-app` 0.29.0 was released in `Pipelex/pipelex-sdk` but never reached npm, because the release workflow handed `npm publish` its tarball by a path npm took for a GitHub repository, so 0.29.1, which carries the same initializer and templates, is the first published from that repository.
+
 ## [v0.29.0] - 2026-10-02
 
 ### Changed

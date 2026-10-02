@@ -23,11 +23,12 @@
 #   export                   each starter carrying the version, pushed to its template repository,
 #                            under the `mirrors` environment
 #
-# Each package is built in a job that cannot publish and published by a job that runs nothing
-# of the repository's code or dependencies: it checks the built artifact and uploads it. So no
-# install or build script ever runs where the publishers' id-token can be minted, and the
-# environments guard exactly the jobs that can mint it or read the export App's key; the build,
-# tag and Release jobs hold none.
+# Each package is built in a job that cannot publish and published by a job that installs and
+# builds nothing of the repository or its dependencies: it runs only scripts/publish.mjs and the
+# scripts/versions.mjs it imports, both dependency-free, from the tag, to check the built
+# artifact, then uploads it. So no install or build script ever runs where the publishers'
+# id-token can be minted, and the environments guard exactly the jobs that can mint it or read
+# the export App's key; the build, tag and Release jobs hold none.
 #
 # A run that fails part-way is finished by re-running it, "Re-run failed jobs" or all of them:
 # the tag is found where it was put, a package its registry has in full is skipped, the Release
@@ -199,7 +200,7 @@ jobs:
 
       - name: Publish to npm with provenance
         if: steps.check.outputs.publish == 'true'
-        run: npm publish "$TARBALL" --access public --provenance --ignore-scripts
+        run: npm publish "./$TARBALL" --access public --provenance --ignore-scripts
 
   npm-initializer-build:
     name: Build @pipelex/create-method-app
@@ -307,7 +308,7 @@ jobs:
 
       - name: Publish to npm with provenance
         if: steps.check.outputs.publish == 'true'
-        run: npm publish "$TARBALL" --access public --provenance --ignore-scripts
+        run: npm publish "./$TARBALL" --access public --provenance --ignore-scripts
 
   pypi-build:
     name: Build pipelex-sdk
@@ -633,7 +634,7 @@ jobs:
       - name: Publish on the sprint dist-tag, leaving latest where it is
         if: steps.check.outputs.publish == 'true'
         run: |
-          npm publish "$TARBALL" --access public --tag sprint --provenance=false --ignore-scripts
+          npm publish "./$TARBALL" --access public --tag sprint --provenance=false --ignore-scripts
           latest=$(npm view @pipelex/sdk dist-tags.latest)
           if [ "$latest" = "$VERSION" ]; then
             echo "::error::latest now names $VERSION, which a sprint prerelease must never become."
