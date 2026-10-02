@@ -12,9 +12,9 @@ Every matrix leg uses this directory's `Makefile` targets, which honor `PYTHON_V
 
 ## Publishing
 
-Nothing publishes `pipelex-sdk` from this repository yet. The repository's release workflow, which reads the root `VERSION` and publishes each package whose manifest carries it, is the next step of the move into `pipelex-sdk`, and the root's [`docs/release-model.md`](../../docs/release-model.md) describes the model. Until then the package's last release, 0.16.0, was published from `Pipelex/pipelex-sdk-python`, whose publish workflow is disabled.
+The repository's release workflow, the root's `.github/workflows/release.yml`, publishes `pipelex-sdk` to PyPI when a release that ships it merges into `main`: it reads the root `VERSION`, builds the sdist and the wheel from the release's tag, and uploads them through PyPI's trusted publishing. The root's [`docs/release-model.md`](../../docs/release-model.md) describes the model. Releases up to 0.16.0 were published from `Pipelex/pipelex-sdk-python`, whose publish workflow is disabled.
 
-Two facts carry over to that workflow:
+Two facts about that workflow:
 
-- **PyPI Trusted Publishing** names a repository, a workflow filename and an environment (`pypi`) for the `pipelex-sdk` project, so the new repository needs its own registration and its own `pypi` environment, and no API token secret.
+- **PyPI Trusted Publishing** names this repository, the workflow filename `release.yml` and the environment `pypi` for the `pipelex-sdk` project, so the publish job holds that environment, which allows `main` alone, and no API token secret exists.
 - **The Actions allowlist** sits at the enterprise level, above the `Pipelex` and `mthds-ai` organizations, and some of its entries key on an exact commit SHA. `sigstore/gh-action-sigstore-python` was allowlisted at `790bc6befb9d733738f18d8f895854b453640ec9` (v3.5.0) for the old publish workflow's signed GitHub Release; any other version of a pinned action needs an enterprise admin to add its SHA first.
