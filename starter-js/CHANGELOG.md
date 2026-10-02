@@ -5,6 +5,7 @@
 ### Changed
 
 - **`/bump-sdk` reads the SDK's changelog from `Pipelex/pipelex-sdk`**: without a local checkout, the skill now fetches `@pipelex/sdk`'s changelog from the `js/` directory of `Pipelex/pipelex-sdk`, where the SDK is developed, and the documents that point at the method-app template link to its directory there.
+- **`make use-local` takes the SDK from a `pipelex-sdk` checkout**: the target now builds `@pipelex/sdk` from `../pipelex-sdk/js`, the `js/` directory of a `Pipelex/pipelex-sdk` checkout beside the project, where it looked for a `../pipelex-sdk-js` checkout, and `/bump-sdk` reads a local changelog from the same place. The form kernel is still `../mthds-form`.
 
 ## [v0.6.3] - 2026-10-01
 

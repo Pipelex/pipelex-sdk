@@ -94,7 +94,7 @@ Widen the host only on a network you trust, for a container or to open the app o
 | `make test-e2e`           | **Optional** Playwright e2e — a live spec costs an LLM call (prompts first; auto-skips without a key)                               |
 | `make check`              | lint + format-check + typecheck + codegen-check                                                                                     |
 | `make all`                | check + test + build                                                                                                                |
-| `make use-local`          | Install the sibling `../pipelex-sdk-js` and `../mthds-form` checkouts into `node_modules` (`SIBLINGS_DIR=` names another directory) |
+| `make use-local`          | Install the sibling `../pipelex-sdk/js` and `../mthds-form` checkouts into `node_modules` (`SIBLINGS_DIR=` names another directory) |
 | `make use-local-form`     | Install the sibling `../mthds-form` checkout alone                                                                                  |
 | `make use-published`      | Restore the `@pipelex/sdk` and `@pipelex/mthds-form` versions the lockfile pins                                                     |
 | `make use-published-form` | Restore the `@pipelex/mthds-form` version the lockfile pins                                                                         |

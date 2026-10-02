@@ -217,7 +217,7 @@ Widen the host only on a network you trust, for a container or to open the app o
 | `make test-e2e-ui`    | Same, with the Playwright UI runner                                                                      |
 | `make check`          | lint + format-check + typecheck + codegen-check                                                          |
 | `make all`            | check + test + build (does **not** run e2e or `codegen` — both need a key)                               |
-| `make use-local`      | Pack & install siblings `../pipelex-sdk-js` + `../mthds-form` into `node_modules` (alias: `ul`)          |
+| `make use-local`      | Pack & install siblings `../pipelex-sdk/js` + `../mthds-form` into `node_modules` (alias: `ul`)          |
 | `make use-npm`        | Restore the latest npm-published `@pipelex/sdk` + `@pipelex/mthds-form` packages (alias: `un`)           |
 
 ## End-to-end testing (optional)
@@ -234,9 +234,9 @@ The happy-path specs (`extract`, `summarize-pdf`, `generate-image`, `text-stats`
 - A script driving the page waits for `html[data-hydrated]`, which the root layout sets once React has hydrated it. Acting earlier, a click or a dropped file never reaches its handler, and a screenshot raises a hydration mismatch of its own making.
 - First-time setup needs the browser binary: `npx playwright install chromium`.
 
-## Local package development (sibling `pipelex-sdk-js` and `mthds-form` repos)
+## Local package development (sibling `pipelex-sdk` and `mthds-form` repos)
 
-If you have the [`pipelex-sdk-js`](https://github.com/Pipelex/pipelex-sdk-js) and [`mthds-form`](https://github.com/Pipelex/mthds-form) repos checked out as sibling directories (`../pipelex-sdk-js`, `../mthds-form`) and want this app to use them instead of the published npm packages:
+If you have the [`pipelex-sdk`](https://github.com/Pipelex/pipelex-sdk) and [`mthds-form`](https://github.com/Pipelex/mthds-form) repos checked out as sibling directories (`../pipelex-sdk`, whose `js/` directory is `@pipelex/sdk`, and `../mthds-form`) and want this app to use them instead of the published npm packages:
 
 ```bash
 make use-local   # builds both siblings, packs each with `npm pack`, installs the tarballs into node_modules/@pipelex/{sdk,mthds-form}

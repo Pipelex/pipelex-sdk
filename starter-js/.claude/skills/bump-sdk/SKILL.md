@@ -7,7 +7,7 @@ description: Bump the @pipelex/sdk dependency in pipelex-starter-js to a newer p
 
 `@pipelex/sdk` is pre-1.0, so its `^0.x.y` range in `package.json` only auto-resolves patch bumps (npm treats the leading `0` as the major for caret purposes) — a new minor like `0.1.5 → 0.2.0` needs this repo's `package.json` edited by hand. This skill does that deliberately: read what changed, apply what can be applied mechanically, verify, then hand the user a reviewable commit.
 
-This repo is a **reference template** — treat it as if the sibling `../pipelex-sdk-js` checkout this workspace happens to have might not exist for whoever runs this skill. Always have a working fallback that only needs the published npm package and the public GitHub repo.
+This repo is a **reference template** — treat it as if the sibling `../pipelex-sdk` checkout (whose `js/` directory is the SDK) this workspace happens to have might not exist for whoever runs this skill. Always have a working fallback that only needs the published npm package and the public GitHub repo.
 
 Guides the user through 8 steps. Every step that changes files or runs `npm install` should be visible to the user before moving on, with staged confirmations and no push or commit without explicit approval. The interesting judgment calls here are in reading the changelog and deciding what's safe to auto-fix, so lean on explaining rather than just executing.
 
@@ -39,7 +39,7 @@ Store the result as `TARGET_VERSION` (no `v` prefix, e.g. `0.2.0`). Warn if it's
 
 You need the SDK's `CHANGELOG.md` entries for every version strictly after the current one, up to and including `TARGET_VERSION`. Get it from whichever source is available, in this order:
 
-1. **Local sibling checkout**, if this workspace has one: `../pipelex-sdk-js/CHANGELOG.md`. Fast and needs no network, but only when it is current: a checkout whose changelog has no `## [v<TARGET_VERSION>]` heading is behind or archived (the SDK moved to `Pipelex/pipelex-sdk`, and the old `pipelex-sdk-js` repository stops at 0.28.1), so read the GitHub copy below instead.
+1. **Local sibling checkout**, if this workspace has one: `../pipelex-sdk/js/CHANGELOG.md`, the SDK's changelog in a checkout of `Pipelex/pipelex-sdk`. Fast and needs no network, but only when it is current: a checkout whose changelog has no `## [v<TARGET_VERSION>]` heading is behind, so read the GitHub copy below instead.
 2. **GitHub raw**, otherwise: fetch `https://raw.githubusercontent.com/Pipelex/pipelex-sdk/main/js/CHANGELOG.md` (the SDK is the `js/` directory of `Pipelex/pipelex-sdk`, confirmed via `npm view @pipelex/sdk repository`). The published npm tarball does **not** ship a `CHANGELOG.md`, so this is the only network-only fallback — don't assume `node_modules/@pipelex/sdk/` has it.
 
 Extract the entries between `## [v{CURRENT}]` (exclusive) and `## [v{TARGET_VERSION}]` (inclusive) and present them to the user, grouped by version, newest first.
@@ -105,5 +105,5 @@ Then offer (but do not automatically execute) pushing and opening a PR — targe
 - Never use `git add .` or `git add -A` — stage only the files this bump actually touches.
 - Never push or create PRs without explicit user approval.
 - Never guess at a fix for a non-mechanical breaking change (behavior changes, removed APIs) — flag it and let the user decide.
-- Don't assume the sibling `../pipelex-sdk-js` checkout exists — always have the GitHub-raw fallback ready.
+- Don't assume the sibling `../pipelex-sdk` checkout exists — always have the GitHub-raw fallback ready.
 - If any step fails or the user wants to abort, stop immediately — do not continue the workflow.

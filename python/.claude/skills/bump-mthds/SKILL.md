@@ -168,12 +168,12 @@ turns a pyright cascade into a set of expected edits:
 .venv/bin/python .claude/skills/bump-mthds/scripts/upstream_notes.py 0.9.0 0.11.0
 ```
 
-The helper reads `../mthds-python/CHANGELOG.md` and prints the released sections
-strictly after the old pin up to and including the new one. It skips
-`## [Unreleased]` — that section describes work that is *not* in the version you
-are adopting, and this repo's changelog is read by people deciding whether an
-upgrade will break them. If the checkout predates the target release the script
-says so; fall back to:
+The helper reads `../../mthds-python/CHANGELOG.md`, the workspace's checkout two
+levels above `python/`, and prints the released sections strictly after the old
+pin up to and including the new one. It skips `## [Unreleased]` — that section
+describes work that is *not* in the version you are adopting, and this repo's
+changelog is read by people deciding whether an upgrade will break them. If the
+checkout predates the target release the script says so; fall back to:
 
 ```bash
 gh release view v0.11.0 --repo mthds-ai/mthds-python

@@ -30,9 +30,10 @@ from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 
-# .../pipelex-sdk-python/.claude/skills/bump-mthds/scripts/upstream_notes.py
-#  parents[4] is this repo's root; its parent is the workspace root.
-DEFAULT_CHANGELOG = Path(__file__).resolve().parents[4].parent / "mthds-python" / "CHANGELOG.md"
+# .../pipelex-sdk/python/.claude/skills/bump-mthds/scripts/upstream_notes.py
+#  parents[4] is `python/`, parents[5] this repository's root, and parents[6] the workspace
+#  root, where the `mthds-python` checkout sits beside the main checkout and every worktree.
+DEFAULT_CHANGELOG = Path(__file__).resolve().parents[6] / "mthds-python" / "CHANGELOG.md"
 HEADING = re.compile(r"^## \[v?(?P<version>\d+\.\d+\.\d+[^\]]*)\]")
 UNRELEASED = re.compile(r"^## \[Unreleased\]", re.IGNORECASE)
 FALLBACK = "gh release view v{version} --repo mthds-ai/mthds-python"

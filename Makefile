@@ -7,11 +7,12 @@
 # hooks, the repository's version and the workflow twins, or runs the same target in every
 # package directory, stopping at the first failure.
 #
-# Nothing here installs a package. A worktree is provisioned with `make install`, which only
-# wires the hooks, and each directory's `agent-check` and `agent-test` install that directory
-# first when its node_modules or .venv is missing, so a worktree pays only for the
-# directories its work touches. The root's own targets need only Node: its scripts have no
-# dependency. To check one directory, run its own target:
+# Nothing here installs a package but `use-local`, which installs the directories it
+# switches. A worktree is provisioned with `make install`, which only wires the hooks, and
+# each directory's `agent-check` and `agent-test` install that directory first when its
+# node_modules or .venv is missing, so a worktree pays only for the directories its work
+# touches. The root's own targets need only Node: its scripts have no dependency. To check
+# one directory, run its own target:
 #
 #     make -C js agent-check
 PACKAGES := js python starter-js starter-python method-apps
@@ -73,3 +74,61 @@ agent-check: ## Run every package directory's agent-check, installing a director
 agent-test: ## Run every package directory's agent-test, installing a directory first when it was never installed, then the root scripts' tests, all silent on success
 	$(call each,agent-test)
 	@$(MAKE) --no-print-directory test-scripts
+
+# ── This tree's SDK in the JavaScript templates ─────────────────────────────────────────────
+# A template's own `make use-local` serves the project made from it: it installs the
+# `pipelex-sdk` and `mthds-form` checkouts beside that project, the SDK being the `js/`
+# directory of a `Pipelex/pipelex-sdk` checkout. Inside this repository that path names
+# nothing. The SDK a maintainer means is this tree's own `js/`, in whichever worktree the work
+# is, and a template, which looks for the SDK under a directory named `pipelex-sdk`, cannot
+# name a worktree's. So the maintainers' switch is the root's (docs/layout.md, "This tree's
+# SDK in the templates"):
+#
+# - `use-local` builds and packs `js/` and the workspace's `mthds-form` checkout, which sits
+#   beside this repository's root whether that root is the main checkout or a worktree, and
+#   installs both tarballs into each JavaScript template in ONE `npm install --no-save`, as
+#   the templates' own targets do: a second `--no-save` install re-reconciles node_modules
+#   against the lockfile and silently puts the first tarball back on its registry version.
+#   The pack steps pass `--ignore-scripts` because each package's `prepare` would rebuild it,
+#   which the build just before has done.
+# - `use-published` puts back the versions each template's lockfile pins, `--no-save`, so
+#   leaving local mode never rewrites a manifest or a lockfile: moving a range is the bump
+#   skills' work.
+#
+# MTHDS_FORM_DIR=<dir> takes the form kernel from another checkout, such as a worktree of
+# `mthds-form`, and IN=<dir> narrows both targets to the templates at or under that
+# directory, as the method-app family's own `use-local` does with IN=method-apps.
+.PHONY: use-local use-published
+# The templates that install `@pipelex/sdk` and `@pipelex/mthds-form` from npm.
+JS_TEMPLATES := starter-js method-apps/webapp-js
+MTHDS_FORM_DIR := ../mthds-form
+LOCAL_PACKAGES := @pipelex/sdk @pipelex/mthds-form
+in_dir = $(patsubst %/,%,$(IN))
+switched = $(if $(in_dir),$(filter $(in_dir) $(in_dir)/%,$(JS_TEMPLATES)),$(JS_TEMPLATES))
+refuse_empty_switch = @$(if $(switched),:,echo "ERROR: IN=$(IN) names none of the JavaScript templates: $(JS_TEMPLATES)."; exit 2)
+
+use-local: ## Install this tree's js/ and the workspace's mthds-form checkout into every JavaScript template (MTHDS_FORM_DIR=<dir>, IN=<dir> to change)
+	$(refuse_empty_switch)
+	@[ -d "$(MTHDS_FORM_DIR)/node_modules" ] || { echo "ERROR: $(MTHDS_FORM_DIR) is not an installed mthds-form checkout. Clone Pipelex/mthds-form beside this repository and run 'npm ci' in it, or name another checkout with MTHDS_FORM_DIR=<dir>."; exit 1; }
+	@$(MAKE) --no-print-directory -C js install-if-missing
+	@set -e; for t in $(switched); do $(MAKE) --no-print-directory -C "$$t" install-if-missing; done
+	@DEST=$$(mktemp -d) && trap 'rm -rf "$$DEST"' EXIT && \
+	for d in js "$(MTHDS_FORM_DIR)"; do \
+		echo "Building and packing $$d..." && (cd "$$d" && npm run build && npm pack --silent --ignore-scripts --pack-destination "$$DEST" >/dev/null) || exit 1; \
+	done && \
+	for t in $(switched); do \
+		echo "── $$t: installing the local $(LOCAL_PACKAGES)" && \
+		(cd "$$t" && for n in $(LOCAL_PACKAGES); do rm -rf "node_modules/$$n"; done && npm install "$$DEST"/*.tgz --no-save --silent) || exit 1; \
+	done
+	@echo "This tree's js/ and $(MTHDS_FORM_DIR) are installed in: $(switched). Re-run after every edit; 'make use-published' switches back."
+
+use-published: ## Put every JavaScript template back on the @pipelex/sdk and @pipelex/mthds-form versions its lockfile pins (IN=<dir> to narrow)
+	$(refuse_empty_switch)
+	@set -e; for t in $(switched); do \
+		if [ ! -d "$$t/node_modules" ]; then echo "── $$t: not installed, nothing to restore"; continue; fi; \
+		echo "── $$t: restoring the locked $(LOCAL_PACKAGES)"; \
+		(cd "$$t" && \
+		specs=$$(node -p 'const p = require("./package-lock.json").packages; process.argv.slice(1).map((n) => n + "@" + p["node_modules/" + n].version).join(" ")' $(LOCAL_PACKAGES)) && \
+		for n in $(LOCAL_PACKAGES); do rm -rf "node_modules/$$n"; done && \
+		npm install $$specs --no-save --silent); \
+	done

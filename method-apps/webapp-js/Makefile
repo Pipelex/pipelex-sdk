@@ -255,9 +255,10 @@ clean: ## Remove build artifacts and caches
 # ── Local Pipelex package development ──────────────────────────────────────
 # By default, `make install` fetches the published `@pipelex/sdk` and
 # `@pipelex/mthds-form` packages from npm. `make use-local` packs and installs
-# the sibling pipelex-sdk-js and mthds-form checkouts so you can develop them
-# and the app side-by-side, and `make use-local-form` does the same for the form
-# kernel alone. `make use-published` and `make use-published-form` switch back,
+# the sibling pipelex-sdk and mthds-form checkouts so you can develop them and
+# the app side-by-side, and `make use-local-form` does the same for the form
+# kernel alone. The SDK is the `js/` directory of a `Pipelex/pipelex-sdk`
+# checkout. `make use-published` and `make use-published-form` switch back,
 # and `make local-status` says which mode node_modules is in.
 #
 # The siblings are looked for in the parent directory. SIBLINGS_DIR=<dir> names
@@ -296,7 +297,7 @@ clean: ## Remove build artifacts and caches
 # packages share. A kernel on a sibling branch that needs an unpublished `mthds`
 # fails loudly at the install, naming the version it could not find.
 SIBLINGS = $(or $(call given,SIBLINGS_DIR),..)
-SDK_DIR = $(call shq,$(SIBLINGS)/pipelex-sdk-js)
+SDK_DIR = $(call shq,$(SIBLINGS)/pipelex-sdk/js)
 FORM_DIR = $(call shq,$(SIBLINGS)/mthds-form)
 
 # `$(call install_local,<sibling dirs>,<package names>)` builds and packs each
@@ -331,9 +332,9 @@ define refuse_while_sdk_local
 	fi
 endef
 
-use-local: ## Pack and install the sibling pipelex-sdk-js and mthds-form checkouts into node_modules (from .., or SIBLINGS_DIR=<dir>)
+use-local: ## Pack and install the sibling pipelex-sdk (its js/) and mthds-form checkouts into node_modules (from .., or SIBLINGS_DIR=<dir>)
 	$(call install_local,$(SDK_DIR) $(FORM_DIR),@pipelex/sdk @pipelex/mthds-form)
-	@echo "Now using the local pipelex-sdk-js and mthds-form (tarball installs). Re-run after every edit. 'make use-published' to switch back."
+	@echo "Now using the local pipelex-sdk and mthds-form (tarball installs). Re-run after every edit. 'make use-published' to switch back."
 
 use-local-form: ## Pack and install the sibling mthds-form checkout alone into node_modules (from .., or SIBLINGS_DIR=<dir>)
 	$(call refuse_while_sdk_local,use-local)

@@ -31,7 +31,7 @@ Each template is self-contained: it has its own `Makefile`, its own `CLAUDE.md` 
 | `make test`               | The tests of the family's scripts and of the initializer, then every template's tests                     |
 | `make all`                | `check`, `test`, then every template's build                                                              |
 | `make check-family`       | Check the formatting of the family root's own files                                                       |
-| `make use-local`          | Install each template's Pipelex packages from the workspace's checkouts                                   |
+| `make use-local`          | Install this repository's `js/` and the workspace's `mthds-form` checkout into every template             |
 | `make use-local-form`     | Install the workspace's `mthds-form` checkout alone into every template that uses the form kernel         |
 | `make use-published`      | Restore the Pipelex packages each template's lock file pins                                               |
 | `make use-published-form` | Restore the `@pipelex/mthds-form` version the lock file pins, in every template that uses the form kernel |

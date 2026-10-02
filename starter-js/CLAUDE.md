@@ -322,12 +322,12 @@ Enforced via Husky + lint-staged on commit.
 | `make test-e2e`       | Optional Playwright e2e (live API, costs an LLM call; prompts first, auto-skips without a key) |
 | `make check`          | lint + format-check + typecheck + codegen-check                                                |
 | `make all`            | check + test + build (does **not** include e2e, `codegen`, or `codegen-verify`)                |
-| `make use-local`      | Pack and install siblings `../pipelex-sdk-js` + `../mthds-form` (alias: `ul`)                  |
+| `make use-local`      | Pack and install siblings `../pipelex-sdk/js` + `../mthds-form` (alias: `ul`)                  |
 | `make use-npm`        | Restore the latest npm-published `@pipelex/sdk` + `@pipelex/mthds-form` (alias: `un`)          |
 
 ## Local package development (`use-local`)
 
-When working on this starter alongside the SDK or the form kernel, use `make use-local` to install the siblings `../pipelex-sdk-js` and `../mthds-form` into `node_modules/@pipelex/sdk` and `node_modules/@pipelex/mthds-form` instead of the npm packages. The target builds each sibling, packs it with `npm pack`, then installs both resulting tarballs — in **one** `npm install` call, deliberately: a second `--no-save` install re-reconciles `node_modules` against the lockfile and can silently revert the first tarball to the registry version.
+When working on this starter alongside the SDK or the form kernel, use `make use-local` to install the siblings `../pipelex-sdk/js` and `../mthds-form` into `node_modules/@pipelex/sdk` and `node_modules/@pipelex/mthds-form` instead of the npm packages: the SDK is the `js/` directory of a checkout of [`Pipelex/pipelex-sdk`](https://github.com/Pipelex/pipelex-sdk) beside this project, and the form kernel a checkout of [`Pipelex/mthds-form`](https://github.com/Pipelex/mthds-form). The target builds each sibling, packs it with `npm pack`, then installs both resulting tarballs — in **one** `npm install` call, deliberately: a second `--no-save` install re-reconciles `node_modules` against the lockfile and can silently revert the first tarball to the registry version.
 
 We use a tarball install rather than a symlink (`ln -s`) because Next.js 16's Turbopack does not follow symlinked workspace packages — both `npm run dev` and `npm run build` fail with `Module not found: Can't resolve '@pipelex/sdk'` against a symlinked entry. **Re-run `make use-local` after every edit to either sibling** to pick up changes.
 
@@ -345,7 +345,7 @@ Other targets that matter:
 
 - **`make agent-test`** instead of `make test` when an AI agent runs the suite. It's silent on success; only failures hit the context.
 - **`make test-e2e`** before shipping changes that touch the SDK call path (`src/actions/`, `src/lib/pipelexClient.ts`, `src/lib/loadBundle.ts`, `src/lib/blockingRun.ts`, `src/lib/durableRun.ts`, `src/lib/wireOutput.ts`, `src/lib/errors.ts`, `src/lib/fileInputs.ts`, `src/lib/uploadGrant.ts`, `src/hooks/useRun.ts`, `src/hooks/useFileInputs.ts`, `src/generated/`, `methods/`). Unit tests mock the SDK; only e2e exercises the real API, the durable poll loop, and the rendered error UX. Not part of `make all` (costs an LLM call per run).
-- **`make use-local`** after editing the sibling `../pipelex-sdk-js` SDK or `../mthds-form` form kernel, before re-running tests or the dev server. The tarball install only refreshes when the target re-runs.
+- **`make use-local`** after editing the sibling `../pipelex-sdk/js` SDK or `../mthds-form` form kernel, before re-running tests or the dev server. The tarball install only refreshes when the target re-runs.
 
 ## Git Workflow
 

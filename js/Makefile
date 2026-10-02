@@ -1,8 +1,9 @@
 .DEFAULT_GOAL := help
 .PHONY: help install install-if-missing check c test t test-e2e te clean build rebuild dev pack all depcruise agent-check agent-test use-local use-npm ul un
 
-# Sibling repo for live mthds development (see use-local / use-npm).
-MTHDS_JS_DIR := ../mthds-js
+# The workspace's mthds-js checkout, for live mthds development (see use-local / use-npm). It
+# sits beside this repository's root, the main checkout or a worktree alike, two levels up.
+MTHDS_JS_DIR := ../../mthds-js
 
 # Colors
 BLUE := \033[0;34m
@@ -41,7 +42,7 @@ make depcruise  - Check architectural boundaries
 
 make pack       - Create tarball for local npx testing
 
-make use-local  - Switch mthds to sibling ../mthds-js (file link)
+make use-local  - Switch mthds to the workspace's ../../mthds-js (file link)
 make use-npm    - Switch mthds back to npm [VERSION=x.y.z]
 
 make c          - Shorthand -> check
@@ -157,11 +158,11 @@ pack: rebuild
 	@echo "$(YELLOW)Test with: npx ./$$(npm pack --dry-run --json | node -p \"JSON.parse(require('fs').readFileSync(0,'utf-8'))[0].filename\")$(NC)"
 
 # --- Switch mthds source ---
-# use-local:  file link to sibling ../mthds-js for live development
+# use-local:  file link to the workspace's ../../mthds-js for live development
 # use-npm:    install from the npm registry (latest by default, or VERSION=x.y.z)
 
 use-local:
-	@if [ ! -d $(MTHDS_JS_DIR) ]; then echo "ERROR: $(MTHDS_JS_DIR) not found. Clone it next to pipelex-sdk-js."; exit 1; fi
+	@if [ ! -d $(MTHDS_JS_DIR) ]; then echo "ERROR: $(MTHDS_JS_DIR) not found. Clone mthds-js at the workspace root, beside this repository."; exit 1; fi
 	cd $(MTHDS_JS_DIR) && npm install && npm run build
 	npm install mthds@file:$(MTHDS_JS_DIR)
 	@echo "Switched to local mthds (file link). Run 'make use-npm' to switch back."
