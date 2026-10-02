@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The family's home in `Pipelex/pipelex-sdk`**: `@pipelex/create-method-app`'s repository, homepage and issue links now point at the `method-apps/initializers/js/` directory of `Pipelex/pipelex-sdk` and at that repository's issues; the README and changelog a bootstrapped project starts with link to the template's directory there, and the template's `/bump-sdk` reads the SDK's changelog from the repository's `js/` directory. The initializer refuses to write a project inside a checkout of `Pipelex/pipelex-sdk`, as it still does inside one of `Pipelex/pipelex-method-apps`.
+- **The pristine commit's subject**: the commit the initializer makes in a new project now reads `Start from Pipelex/pipelex-sdk/method-apps/webapp-js <version> (<sha>)`, where it read `Start from Pipelex/pipelex-method-apps/webapp-js <version> (<sha>)`, so a tool that finds a project's first commit by its subject has to accept both.
+
 ## [v0.5.7] - 2026-10-01
 
 ### Security

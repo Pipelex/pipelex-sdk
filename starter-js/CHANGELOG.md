@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`/bump-sdk` reads the SDK's changelog from `Pipelex/pipelex-sdk`**: without a local checkout, the skill now fetches `@pipelex/sdk`'s changelog from the `js/` directory of `Pipelex/pipelex-sdk`, where the SDK is developed, and the documents that point at the method-app template link to its directory there.
+
 ## [v0.6.3] - 2026-10-01
 
 ### Removed

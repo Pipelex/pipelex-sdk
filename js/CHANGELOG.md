@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The package's repository, homepage and issue links**: the npm page now sends a reader to the `js/` directory of `Pipelex/pipelex-sdk`, where the SDK's source lives, and to that repository's issues; `package.json`'s `repository` names the new repository with the directory `js`, as npm provenance requires.
+
 ## [v0.28.1] - 2026-10-01
 
 ### Added

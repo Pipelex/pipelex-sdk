@@ -43,8 +43,9 @@ import { fileURLToPath } from "node:url";
 // The template's placeholders, in their two spellings.
 export const TEMPLATE_NAME = "pipelex-method-webapp-js"; // npm package name
 export const TEMPLATE_TITLE = "Pipelex Method App"; // human-facing display name
-// The template's home: its directory in the pipelex-method-apps mono-repo.
-export const TEMPLATE_URL = "https://github.com/Pipelex/pipelex-method-apps/tree/main/webapp-js";
+// The template's home: its directory in the pipelex-sdk mono-repo.
+export const TEMPLATE_URL =
+  "https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/webapp-js";
 
 // Fresh projects restart here — package.json and CHANGELOG.md must agree.
 export const RESET_VERSION = "0.1.0";

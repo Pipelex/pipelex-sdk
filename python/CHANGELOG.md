@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The project's links on PyPI**: the repository and documentation links now point at the `python/` directory of `Pipelex/pipelex-sdk`, where the SDK's source lives, the changelog link at `python/CHANGELOG.md` there, and a new `Issues` link at that repository's issues.
+
 ## [v0.16.0] - 2026-10-01
 
 ### Added

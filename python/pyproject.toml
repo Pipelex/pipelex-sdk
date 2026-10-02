@@ -41,9 +41,10 @@ build-backend = "hatchling.build"
 
 [project.urls]
 Homepage = "https://www.pipelex.com"
-Repository = "https://github.com/Pipelex/pipelex-sdk-python"
-Documentation = "https://github.com/Pipelex/pipelex-sdk-python"
-Changelog = "https://github.com/Pipelex/pipelex-sdk-python/blob/main/CHANGELOG.md"
+Repository = "https://github.com/Pipelex/pipelex-sdk/tree/main/python"
+Documentation = "https://github.com/Pipelex/pipelex-sdk/tree/main/python"
+Changelog = "https://github.com/Pipelex/pipelex-sdk/blob/main/python/CHANGELOG.md"
+Issues = "https://github.com/Pipelex/pipelex-sdk/issues"
 
 # `[tool.pytest]` is the native table pytest 9 reads (`ini_options` is its backwards-compatibility
 # form, and the two together are an error). `testpaths` is the unit tree alone, so a bare `pytest`

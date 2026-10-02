@@ -403,7 +403,7 @@ Other targets that matter:
 ## Anti-patterns to Avoid
 
 - **No bundle TOML inlined in `.ts` files** — bundles live under `methods/<name>/`.
-- **No raw `fetch()` to the Pipelex API** — always go through `PipelexApiClient`. (If you find a missing capability in the SDK, fix it upstream in `pipelex-sdk-js`, don't bypass it here.)
+- **No raw `fetch()` to the Pipelex API** — always go through `PipelexApiClient`. (If you find a missing capability in the SDK, fix it upstream in `@pipelex/sdk`, don't bypass it here.)
 - **No `as` casts on SDK output** — go through the `parseXxx()` narrower instead.
 - **No hand-written output shapes** — the method declares them and `npm run codegen` projects them. If a type in `src/types/` lists fields, it is duplicating the method.
 - **No hand-rolled input markup for method inputs** — no `<textarea>`, `<input>`, or file picker for something a method declares. The method declares it, `contracts.ts` carries it, and `<RunInputsForm>` renders it. App chrome (the submit button, `RunDetails`, a host's own shortcut buttons) is still hand-written, as it should be.

@@ -5,7 +5,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Pipelex/pipelex-sdk-js"
+    "url": "git+https://github.com/Pipelex/pipelex-sdk.git",
+    "directory": "js"
+  },
+  "homepage": "https://github.com/Pipelex/pipelex-sdk/tree/main/js#readme",
+  "bugs": {
+    "url": "https://github.com/Pipelex/pipelex-sdk/issues"
   },
   "type": "module",
   "sideEffects": [

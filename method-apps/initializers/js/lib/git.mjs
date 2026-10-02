@@ -34,11 +34,13 @@ import path from "node:path";
 
 /**
  * The repositories whose checkouts are templates, read from `origin`: the
- * family's own, and the starters. Running the initializer inside one would
- * make a project of a template's checkout.
+ * family's own, `pipelex-sdk`, and `pipelex-method-apps`, where the family
+ * lived before, whose clones still hold the templates; and the starters.
+ * Running the initializer inside one would make a project of a template's
+ * checkout.
  */
 export const TEMPLATE_ORIGINS =
-  /[/:](pipelex\/(pipelex-method-apps|pipelex-starter-js|pipelex-starter-python)|mthds-ai\/mthds-starter-js)(\.git)?\/?$/i;
+  /[/:](pipelex\/(pipelex-sdk|pipelex-method-apps|pipelex-starter-js|pipelex-starter-python)|mthds-ai\/mthds-starter-js)(\.git)?\/?$/i;
 
 /**
  * Variables that point git at a repository other than the one it would find
@@ -240,7 +242,7 @@ export function hasIdentityForInit({ dest, from, enclosed, env }) {
 
 /** The pristine commit's message, in the scaffold skill's format. */
 export function pristineMessage({ template, version, source }) {
-  return `Start from Pipelex/pipelex-method-apps/${template} ${version} (${source})`;
+  return `Start from Pipelex/pipelex-sdk/method-apps/${template} ${version} (${source})`;
 }
 
 /**
