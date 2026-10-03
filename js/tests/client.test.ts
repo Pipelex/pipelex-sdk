@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MODEL_CATEGORIES, type ModelCategory } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
 import { PipelexExecuteResult } from "../src/execute-result.js";
 import {
@@ -1548,6 +1549,43 @@ describe("PipelexApiClient.models", () => {
       .mockResolvedValue(jsonResponse(200, { models: [], aliases: {}, waterfalls: {} }));
     await client.models("img_gen");
     expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/models?type=img_gen");
+  });
+
+  it("filters on the judgment category", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { models: [], aliases: {}, waterfalls: {} }));
+    const category: ModelCategory = "judgment";
+    await client.models(category);
+    expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/models?type=judgment");
+  });
+
+  it("returns a deck carrying a judgment entry and an unknown category whole", async () => {
+    // The protocol's reader rule: a client reading a model list keeps an entry whose
+    // category it does not recognize, so a category a later protocol minor adds
+    // reaches the caller with its raw value instead of failing the deck.
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        models: [
+          { name: "gpt-4o", type: "llm" },
+          { name: "judge-small", type: "judgment" },
+          { name: "oracle-1", type: "divination" },
+        ],
+        aliases: {},
+        waterfalls: {},
+      }),
+    );
+    const deck = await client.models();
+    expect(deck.models.map((entry) => [entry.name, entry.type])).toEqual([
+      ["gpt-4o", "llm"],
+      ["judge-small", "judgment"],
+      ["oracle-1", "divination"],
+    ]);
+    const knownCategories: readonly string[] = MODEL_CATEGORIES;
+    expect(knownCategories).toContain(deck.models[1]!.type);
+    expect(knownCategories).not.toContain(deck.models[2]!.type);
   });
 });
 

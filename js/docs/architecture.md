@@ -9,6 +9,8 @@
 - read the model deck and version handshake (`models` / `version`),
 - and reach the Pipelex product surface (user profile, methods catalog, organizations, billing, API keys, onboarding, storage).
 
+`models` returns the deck as the runner sent it, with no runtime check, and types each entry's `type` as `ModelCategory | (string & {}) | null`: a category `mthds` defines, `judgment` among them, or the raw value of one this version does not define, which the MTHDS Protocol requires a client reading a model list to keep rather than fail on.
+
 ## Dependency direction (one-way)
 
 ```

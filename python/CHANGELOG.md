@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`models()` reads a deck carrying a `judgment` model, on `mthds` 0.18.0 (Breaking)**: `pipelex-sdk` now pins `mthds==0.18.0`, the MTHDS Protocol 0.7.0 release, where `mthds` 0.17.0 failed the whole `models()` call with a `ValidationError` on a single `judgment` entry. A `judgment` entry reads as `ModelCategory.JUDGMENT` and `models(ModelCategory.JUDGMENT)` lists the models a `PipeJudge` names, while an entry whose category this version does not define keeps its raw string, since `ModelInfo.type` is now `ModelCategory | str | None`; code that treats `type` as a `ModelCategory` handles the `str` case too.
+
 ## [v0.29.0] - 2026-10-02
 
 ### Changed
