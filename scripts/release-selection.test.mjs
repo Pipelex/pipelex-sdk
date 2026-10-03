@@ -415,6 +415,15 @@ describe("a hold-back an open sprint needs", () => {
     assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints: after, hold: ["python"] })), ["sprint"]);
   });
 
+  it("counts every base branch the ledger names, staging included, as a line a release still owes", () => {
+    const { root } = shippedOnce();
+    git(root, "checkout", "-q", "-b", "staging");
+    const promoted = commit(root, { "python/src/promoted.py": "C = 1\n" });
+    git(root, "checkout", "-q", "dev");
+    const sprints = [sprint([["L-1", `${REPO}/python`, "closed", [promoted], around(root, "v0.2.0", -HOUR)]])];
+    assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints, hold: ["python"] })), ["sprint"]);
+  });
+
   it("reads a merge git here does not hold by date only once the fetched dev was made after the member closed", () => {
     const { root } = shippedOnce();
     const missing = "0123456789abcdef0123456789abcdef01234567";

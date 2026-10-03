@@ -79,8 +79,10 @@ const RELEASE_TAG = /^v\d+\.\d+\.\d+$/;
 // value read out of the sprint reading from ever reaching git as an option.
 const MERGE = /^[0-9a-f]{7,40}$/;
 
-// The branches a landed merge sits on, as this checkout holds them and as it last fetched them.
-const BASE_REFS = ["refs/heads/dev", "refs/heads/main", "refs/remotes/origin/dev", "refs/remotes/origin/main"];
+// The branches a landed merge sits on, as this checkout holds them and as it last fetched them: the
+// ledger's base branches, `staging` among them although this repository has none, so that the
+// reading stays the train's.
+const BASE_REFS = ["dev", "main", "staging"].flatMap((branch) => [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]);
 
 // The branch topic work lands on, as this checkout last fetched it: `dev`, else `main`.
 const LANDING_REFS = ["refs/remotes/origin/dev", "refs/remotes/origin/main"];
