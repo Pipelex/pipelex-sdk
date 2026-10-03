@@ -12,6 +12,8 @@ It is the **hosted superset** of the MTHDS Protocol:
 - **plus** the durable run lifecycle (`get_run_status`, `get_run_result`, `wait_for_result`, `start_and_wait`);
 - **plus** the Pipelex product surface (methods catalog, organizations, billing, API keys, onboarding, storage, run records).
 
+The inherited `models` reads the deck the way the MTHDS Protocol asks of a client reading a model list: an entry of a category `mthds` defines, `judgment` among them, reads as its `ModelCategory` member, and an entry whose category this version does not define keeps its raw string instead of failing the whole deck, since `ModelInfo.type` is `ModelCategory | str | None`.
+
 ## Dependency direction
 
 One-way: `pipelex-sdk → mthds`. The SDK depends on `mthds` for the protocol/transport base and never the reverse. This mirrors the TypeScript `@pipelex/sdk → mthds` edge.
