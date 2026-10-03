@@ -22,16 +22,27 @@
  *
  * A hold-back is refused in four cases: the unit is not proposed; no unit has
  * a tag of its own yet, so this is the first release, which ships every
- * package; an open sprint has a landed member in the unit's directory that no
- * closed release of this repository has shipped since it landed, since the
- * sprint machinery reads the whole repository as shipped once the release
- * item closes; or an open sprint has such a member owned by the repository's
- * root, which names no directory and so refuses every hold-back.
+ * package; an open sprint has a landed member in the unit's directory whose
+ * work no release has shipped, since the sprint machinery reads the whole
+ * repository as shipped once a release tag contains the sprint's work; or an
+ * open sprint has such a member owned by the repository's root, which names no
+ * directory and so refuses every hold-back.
+ *
+ * A landed member's work has shipped when the newest release tag, `vX.Y.Z`,
+ * contains every merge commit its landing recorded, the `merges` the sprint
+ * reading lists for it. That is the reading the ledger's sprint train takes of
+ * a repository that publishes, taken here member by member because the train
+ * reads a repository only once every member on it has closed, and it keeps the
+ * train's fallbacks: a member closed with no merge commit recorded, or whose
+ * recorded merge no base branch here holds, counts as shipped when that tag was
+ * made after the member closed. A member merged and not yet closed has no merge
+ * recorded, so it has not shipped.
  *
  * The sprint reading is the JSON of `ledger sprint status --remote --json`,
  * handed in as a file or on stdin (`--sprints -`), and it is required with
  * `--hold`. This script asks nothing of the ledger or the network; it reads
- * git and the files it is given.
+ * git and the files it is given, so the tags it sees are the ones this
+ * checkout last fetched.
  *
  * The report is Markdown, or JSON with `--json`, whose `ok` field is the
  * verdict. The exit code is 0 when the selection stands, 1 when it is refused
@@ -60,6 +71,19 @@ const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 // The states `ledger sprint status` gives a member whose branch is in the base: `merged`, which
 // only `--remote` can see, and `closed`, which the landing turns a merged member into.
 const LANDED = new Set(["merged", "closed"]);
+
+// A release tag as the release workflow cuts it from `VERSION`: `vX.Y.Z`, never a prerelease.
+const RELEASE_TAG = /^v\d+\.\d+\.\d+$/;
+
+// A merge commit as the ledger records it in a member's close. Held to hex, which also keeps a
+// value read out of the sprint reading from ever reaching git as an option.
+const MERGE = /^[0-9a-f]{7,40}$/;
+
+// The branches a landed merge sits on, as this checkout holds them and as it last fetched them.
+const BASE_REFS = ["refs/heads/dev", "refs/heads/main", "refs/remotes/origin/dev", "refs/remotes/origin/main"];
+
+// The branch topic work lands on, as this checkout last fetched it: `dev`, else `main`.
+const LANDING_REFS = ["refs/remotes/origin/dev", "refs/remotes/origin/main"];
 
 const USAGE =
   "usage: node scripts/release-selection.mjs [--ref <rev>] [--sprints <file | ->] [--hold <unit>]... [--json] <dir | dir:sub1,sub2>...";
@@ -199,12 +223,15 @@ export function parseSprints(text) {
       throw notOne(`${sprint.id} has no status or no members`);
     }
     for (const member of sprint.members) {
-      const fields = ["id", "repo", "owner", "state", "type"];
+      const fields = ["id", "repo", "owner", "state"];
       if (!isObject(member) || fields.some((field) => typeof member[field] !== "string")) {
         throw notOne(`a member of ${sprint.id} lacks one of ${fields.join(", ")}`);
       }
       if (member.closed !== null && typeof member.closed !== "string") {
         throw notOne(`${member.id} in ${sprint.id} has a closed field that is neither null nor a time`);
+      }
+      if (!Array.isArray(member.merges) || member.merges.some((sha) => typeof sha !== "string" || !MERGE.test(sha))) {
+        throw notOne(`${member.id} in ${sprint.id} has no merges list of commit SHAs`);
       }
     }
   }
@@ -217,26 +244,99 @@ function instant(text, where) {
   return at;
 }
 
+/** The newest release tag of the repository, by version, or null when it has none. */
+export function newestRelease(root) {
+  const listed = lookup(root, ["for-each-ref", "--format=%(refname:strip=2)", "refs/tags/"]) ?? "";
+  const tags = listed.split("\n").filter((name) => RELEASE_TAG.test(name));
+  if (tags.length === 0) return null;
+  return tags.reduce((a, b) => (compareVersions(a.slice(1), b.slice(1)) >= 0 ? a : b));
+}
+
+/**
+ * Whether this repository's releases have shipped a landed sprint member's
+ * work, as a predicate over the members of a sprint reading: the newest
+ * release tag contains every merge commit the member's landing recorded. It is
+ * the sprint train's reading of a repository that publishes, asked of one
+ * member, with the train's fallbacks in the train's order:
+ *
+ * - a member closed with no merge commit recorded is read by date, shipped
+ *   when the tag was made after it closed;
+ * - so is a member whose merge, missing from the tag, no base branch here
+ *   holds: a stacked pull request's merge into the branch below it, which that
+ *   branch's squash into `dev` discarded, so no release will ever contain it;
+ * - a merge git here does not hold at all counts as on no base branch once the
+ *   branch work lands on, as last fetched, was made at or after the member
+ *   closed, since the fetch that brought it would have brought the merge too
+ *   had it landed there; otherwise it is a fetch away, and has not shipped.
+ *
+ * A member merged and not yet closed has no merge recorded and has not
+ * shipped, and nothing has shipped while the repository has no release tag.
+ * Each git question is asked once.
+ */
+export function releaseReading(root) {
+  const tag = newestRelease(root);
+  const tagRef = tag === null ? null : `refs/tags/${tag}`;
+  const cache = new Map();
+  const once = (key, ask) => {
+    if (!cache.has(key)) cache.set(key, ask());
+    return cache.get(key);
+  };
+  // True when one of the refs contains the commit, false when none does, null when git cannot tell:
+  // a commit git here does not hold.
+  const reaches = (commit, refs) => {
+    const count = lookup(root, ["rev-list", "--count", commit, ...refs.map((ref) => `^${ref}`), "--"]);
+    return count === null ? null : count === "0";
+  };
+  const madeAt = (ref) =>
+    once(`made ${ref}`, () => {
+      const text = lookup(root, ["for-each-ref", "--format=%(creatordate:iso-strict)", ref]);
+      const at = text ? Date.parse(text.split("\n")[0]) : Number.NaN;
+      return Number.isNaN(at) ? null : at;
+    });
+  const bases = () =>
+    once("bases", () => (lookup(root, ["for-each-ref", "--format=%(refname)", ...BASE_REFS]) ?? "").split("\n").filter(Boolean));
+  const inTag = (sha) => once(`tag ${sha}`, () => reaches(sha, [tagRef]));
+  const onBaseLine = (sha) => once(`base ${sha}`, () => (bases().length === 0 ? null : reaches(sha, bases())));
+  const landedPast = (moment) => {
+    const landing = LANDING_REFS.find((ref) => bases().includes(ref));
+    if (landing === undefined) return false;
+    const made = madeAt(landing);
+    return made !== null && made >= moment;
+  };
+
+  return (member, where) => {
+    if (member.state !== "closed" || tagRef === null) return false;
+    const closed = member.closed === null ? null : instant(member.closed, where);
+    let dated = member.merges.length === 0;
+    for (const sha of member.merges) {
+      const verdict = inTag(sha);
+      if (verdict === true) continue;
+      let placed = onBaseLine(sha);
+      if (placed === null && verdict === null && closed !== null && landedPast(closed)) placed = false;
+      // On a base branch the tag lacks, a release is still owed; unplaced, git here cannot say.
+      if (placed !== false) return false;
+      dated = true;
+    }
+    if (!dated) return true;
+    const made = madeAt(tagRef);
+    return made !== null && closed !== null && made > closed;
+  };
+}
+
 /**
  * The landed work each open sprint still waits to see shipped, by unit: every
- * member of this repository that has landed (merged or closed), is not itself
- * a release, and was not followed by a closed release of the repository in
- * the same sprint. Members owned by the repository's root name no unit and
- * are listed apart.
+ * member of this repository that has landed (merged or closed) and whose work
+ * `shipped`, the reading of `releaseReading`, says no release has shipped.
+ * Members owned by the repository's root name no unit and are listed apart.
  */
-export function sprintNeeds(sprints, units, { repo = REPO } = {}) {
+export function sprintNeeds(sprints, units, { repo = REPO, shipped }) {
   const byUnit = new Map(units.map((unit) => [unit.name, []]));
   const root = [];
   for (const sprint of sprints) {
     if (sprint.status !== "open") continue;
     const own = sprint.members.filter((member) => member.repo === repo && member.state !== "cancelled");
-    const releases = own
-      .filter((member) => member.type === "release" && member.state === "closed" && member.closed !== null)
-      .map((member) => instant(member.closed, `${member.id} in ${sprint.id}`));
     for (const member of own) {
-      if (member.type === "release" || !LANDED.has(member.state)) continue;
-      const landed = member.closed === null ? null : instant(member.closed, `${member.id} in ${sprint.id}`);
-      if (landed !== null && releases.some((at) => at >= landed)) continue;
+      if (!LANDED.has(member.state) || shipped(member, `${member.id} in ${sprint.id}`)) continue;
       const need = { sprint: sprint.id, member: member.id, owner: member.owner, state: member.state };
       if (member.owner === repo) {
         root.push(need);
@@ -279,7 +379,7 @@ export function selectRelease(root, specs, { ref = "HEAD", sprints = null, hold 
     );
   }
   const firstRelease = units.every((unit) => !unit.tagged);
-  const needs = sprints === null ? null : sprintNeeds(sprints, units, { repo });
+  const needs = sprints === null ? null : sprintNeeds(sprints, units, { repo, shipped: releaseReading(root) });
   const refusals = [];
   const held = new Set();
   for (const name of new Set(hold)) {
@@ -306,7 +406,7 @@ export function selectRelease(root, specs, { ref = "HEAD", sprints = null, hold 
       refusals.push({
         kind: "sprint",
         unit: name,
-        message: `Holding back ${name} is refused: ${listed(needs.byUnit.get(name))} landed in ${unit.dir}/ and has not shipped, and an open sprint reads the whole repository as shipped once this release's item closes (docs/release-model.md). Ship ${name} in this release.`,
+        message: `Holding back ${name} is refused: ${listed(needs.byUnit.get(name))} landed in ${unit.dir}/ and no release has shipped it yet. An open sprint reads the whole repository as shipped once a release tag contains the sprint's work, so this release's tag would vouch for that work without publishing ${name} (docs/release-model.md). Ship ${name} in this release.`,
       });
     } else if (needs.root.length > 0) {
       refusals.push({
