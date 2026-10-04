@@ -80,10 +80,10 @@ export async function requestSummarizePdfUpload(request: UploadRequest): Promise
  * envelope as readily as a bare value — verified live against the hosted API —
  * and preserves the envelope on output, so the gate's payload goes straight in.
  * `pipe_ref` names the pipe rather than leaving it to the closure's `main_pipe`.
- * Since SDK 0.19.0 a validation report stating `default_pipe_ref: null` is the
- * server saying it determined no entry pipe, and preparation refuses there
- * instead of falling back — so the ref is stated, exactly as `make add-method`
- * scaffolds it, and the run is sent the same ref.
+ * Preparation reads the method's inputs from `POST /v1/pipe-io`, and that route
+ * selects the pipe: given no `pipe_ref`, a method declaring no entry pipe or
+ * several is refused there, with no fallback — so the ref is stated, exactly as
+ * `make add-method` scaffolds it, and the run is sent the same ref.
  *
  * On failure `prepareInputs` throws *before any run starts* (a typed
  * `InputPreparationError` — see `classifyInputPreparationError`). Because this
