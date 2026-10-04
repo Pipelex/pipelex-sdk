@@ -194,7 +194,9 @@ export async function writeTree(
  * `source` is passed for a selector method so a 404 can be read the right way
  * round: on a files method a 404 means the route is missing, while on a selector
  * method the route answered and the *method* is missing — two failures with
- * nothing in common but their status code.
+ * nothing in common but their status code. A call made after the selector has
+ * already resolved passes it only for a 404 the API typed: an untyped one there
+ * is its own route missing.
  */
 function explain(
   error: unknown,
@@ -376,7 +378,15 @@ export async function fetchPipeIoArtifacts(
       defaultPipeRef: response.default_pipe_ref,
     };
   } catch (error) {
-    console.error(`\n✗ ${source.name} — ${explain(error, baseUrl, "POST /v1/pipe-io", source)}`);
+    // `fetchGenerated` calls this only after `/v1/codegen` resolved the same
+    // selector, so an untyped 404 here is a runner older than the route, and the
+    // message names the route. A 404 the API typed is still its own answer about
+    // the method, so that one keeps the selector reading.
+    const aboutTheMethod = error instanceof ApiResponseError && error.errorType !== undefined;
+    console.error(
+      `\n✗ ${source.name} — ` +
+        explain(error, baseUrl, "POST /v1/pipe-io", aboutTheMethod ? source : undefined),
+    );
     return null;
   }
 }

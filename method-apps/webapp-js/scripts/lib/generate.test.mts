@@ -488,6 +488,66 @@ describe("generateMethod", () => {
     await expect(readdir(outDir)).rejects.toThrow();
   });
 
+  // A runner older than `/v1/pipe-io` resolves a selector on `/v1/codegen` and
+  // then answers the route's absence with a bare 404, which must name the route
+  // rather than blame a method the API has just resolved.
+  it("names the route, not the method, when a selector's pipe-io call is a 404", async () => {
+    noDrifts();
+    const errors = captureErrors();
+    const client = fakeClient({
+      pipeIo: vi
+        .fn()
+        .mockRejectedValue(
+          new ApiResponseError(
+            "API POST /v1/pipe-io failed (404)",
+            "https://api.example/v1/pipe-io",
+            404,
+            "Not Found",
+            '{"detail":"Not Found"}',
+            undefined,
+            "Not Found",
+            undefined,
+            undefined,
+          ),
+        ),
+    });
+
+    expect(await generateMethod(client, SELECTOR_SOURCE, outDir, "https://api.example")).toBe(
+      "failed",
+    );
+    expect(errors.join("\n")).toContain("does not serve POST /v1/pipe-io");
+    expect(errors.join("\n")).not.toContain("could not resolve");
+    await expect(readdir(outDir)).rejects.toThrow();
+  });
+
+  it("keeps the API's own answer about the method when its pipe-io 404 is typed", async () => {
+    noDrifts();
+    const errors = captureErrors();
+    const client = fakeClient({
+      pipeIo: vi
+        .fn()
+        .mockRejectedValue(
+          new ApiResponseError(
+            "API POST /v1/pipe-io failed (404)",
+            "https://api.example/v1/pipe-io",
+            404,
+            "Not Found",
+            "{}",
+            "MethodPackageNotFoundError",
+            "No package at address 'github.com/Pipelex/methods/text_stats'.",
+            undefined,
+            undefined,
+          ),
+        ),
+    });
+
+    expect(await generateMethod(client, SELECTOR_SOURCE, outDir, "https://api.example")).toBe(
+      "failed",
+    );
+    expect(errors.join("\n")).toContain("could not resolve method_ref");
+    expect(errors.join("\n")).toContain("No package at address");
+  });
+
   it("names the route a base URL does not serve, writing nothing", async () => {
     noDrifts();
     const errors = captureErrors();

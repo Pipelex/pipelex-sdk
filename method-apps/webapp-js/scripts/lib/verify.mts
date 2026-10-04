@@ -66,10 +66,12 @@ export const EXIT_FAILED = 1;
  *
  * A selector method takes the selector-resolution reading of a 404 first: on a
  * committed tree that used to resolve, "no package at this address any more" is
- * the whole story, and the server spells it out.
+ * the whole story, and the server spells it out. By the `/v1/pipe-io` call,
+ * `/v1/codegen` has resolved the same selector, so that call passes `source` only
+ * for a 404 the API typed: an untyped one is the route missing, not the method.
  */
-function requestDetail(error: unknown, route: string, source: MethodSource): string {
-  if (source.kind === "selector") {
+function requestDetail(error: unknown, route: string, source?: MethodSource): string {
+  if (source?.kind === "selector") {
     const selectorFailure = explainSelectorFailure(error, source.selector);
     if (selectorFailure !== null) return selectorFailure;
   }
@@ -236,7 +238,11 @@ async function runVerifyInner(): Promise<number> {
         continue;
       }
     } catch (error) {
-      console.error(`\n✗ ${method.name} — ${requestDetail(error, "POST /v1/pipe-io", method)}`);
+      const aboutTheMethod = error instanceof ApiResponseError && error.errorType !== undefined;
+      console.error(
+        `\n✗ ${method.name} — ` +
+          requestDetail(error, "POST /v1/pipe-io", aboutTheMethod ? method : undefined),
+      );
       failed = true;
       continue;
     }
