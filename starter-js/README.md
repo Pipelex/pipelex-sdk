@@ -124,7 +124,7 @@ Text inputs are plain strings. A file input (the PDF example) is stored the mome
 
 The kernel's file control also offers "paste a URL instead", so an `https://` or `pipelex-storage://` reference works without any upload at all. Those two schemes are the whole accepted set, checked before anything else: the SDK reads an unrecognised string as a path on the server's own disk, so a public Server Action has to refuse by default rather than assume "no bytes" means "nothing to check". A `data:` URL is refused too, because nothing in the app sends a file inline.
 
-**The upload grant route is served only by a deployment that has it.** The hosted API serves `POST /v1/upload/grant` (verified on 2026-09-24 against both `api.pipelex.com` and `api-dev.pipelex.com`). Against a deployment without it, the PDF example says "File upload isn't available on this API" beside the field instead of storing the file.
+**The upload grant route is served only by a deployment that has it.** The hosted API serves `POST /v1/upload/grant` (verified on 2026-09-24 against both `api.pipelex.com` and `api-dev.pipelex.com`). Against a deployment without it, the PDF example says "File upload isn't available on this API" beside the field instead of storing the file. Preparing a run's file inputs needs a second route, `POST /v1/pipe-io`, from which `prepareInputs` reads the method's inputs: `api.pipelex.com` serves it, and so does `pipelex-api` from v0.33.1, while an older runner refuses the run before it starts.
 
 Image **outputs** (the image example) come back as a URL — a storage URL or a base64 data URL — which renders directly in an `<img>`.
 
@@ -229,7 +229,7 @@ The happy-path specs (`extract`, `summarize-pdf`, `generate-image`, `text-stats`
 - **They auto-skip without a key.** No `PIPELEX_API_KEY`? Those specs skip cleanly (you'll see them reported as skipped) instead of failing with an auth error — so a fresh fork can run `make test-e2e` before configuring credentials.
 - **`make test-e2e` prompts for confirmation** before spending, since it costs money. The prompt is skipped in CI / non-interactive shells; pass `CONFIRM=1 make test-e2e` to bypass it in scripts.
 - **It is excluded from `make all`.**
-- `summarize-pdf` stores the sample PDF through an upload grant, so it also needs a base URL that serves `POST /v1/upload/grant`, which both hosted APIs do.
+- `summarize-pdf` stores the sample PDF through an upload grant, so it also needs a base URL that serves `POST /v1/upload/grant` and, to prepare the run's inputs, `POST /v1/pipe-io`, both of which the hosted APIs serve.
 - Two specs need **no** key, cost nothing, and run out of the box: `home` renders the page and checks it hydrates cleanly, and `error-display` tests the offline error UX.
 - A script driving the page waits for `html[data-hydrated]`, which the root layout sets once React has hydrated it. Acting earlier, a click or a dropped file never reaches its handler, and a screenshot raises a hydration mismatch of its own making.
 - First-time setup needs the browser binary: `npx playwright install chromium`.

@@ -147,7 +147,7 @@ Now the bytes take the shortest path. The method's `request<Name>Upload` Server 
 
 The grant writes one object, once, within minutes, and only the file it was requested for, which is what makes handing it to a browser safe. It is also a bearer capability, so nothing logs it. A file the user replaces or removes after dropping it stays in the organisation's storage, unreferenced.
 
-**The grant route has to exist on the configured API.** A deployment without `POST /v1/upload/grant` answers `404`, which `classifyPipelineError` reports as `upload_unavailable`, naming the route and `PIPELEX_BASE_URL`, rather than letting it read as a transport failure. The hosted API serves the route: verified on 2026-09-24 against both `api.pipelex.com` and `api-dev.pipelex.com`, from the grant through the stored object's resolution.
+**The grant route has to exist on the configured API.** A deployment without `POST /v1/upload/grant` answers `404`, which `classifyPipelineError` reports as `upload_unavailable`, naming the route and `PIPELEX_BASE_URL`, rather than letting it read as a transport failure. The hosted API serves the route: verified on 2026-09-24 against both `api.pipelex.com` and `api-dev.pipelex.com`, from the grant through the stored object's resolution. Preparing a run's file inputs needs a second route, `POST /v1/pipe-io`, from which `prepareInputs` reads the method's inputs: `api.pipelex.com` serves it, and so does `pipelex-api` from v0.33.1, while an older runner refuses the run before it starts.
 
 ### Where each check lives
 
