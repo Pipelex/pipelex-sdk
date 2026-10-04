@@ -60,7 +60,7 @@ The command refuses rather than overwriting a slice that already exists, and `DR
 | `PIPELEX_BASE_URL`           | Pipelex API base URL                                                                  | `https://api.pipelex.com` |
 | `NEXT_PUBLIC_EXECUTION_MODE` | Execution mode for every method — `durable` or `blocking`. The page offers no switch. | `durable`                 |
 
-**`make create`, `make add-method`, `npm run codegen` and `npm run codegen:verify` need `PIPELEX_API_KEY` and the network.** Each one asks the API for the form views codegen needs and, for a catalog id or a package address, checks that the base URL resolves that kind of method, naming the missing capability when one is not served. `make all` needs neither a key nor a network.
+**`make create`, `make add-method`, `npm run codegen` and `npm run codegen:verify` need `PIPELEX_API_KEY` and the network.** Each one asks the API for the method's typed artifacts (`POST /v1/codegen`) and for its contracts and form descriptors (`POST /v1/pipe-io`) and, for a catalog id or a package address, checks that the base URL resolves that kind of method, naming the missing route or capability when one is not served. A method whose pipes are still declared as signatures is refused, naming them, since it cannot run yet. `make all` needs neither a key nor a network.
 
 A variable already exported in your shell wins over `.env.local`.
 

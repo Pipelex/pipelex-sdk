@@ -34,9 +34,9 @@ import { runAddMethod } from "./add-method.mts";
 import { checkMethod, EXIT_CURRENT } from "./check.mts";
 import { discoverMethods, REPO_ROOT } from "./shared.mts";
 import RECEIPT_REVIEW_CODEGEN from "./fixtures/recorded/receipt-review.codegen.json" with { type: "json" };
-import RECEIPT_REVIEW_VALIDATE from "./fixtures/recorded/receipt-review.validate.json" with { type: "json" };
+import RECEIPT_REVIEW_PIPE_IO from "./fixtures/recorded/receipt-review.pipe-io.json" with { type: "json" };
 import TEXT_STATS_CODEGEN from "./fixtures/recorded/text-stats.codegen.json" with { type: "json" };
-import TEXT_STATS_VALIDATE from "./fixtures/recorded/text-stats.validate.json" with { type: "json" };
+import TEXT_STATS_PIPE_IO from "./fixtures/recorded/text-stats.pipe-io.json" with { type: "json" };
 
 /** What the copy leaves behind: installs, build output, git, and local secrets. */
 const NOT_COPIED = new Set([
@@ -80,12 +80,10 @@ function recordedClient() {
     codegen: vi.fn(async (request: { files?: unknown }) =>
       request.files === undefined ? TEXT_STATS_CODEGEN : RECEIPT_REVIEW_CODEGEN,
     ),
-    validate: vi.fn().mockResolvedValue(TEXT_STATS_VALIDATE),
-    validateFiles: vi.fn().mockResolvedValue(RECEIPT_REVIEW_VALIDATE),
-  } as unknown as Pick<
-    PipelexApiClient,
-    "codegen" | "validate" | "validateFiles" | "version" | "getMethod"
-  >;
+    pipeIo: vi.fn(async (request: { files?: unknown }) =>
+      request.files === undefined ? TEXT_STATS_PIPE_IO : RECEIPT_REVIEW_PIPE_IO,
+    ),
+  } as unknown as Pick<PipelexApiClient, "codegen" | "pipeIo" | "version" | "getMethod">;
 }
 
 /**

@@ -154,7 +154,7 @@ typecheck: ## Run TypeScript type checking (app + e2e specs + scripts)
 	npm run typecheck:scripts
 
 # Regenerates src/generated/<method>/ from methods/<method>/. Needs PIPELEX_API_KEY
-# and a base URL that serves /v1/validate's form views, which the default does
+# and a base URL that serves /v1/codegen and /v1/pipe-io, which the default does
 # (see docs/add-method.md).
 # Deliberately OUT of `make all`, for the same reason test-e2e is: key + network.
 codegen: ## Regenerate the typed artifacts in src/generated/ from methods/ (needs PIPELEX_API_KEY)
