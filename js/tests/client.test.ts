@@ -1414,19 +1414,14 @@ describe("PipelexApiClient.validateFiles", () => {
         const fetchSpy = vi.spyOn(globalThis, "fetch");
         const client = makeClient();
 
-        const validateErr = await client
+        const err = await client
           .validateFiles([{ content: "domain = 'x'" }], { timeoutMs })
           .catch((e: unknown) => e);
-        const runnerErr = await client
-          .buildRunner({ files: [{ content: "domain = 'x'" }] }, { timeoutMs })
-          .catch((e: unknown) => e);
 
-        for (const err of [validateErr, runnerErr]) {
-          expect(err).toBeInstanceOf(RangeError);
-          expect((err as Error).message).toContain(
-            '"timeoutMs" must be a positive number no larger than 2147483647',
-          );
-        }
+        expect(err).toBeInstanceOf(RangeError);
+        expect((err as Error).message).toContain(
+          '"timeoutMs" must be a positive number no larger than 2147483647',
+        );
         expect(fetchSpy).not.toHaveBeenCalled();
       },
     );

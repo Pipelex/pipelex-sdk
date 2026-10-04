@@ -4,8 +4,8 @@
  * Holds the Dict-serialized protocol concretes (`DictStuff` / `DictWorkingMemory`
  * / `DictPipeOutput` and the default `RunResultExecute` binding), the Pipelex
  * `/v1/validate` surface (`PipelexValidationResult` + `ValidationErrorItem`), and
- * the `/v1/build/*` request/response models. Built on the protocol wire types
- * imported from the `mthds/protocol` subpath.
+ * the request/response models of the tools routes and the crate routes. Built on
+ * the protocol wire types imported from the `mthds/protocol` subpath.
  */
 
 import type {
@@ -102,8 +102,7 @@ export interface PipelexRunResultStart extends RunResultStart {
  * one of inline source / `method_ref` / `method_id` per request — any second
  * selector is a request-shape `422`. An unknown or foreign-org id is a `404`
  * (indistinguishable by design); a stored method with no MTHDS source is a
- * `422`. The `/v1/build/*` projections are deliberately excluded — they take
- * no `method_id` (expand a stored method with `getMethodClosure` there).
+ * `422`.
  */
 export interface PipelexHostedToolingExtensions {
   /** A stored method's catalog id (`mt_…`) — hosted-only, resolved server-side. */
@@ -316,7 +315,7 @@ export type ValidationErrorCategory =
  * One structured bundle-validation error — mirror of pipelex's `ValidationErrorItem`.
  * Carried by `PipelexInvalidReport.validation_errors[]` on the **200** invalid arm of
  * `POST /v1/validate` (NOT a 422 — an invalid bundle is a produced verdict), by the
- * VALID arm's advisory `warnings[]`, by the build and crate routes' **200** invalid arm
+ * VALID arm's advisory `warnings[]`, by the crate routes' **200** invalid arm
  * (`CrateInvalidReport.validation_errors[]`), by the 422 problem body a run route answers
  * when the runner refuses the method for its validation errors
  * (`ApiResponseError.validationErrors`), and by a failed run's stored report.
@@ -546,15 +545,18 @@ export interface FormatResponse {
   diagnostics: Diagnostic[];
 }
 
-// ── Build routes (Pipelex API layer 2 — `/v1/build/*`) ──────────────────
-
-export type ConceptRepresentationFormat = "json" | "python" | "schema";
-
-/** Encoding of a `/v1/build/inputs` template. Decides which field carries it back. */
-export type InputsTemplateFormat = "json" | "toml";
+// ── Crate extensions (Pipelex API — `/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`) ──
+//
+// `/v1/resolve` emits the normalized library crate, `/v1/codegen` projects that crate
+// into stamped typed artifacts plus their lock, and `/v1/pipe-io` derives a method's
+// three I/O artifacts with no dry run. All three are Pipelex API extensions (NOT
+// `x-mthds-protocol`) over standard-owned artifacts, so their wire fields stay
+// brand-neutral. They share one closure envelope (`CrateRequestBase`) and one verdict
+// discipline: a produced verdict is a 200 discriminated on `is_valid`, with
+// `CrateInvalidReport` as the shared invalid arm.
 
 /**
- * One MTHDS file in a build closure. `source` is an optional provenance label (a
+ * One MTHDS file in a crate closure. `source` is an optional provenance label (a
  * filename, a URI) that the server threads onto every diagnostic it raises from
  * this file, so an invalid verdict can point at the file that caused it.
  *
@@ -570,11 +572,13 @@ export interface MthdsFileItem {
 }
 
 /**
- * The closure selector every crate-family route shares — `/v1/resolve`, `/v1/codegen`,
- * `/v1/pipe-io`, and `/v1/build/*` (mirror of the server's `MthdsFilesRequest`).
+ * The closure selector every crate route shares — `/v1/resolve`, `/v1/codegen` and
+ * `/v1/pipe-io` (mirror of the server's `MthdsFilesRequest`).
  *
  * Supply the closure EITHER as inline `files` OR as a `method_ref` — never both, and
- * never neither (both arms are a request-shape `422`). An **address-form** `method_ref`
+ * never neither (both arms are a request-shape `422`); the hosted `method_id` joins
+ * them as a third form on each route's own request (see
+ * {@link PipelexHostedToolingExtensions}). An **address-form** `method_ref`
  * (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is resolved by the server
  * (pipelex-api >= 0.21.0): the repository is fetched at the tag, the package is
  * located by manifest identity, and its `.mthds` files feed the closure with their
@@ -583,7 +587,7 @@ export interface MthdsFileItem {
  *
  * The XOR is a server-side invariant, not a type-level one: expressing it as a union
  * here would make the common `{ files }` call site pick a branch for no gain, and the
- * server rejects the two illegal shapes with a typed `ApiResponseError` either way.
+ * server rejects the illegal shapes with a typed `ApiResponseError` either way.
  */
 export interface CrateRequestBase {
   files?: MthdsFileItem[];
@@ -591,186 +595,22 @@ export interface CrateRequestBase {
 }
 
 /**
- * The crate envelope plus the pipe selector the `/v1/build/*` projections add
- * (mirror of the server's `MthdsPipeRequest`).
- */
-export interface BuildRequestBase extends CrateRequestBase {
-  /**
-   * The pipe to project, as a QUALIFIED `domain.pipe_code` ref. Omit it to default
-   * to the closure's declared `main_pipe` — which fails (422) when the closure
-   * declares none, or declares several across its domains.
-   */
-  pipe_ref?: string;
-  /**
-   * The `/v1/build/*` projections take NO `method_id` — the hosted platform's
-   * tooling selector covers `validate`/`resolve`/`codegen`/`pipe-io` only, and the build
-   * routes are deliberately excluded (they are frozen, being replaced by the
-   * codegen surface). Pinned to `never` so a stored-method caller reaches for
-   * `getMethodClosure` instead of a field no server resolves.
-   */
-  method_id?: never;
-}
-
-export interface BuildInputsRequest extends BuildRequestBase {
-  /** `json` (default) puts the parsed template in `inputs`; `toml` puts raw text in `inputs_toml`. */
-  format?: InputsTemplateFormat;
-  /** Emit the ceremonial `{concept, content}` envelope per input. Defaults to the light shape. */
-  explicit?: boolean;
-}
-
-export interface BuildOutputRequest extends BuildRequestBase {
-  /** `schema` (default) and `json` put a parsed object in `output`; `python` puts source in `output_python`. */
-  format?: ConceptRepresentationFormat;
-}
-
-export interface BuildRunnerRequest extends BuildRequestBase {
-  /**
-   * Accept unresolved pipe signatures as pending rather than invalid. Alone among
-   * the build routes this one still runs the dry-run sweep, and the flag only ever
-   * parameterized that sweep.
-   */
-  allow_signatures?: boolean;
-}
-
-export interface ConceptRequest {
-  spec: Record<string, unknown>;
-}
-
-export interface PipeSpecRequest {
-  pipe_type: string;
-  spec: Record<string, unknown>;
-}
-
-/**
- * The `is_valid: false` arm shared by every crate-family route — `/v1/build/*`,
- * `/v1/resolve`, `/v1/codegen`, and `/v1/pipe-io` (mirror of the server's one
- * `CrateInvalidReport`).
+ * The `is_valid: false` arm shared by every crate route — `/v1/resolve`,
+ * `/v1/codegen` and `/v1/pipe-io` (mirror of the server's one `CrateInvalidReport`).
  *
  * They all follow `/validate`'s discipline: an unresolvable closure is the
  * *successful product* of the call (the request was well-formed, the library was
  * not), so it rides a **200** discriminated on `is_valid` — never a 4xx. Only a
  * no-verdict condition throws `ApiResponseError`: a request the route cannot act on
- * (an unknown `pipe_ref` on the build routes and `pipe-io`, an unknown `kind`/`target`
- * on codegen), the reserved `method_ref`, auth, a server fault. Branch on `is_valid`,
- * never on the transport.
+ * (a pipe selection `pipe-io` refuses, an unknown `kind`/`target` on codegen), the
+ * reserved `method_ref`, auth, a server fault. Branch on `is_valid`, never on the
+ * transport.
  */
 export interface CrateInvalidReport {
   is_valid: false;
   validation_errors: ValidationErrorItem[];
   message: string;
 }
-
-/** Fields the valid arm of every `/v1/build/*` route carries. */
-interface BuildValidReportBase {
-  is_valid: true;
-  /** The qualified pipe that was projected — the RESOLVED selector, always `domain.pipe_code`. */
-  pipe_ref: string;
-  /** The `pipe_ref` as submitted. Absent when it was omitted and defaulted to `main_pipe`. */
-  requested_pipe_ref?: string;
-  message: string;
-}
-
-/**
- * The `/v1/build/inputs` valid arm. The template rides ONE of two fields, chosen by
- * `format`: `inputs` (a parsed object) for `json`, `inputs_toml` (raw text) for
- * `toml`. TOML cannot be carried as a parsed object without losing what makes it
- * worth asking for — its concept comments and key order — so the two are separate
- * fields and the unused one is absent from the body entirely.
- *
- * That "absent entirely" is why this is a union rather than one interface with two
- * optional fields: `format` is a real discriminant, so narrowing on it hands you the
- * field it selected as REQUIRED, with the other one statically unreachable.
- */
-interface BuildInputsJsonReport extends BuildValidReportBase {
-  format: "json";
-  explicit: boolean;
-  inputs: Record<string, unknown>;
-  inputs_toml?: never;
-}
-
-interface BuildInputsTomlReport extends BuildValidReportBase {
-  format: "toml";
-  explicit: boolean;
-  inputs?: never;
-  inputs_toml: string;
-}
-
-export type BuildInputsValidReport = BuildInputsJsonReport | BuildInputsTomlReport;
-
-export type BuildInputsResponse = BuildInputsValidReport | CrateInvalidReport;
-
-/**
- * The `/v1/build/output` valid arm. Same two-field split as the inputs template, for
- * the same reason: `schema` and `json` are objects, `python` is source text — and so
- * it is a discriminated union for the same reason too.
- */
-interface BuildOutputObjectReport extends BuildValidReportBase {
-  format: "schema" | "json";
-  output: Record<string, unknown>;
-  output_python?: never;
-}
-
-interface BuildOutputPythonReport extends BuildValidReportBase {
-  format: "python";
-  output?: never;
-  output_python: string;
-}
-
-export type BuildOutputValidReport = BuildOutputObjectReport | BuildOutputPythonReport;
-
-export type BuildOutputResponse = BuildOutputValidReport | CrateInvalidReport;
-
-/**
- * One stamped generated file — shared by `/v1/build/runner`'s structures projection
- * and `/v1/codegen`'s artifact set. `path` is relative to the output root the client
- * chooses; `content` is complete, stamp header included, and is written verbatim.
- */
-export interface GeneratedArtifact {
-  path: string;
-  content: string;
-}
-
-/**
- * The typed-structures projection the runner script imports from. Write `artifacts`
- * and `lock` (as `lock_filename`) under `directory`, relative to the runner script,
- * and the returned `python_code` runs against them.
- */
-export interface RunnerStructures {
-  directory: string;
-  artifacts: GeneratedArtifact[];
-  lock: string;
-  lock_filename: string;
-}
-
-export interface BuildRunnerValidReport extends BuildValidReportBase {
-  python_code: string;
-  structures: RunnerStructures;
-}
-
-export type BuildRunnerResponse = BuildRunnerValidReport | CrateInvalidReport;
-
-export interface ConceptResponse {
-  success: boolean;
-  concept_code: string;
-  toml: string;
-}
-
-export interface PipeSpecResponse {
-  success: boolean;
-  pipe_code: string;
-  pipe_type: string;
-  toml: string;
-}
-
-// ── Crate extensions (Pipelex API — `/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`) ──
-//
-// The second crate-family surface: `/v1/resolve` emits the normalized library crate,
-// `/v1/codegen` projects that crate into stamped typed artifacts plus their lock, and
-// `/v1/pipe-io` derives a method's three I/O artifacts with no dry run. All three are
-// Pipelex API extensions (NOT `x-mthds-protocol`) over standard-owned artifacts, so
-// their wire fields stay brand-neutral. Same envelope and same verdict discipline as
-// the build routes: a produced verdict is a 200 discriminated on `is_valid`, with
-// `CrateInvalidReport` as the shared invalid arm.
 
 /**
  * `POST /v1/resolve` request — the crate envelope (no projection axes) plus the
@@ -812,7 +652,8 @@ export type ResolveResponse = ResolveValidReport | CrateInvalidReport;
  * projected into typed models) is the only kind served today; the future per-pipe kinds
  * (`docs`, `tools`, `tests`) join it and select their pipe via `pipe_ref`. Input templates
  * are deliberately NOT a kind here — they are user-editable scaffolds, never stamped or
- * locked, and ride `POST /v1/build/inputs` instead.
+ * locked, and a client projects one from the input-form descriptor `/v1/pipe-io` returns
+ * (`renderInputsTemplate`, from `mthds/protocol`).
  */
 export type CodegenKind = "types";
 
@@ -838,6 +679,16 @@ export interface CodegenRequest extends CrateRequestBase, PipelexHostedToolingEx
    * exists for the future per-pipe kinds.
    */
   pipe_ref?: string;
+}
+
+/**
+ * One stamped generated file of `/v1/codegen`'s artifact set. `path` is relative to the
+ * output root the client chooses; `content` is complete, stamp header included, and is
+ * written verbatim.
+ */
+export interface GeneratedArtifact {
+  path: string;
+  content: string;
 }
 
 /**

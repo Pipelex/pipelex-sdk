@@ -624,17 +624,4 @@ describe("PipelexApiClient run-lifecycle delegation", () => {
     await client.validate(["domain = 'x'"]);
     expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/validate");
   });
-
-  it("build helpers hit /v1/build/*", async () => {
-    const client = makeClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async () => jsonResponse(200, {}));
-    await client.buildInputs({ files: [{ content: "x" }] });
-    await client.concept({ spec: {} });
-    await client.pipeSpec({ pipe_type: "PipeLLM", spec: {} });
-    expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/build/inputs");
-    expect(fetchSpy.mock.calls[1]![0]).toBe("http://localhost:8081/v1/build/concept");
-    expect(fetchSpy.mock.calls[2]![0]).toBe("http://localhost:8081/v1/build/pipe-spec");
-  });
 });

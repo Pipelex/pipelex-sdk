@@ -60,7 +60,7 @@ The client inherits `mthds`'s `_send` (one raw HTTP request, no status interpret
 
 - **`_send_or_unreachable`** — wraps `_send`, mapping httpx transport failures to `ApiUnreachableError` (a `httpx.TimeoutException` → `code="ABORT_TIMEOUT"`; any other `httpx.TransportError` → `code=<exception class name>`). Non-2xx interpretation stays with the caller.
 - **`_request_product`** — the product-route path. Serializes the body with `pydantic_core.to_json` (supporting PUT/PATCH/DELETE as well as GET/POST), uses the management-call timeout, maps a non-2xx response to `ApiResponseError`, and is **empty-body tolerant** (a 2xx with no body — DELETE / onboarding / update — returns `None`).
-- **`_request_json`** — the plainer path for `health` (and, if ever added, the build extensions). Takes an absolute URL, raises `PipelineRequestError` on a non-2xx response. Transport failures still map to `ApiUnreachableError`.
+- **`_request_json`** — the plainer path for `health`. Takes an absolute URL, raises `PipelineRequestError` on a non-2xx response. Transport failures still map to `ApiUnreachableError`.
 
 `start_client` is overridden so the `Authorization` header is sent only when a token is configured — anonymous access (empty token) omits it — and so the spec-conforming `User-Agent` (built once at construction by `pipelex_sdk.user_agent`, with the optional `app_info` in front) is a default header on every request, authenticated or not. See [`client-identification.md`](client-identification.md) and the workspace spec `docs/specs/client-identification.md`.
 
@@ -274,7 +274,7 @@ The download twin of input preparation, and the Python twin of `@pipelex/sdk`'s 
 
 ## Out of scope
 
-- The `/v1/build/*` helpers — `build_output`, `build_runner`, `concept`, `pipe_spec`. `build_inputs` shipped in 0.5.0 and was removed again once `prepare_inputs`, its only caller, moved onto the input-form descriptor (read from `validate` then, from `pipe_io` now): this SDK no longer touches `/v1/build/*`, which the workspace is retiring (L-260829-848001 in the workspace ledger).
+- The `/v1/build/*` helpers. Neither SDK carries them any more. This one never shipped `build_output`, `build_runner`, `concept` or `pipe_spec`, and removed `build_inputs`, which shipped in 0.5.0, once `prepare_inputs`, its only caller, moved onto the input-form descriptor (read from `validate` then, from `pipe_io` now). `@pipelex/sdk` retired all five of its wrappers together once no consumer was left. The workspace is retiring the routes themselves (L-260829-848001 in the workspace ledger); a caller that wants an inputs template projects it from the descriptor `pipe_io` returns, with `mthds.protocol.inputs_template`.
 - Organization *switch* (a WorkOS session operation, not a `/v1` route).
 - A `~/.pipelex/config` file reader (env-only for now, matching the JS SDK).
 - A synchronous client facade.
@@ -288,7 +288,6 @@ The download twin of input preparation, and the Python twin of `@pipelex/sdk`'s 
 This SDK is a port of the TypeScript `@pipelex/sdk` (`PipelexApiClient`) and tracks it closely, but it is **not surface-complete, and this section is where the gaps are named.** The Checkpoint-5 parity audit walked the JS `src/client.ts`, `src/index.ts` (the public barrel), and `docs/architecture.md`, plus a field-by-field sweep of `runs.ts` / `product-models.ts` / `models.ts`; it concluded surface-completeness, and that conclusion went stale as the JS SDK grew. The honest list of what has no Python counterpart today:
 
 - **Tooling routes** — `lint`, `format` (`resolve` and `codegen` shipped in 0.8.0 with the method selectors and are **not** gaps).
-- **Authoring helpers** — `build_output`, `build_runner`, `concept`, `pipe_spec`. JS still exports its `buildInputs` wrapper; Python's was **deleted** rather than left unused, because `prepare_inputs` was its only caller. A deliberate divergence, not a gap: the JS wrappers retire together as their own step of the same program.
 - **Offline helpers** — `get_method_closure` (the *client* sugar that fetches a method by id and labels each of its files with that id as provenance, raising when the row carries no source; in the JS SDK it is the documented migration target for the deleted by-id expansion legs, and this SDK never had such legs, so it stays deferred rather than required). Its parsing half is **not** a gap: `method_source_to_contents` is the Python counterpart of `methodSourceToContents`, so a caller composes the closure from `get_method` in two lines. `run_codegen_check` was the other entry here and is no longer a gap: it shipped as `pipelex_sdk.codegen_check`, with a filesystem-shaped signature where the JS export is pure.
 
 Each stays deferred rather than silently missing. Everything else — the protocol routes, the durable lifecycle, the whole product surface, and the errors — does have a Python equivalent.

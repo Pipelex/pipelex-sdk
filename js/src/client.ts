@@ -19,16 +19,8 @@ import {
   serializeMethodFiles,
 } from "mthds/protocol";
 import type {
-  BuildInputsRequest,
-  BuildInputsResponse,
-  BuildOutputRequest,
-  BuildOutputResponse,
-  BuildRunnerRequest,
-  BuildRunnerResponse,
   CodegenRequest,
   CodegenResponse,
-  ConceptRequest,
-  ConceptResponse,
   CrateRequestBase,
   DictPipeOutput,
   DictRunResultExecute,
@@ -37,8 +29,6 @@ import type {
   MthdsFileItem,
   PipeIORequest,
   PipeIOResponse,
-  PipeSpecRequest,
-  PipeSpecResponse,
   PipelexRunResultStart,
   PipelexValidationResult,
   ResolveRequest,
@@ -294,11 +284,6 @@ const RUNS = "runs";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 1_200_000; // 20 min — matches the runner's blocking execute ceiling.
 const POLL_REQUEST_TIMEOUT_MS = 30_000; // single status/result GETs; the hosted gateway caps responses at ~30s.
-// `build/runner` is the one extension route that dry-run-sweeps the closure, and it
-// sweeps the WHOLE closure when `pipe_ref` is omitted. The 30s management timeout is
-// sized for the static routes; a large closure legitimately exceeds it, and aborting
-// it would surface as `ApiUnreachableError` — blaming the network for a healthy server.
-const BUILD_RUNNER_TIMEOUT_MS = 300_000; // 5 min
 const DEFAULT_DEGRADED_RETRY_SECONDS = 5; // matches the platform's `_DEGRADE_RETRY_AFTER_SECONDS`.
 const VALIDATE_MARKDOWN_RENDER_FORMAT = "markdown";
 
@@ -316,7 +301,6 @@ const BARE_RUNNER_IMPLEMENTATION = "pipelex-api";
  * One base URL (`PIPELEX_BASE_URL`); every endpoint is `<base>/v1/<endpoint>`:
  * - **protocol** (`execute` / `start` / `validate` / `models` / `version`) — works
  *   against any MTHDS-compliant runner, hosted or bare.
- * - **build extensions** (`/v1/build/*`) — the Pipelex API's authoring helpers.
  * - **crate extensions** (`/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`) — the normalized
  *   library crate, the stamped typed artifacts projected from it, and a method's three
  *   I/O artifacts derived with no dry run.
@@ -330,7 +314,7 @@ const BARE_RUNNER_IMPLEMENTATION = "pipelex-api";
  *
  * Implements `MTHDSProtocol<DictPipeOutput>` so the protocol-execution methods
  * stay shaped like the standard's wire surface (`mthds/protocol`). The Pipelex
- * extensions (build, run lifecycle) ride on top.
+ * extensions (the crate and tools routes, the run lifecycle) ride on top.
  */
 
 // ── Methods catalog: typed `python` ⇄ wire string ────────────────────────
@@ -836,8 +820,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * fetch-sized budget (`METHOD_REF_FETCH_TIMEOUT_MS`, three minutes) that
    * `crateRequestTimeoutMs` gives the crate routes several times over. That budget
    * exists to RAISE routes whose default is the ~30s poll ceiling; applying it here
-   * would lower this one — which is why `buildRunner`, on its own five-minute
-   * default, is excluded from it for the same reason.
+   * would lower this one.
    */
   async validate(
     source: string[] | ValidateMethodSelector,
@@ -996,31 +979,32 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
-   * POST one of the Pipelex-API extension routes — the tools (`lint`, `format`), the
-   * crate routes (`resolve`, `codegen`, `pipe-io`), and the build projections (`build/*`). Their
-   * non-2xx bodies are RFC 7807 problems, mapped to the typed `ApiResponseError` like
-   * the product routes.
+   * POST one of the Pipelex-API extension routes — the tools (`lint`, `format`) and the
+   * crate routes (`resolve`, `codegen`, `pipe-io`). Their non-2xx bodies are RFC 7807
+   * problems, mapped to the typed `ApiResponseError` like the product routes.
    *
-   * The mapping is what makes their no-verdict arms usable: a crate-family route
-   * answers `422` for a request it cannot act on (an unresolvable pipe selector on the
-   * build routes and `pipe-io`; an unknown `kind`/`target`, or a `pipe_ref` on the concept-set-wide
-   * `types` kind, on `codegen`) and `501` for the reserved registry-form `method_ref`
-   * (the address form is resolved server-side as of pipelex-api 0.21.0). A caller
-   * branches on `ApiResponseError.status`, never on a message.
+   * The mapping is what makes their no-verdict arms usable: a crate route answers `422`
+   * for a request it cannot act on (a pipe selection `pipe-io` refuses; an unknown
+   * `kind`/`target`, or a `pipe_ref` on the concept-set-wide `types` kind, on `codegen`)
+   * and `501` for the reserved registry-form `method_ref` (the address form is resolved
+   * server-side as of pipelex-api 0.21.0). A caller branches on `ApiResponseError.status`,
+   * never on a message.
    *
-   * All of these are inference-free, so they default to the management-call timeout.
-   * `build/runner` is the exception — it dry-run-sweeps the closure — and overrides it
-   * via `timeoutMs`.
+   * All of these are static and inference-free, so they default to the management-call
+   * timeout. The one internal raise is the fetch-sized budget `crateRequestTimeoutMs`
+   * gives a crate route whose closure is a `method_ref`, because the server may clone a
+   * repository before it answers; it is matched to what the server does, not a
+   * caller-facing parameter.
    *
-   * **The static routes deliberately expose no `timeoutMs` / `signal`, and that is not
-   * an oversight to be "fixed" per route.** Automated reviewers have proposed adding
-   * them to whichever route was newest more than once; the reasons they are absent are:
+   * **These routes deliberately expose no `timeoutMs` / `signal`, and that is not an
+   * oversight to be "fixed" per route.** Automated reviewers have proposed adding them
+   * to whichever route was newest more than once; the reasons they are absent are:
    *
-   * 1. The split tracks the **dry-run sweep**, not the age of the route. `build/runner`
-   *    is slow because it sweeps (the whole closure when `pipe_ref` is omitted); every
-   *    other extension route rides the static core (`crate_ops.py` is explicit that
-   *    `build/runner` "is the exception — it needs the dry-run sweep"). Giving one
-   *    static route an override while its siblings lack one is the inconsistency.
+   * 1. None of them runs a **dry-run sweep**, which is what makes a route legitimately
+   *    slow. The sweeping route is `validate`, which already sits on the execute
+   *    ceiling and takes caller transport options; every extension route rides the
+   *    static core. Giving one static route an override while its siblings lack one is
+   *    the inconsistency.
    * 2. The input is **bounded server-side** — the runner's `pipelex_api/limits.py` caps a request
    *    at 16 `.mthds` files of 1 MiB each — and none of these routes runs inference.
    * 3. On the hosted path an override would be **inert**: the gateway caps responses at
@@ -1034,12 +1018,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   private async requestExtension<T>(
     endpoint: string,
     body: unknown,
-    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+    options: { timeoutMs?: number } = {},
   ): Promise<T> {
     const res = await this.requestRaw("POST", this.url(endpoint), {
       body,
       timeoutMs: options.timeoutMs ?? POLL_REQUEST_TIMEOUT_MS,
-      signal: options.signal,
     });
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", endpoint, res);
@@ -1078,7 +1061,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   // Served by any `pipelex-api` runner AND on every hosted origin. On the hosted
   // plane a route is reachable only when the gateway's API-key allowlist and the
   // platform's tooling proxy both list it — they each enumerate routes explicitly
-  // (`validate`, `models`, `build/*`, …), and an unlisted path answers a gateway
+  // (`validate`, `models`, …), and an unlisted path answers a gateway
   // `403 {"message":"Forbidden"}`, refused before any service sees it, so not even
   // an RFC 7807 problem body. Both list `resolve` and `codegen`.
   //
@@ -1180,99 +1163,6 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     return this.requestExtension("pipe-io", request, {
       timeoutMs: crateRequestTimeoutMs(request),
     });
-  }
-
-  // ── Build extensions (Pipelex API layer 2 — `/v1/build/*`) ────────
-
-  /**
-   * Project a pipe's declared inputs as a fill-in template — `POST /v1/build/inputs`.
-   *
-   * Supply the closure as `files` (each `{content, source?}`) and, optionally, the
-   * QUALIFIED `pipe_ref` to project; omitting it defaults to the closure's
-   * `main_pipe`. The template rides `inputs` (a parsed object) for `format: "json"`,
-   * the default, and `inputs_toml` (raw text) for `format: "toml"`.
-   *
-   * Returns a **200 verdict**: pattern-match `is_valid` before reading the arm — an
-   * unresolvable closure comes back as `is_valid: false` with `validation_errors[]`,
-   * not as a thrown error.
-   *
-   * Accepts the closure as inline `files` or as a `method_ref` (both on the wire
-   * model {@link BuildInputsRequest}; the address form is server-resolved, the
-   * registry form `501`s) — exactly one of the two, like `buildOutput` /
-   * `buildRunner`. There is NO by-id form: the build routes take no `method_id`
-   * (the hosted tooling selector covers `validate`/`resolve`/`codegen`/`pipe-io` only), so a
-   * stored method is expanded first — `buildInputs({ files: await
-   * client.getMethodClosure(methodId) })`. That expansion stays the answer here
-   * because a `buildInputs` caller wants this route's template; it is not what
-   * `prepareInputs` does any more.
-   *
-   * Nothing inside this SDK calls this route: `prepareInputs` reads its signature
-   * from the input-form descriptor `pipeIo` returns. It survives for the
-   * consumers that still render a template over HTTP, and is retired with the rest
-   * of `/v1/build/*` once they project it client-side.
-   */
-  async buildInputs(request: BuildInputsRequest): Promise<BuildInputsResponse> {
-    // `method_id` is `never` in the type; this backs it for untyped (JS)
-    // callers migrating off the retired client-side by-id expansion — a
-    // teaching error beats the server silently ignoring an unknown key.
-    if ((request as unknown as Record<string, unknown>)["method_id"] !== undefined) {
-      throw new PipelineRequestError(
-        "buildInputs takes no method_id — the build routes have no by-id form. Expand the stored " +
-          "method first: buildInputs({ files: await client.getMethodClosure(methodId) }).",
-      );
-    }
-    return this.requestExtension("build/inputs", request, {
-      timeoutMs: crateRequestTimeoutMs(request),
-    });
-  }
-
-  /**
-   * Project a pipe's output concept — `POST /v1/build/output`. Same envelope and
-   * same 200-verdict discipline as {@link buildInputs}. `format: "schema"` (the
-   * default) and `"json"` put a parsed object in `output`; `"python"` puts source
-   * text in `output_python`.
-   */
-  async buildOutput(request: BuildOutputRequest): Promise<BuildOutputResponse> {
-    return this.requestExtension("build/output", request, {
-      timeoutMs: crateRequestTimeoutMs(request),
-    });
-  }
-
-  /**
-   * Generate a runnable Python script plus its stamped typed structures —
-   * `POST /v1/build/runner`. Same envelope and same 200-verdict discipline as
-   * {@link buildInputs}.
-   *
-   * Alone among the build routes this one dry-runs the closure, so it also takes
-   * `allow_signatures` (accept unresolved pipe signatures as pending). Note that
-   * omitting `pipe_ref` sweeps the WHOLE closure rather than just the defaulted
-   * pipe — the default can only be resolved after the sweep has run — so a broken
-   * sibling pipe can sink the request. Pass `pipe_ref` to scope the sweep.
-   *
-   * Because of that sweep it is the one extension route that can legitimately run
-   * long, so it gets its own generous timeout (5 min) rather than the 30s the static
-   * routes use, and it is the ONLY extension route that takes transport options at all
-   * (the policy note on `requestExtension` says why the static ones do not). Override it
-   * per call with `options.timeoutMs`, a positive number no larger than 2147483647 (else a
-   * `RangeError`); a caller that stops caring mid-sweep can cancel
-   * via `options.signal` instead of waiting it out.
-   */
-  async buildRunner(
-    request: BuildRunnerRequest,
-    options: { timeoutMs?: number; signal?: AbortSignal } = {},
-  ): Promise<BuildRunnerResponse> {
-    return this.requestExtension("build/runner", request, {
-      timeoutMs: options.timeoutMs ?? BUILD_RUNNER_TIMEOUT_MS,
-      signal: options.signal,
-    });
-  }
-
-  async concept(request: ConceptRequest): Promise<ConceptResponse> {
-    return this.requestExtension("build/concept", request);
-  }
-
-  async pipeSpec(request: PipeSpecRequest): Promise<PipeSpecResponse> {
-    return this.requestExtension("build/pipe-spec", request);
   }
 
   // ── Hosted extension: durable run lifecycle (NOT part of the protocol) ──
@@ -1549,8 +1439,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `method_id` as its `source` provenance.
    *
    * This is the LOCAL expansion utility — for callers that want the files in
-   * hand (to edit, to diff, to feed a route with no by-id form, the `/v1/build/*`
-   * family being the last of those). The operations that accept `method_id`
+   * hand (to edit, to diff, or to send to a bare runner, which has no catalog to
+   * resolve an id against). The operations that accept `method_id`
    * natively (`execute`/`start`, `validate`/`resolve`/`codegen`/`pipeIo`, and
    * `prepareInputs`, which composes a `pipeIo` of its own) take the id as a
    * pass-through instead; nothing in this client expands an id behind your back.
@@ -2067,11 +1957,9 @@ function buildExtensions(
 const METHOD_REF_FETCH_TIMEOUT_MS = 180_000; // 3 min — covers the server's clone + resolve
 
 /**
- * The internal request budget for a call carrying a `CrateRequestBase` closure
- * (the crate routes and the build projections alike): the static-route default,
- * unless the closure is a `method_ref` the server may have to fetch first.
- * `buildRunner` is the exception — its own five-minute default already clears
- * the fetch budget.
+ * The internal request budget for a crate route's `CrateRequestBase` closure
+ * (`resolve`, `codegen`, `pipeIo`): the static-route default, unless the closure
+ * is a `method_ref` the server may have to fetch first.
  */
 function crateRequestTimeoutMs(request: CrateRequestBase): number | undefined {
   return nonEmptyString(request.method_ref) !== undefined ? METHOD_REF_FETCH_TIMEOUT_MS : undefined;

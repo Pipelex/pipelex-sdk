@@ -1,6 +1,6 @@
 # Crate routes (`/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`)
 
-Three routes project a **closure** of MTHDS files into the artifacts downstream tooling actually consumes: `resolve` emits the **normalized library crate**, `codegen` projects that crate into **stamped typed artifacts** plus their lock, and `pipeIo` derives a method's **pipe I/O contracts, input form and output form** without a dry run. Like the [build routes](./build-routes.md), they are Pipelex API extensions rather than MTHDS Protocol operations — but note the ownership split: the _crate_ and the three I/O artifacts are standard-owned (the MTHDS Library Crate Format, and the standard's pipe I/O contracts and form descriptors), while the HTTP surface serving them, and every type projection on top of the crate, are ours.
+Three routes project a **closure** of MTHDS files into the artifacts downstream tooling actually consumes: `resolve` emits the **normalized library crate**, `codegen` projects that crate into **stamped typed artifacts** plus their lock, and `pipeIo` derives a method's **pipe I/O contracts, input form and output form** without a dry run. They are Pipelex API extensions rather than MTHDS Protocol operations — but note the ownership split: the _crate_ and the three I/O artifacts are standard-owned (the MTHDS Library Crate Format, and the standard's pipe I/O contracts and form descriptors), while the HTTP surface serving them, and every type projection on top of the crate, are ours.
 
 > **`resolve` and `codegen` are served on every hosted origin, and by any `pipelex-api` runner.** On the hosted plane a route is reachable only when the gateway's API-key allowlist and the platform's tooling proxy both list its path — each enumerates routes explicitly, and an unlisted path answers a gateway `403 {"message":"Forbidden"}`, refused before any service sees the request, so not even an RFC 7807 problem body. `resolve` and `codegen` are listed by both.
 >
@@ -25,7 +25,11 @@ interface PipelexHostedToolingExtensions {
 }
 ```
 
-This is the same `MthdsFileItem` and the same `source` semantics the build routes use, so the [notes there](./build-routes.md#the-shared-envelope) apply verbatim: pass a filename per file and, when the engine can attribute a diagnostic to one, it comes back as `source` on the corresponding `validation_errors[]` item.
+`source` is why the envelope carries files rather than bare strings. A closure is a set of files, and a diagnostic that cannot say _which_ file it came from is much harder to act on. Pass a filename (or any label) per file and, **when the engine can attribute the diagnostic to a file**, it comes back as `source` on the corresponding `validation_errors[]` item.
+
+Treat that attribution as best-effort, not a guarantee — which is why `ValidationErrorItem.source` is typed optional and why the `resolve` sample below reads `err.source ?? "?"`. Some arms don't populate it: graph-level `dry_run` and `pipe_factory` items have no single owning file, and a `main_pipe` naming a nonexistent pipe currently reports its provenance in the message prose while leaving the structured field unset. The syntax-error arm, the common case, does thread it.
+
+> `MthdsFileItem` is not the same type as `MthdsFile` (the one `validateFiles()` takes). `/v1/validate` spells the provenance label `uri` and carries it in a parallel `mthds_sources` array; this envelope spells it `source` and carries it inline. The two collapse into one only if `/v1/validate` ever migrates onto `files[]` — a protocol-level change owned by the MTHDS standard, not ours to make here.
 
 An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is resolved by the server through the same fetch path as a `method_ref` run: the repository fetched at the tag, the package located by manifest identity, the package's real relative paths feeding the per-file `source` labels. Any non-address reference stays reserved and answers `501`.
 
@@ -33,7 +37,7 @@ An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>
 
 Supplying **no** selector or **more than one** is a request-shape `422` — the tooling routes are stateless, so there is no linkage exception; a second selector could only be ignored, which is the worst contract of the three. The SDK does not model the XOR in the type system — the union would force the overwhelmingly common `{ files }` call site to pick a branch for no gain, and the server's answer is a typed `ApiResponseError` either way.
 
-The old advice to expand a stored method client-side (`resolve({ files: await client.getMethodClosure(methodId) })`) remains valid — `getMethodClosure` stays public as the local expansion utility, and it is what a caller uses against a bare runner or on the routes with no by-id form (`/v1/build/*`).
+The old advice to expand a stored method client-side (`resolve({ files: await client.getMethodClosure(methodId) })`) remains valid — `getMethodClosure` stays public as the local expansion utility, and it is what a caller uses against a bare runner, which has no catalog to resolve an id against.
 
 A `method_ref` makes the server fetch the repository before it answers, so the client gives a call carrying one a fetch-sized budget (three minutes) instead of the 30-second default. On the hosted API the gateway caps every request at about 30 seconds whatever the client allows, so a cold `method_ref` clone can answer a `502`; retrying clears it once the runner has cached the clone.
 
@@ -120,7 +124,7 @@ The valid arm (`PipeIOValidReport`):
 
 ## The response is a verdict, not a payload
 
-All three routes return a **discriminated 200**, the same discipline as `validate` and the build routes: an unresolvable closure is the _successful product_ of the call (the request was well-formed; the library was not), so it rides a 200 with `is_valid: false` and the shared `CrateInvalidReport` — the very same invalid arm the build routes return, carrying the same structured `validation_errors[]`.
+All three routes return a **discriminated 200**, the same discipline as `validate`: an unresolvable closure is the _successful product_ of the call (the request was well-formed; the library was not), so it rides a 200 with `is_valid: false` and the shared `CrateInvalidReport`, carrying the same structured `validation_errors[]` as `validate`'s invalid arm.
 
 **Branch on `is_valid` before reading the arm.** A consumer that only catches throws will render a success over an unusable result, because nothing threw.
 
@@ -138,7 +142,7 @@ Only a **no-verdict** condition, as the typed `ApiResponseError` — branch on i
 | `502`         | On a hosted origin, a cold `method_ref` clone that outran the gateway's 30-second cap; a retry clears it.   |
 | `5xx`         | Server fault, including on `pipeIo` a pipe whose artifacts cannot be derived.                               |
 
-Note the split, same as the build routes: a bad **closure** is a 200 verdict; a bad **request** throws.
+Note the split: a bad **closure** is a 200 verdict; a bad **request** throws.
 
 (The offline check below is not a route and throws its own `CodegenLockError` instead — it never reaches the network.)
 

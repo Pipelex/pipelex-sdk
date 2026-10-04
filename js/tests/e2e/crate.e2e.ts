@@ -19,7 +19,7 @@
  * vocabulary in particular is a mirror of a Python `StrEnum` in another repo, so
  * nothing but a live call proves the two still agree.
  *
- * The through-line is the same verdict discipline the build routes share with
+ * The through-line is the verdict discipline the crate routes share with
  * `validate`: an unresolvable CLOSURE is a produced verdict on a **200**
  * (`is_valid: false` + `validation_errors[]`), while an unresolvable REQUEST — a
  * `pipe_ref` on the concept-set-wide `types` kind, the reserved `method_ref` — is
