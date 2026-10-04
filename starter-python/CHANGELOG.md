@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`pipelex-sdk` 0.30.0 and `mthds` 0.18.0 are the floors**: bumped from 0.14.0 and 0.17.0. A project made from the template that lists the model deck with the client's `models()` no longer fails the whole call on a deck holding a `judgment` model: `mthds` 0.18.0 reads that category, and keeps the raw string in `ModelInfo.type` for a category it does not know. The SDK's breaking changes in between, run-history rows reduced to `RunHistoryItem`, `PipeStatus` removed, an optional `main_stuff` and `prepare_inputs` reading `POST /v1/pipe-io`, reach nothing the starter calls: it reads `main_stuff` only from a full results read, where a completed run without one still raises `MissingMainStuffError`.
+
 ## [v0.29.1] - 2026-10-02
 
 ### Fixed
