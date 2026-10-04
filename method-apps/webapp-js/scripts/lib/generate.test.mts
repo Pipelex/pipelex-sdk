@@ -23,10 +23,19 @@ import {
   ApiResponseError,
   runCodegenCheck,
   type CodegenValidReport,
+  type InputForm,
+  type OutputForm,
+  type PipeIOContracts,
   type PipelexApiClient,
 } from "@pipelex/sdk";
 
-import { generateMethod, readMethodProse, writeTree } from "./generate.mts";
+import {
+  fetchPipeIoArtifacts,
+  generateMethod,
+  methodProseOf,
+  readMethodProse,
+  writeTree,
+} from "./generate.mts";
 import {
   CONTRACTS_FILENAME,
   hashSource,
@@ -286,8 +295,9 @@ describe("generateMethod", () => {
     engine_version: "0.56.0",
   };
 
-  const VALID_VALIDATE = {
+  const VALID_PIPE_IO = {
     is_valid: true,
+    pipe_ref: "demo.demo",
     pipe_io_contracts: {
       "demo.demo": {
         inputs: {},
@@ -306,20 +316,30 @@ describe("generateMethod", () => {
         field: { kind: "prose", name: "output", concept_ref: "native.Text", required: true },
       },
     },
+    default_pipe_ref: "demo.demo",
+    pending_signatures: [],
+    is_runnable: true,
   };
 
   /** A client that answers both calls with the fixtures above, unless overridden. */
   function fakeClient(overrides: Record<string, unknown> = {}) {
     return {
       codegen: vi.fn().mockResolvedValue(VALID_REPORT),
-      validate: vi.fn().mockResolvedValue(VALID_VALIDATE),
-      validateFiles: vi.fn().mockResolvedValue(VALID_VALIDATE),
+      pipeIo: vi.fn().mockResolvedValue(VALID_PIPE_IO),
       ...overrides,
-    } as unknown as Pick<PipelexApiClient, "codegen" | "validate" | "validateFiles"> & {
+    } as unknown as Pick<PipelexApiClient, "codegen" | "pipeIo"> & {
       codegen: Mock;
-      validate: Mock;
-      validateFiles: Mock;
+      pipeIo: Mock;
     };
+  }
+
+  /** Collect what the method under test reports on stderr. */
+  function captureErrors(): string[] {
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((line: unknown) => {
+      errors.push(String(line));
+    });
+    return errors;
   }
 
   beforeEach(() => {
@@ -331,7 +351,7 @@ describe("generateMethod", () => {
     vi.restoreAllMocks();
   });
 
-  it("sends a files source inline, and validates it with per-file attribution", async () => {
+  it("sends a files source inline to both routes, describing every pipe", async () => {
     noDrifts();
     const client = fakeClient();
 
@@ -341,17 +361,17 @@ describe("generateMethod", () => {
       kind: "types",
       target: "ts-zod",
     });
-    expect(client.validateFiles).toHaveBeenCalledWith(
-      [{ content: "a = 1\n", uri: "methods/demo/main.mthds" }],
-      { views: ["input_form", "output_form"] },
-    );
-    expect(client.validate).not.toHaveBeenCalled();
+    // The files are here already, so the route is not asked to echo them.
+    expect(client.pipeIo).toHaveBeenCalledWith({
+      files: FILES_SOURCE.kind === "files" ? FILES_SOURCE.files : [],
+      all_pipes: true,
+    });
     expect((await readdir(outDir)).sort()).toEqual(
       [CONTRACTS_FILENAME, LOCK_FILENAME, SOURCES_SIDECAR, "types.ts"].sort(),
     );
   });
 
-  it("sends a selector source as the selector, on both routes", async () => {
+  it("sends a selector source as the selector, on both routes, asking for its files", async () => {
     noDrifts();
     const client = fakeClient();
 
@@ -361,14 +381,25 @@ describe("generateMethod", () => {
       kind: "types",
       target: "ts-zod",
     });
-    expect(client.validate).toHaveBeenCalledWith(
-      { method_ref: "github.com/Pipelex/methods/text_stats@v0.1.1" },
-      false,
-      undefined,
-      undefined,
-      ["input_form", "output_form"],
+    expect(client.pipeIo).toHaveBeenCalledWith({
+      method_ref: "github.com/Pipelex/methods/text_stats@v0.1.1",
+      all_pipes: true,
+      include_files: true,
+    });
+  });
+
+  it("writes contracts.ts from the route's three maps, verbatim", async () => {
+    noDrifts();
+
+    await generateMethod(fakeClient(), FILES_SOURCE, outDir, "https://api.example");
+
+    expect(await readFile(path.join(outDir, CONTRACTS_FILENAME), "utf-8")).toBe(
+      renderContracts(
+        VALID_PIPE_IO.pipe_io_contracts as PipeIOContracts,
+        VALID_PIPE_IO.input_form as InputForm,
+        VALID_PIPE_IO.output_form as OutputForm,
+      ),
     );
-    expect(client.validateFiles).not.toHaveBeenCalled();
   });
 
   it("records the manifest hash in the sidecar of a selector-sourced tree", async () => {
@@ -384,10 +415,7 @@ describe("generateMethod", () => {
 
   it("fails a selector the API cannot resolve, writing nothing", async () => {
     noDrifts();
-    const errors: string[] = [];
-    vi.spyOn(console, "error").mockImplementation((line: unknown) => {
-      errors.push(String(line));
-    });
+    const errors = captureErrors();
     const client = fakeClient({
       codegen: vi
         .fn()
@@ -417,28 +445,74 @@ describe("generateMethod", () => {
     await expect(readdir(outDir)).rejects.toThrow();
   });
 
-  // Both views are refused the same way and for the same reason: the tokens are
-  // lenient-ignored by an API too old to serve them, so an absent payload is the
-  // only signal, and a `contracts.ts` written without one renders an empty form
-  // (no input descriptor) or an empty result (no output descriptor) rather than
-  // failing anywhere a reader would look.
-  it.each([
-    ["input_form", { input_form: undefined }],
-    ["output_form", { output_form: undefined }],
-  ])("fails before writing when the %s view is missing", async (view, missing) => {
+  // The route runs no dry run, so a method still under construction loads and
+  // describes itself like any other. Its contracts would describe a form whose
+  // Run can only fail, so the build refuses it, naming what is left to write.
+  it("refuses a method whose pipes are still signatures, naming them, writing nothing", async () => {
     noDrifts();
-    const errors: string[] = [];
-    vi.spyOn(console, "error").mockImplementation((line: unknown) => {
-      errors.push(String(line));
-    });
+    const errors = captureErrors();
     const client = fakeClient({
-      validate: vi.fn().mockResolvedValue({ ...VALID_VALIDATE, ...missing }),
+      pipeIo: vi.fn().mockResolvedValue({
+        ...VALID_PIPE_IO,
+        is_runnable: false,
+        pending_signatures: ["demo.summarize", "demo.shout"],
+      }),
     });
 
-    expect(await generateMethod(client, SELECTOR_SOURCE, outDir, "https://api.example")).toBe(
+    expect(await generateMethod(client, FILES_SOURCE, outDir, "https://api.example")).toBe(
       "failed",
     );
-    expect(errors.join("\n")).toContain(`no ${view} view`);
+    expect(errors.join("\n")).toContain("not runnable");
+    expect(errors.join("\n")).toContain("demo.summarize, demo.shout");
+    await expect(readdir(outDir)).rejects.toThrow();
+  });
+
+  it("refuses a method the route reports as invalid, with each diagnostic, writing nothing", async () => {
+    noDrifts();
+    const errors = captureErrors();
+    const client = fakeClient({
+      pipeIo: vi.fn().mockResolvedValue({
+        is_valid: false,
+        validation_errors: [
+          { category: "blueprint", message: "unknown concept", source: "main.mthds" },
+        ],
+        message: "The method does not load.",
+      }),
+    });
+
+    expect(await generateMethod(client, FILES_SOURCE, outDir, "https://api.example")).toBe(
+      "failed",
+    );
+    expect(errors.join("\n")).toContain("does not resolve");
+    expect(errors.join("\n")).toContain("main.mthds: unknown concept");
+    await expect(readdir(outDir)).rejects.toThrow();
+  });
+
+  it("names the route a base URL does not serve, writing nothing", async () => {
+    noDrifts();
+    const errors = captureErrors();
+    const client = fakeClient({
+      pipeIo: vi
+        .fn()
+        .mockRejectedValue(
+          new ApiResponseError(
+            "API POST /v1/pipe-io failed (404)",
+            "https://api.example/v1/pipe-io",
+            404,
+            "Not Found",
+            "{}",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+          ),
+        ),
+    });
+
+    expect(await generateMethod(client, FILES_SOURCE, outDir, "https://api.example")).toBe(
+      "failed",
+    );
+    expect(errors.join("\n")).toContain("does not serve POST /v1/pipe-io");
     await expect(readdir(outDir)).rejects.toThrow();
   });
 
@@ -465,7 +539,7 @@ describe("generateMethod", () => {
         "failed",
       );
       expect(errors.join("\n")).toContain("land on a file this script writes itself");
-      expect(client.validateFiles).not.toHaveBeenCalled();
+      expect(client.pipeIo).not.toHaveBeenCalled();
       await expect(readdir(outDir)).rejects.toThrow();
     },
   );
@@ -491,4 +565,122 @@ describe("readMethodProse", () => {
       expect(readMethodProse(blueprint)).toEqual({ description: null, pipeDescriptions: {} });
     },
   );
+});
+
+describe("methodProseOf", () => {
+  const CONCEPTS = { source: "concepts.mthds", content: 'domain = "review"\n' };
+  const MAIN = {
+    source: "main.mthds",
+    content: [
+      'domain = "review"',
+      'description = "Score a batch of CVs."',
+      'main_pipe = "score"',
+      "",
+      "[pipe.score]",
+      'type = "PipeLLM"',
+      'description = "Score each CV."',
+    ].join("\n"),
+  };
+  const HELPERS = {
+    source: "helpers.mthds",
+    content: [
+      'domain = "helpers"',
+      'description = "Shared steps."',
+      "",
+      "[pipe.clean]",
+      'type = "PipeCompose"',
+      'description = "Clean each PDF."',
+    ].join("\n"),
+  };
+
+  it("takes the description from the file that declares the main pipe, wherever it sits", () => {
+    expect(methodProseOf([CONCEPTS, HELPERS, MAIN]).description).toBe("Score a batch of CVs.");
+  });
+
+  it("collects every file's pipe descriptions, the primary file's first", () => {
+    const prose = methodProseOf([HELPERS, MAIN]);
+    expect(prose.pipeDescriptions).toEqual({
+      "review.score": "Score each CV.",
+      "helpers.clean": "Clean each PDF.",
+    });
+    expect(Object.keys(prose.pipeDescriptions)[0]).toBe("review.score");
+  });
+
+  it("falls back to the first file when none declares a main pipe", () => {
+    expect(methodProseOf([HELPERS, CONCEPTS]).description).toBe("Shared steps.");
+  });
+
+  it("skips a file it cannot parse, and reads nothing from none", () => {
+    expect(methodProseOf([{ content: "this is = = not toml" }, MAIN]).description).toBe(
+      "Score a batch of CVs.",
+    );
+    expect(methodProseOf([])).toEqual({ description: null, pipeDescriptions: {} });
+  });
+});
+
+// The prose rides the same call as the artifacts: a selector's files come back
+// on the answer because `pipeIoRequest` asks for them, and a bundle's are read
+// where they already are.
+describe("fetchPipeIoArtifacts", () => {
+  const ANSWER = {
+    is_valid: true,
+    pipe_ref: "review.score",
+    pipe_io_contracts: {},
+    input_form: {},
+    output_form: {},
+    default_pipe_ref: "review.score",
+    pending_signatures: [],
+    is_runnable: true,
+    files: [
+      {
+        source: "review.mthds",
+        content: 'domain = "review"\ndescription = "Read from the echo."\nmain_pipe = "score"\n',
+      },
+    ],
+  };
+
+  function client(answer: unknown) {
+    return { pipeIo: vi.fn().mockResolvedValue(answer) } as unknown as Pick<
+      PipelexApiClient,
+      "pipeIo"
+    >;
+  }
+
+  it("reads a selector method's prose off the files the route echoed", async () => {
+    const fetched = await fetchPipeIoArtifacts(
+      client(ANSWER),
+      {
+        name: "review",
+        kind: "selector",
+        selector: { method_id: "mt_review" },
+        sourceHashes: {},
+      },
+      "https://api.example",
+    );
+    expect(fetched?.prose.description).toBe("Read from the echo.");
+    expect(fetched?.defaultPipeRef).toBe("review.score");
+  });
+
+  it("reads a bundle's prose off its own files", async () => {
+    const fetched = await fetchPipeIoArtifacts(
+      client({ ...ANSWER, files: undefined }),
+      {
+        name: "review",
+        kind: "files",
+        files: [{ source: "main.mthds", content: 'domain = "review"\ndescription = "Local."\n' }],
+        sourceHashes: {},
+      },
+      "https://api.example",
+    );
+    expect(fetched?.prose.description).toBe("Local.");
+  });
+
+  it("carries a stated null entry pipe through for the scaffold's pipe rule", async () => {
+    const fetched = await fetchPipeIoArtifacts(
+      client({ ...ANSWER, default_pipe_ref: null }),
+      { name: "review", kind: "selector", selector: { method_id: "mt_review" }, sourceHashes: {} },
+      "https://api.example",
+    );
+    expect(fetched?.defaultPipeRef).toBeNull();
+  });
 });

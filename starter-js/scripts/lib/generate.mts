@@ -10,7 +10,8 @@
  * artifact or re-serializing the lock breaks that trust chain.
  *
  * This is the dev action: it needs an API key and a base URL that serves
- * `/v1/codegen`. The check that guards CI is offline and needs neither.
+ * `/v1/codegen` and `/v1/pipe-io`. The check that guards CI is offline and needs
+ * neither.
  *
  * `runGenerate` owns the whole contract, exit code included, so the CLI entry
  * (`scripts/codegen.mts`) stays a one-liner and `writeTree` — the only code in
@@ -32,9 +33,11 @@ import {
   type CodegenValidReport,
   type GeneratedArtifact,
   type InputForm,
+  type MthdsFileItem,
   type OutputForm,
   type PipeIOContracts,
 } from "@pipelex/sdk";
+import { parse as parseToml } from "smol-toml";
 
 import { assertSelectorSupport, explainSelectorFailure, selectorKindsOf } from "./api.mts";
 import {
@@ -54,8 +57,8 @@ import {
   REPO_ROOT,
   SIDECAR_COMMENT,
   SOURCES_SIDECAR,
-  missingViews,
-  VALIDATE_VIEWS,
+  notRunnableReason,
+  pipeIoRequest,
   type MethodSource,
   type SourcesSidecar,
   walk,
@@ -225,16 +228,12 @@ const WRITER_OWNED: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * What the method says about itself in prose, read from the validate report's
- * `bundle_blueprint` — which the SDK types as opaque on purpose, so every field
- * is checked rather than assumed.
+ * What the method says about itself in prose, read from its own `.mthds` files:
+ * the domain's `description` and each pipe's.
  *
  * Written into no artifact. It is there for a caller that describes an app
  * after its method, and a missing value is simply `null`: such a caller has a
  * fallback.
- * For a bundle of several files the blueprint is the file that declares the
- * domain's description and main pipe, so a pipe declared in another file has
- * no entry in `pipeDescriptions`.
  */
 export interface MethodProse {
   /** The domain's own `description`. */
@@ -247,22 +246,61 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
-/** Read `MethodProse` out of an opaque blueprint, tolerating any shape. */
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * Read `MethodProse` out of one parsed `.mthds` file, tolerating any shape: the
+ * file is the method author's, so every field is checked rather than assumed.
+ */
 export function readMethodProse(blueprint: unknown): MethodProse {
-  const record = (value: unknown): Record<string, unknown> =>
-    typeof value === "object" && value !== null && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : {};
-  const fields = record(blueprint);
+  const fields = asRecord(blueprint);
   const domain = nonEmptyString(fields.domain);
   const pipeDescriptions: Record<string, string> = {};
   if (domain !== null) {
-    for (const [code, pipe] of Object.entries(record(fields.pipe))) {
-      const description = nonEmptyString(record(pipe).description);
+    for (const [code, pipe] of Object.entries(asRecord(fields.pipe))) {
+      const description = nonEmptyString(asRecord(pipe).description);
       if (description !== null) pipeDescriptions[`${domain}.${code}`] = description;
     }
   }
   return { description: nonEmptyString(fields.description), pipeDescriptions };
+}
+
+/**
+ * Read `MethodProse` out of a method's `.mthds` files.
+ *
+ * The domain's description is the one in the method's primary file: the first
+ * that declares a `main_pipe`, else the first, which is the file a method leads
+ * with. Every file's pipes contribute their descriptions, each qualified by its
+ * own file's domain, so a pipe declared beside the main one is described too;
+ * the primary file's come first, since `methodVocabulary` keeps the first
+ * spelling it meets.
+ *
+ * A file that does not parse here contributes nothing. The API has just loaded
+ * the same closure, so such a file is a disagreement between two TOML parsers,
+ * not a broken method, and the prose is optional: every caller has a fallback.
+ */
+export function methodProseOf(files: readonly MthdsFileItem[]): MethodProse {
+  const blueprints: Record<string, unknown>[] = [];
+  for (const file of files) {
+    try {
+      blueprints.push(parseToml(file.content));
+    } catch {
+      continue;
+    }
+  }
+  const primary =
+    blueprints.find((blueprint) => nonEmptyString(blueprint.main_pipe) !== null) ?? blueprints[0];
+  const pipeDescriptions: Record<string, string> = {};
+  for (const blueprint of [primary, ...blueprints.filter((other) => other !== primary)]) {
+    for (const [ref, description] of Object.entries(readMethodProse(blueprint).pipeDescriptions)) {
+      pipeDescriptions[ref] ??= description;
+    }
+  }
+  return { description: readMethodProse(primary).description, pipeDescriptions };
 }
 
 /**
@@ -274,88 +312,71 @@ export function methodVocabulary(prose: MethodProse): string {
   return [prose.description ?? "", ...Object.values(prose.pipeDescriptions)].join(" ");
 }
 
-/** The three `/v1/validate` payloads `contracts.ts` is rendered from. */
-export interface ValidateArtifacts {
+/** The three `/v1/pipe-io` artifacts `contracts.ts` is rendered from, and what rides beside them. */
+export interface PipeIoArtifacts {
   pipeIoContracts: PipeIOContracts;
   inputForm: InputForm;
   outputForm: OutputForm;
   /** The method's own prose, for a caller naming an app after it. Written into no artifact. */
   prose: MethodProse;
   /**
-   * The report's own entry pipe, carried through for the scaffold's pipe rule
+   * The method's own entry pipe, carried through for the scaffold's pipe rule
    * (`make add-method`) and written into no artifact.
    *
-   * It is read in preference to `bundle_blueprint.main_pipe` because it is
-   * typed and because it is the field a published package's manifest fills:
-   * `github.com/Pipelex/methods/documents` has no bundle-level `main_pipe` and
-   * still names an entry pipe here.
+   * It is the route's `default_pipe_ref`: a published package's manifest
+   * `main_pipe`, else the closure's single `main_pipe` declaration, so
+   * `github.com/Pipelex/methods/documents`, which has no bundle-level
+   * `main_pipe`, still names an entry pipe here. It is `null` when the method
+   * declares none, or several in different domains: the route refuses to choose
+   * between them, and so does the scaffold, which then asks for `--pipe`.
    */
   defaultPipeRef: string | null;
 }
 
 /**
  * Fetch one method's pipe IO contracts and both wire form descriptors from
- * `POST /v1/validate`, opting into the structured views with
- * `views: ["input_form", "output_form"]` (`VALIDATE_VIEWS`) — a descriptor is
- * absent from any verdict that did not ask for it.
+ * `POST /v1/pipe-io`, for every pipe the method loads (`pipeIoRequest`).
  *
- * A `files` method goes through `validateFiles` rather than the lower-level
- * `validate`: the closure is already `MthdsFileItem[]` (`{content, source}`) and
- * that adapter takes `MthdsFile[]` (`{content, uri}`), so one field rename buys
- * per-file attribution in the diagnostics — and the adapter, not this script, is
- * what guarantees the `mthds_contents` / `mthds_sources` arrays it builds are the
- * same length. Doing it by hand is a 422 waiting for the first method with two
- * bundles. A `selector` method has no local files to attribute, so it goes to
- * `validate` with the selector itself and the same `views` opt-in.
+ * The route loads the method and derives the three artifacts without dry-running
+ * it, where `/v1/validate` dry-ran every pipe for a verdict nothing here reads.
+ * What the build still refuses is a method that cannot run at all: one whose
+ * pipes are still declared as signatures, which the route reports as
+ * `is_runnable: false` with their refs in `pending_signatures`.
  *
  * Returns `null` after reporting; the caller fails the method and writes nothing.
- * An invalid bundle is a produced verdict on a 200, not a thrown error, so it is
- * pattern-matched rather than caught — and it must never yield a contracts file:
- * contracts projected from a bundle that does not resolve would describe a form
- * for a method that cannot run. A valid verdict missing either view is refused
- * the same way: the tokens are lenient-ignored by an API too old to serve them,
- * and a contracts file without them renders an empty form (the kernel derives
- * its input fields from `input_form`) or an empty result (it derives the result
- * field from `output_form`).
+ * An unresolvable method and an unrunnable one are both produced verdicts on a
+ * 200, not thrown errors, so they are pattern-matched rather than caught — and
+ * neither may yield a contracts file: contracts projected from either would
+ * describe a form for a method that cannot run.
  */
-export async function fetchValidateArtifacts(
-  client: Pick<PipelexApiClient, "validate" | "validateFiles">,
+export async function fetchPipeIoArtifacts(
+  client: Pick<PipelexApiClient, "pipeIo">,
   source: MethodSource,
   baseUrl: string,
-): Promise<ValidateArtifacts | null> {
+): Promise<PipeIoArtifacts | null> {
   try {
-    const response =
-      source.kind === "files"
-        ? await client.validateFiles(
-            source.files.map((file) => ({ content: file.content, uri: file.source })),
-            { views: VALIDATE_VIEWS },
-          )
-        : await client.validate(source.selector, false, undefined, undefined, VALIDATE_VIEWS);
+    const response = await client.pipeIo(pipeIoRequest(source));
     if (!response.is_valid) {
-      console.error(`\n✗ ${source.name} — the method does not validate:`);
+      console.error(`\n✗ ${source.name} — the method does not resolve:`);
       for (const item of response.validation_errors) {
         console.error(`    ${item.source ?? "?"}: ${item.message}`);
       }
       return null;
     }
-    if (!response.input_form || !response.output_form) {
-      console.error(
-        `\n✗ ${source.name} — /v1/validate returned no ` +
-          `${missingViews(response).join(" or ")} view despite the ` +
-          `views: ${JSON.stringify(VALIDATE_VIEWS)} opt-in. This base URL serves an API too old ` +
-          `for the wire descriptors — check PIPELEX_BASE_URL, or report upstream.`,
-      );
+    const notRunnable = notRunnableReason(response);
+    if (notRunnable !== null) {
+      console.error(`\n✗ ${source.name} — ${notRunnable}`);
       return null;
     }
     return {
       pipeIoContracts: response.pipe_io_contracts,
       inputForm: response.input_form,
       outputForm: response.output_form,
-      prose: readMethodProse(response.bundle_blueprint),
-      defaultPipeRef: response.default_pipe_ref ?? null,
+      prose: methodProseOf(source.kind === "files" ? source.files : (response.files ?? [])),
+      defaultPipeRef: response.default_pipe_ref,
     };
   } catch (error) {
-    console.error(`\n✗ ${source.name} — ${explain(error, baseUrl, "POST /v1/validate", source)}`);
+    console.error(`\n✗ ${source.name} — ${explain(error, baseUrl, "POST /v1/pipe-io", source)}`);
     return null;
   }
 }
@@ -363,7 +384,7 @@ export async function fetchValidateArtifacts(
 /** Everything one method needs written, once every guard has passed. */
 export interface FetchedMethod {
   report: CodegenValidReport;
-  contracts: ValidateArtifacts;
+  contracts: PipeIoArtifacts;
 }
 
 /**
@@ -372,14 +393,14 @@ export interface FetchedMethod {
  *
  * Split from the writing half so the scaffold can run the same guards without
  * committing to a write — `--dry-run` is exactly this function and nothing else.
- * The ordering inside is load-bearing and unchanged: by the time the validate
+ * The ordering inside is load-bearing and unchanged: by the time the pipe-io
  * call is made, every codegen guard has passed, so a failure there leaves the
  * tree untouched rather than half-updated.
  *
  * Returns `null` after reporting the reason; the caller fails the method.
  */
 export async function fetchGenerated(
-  client: Pick<PipelexApiClient, "codegen" | "validate" | "validateFiles">,
+  client: Pick<PipelexApiClient, "codegen" | "pipeIo">,
   source: MethodSource,
   outDir: string,
   baseUrl: string,
@@ -473,7 +494,7 @@ export async function fetchGenerated(
   // The form's half of the tree, and the last thing that can fail this method:
   // by here every codegen guard has passed, so a failure now leaves the whole
   // tree untouched rather than half-updated.
-  const contracts = await fetchValidateArtifacts(client, source, baseUrl);
+  const contracts = await fetchPipeIoArtifacts(client, source, baseUrl);
   if (contracts === null) return null;
 
   return { report, contracts };
@@ -503,7 +524,7 @@ export async function writeGenerated(
  * one bad method neither aborts the loop nor skips every method after it.
  */
 export async function generateMethod(
-  client: Pick<PipelexApiClient, "codegen" | "validate" | "validateFiles">,
+  client: Pick<PipelexApiClient, "codegen" | "pipeIo">,
   source: MethodSource,
   outDir: string,
   baseUrl: string,

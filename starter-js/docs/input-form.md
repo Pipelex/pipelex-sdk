@@ -6,7 +6,7 @@ This is the reference for how the demo forms are built — why none of them name
 
 The same argument as [codegen](codegen.md), one layer up. A method's `.mthds` bundle already declares what it takes: variable names, concepts, which inputs are required. Before this, each demo form hand-rolled a `<textarea>` or a file picker for those inputs and hand-wrote a guard for each on **both** sides of the Server Action boundary. Every consumer who swapped in their own method inherited the obligation to write a form and to write its validation twice.
 
-Now the form is derived from the method's own **wire input-form descriptor** — the standard's per-pipe, ordered presentation view of a method's inputs, requested from `POST /v1/validate` with `views: ["input_form"]` — with the IO contract co-walked beside it for the two facts the wire deliberately omits (the scalar content-wrapper key, a nested list's bounds). Swap the method, run `npm run codegen`, and the form follows — new inputs appear, renamed inputs relabel, a file input becomes a dropzone, and the Run button gates on whatever that method actually requires.
+Now the form is derived from the method's own **wire input-form descriptor** — the standard's per-pipe, ordered presentation view of a method's inputs, read from `POST /v1/pipe-io` — with the IO contract co-walked beside it for the two facts the wire deliberately omits (the scalar content-wrapper key, a nested list's bounds). Swap the method, run `npm run codegen`, and the form follows — new inputs appear, renamed inputs relabel, a file input becomes a dropzone, and the Run button gates on whatever that method actually requires.
 
 The kernel doing the deriving is [`@pipelex/mthds-form`](https://www.npmjs.com/package/@pipelex/mthds-form), which ships in two halves and this app uses both:
 
@@ -17,7 +17,7 @@ Import from those two specifiers only. Never reach into `dist/`.
 
 ## The contract artifacts
 
-`fieldsForContract(contract, descriptor)` consumes two payloads of one `POST /v1/validate` response: the pipe's IO contract (`pipe_io_contracts`) and its input-form descriptor (`input_form`, an opt-in structured view requested with `views: ["input_form"]`). The descriptor states what each field IS — kind, order, constraints, presence, gating — so the kernel maps it structurally instead of guessing from concept names and schema shapes; the contract is co-walked for the two facts the wire deliberately omits (the scalar wrapper key, a nested list's bounds) and is what the run gate validates against. This app takes both as one **committed codegen artifact** rather than a runtime fetch, so first paint needs no network and no API key: `npm run codegen` writes `src/generated/<method>/contracts.ts` alongside the types and the binder.
+`fieldsForContract(contract, descriptor)` consumes two payloads of one `POST /v1/pipe-io` response: the pipe's IO contract (`pipe_io_contracts`) and its input-form descriptor (`input_form`). The descriptor states what each field IS — kind, order, constraints, presence, gating — so the kernel maps it structurally instead of guessing from concept names and schema shapes; the contract is co-walked for the two facts the wire deliberately omits (the scalar wrapper key, a nested list's bounds) and is what the run gate validates against. This app takes both as one **committed codegen artifact** rather than a runtime fetch, so first paint needs no network and no API key: `npm run codegen` writes `src/generated/<method>/contracts.ts` alongside the types and the binder.
 
 ```ts
 export const PIPE_IO_CONTRACTS: PipeIOContracts = {
@@ -56,7 +56,7 @@ const DESCRIPTOR = requireInputForm(INPUT_FORM, "extract_entities", "extract_ent
 
 `requireContract` (`src/lib/runInputs.ts`) wraps the kernel's `getPipeIOContract` — **contracts, then domain, then pipe code** — and throws when it misses; `requireInputForm` is its twin over `getPipeInputForm`, same argument order. The wrappers earn their place: the kernel returns `undefined` on a miss, and `fieldsForContract` returns `[]` unless both artifacts are present — so a missed lookup renders as an empty form with a live Run button, which reads like a styling bug rather than a typo. Both the form and its Server Action call `requireContract` at module scope (the form additionally `requireInputForm`), so a bad lookup fails at import.
 
-Drift is covered the same way the rest of the tree is: `contracts.ts` carries no codegen stamp (it is not the codegen server's output), so its SHA-256 rides in the `sources.json` sidecar's `derived` map, and `npm run codegen:verify` re-fetches `/v1/validate` — with the same `views` opt-in — and compares the rendered bytes. See [`docs/codegen.md`](codegen.md).
+Drift is covered the same way the rest of the tree is: `contracts.ts` carries no codegen stamp (it is not the codegen server's output), so its SHA-256 rides in the `sources.json` sidecar's `derived` map, and `npm run codegen:verify` re-fetches `/v1/pipe-io` — with the same request — and compares the rendered bytes. See [`docs/codegen.md`](codegen.md).
 
 ## The three pieces in the app
 
@@ -222,7 +222,7 @@ The check that would catch a readiness-versus-gate regression is the agreement t
 
 A method's contract has two sides, and until recently only one of them was read. Each example hand-wrote a result component — three columns of entities, a title and a bulleted summary, an `<img>` with a download link — and a scaffolded slice got `<JsonResult>`, an honest JSON dump, because a component is a design decision about a shape and `make add-method` had never seen the shape. Both halves of that were the same gap: the method **declares** what it produces, and nothing was reading the declaration.
 
-`POST /v1/validate` now answers with an `output_form` beside `input_form`, and the output contract carries a `json_schema`. `npm run codegen` asks for both views and commits `OUTPUT_FORM` in the same `contracts.ts`, so the result side needs no new artifact, no new gate and no new staleness check — `sources.json`'s `derived` hash already covered that file.
+`POST /v1/pipe-io` answers with an `output_form` beside `input_form`, and the output contract carries a `json_schema`. `npm run codegen` commits `OUTPUT_FORM` in the same `contracts.ts`, so the result side needs no new artifact, no new gate and no new staleness check — `sources.json`'s `derived` hash already covered that file.
 
 ```tsx
 const CONTRACT = requireContract(PIPE_IO_CONTRACTS, "summarize_pdf", "summarize_pdf");

@@ -53,7 +53,7 @@ describe("checkUploadRequest", () => {
 });
 
 describe("checkFileInputs", () => {
-  // Descriptor nodes in the wire shape `POST /v1/validate` returns — the same
+  // Descriptor nodes in the wire shape `POST /v1/pipe-io` returns — the same
   // artifact `INPUT_FORM` in a generated `contracts.ts` carries. The gate is
   // typed on the standard's closed shapes, so the fixtures cast to it.
   const DOCUMENT = { kind: "document", concept_ref: "native.Document", required: true } as const;

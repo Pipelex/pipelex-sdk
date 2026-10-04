@@ -9,11 +9,13 @@
  * and compare its `crate_fingerprint` against the committed lock's.
  *
  * The same gap exists for `contracts.ts`, and for the same reason: it is projected
- * from `POST /v1/validate` and nothing offline can tell whether that route would
- * return the same payload today. So this module re-fetches it too and compares
- * the rendered bytes against the committed file. The re-fetch is close to free —
- * the client and the closure are already in hand — which is why it is checked
- * here rather than exempted the way an unverifiable artifact would have to be.
+ * from `POST /v1/pipe-io` and nothing offline can tell whether that route would
+ * return the same payload today. So this module re-fetches it too, with the
+ * request the writer sends (`pipeIoRequest`), and compares the rendered bytes
+ * against the committed file. The re-fetch is close to free — the client and the
+ * closure are already in hand, and the route runs no dry run — which is why it is
+ * checked here rather than exempted the way an unverifiable artifact would have
+ * to be.
  *
  * It writes nothing. A mismatch means `npm run codegen` has real work to do; the
  * fix is a deliberate regeneration commit, not a silent rewrite from a checker.
@@ -47,8 +49,8 @@ import {
   readTextFile,
   renderContracts,
   REPO_ROOT,
-  missingViews,
-  VALIDATE_VIEWS,
+  notRunnableReason,
+  pipeIoRequest,
   type MethodSource,
 } from "./shared.mts";
 
@@ -199,33 +201,23 @@ async function runVerifyInner(): Promise<number> {
       continue;
     }
 
-    // The contracts artifact rides `/v1/validate`, not `/v1/codegen`, so the
+    // The contracts artifact rides `/v1/pipe-io`, not `/v1/codegen`, so the
     // crate fingerprint above says nothing about it. Compare the rendered bytes —
-    // with the same `views` opt-in the writer sends, or the render differs on
-    // every tree by the descriptor's absence alone.
+    // from the same request the writer sends, or the render differs on every
+    // tree by the pipes it covers alone.
     try {
-      const response =
-        method.kind === "files"
-          ? await client.validateFiles(
-              method.files.map((file) => ({ content: file.content, uri: file.source })),
-              { views: VALIDATE_VIEWS },
-            )
-          : await client.validate(method.selector, false, undefined, undefined, VALIDATE_VIEWS);
+      const response = await client.pipeIo(pipeIoRequest(method));
       if (!response.is_valid) {
-        console.error(`\n✗ ${method.name} — the method no longer validates:`);
+        console.error(`\n✗ ${method.name} — the method no longer resolves:`);
         for (const item of response.validation_errors) {
           console.error(`    ${item.source ?? "?"}: ${item.message}`);
         }
         failed = true;
         continue;
       }
-      if (!response.input_form || !response.output_form) {
-        console.error(
-          `\n✗ ${method.name} — /v1/validate returned no ` +
-            `${missingViews(response).join(" or ")} view, so the committed ` +
-            `${CONTRACTS_FILENAME} cannot be verified. This base URL serves an API too old ` +
-            `for the wire descriptors — check PIPELEX_BASE_URL.`,
-        );
+      const notRunnable = notRunnableReason(response);
+      if (notRunnable !== null) {
+        console.error(`\n✗ ${method.name} — ${notRunnable}`);
         failed = true;
         continue;
       }
@@ -237,21 +229,21 @@ async function runVerifyInner(): Promise<number> {
       const committed = await readTextFile(path.join(outDir, CONTRACTS_FILENAME));
       if (live !== committed) {
         console.error(
-          `\n✗ ${method.name} — the committed ${CONTRACTS_FILENAME} is not what /v1/validate returns.`,
+          `\n✗ ${method.name} — the committed ${CONTRACTS_FILENAME} is not what /v1/pipe-io returns.`,
         );
         console.error("    Run `npm run codegen` and commit the result.");
         failed = true;
         continue;
       }
     } catch (error) {
-      console.error(`\n✗ ${method.name} — ${requestDetail(error, "POST /v1/validate", method)}`);
+      console.error(`\n✗ ${method.name} — ${requestDetail(error, "POST /v1/pipe-io", method)}`);
       failed = true;
       continue;
     }
 
     console.log(
       `\n✓ ${method.name} — crate ${committedFingerprint.slice(0, 12)} matches the engine, ` +
-        `${CONTRACTS_FILENAME} matches /v1/validate`,
+        `${CONTRACTS_FILENAME} matches /v1/pipe-io`,
     );
     if (liveEngine !== committedEngine) {
       // Not a failure. The stamp carries `engine_version`, so an engine bump

@@ -156,7 +156,7 @@ export function looksLikePath(value: string): boolean {
  * directory names. Only a name that exists nowhere falls through to the
  * selector grammar.
  *
- * A selector comes back as the SDK's own type, which is what `validate`,
+ * A selector comes back as the SDK's own type, which is what `pipeIo`,
  * `codegen`, `prepareInputs`, the manifest and the scaffolded action's
  * `buildOptions` all take, so it is parsed once here and carried unchanged
  * everywhere else. A path comes back as given: resolving it needs the
@@ -617,12 +617,13 @@ function splitPipeRef(ref: string): ChosenPipe {
  * Which pipe the scaffolded slice runs, by a rule that ends in a refusal rather
  * than a guess.
  *
- * In order: an explicit `--pipe` (bare or qualified); else the validate
- * report's `default_pipe_ref`; else the single entry when there is exactly one;
- * else a refusal listing what the method declares. `default_pipe_ref` is read
- * in preference to the blueprint's opaque `main_pipe` because it is typed and
- * because it is the field a published package's manifest fills — the
- * `documents` package has no bundle-level `main_pipe` and still names one.
+ * In order: an explicit `--pipe` (bare or qualified); else the method's own
+ * entry pipe, `/v1/pipe-io`'s `default_pipe_ref`; else the single entry when
+ * there is exactly one; else a refusal listing what the method declares.
+ * `default_pipe_ref` is the field a published package's manifest fills — the
+ * `documents` package has no bundle-level `main_pipe` and still names one — and
+ * it is `null` for a method whose domains each declare a `main_pipe`, which the
+ * route will not choose between, and neither does this rule.
  */
 export function choosePipe(
   contracts: PipeIOContracts,
@@ -672,7 +673,7 @@ export function choosePipe(
 export function contractFor(contracts: PipeIOContracts, pipe: ChosenPipe): PipeIOContract {
   const contract = contracts[pipe.ref] ?? contracts[pipe.code];
   if (contract === undefined) {
-    throw new AddMethodError(`the validate report carries no IO contract for "${pipe.ref}".`);
+    throw new AddMethodError(`the pipe-io report carries no IO contract for "${pipe.ref}".`);
   }
   return contract;
 }
@@ -682,7 +683,7 @@ export function descriptorFor(inputForm: InputForm, pipe: ChosenPipe): PipeInput
   const descriptor = inputForm[pipe.ref] ?? inputForm[pipe.code];
   if (descriptor === undefined) {
     throw new AddMethodError(
-      `the validate report carries no input-form descriptor for "${pipe.ref}" — ` +
+      `the pipe-io report carries no input-form descriptor for "${pipe.ref}" — ` +
         "the form would render empty. Check PIPELEX_BASE_URL, or report it upstream.",
     );
   }
@@ -1628,7 +1629,7 @@ export function renderForm(plan: ScaffoldPlan): string {
 /** The client surface the gesture needs — the two crate routes, the handshake, the catalog. */
 export type AddMethodClient = Pick<
   PipelexApiClient,
-  "codegen" | "validate" | "validateFiles" | "version" | "getMethod"
+  "codegen" | "pipeIo" | "version" | "getMethod"
 >;
 
 /** What the tests swap out: the tree the gesture writes into, and the API it talks to. */
@@ -1880,7 +1881,7 @@ export async function planAddMethod(
 
     // The same fetch-and-guard half `npm run codegen` runs, so a scaffolded
     // tree is the tree a regeneration would write — and every codegen refusal
-    // (an unresolvable selector, an escaping artifact path, a missing view)
+    // (an unresolvable selector, an escaping artifact path, an unrunnable method)
     // happens here, having written nothing.
     fetched = await fetchGenerated(client, methodSource, inRepo(paths.generatedDir), baseUrl);
   } else {

@@ -72,7 +72,7 @@ Run `make all` (lint + format-check + typecheck + unit tests + build, per this r
 
 A `@pipelex/sdk` bump always touches the SDK call path by definition, so **always** offer `make test-e2e` here (it exercises the real API against the new SDK version, which `make all`'s mocked unit tests can't). It costs an LLM call per run and needs `PIPELEX_API_KEY` set, so only run it with explicit user approval.
 
-**If the SDK changelog entries mention codegen, crates, locks, or `runCodegenCheck`, also offer `make codegen-verify`** (needs a key and a base URL serving `/v1/codegen`, but no LLM call). `make all` already re-runs the offline check after the bump; `codegen-verify` additionally asks the live engine whether the committed generated trees are still semantically current under the new SDK, which is exactly the surface such a release could have moved.
+**If the SDK changelog entries mention codegen, crates, locks, `runCodegenCheck` or `pipeIo`, also offer `make codegen-verify`** (needs a key and a base URL serving `/v1/codegen` and `/v1/pipe-io`, but no LLM call). `make all` already re-runs the offline check after the bump; `codegen-verify` additionally asks the live engine whether the committed generated trees are still semantically current under the new SDK, which is exactly the surface such a release could have moved.
 
 ## Step 7 — Update This Repo's CHANGELOG.md
 
