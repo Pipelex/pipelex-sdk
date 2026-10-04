@@ -4,7 +4,8 @@
 
 ### Changed
 
-- **`models()` reads a deck carrying a `judgment` model, on `mthds` 0.29 (Breaking)**: `@pipelex/sdk` now depends on `mthds` `^0.29.0`, the MTHDS Protocol 0.7.0 release, so the re-exported `ModelCategory` and `MODEL_CATEGORIES` carry `judgment`, `models("judgment")` lists the models a `PipeJudge` names, and `MTHDS_PROTOCOL_VERSION` is `0.7.0`. A deck entry's `ModelInfo.type` is now `ModelCategory | (string & {}) | null`, so an entry whose category this version does not define reaches the caller with its raw value; code that indexes a table by an entry's `type`, or types one as `Record<ModelCategory, …>`, now says what `judgment` and an unknown category do.
+- **`models()` reads a deck carrying a `judgment` model (Breaking)**: the re-exported `ModelCategory` and `MODEL_CATEGORIES` carry `judgment`, the category MTHDS Protocol 0.7.0 adds, so `models("judgment")` lists the models a `PipeJudge` names, and `MTHDS_PROTOCOL_VERSION` is `0.7.0`. A deck entry's `ModelInfo.type` is now `ModelCategory | (string & {}) | null`, so an entry whose category this version does not define reaches the caller with its raw value; code that indexes a table by an entry's `type`, or types one as `Record<ModelCategory, …>`, now says what `judgment` and an unknown category do.
+- **The `mthds` floor moves from `^0.28.0` to `^0.30.0` (Breaking)**: this package imports only `mthds/protocol`, whose MTHDS Protocol 0.7.0 brings the `judgment` category above. A project that also imports `mthds` itself moves to 0.30 with it, so that one copy is installed and an `instanceof PipelineRequestError` check made with the class from `mthds/protocol` still matches this package's errors. In 0.30, `MthdsApiClient` no longer has `buildInputs`, `buildOutput`, `buildRunner`, `concept`, `pipeSpec` or `uploadFile` and gains `pipeIo`, and a file upload goes through this package's `uploadFile`.
 
 ### Removed
 
