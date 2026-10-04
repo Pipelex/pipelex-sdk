@@ -84,7 +84,7 @@ export type {
   ResolvedArtifact,
 } from "./artifacts.js";
 
-// ── Wire models (Dict concretes, validate surface, tools + build + crate routes) ──
+// ── Wire models (Dict concretes, validate surface, tools + crate routes) ──
 export type {
   DiagnosticKind,
   DiagnosticRange,
@@ -120,27 +120,10 @@ export type {
   RemapValueOp,
   FixOp,
   SuggestedFix,
-  ConceptRepresentationFormat,
-  InputsTemplateFormat,
   MthdsFileItem,
   CrateRequestBase,
-  BuildRequestBase,
-  BuildInputsRequest,
-  BuildOutputRequest,
-  BuildRunnerRequest,
-  ConceptRequest,
-  PipeSpecRequest,
   CrateInvalidReport,
-  BuildInputsValidReport,
-  BuildOutputValidReport,
-  BuildRunnerValidReport,
   GeneratedArtifact,
-  RunnerStructures,
-  BuildInputsResponse,
-  BuildOutputResponse,
-  BuildRunnerResponse,
-  ConceptResponse,
-  PipeSpecResponse,
   ResolveRequest,
   ResolveValidReport,
   ResolveResponse,

@@ -228,17 +228,26 @@ describe("crate routes — a method_ref closure gets the fetch budget", () => {
     expect(byRef.error).toBeInstanceOf(ApiUnreachableError);
   });
 
-  it("gives the build projections the same budget — a method_ref buildInputs outlives 30s", async () => {
-    // The build routes share `CrateRequestBase`, so an address-form closure makes
-    // the server fetch there too. `buildRunner` is excluded: its own five-minute
-    // default already clears the fetch budget.
+  it("gives codegen the same budget — a method_ref codegen outlives 30s", async () => {
+    // Every crate route shares `CrateRequestBase`, so an address-form closure makes
+    // the server fetch there too (`pipeIo`'s twin of this case is in pipe-io.test.ts).
     vi.useFakeTimers();
     vi.spyOn(globalThis, "fetch").mockImplementation(hangingFetch());
     const client = makeClient();
 
-    const byFiles = track(client.buildInputs({ files: [{ content: "domain = 'smoke'\n" }] }));
+    const byFiles = track(
+      client.codegen({
+        files: [{ content: "domain = 'smoke'\n" }],
+        kind: "types",
+        target: "ts-zod",
+      }),
+    );
     const byRef = track(
-      client.buildOutput({ method_ref: "github.com/Pipelex/methods/documents@v0.1.0" }),
+      client.codegen({
+        method_ref: "github.com/Pipelex/methods/documents@v0.1.0",
+        kind: "types",
+        target: "ts-zod",
+      }),
     );
 
     await vi.advanceTimersByTimeAsync(31_000);

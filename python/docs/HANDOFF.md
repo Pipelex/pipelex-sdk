@@ -46,7 +46,7 @@ These need the `PUT/PATCH/DELETE` verbs and a `problem+json` → typed error map
 
 Keep exactly the five normative routes + their typed models: `execute` / `start` / `validate` / `models` / `version`. These are the **entire** normative MTHDS Protocol per `mthds/docs/spec/` (OpenAPI `mthds-protocol.openapi.yaml` is authoritative). Everything else — lifecycle, product, build helpers, health — is out-of-protocol by the spec's own words ("keeps no run store and owns no user, billing, or catalog concepts"). The lifecycle is an out-of-protocol *hosted extension*, which is why it belongs here, not in the protocol client.
 
-Note: `mthds-python` does **not** currently carry the `/v1/build/*` helpers (the TS clients do) — decide separately whether this repo should; not required for the split.
+Note: `mthds-python` does **not** currently carry the `/v1/build/*` helpers (`mthds-js` does; `@pipelex/sdk` has since retired its wrappers) — decide separately whether this repo should; not required for the split.
 
 ## Reference map
 

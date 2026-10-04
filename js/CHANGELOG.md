@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.30.0] - 2026-10-04
+
+### Changed
+
+- **`models()` reads a deck carrying a `judgment` model (Breaking)**: the re-exported `ModelCategory` and `MODEL_CATEGORIES` carry `judgment`, the category MTHDS Protocol 0.7.0 adds, so `models("judgment")` lists the models a `PipeJudge` names, and `MTHDS_PROTOCOL_VERSION` is `0.7.0`. A deck entry's `ModelInfo.type` is now `ModelCategory | (string & {}) | null`, so an entry whose category this version does not define reaches the caller with its raw value; code that indexes a table by an entry's `type`, or types one as `Record<ModelCategory, …>`, now says what `judgment` and an unknown category do.
+- **The `mthds` floor moves from `^0.28.0` to `^0.30.0` (Breaking)**: this package imports only `mthds/protocol`, whose MTHDS Protocol 0.7.0 brings the `judgment` category above. A project that also imports `mthds` itself moves to 0.30 with it, so that one copy is installed and an `instanceof PipelineRequestError` check made with the class from `mthds/protocol` still matches this package's errors. In 0.30, `MthdsApiClient` no longer has `buildInputs`, `buildOutput`, `buildRunner`, `concept`, `pipeSpec` or `uploadFile` and gains `pipeIo`, and a file upload goes through this package's `uploadFile`.
+
+### Removed
+
+- **The `/v1/build/*` wrappers and their types (Breaking)**: `PipelexApiClient` no longer has `buildInputs`, `buildOutput`, `buildRunner`, `concept` or `pipeSpec`, and the package no longer exports `BuildRequestBase`, `BuildInputsRequest`, `BuildOutputRequest`, `BuildRunnerRequest`, `ConceptRequest`, `PipeSpecRequest`, `BuildInputsValidReport`, `BuildOutputValidReport`, `BuildRunnerValidReport`, `BuildInputsResponse`, `BuildOutputResponse`, `BuildRunnerResponse`, `ConceptResponse`, `PipeSpecResponse`, `RunnerStructures` or `ConceptRepresentationFormat`, while `InputsTemplateFormat` now resolves to the `mthds/protocol` type of the same name and values. A caller that wants an inputs template reads the pipe's input-form descriptor with `pipeIo` and renders it client-side with `renderInputsTemplate` (or `projectInputsTemplate` for the object), both from `mthds/protocol` and re-exported by this package. `MthdsFileItem`, `CrateRequestBase`, `CrateInvalidReport` and `GeneratedArtifact` stay, serving `resolve`, `codegen` and `pipeIo`.
+
 ## [v0.29.1] - 2026-10-02
 
 ### Fixed

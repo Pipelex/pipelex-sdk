@@ -1,6 +1,6 @@
 {
   "name": "@pipelex/sdk",
-  "version": "0.29.1",
+  "version": "0.30.0",
   "description": "TypeScript SDK for the Pipelex hosted API — execute methods, manage runs, and call the product surface.",
   "license": "MIT",
   "repository": {
@@ -70,7 +70,7 @@
     "vitest": "^4.0.18"
   },
   "dependencies": {
-    "mthds": "^0.28.0",
+    "mthds": "^0.30.0",
     "smol-toml": "^1.6.0",
     "undici": "^7.29.1"
   }

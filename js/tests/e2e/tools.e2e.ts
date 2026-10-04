@@ -73,8 +73,10 @@ prompt = "Say hi"
 
 // ── Suite ────────────────────────────────────────────────────────────────
 
-// See build.e2e.ts: the OSS default is AUTH_MODE=none, but an auth-enabled target
-// needs a real token or /health passes while every /v1 call 401s.
+// The default OSS runner serves `AUTH_MODE=none` and ignores the bearer entirely, so
+// the placeholder is enough locally. Point PIPELEX_E2E_BASE_URL at an auth-enabled
+// server and PIPELEX_API_KEY carries the real token — otherwise /health would pass
+// (it is mounted outside the auth dependency) while every /v1 call 401s.
 const client = new PipelexApiClient({
   baseUrl: BASE_URL,
   apiKey: process.env.PIPELEX_API_KEY || "e2e-test",

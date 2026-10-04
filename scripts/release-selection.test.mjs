@@ -15,10 +15,12 @@ import {
   ROOT,
   SelectionError,
   main,
+  newestRelease,
   nextMinor,
   parseArgs,
   parseSprints,
   proposeUnits,
+  releaseReading,
   renderMarkdown,
   selectRelease,
   sprintNeeds,
@@ -61,11 +63,13 @@ function write(root, files) {
   }
 }
 
+/** Commit the files on the branch checked out, and return the commit's SHA. */
 function commit(root, files, message = "change") {
   write(root, files);
   git(root, "add", "-A");
   // Empty when a release tags a tree it did not change, such as the import's.
   git(root, "commit", "-q", "--allow-empty", "-m", message);
+  return git(root, "rev-parse", "HEAD");
 }
 
 /** A release as the workflow makes it: VERSION and the shipped manifests moved, one commit, its tag. */
@@ -105,20 +109,35 @@ const unit = (result, name) => result.units.find((each) => each.name === name);
 const reasons = (result) => Object.fromEntries(result.units.map((each) => [each.name, each.reason]));
 const kinds = (result) => result.refusals.map((refusal) => refusal.kind);
 
-/** One open sprint whose members are given as `[id, owner, state, type, closed]`. */
+/**
+ * One open sprint whose members are given as `[id, owner, state, merges, closed]`, as
+ * `ledger sprint status --json` reads them: a closed member's close time and the merge commits
+ * its landing recorded. A closed member given no time closes an hour from now, after every tag a
+ * test makes, so the date never reads it as shipped and only its merges can.
+ */
 function sprint(members, { id = "L-000000-sprint", status = "open" } = {}) {
   return {
     id,
     status,
-    members: members.map(([memberId, owner, state, type = "task", closed = null]) => ({
+    members: members.map(([memberId, owner, state, merges = [], closed]) => ({
       id: memberId,
+      title: "work",
+      type: "task",
       repo: owner.split("/")[0],
       owner,
       state,
-      type,
-      closed,
+      closed: state === "closed" ? (closed ?? new Date(Date.now() + HOUR).toISOString()) : null,
+      merges,
     })),
   };
+}
+
+const HOUR = 60 * 60 * 1000;
+
+/** When git says a tag was made, moved by `offset` milliseconds, as the ledger writes a close time. */
+function around(root, tag, offset) {
+  const made = git(root, "for-each-ref", "--format=%(creatordate:iso-strict)", `refs/tags/${tag}`);
+  return new Date(Date.parse(made) + offset).toISOString();
 }
 
 describe("the first release", () => {
@@ -273,94 +292,159 @@ describe("the method apps", () => {
   it("are the unit a sprint member in any of their directories needs", () => {
     const root = repository();
     release(root, "0.1.0", {});
-    commit(root, { "apps/web-js/src/page.tsx": "export {};\n", "js/src/index.ts": "//\n" });
-    const sprints = [sprint([["L-1", `${REPO}/apps/web-js`, "closed", "feature", "2026-10-02T10:00:00Z"]])];
+    const merge = commit(root, { "apps/web-js/src/page.tsx": "export {};\n", "js/src/index.ts": "//\n" });
+    const sprints = [sprint([["L-1", `${REPO}/apps/web-js`, "closed", [merge]]])];
     const result = selectRelease(root, UNITS, { sprints, hold: ["apps"] });
     assert.deepEqual(kinds(result), ["sprint"]);
   });
 });
 
 describe("a hold-back an open sprint needs", () => {
-  /** Two changed units, so that holding one back still leaves a release. */
+  /**
+   * Two units changed after the first release, so that holding one back still leaves a release.
+   * Each change is a commit of its own, the merge a member's landing records.
+   */
   function changed() {
     const root = repository();
     release(root, "0.1.0", {});
-    commit(root, {
-      "js/src/index.ts": "export const a = 1;\n",
-      "python/src/client.py": "A = 1\n",
-    });
-    return root;
+    const js = commit(root, { "js/src/index.ts": "export const a = 1;\n" });
+    const python = commit(root, { "python/src/client.py": "A = 1\n" });
+    return { root, js, python };
   }
 
-  it("is refused while the member's work has landed and not shipped", () => {
-    const root = changed();
-    const sprints = [sprint([["L-1", `${REPO}/python`, "closed", "feature", "2026-10-02T10:00:00Z"]])];
+  /** `changed()`, then v0.2.0 shipping both changes, then a further change to each unit, so both are proposed again. */
+  function shippedOnce() {
+    const { root, js, python } = changed();
+    release(root, "0.2.0", { "js/package.json": pkg("0.2.0"), "python/pyproject.toml": pyproject("0.2.0") });
+    commit(root, { "js/src/index.ts": "export const a = 2;\n", "python/src/client.py": "A = 2\n" });
+    return { root, js, python };
+  }
+
+  it("is refused while no release tag contains the member's merge", () => {
+    const { root, python } = changed();
+    const sprints = [sprint([["L-1", `${REPO}/python`, "closed", [python]]])];
     const result = selectRelease(root, UNITS, { sprints, hold: ["python"] });
     assert.equal(result.ok, false);
     assert.deepEqual(kinds(result), ["sprint"]);
-    assert.match(result.refusals[0].message, /L-1 \(closed\) in sprint L-000000-sprint landed in python\//);
+    assert.match(
+      result.refusals[0].message,
+      /L-1 \(closed\) in sprint L-000000-sprint landed in python\/ and no release has shipped it yet/,
+    );
+    assert.match(result.refusals[0].message, /once a release tag contains the sprint's work/);
+    assert.doesNotMatch(result.refusals[0].message, /item/);
     assert.deepEqual(result.held, []);
     assert.ok(result.selected.includes("python"));
   });
 
-  it("is refused for a member merged and not yet closed", () => {
-    const root = changed();
+  it("is refused for a member merged and not yet closed, whose landing has recorded no merge", () => {
+    const { root } = shippedOnce();
     const sprints = [sprint([["L-1", `${REPO}/python`, "merged"]])];
     assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints, hold: ["python"] })), ["sprint"]);
   });
 
   it("is refused when a member owned by the root has landed, since it names no directory", () => {
-    const root = changed();
-    const sprints = [sprint([["L-1", REPO, "closed", "task", "2026-10-02T10:00:00Z"]])];
+    const { root, python } = changed();
+    const sprints = [sprint([["L-1", REPO, "closed", [python]]])];
     const result = selectRelease(root, UNITS, { sprints, hold: ["python"] });
     assert.deepEqual(kinds(result), ["sprint-root"]);
     assert.deepEqual(result.root_sprint_needs.map((need) => need.member), ["L-1"]);
   });
 
-  it("is allowed once a closed release of the repository came after the member landed", () => {
-    const root = changed();
+  it("is allowed once the newest release tag contains every merge the member's landing recorded", () => {
+    const { root, js, python } = shippedOnce();
     const sprints = [
       sprint([
-        ["L-1", `${REPO}/python`, "closed", "feature", "2026-10-01T10:00:00Z"],
-        ["L-2", REPO, "closed", "release", "2026-10-01T12:00:00Z"],
+        ["L-1", `${REPO}/python`, "closed", [python, js]],
+        ["L-2", REPO, "closed", [js]],
       ]),
     ];
     const result = selectRelease(root, UNITS, { sprints, hold: ["python"] });
     assert.equal(result.ok, true);
     assert.deepEqual(result.held, ["python"]);
+    assert.deepEqual(unit(result, "python").sprint_needs, []);
+    assert.deepEqual(result.root_sprint_needs, []);
   });
 
-  it("is refused when the member landed after the last closed release, or while the release is open", () => {
-    const root = changed();
-    const later = [
-      sprint([
-        ["L-1", `${REPO}/python`, "closed", "feature", "2026-10-02T10:00:00Z"],
-        ["L-2", REPO, "closed", "release", "2026-10-01T12:00:00Z"],
-      ]),
-    ];
-    assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints: later, hold: ["python"] })), ["sprint"]);
-    const open = [
-      sprint([
-        ["L-1", `${REPO}/python`, "closed", "feature", "2026-10-02T10:00:00Z"],
-        ["L-3", REPO, "queued", "release"],
-      ]),
-    ];
-    assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints: open, hold: ["python"] })), ["sprint"]);
+  it("is refused while one of the member's merges is missing from the tag", () => {
+    const { root, python } = shippedOnce();
+    const later = commit(root, { "python/src/client.py": "A = 3\n" });
+    const sprints = [sprint([["L-1", `${REPO}/python`, "closed", [python, later]]])];
+    assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints, hold: ["python"] })), ["sprint"]);
+  });
+
+  it("reads the tag on main's merge commit as carrying what dev held when the release branch was cut, and nothing merged after", () => {
+    const root = repository();
+    release(root, "0.1.0", {});
+    git(root, "branch", "main");
+    const before = commit(root, { "python/src/client.py": "A = 1\n" });
+    git(root, "checkout", "-q", "-b", "release/v0.2.0");
+    commit(root, { VERSION: "0.2.0\n", "python/pyproject.toml": pyproject("0.2.0") }, "Release v0.2.0");
+    git(root, "checkout", "-q", "dev");
+    const after = commit(root, { "python/src/client.py": "A = 2\n", "js/src/index.ts": "export const a = 1;\n" });
+    git(root, "checkout", "-q", "main");
+    git(root, "merge", "-q", "--no-ff", "--no-edit", "-m", "Release v0.2.0 (#1)", "release/v0.2.0");
+    git(root, "tag", "v0.2.0");
+    // The landing's back-merge brings main into dev, which does not put dev's later work in the tag.
+    git(root, "checkout", "-q", "dev");
+    git(root, "merge", "-q", "--no-ff", "--no-edit", "-m", "Merge main into dev", "main");
+
+    const shipped = [sprint([["L-1", `${REPO}/python`, "closed", [before]]])];
+    const result = selectRelease(root, UNITS, { sprints: shipped, hold: ["python"] });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.selected, ["js"]);
+    const owed = [sprint([["L-2", `${REPO}/python`, "closed", [after]]])];
+    assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints: owed, hold: ["python"] })), ["sprint"]);
+  });
+
+  it("reads a member closed with no merge recorded by date: shipped when the newest release tag was made after it closed", () => {
+    const { root } = shippedOnce();
+    const before = [sprint([["L-1", `${REPO}/python`, "closed", [], around(root, "v0.2.0", -HOUR)]])];
+    assert.equal(selectRelease(root, UNITS, { sprints: before, hold: ["python"] }).ok, true);
+    const after = [sprint([["L-1", `${REPO}/python`, "closed", [], around(root, "v0.2.0", HOUR)]])];
+    assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints: after, hold: ["python"] })), ["sprint"]);
+  });
+
+  it("reads a recorded merge no base branch holds, such as a stacked pull request's, by date", () => {
+    const { root, python } = shippedOnce();
+    git(root, "checkout", "-q", "-b", "feature/Lower");
+    const stacked = commit(root, { "python/src/stacked.py": "B = 1\n" });
+    git(root, "checkout", "-q", "dev");
+    const before = [sprint([["L-1", `${REPO}/python`, "closed", [python, stacked], around(root, "v0.2.0", -HOUR)]])];
+    assert.equal(selectRelease(root, UNITS, { sprints: before, hold: ["python"] }).ok, true);
+    const after = [sprint([["L-1", `${REPO}/python`, "closed", [python, stacked], around(root, "v0.2.0", HOUR)]])];
+    assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints: after, hold: ["python"] })), ["sprint"]);
+  });
+
+  it("counts every base branch the ledger names, staging included, as a line a release still owes", () => {
+    const { root } = shippedOnce();
+    git(root, "checkout", "-q", "-b", "staging");
+    const promoted = commit(root, { "python/src/promoted.py": "C = 1\n" });
+    git(root, "checkout", "-q", "dev");
+    const sprints = [sprint([["L-1", `${REPO}/python`, "closed", [promoted], around(root, "v0.2.0", -HOUR)]])];
+    assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints, hold: ["python"] })), ["sprint"]);
+  });
+
+  it("reads a merge git here does not hold by date only once the fetched dev was made after the member closed", () => {
+    const { root } = shippedOnce();
+    const missing = "0123456789abcdef0123456789abcdef01234567";
+    const sprints = [sprint([["L-1", `${REPO}/python`, "closed", [missing], around(root, "v0.2.0", -HOUR)]])];
+    // Nothing fetched here can place the merge, and a fetch is what would.
+    assert.deepEqual(kinds(selectRelease(root, UNITS, { sprints, hold: ["python"] })), ["sprint"]);
+    // A fetched dev made since the close would have brought the merge, had it landed there.
+    git(root, "update-ref", "refs/remotes/origin/dev", "HEAD");
+    assert.equal(selectRelease(root, UNITS, { sprints, hold: ["python"] }).ok, true);
   });
 
   it("ignores work not landed, cancelled, of another repository, of another unit, or of a sprint no longer open", () => {
-    const root = changed();
+    const { root, js, python } = changed();
     const sprints = [
       sprint([
         ["L-1", `${REPO}/python`, "pr-open"],
         ["L-2", `${REPO}/python`, "cancelled"],
-        ["L-3", "pipelex-sdk-python", "closed", "feature", "2026-10-02T10:00:00Z"],
-        ["L-4", `${REPO}/js`, "closed", "feature", "2026-10-02T10:00:00Z"],
+        ["L-3", "pipelex-sdk-python", "closed", [python]],
+        ["L-4", `${REPO}/js`, "closed", [js]],
       ]),
-      sprint([["L-5", `${REPO}/python`, "closed", "feature", "2026-10-02T10:00:00Z"]], {
-        id: "L-000000-closed",
-        status: "closed",
-      }),
+      sprint([["L-5", `${REPO}/python`, "closed", [python]]], { id: "L-000000-closed", status: "closed" }),
     ];
     const result = selectRelease(root, UNITS, { sprints, hold: ["python"] });
     assert.equal(result.ok, true);
@@ -369,16 +453,41 @@ describe("a hold-back an open sprint needs", () => {
   });
 
   it("cannot be checked without the sprint reading", () => {
-    const root = changed();
+    const { root } = changed();
     assert.throws(() => selectRelease(root, UNITS, { hold: ["python"] }), SelectionError);
+  });
+});
+
+describe("releaseReading", () => {
+  it("reads nothing as shipped while the repository has no release tag", () => {
+    const root = repository();
+    const merge = commit(root, { "js/src/index.ts": "//\n" });
+    const [member] = sprint([["L-1", `${REPO}/js`, "closed", [merge], "2000-01-01T00:00:00Z"]]).members;
+    assert.equal(releaseReading(root)(member, "L-1"), false);
+  });
+
+  it("refuses a close time that is not a time", () => {
+    const root = repository();
+    release(root, "0.1.0", {});
+    const [member] = sprint([["L-1", `${REPO}/js`, "closed", [], "yesterday"]]).members;
+    assert.throws(() => releaseReading(root)(member, "L-1 in L-000000-sprint"), SelectionError);
+  });
+});
+
+describe("newestRelease", () => {
+  it("is the highest release tag by version, never a prerelease or another tag", () => {
+    const root = repository();
+    assert.equal(newestRelease(root), null);
+    for (const tag of ["v0.9.0", "v0.10.0", "v0.11.0-rc.1", "w1.0.0", "v2", "v3.0.0/x"]) git(root, "tag", tag);
+    assert.equal(newestRelease(root), "v0.10.0");
   });
 });
 
 describe("sprintNeeds", () => {
   it("refuses a member whose owner no unit covers", () => {
     const units = [{ name: "js", dir: "js" }];
-    const sprints = [sprint([["L-1", `${REPO}/rust`, "closed", "task", "2026-10-02T10:00:00Z"]])];
-    assert.throws(() => sprintNeeds(sprints, units), SelectionError);
+    const sprints = [sprint([["L-1", `${REPO}/rust`, "closed"]])];
+    assert.throws(() => sprintNeeds(sprints, units, { shipped: () => false }), SelectionError);
   });
 });
 
@@ -393,8 +502,16 @@ describe("parseSprints", () => {
     for (const text of ["not json", "null", "[{}]", '[{"id": "L-1", "status": "open"}]']) {
       assert.throws(() => parseSprints(text), SelectionError, text);
     }
-    const bad = sprint([["L-1", `${REPO}/js`, "closed", "task", 3]]);
+    const bad = sprint([["L-1", `${REPO}/js`, "closed", [], 3]]);
     assert.throws(() => parseSprints(JSON.stringify(bad)), SelectionError);
+  });
+
+  it("refuses a member whose merges are not a list of commit SHAs, so nothing else reaches git", () => {
+    const [member] = sprint([["L-1", `${REPO}/js`, "closed"]]).members;
+    for (const merges of [undefined, "abc1234", ["--output=x"], ["ABC1234"], ["abc12"], [1234567]]) {
+      const reading = { id: "L-2", status: "open", members: [{ ...member, merges }] };
+      assert.throws(() => parseSprints(JSON.stringify(reading)), SelectionError, JSON.stringify(merges));
+    }
   });
 });
 

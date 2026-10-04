@@ -582,11 +582,11 @@ export class ApiResponseError extends PipelineRequestError {
    * runner refuses the method for its validation errors.
    *
    * Everywhere else an invalid bundle is a produced verdict, not an `ApiResponseError`:
-   * `POST /v1/validate` answers it with a **200** `PipelexInvalidReport`, and the build
-   * and crate routes with a **200** `CrateInvalidReport`, whose `validation_errors[]` the
-   * caller reads off the returned value. This field is `undefined` for any error that
-   * carries no per-error list (auth, transport, a request-shape 422, a build route's 422
-   * for a pipe it cannot build). A consumer must NOT assume a given `error_type` implies a
+   * `POST /v1/validate` answers it with a **200** `PipelexInvalidReport`, and the crate
+   * routes with a **200** `CrateInvalidReport`, whose `validation_errors[]` the caller
+   * reads off the returned value. This field is `undefined` for any error that carries no
+   * per-error list (auth, transport, a request-shape 422, the 422 `pipe-io` answers for a
+   * pipe selection it refuses). A consumer must NOT assume a given `error_type` implies a
    * populated list — fall back to `serverMessage` when this is empty.
    */
   public readonly validationErrors: ValidationErrorItem[] | undefined;

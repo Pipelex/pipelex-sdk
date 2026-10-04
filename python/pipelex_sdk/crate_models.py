@@ -1,11 +1,11 @@
 """Wire models for the crate routes — `POST /v1/resolve`, `POST /v1/codegen` and
 `POST /v1/pipe-io` — and the shared crate envelope they are built on.
 
-The envelope lives here because these are the routes that still use it. `MthdsFileItem`,
+The envelope lives here because these are the routes that use it. `MthdsFileItem`,
 `CrateRequestBase` and `CrateInvalidReport` used to sit in a `build_models` module beside the
-`/v1/build/inputs` wire models; those went when `prepare_inputs` moved its signature source to
-the input-form descriptor and this SDK stopped calling `/v1/build/*` (workspace campaign
-L-260829-848001). Nothing about the envelope changed in the move.
+inputs-template wire models; those went when `prepare_inputs` moved its signature source to
+the input-form descriptor and this SDK stopped calling the build routes. Nothing about the
+envelope changed in the move.
 
 `/v1/resolve` emits the normalized library crate, `/v1/codegen` projects that crate into stamped
 typed artifacts plus their lock, and `/v1/pipe-io` returns a method's three I/O artifacts — pipe
