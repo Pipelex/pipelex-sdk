@@ -358,7 +358,7 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Empty-body tolerant — DELETE / onboarding / update routes answer 2xx with no body,
         returned as `None`. Uses the management-call timeout, not the blocking ceiling;
-        `request_timeout` overrides it for the crate/build calls whose `method_ref` closure
+        `request_timeout` overrides it for the crate calls whose `method_ref` closure
         the server may have to fetch first (see `_METHOD_REF_FETCH_TIMEOUT_SECONDS`).
         """
         content = to_json(body) if body is not None else None
@@ -372,8 +372,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
     async def _request_json(self, method: str, url: str, *, body: object | None = None) -> Any:
         """Issue a request to an absolute URL and parse the JSON body, raising the plainer
-        `PipelineRequestError` on a non-2xx response. Used by `health` (origin-level) and
-        the build extensions — surfaces that don't need the product `code` taxonomy.
+        `PipelineRequestError` on a non-2xx response. Used by `health` (origin-level), a
+        surface that doesn't need the product `code` taxonomy.
         Transport failures still map to `ApiUnreachableError`.
         """
         content = to_json(body) if body is not None else None

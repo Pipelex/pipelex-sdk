@@ -6,6 +6,10 @@
 
 - **`models()` reads a deck carrying a `judgment` model, on `mthds` 0.29 (Breaking)**: `@pipelex/sdk` now depends on `mthds` `^0.29.0`, the MTHDS Protocol 0.7.0 release, so the re-exported `ModelCategory` and `MODEL_CATEGORIES` carry `judgment`, `models("judgment")` lists the models a `PipeJudge` names, and `MTHDS_PROTOCOL_VERSION` is `0.7.0`. A deck entry's `ModelInfo.type` is now `ModelCategory | (string & {}) | null`, so an entry whose category this version does not define reaches the caller with its raw value; code that indexes a table by an entry's `type`, or types one as `Record<ModelCategory, …>`, now says what `judgment` and an unknown category do.
 
+### Removed
+
+- **The `/v1/build/*` wrappers and their types (Breaking)**: `PipelexApiClient` no longer has `buildInputs`, `buildOutput`, `buildRunner`, `concept` or `pipeSpec`, and the package no longer exports `BuildRequestBase`, `BuildInputsRequest`, `BuildOutputRequest`, `BuildRunnerRequest`, `ConceptRequest`, `PipeSpecRequest`, `BuildInputsValidReport`, `BuildOutputValidReport`, `BuildRunnerValidReport`, `BuildInputsResponse`, `BuildOutputResponse`, `BuildRunnerResponse`, `ConceptResponse`, `PipeSpecResponse`, `RunnerStructures` or `ConceptRepresentationFormat`, while `InputsTemplateFormat` now resolves to the `mthds/protocol` type of the same name and values. A caller that wants an inputs template reads the pipe's input-form descriptor with `pipeIo` and renders it client-side with `renderInputsTemplate` (or `projectInputsTemplate` for the object), both from `mthds/protocol` and re-exported by this package. `MthdsFileItem`, `CrateRequestBase`, `CrateInvalidReport` and `GeneratedArtifact` stay, serving `resolve`, `codegen` and `pipeIo`.
+
 ## [v0.29.1] - 2026-10-02
 
 ### Fixed
