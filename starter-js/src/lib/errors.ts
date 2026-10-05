@@ -695,12 +695,13 @@ function classifyLifecycleUnavailable(
  * Classify an SDK input-preparation failure (`prepareInputs` / `uploadFile`) into
  * a single `upload_failed` kind with subclass-tailored copy. A run carries stored or
  * `https://` references only, which `prepareInputs` passes through untouched, so on
- * the run path what arrives here is the base `InputPreparationError`: a method
- * signature that did not resolve, a validate report without the `input_form` view,
- * a pipe ref it could not match. The upload subclasses are kept for a caller that
- * prepares a local file. Mirrors `classifyServerError`'s switch: branch on the
- * concrete subclass, then fall back to the base `InputPreparationError` so any
- * future subclass is still classified (never `unknown`).
+ * the run path what arrives here is the base `InputPreparationError`: a pipe the
+ * API's `POST /v1/pipe-io` refused to select, a method signature that did not
+ * resolve, or a route answer whose input form does not describe the selected pipe.
+ * The upload subclasses are kept for a caller that prepares a local file. Mirrors
+ * `classifyServerError`'s switch: branch on the concrete subclass, then fall back to
+ * the base `InputPreparationError` so any future subclass is still classified
+ * (never `unknown`).
  */
 function classifyInputPreparationError(
   err: InputPreparationError,
@@ -743,14 +744,15 @@ function classifyInputPreparationError(
     };
   }
 
-  // The base InputPreparationError (the method's signature or the API's validate
-  // report), InvalidLocalSourceError, UploadTransportError, or any future subclass.
-  // Its own message is the only thing that names the cause, so it goes in details.
+  // The base InputPreparationError (the pipe selection or the method's signature),
+  // InvalidLocalSourceError, UploadTransportError, or any future subclass. Its own
+  // message is the only thing that names the cause, the server's reason included
+  // when the route refused the pipe, so it goes in details.
   return {
     kind: "upload_failed",
     title: "Preparing the inputs failed",
     message:
-      "The starter couldn't prepare the method's inputs before running it. Files are already stored by then, so the cause is usually the method's signature, or an API that doesn't serve what preparation needs. The technical details below name it.",
+      "The starter couldn't prepare the method's inputs before running it. Files are already stored by then, so the cause is usually the method's signature or the pipe it names. The technical details below name it.",
     details,
   };
 }

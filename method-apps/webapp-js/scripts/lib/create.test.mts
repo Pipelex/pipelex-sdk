@@ -40,9 +40,9 @@ import {
 } from "./create.mts";
 import { REPO_ROOT } from "./shared.mts";
 import RECEIPT_REVIEW_CODEGEN from "./fixtures/recorded/receipt-review.codegen.json" with { type: "json" };
-import RECEIPT_REVIEW_VALIDATE from "./fixtures/recorded/receipt-review.validate.json" with { type: "json" };
+import RECEIPT_REVIEW_PIPE_IO from "./fixtures/recorded/receipt-review.pipe-io.json" with { type: "json" };
 import TEXT_STATS_CODEGEN from "./fixtures/recorded/text-stats.codegen.json" with { type: "json" };
-import TEXT_STATS_VALIDATE from "./fixtures/recorded/text-stats.validate.json" with { type: "json" };
+import TEXT_STATS_PIPE_IO from "./fixtures/recorded/text-stats.pipe-io.json" with { type: "json" };
 
 const RECEIPTS_DIR = path.join(
   REPO_ROOT,
@@ -409,12 +409,12 @@ describe("runCreate", () => {
       codegen: vi.fn(async (request: { files?: unknown }) =>
         request.files === undefined ? TEXT_STATS_CODEGEN : RECEIPT_REVIEW_CODEGEN,
       ),
-      validate: vi.fn().mockResolvedValue(TEXT_STATS_VALIDATE),
-      validateFiles: vi.fn().mockResolvedValue(RECEIPT_REVIEW_VALIDATE),
-    } as unknown as Pick<
-      PipelexApiClient,
-      "codegen" | "validate" | "validateFiles" | "version" | "getMethod"
-    > & { codegen: ReturnType<typeof vi.fn> };
+      pipeIo: vi.fn(async (request: { files?: unknown }) =>
+        request.files === undefined ? TEXT_STATS_PIPE_IO : RECEIPT_REVIEW_PIPE_IO,
+      ),
+    } as unknown as Pick<PipelexApiClient, "codegen" | "pipeIo" | "version" | "getMethod"> & {
+      codegen: ReturnType<typeof vi.fn>;
+    };
   }
 
   interface Call {

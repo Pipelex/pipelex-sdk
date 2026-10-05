@@ -1,5 +1,6 @@
 {
   "is_valid": true,
+  "pipe_ref": "receipt_review.review_receipts",
   "pipe_io_contracts": {
     "receipt_review.review_receipts": {
       "inputs": {
@@ -206,14 +207,6 @@
     }
   },
   "default_pipe_ref": "receipt_review.review_receipts",
-  "bundle_blueprint": {
-    "domain": "receipt_review",
-    "description": "Read a batch of receipts and list, for each one, who issued it, when, and the total paid.",
-    "main_pipe": "review_receipts",
-    "pipe": {
-      "review_receipts": {
-        "description": "Read every receipt and summarize each one: the merchant, the date and the total."
-      }
-    }
-  }
+  "pending_signatures": [],
+  "is_runnable": true
 }

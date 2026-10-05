@@ -697,11 +697,15 @@ function classifyLifecycleUnavailable(
 
 /**
  * Classify an SDK input-preparation failure (`prepareInputs` / `uploadFile`) into
- * a single `upload_failed` kind with subclass-tailored copy — a method with a file input
- * uploads the file to Pipelex storage before the run, and that upload can fail in
- * a few distinct, actionable ways. Mirrors `classifyServerError`'s switch: branch
- * on the concrete subclass, then fall back to the base `InputPreparationError` so
- * any future subclass is still classified (never `unknown`).
+ * a single `upload_failed` kind with subclass-tailored copy. A run carries stored or
+ * `https://` references only, which `prepareInputs` passes through untouched, so on
+ * the run path what arrives here is the base `InputPreparationError`: a pipe the
+ * API's `POST /v1/pipe-io` refused to select, a method signature that did not
+ * resolve, or a route answer whose input form does not describe the selected pipe.
+ * The upload subclasses are kept for a caller that prepares a local file. Mirrors
+ * `classifyServerError`'s switch: branch on the concrete subclass, then fall back to
+ * the base `InputPreparationError` so any future subclass is still classified
+ * (never `unknown`).
  */
 function classifyInputPreparationError(
   err: InputPreparationError,
@@ -744,13 +748,15 @@ function classifyInputPreparationError(
     };
   }
 
-  // InvalidLocalSourceError, UploadTransportError, a malformed data URL (the base
-  // InputPreparationError), or any future subclass — a generic upload failure.
+  // The base InputPreparationError (the pipe selection or the method's signature),
+  // InvalidLocalSourceError, UploadTransportError, or any future subclass. Its own
+  // message is the only thing that names the cause, the server's reason included
+  // when the route refused the pipe, so it goes in details.
   return {
     kind: "upload_failed",
-    title: "Preparing the file for upload failed",
+    title: "Preparing the inputs failed",
     message:
-      "This app couldn't upload the file to Pipelex storage before running the pipeline. The technical details below should help track it down.",
+      "This app couldn't prepare the method's inputs before running it. Files are already stored by then, so the cause is usually the method's signature or the pipe it names. The technical details below name it.",
     details,
   };
 }

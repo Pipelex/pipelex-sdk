@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.31.0] - 2026-10-05
+
+### Changed
+
+- **A stuff's `concept` is its ref string, on `mthds` 0.19.0 (Breaking)**: `pipelex-sdk` now pins `mthds==0.19.0`, moved from `==0.18.0`, the release that narrows `DictStuffAbstract.concept` back to `str` and removes `DictConcept`. `RunResults.working_memory` (a `DictWorkingMemoryAbstract`) and the blocking `execute` result (a `DictRunResultExecute`) inherit that narrowing, so a working memory whose stuff carries the concept object instead of its ref string now fails validation; code that read `stuff.concept.code` reads the ref string from `stuff.concept`. The pin also matches the one `pipelex` holds, so the two packages install together again.
+
 ## [v0.30.0] - 2026-10-04
 
 ### Changed

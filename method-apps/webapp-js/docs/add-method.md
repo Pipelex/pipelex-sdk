@@ -10,12 +10,12 @@ make add-method METHOD=mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df       # a method 
 
 ## The gesture
 
-|            |                                                                                                                                                              |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Make       | `make add-method METHOD=<method> [PIPE=…] [NAME=…] [LABEL=…] [DRY_RUN=1]`                                                                                    |
-| npm        | `npm run add-method -- <method> [--pipe …] [--name …] [--label …] [--dry-run]`                                                                               |
-| Needs      | `PIPELEX_API_KEY`, and a base URL that serves the form views and, for a selector, advertises its kind (see [The handshake](#the-handshake-and-the-base-url)) |
-| Exit codes | `0` written (or rehearsed), `1` refused or failed — never a thrown stack                                                                                     |
+|            |                                                                                                                                                                               |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Make       | `make add-method METHOD=<method> [PIPE=…] [NAME=…] [LABEL=…] [DRY_RUN=1]`                                                                                                     |
+| npm        | `npm run add-method -- <method> [--pipe …] [--name …] [--label …] [--dry-run]`                                                                                                |
+| Needs      | `PIPELEX_API_KEY`, and a base URL that serves `/v1/codegen` and `/v1/pipe-io` and, for a selector, advertises its kind (see [The handshake](#the-handshake-and-the-base-url)) |
+| Exit codes | `0` written (or rehearsed), `1` refused or failed — never a thrown stack                                                                                                      |
 
 It is out of `make all` for the same reason `codegen` and `test-e2e` are: it needs a key and a network.
 
@@ -72,7 +72,7 @@ For a bundle, `methods/<name>/` holds the copied `.mthds` files instead of a man
 
 The `.mthds` files are the method. The action reads every one of them at request time with `loadMethodBundles("<name>")` — the directory's name is the only thing it holds, never a copy of the bundle — and sends them as `mthds_contents`, sorted on each file's path inside the directory written with `/`, which is the order `npm run codegen` projects them in on every platform. **To change the method, edit the files and run `npm run codegen`**: `sources.json` hashes each file, so `make check` fails with the usual remedy until you do, and the run follows the edit on its own.
 
-A bundle is validated and projected under the names you gave it, so a diagnostic names the file you pointed at; the generated tree then records each file under its path in `methods/<name>/`, which is what the offline check compares. The name a file is sent under does not reach the artifacts, so the tree is exactly the one `npm run codegen` writes afterwards.
+A bundle is sent to the API under the names you gave it, so a diagnostic names the file you pointed at; the generated tree then records each file under its path in `methods/<name>/`, which is what the offline check compares. The name a file is sent under does not reach the artifacts, so the tree is exactly the one `npm run codegen` writes afterwards.
 
 A method whose pipe takes a file hands `prepareInputs` the same bundle the run sends (`files: bundles.map((content) => ({ content }))`), read once per run.
 
@@ -109,11 +109,11 @@ Everything comes from one kebab-case slug.
 A published package can carry several pipes, so the pipe is chosen by a rule that ends in a refusal rather than a guess. In order:
 
 1. `PIPE`, if given — bare or qualified, refused if the method declares no such pipe (the message lists the ones it does), and refused as ambiguous if a bare code matches more than one domain.
-2. The validate report's `default_pipe_ref`, when the method names one. This is read in preference to `bundle_blueprint.main_pipe` because it is typed and because it is the field a **package manifest's** entry pipe arrives in — `github.com/Pipelex/methods/documents` has no bundle-level main pipe and still has a default here.
+2. The method's own entry pipe, `POST /v1/pipe-io`'s `default_pipe_ref`, when the method names one. It is the field a **package manifest's** entry pipe arrives in — `github.com/Pipelex/methods/documents` has no bundle-level main pipe and still has a default here.
 3. The only pipe, when the method declares exactly one.
 4. Otherwise a refusal listing the pipes and asking for `PIPE`.
 
-The chosen ref is split at its last dot: the domain and the code are what `requireContract` and `requireInputForm` take. The action sends the whole qualified ref as `pipe_code` beside the selector or the bundle. The runtime looks a qualified ref up exactly, while it searches every domain of the method for a bare code and refuses one that two domains declare, so the qualified form keeps a run working after the method gains a second domain. The rule reads `default_pipe_ref` for a bundle too — for a bundle, it is the pipe named by `main_pipe`.
+The chosen ref is split at its last dot: the domain and the code are what `requireContract` and `requireInputForm` take. The action sends the whole qualified ref as `pipe_code` beside the selector or the bundle. The runtime looks a qualified ref up exactly, while it searches every domain of the method for a bare code and refuses one that two domains declare, so the qualified form keeps a run working after the method gains a second domain. The rule reads `default_pipe_ref` for a bundle too — for a bundle, it is the pipe named by `main_pipe`. A bundle whose domains each declare a `main_pipe` has no default: the route will not choose between them, so the rule goes on to step 3 or asks for `PIPE`.
 
 ## The output: a typed narrower, a generic view
 
@@ -156,11 +156,13 @@ The scaffold inserts one import line directly above the first and one array entr
 
 ## The handshake, and the base URL
 
-A bundle needs no handshake: it travels inline, and the base URL only has to serve `/v1/codegen` and `/v1/validate`'s form views. A selector is resolved **server-side**, so the API has to forward it. `GET /v1/version`'s `extensions` array is the SDK's documented handshake for that, and the three keyed scripts — `add-method`, `codegen` and `codegen:verify` — ask it once per run whenever a selector is involved, before anything is fetched or written. A missing extension is a refusal naming the base URL, the missing kind and what does advertise it, rather than the bare `403` an env-scoped key otherwise produces.
+A bundle needs no handshake: it travels inline, and the base URL only has to serve `/v1/codegen` and `/v1/pipe-io`. A selector is resolved **server-side**, so the API has to forward it. `GET /v1/version`'s `extensions` array is the SDK's documented handshake for that, and the three keyed scripts — `add-method`, `codegen` and `codegen:verify` — ask it once per run whenever a selector is involved, before anything is fetched or written. A missing extension is a refusal naming the base URL, the missing kind and what does advertise it, rather than the bare `403` an env-scoped key otherwise produces.
 
 Two cases deliberately **proceed** rather than refuse, because in both the handshake has no verdict to give and the real call's own error is the better message: the handshake itself failing, and a response that advertises no capabilities at all.
 
-**The default base URL, `https://api.pipelex.com`, serves all of it**: `/v1/validate`'s `input_form` and `output_form` views, which `npm run codegen` and this gesture need for **every** method, and both selector kinds. The handshake and the view check matter when `PIPELEX_BASE_URL` points elsewhere, at a local stack or another deployment that may lack one of them. Nothing in `make all` depends on any of this: `codegen:check` is pure hashing, so `git clone && make all` stays green with no key and no network.
+**The default base URL, `https://api.pipelex.com`, serves all of it**: `/v1/codegen` and `/v1/pipe-io`, which `npm run codegen` and this gesture call for **every** method, and both selector kinds. A `pipelex-api` runner serves `/v1/pipe-io` from v0.33.1. The handshake matters when `PIPELEX_BASE_URL` points elsewhere, at a local stack or another deployment that may lack a selector kind, and a route the base URL does not serve is a refusal naming it.
+
+`/v1/pipe-io` loads the method without dry-running it. The gesture refuses a method that cannot run, one whose pipes are still declared as signatures, naming those pipes, before anything is written. It does not dry-run the method, so a method whose dry run would fail is scaffolded, and fails at its first run; the `/mthds-check` skill is the place to ask for that verdict first. Nothing in `make all` depends on any of this: `codegen:check` is pure hashing, so `git clone && make all` stays green with no key and no network.
 
 A selector that the API cannot resolve — an unknown package, a foreign-org id — comes back as a 404, and the server's own message is printed **verbatim** under a line naming the selector. For a bad address that message lists the packages the repository does contain, which is far more useful than a guess about `PIPELEX_BASE_URL` would be.
 
@@ -191,4 +193,4 @@ A generative arm — a `design.ts` projection written beside `contracts.ts`, and
 - [`docs/codegen.md`](codegen.md) — the trust chain this extends, and the two source kinds in full.
 - [`docs/input-form.md`](input-form.md) — the kernel composition every scaffolded form is an instance of.
 - `scripts/lib/add-method.mts` — the behavior, with the pure helpers each unit-tested over a table in `add-method.test.mts`.
-- `@pipelex/sdk` `dist/client.d.ts` — `validate` / `codegen` / `prepareInputs` selectors, and `version().extensions`.
+- `@pipelex/sdk` `dist/client.d.ts` — `pipeIo` / `codegen` / `prepareInputs` selectors, and `version().extensions`.

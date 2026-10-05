@@ -106,7 +106,7 @@ The flow, end to end:
 
 ## Input forms
 
-**No form field in this app is written by hand.** Each form is rendered from its method's wire input-form descriptor by the [`@pipelex/mthds-form`](https://www.npmjs.com/package/@pipelex/mthds-form) kernel: `npm run codegen` commits a `contracts.ts` beside the generated types — the method's IO contracts plus the descriptor, both from one `/v1/validate` call — the form derives its fields from it, and the Run button gates on whatever that method actually requires. Add an input to a `.mthds` bundle, re-run codegen, and it shows up with the right control and the right label — no component edit.
+**No form field in this app is written by hand.** Each form is rendered from its method's wire input-form descriptor by the [`@pipelex/mthds-form`](https://www.npmjs.com/package/@pipelex/mthds-form) kernel: `npm run codegen` commits a `contracts.ts` beside the generated types — the method's IO contracts plus the descriptor, both from one `/v1/pipe-io` call — the form derives its fields from it, and the Run button gates on whatever that method actually requires. Add an input to a `.mthds` bundle, re-run codegen, and it shows up with the right control and the right label — no component edit.
 
 The same kernel supplies the input rules on **both** sides of the Server Action boundary, so there are no hand-written per-input guards left anywhere. The two sides call it differently, on purpose: the browser runs `computeReadiness` to decide whether Run is live, and the server runs `gateRunInputs` (`src/lib/runInputs.ts`), which calls readiness's own two functions over the same derived fields _and_ validates shapes _and_ builds the wire envelope. The server side is deliberately a strict superset — it is the trust boundary, because a Server Action is a public endpoint — and a test runs both sides over one table of inputs to hold them to it.
 
@@ -124,7 +124,7 @@ Text inputs are plain strings. A file input (the PDF example) is stored the mome
 
 The kernel's file control also offers "paste a URL instead", so an `https://` or `pipelex-storage://` reference works without any upload at all. Those two schemes are the whole accepted set, checked before anything else: the SDK reads an unrecognised string as a path on the server's own disk, so a public Server Action has to refuse by default rather than assume "no bytes" means "nothing to check". A `data:` URL is refused too, because nothing in the app sends a file inline.
 
-**The upload grant route is served only by a deployment that has it.** The hosted API serves `POST /v1/upload/grant` (verified on 2026-09-24 against both `api.pipelex.com` and `api-dev.pipelex.com`). Against a deployment without it, the PDF example says "File upload isn't available on this API" beside the field instead of storing the file.
+**The upload grant route is served only by a deployment that has it.** The hosted API serves `POST /v1/upload/grant` (verified on 2026-09-24 against both `api.pipelex.com` and `api-dev.pipelex.com`). Against a deployment without it, the PDF example says "File upload isn't available on this API" beside the field instead of storing the file. Preparing a run's file inputs needs a second route, `POST /v1/pipe-io`, from which `prepareInputs` reads the method's inputs: `api.pipelex.com` serves it, and so does `pipelex-api` from v0.33.1, while an older runner refuses the run before it starts.
 
 Image **outputs** (the image example) come back as a URL — a storage URL or a base64 data URL — which renders directly in an `<img>`.
 
@@ -138,7 +138,7 @@ npm run codegen:check   # prove the committed trees are current — offline, no 
 npm run codegen:verify  # ask the API whether the committed types are still semantically current — needs a key
 ```
 
-`npm run codegen` sends each method to the API's `/v1/codegen` route, which returns a `types.ts` (zod schemas plus their inferred TypeScript types), a `binder.ts` (`parseXxx` / `serializeXxx` over those schemas), and a `codegen.lock`. It also asks `/v1/validate` for the method's input/output contracts and **both** of its form descriptors (`views: ["input_form", "output_form"]`) and writes a `contracts.ts`, which is what the input forms render from, what the run gate validates against, and what the result view is built from. The codegen artifacts carry a stamp and the lock records their hashes; `contracts.ts` is deliberately unstamped, tracked instead by its hash in `sources.json`'s `derived` map. Either way `npm run codegen:check` re-derives the whole verdict **offline** — no key, no network — and fails if a generated file was edited, deleted, or left behind. Beside each lock, that same `sources.json` records a hash of every source `.mthds`, which catches the other kind of staleness: editing a bundle and forgetting to regenerate. `make check` runs that check, so `make all` does too.
+`npm run codegen` sends each method to the API's `/v1/codegen` route, which returns a `types.ts` (zod schemas plus their inferred TypeScript types), a `binder.ts` (`parseXxx` / `serializeXxx` over those schemas), and a `codegen.lock`. It also asks `/v1/pipe-io` for the method's input/output contracts and **both** of its form descriptors, without dry-running the method, and writes a `contracts.ts`, which is what the input forms render from, what the run gate validates against, and what the result view is built from. The codegen artifacts carry a stamp and the lock records their hashes; `contracts.ts` is deliberately unstamped, tracked instead by its hash in `sources.json`'s `derived` map. Either way `npm run codegen:check` re-derives the whole verdict **offline** — no key, no network — and fails if a generated file was edited, deleted, or left behind. Beside each lock, that same `sources.json` records a hash of every source `.mthds`, which catches the other kind of staleness: editing a bundle and forgetting to regenerate. `make check` runs that check, so `make all` does too.
 
 A few things worth knowing:
 
@@ -151,7 +151,7 @@ A few things worth knowing:
 
 A method directory holds either a `.mthds` bundle or a `method.json` manifest naming a method that lives elsewhere; `npm run codegen` regenerates both kinds in one pass, and bumping a published method's version is an edit to that manifest's tag plus a regeneration. See [`docs/codegen.md`](docs/codegen.md) for the two source kinds, and [Add a method](#add-a-method) for the gesture that writes either.
 
-**Regeneration needs `PIPELEX_API_KEY` and the network, and no base URL override.** The default, `https://api.pipelex.com`, serves `/v1/validate`'s `input_form` and `output_form` views (codegen needs both for every method) and resolves both selector kinds a manifest can name. Nothing in the committed tree depends on it — `npm run codegen:check` is pure hashing, so `git clone && make all` passes with no key and no network.
+**Regeneration needs `PIPELEX_API_KEY` and the network, and no base URL override.** The default, `https://api.pipelex.com`, serves `/v1/codegen` and `/v1/pipe-io` (codegen calls both for every method) and resolves both selector kinds a manifest can name. A method whose pipes are still declared as signatures is refused, naming them, since it cannot run yet. Nothing in the committed tree depends on it — `npm run codegen:check` is pure hashing, so `git clone && make all` passes with no key and no network.
 
 ## Add a method
 
@@ -169,7 +169,7 @@ The gesture is **one-shot** — it refuses rather than overwriting a slice that 
 
 Useful arguments: `PIPE=<pipe_code>` when the method carries several pipes (without it, the method's own default is used, and a method with several pipes and no default is refused listing them), `NAME=` and `LABEL=` to override the derived directory name and tab label, and `DRY_RUN=1` to print the whole plan without writing anything. The `/mthds-build` skill from the [mthds-plugins](https://github.com/Pipelex/mthds-plugins) marketplace can write the bundle in the first place.
 
-**It needs a key and a base URL that serves the form views** — see the note on `PIPELEX_BASE_URL` in [Environment variables](#environment-variables). The full reference is [`docs/add-method.md`](docs/add-method.md).
+**It needs a key and a base URL that serves `/v1/codegen` and `/v1/pipe-io`** — see the note on `PIPELEX_BASE_URL` in [Environment variables](#environment-variables). The full reference is [`docs/add-method.md`](docs/add-method.md).
 
 ## Remove an example
 
@@ -229,7 +229,7 @@ The happy-path specs (`extract`, `summarize-pdf`, `generate-image`, `text-stats`
 - **They auto-skip without a key.** No `PIPELEX_API_KEY`? Those specs skip cleanly (you'll see them reported as skipped) instead of failing with an auth error — so a fresh fork can run `make test-e2e` before configuring credentials.
 - **`make test-e2e` prompts for confirmation** before spending, since it costs money. The prompt is skipped in CI / non-interactive shells; pass `CONFIRM=1 make test-e2e` to bypass it in scripts.
 - **It is excluded from `make all`.**
-- `summarize-pdf` stores the sample PDF through an upload grant, so it also needs a base URL that serves `POST /v1/upload/grant`, which both hosted APIs do.
+- `summarize-pdf` stores the sample PDF through an upload grant, so it also needs a base URL that serves `POST /v1/upload/grant` and, to prepare the run's inputs, `POST /v1/pipe-io`, both of which the hosted APIs serve.
 - Two specs need **no** key, cost nothing, and run out of the box: `home` renders the page and checks it hydrates cleanly, and `error-display` tests the offline error UX.
 - A script driving the page waits for `html[data-hydrated]`, which the root layout sets once React has hydrated it. Acting earlier, a click or a dropped file never reaches its handler, and a screenshot raises a hydration mismatch of its own making.
 - First-time setup needs the browser binary: `npx playwright install chromium`.
@@ -255,7 +255,7 @@ Aliases: `make ul` / `make un`. **Re-run `make use-local` after every edit to ei
 
 A variable already exported in your shell wins over `.env.local` — Next.js loads the file without overwriting what is already in the environment. If a run reaches an endpoint you did not configure here, check your shell first.
 
-**`npm run codegen`, `npm run codegen:verify` and `make add-method` need `PIPELEX_API_KEY` and the network.** Each one asks the API for the form views codegen needs and, for a catalog id or a package address, checks that the base URL resolves that kind of method, naming the base URL and the missing capability when one is not served. The default serves everything they ask for; a base URL pointed elsewhere may not. `make all` needs neither a key nor a network.
+**`npm run codegen`, `npm run codegen:verify` and `make add-method` need `PIPELEX_API_KEY` and the network.** Each one asks the API for the method's typed artifacts (`POST /v1/codegen`) and for its contracts and form descriptors (`POST /v1/pipe-io`) and, for a catalog id or a package address, checks that the base URL resolves that kind of method, naming the base URL and the missing capability when one is not served. The default serves everything they ask for; a base URL pointed elsewhere may not. `make all` needs neither a key nor a network.
 
 ## License
 

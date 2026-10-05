@@ -65,7 +65,7 @@ import {
 } from "./add-method.mts";
 import { MANIFEST_FILENAME, REPO_ROOT } from "./shared.mts";
 import RECEIPT_REVIEW_CODEGEN from "./fixtures/recorded/receipt-review.codegen.json" with { type: "json" };
-import RECEIPT_REVIEW_VALIDATE from "./fixtures/recorded/receipt-review.validate.json" with { type: "json" };
+import RECEIPT_REVIEW_PIPE_IO from "./fixtures/recorded/receipt-review.pipe-io.json" with { type: "json" };
 import {
   DOCUMENTS_CONTRACTS,
   DOCUMENTS_INPUT_FORM,
@@ -1044,6 +1044,22 @@ describe("runAddMethod", () => {
     return dir;
   }
 
+  /** A `/v1/pipe-io` answer for `text_stats`, with any field overridden. */
+  function pipeIoAnswer(overrides: Record<string, unknown> = {}) {
+    return {
+      is_valid: true,
+      pipe_ref: "text_stats.analyze_text",
+      pipe_io_contracts: TEXT_STATS_CONTRACTS,
+      input_form: TEXT_STATS_INPUT_FORM,
+      output_form: TEXT_STATS_OUTPUT_FORM,
+      default_pipe_ref: "text_stats.analyze_text",
+      pending_signatures: [],
+      is_runnable: true,
+      files: [],
+      ...overrides,
+    };
+  }
+
   function fakeClient(overrides: Record<string, unknown> = {}) {
     return {
       version: vi.fn().mockResolvedValue({ extensions: ["runs", "method_id", "method_ref"] }),
@@ -1056,26 +1072,21 @@ describe("runAddMethod", () => {
         crate_fingerprint: "28f776a299e6ab8d2c14fafae459f5daa50bd030ee1191d149e566f0f37d38e2",
         engine_version: "0.56.0",
       }),
-      validate: vi.fn().mockResolvedValue({
-        is_valid: true,
-        pipe_io_contracts: TEXT_STATS_CONTRACTS,
-        input_form: TEXT_STATS_INPUT_FORM,
-        output_form: TEXT_STATS_OUTPUT_FORM,
-        default_pipe_ref: "text_stats.analyze_text",
-      }),
-      validateFiles: vi.fn(),
+      pipeIo: vi.fn().mockResolvedValue(pipeIoAnswer()),
       ...overrides,
-    } as unknown as Pick<
-      PipelexApiClient,
-      "codegen" | "validate" | "validateFiles" | "version" | "getMethod"
-    > & { codegen: Mock; validate: Mock; validateFiles: Mock; version: Mock; getMethod: Mock };
+    } as unknown as Pick<PipelexApiClient, "codegen" | "pipeIo" | "version" | "getMethod"> & {
+      codegen: Mock;
+      pipeIo: Mock;
+      version: Mock;
+      getMethod: Mock;
+    };
   }
 
   /** A client answering for the receipt-review bundle, with its recorded responses. */
   function receiptsClient() {
     return fakeClient({
       codegen: vi.fn().mockResolvedValue(RECEIPT_REVIEW_CODEGEN),
-      validateFiles: vi.fn().mockResolvedValue(RECEIPT_REVIEW_VALIDATE),
+      pipeIo: vi.fn().mockResolvedValue(RECEIPT_REVIEW_PIPE_IO),
     });
   }
 
@@ -1222,7 +1233,7 @@ describe("runAddMethod", () => {
     expect(await runAddMethod([TEXT_STATS_REF], deps(client))).toBe(1);
 
     expect(client.codegen).not.toHaveBeenCalled();
-    expect(client.validate).not.toHaveBeenCalled();
+    expect(client.pipeIo).not.toHaveBeenCalled();
     expect(await written()).toEqual(["src/components/ExampleTabs.tsx"]);
   });
 
@@ -1261,20 +1272,21 @@ describe("runAddMethod", () => {
       (line: unknown) => void errors.push(String(line)),
     );
     const client = fakeClient({
-      validate: vi.fn().mockResolvedValue({
-        is_valid: true,
-        pipe_io_contracts: DOCUMENTS_CONTRACTS,
-        input_form: DOCUMENTS_INPUT_FORM,
-        output_form: DOCUMENTS_OUTPUT_FORM,
-        default_pipe_ref: null,
-      }),
+      pipeIo: vi.fn().mockResolvedValue(
+        pipeIoAnswer({
+          pipe_io_contracts: DOCUMENTS_CONTRACTS,
+          input_form: DOCUMENTS_INPUT_FORM,
+          output_form: DOCUMENTS_OUTPUT_FORM,
+          default_pipe_ref: null,
+        }),
+      ),
     });
 
     expect(await runAddMethod(["github.com/Pipelex/methods/documents"], deps(client))).toBe(1);
 
     expect(errors.join("\n")).toContain("pass --pipe");
     expect(errors.join("\n")).toContain("documents.extract_text_pages");
-    // The tree fetch happened (the pipe rule reads the validate report), but the
+    // The tree fetch happened (the pipe rule reads the pipe-io report), but the
     // refusal still landed before the write half.
     expect(await written()).toEqual(["src/components/ExampleTabs.tsx"]);
   });
@@ -1287,9 +1299,8 @@ describe("runAddMethod", () => {
     const lines: string[] = [];
     vi.spyOn(console, "log").mockImplementation((line: unknown) => void lines.push(String(line)));
     const client = fakeClient({
-      validate: vi.fn().mockResolvedValue({
-        is_valid: true,
-        pipe_io_contracts: TEXT_STATS_CONTRACTS,
+      pipeIo: vi.fn().mockResolvedValue({
+        ...pipeIoAnswer(),
         input_form: {
           "text_stats.analyze_text": {
             fields: [
@@ -1359,9 +1370,9 @@ describe("runAddMethod", () => {
       await readFile(path.join(RECEIPTS_DIR, "main.mthds"), "utf-8"),
     );
     // Sent under the names it was read by, so a diagnostic names the person's file…
-    expect(client.validateFiles.mock.calls[0]![0].map((file: { uri: string }) => file.uri)).toEqual(
-      [path.join(RECEIPTS_DIR, "concepts.mthds"), path.join(RECEIPTS_DIR, "main.mthds")],
-    );
+    expect(
+      client.pipeIo.mock.calls[0]![0].files.map((file: { source: string }) => file.source),
+    ).toEqual([path.join(RECEIPTS_DIR, "concepts.mthds"), path.join(RECEIPTS_DIR, "main.mthds")]);
     // …and recorded under the names it now has, which is what `codegen:check` hashes.
     const sidecar = JSON.parse(
       await readFile(path.join(root, "src/generated/receipt-review/sources.json"), "utf-8"),
@@ -1383,7 +1394,7 @@ describe("runAddMethod", () => {
     const relative = path.relative(REPO_ROOT, RECEIPTS_DIR);
     expect(await runAddMethod([relative], { ...deps(client), cwd: REPO_ROOT })).toBe(0);
 
-    expect(client.validateFiles.mock.calls[0]![0][0].uri).toBe(
+    expect(client.pipeIo.mock.calls[0]![0].files[0].source).toBe(
       path.join(relative, "concepts.mthds"),
     );
   });
@@ -1639,7 +1650,7 @@ describe("runAddMethod", () => {
         expect(await runAddMethod([RECEIPTS_DIR], deps(client))).toBe(1);
 
         expect(errors.join("\n")).toContain("refusing a symlink at");
-        expect(client.validateFiles).not.toHaveBeenCalled();
+        expect(client.pipeIo).not.toHaveBeenCalled();
         expect(client.codegen).not.toHaveBeenCalled();
         expect(await readdir(elsewhere)).toEqual([]);
       } finally {

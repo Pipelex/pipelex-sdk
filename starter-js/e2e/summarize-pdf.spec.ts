@@ -6,8 +6,8 @@ import { requireLiveApi } from "./liveApi";
 // PDF shipped in public/ — the "Use sample PDF" button runs it through the
 // same path as a real drop: a grant from the PDF's Server Action, then a `PUT`
 // straight from the browser to Pipelex storage, so the base URL must serve
-// `POST /v1/upload/grant`. It skips cleanly when no key is set (see
-// e2e/liveApi.ts).
+// `POST /v1/upload/grant`, and `POST /v1/pipe-io`, which preparing the run's
+// inputs reads. It skips cleanly when no key is set (see e2e/liveApi.ts).
 requireLiveApi();
 
 // Runs in the default execution mode (durable: start + poll).
