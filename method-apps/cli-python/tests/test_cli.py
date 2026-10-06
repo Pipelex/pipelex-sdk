@@ -165,6 +165,15 @@ class TestInputOptions:
         assert "mood" not in result.stderr.split("Run `")[0]
         assert fake_client.entered == 0
 
+    def test_an_integer_too_long_to_read_is_a_usage_error_naming_its_option(self, fake_client: FakeClient):
+        # Past the interpreter's limit on an integer string's digits, `int()` raises a bare ValueError.
+        contracts = contracts_for_pipe(wire_contracts("every-kind"), "every_kind.take_everything")
+        result = invoke(make_binding(contracts=contracts), ["--count", "9" * 5000])
+        assert result.exit_code == 2
+        assert result.stdout == ""
+        assert "Usage error: --count takes a number of at most" in result.stderr
+        assert fake_client.entered == 0
+
     def test_the_inputs_file_can_give_a_required_input(self, fake_client: FakeClient, tmp_path: Path):
         path = tmp_path / "inputs.json"
         path.write_text(json.dumps({"name": "Marie"}), encoding="utf-8")
@@ -743,12 +752,18 @@ class TestAbsentOutput:
         assert "No inference calls" in result.stderr
 
     def test_the_absence_of_an_output_that_is_not_optional_is_refused(self, fake_client: FakeClient):
-        fake_client.wait_answer = run_results(ABSENCE_OUTPUT)
-        result = invoke(make_binding(output_model=Greeting), [])
+        fake_client.wait_answer = run_results(ABSENCE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        # The default binding's output model is opaque, which would take the absence document as data.
+        result = invoke(make_binding(), [])
         assert result.exit_code == 1
         assert result.stdout == ""
-        assert "Greeting refuses" in result.stderr
+        assert f"Run {RUN_ID} delivered no output, although the pipe's contract requires one, so nothing is printed." in result.stderr
+        assert "kind: skipped" in result.stderr
+        assert "reason: The condition chose no branch." in result.stderr
+        assert "make codegen" not in result.stderr
         assert "produced no output" not in result.stderr
+        # The cost is reported all the same: the run is paid for.
+        assert "No inference calls" in result.stderr
 
 
 class TestEnvironment:

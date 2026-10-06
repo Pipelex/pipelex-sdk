@@ -60,6 +60,14 @@ class TestReadInputsFile:
             read_inputs_file(path)
         assert caught.value.hint is not None
 
+    def test_an_integer_too_long_to_read_is_refused(self, tmp_path: Path):
+        # Valid JSON, which `json` reads with `int()`, which refuses an integer past the interpreter's limit on digits.
+        path = tmp_path / "inputs.json"
+        path.write_text(f'{{"count": {"9" * 5000}}}', encoding="utf-8")
+        with pytest.raises(InputsFileError, match="holds an integer of more than") as caught:
+            read_inputs_file(path)
+        assert caught.value.hint is not None
+
 
 EVERYTHING = contracts_for_pipe(wire_contracts("every-kind"), "every_kind.take_everything")
 BARE = contracts_for_pipe(wire_contracts("every-kind"), "every_kind.take_bare")
@@ -187,6 +195,11 @@ class TestReadOption:
         with pytest.raises(InputUsageError, match="takes an integer"):
             read_option(_options()["count"], raw, ValueReader())
 
+    @pytest.mark.parametrize("name", ["count", "amount"])
+    def test_an_integer_too_long_to_read_is_refused(self, name: str):
+        with pytest.raises(InputUsageError, match="takes a number of at most .* digits; this one has 5000"):
+            read_option(_options()[name], "-" + "9" * 5000, ValueReader())
+
     def test_a_list_of_booleans_takes_true_or_false(self):
         assert read_option(_options()["checks"], ["true", "FALSE"], ValueReader()) == [{"yes_no": True}, {"yes_no": False}]
         with pytest.raises(InputUsageError, match="takes true or false"):
@@ -219,6 +232,10 @@ class TestReadOption:
     def test_json_must_be_the_kind_the_input_takes(self, raw: str, says: str):
         with pytest.raises(InputUsageError, match=says):
             read_option(_options()["priority"], raw, ValueReader())
+
+    def test_json_holding_an_integer_too_long_to_read_is_refused(self):
+        with pytest.raises(InputUsageError, match="--priority takes JSON whose integers have at most"):
+            read_option(_options()["priority"], f'{{"level": {"9" * 5000}}}', ValueReader())
 
     def test_json_can_come_from_a_file(self, tmp_path: Path):
         (tmp_path / "priority.json").write_text('{"level": "urgent"}', encoding="utf-8")
@@ -284,6 +301,15 @@ class TestCollectInputs:
         # No `concept` beside it, so `content` is one of its fields, not an envelope's payload.
         bare = {"content": "  ", "title": "A title"}
         assert _collect(TEXT_STATS, {}, file_inputs={"text": bare}) == {"text": bare}
+
+    def test_a_structured_value_with_concept_and_content_fields_among_others_is_judged_as_itself(self):
+        # An envelope's keys are exactly `concept` and `content`, as the SDK's `prepare_inputs` reads one.
+        structured = {"concept": "proposal", "content": None, "title": "Ready"}
+        assert _collect(TEXT_STATS, {}, file_inputs={"text": structured}) == {"text": structured}
+
+    def test_an_exact_envelope_with_blank_content_is_missing(self):
+        with pytest.raises(InputUsageError, match=r"The run needs text \(--text\)"):
+            _collect(TEXT_STATS, {}, file_inputs={"text": {"concept": "native.Text", "content": None}})
 
 
 def _level_choice(value: str) -> Enum:

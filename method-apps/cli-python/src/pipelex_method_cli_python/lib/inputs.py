@@ -26,8 +26,8 @@ Each field kind of `mthds.protocol.input_form` gets one style of option:
 `--inputs-template` use, passed as it is; an option given on the command line overrides that input
 from the file. Presence is checked once both are merged, so a required input may come from either,
 and a missing one is refused naming its option. A value is judged by what it carries, whichever side
-gave it: an envelope, an object holding both `concept` and `content`, by its content, and anything
-else by itself.
+gave it: an envelope, an object whose keys are exactly `concept` and `content` as the SDK's
+`prepare_inputs` recognises one, by its content, and anything else by itself.
 
 The value each option puts on the wire is the value `@pipelex/mthds-form`, the web app template's
 form kernel, sends for the same field and value: `lib/wire.py` holds the port of its rules.
@@ -519,7 +519,12 @@ def _read_number(raw: str, leaf: InputFormItem, *, flag: str) -> int | float:
     integer = isinstance(leaf, NumberItem) and leaf.integer
     value: int | float
     if _INTEGER.fullmatch(text):
-        value = int(text)
+        try:
+            value = int(text)
+        except ValueError as exc:
+            # Past the interpreter's limit on the digits of an integer string, `int()` refuses to read it.
+            msg = f"{flag} takes a number of at most {sys.get_int_max_str_digits()} digits; this one has {len(text.lstrip('+-'))}."
+            raise InputUsageError(msg) from exc
     elif integer:
         msg = f"{flag} takes an integer; {raw!r} is not one."
         raise InputUsageError(msg)
@@ -581,6 +586,10 @@ def _read_json(option: InputOption, text: str) -> object:
         value: object = json.loads(text)
     except json.JSONDecodeError as exc:
         msg = f"{flag} takes JSON, which this is not: {exc}."
+        raise InputUsageError(msg) from exc
+    except ValueError as exc:
+        # Valid JSON, but `json` reads an integer with `int()`, which refuses one past the interpreter's limit on digits.
+        msg = f"{flag} takes JSON whose integers have at most {sys.get_int_max_str_digits()} digits; this holds a longer one."
         raise InputUsageError(msg) from exc
     kind = _json_type(value)
     if isinstance(option.node, ObjectItem) and kind != "object":
@@ -683,14 +692,16 @@ def collect_inputs(
 def _wire_filled(wire: object) -> bool:
     """Whether an input reaches the wire holding something, from an option or from the inputs file alike.
 
-    An envelope, an object holding both `concept` and `content`, holds what its content holds, so a
-    blank text is missing however it is enveloped. Anything else is judged as itself: a bare list, a
-    bare scalar, or a bare structured value, which may well have a `content` field of its own.
+    An envelope holds what its content holds, so a blank text is missing however it is enveloped. An
+    envelope is an object whose keys are exactly `concept` and `content`, the rule by which the SDK's
+    `prepare_inputs` and the runtime recognise one. Anything else is judged as itself: a bare list, a
+    bare scalar, or a bare structured value, which may well have `concept` and `content` fields of its
+    own beside others.
     """
     if not isinstance(wire, dict):
         return is_filled(wire)
     members = cast("dict[str, Any]", wire)
-    if CONCEPT_KEY in members and CONTENT_KEY in members:
+    if members.keys() == {CONCEPT_KEY, CONTENT_KEY}:
         return is_filled(members[CONTENT_KEY])
     return is_filled(members)
 
@@ -719,7 +730,8 @@ def read_inputs_file(path: Path) -> dict[str, Any]:
     """Read an inputs file, or stdin for `-`, into the inputs a run sends.
 
     Raises:
-        InputsFileError: The file cannot be read, is not valid JSON, or is not a JSON object.
+        InputsFileError: The file cannot be read, is not valid JSON, holds an integer too long to
+            read, or is not a JSON object.
     """
     origin = "stdin" if str(path) == STDIN else str(path)
     try:
@@ -735,6 +747,10 @@ def read_inputs_file(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         msg = f"The inputs file {origin} is not valid JSON: {exc}."
         raise InputsFileError(msg, hint='--inputs takes a JSON object mapping each input name to its value, such as {"text": "Hello"}.') from exc
+    except ValueError as exc:
+        # Valid JSON, but `json` reads an integer with `int()`, which refuses one past the interpreter's limit on digits.
+        msg = f"The inputs file {origin} holds an integer of more than {sys.get_int_max_str_digits()} digits, which cannot be read."
+        raise InputsFileError(msg, hint="Shorten the integer, or give it as a string where the method takes text.") from exc
     if not isinstance(payload, dict):
         msg = f"The inputs file {origin} holds a JSON {type(payload).__name__}, not an object."
         raise InputsFileError(msg, hint='--inputs takes a JSON object mapping each input name to its value, such as {"text": "Hello"}.')

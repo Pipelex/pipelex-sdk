@@ -21,14 +21,16 @@ regenerate and fetch the result again.
 without producing it, and the run then delivers the runtime's absence document, `{"absent": true,
 "variable_name": …, "kind": …, "reason": …, "producing_pipe": …, "upstream": …}`, or nothing at
 all, in place of the output. That is the method working as declared, so it is not refused: the
-result is `null`, and the caller says why on stderr. The same document from a pipe whose output is
-not optional is refused as any other result the model does not describe.
+result is `null`, and the caller says why on stderr. The same absence from a pipe whose output is
+not optional is the method breaking its own contract, which is refused as such, with the absence's
+kind and reason, rather than as a result the model does not describe.
 
-The document is recognised by its whole shape, exactly those keys each holding the type the
-runtime writes, and never by its `absent` key alone: a model of the method's own may declare an
-`absent` field, and a payload of it is data. Validating against the model first would not tell the
-two apart either, since a generated model ignores the keys it does not declare and an opaque one
-allows them, so the absence document would pass as data.
+The document is recognised before the model is consulted, whatever the output's optionality, by its
+whole shape, exactly those keys each holding the type the runtime writes, and never by its `absent`
+key alone: a model of the method's own may declare an `absent` field, and a payload of it is data.
+Validating against the model first would not tell the two apart either, since a generated model
+ignores the keys it does not declare and an opaque one allows them, so the absence document would
+pass as data.
 """
 
 import json
@@ -110,10 +112,13 @@ def narrow_output(
 
     Raises:
         OutputShapeError: The binding declares a plural output and the run's output is not one.
-        OutputValidationError: The model refuses the result, naming every field that failed.
+        OutputValidationError: The model refuses the result, naming every field that failed, or the
+            run left absent an output the pipe's contract requires.
     """
-    if output_optional and is_absence(results.main_stuff):
-        return NarrowedOutput(payload=None, absent=True, absence_reason=_absence_reason(results.main_stuff))
+    if is_absence(results.main_stuff):
+        if output_optional:
+            return NarrowedOutput(payload=None, absent=True, absence_reason=_absence_reason(results.main_stuff))
+        raise _required_output_absent(results)
     payload = result_payload(results, output_is_list=output_is_list)
     validator: TypeAdapter[Any] = TypeAdapter(list[output_model]) if output_is_list else TypeAdapter(output_model)
     try:
@@ -130,6 +135,23 @@ def narrow_output(
         hint = f"The method changed since the tree was generated: run `make codegen` and update binding.py{then}."
         raise OutputValidationError(msg, hint=hint, details=lines) from exc
     return NarrowedOutput(payload=payload)
+
+
+def _required_output_absent(results: RunResults) -> OutputValidationError:
+    """The error for a run that left absent an output its pipe's contract does not declare optional.
+
+    The method itself did not produce what its contract promises, so the hint points at the method
+    rather than at the generated tree, and the absence's kind and reason, when the runtime gave them,
+    say why.
+    """
+    msg = f"Run {results.pipeline_run_id} delivered no output, although the pipe's contract requires one, so nothing is printed."
+    details: tuple[str, ...] = ()
+    main_stuff: object = results.main_stuff
+    if isinstance(main_stuff, dict):
+        document = cast("dict[str, Any]", main_stuff)
+        details = (f"kind: {document['kind']}", f"reason: {document[REASON_KEY]}")
+    hint = "The method broke its own contract by leaving its output absent: change the method so that it always produces one, then run it again."
+    return OutputValidationError(msg, hint=hint, details=details)
 
 
 def _absence_reason(main_stuff: object) -> str | None:

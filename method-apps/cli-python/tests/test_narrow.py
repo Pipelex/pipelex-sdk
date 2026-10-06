@@ -116,9 +116,24 @@ class TestAbsentOutput:
         narrowed = narrow_output(run_results({"text": "hi"}), output_model=Greeting, output_is_list=False, output_optional=True)
         assert narrowed == NarrowedOutput(payload={"text": "hi"})
 
-    def test_the_absence_document_of_an_output_that_is_not_optional_is_refused(self):
-        with pytest.raises(OutputValidationError, match="Greeting refuses"):
-            narrow_output(run_results(ABSENCE_OUTPUT), output_model=Greeting, output_is_list=False, output_optional=False)
+    @pytest.mark.parametrize("model", [Greeting, Opaque])
+    def test_the_absence_document_of_an_output_that_is_not_optional_is_refused_as_an_absence(self, model: type[BaseModel]):
+        # An opaque model allows any key, so validating first would print the document as data.
+        with pytest.raises(OutputValidationError) as caught:
+            narrow_output(
+                run_results(ABSENCE_OUTPUT), output_model=model, output_is_list=False, output_optional=False, resume_hint="cli --resume run-1"
+            )
+        error = caught.value
+        assert error.message == f"Run {RUN_ID} delivered no output, although the pipe's contract requires one, so nothing is printed."
+        assert error.details == ("kind: skipped", "reason: The condition chose no branch.")
+        # The method broke its own contract: fetching the result again would deliver the same absence.
+        assert error.hint is not None
+        assert "make codegen" not in error.hint and "--resume" not in error.hint
+
+    def test_no_main_output_at_all_for_an_output_that_is_not_optional_is_refused_as_an_absence(self):
+        with pytest.raises(OutputValidationError, match="delivered no output, although the pipe's contract requires one") as caught:
+            narrow_output(run_results(None), output_model=Opaque, output_is_list=False, output_optional=False)
+        assert caught.value.details == ()
 
     def test_a_payload_whose_own_absent_field_is_true_is_data(self):
         payload = {"absent": True, "employee": "Alice"}

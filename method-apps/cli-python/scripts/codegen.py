@@ -227,14 +227,18 @@ async def fetch_generated(client: CodegenClient, source: CodegenSource, layout: 
 
 
 def write_if_changed(path: Path, content: str) -> bool:
-    """Write `content` to `path` unless it already holds exactly that; whether it wrote."""
+    """Write `content` to `path` unless it already holds exactly that; whether it wrote.
+
+    The text is written with LF line endings on every platform: text mode would otherwise write
+    CRLF on Windows, and the tree would not hold the bytes the API emitted.
+    """
     try:
         if path.read_text(encoding="utf-8") == content:
             return False
     except (OSError, UnicodeDecodeError):
         pass
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    path.write_text(content, encoding="utf-8", newline="\n")
     return True
 
 

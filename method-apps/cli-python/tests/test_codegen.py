@@ -163,6 +163,21 @@ class TestGenerate:
         assert written["pipe_io_contracts"] == wire_contracts("summarize-pdf").model_dump(mode="json")["pipe_io_contracts"]
         assert (layout.generated_dir / INIT_FILENAME).read_text(encoding="utf-8").startswith('"""')
 
+    def test_the_files_the_script_writes_hold_lf_on_every_platform(self, api: FakeCodegenClient, layout: Layout, monkeypatch: pytest.MonkeyPatch):
+        # Text mode writes CRLF on Windows unless `newline` says otherwise: this stands in for it on any platform.
+        original = Path.write_text
+
+        def write_text_as_windows(path: Path, data: str, encoding: str | None = None, errors: str | None = None, newline: str | None = None) -> int:
+            ending = "\r\n" if newline is None else newline or "\n"
+            return original(path, data.replace("\n", ending), encoding=encoding, errors=errors, newline="\n")
+
+        monkeypatch.setattr(Path, "write_text", write_text_as_windows)
+        assert generate(layout) == 0
+        written = tree_bytes(layout)
+        for name in (CONTRACTS_FILENAME, INIT_FILENAME, SOURCES_SIDECAR):
+            assert b"\n" in written[name]
+            assert b"\r\n" not in written[name], name
+
     def test_a_second_run_changes_nothing(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
         generate(layout)
         before = tree_bytes(layout)
