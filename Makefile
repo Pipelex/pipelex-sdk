@@ -28,6 +28,13 @@ TEMPLATES := starter-js starter-python method-apps/webapp-js method-apps/cli-pyt
 # and carry one version: the method apps' templates and the initializer that packs them.
 UNITS := js python starter-js starter-python method-apps:webapp-js,cli-python,initializers/js
 
+# The READMEs whose copy-out command copies the template beside them out of a release's tag,
+# as one does while no initializer serves that template. A release checks the `TAG=` each one
+# sets: it must name a release that holds the template, one already tagged or this release
+# when the unit holding the README ships in it (docs/release-model.md). A README leaves the
+# list when an initializer serves its template.
+COPY_OUTS := method-apps/cli-python/README.md
+
 # Run `make <target>` in each package directory, naming each one as it starts. The leading
 # `+` marks the line as a recursive make, so `make -n` descends rather than printing the loop.
 each = +@set -e; for d in $(PACKAGES); do echo "── $$d: make $(1)"; $(MAKE) --no-print-directory -C "$$d" $(1); done
@@ -88,8 +95,8 @@ install-linters: ## Install the actionlint and shellcheck CI runs, for Linux x86
 check-versions: ## Check that every unit's manifests carry one version, at or below VERSION
 	@node scripts/versions.mjs $(UNITS)
 
-check-release-versions: ## Check versions as a release pull request must: a unit ships at VERSION, with its changelog entry
-	@node scripts/versions.mjs --release $(UNITS)
+check-release-versions: ## Check versions as a release pull request must: a unit ships at VERSION, with its changelog entry, and each copy-out names a release holding its template
+	@node scripts/versions.mjs --release $(foreach file,$(COPY_OUTS),--copy-out $(file)) $(UNITS)
 
 # The units a release proposes, and the hold-backs it refuses (docs/release-model.md). The root
 # /release skill runs it with the open sprints' reading on stdin:
