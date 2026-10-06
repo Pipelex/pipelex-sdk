@@ -3,12 +3,12 @@
 Every gesture runs as it does for real down to the client's three routes, which a fake answers from
 recordings: `fixtures/codegen/summarize-pdf/` holds the starter template's summarize-pdf bundle and
 the `/v1/codegen` answer its committed tree was written from (its `models.py` and `codegen.lock`,
-verbatim), and the `/v1/pipe-io` answer is built from the contracts of `webapp-js`'s fixture for the
+verbatim), and the `/v1/pipe-io` answer is built from the wire-format table's contract fixture for the
 same method. The fake replaces `lib/client.py`'s `make_client`, the one seam every gesture reaches
 the API through, and each test points the gestures at a `Layout` under its own temporary directory,
 so no test writes into the package's tree.
 
-Each policy `webapp-js`'s codegen holds has its test here: symlinks and special files refused,
+Each policy the codegen kit holds (`docs/codegen.md`) has its test here: symlinks and special files refused,
 UTF-8 fatal, the server's paths contained and clear of the files the script writes itself, the key
 never sent over plaintext to another machine, the selector handshake, the self-check, the
 revision confirmed by a second `/v1/codegen` after `/v1/pipe-io`, so that a method changed in
@@ -285,9 +285,13 @@ class TestGenerate:
         assert "the method does not resolve: 1 error" in err
         assert "method/main.mthds: Unknown concept" in err
 
-    def test_a_package_with_no_method_says_to_create_one(self, api: FakeCodegenClient, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    def test_a_package_with_no_method_has_nothing_to_generate(self, api: FakeCodegenClient, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
         assert generate(Layout(tmp_path / "empty")) == 1
-        assert "holds no method. Run `make create` first." in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "holds no method, so there is nothing to generate." in err
+        # template-only:begin
+        assert "Run `make create` first" in err
+        # template-only:end
         assert api.calls == []
 
     def test_a_missing_key_is_refused_before_any_request(self, layout: Layout, capsys: pytest.CaptureFixture[str]):
@@ -465,11 +469,15 @@ class TestHandshake:
 
 
 class TestCheck:
-    def test_the_template_as_shipped_is_current(self, capsys: pytest.CaptureFixture[str]):
-        # No method and no tree: nothing to be out of step with, so `make check` is green on a fresh clone.
-        assert not PACKAGE_LAYOUT.generated_dir.exists() or not any(PACKAGE_LAYOUT.method_dir.glob("*.mthds"))
+    def test_the_package_s_own_tree_is_current(self, capsys: pytest.CaptureFixture[str]):
+        # The package holds its method and its tree together, or neither.
+        assert PACKAGE_LAYOUT.method_dir.exists() == PACKAGE_LAYOUT.generated_dir.exists()
         assert codegen_check.main() == EXIT_CURRENT
+        # template-only:begin
+        # The template as shipped holds neither: nothing to be out of step with, so `make check` is green on a fresh copy.
+        assert not PACKAGE_LAYOUT.method_dir.exists()
         assert "nothing to check" in capsys.readouterr().out
+        # template-only:end
 
     def test_a_method_without_a_tree_is_drift(self, layout: Layout, capsys: pytest.CaptureFixture[str]):
         assert run_check(layout) == EXIT_DRIFT

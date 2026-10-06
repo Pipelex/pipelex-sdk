@@ -41,6 +41,12 @@ Nothing under `generated/` is edited by hand: ruff excludes the directory so tha
 
 The bundle is sent with each file labelled by its path relative to the package, `method/<path>`, which is also the key the sidecar records it under, so a validation error names the file a person edits.
 
+<!-- template-only:begin -->
+
+In the template, `make create` fetches and writes the method through these same functions, `fetch_generated` and `write_generated`, so that the tree it writes is the one `make codegen` would write and every guard above holds for it too ([`create.md`](create.md)). It asks `/v1/pipe-io` to echo a named method's `.mthds` files as well (`include_files`), since the method's own prose names the project; `make codegen` does not read them and never asks for them. Its bundle reader walks a bundle directory with the same `walk` and reads it with the same `read_bundle`, so it refuses the same links, special files and undecodable files.
+
+<!-- template-only:end -->
+
 ## Gate fidelity policies
 
 Each of these replaced a way the gates could be silently wrong, and each has its test in `tests/test_codegen.py`:

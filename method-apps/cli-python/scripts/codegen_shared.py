@@ -102,6 +102,10 @@ class SymlinkRefusedError(CodegenSetupError):
     def __init__(self, where: str, kind: str) -> None:
         allowed = f"only regular files and directories are allowed under {METHOD_DIRNAME}/ and {GENERATED_DIRNAME}/"
         super().__init__(f"refusing {kind} at {where}: {allowed}.")
+        #: The path refused, as a message names it, so that a caller reading a tree elsewhere can word its own refusal.
+        self.where = where
+        #: What it is: `a symlink` or `a special file`.
+        self.kind = kind
 
 
 class NonUtf8FileError(CodegenSetupError):
@@ -233,9 +237,29 @@ class CodegenSource:
         """The `/v1/codegen` request: the method and the projection, with no `pipe_ref`, which the `types` kind refuses."""
         return CodegenRequest.model_validate({**self._selector_kwargs(), "kind": "types", "target": TARGET})
 
-    def pipe_io_request(self) -> PipeIORequest:
-        """The `/v1/pipe-io` request for every pipe the method loads, a bundle's and a named method's alike."""
-        return PipeIORequest.model_validate({**self._selector_kwargs(), "all_pipes": True})
+    def pipe_io_request(self, *, include_files: bool = False) -> PipeIORequest:
+        """The `/v1/pipe-io` request for every pipe the method loads, a bundle's and a named method's alike.
+
+        `include_files` asks the route to echo a named method's `.mthds` files, which only a caller
+        reading the method's own prose needs; a bundle's files are already in hand, so it is never
+        asked for one.
+        """
+        echo = include_files and self.selector is not None
+        return PipeIORequest.model_validate({**self._selector_kwargs(), "all_pipes": True, "include_files": echo})
+
+
+def bundle_paths(paths: list[str]) -> list[str]:
+    """The bundle's files among the paths a walk found: every `.mthds` file, in the walk's order."""
+    return [path for path in paths if path.endswith(BUNDLE_SUFFIX)]
+
+
+def read_bundle(directory: Path, relatives: list[str], layout: Layout) -> list[tuple[str, str]]:
+    """Each of a bundle's files under `directory`, as its path relative to it and its text, in the order given.
+
+    Raises:
+        NonUtf8FileError: A file is not UTF-8.
+    """
+    return [(relative, read_text_file(directory / relative, layout)) for relative in relatives]
 
 
 def discover_source(layout: Layout) -> CodegenSource | None:
@@ -252,7 +276,7 @@ def discover_source(layout: Layout) -> CodegenSource | None:
     if not method_dir.is_dir():
         return None
     paths = walk(method_dir, layout)
-    bundles = [path for path in paths if path.endswith(BUNDLE_SUFFIX)]
+    bundles = bundle_paths(paths)
     if MANIFEST_FILENAME in paths and bundles:
         msg = (
             f"{layout.describe(method_dir)}/ holds both {MANIFEST_FILENAME} and .mthds files ({', '.join(bundles)}): "
@@ -265,14 +289,9 @@ def discover_source(layout: Layout) -> CodegenSource | None:
         return CodegenSource(selector=parse_manifest(content, origin=label), source_hashes={label: hash_source(content)})
     if not bundles:
         return None
-    files: list[MthdsFileItem] = []
-    hashes: dict[str, str] = {}
-    for relative in bundles:
-        content = read_text_file(method_dir / relative, layout)
-        label = f"{METHOD_DIRNAME}/{relative}"
-        files.append(MthdsFileItem(content=content, source=label))
-        hashes[label] = hash_source(content)
-    return CodegenSource(files=tuple(files), source_hashes=hashes)
+    labelled = [(f"{METHOD_DIRNAME}/{relative}", content) for relative, content in read_bundle(method_dir, bundles, layout)]
+    files = tuple(MthdsFileItem(content=content, source=label) for label, content in labelled)
+    return CodegenSource(files=files, source_hashes={label: hash_source(content) for label, content in labelled})
 
 
 def invalid_lines(report: CrateInvalidReport, *, lead: str = "the method does not resolve") -> list[str]:

@@ -14,11 +14,16 @@ def _write(path: Path, text: str) -> None:
 
 
 class TestReadMethodSource:
-    def test_the_template_as_shipped_has_no_method_directory(self):
-        # The template ships no method: `make create` writes `method/`, so the package's own is absent.
+    def test_the_package_s_own_method_directory_names_one_method(self):
+        if method_dir().is_dir():
+            source = read_method_source()
+            assert sum(named is not None for named in (source.mthds_contents, source.method_id, source.method_ref)) == 1
+        # template-only:begin
+        # The template ships no method, so the package's own `method/` is absent.
         assert not method_dir().is_dir()
         with pytest.raises(MethodSourceError, match="missing"):
             read_method_source()
+        # template-only:end
 
     def test_a_bundle_is_every_mthds_file_in_the_order_of_its_path(self, tmp_path: Path):
         _write(tmp_path / "b.mthds", "b")

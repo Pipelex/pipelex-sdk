@@ -2,9 +2,11 @@
 
 A command-line tool that runs one MTHDS method through the [Pipelex](https://pipelex.com) API with [`pipelex-sdk`](https://pypi.org/project/pipelex-sdk/), printing the method's result as JSON on stdout.
 
+This directory is a **template**. It ships the run lifecycle, the error presentation, the result output, the options derived from a method's input form and the codegen kit, and no method at all, and every project created from it inherits what it carries. Keep it small, generic and high-quality, and when adding anything ask whether every project created from it should inherit it.
+
 <!-- template-only:begin -->
 
-This directory is a **template**. It is the `cli-python/` member of the method-app family, `method-apps/` in the `pipelex-sdk` repository, and it ships the run lifecycle, the error presentation, the result output, the options derived from a method's input form and the codegen kit, and no method at all: `make create` will turn a copy of it into the command for one method, and until that gesture is written it parses the family's arguments and refuses. Keep the template small, generic and high-quality, and when adding anything ask whether every project created from it should inherit it. A worked demonstration of a method belongs in the gallery this template was extracted from, `starter-python/` in the same repository, never here. The family's `docs/cli-python-lineage.md`, beside this directory, records that extraction and the rule that came out of it: **this template leads the code it shares with the starter**, so a fix to a module it carries lands here first and owes the starter a port, which nothing makes for you.
+It is the `cli-python/` member of the method-app family, `method-apps/` in the `pipelex-sdk` repository. `make create` turns a copy of it into the command for one method: it writes the method into the package, names the project after it with the bootstrap, and leaves `make all` green ([`docs/create.md`](docs/create.md)). A worked demonstration of a method belongs in the gallery this template was extracted from, `starter-python/` in the same repository, never here. The family's `docs/cli-python-lineage.md`, beside this directory, records that extraction and the rule that came out of it: **this template leads the code it shares with the starter**, so a fix to a module it carries lands here first and owes the starter a port, which nothing makes for you. The bootstrap rewrites this file by exact match, so these stay as they are: the description line under the H1 is byte-identical to `CLAUDE_DESCRIPTION` in `.claude/skills/bootstrap/scripts/bootstrap.py`, the paragraph above opens with the sentence the script looks for and ends at the first blank line, and the template's name appears only in the H1 and in paths; `tests/test_bootstrap.py` checks them.
 
 <!-- template-only:end -->
 
@@ -39,22 +41,37 @@ src/pipelex_method_cli_python/
     method_source.py  # the method's source, read from the package's method/ through importlib.resources
     manifest.py       # method.json, which names a method by catalog id or published address
 scripts/
-  create.py           # make create: parses the family's contract, then refuses (not written yet)
   codegen.py          # make codegen: the typed models and contracts.json, from POST /v1/codegen and /v1/pipe-io
   codegen_check.py    # make codegen-check: offline, whether generated/ is current with method/
   codegen_verify.py   # make codegen-verify: keyed, whether the committed tree is what the method resolves to
-  codegen_shared.py   # what the three share: the layout, the sidecar and the policies
+  codegen_shared.py   # what the codegen gestures share: the layout, the bundle reader, the sidecar and the policies
   codegen_api.py      # the selector handshake and the failures in words
   local_status.py     # make local-status: a local checkout or PyPI, read from direct_url.json
+  # template-only:begin
+  create.py           # make create: the gesture's two halves, the env file and the steps after the bootstrap
+  create_plan.py      # what make create decides about the method before writing: the argument, the bundle, the pipe, binding.py
+  # template-only:end
 tests/
   support.py          # the FakeClient, results built the way the SDK builds them, contracts and bindings, invoke()
   conftest.py         # the fake_client fixture, and no ambient key in any test
   fixtures/           # the wire-format table and its contracts, and the recorded codegen of a method
   test_*.py           # one file per module; test_cli.py drives the command through Typer's CliRunner,
-                      # test_wire_table.py replays the table, test_codegen.py runs the three gestures
+                      # test_wire_table.py replays the table, test_codegen.py runs the codegen gestures
+  # template-only:begin
+  test_create*.py     # the gesture: its arguments and halves, its planning, and test_create_tree.py's created copies
+  test_bootstrap.py   # the bootstrap, and that nothing a project keeps names the template or the gesture
+  support_create.py   # the client that answers from fixtures/recorded/, the API's answers for fixtures/bundles/
+.claude/skills/bootstrap/  # the bootstrap, which names the project; make create runs it, then removes it
+  # template-only:end
 ```
 
-The template as shipped holds no method. `make create` will write these inside the package: `method/` (the method's `.mthds` files, or a `method.json`), `generated/` (what `make codegen` writes: the method's typed models, `codegen.lock`, `contracts.json`, `__init__.py` and `sources.json`), and `binding.py`, which declares `PIPE_REF`, `OUTPUT_MODEL` and `OUTPUT_IS_LIST`. [`lib/binding.py`](src/pipelex_method_cli_python/lib/binding.py) documents the seam; the CLI finds those files through `importlib.resources` and imports `binding.py` dynamically, so the template as shipped type-checks with neither. [`docs/codegen.md`](docs/codegen.md) describes the generated tree and its checks, and [`docs/cli-kernel.md`](docs/cli-kernel.md) the options derived from it.
+The method lives inside the package: `method/` (the method's `.mthds` files, or a `method.json`), `generated/` (what `make codegen` writes: the method's typed models, `codegen.lock`, `contracts.json`, `__init__.py` and `sources.json`), and `binding.py`, which declares `PIPE_REF`, `OUTPUT_MODEL` and `OUTPUT_IS_LIST`. [`lib/binding.py`](src/pipelex_method_cli_python/lib/binding.py) documents the seam; the CLI finds those files through `importlib.resources` and imports `binding.py` dynamically, so the package type-checks without them. [`docs/codegen.md`](docs/codegen.md) describes the generated tree and its checks, and [`docs/cli-kernel.md`](docs/cli-kernel.md) the options derived from it.
+
+<!-- template-only:begin -->
+
+The template as shipped holds none of them: `make create` writes them, then the bootstrap renames the package after the method. The CLI then says it holds no method, and `make check` is green on the template as on a project.
+
+<!-- template-only:end -->
 
 ## Commands
 
@@ -74,6 +91,9 @@ make lock             # uv lock, after editing the dependencies
 make use-local        # pipelex-sdk and mthds from local checkouts, as editable packages
 make use-published    # back to what uv.lock pins
 make local-status     # which of the two is installed
+# template-only:begin
+make create METHOD=…  # one-shot: turn this template into the command for one method (docs/create.md)
+# template-only:end
 ```
 
 ## The command's contract
@@ -90,15 +110,21 @@ make local-status     # which of the two is installed
 
 These are the files a release of `pipelex-sdk` or `mthds` can reach, which the repository's `/bump-sdk` reads: `lib/client.py` constructs the client and reads `AppInfo`; `lib/run.py` calls `prepare_inputs`, `start`, `execute`, `wait_for_result` and `results_from_execute`; `lib/contracts.py` reads `mthds.protocol`'s `PipeIOContracts`, `InputForm` and `OutputForm`; `lib/inputs.py` reads the `mthds.protocol.input_form` models and `render_inputs_template`; `lib/wire.py` reads `PipeInputContract`; `scripts/codegen.py`, `scripts/codegen_check.py` and `scripts/codegen_verify.py` call the client's `codegen`, `pipe_io` and `version`, the SDK's `write_codegen_tree` and `run_codegen_check`, and read its `CodegenRequest`, `PipeIORequest` and their reports; `lib/artifacts.py` calls `collect_artifacts` and `download_artifacts`; `lib/usage.py` reads `summarize_usage` and `FieldNotIncludedError`; `lib/errors.py` matches the SDK's error classes and reads `RunErrorReport` and the problem document's fields; `lib/output.py` reads `RunResults`; and `cli.py` catches `mthds.protocol.exceptions.PipelineRequestError`. In the tests, `tests/support.py`, `tests/conftest.py` and `tests/test_codegen.py` build the SDK's own result, report and error types the way the SDK builds them, and the fake client's `prepare_inputs` runs the SDK's own.
 
+<!-- template-only:begin -->
+
+In the template, `scripts/create_plan.py` also calls the client's `get_method` and reads its `MethodData`, and asks `pipe_io` for a named method's files (`include_files`), whose prose names the project; `tests/support_create.py` answers those calls from the recorded fixtures.
+
+<!-- template-only:end -->
+
 ## Rules
 
-- **After any change, run `make all`**, or `make agent-check agent-test` for a quiet run. Do not declare a task done until it passes. If formatting fails, run `make format`.
+- **After any change, run `make all`**, or `make agent-check agent-test` for a quiet run. Do not declare a task done until it passes. If formatting fails, run `make format`. CI runs the same gates on the oldest and the newest supported Python, with a locked install ([`docs/ci.md`](docs/ci.md)).
 - **Run every tool from `.venv/bin/`, through the Makefile, never with `uv run`**: `uv run` re-syncs the environment against `uv.lock` first, which silently undoes `make use-local`.
 - **Tests replace `lib/client.py`'s `make_client`, never the `pipelex_sdk` package.** The `fake_client` fixture hands back a `FakeClient` whose answers are the SDK's own types, so every code path runs as it does for real down to the client's methods. Keep stdout and stderr apart in every assertion: `invoke()` returns them separately.
 - **Every module that talks to the API calls `api.make_client()` through the module** (`from pipelex_method_cli_python.lib import client as api`), never by importing the function, or the fixture cannot replace it.
 - **Print server text with `rich.markup.escape`** wherever it reaches the Rich console: a bracketed span in a run's error would otherwise be read as markup.
 - **Never edit anything under `src/pipelex_method_cli_python/generated/`** once a project has one: the codegen writes it verbatim and stamps it, and `make codegen-check` reports a hand edit to `contracts.json` as drift. Ruff excludes the directory on purpose. After changing the method, run `make codegen` and commit the tree with it.
-- **No input is named in the CLI's code.** A change to how an input is taken belongs in `lib/inputs.py` and `lib/wire.py` for every method at once, and a change to what goes on the wire must keep `tests/test_wire_table.py` green.
+- **No input is named in the CLI's code.** A change to how an input is taken belongs in `lib/inputs.py` and `lib/wire.py` for every method at once, and a change to what goes on the wire must keep `tests/test_wire_table.py` green, never by editing `tests/fixtures/wire/`, which records what the form kernel sends.
 - **Tests that need a method build it from fixtures**, a contracts document and a binding from `tests/support.py`, or a package of their own under `tmp_path` for the codegen gestures, never by writing into the package's own `src/` tree.
 - **The dependencies a module imports are declared in `pyproject.toml`**, even those that arrive transitively, and `uv.lock` moves with them (`make lock`). Moving the `pipelex-sdk` floor is a reviewed change with the SDK's changelog read, never a side effect of local mode.
 
@@ -113,6 +139,8 @@ This passage describes the repository the template lives in, and leaves with the
 - **A workflow is edited in `.github/workflows/` here, then re-rendered** with `make workflows` at the repository's root, which writes its standalone and next-SDK twins into the root `.github/workflows/`; commit them together. The workflows install with `make install` under `UV_LOCKED=1`, so a `uv.lock` that `pyproject.toml` has moved away from fails CI rather than being rewritten, and the next-SDK twin installs the SDK built from the same commit over the locked one right after that step.
 - **The version is the family's.** `pyproject.toml`'s `[project] version` carries the version the family last shipped as, at or below the root `VERSION`, and only a release moves it, with `uv.lock`. Changelog entries go in the family's `method-apps/CHANGELOG.md`; this directory's `CHANGELOG.md` only points there.
 - **The wire-format table is the family's.** `tests/fixtures/wire/` is recorded by `method-apps/scripts/record-wire-table.mjs` from the form kernel `webapp-js` installs; never edit it by hand. After a kernel upgrade, rerun the recorder in `method-apps/`, commit the table, and make `lib/wire.py` agree with it.
+- **What a project inherits is decided here.** `make create` ends in the bootstrap, `.claude/skills/bootstrap/scripts/bootstrap.py`, which renames the project and removes what only the template needs: whole files, listed in its `REMOVALS` (the gesture, its planning code, its tests and their fixtures, and `docs/create.md`), and passages of the files a project keeps, each between two marker lines, the words `template-only` followed by `:begin`, then by `:end`, in whatever comment the file uses, Python and the Makefile included. Keep each marker on a line of its own, and never spell one out anywhere else. `tests/test_bootstrap.py` fails when a file a project keeps still names the template, the gesture or the wire-table recorder outside such a passage, and `tests/test_create_tree.py` creates a project from recorded answers once per kind of method and runs ruff, pyright, the tests, the offline codegen check and its `--help` over it.
+- **The live proof of `make create` is taken by hand**, against the hosted API, before a release that touches the gesture, the bootstrap or the code a created project runs: [`docs/ci.md`](docs/ci.md) has the procedure.
 - **There is no git hook.** The repository's pre-commit hook runs a template's `.husky/pre-commit`, and this template has none: `make check` and CI hold it to ruff, pyright and the offline codegen check.
 - **Pull requests target `dev`.** `make all` here, and `make check-workflows check-versions` at the repository's root after changing a workflow or a version.
 

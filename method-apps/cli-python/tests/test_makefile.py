@@ -1,18 +1,14 @@
-"""The Makefile's gesture arguments and sibling checkouts, pinned with `make -n`.
+"""The Makefile's arguments and sibling checkouts, pinned with `make -n`.
 
 `make -n` prints the commands a target would run without running them, so each case reads the line
-a target would execute. The rules are the method-app family's: only a value given on the command
-line counts, a blank one (or a `0` switch) is not given, and a value reaches the script exactly as
-typed. The family's own contract test runs `make -n create` in every template and compares them;
-these pin this template's expansions on their own.
+a target would execute. Only a value given on the command line counts, a blank one is not given,
+and a value reaches the shell exactly as typed.
 """
 
 import os
 import re
 import subprocess
 from pathlib import Path
-
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,15 +25,6 @@ def _make(args: list[str], *, env: dict[str, str] | None = None, cwd: Path = PRO
     )
 
 
-def _create_line(variables: list[str], *, env: dict[str, str] | None = None) -> str:
-    """The line `make create <variables>` would run, with its spacing collapsed."""
-    result = _make(["-n", "create", *variables], env=env)
-    assert result.returncode == 0, result.stderr
-    line = next((printed for printed in result.stdout.splitlines() if "scripts/create.py" in printed), None)
-    assert line is not None, result.stdout
-    return " ".join(line.split())
-
-
 def _checkouts(variables: list[str], *, env: dict[str, str] | None = None) -> tuple[str, str]:
     """The SDK and mthds checkouts `make use-local <variables>` would install, each as its quoted word."""
     result = _make(["-n", "use-local", *variables], env=env)
@@ -49,31 +36,6 @@ def _checkouts(variables: list[str], *, env: dict[str, str] | None = None) -> tu
     found = re.match(rf"sdk={quoted}; mthds={quoted};", line)
     assert found is not None, line
     return found.group(1), found.group(2)
-
-
-class TestGestureArguments:
-    def test_passes_the_values_given_on_the_command_line_as_flags(self):
-        line = _create_line(["METHOD=bundles/cv", "NAME=cv", "PIPE=screen", "LICENSE=mit", "DRY_RUN=1"])
-        assert line == ".venv/bin/python scripts/create.py 'bundles/cv' --name 'cv' --pipe 'screen' --license 'mit' --dry-run"
-
-    def test_treats_a_blank_value_and_a_0_switch_as_not_given(self):
-        assert _create_line(["METHOD=cv", "NAME=", "TITLE= ", "DRY_RUN="]) == ".venv/bin/python scripts/create.py 'cv'"
-        assert _create_line(["METHOD=cv", "DRY_RUN=0"]) == ".venv/bin/python scripts/create.py 'cv'"
-
-    def test_ignores_a_variable_the_shell_exports(self):
-        line = _create_line(["METHOD=cv"], env={"NAME": "from-shell", "LICENSE": "proprietary", "DRY_RUN": "1"})
-        assert line == ".venv/bin/python scripts/create.py 'cv'"
-
-    def test_hands_a_value_over_exactly_as_typed(self):
-        line = _create_line(["METHOD=$(touch pwned)", 'TITLE=Bob\'s "$5" app, really'])
-        assert line == ".venv/bin/python scripts/create.py '$(touch pwned)' --title 'Bob'\\''s \"$5\" app, really'"
-
-    @pytest.mark.parametrize("variables", [[], ["METHOD="], ["METHOD=  "]])
-    def test_refuses_a_missing_or_blank_method_before_running_anything(self, variables: list[str]):
-        result = _make(["create", *variables])
-        assert result.returncode == 2
-        assert "usage: make create METHOD=" in result.stdout
-        assert "scripts/create.py" not in result.stdout
 
 
 class TestSiblingCheckouts:

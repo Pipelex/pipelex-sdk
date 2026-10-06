@@ -1,7 +1,7 @@
 """What every module of the CLI shares: its name, its run modes and the base of the errors it raises itself.
 
-The names are the project's own. `make create` renames the distribution, the console script and the
-import package after the method, so the two names here change with them.
+The names are the project's own: the distribution's and the console script's, which are named after
+the method, as the import package is.
 """
 
 import os

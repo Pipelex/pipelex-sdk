@@ -1,12 +1,12 @@
 """The binding: the one seam between this generic CLI and the one method it runs.
 
-The template ships no method. `make create` turns a copy of it into the CLI for one method by
-writing these inside the package, and the CLI finds them there at run time:
+The CLI finds its method inside the package at run time:
 
 - `method/`, the method's source (`lib/method_source.py`);
 - `generated/`, the package `make codegen` writes: the method's typed models, the codegen lock, and
   `contracts.json`, the contracts the command derives its options from (`lib/contracts.py`);
-- `binding.py`, written once and the project's own to edit afterwards, which declares:
+- `binding.py`, written once when the project is created and its own to edit afterwards, which
+  declares:
 
   ```python
   from pipelex_method_cli_python.generated.models import ReceiptReview
@@ -19,8 +19,8 @@ writing these inside the package, and the CLI finds them there at run time:
   OUTPUT_IS_LIST = False
   ```
 
-The package holds no method when it has neither `binding.py` nor a generated tree, which is the
-template as shipped: the command then says to run `make create`. Their presence is read off the
+The package holds no method when it has neither `binding.py` nor a generated tree, which only the
+template as shipped does: the command then says so. Their presence is read off the
 package's files through `importlib.resources`, without importing anything, so an `ImportError`
 raised inside a binding that exists is never mistaken for a binding that does not. A tree is present
 only when it holds what `make codegen` writes (`lib/contracts.py`'s `GENERATED_FILES`): a leftover
@@ -56,7 +56,7 @@ from pipelex_method_cli_python.lib.contracts import (
 )
 from pipelex_method_cli_python.lib.method_source import PACKAGE, MethodSource, read_method_source
 
-#: The module `make create` writes, which names the pipe and the output model.
+#: The module that names the pipe and the output model.
 BINDING_MODULE = f"{PACKAGE}.binding"
 
 #: The file that module is, inside the package.
@@ -76,7 +76,7 @@ class BindingError(AppError):
 
 @dataclass(frozen=True)
 class MethodBinding:
-    """What the CLI knows about its method once `make create` has written it."""
+    """What the CLI knows about its method."""
 
     #: The pipe the CLI runs, by its namespaced reference (`<domain>.<pipe_code>`), which the API
     #: resolves exactly, where a bare code would be searched for across the method's domains.

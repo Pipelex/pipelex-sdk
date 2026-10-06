@@ -11,6 +11,7 @@ import signal
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import typer
 from pipelex_sdk.artifact_models import ArtifactItemError, DownloadArtifactsResult, DownloadedArtifact
@@ -23,6 +24,7 @@ from pipelex_sdk.errors import (
     RunLifecycleUnavailableError,
 )
 from pipelex_sdk.runs import RunResults, RunStatus, WaitForResultOptions
+from pydantic import ValidationError
 
 from pipelex_method_cli_python.cli import (
     EMPTY_STATE,
@@ -60,11 +62,14 @@ from tests.support import (
 
 
 class TestEmptyState:
-    def test_help_says_to_run_make_create(self):
+    def test_help_says_there_is_no_method(self):
         result = invoke(None, ["--help"])
         assert result.exit_code == 0
+        assert "holds no method" in result.stdout
+        # template-only:begin
         assert "make create METHOD=" in result.stdout
-        # The empty state takes no option: there is nothing to run yet.
+        # template-only:end
+        # The empty state takes no option: there is nothing to run.
         assert "--blocking" not in result.stdout
 
     def test_a_bare_run_refuses_on_stderr(self):
@@ -580,6 +585,65 @@ class TestDownloads:
         assert refusal in result.stderr
         # The download's failure as it happened, then the refusal last, as the error the command exits with.
         assert result.stderr.index("cannot be created or used") < result.stderr.index(refusal)
+
+    @pytest.mark.parametrize(
+        ("failure", "says"),
+        [
+            # An unwritable `--out` can surface as a bare `OSError`.
+            (PermissionError(13, "Permission denied", "out"), "Permission denied"),
+            # Python 3.11 and 3.12 raise this where `--out` is a symbolic link loop, which the SDK resolves first.
+            (RuntimeError("Symlink loop from 'out'"), "Symlink loop"),
+            # A body httpx cannot decode, which the SDK's transport mapping leaves as httpx's own error.
+            (httpx.DecodingError("Error -3 while decompressing data"), "decompressing"),
+            # A malformed answer from the route that resolves the files' links.
+            (json.JSONDecodeError("Expecting value", "<html>", 0), "Expecting value"),
+            (ValidationError.from_exception_data("BulkResolvedStorageUrls", []), "BulkResolvedStorageUrls"),
+        ],
+    )
+    def test_a_download_that_fails_unforeseen_never_hides_a_refused_result(
+        self, failure: Exception, says: str, fake_client: FakeClient, tmp_path: Path
+    ):
+        # Neither a `PipelineRequestError` nor an `AppError`, but what the download path can raise all the same.
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        fake_client.download_answer = failure
+        result = invoke(make_binding(output_model=Greeting), ["--out", str(tmp_path)])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert says in result.stderr
+        assert "No inference calls" in result.stderr
+        refusal = f"Run {RUN_ID} returned a result that Greeting refuses, first at text, so it is not printed."
+        assert refusal in result.stderr
+        assert result.stderr.index(says) < result.stderr.index(refusal)
+        assert "Traceback" not in result.stderr
+
+    @pytest.mark.parametrize(
+        ("failure", "says"),
+        [
+            (PermissionError(13, "Permission denied", "out"), "PermissionError: [Errno 13] Permission denied: 'out'"),
+            (httpx.DecodingError("Error -3 while decompressing data"), "DecodingError: Error -3 while decompressing data"),
+        ],
+    )
+    def test_a_download_that_fails_unforeseen_after_a_printed_result_is_an_error_never_a_traceback(
+        self, failure: Exception, says: str, fake_client: FakeClient, tmp_path: Path
+    ):
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        fake_client.download_answer = failure
+        result = invoke(make_binding(), ["--out", str(tmp_path)])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == IMAGE_OUTPUT
+        assert f"Error: Saving the run's files failed: {says}" in result.stderr
+        assert "The run succeeded and its result is complete above." in result.stderr
+        assert f"{COMMAND_NAME} --resume {RUN_ID} --out DIR" in result.stderr
+        assert "[bold]" not in result.stderr
+        assert "No inference calls" in result.stderr
+        assert "Traceback" not in result.stderr
+
+    def test_a_bug_in_the_download_is_never_worded_as_a_failed_save(self, fake_client: FakeClient, tmp_path: Path):
+        # A failure the download path cannot raise is a bug, and crashes loudly rather than reading like an ordinary one.
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        fake_client.download_answer = TypeError("'NoneType' object is not subscriptable")
+        with pytest.raises(TypeError, match="not subscriptable"):
+            invoke(make_binding(output_model=Greeting), ["--out", str(tmp_path)])
 
     def test_a_default_directory_refused_never_hides_a_refused_result(self, fake_client: FakeClient):
         fake_client.wait_answer = run_results(IMAGE_OUTPUT, run_id="../escape")

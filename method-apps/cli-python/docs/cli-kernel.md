@@ -8,7 +8,7 @@ This is why nothing is written per method: a generated module of options would b
 
 | Field kind | Option | What it takes |
 | --- | --- | --- |
-| `text`, `prose` | `--name TEXT` | A string. `@path` reads it from a UTF-8 file, a leading `~` in the path naming the home directory, `@-` from stdin, and a leading `@@` stands for a literal `@` |
+| `text`, `prose` | `--name TEXT` | A string. `@path` reads it from a UTF-8 file, a leading `~` in the path naming the home directory as a shell's does (one naming no user, such as Word's `~$report.docx`, is the file's own name), `@-` from stdin, and a leading `@@` stands for a literal `@` |
 | `date` | `--name DATE`, or `--name DATETIME` when the descriptor says `datetime` | An ISO 8601 calendar date, or a date and time. A calendar date given with a time of day is refused unless the time is midnight, rather than silently cut |
 | `number` | `--name N`, or `--name INTEGER` | A finite number, or an integer when the descriptor says so, inside the descriptor's bounds, written in ASCII digits with an optional sign, decimal point and exponent, which is what the form kernel's `Number()` reads: `1_000`, `1_0.5` and digits of other scripts are refused |
 | `boolean` | `--name / --no-name` | One of the pair; without either, the input is not given |

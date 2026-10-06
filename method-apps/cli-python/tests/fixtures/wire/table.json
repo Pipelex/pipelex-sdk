@@ -1,5 +1,5 @@
 {
-  "comment": "What @pipelex/mthds-form sends for each case, recorded by method-apps/scripts/record-wire-table.mjs from the kernel webapp-js installs. `control` is the value the form's control holds, `cli` the option values cli-python is given for the same value, and `uploads` the local files a case names with the reference their upload answers. Do not edit: rerun the recorder.",
+  "comment": "What the form kernel, @pipelex/mthds-form, sends for each case, recorded from the kernel named below. `control` is the value the form's control holds, `cli` the option values the CLI is given for the same value, and `uploads` the local files a case names with the reference their upload answers. Do not edit.",
   "kernel": "@pipelex/mthds-form 0.10.0",
   "cases": [
     {

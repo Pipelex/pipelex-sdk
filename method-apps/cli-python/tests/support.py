@@ -29,7 +29,7 @@ from pipelex_method_cli_python.lib.method_source import MethodSource
 #: The test fixtures' directory.
 FIXTURES = Path(__file__).parent / "fixtures"
 
-#: The contracts recorded from `webapp-js`'s fixtures by the family's wire-table recorder, one file per fixture.
+#: The contract fixtures the wire-format table is recorded over, one file per fixture.
 WIRE_CONTRACTS = FIXTURES / "wire" / "contracts"
 
 #: The pipe the default binding runs.
@@ -85,7 +85,7 @@ class AnyOutput(BaseModel):
 
 
 def wire_contracts(fixture: str) -> ContractsDocument:
-    """The contracts of one of `webapp-js`'s fixtures, as the wire-table recorder wrote them."""
+    """The contracts of one of the wire-format table's fixtures."""
     path = WIRE_CONTRACTS / f"{fixture}.json"
     return parse_contracts(path.read_text(encoding="utf-8"), origin=str(path))
 
@@ -147,7 +147,7 @@ def make_binding(
     contracts: PipeContracts | None = None,
     output_model: type[BaseModel] = AnyOutput,
 ) -> MethodBinding:
-    """A binding as `make create` would leave one, without a generated tree on disk.
+    """A binding as a project holds one, without a generated tree on disk.
 
     The default pipe takes no input, and its output model accepts any object, so a test about
     something else is not held to either.

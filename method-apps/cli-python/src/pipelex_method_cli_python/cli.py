@@ -15,8 +15,8 @@ as the fields of `LifecycleFlags`, from which both the parameters and the readin
 values are derived. `RESERVED_FLAGS` is what a derived option must stay clear of: an input whose
 flag would take one of them is offered as `--input-<name>` instead.
 
-**With no method yet**, the template as shipped, the command takes no option: its help says to run
-`make create`, and a bare run refuses with that message on stderr and exit code 1.
+**With no method**, which only the template as shipped has, the command takes no option: its help
+says so, and a bare run refuses with that message on stderr and exit code 1.
 """
 
 import asyncio
@@ -47,22 +47,28 @@ from pipelex_method_cli_python.lib.inputs import (
 )
 from pipelex_method_cli_python.lib.run import RunPlan, execute_plan
 
-#: What `make create` takes, as the empty state names it.
+# template-only:begin
+#: What `make create` takes, as the template's empty state names it.
 CREATE_COMMAND = "make create METHOD=<path/to/bundle | mt_… | github.com/owner/repo[/pkg][@tag]>"
+# template-only:end
 
-#: The empty state, one sentence per line: the template as shipped holds no method.
-EMPTY_STATE_LINES = (
-    "This CLI holds no method yet. Turn it into the command for your method by running, in the project's directory:",
+#: The empty state, one paragraph per line: the package holds no method, neither `binding.py` nor a
+#: generated tree. A line indented by two spaces is a command, kept whole on its line.
+EMPTY_STATE_LINES: tuple[str, ...] = (
+    "This CLI holds no method: its package has neither binding.py nor a generated/ tree.",
+    # template-only:begin
+    "Turn this template into the command for your method by running, in its directory:",
     f"  {CREATE_COMMAND}",
     "METHOD is a .mthds file or a directory of them, a method id from your organization's catalog (mt_…), or a published method's address.",
+    # template-only:end
 )
 
 #: What a bare run prints on stderr in the empty state.
 EMPTY_STATE = "\n".join(EMPTY_STATE_LINES)
 
 #: The empty state's help, one paragraph per line. Click rewraps a paragraph unless a line holding
-#: only `\b` opens it, which keeps the `make create` command whole on its line.
-EMPTY_STATE_HELP = "\n\n".join((EMPTY_STATE_LINES[0], f"\b\n{EMPTY_STATE_LINES[1]}", EMPTY_STATE_LINES[2]))
+#: only `\b` opens it, which keeps a command whole on its line.
+EMPTY_STATE_HELP = "\n\n".join(f"\b\n{line}" if line.startswith("  ") else line for line in EMPTY_STATE_LINES)
 
 #: The exit code of a command line the CLI refuses, as Typer exits for an unknown option.
 USAGE_EXIT_CODE = 2

@@ -25,7 +25,7 @@ Each of these came across with its behaviour and its tests, moved under `cli-pyt
 - **`lib/binding.py`, `lib/method_source.py`, `lib/inputs.py`, `lib/client.py` and `lib/app.py`**: the seam to the one method, the method read as package data, `--inputs FILE` and later the options derived from the input form, the one place a client is built (which is what the tests replace), and what every module shares.
 - **The codegen kit and the CLI kernel**, ported from the web app template rather than taken from the starter: `scripts/codegen.py`, `scripts/codegen_check.py` and `scripts/codegen_verify.py` with `lib/contracts.py`, and `lib/wire.py`, the port of the form kernel's payload rules, held to the TypeScript kernel by the family's wire-format table (`cli-python/docs/codegen.md`, `cli-python/docs/cli-kernel.md`).
 - **The Makefile**, rewritten on the method-app family's shape: the `given`, `opt`, `flag`, `require` and `shq` helpers of the web app template, every tool run from `.venv/bin/`, `use-local` and `use-published` over editable installs, and the `create` target forwarding the family's contract.
-- **`scripts/create.py`**, the family's argument contract with the gesture still to write, and **`scripts/local_status.py`**.
+- **`scripts/create.py`**, which `cli-python` wrote as its own create gesture on the family's argument contract, with its planning in `scripts/create_plan.py` (`cli-python/docs/create.md`), and **`scripts/local_status.py`**.
 - **The workflows**, one lint job and one test job over the oldest and newest Python the project supports, installing with `uv sync` under `UV_LOCKED=1`.
 
 ## Left behind
@@ -34,5 +34,5 @@ Each of these came across with its behaviour and its tests, moved under `cli-pyt
 - **The mode groups**, `widget/blocking/`, `widget/attended/` and `widget/detached/`, and `test_mode_symmetry.py`, which held the three to one shape.
 - **`widget/inputs.py`**: its text, file and sample inputs were the demos'. Its upload of a local file as a `Document` input came back as the SDK's `prepare_inputs`, which the command calls before a run whose method declares a file input, and whose errors `lib/errors.py` presents.
 - **`make add-method`** and `scripts/add_method.py`, since a CLI holds one method for good, and the starter's `scripts/codegen.py` and `scripts/codegen_check.py`, which the codegen kit ported from the web app template replaced.
-- **The bootstrap skill**, which a later version of this template rewrites for its own rename.
+- **The bootstrap skill**, which `cli-python` rewrote for its own rename and its own create gesture (`cli-python/docs/create.md`).
 - **mypy, `plxt` and the `.vscode/` settings**: pyright strict is the one type checker, and the template carries no `.mthds` file to format.

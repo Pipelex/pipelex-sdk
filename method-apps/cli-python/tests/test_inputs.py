@@ -254,6 +254,31 @@ class TestReadOption:
         with pytest.raises(InputUsageError, match="cannot be read"):
             read_option(_options()["headline"], f"@{tmp_path / 'absent.txt'}", ValueReader())
 
+    @pytest.mark.parametrize("raw", ["~$report.docx", "~nobody-pipelex-cli-test/x"])
+    def test_a_tilde_naming_no_user_is_a_usage_error_not_a_crash(self, raw: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # `Path.expanduser` raises on a `~` naming no user, where a shell leaves the word as written.
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(InputUsageError, match="cannot be read"):
+            read_option(_options()["headline"], f"@{raw}", ValueReader())
+        with pytest.raises(InputUsageError, match="which is not a file"):
+            read_option(_options()["picture"], raw, ValueReader())
+
+    def test_a_file_named_with_a_tilde_naming_no_user_is_read_as_written(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # Word's lock file, `~$report.docx`, is an ordinary file name, which a shell passes through as it is.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "~$report.docx").write_text("locked", encoding="utf-8")
+        assert read_option(_options()["picture"], "~$report.docx", ValueReader()) == {"url": "~$report.docx", "filename": "~$report.docx"}
+        assert read_option(_options()["headline"], "@~$report.docx", ValueReader()) == {"text": "locked"}
+
+    def test_a_file_under_a_directory_that_cannot_be_searched_is_a_usage_error(self, monkeypatch: pytest.MonkeyPatch):
+        # Python 3.11 and 3.12 raise `PermissionError` from `is_file()` under such a directory, where 3.13 answers False.
+        def refuse(self: Path) -> bool:
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "is_file", refuse)
+        with pytest.raises(InputUsageError, match="cannot be read: Permission denied"):
+            read_option(_options()["picture"], "/locked/cat.png", ValueReader())
+
     def test_stdin_is_read_once(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("sys.stdin", io.StringIO("from stdin"))
         reader = ValueReader()

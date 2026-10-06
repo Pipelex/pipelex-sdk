@@ -171,14 +171,16 @@ def guard_report(report: CodegenValidReport, layout: Layout) -> None:
         raise GenerateFailure("\n".join(lines))
 
 
-async def fetch_pipe_io(client: CodegenClient, source: CodegenSource) -> PipeIOValidReport:
+async def fetch_pipe_io(client: CodegenClient, source: CodegenSource, *, include_files: bool = False) -> PipeIOValidReport:
     """Ask `POST /v1/pipe-io` for every pipe's contracts, and refuse a method that does not run.
+
+    `include_files` asks for a named method's `.mthds` files beside its contracts (`CodegenSource.pipe_io_request`).
 
     Raises:
         GenerateFailure: The request failed, the method does not resolve, or it is not runnable.
     """
     try:
-        response = await client.pipe_io(source.pipe_io_request())
+        response = await client.pipe_io(source.pipe_io_request(include_files=include_files))
     except (PipelineRequestError, httpx.HTTPError, ValueError) as exc:
         # A refusal or an unreachable API, a transport error the SDK leaves unmapped, or a body that is not the answer.
         raise GenerateFailure(explain(exc, client.base_url, "POST /v1/pipe-io", source if about_the_method(exc) else None)) from exc
@@ -214,14 +216,17 @@ async def confirm_revision(client: CodegenClient, source: CodegenSource, report:
         raise GenerateFailure(msg)
 
 
-async def fetch_generated(client: CodegenClient, source: CodegenSource, layout: Layout) -> Fetched:
+async def fetch_generated(client: CodegenClient, source: CodegenSource, layout: Layout, *, include_files: bool = False) -> Fetched:
     """Both answers, the codegen first and the contracts after it, then the codegen's revision confirmed, so a failure anywhere writes nothing.
+
+    `include_files` asks the contracts' answer to carry a named method's `.mthds` files too, for a
+    caller that reads the method's own prose.
 
     Raises:
         GenerateFailure: A request failed, its answer was refused, or the method changed between the answers.
     """
     report = await fetch_codegen(client, source, layout)
-    pipe_io = await fetch_pipe_io(client, source)
+    pipe_io = await fetch_pipe_io(client, source, include_files=include_files)
     await confirm_revision(client, source, report)
     return Fetched(report=report, pipe_io=pipe_io)
 
@@ -309,7 +314,10 @@ async def run_codegen(layout: Layout = PACKAGE_LAYOUT) -> int:
         print(f"codegen: {exc}", file=sys.stderr)
         return EXIT_FAILED
     if source is None:
-        print(f"codegen: {layout.describe(layout.method_dir)}/ holds no method. Run `make create` first.", file=sys.stderr)
+        print(f"codegen: {layout.describe(layout.method_dir)}/ holds no method, so there is nothing to generate.", file=sys.stderr)
+        # template-only:begin
+        print("  Run `make create` first: it writes the method and generates its tree.", file=sys.stderr)
+        # template-only:end
         return EXIT_FAILED
     try:
         client = api.make_client()
