@@ -9,7 +9,7 @@
 #
 # A new template joins the family by being named here. docs/family.md says what
 # else it needs.
-TEMPLATES := webapp-js
+TEMPLATES := webapp-js cli-python
 
 # The templates that depend on the form kernel, @pipelex/mthds-form, and so
 # answer the targets that switch it alone. Each is also named in TEMPLATES.
@@ -49,7 +49,7 @@ install: ## Install every template's dependencies
 
 # The git hooks belong to the repository's root, whose `make install` wires them
 # and whose pre-commit hook runs each template's own hook from inside it.
-install-if-missing: ## Install each template whose node_modules is missing
+install-if-missing: ## Install each template that was never installed (its node_modules or .venv is missing)
 	$(call each,install-if-missing)
 
 check: check-family ## Check the family, then run every template's check (lint, format, typecheck, codegen)

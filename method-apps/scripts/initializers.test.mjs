@@ -1,8 +1,11 @@
-// The family's initializers: every template of `TEMPLATES` is served by exactly
-// one of them, and each one's table of templates takes the variables of the
-// `make create` contract, no more and no fewer. An initializer's table is the
-// `templates.json` at its root, whatever its language, so this reads each
-// `initializers/<language>/templates.json`. Run with `node --test`.
+// The family's initializers: every template of `TEMPLATES` whose ecosystem has
+// an initializer is served by exactly one of them, and each one's table of
+// templates takes the variables of the `make create` contract, no more and no
+// fewer. An initializer's table is the `templates.json` at its root, whatever
+// its language, so this reads each `initializers/<language>/templates.json`. A
+// template's ecosystem is the last word of its name, `js` for `webapp-js`, and
+// an ecosystem whose initializer is not written yet has no directory there: its
+// templates are served by none until it is. Run with `node --test`.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -18,6 +21,11 @@ const INITIALIZERS = path.join(ROOT, "initializers");
 const makefile = fs.readFileSync(path.join(ROOT, "Makefile"), "utf8");
 const TEMPLATES = /^TEMPLATES := (.+)$/m.exec(makefile)[1].trim().split(/\s+/);
 
+/** A template's ecosystem: the last word of its name, `python` for `cli-python`. */
+function ecosystemOf(template) {
+  return template.slice(template.lastIndexOf("-") + 1);
+}
+
 /** Every initializer's table, by its directory's name. */
 const tables = Object.fromEntries(
   fs
@@ -30,9 +38,15 @@ const tables = Object.fromEntries(
 );
 
 describe("the initializers", () => {
-  it("serve every template of the family, each by exactly one initializer", () => {
+  it("serve every template whose ecosystem has an initializer, each by exactly one", () => {
     for (const template of TEMPLATES) {
       const servedBy = Object.keys(tables).filter((name) => template in tables[name].templates);
+      if (!(ecosystemOf(template) in tables)) {
+        // Its ecosystem has no initializer yet, so nothing can serve it: the
+        // next test refuses a table serving another ecosystem's template.
+        assert.equal(servedBy.length, 0, `${template} is served by ${servedBy.join(" and ")}`);
+        continue;
+      }
       assert.equal(
         servedBy.length,
         1,

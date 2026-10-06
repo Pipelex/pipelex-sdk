@@ -332,6 +332,16 @@ jobs:
     if: needs.changes.outputs.method-apps == 'true'
     uses: ./.github/workflows/method-apps-webapp-js-tests-check.yml
 
+  method-apps-cli-python-lint:
+    needs: changes
+    if: needs.changes.outputs.method-apps == 'true'
+    uses: ./.github/workflows/method-apps-cli-python-lint-check.yml
+
+  method-apps-cli-python-tests:
+    needs: changes
+    if: needs.changes.outputs.method-apps == 'true'
+    uses: ./.github/workflows/method-apps-cli-python-tests-check.yml
+
   lint-all:
     name: Lint (all)
     if: always()
@@ -346,6 +356,7 @@ jobs:
       - starter-python-lint
       - starter-python-package
       - method-apps-webapp-js-lint
+      - method-apps-cli-python-lint
     runs-on: ubuntu-latest
     steps:
       - name: Fail when a needed job failed or was cancelled
@@ -369,6 +380,7 @@ jobs:
       - starter-python-tests
       - method-apps-family
       - method-apps-webapp-js-tests
+      - method-apps-cli-python-tests
     runs-on: ubuntu-latest
     steps:
       - name: Fail when a needed job failed or was cancelled

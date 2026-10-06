@@ -8,7 +8,7 @@ The Pipelex client surface in one repository: the clients of the [Pipelex](https
 | [`python/`](python/) | `pipelex-sdk`, the Python client | `pip install pipelex-sdk` |
 | [`starter-js/`](starter-js/) | A Next.js starter app calling Pipelex through `@pipelex/sdk` | "Use this template" on [`Pipelex/pipelex-starter-js`](https://github.com/Pipelex/pipelex-starter-js) |
 | [`starter-python/`](starter-python/) | A Python command-line starter calling Pipelex through `pipelex-sdk` | "Use this template" on [`Pipelex/pipelex-starter-python`](https://github.com/Pipelex/pipelex-starter-python) |
-| [`method-apps/`](method-apps/) | The method-app templates and `@pipelex/create-method-app`, which writes one around your method | `npm create @pipelex/method-app@latest my-app -- --method <bundle>` |
+| [`method-apps/`](method-apps/) | The method-app templates, a Next.js web app and a Python command-line tool, and `@pipelex/create-method-app`, which writes the web app around your method | `npm create @pipelex/method-app@latest my-app -- --method <bundle>`; the Python one is copied out of a release's tag, as [its README](method-apps/cli-python/README.md) shows |
 
 Each directory's `README.md` is the guide for using it.
 
