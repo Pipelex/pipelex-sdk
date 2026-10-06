@@ -12,12 +12,17 @@ The order is the safety story:
    from the shell and then from `.env`, plan the method (`create_plan.py`, which fetches it once:
    everything below reads that one fetch), derive the project's name, title and description from
    it, plan the env file, and run the bootstrap with `--dry-run`, which validates every value it
-   will be given. `--dry-run` stops here, having written nothing.
+   will be given and checks the `binding.py` the gesture will write with the rest of the tree.
+   `--dry-run` stops here, having written nothing.
 2. **Write.** The method first, `method/`, `generated/` and `binding.py`, which are removed again if
    writing them fails, so that the template is as it was and the gesture can run again. Then the
    bootstrap with `--clean`, the env file, `uv sync` to re-sync `uv.lock` and the environment with
    the renamed project, `make all`, and last the bootstrap skill's own removal, once the checks are
-   green. A failure after the method is written names the ordinary commands left to run.
+   green. A failure after the method is written names the ordinary commands left to run, never a
+   traceback.
+
+Every value reaches the bootstrap as `--flag=value`, so that a title or a description derived from
+the method may start with dashes without being taken for a flag.
 
 The gesture is one-shot, and the template's alone: the bootstrap removes it, with everything only it
 uses, from the project it creates. The arguments are the method-app family's `make create`
@@ -33,6 +38,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -45,6 +51,7 @@ from pipelex_sdk.errors import CodegenError
 
 from pipelex_method_cli_python.lib import client as api
 from pipelex_method_cli_python.lib.app import DISTRIBUTION_NAME, AppError
+from pipelex_method_cli_python.lib.binding import BINDING_FILENAME
 from pipelex_method_cli_python.lib.method_source import PACKAGE
 from scripts.codegen_shared import CLI_ROOT, CodegenSetupError, Layout, insecure_base_url_reason
 from scripts.create_plan import (
@@ -260,12 +267,18 @@ def quote_env_value(key: str, value: str) -> str:
     """A value as python-dotenv reads it back exactly: in single quotes, so that a `#`, a `$` or a space survives.
 
     Raises:
-        CreateError: The value holds a line break, which an env file cannot hold, or `${`, which
-            python-dotenv expands as a variable even inside quotes.
+        CreateError: The value holds a line break, which an env file cannot hold, `${`, which
+            python-dotenv expands as a variable even inside quotes, or a byte that is not UTF-8,
+            which Python decodes from the shell into a character no UTF-8 file can hold.
     """
     if "\n" in value or "\r" in value:
         msg = f"{key} contains a line break, which an env file cannot hold."
         raise CreateError(msg)
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        msg = f"{key} holds bytes that are not UTF-8, which {ENV_FILE} cannot hold. Write {ENV_FILE} yourself, then run make create again."
+        raise CreateError(msg) from exc
     if "${" in value:
         msg = f"{key} contains `${{`, which python-dotenv would expand as a variable. Write {ENV_FILE} yourself, then run make create again."
         raise CreateError(msg)
@@ -288,53 +301,77 @@ def set_env_line(text: str, key: str, value: str) -> str:
     return "\n".join(kept) + "\n"
 
 
+def unreadable_env_file(path: Path | str, exc: Exception, *, why: str) -> CreateError:
+    """The refusal of an env file the gesture must read and cannot, naming it."""
+    return CreateError(f"{path} cannot be read ({exc}), and {why}. Fix it or remove it, then run make create again.")
+
+
 def plan_env_file(root: Path, shell: ShellEnv, env_file: Path | None, base_url: str) -> EnvPlan:
     """Decide what happens to `.env`. An existing one is the person's and is never touched.
 
-    python-dotenv reads one env file, the nearest, so a `.env` written here hides any above it. When
-    the key came from one above rather than from the shell, the gesture leaves the project without a
-    `.env`, so that the file above keeps supplying it: the gesture copies a key only from the shell.
+    python-dotenv reads one env file, the nearest, so a `.env` written here hides any above it. The
+    gesture refuses a run with no key at all, so a key the shell did not export came from a `.env`
+    above the project: the gesture then leaves the project without a `.env`, so that the file above
+    keeps supplying it, since it copies a key only from the shell. A `.env` it writes therefore always
+    holds the shell's key.
 
     Raises:
-        CreateError: A value cannot be written so that python-dotenv reads it back as it is.
+        CreateError: A value cannot be written so that python-dotenv reads it back as it is, or the
+            existing `.env` or `.env.example` cannot be read.
     """
     target = root / ENV_FILE
     if target.exists() or target.is_symlink():
         notes = [f"{ENV_FILE} exists and is left as it is."]
-        written = dotenv_values(target).get(BASE_URL_KEY) if target.is_file() else None
+        try:
+            written = dotenv_values(target).get(BASE_URL_KEY) if target.is_file() else None
+        except (OSError, UnicodeError) as exc:
+            raise unreadable_env_file(ENV_FILE, exc, why="the CLI reads it") from exc
         if shell.base_url is not None and written and written != shell.base_url:
             notes.append(
                 f"your shell sets {BASE_URL_KEY}={shell.base_url}, but {ENV_FILE} says {written}: the CLI reads the file whenever "
                 "the shell does not set it."
             )
         return EnvPlan(action="keep", content=None, notes=tuple(notes))
-    if shell.key is None and env_file is not None:
+    if shell.key is None:
+        where = env_file if env_file is not None else f"a {ENV_FILE} above this project"
         note = (
-            f"{ENV_FILE} is not written: {API_KEY_KEY} comes from {env_file}, which the CLI reads only while this project has "
+            f"{ENV_FILE} is not written: {API_KEY_KEY} comes from {where}, which the CLI reads only while this project has "
             f"no {ENV_FILE} of its own, and the gesture copies a key only from your shell."
         )
         return EnvPlan(action="skip", content=None, notes=(note,))
     example = root / ENV_EXAMPLE
-    text = example.read_text(encoding="utf-8") if example.is_file() else MINIMAL_ENV
+    try:
+        text = example.read_text(encoding="utf-8") if example.is_file() else MINIMAL_ENV
+    except (OSError, UnicodeError) as exc:
+        raise unreadable_env_file(ENV_EXAMPLE, exc, why=f"{ENV_FILE} is written from it") from exc
     text = set_env_line(text, BASE_URL_KEY, quote_env_value(BASE_URL_KEY, base_url))
-    if shell.key is not None:
-        text = set_env_line(text, API_KEY_KEY, quote_env_value(API_KEY_KEY, shell.key))
+    text = set_env_line(text, API_KEY_KEY, quote_env_value(API_KEY_KEY, shell.key))
     origin = "from your shell" if shell.base_url is not None else f"from {env_file}" if env_file is not None else "the default"
-    key_note = f"and {API_KEY_KEY} from your shell" if shell.key is not None else f"and an empty {API_KEY_KEY}: set one before running the CLI"
-    notes = [f"{ENV_FILE} is written with {BASE_URL_KEY}={base_url} ({origin}), {key_note}, readable by you alone."]
+    notes = [f"{ENV_FILE} is written with {BASE_URL_KEY}={base_url} ({origin}) and {API_KEY_KEY} from your shell, readable by you alone."]
     if env_file is not None:
         notes.append(f"it hides {env_file} from the CLI, which reads the nearest {ENV_FILE} only.")
     return EnvPlan(action="write", content=text, notes=tuple(notes))
 
 
 def write_env_file(path: Path, content: str) -> bool:
-    """Create `.env` readable by its owner alone, never over an existing one; whether it was written."""
+    """Create `.env` readable by its owner alone, never over an existing one; whether it was written.
+
+    A write that fails part-way removes the file it created, so that nothing half-written holds a key.
+    The content is UTF-8 text: `quote_env_value` refuses a value that is not.
+
+    Raises:
+        OSError: The file cannot be created or written.
+    """
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
         return False
-    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(content)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
     return True
 
 
@@ -375,12 +412,40 @@ class CreateDeps:
 
 
 def resolve_deps(root: Path) -> CreateDeps:
-    """The surroundings of a real run. The shell's own values are read first, since the env file loaded next would be indistinguishable from them."""
+    """The surroundings of a real run. The shell's own values are read first, since the env file loaded next would be indistinguishable from them.
+
+    Raises:
+        CreateError: The env file the CLI would read cannot be read.
+    """
     shell = ShellEnv(base_url=os.environ.get(BASE_URL_KEY, "").strip() or None, key=os.environ.get(API_KEY_KEY, "").strip() or None)
     env_file = find_env_file(root)
     if env_file is not None:
-        load_dotenv(env_file, override=False)
+        try:
+            load_dotenv(env_file, override=False)
+        except (OSError, UnicodeError) as exc:
+            raise unreadable_env_file(env_file, exc, why="the CLI reads it") from exc
     return CreateDeps(root=root, cwd=Path.cwd(), shell=shell, env_file=env_file)
+
+
+def project_name(root: Path) -> object:
+    """`pyproject.toml`'s `[project] name`, whatever it is, or `None` when it names none.
+
+    Raises:
+        OSError: The file cannot be read.
+        UnicodeError: The file is not UTF-8.
+        tomllib.TOMLDecodeError: The file is not TOML.
+    """
+    document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    project: object = document.get("project")
+    return cast("dict[str, Any]", project).get("name") if isinstance(project, dict) else None
+
+
+def names_the_template(root: Path) -> bool:
+    """Whether `pyproject.toml` still names the template: the bootstrap writes it last, so a run that failed before it left a template."""
+    try:
+        return project_name(root) == TEMPLATE_NAME
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return False
 
 
 def assert_template(root: Path) -> None:
@@ -390,12 +455,10 @@ def assert_template(root: Path) -> None:
         CreateError: `pyproject.toml` is unreadable or names another project, or the bootstrap is missing.
     """
     try:
-        document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        name = project_name(root)
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         msg = f"no readable pyproject.toml in {root}: run this from the project's root."
         raise CreateError(msg) from exc
-    project: object = document.get("project")
-    name: object = cast("dict[str, Any]", project).get("name") if isinstance(project, dict) else None
     if name != TEMPLATE_NAME:
         msg = (
             f'this is not the un-bootstrapped template: pyproject.toml names "{name}", not "{TEMPLATE_NAME}". make create is '
@@ -409,15 +472,39 @@ def assert_template(root: Path) -> None:
 
 
 def bootstrap_flags(identity: Identity, args: CreateArgs) -> list[str]:
-    """The bootstrap's flags for this identity, without `--root` and `--dry-run`."""
+    """The bootstrap's flags for this identity, without `--root` and `--dry-run`.
+
+    Each value is handed over as `--flag=value`, which the bootstrap never takes for a dropped value,
+    so that a title or a description derived from the method may start with dashes.
+    """
     # A created project is not a template, and the template's charter paragraph would steer every
     # later agent session toward maintaining one: hence `--clean`.
-    flags = ["--name", identity.name, "--title", identity.title, "--description", identity.description, "--clean"]
+    flags = [f"--name={identity.name}", f"--title={identity.title}", f"--description={identity.description}", "--clean"]
     for field, flag in BOOTSTRAP_PASSTHROUGH:
         value: object = getattr(args, field)
         if isinstance(value, str):
-            flags.extend((flag, value))
+            flags.append(f"{flag}={value}")
     return flags
+
+
+def rehearse_bootstrap(bootstrap: Sequence[str], binding: str, root: Path, deps: CreateDeps) -> bool:
+    """Run the bootstrap with `--dry-run`, handing it `binding.py` as the write half will write it; whether it took every value.
+
+    The binding is not in the package yet, so it goes to the bootstrap as a temporary file outside the
+    project, which the dry run checks as part of the tree: a binding the real run would refuse is
+    refused here, before anything is written.
+
+    Raises:
+        CreateError: The temporary file cannot be written.
+    """
+    try:
+        with tempfile.TemporaryDirectory(prefix="make-create-", ignore_cleanup_errors=True) as scratch:
+            planned = Path(scratch) / BINDING_FILENAME
+            planned.write_text(binding, encoding="utf-8")
+            return deps.run([*bootstrap, f"--binding={planned}", "--dry-run"], root, None) == 0
+    except OSError as exc:
+        msg = f"the planned {BINDING_FILENAME} could not be handed to the bootstrap's dry run: {exc}. Nothing was written in the project."
+        raise CreateError(msg) from exc
 
 
 def print_plan(plan: MethodPlan, identity: Identity, base_url: str, layout: Layout) -> None:
@@ -479,10 +566,11 @@ async def _run_create(argv: Sequence[str], given: CreateDeps | None) -> int:
     for note in env_plan.notes:
         print(f"  env:    {note}")
     print("\ncreate: checking the project values with the bootstrap (--dry-run)\n")
-    if deps.run([*bootstrap, "--dry-run"], root, None) != 0:
+    if not rehearse_bootstrap(bootstrap, plan.binding, root, deps):
         msg = (
             "the bootstrap refused these values (see above). Nothing was written; pass the flag that fixes it: --name, --title, "
-            "--description, or one of the --author-*, --repo-url and --license* flags."
+            "--description, or one of the --author-*, --repo-url and --license* flags. When the line it names is in "
+            f"{BINDING_FILENAME}, which comes from the method, pass --pipe to run another of its pipes, or report it."
         )
         raise CreateError(msg)
 
@@ -515,19 +603,30 @@ async def _run_create(argv: Sequence[str], given: CreateDeps | None) -> int:
         msg = f"writing the method failed: {exc}. What it wrote was removed, so the template is as it was: fix the cause and run make create again."
         raise CreateError(msg) from exc
 
+    env_line = [f"cp {ENV_EXAMPLE} {ENV_FILE}   # then set {API_KEY_KEY} in it"] if env_plan.action == "write" else []
     announce(2)
     if deps.run(bootstrap, root, None) != 0:
-        env_line = [f"cp {ENV_EXAMPLE} {ENV_FILE}   # then set {API_KEY_KEY} in it"] if env_plan.action == "write" else []
-        lines = [shlex.join([".venv/bin/python", BOOTSTRAP_SCRIPT, *flags]), *env_line, *REMAINING]
+        # The bootstrap writes pyproject.toml last: until then the tree is the template's, and the
+        # same command finishes it; after, it names the project, and the bootstrap needs --force.
+        renamed = not names_the_template(root)
+        command = shlex.join([".venv/bin/python", BOOTSTRAP_SCRIPT, *flags, *(["--force"] if renamed else [])])
+        lines = [command, *env_line, *REMAINING]
+        force_note = "; pyproject.toml already names the project, so the bootstrap runs again with --force" if renamed else ""
         msg = (
-            "the bootstrap failed after the method was written (see above). The method is in place; fix the cause, then finish by "
-            "hand, from this directory:\n" + "\n".join(f"  {line}" for line in lines)
+            f"the bootstrap failed after the method was written (see above). The method is in place{force_note}. Fix the cause, "
+            "then finish by hand, from this directory:\n" + "\n".join(f"  {line}" for line in lines)
         )
         raise CreateError(msg)
 
     announce(3)
     if env_plan.action == "write" and env_plan.content is not None:
-        if write_env_file(root / ENV_FILE, env_plan.content):
+        try:
+            wrote = write_env_file(root / ENV_FILE, env_plan.content)
+        except OSError as exc:
+            left = "\n".join(f"  {line}" for line in (*env_line, *REMAINING))
+            msg = f"writing {ENV_FILE} failed: {exc}. The project is created; fix the cause, then finish by hand, from this directory:\n{left}"
+            raise CreateError(msg) from exc
+        if wrote:
             print(f"    wrote {ENV_FILE}")
         else:
             print(f"! {ENV_FILE} appeared while the gesture ran, and is left as it is.")

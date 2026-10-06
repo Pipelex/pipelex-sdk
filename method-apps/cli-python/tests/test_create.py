@@ -3,22 +3,27 @@
 The Makefile forwards the method-app family's contract, pinned here with `make -n` (the family's own
 test compares every template's forwarding). The gesture runs over a template of the test's own,
 with the recorded client in place of `lib/client.py`'s `make_client` and a runner that records the
-commands it is handed instead of running them; `test_create_tree.py` runs the real bootstrap.
+commands it is handed instead of running them; `TestWithTheRealBootstrap` and `test_create_tree.py`
+run the real bootstrap over copies of the template.
 """
 
 import os
+import shlex
 import stat
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
 from dotenv import dotenv_values
+from pipelex_sdk.product_models import MethodData
 
 from pipelex_method_cli_python.lib import client as client_module
 from pipelex_method_cli_python.lib.binding import BINDING_FILENAME
 from pipelex_method_cli_python.lib.method_source import PACKAGE
+from scripts import create_plan
 from scripts.codegen_shared import Layout
 from scripts.create import (
     BOOTSTRAP_DIR,
@@ -28,17 +33,23 @@ from scripts.create import (
     CreateDeps,
     CreateError,
     EnvPlan,
+    RunCommand,
     ShellEnv,
+    bootstrap_flags,
     derive_identity,
     parse_create_args,
     plan_env_file,
     quote_env_value,
+    resolve_deps,
     run_create,
     set_env_line,
     write_env_file,
 )
 from scripts.create_plan import CatalogEntry, MethodArgs, MethodPlan, MethodProse, plan_method
-from tests.support_create import RECEIPT_REVIEW_BUNDLE, STORED_METHOD_ID, TEMPLATE_ROOT, TEXT_STATS_REF, RecordedClient
+from tests.support_create import RECEIPT_REVIEW_BUNDLE, STORED_METHOD_ID, TEMPLATE_ROOT, TEXT_STATS_REF, RecordedClient, copy_template, stored_method
+
+#: Whether the tests run as root, who writes into a directory whose mode refuses everyone else.
+AS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 # ── The Makefile ────────────────────────────────────────────────────────────
 
@@ -165,6 +176,12 @@ class TestDeriveIdentity:
         identity = derive_identity(text_stats_plan, CreateArgs(method="x", name="mine", title="Mine", description="My own."))
         assert (identity.name, identity.title, identity.description) == ("mine", "Mine", "My own.")
 
+    def test_every_value_reaches_the_bootstrap_in_the_equals_form_whatever_it_starts_with(self, text_stats_plan: MethodPlan):
+        plan = replace(text_stats_plan, catalog=CatalogEntry(name="-- CV", description="-- draft: screens CVs"))
+        args = CreateArgs(method="x", license_holder="--Acme")
+        flags = bootstrap_flags(derive_identity(plan, args), args)
+        assert flags == ["--name=text-stats", "--title=-- CV", "--description=-- draft: screens CVs", "--clean", "--license-holder=--Acme"]
+
 
 # ── The env file ────────────────────────────────────────────────────────────
 
@@ -180,10 +197,46 @@ class TestEnvFile:
         (tmp_path / ".env").write_text(f"PIPELEX_API_KEY={quote_env_value('PIPELEX_API_KEY', value)}\n", encoding="utf-8")
         assert dotenv_values(tmp_path / ".env")["PIPELEX_API_KEY"] == value
 
-    @pytest.mark.parametrize(("value", "says"), [("a\nb", "line break"), ("pk_${HOME}", "expand as a variable")])
+    @pytest.mark.parametrize(
+        ("value", "says"),
+        [("a\nb", "line break"), ("pk_${HOME}", "expand as a variable"), ("pk_\udce9", "not UTF-8")],
+    )
     def test_a_value_no_env_file_can_hold_is_refused(self, value: str, says: str):
+        # The last is a shell's byte that is not UTF-8, as Python decodes it into the environment.
         with pytest.raises(CreateError, match=says):
             quote_env_value("PIPELEX_API_KEY", value)
+
+    def test_a_key_the_shell_did_not_export_is_never_written(self, tmp_path: Path):
+        # The gesture refuses a run with no key at all, so a key the shell did not export came from an env file above.
+        plan = plan_env_file(tmp_path, ShellEnv(), None, "https://api.pipelex.com")
+        assert plan.action == "skip"
+        assert "copies a key only from your shell" in plan.notes[0]
+
+    @pytest.mark.parametrize("content", [b"PIPELEX_BASE_URL=\xe9\n", None])
+    def test_an_example_it_cannot_read_is_refused_naming_it(self, content: bytes | None, tmp_path: Path):
+        example = tmp_path / ".env.example"
+        if content is None:
+            if AS_ROOT:
+                pytest.skip("root reads a file whose mode refuses everyone else")
+            example.write_text("PIPELEX_BASE_URL=\n", encoding="utf-8")
+            example.chmod(0)
+        else:
+            example.write_bytes(content)
+        try:
+            with pytest.raises(CreateError, match=r"\.env\.example cannot be read"):
+                plan_env_file(tmp_path, ShellEnv(key="k"), None, "https://api.pipelex.com")
+        finally:
+            example.chmod(0o644)
+
+    def test_an_existing_one_it_cannot_read_is_refused_naming_it(self, tmp_path: Path):
+        (tmp_path / ".env").write_bytes(b"PIPELEX_BASE_URL=\xe9\n")
+        with pytest.raises(CreateError, match=r"\.env cannot be read"):
+            plan_env_file(tmp_path, ShellEnv(base_url="https://api.example.com", key="k"), tmp_path / ".env", "https://api.example.com")
+
+    def test_the_env_file_the_values_are_read_from_must_be_readable(self, tmp_path: Path):
+        (tmp_path / ".env").write_bytes(b"PIPELEX_BASE_URL=\xe9\n")
+        with pytest.raises(CreateError, match=r"\.env cannot be read"):
+            resolve_deps(tmp_path)
 
     def test_is_written_from_the_example_with_one_base_url_and_the_shell_s_key(self, tmp_path: Path):
         (tmp_path / ".env.example").write_text("# comment\nPIPELEX_BASE_URL=https://api.pipelex.com\nPIPELEX_API_KEY=\n", encoding="utf-8")
@@ -268,12 +321,13 @@ def api(monkeypatch: pytest.MonkeyPatch) -> RecordedClient:
     return client
 
 
-def deps(root: Path, runner: Runner, *, shell: ShellEnv | None = None) -> CreateDeps:
+def deps(root: Path, runner: RunCommand, *, shell: ShellEnv | None = None) -> CreateDeps:
     return CreateDeps(root=root, cwd=root, shell=shell or ShellEnv(key="pk_test#1"), env_file=None, run=runner)
 
 
 def flag_value(command: list[str], flag: str) -> str:
-    return command[command.index(flag) + 1]
+    """The value a command hands a flag, in the `--flag=value` form the gesture uses."""
+    return next(arg.removeprefix(f"{flag}=") for arg in command if arg.startswith(f"{flag}="))
 
 
 def tree(root: Path) -> dict[str, bytes]:
@@ -337,6 +391,19 @@ class TestReadOnlyHalf:
         assert runner.labels == ["bootstrap --dry-run"]
         assert "the bootstrap refused these values (see above). Nothing was written; pass the flag that fixes it: --name" in capsys.readouterr().err
 
+    async def test_the_dry_run_checks_the_binding_the_gesture_will_write(self, template: Path, api: RecordedClient):
+        planned: list[str] = []
+
+        def read_the_binding(command: Sequence[str], cwd: Path, env: Mapping[str, str] | None) -> int:
+            del cwd, env
+            planned.append(Path(flag_value(list(command), "--binding")).read_text(encoding="utf-8"))
+            return 0
+
+        assert await run_create([TEXT_STATS_REF, "--dry-run"], replace(deps(template, Runner()), run=read_the_binding)) == 0
+        assert len(planned) == 1
+        assert 'PIPE_REF = "text_stats.analyze_text"\n' in planned[0]
+        assert f"from {PACKAGE}.generated.models import Text\n" in planned[0]
+
 
 class TestWriteHalf:
     async def test_runs_every_step_in_order_and_removes_the_bootstrap_last(
@@ -381,7 +448,7 @@ class TestWriteHalf:
             (
                 "bootstrap",
                 "the bootstrap failed after the method was written",
-                [f".venv/bin/python {BOOTSTRAP_SCRIPT} --name text-stats", "cp .env.example .env", "uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"],
+                [f".venv/bin/python {BOOTSTRAP_SCRIPT} --name=text-stats", "cp .env.example .env", "uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"],
                 [],
             ),
             ("uv sync", "re-syncing uv.lock failed", ["uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"], []),
@@ -402,3 +469,99 @@ class TestWriteHalf:
         # The method stays: the gesture cannot run again on a template it has started to turn into a project.
         assert (template / "src" / PACKAGE / BINDING_FILENAME).is_file()
         assert (template / BOOTSTRAP_DIR).is_dir()
+
+    @pytest.mark.parametrize("renamed", [False, True])
+    async def test_the_bootstrap_s_command_left_takes_force_once_pyproject_names_the_project(
+        self, renamed: bool, template: Path, api: RecordedClient, capsys: pytest.CaptureFixture[str]
+    ):
+        def fail_the_bootstrap(command: Sequence[str], cwd: Path, env: Mapping[str, str] | None) -> int:
+            del cwd, env
+            if Runner.label(list(command)) != "bootstrap":
+                return 0
+            if renamed:
+                # The bootstrap writes pyproject.toml last, so a failure after it found every other file written.
+                (template / "pyproject.toml").write_text('[project]\nname = "text-stats"\n', encoding="utf-8")
+            return 1
+
+        assert await run_create([TEXT_STATS_REF], replace(deps(template, Runner()), run=fail_the_bootstrap)) == 1
+        err = capsys.readouterr().err
+        command = next(line.strip() for line in err.splitlines() if BOOTSTRAP_SCRIPT in line)
+        assert command.endswith(" --force") is renamed
+
+    @pytest.mark.skipif(AS_ROOT, reason="root writes into a directory whose mode refuses everyone else")
+    async def test_an_env_file_it_cannot_write_names_the_commands_left(self, template: Path, api: RecordedClient, capsys: pytest.CaptureFixture[str]):
+        def lock_the_root(command: Sequence[str], cwd: Path, env: Mapping[str, str] | None) -> int:
+            del cwd, env
+            if Runner.label(list(command)) == "bootstrap":
+                template.chmod(0o555)
+            return 0
+
+        try:
+            assert await run_create([TEXT_STATS_REF], replace(deps(template, Runner()), run=lock_the_root)) == 1
+        finally:
+            template.chmod(0o755)
+        err = capsys.readouterr().err
+        assert "writing .env failed" in err
+        for command in ("cp .env.example .env", "uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"):
+            assert f"\n  {command}" in err
+        assert not (template / ".env").exists()
+
+
+@dataclass
+class RealBootstrap:
+    """Runs the bootstrap for real, its output on this process's own streams; `uv sync` and `make all` are not run.
+
+    The real run's status is the test's to choose, so that a run that wrote everything can be reported as failed.
+    """
+
+    real_run_status: int = 0
+
+    def __call__(self, command: Sequence[str], cwd: Path, env: Mapping[str, str] | None) -> int:
+        label = Runner.label(list(command))
+        if label in ("uv sync", "make all"):
+            return 0
+        result = subprocess.run(list(command), cwd=cwd, env=None if env is None else dict(env), capture_output=True, text=True, check=False)
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        if label == "bootstrap" and result.returncode == 0:
+            return self.real_run_status
+        return result.returncode
+
+
+class TestWithTheRealBootstrap:
+    """The gesture over a copy of the template, its bootstrap run for real."""
+
+    async def test_the_command_left_finishes_a_bootstrap_that_failed_after_writing_pyproject(
+        self, tmp_path: Path, api: RecordedClient, capsys: pytest.CaptureFixture[str]
+    ):
+        root = copy_template(tmp_path / "project")
+        # The bootstrap writes every file, pyproject.toml last, and its run is then reported as failed.
+        assert await run_create([TEXT_STATS_REF], deps(root, RealBootstrap(real_run_status=1))) == 1
+        err = capsys.readouterr().err
+        command = next(line.strip() for line in err.splitlines() if BOOTSTRAP_SCRIPT in line)
+        again = subprocess.run(shlex.split(command), cwd=root, capture_output=True, text=True, check=False)
+        assert again.returncode == 0, again.stdout + again.stderr
+
+    async def test_a_derived_value_that_starts_with_dashes_reaches_the_bootstrap(
+        self, tmp_path: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        async def drafted(method_id: str) -> MethodData:
+            return MethodData.model_validate(stored_method(method_id, name="Text stats", description="-- draft: screens CVs"))
+
+        monkeypatch.setattr(api, "get_method", drafted)
+        root = copy_template(tmp_path / "project")
+        assert await run_create([STORED_METHOD_ID, "--dry-run"], deps(root, RealBootstrap())) == 0
+        assert "Nothing was written (--dry-run)." in capsys.readouterr().out
+
+    async def test_a_binding_the_bootstrap_would_refuse_is_refused_before_anything_is_written(
+        self, tmp_path: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        written_by_the_gesture = create_plan.BINDING_TEMPLATE.replace('"""The binding:', '"""Written by make create. The binding:', 1)
+        monkeypatch.setattr(create_plan, "BINDING_TEMPLATE", written_by_the_gesture)
+        root = copy_template(tmp_path / "project")
+        before = tree(root)
+        assert await run_create([TEXT_STATS_REF], deps(root, RealBootstrap())) == 1
+        captured = capsys.readouterr()
+        assert f"src/{PACKAGE}/{BINDING_FILENAME}:1: " in captured.err
+        assert "Nothing was written" in captured.err
+        assert tree(root) == before

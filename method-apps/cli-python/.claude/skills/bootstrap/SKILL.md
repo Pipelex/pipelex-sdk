@@ -11,17 +11,17 @@ This directory is a **template**, copied out of the `method-apps/cli-python/` di
 
 Run this skill by hand in two cases only:
 
-- **A `make create` that stopped after writing the method.** Its message lists the commands left, starting with this script and the exact values it planned; follow them in order. Steps 4 to 6 below are those commands.
+- **A `make create` that stopped after writing the method.** Its message lists the commands left, starting with this script and the exact values it planned, `--force` included when the script had already written `pyproject.toml`; follow them in order. Steps 4 to 6 below are those commands.
 - **The method is already in the package**, written by hand: its files or a `method.json` in `src/pipelex_method_cli_python/method/`, its tree from `make codegen` in `generated/`, and a `binding.py`. Walk the user through every step.
 
 ## Step 1 — Preflight
 
 1. Read the `name` under `[project]` in `pyproject.toml`.
    - If it is `pipelex-method-cli-python`: this is the un-bootstrapped template — continue.
-   - If it is anything else: it looks **already bootstrapped**, and the script refuses to run unless `--force` is passed. Tell the user and ask whether to proceed; only add `--force` after they explicitly confirm. Warn them what a re-run means: the README and the changelog are rendered again from scratch, and a license **type** change does not restore the LICENSE wording the first run already replaced.
+   - If it is anything else: it looks **already bootstrapped**, and the script refuses to run unless `--force` is passed. Tell the user and ask whether to proceed; only add `--force` after they explicitly confirm, or when it is in the command a stopped `make create` printed, which is that confirmation. Warn them what a re-run means: the README and the changelog are rendered again from scratch, and a license **type** change does not restore the LICENSE wording the first run already replaced.
 2. Check that the package holds its method: `src/pipelex_method_cli_python/binding.py` exists and `make codegen-check` reports it current. If there is no method, stop and point the user to `make create`: a project bootstrapped without one has no gesture left to add it.
 3. Run `git status --short` if the directory is a repository. Bootstrap leaves its edits **unstaged** for the user's own review, so a noisy starting point is worth flagging.
-4. Check that `.venv/` exists; if not, run `make install` first. The script formats what it writes with the project's ruff, and Step 5's `make all` needs the whole toolchain.
+4. Check that `.venv/` exists; if not, run `make install` first. The script formats the project's Python files with its own ruff, and Step 5's `make all` needs the whole toolchain.
 
 ## Step 2 — Collect the project details
 
@@ -29,7 +29,7 @@ Ask for the following in one consolidated message, leading with the name, and of
 
 **Required:**
 
-- **Name** — e.g. `invoice-extractor`. Lowercase letters and digits, starting with a letter, words joined by single dashes or underscores. It becomes the distribution and the console script as given, and the import package with its dashes as underscores (`invoice_extractor`). The script refuses a name whose package would be a Python keyword, shadow a standard-library module, or shadow one of the project's own or its dependencies' import names (`scripts`, `tests`, `typer`, `pydantic`, …).
+- **Name** — e.g. `invoice-extractor`. Lowercase letters and digits, starting with a letter, words joined by single dashes or underscores. It becomes the distribution and the console script as given, and the import package with its dashes as underscores (`invoice_extractor`). The script refuses a name whose package would be a Python keyword, shadow a standard-library module, or shadow one of the project's own or its dependencies' import names (`scripts`, `tests`, `typer`, `pydantic`, …), and a name that is the name of any package `uv.lock` pins, such as `anyio` or `typing-extensions`, which the dependencies need and the project would replace.
 - **Description** — a one-liner. Lands in `pyproject.toml`, the README and `CLAUDE.md`.
 
 **Optional** (let them skip any):
@@ -61,24 +61,28 @@ Show the derived values so the user can check them: the three names, the title, 
   --dry-run
 ```
 
+A value that starts with dashes is given as `--description="<description>"`, which the script never takes for a missing value; `make create` hands every value over that way.
+
 Pass `--clean` so the script strips `CLAUDE.md`'s template charter paragraph: a bootstrapped project is no longer a template, and that paragraph would steer every future agent session toward template-maintainer behavior. Add `--force` only in the confirmed re-run case from Step 1.
 
-The dry run prints the files it would edit, the package directory it would move and the template-only paths it would remove, and refuses without writing anything when a value is invalid or a file it keeps would still name the template. Present the plan and **get explicit confirmation** before the real run, unless the user gave everything and asked to just do it.
+The dry run prints the files it would edit, the template-only paths it would remove and the package directory it would move, in the order the real run takes them, and refuses without writing anything when a value is invalid, the name is a package `uv.lock` pins, or a file it keeps would still name the template. `binding.py`'s `PIPE_REF` is never read for that: it is the method's own pipe reference, kept as the method names it. `make create` also hands the dry run `--binding=<file>`, the `binding.py` it will write before the real run, so that one the real run would refuse is refused before anything is written; by hand, the binding is already in the package. Present the plan and **get explicit confirmation** before the real run, unless the user gave everything and asked to just do it.
 
 ## Step 4 — Run the replacement
 
 Re-run the same command **without** `--dry-run`. The script:
 
 - sets `pyproject.toml`'s name, description, license, and (if given) authors and repository URL, renames the console script, and resets the version to `0.1.0`
-- moves `src/pipelex_method_cli_python/` to the project's package with a plain filesystem move, and rewrites the template's identifier in every file the project keeps, `.gitattributes`, the Makefile and every import included
+- moves `src/pipelex_method_cli_python/` to the project's package with a plain filesystem move, and rewrites the template's identifier in every file the project keeps, `.gitattributes`, the Makefile, every import and `binding.py`'s import included
 - renders a new `README.md` for the project: its title, its description, how to install and run it, how to work on it, and its license
-- replaces `CLAUDE.md`'s description line and, with `--clean`, strips the charter paragraph
+- replaces `CLAUDE.md`'s description line and, with `--clean`, strips the charter paragraph; the description goes in last, so a description that names the template is kept as given, as in `pyproject.toml`
 - applies the license choice to `LICENSE` and restarts `CHANGELOG.md` at a `v0.1.0` entry dated today
 - removes what only the template needs, listed in its `REMOVALS`: the `make create` gesture, its planning code, its tests and their fixtures, and `docs/create.md`
 - strips every template-only passage, the lines between a `template-only:begin` marker and a `template-only:end` marker together with both markers, from every file that carries one
-- formats every Python file it writes with the project's ruff
+- formats every Python file the project keeps with the project's ruff
 
-It deliberately does **not** touch git, re-sync `uv.lock`, run the checks, or modify the method, `generated/`, `binding.py` or anything in `.github/`. It also does not remove this skill; Step 6 does.
+It deliberately does **not** touch git, re-sync `uv.lock`, run the checks, or modify the method or `generated/`. It treats `binding.py` and `.github/` like every other file the project keeps, so it rewrites the template's identifier there too: `binding.py`'s import follows the renamed package, its `PIPE_REF` stays as the method names it, and a workflow changes only if it names the template. It also does not remove this skill; Step 6 does.
+
+It writes nothing until every check has passed, writes each file whole, through a temporary file renamed over it, and goes in the order that keeps a retry possible: the files in place, the removals, the package directory's move, and `pyproject.toml` last. A run that stops part-way says so and truncates nothing, and since `pyproject.toml` still names the template, the same command run again, once the cause is fixed, finishes the job without `--force`.
 
 **Heads-up — file state changed on disk.** If you need a manual `Edit` afterward, **re-read the file first**: the package has moved, and a pre-run read is stale. The script is meant to cover every placeholder, so a manual edit is a sign the script should handle that case instead.
 
@@ -118,5 +122,5 @@ Then give the user a short summary:
 - **Always dry-run before the real run**, and show its output even when the user supplied every input and asked to proceed.
 - **Re-sync `uv.lock`** with `uv sync`: the rename makes the lock stale, and CI's locked install refuses it.
 - **Don't stop on a red check.** A failing `make all` here means CI will fail too: fix the root cause and re-run.
-- **Don't edit `.github/` workflows.** They are generic to any project created from the template, and the script leaves them alone.
+- **Don't edit `.github/` workflows.** They are generic to any project created from the template, and the script changes one only to rewrite the template's identifier, should it name it.
 - If any step fails or the user wants to abort, stop and leave the tree in a state they can inspect; don't push forward through errors.

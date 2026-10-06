@@ -20,7 +20,7 @@ This document is part of the template, not of the projects it creates: the gestu
 | Script | `.venv/bin/python -m scripts.create <method> [--name …] [--title …] [--description …] [--pipe …] [--author-name …] [--author-email …] [--repo-url …] [--license …] [--license-holder …] [--license-year …] [--dry-run]` |
 | Needs | `PIPELEX_API_KEY`, and a base URL that serves `/v1/codegen` and `/v1/pipe-io` (with `method_id` or `method_ref` for a named method, and `GET /v1/methods/{id}` for a catalog id) — see [the key and the base URL](#the-key-and-the-base-url) |
 | Runs on | The un-bootstrapped template only: `pyproject.toml` must still name `pipelex-method-cli-python`, the bootstrap skill must be present, and the package must hold no method |
-| Exit codes | `0` created (or rehearsed), `1` refused or failed, `2` from make when `METHOD` is missing, `130` after Ctrl-C — never a traceback |
+| Exit codes | `0` created (or rehearsed), `1` refused or failed, with a message naming the file or the step, `2` from make when `METHOD` is missing, `130` after Ctrl-C — never a traceback |
 
 The arguments are the method-app family's contract, the one `webapp-js`'s `make create` takes, less the two values that choose a method among several (`METHOD_NAME` and `LABEL`), which mean nothing for a command that holds one. A family test runs `make -n create` in both templates and fails when they forward a variable differently.
 
@@ -30,11 +30,11 @@ Nothing asks a question. A value the gesture cannot derive is a refusal naming t
 
 `METHOD` is read in this order:
 
-1. **A path that exists** is a bundle, whatever it looks like: a `.mthds` file, or a directory whose `.mthds` files, at any depth, make up the method. `~` and `~/…` are expanded as a shell would, and a relative path is resolved from the directory you ran `make` in. The files are copied into `src/<package>/method/` as they were read, their relative paths kept.
+1. **A path that exists** is a bundle, whatever it looks like: a `.mthds` file, or a directory whose `.mthds` files, at any depth, make up the method. `~`, `~/…` and `~user/…` are expanded as a shell would, by the rule the command applies to a file input's path, and a relative path is resolved from the directory you ran `make` in. The files are copied into `src/<package>/method/` as they were read, their relative paths kept.
 2. **`mt_…`** is a catalog id, a method stored in your organization's catalog on [app.pipelex.com](https://app.pipelex.com). It stays in the catalog, and `method/method.json` names it.
 3. **`github.com/<owner>/<repo>[/<package>…][@<tag>]`**, with or without `https://`, is a published method's address. It stays where it is published, and `method/method.json` names it.
 
-Anything else is refused with the forms listed. A bundle is held to the codegen kit's policies: a symbolic link or a special file, at the path given or anywhere under the directory, is refused rather than followed, and so is a file that is not UTF-8, a path that is not a `.mthds` file, a directory that holds none, and a directory that contains the project itself.
+Anything else is refused with the forms listed. A bundle is held to the codegen kit's policies: a symbolic link or a special file, at the path given or anywhere under the directory, is refused rather than followed, and so is a file that is not UTF-8, a file or a directory that cannot be read, which the refusal names, a path that is not a `.mthds` file, a directory that holds none, and a directory that contains the project itself.
 
 The method is fetched once, through the codegen kit's own `fetch_generated` (`docs/codegen.md`): `/v1/codegen` and `/v1/pipe-io`, with every guard `make codegen` holds, the self-check of what came back and the revision confirmed by a second `/v1/codegen` included. Everything below is read from that one fetch.
 
@@ -43,13 +43,13 @@ The method is fetched once, through the codegen kit's own `fetch_generated` (`do
 | Value | Derived from | Override |
 | --- | --- | --- |
 | Pipe | The method's own entry pipe, `/v1/pipe-io`'s `default_pipe_ref`; otherwise its only pipe; otherwise a refusal listing the pipes | `PIPE`, by `<domain>.<pipe_code>` or by its bare code when only one pipe has it |
-| Output model | The generated `models.py`'s class for the pipe's output concept, and whether the output is a list of it | Nothing: a model the tree does not define, or a `models.py` that cannot be imported, is a refusal |
-| Name | A bundle's pipe's domain; a catalog method's name; an address's package, or its repository when it names no package — kebab-cased, starting with a letter | `NAME` / `--name` |
+| Output model | The model the generated `models.py` exposes under the name of the pipe's output concept, as `binding.py`'s import reads it, and whether the output is a list of it | Nothing: a `models.py` that cannot be imported, or that exposes no pydantic model of that name, is a refusal |
+| Name | A bundle's pipe's domain; a catalog method's name; an address's package, or its repository when it names no package — kebab-cased, starting with a letter, a letter with an accent keeping its letter (`Résumé screening` gives `resume-screening`) | `NAME` / `--name` |
 | Title | A catalog method's name; otherwise the name title-cased, each word the method's own prose spells its own way respelled (`cv-screening` → `CV Screening` where the method writes "CVs") | `TITLE` / `--title` |
 | Description | A catalog method's description; otherwise the domain's own `description`; otherwise the chosen pipe's; otherwise a sentence naming the method. Always on one line | `DESCRIPTION` / `--description` |
 | Author, repository URL, license | Nothing: the bootstrap's own rules, optional, never invented, MIT unless asked | `AUTHOR_NAME`, `AUTHOR_EMAIL`, `REPO_URL`, `LICENSE`, `LICENSE_HOLDER`, `LICENSE_YEAR` |
 
-The name is the distribution and the command as derived, and the import package with its dashes as underscores: `receipt-review` gives the command `receipt-review` and the package `receipt_review`. The bootstrap refuses a name whose package would be a Python keyword, shadow a standard-library module, or shadow one of the project's own or its dependencies' import names, and the refusal names `--name`.
+The name is the distribution and the command as derived, and the import package with its dashes as underscores: `receipt-review` gives the command `receipt-review` and the package `receipt_review`. The bootstrap refuses a name whose package would be a Python keyword, shadow a standard-library module, or shadow one of the project's own or its dependencies' import names, and a name that is the name of any package `uv.lock` pins, such as `anyio`, which the dependencies need and the project would replace; the refusal names `--name`.
 
 The pipe's inputs are derived as options the way the command derives them when it loads, so a method whose input form the command cannot offer is refused here, before anything is written, rather than by the first `--help`.
 
@@ -66,29 +66,29 @@ The gesture runs in two halves, and nothing is written until the first has finis
 3. Plan the method: read the bundle or check that the base URL serves the selector, fetch the catalog entry of a catalog id, fetch the generated tree and the contracts, choose the pipe, bind the output, derive the options, and render `binding.py`, formatted by ruff, in memory.
 4. Derive the project's name, title and description.
 5. Plan `.env`.
-6. Run the bootstrap with `--dry-run` and the derived values, which validates every one of them: a name it would refuse, an author email without a name, a malformed license year. A refusal here stops the gesture with nothing written.
+6. Run the bootstrap with `--dry-run` and the derived values, which validates every one of them: a name it would refuse, an author email without a name, a malformed license year. It is also handed the `binding.py` the gesture will write, as a temporary file outside the project, and checks it with the rest of the tree, so a binding the real run would refuse is refused here; its `PIPE_REF` is the method's own pipe reference and is never read for that, so a pipe named `planning.create_plan` is no refusal. A refusal here stops the gesture with nothing written. Every value is handed over as `--flag=value`, so a title or a description derived from the method may start with dashes.
 
 `DRY_RUN=1` stops at this point and prints the plan: the identity, the pipe with its output and its options, the env file, any warning (each line starting `! `), and the steps below.
 
 **Write.**
 
-1. **Write the method**: `method/`, the generated tree through the codegen kit's own `write_generated`, so that it is exactly the tree `make codegen` would write, and `binding.py`. Nothing is overwritten. If a write fails, everything this step wrote is removed, so the template is exactly as it was and the gesture can be run again.
-2. **Run the bootstrap** with the derived values and `--clean`. It renames the distribution, the package directory under `src/` and the command; rewrites the template's identifier wherever the project keeps it, `.gitattributes` and the Makefile included; renders the README; rewrites `CLAUDE.md`'s description line, `AGENTS.md`'s heading, the license and the changelog; and removes what only the template needs: this gesture, its planning code, its tests and their fixtures, this document, and the passages describing them. Its warnings start with `warning: `.
+1. **Write the method**: `method/`, the generated tree through the codegen kit's own `write_generated`, so that it is exactly the tree `make codegen` would write, and `binding.py`. Nothing is overwritten: each part is created exclusively before anything is written into it, so a `generated/` that appeared since the read-only half is refused and left as it is. If a write fails, everything this step created is removed, and nothing else, so the template is exactly as it was and the gesture can be run again.
+2. **Run the bootstrap** with the derived values and `--clean`. It renames the distribution, the package directory under `src/` and the command; rewrites the template's identifier wherever the project keeps it, `.gitattributes` and the Makefile included; renders the README; rewrites `CLAUDE.md`'s description line, `AGENTS.md`'s heading, the license and the changelog; and removes what only the template needs: this gesture, its planning code, its tests and their fixtures, this document, and the passages describing them. Its warnings start with `warning: `. It writes each file whole, and `pyproject.toml` last, so a bootstrap that stops part-way leaves a tree that its own command, run again, finishes.
 3. **Write `.env`**, unless it already exists or the key is to be left where it was found (see below).
 4. **Re-sync `uv.lock` and the environment** with `uv sync`, since the project was renamed, its command with it, and CI installs with a locked `uv.lock`.
 5. **Run `make all`.**
 6. **Remove the bootstrap skill**, only once `make all` is green, with `.claude/` when that leaves it empty.
 
-A failure after step 1 cannot be undone by running the gesture again, because the template has become a project and the gesture refuses it. The message names the steps that are left, and they are ordinary commands: when the bootstrap is what failed, its own command line with the values the gesture planned, and the copy of `.env.example` to `.env` when the gesture was to write one; then `uv sync`, `make all`, and `rm -rf .claude/skills/bootstrap`. Fix the cause first, and never by editing `src/<package>/generated/`.
+A failure after step 1 cannot be undone by running the gesture again, because the package now holds a method and the gesture refuses it. The message names the steps that are left, and they are ordinary commands: when the bootstrap is what failed, its own command line with the values the gesture planned, with `--force` when it had already written `pyproject.toml`, which then names the project; the copy of `.env.example` to `.env` when the gesture was to write one, which is also what is left when writing `.env` failed; then `uv sync`, `make all`, and `rm -rf .claude/skills/bootstrap`. Fix the cause first, and never by editing `src/<package>/generated/`.
 
 ## The key and the base URL
 
 `.env` is written only when it does not exist, from `.env.example`, and is created readable by you alone. It holds:
 
 - **exactly one `PIPELEX_BASE_URL` line**, holding the base URL the gesture ran against: the one your shell exports, the one a `.env` above the project sets, or the default, `https://api.pipelex.com`, when neither does. Any other assignment of it is dropped, so the file can never hold two;
-- **`PIPELEX_API_KEY`**, set to the value your shell exports, or left empty when the shell exports none.
+- **`PIPELEX_API_KEY`**, set to the value your shell exports. The gesture refuses to run without a key, so one your shell does not export came from a `.env` above the project, and then no `.env` is written at all (below).
 
-Every value is written in single quotes, so a `#`, a `$` or a space in it reaches the command as it was. A value holding a line break, or `${`, which python-dotenv expands as a variable even inside quotes, is refused: write `.env` yourself and run the gesture again.
+Every value is written in single quotes, so a `#`, a `$` or a space in it reaches the command as it was. A value holding a line break, `${`, which python-dotenv expands as a variable even inside quotes, or a byte that is not UTF-8, is refused: write `.env` yourself and run the gesture again. An `.env` or `.env.example` the gesture must read and cannot, unreadable or not UTF-8, is refused by name before anything is written.
 
 The command reads the nearest `.env`, in the directory it runs from or the first directory above it that has one, and only that one. So when the key came from a `.env` above the project rather than from your shell, the gesture writes no `.env` at all: one in the project would hide the file that supplies the key, and the gesture copies a key only from the shell. When it does write one while a `.env` above exists, the plan says that the new file hides it.
 

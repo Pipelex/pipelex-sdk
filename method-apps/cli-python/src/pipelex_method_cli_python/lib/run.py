@@ -32,16 +32,19 @@ root (`cli.py`). Every function takes the client it runs on, opened once by `exe
 """
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import httpx
 from mthds.protocol.exceptions import PipelineRequestError
 from pipelex_sdk.artifact_models import DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
 from pipelex_sdk.execute_result import results_from_execute
 from pipelex_sdk.runs import PollInfo, RunResults, WaitForResultOptions
+from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
 
@@ -54,6 +57,13 @@ from pipelex_method_cli_python.lib.inputs import declares_files
 from pipelex_method_cli_python.lib.narrow import NarrowedOutput, OutputValidationError, narrow_output
 from pipelex_method_cli_python.lib.output import OutputShapeError, print_payload, print_run_id
 from pipelex_method_cli_python.lib.usage import print_cost_report
+
+#: What saving a run's files can raise besides the SDK's own errors and the CLI's: an `OSError` from
+#: the filesystem, such as a working directory removed before `--out` is resolved; the `RuntimeError`
+#: Python 3.11 and 3.12 raise when `--out` is a symbolic link loop; a body httpx cannot decode, which
+#: the SDK's transport mapping leaves as httpx's own error; and a malformed answer from the route that
+#: resolves the files' links, as JSON or as its model.
+UNWORDED_DOWNLOAD_FAILURES = (OSError, RuntimeError, httpx.HTTPError, json.JSONDecodeError, ValidationError)
 
 
 @dataclass(frozen=True)
@@ -231,9 +241,9 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
                 print_error(stderr, present_error(exc, mode=plan.mode))
                 # Raised without `from`, so the refusal keeps its own cause; the download's failure, printed above, is its context.
                 raise shape_error
-            except Exception as exc:
-                # A failure neither the SDK nor the CLI words, such as an `OSError` from an unwritable `--out`,
-                # must not hide the refusal either; without one, it stays what it is.
+            except UNWORDED_DOWNLOAD_FAILURES as exc:
+                # A failure neither the SDK nor the CLI words must not hide the refusal either; without one, it
+                # stays what it is. Anything else is a bug, and crashes loudly whatever the result was.
                 if shape_error is None:
                     raise
                 failure = AppError(f"Saving the run's files failed: {type(exc).__name__}: {exc}")

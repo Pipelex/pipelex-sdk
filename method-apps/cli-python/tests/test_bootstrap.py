@@ -12,15 +12,20 @@ as a module loaded from its path; ruff checks it with the rest of the template.
 """
 
 import importlib.util
+import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
 
+from pipelex_method_cli_python.lib.binding import BINDING_FILENAME
+from pipelex_method_cli_python.lib.method_source import PACKAGE
+from scripts.create_plan import ChosenPipe, OutputBinding, render_binding
 from tests.support_create import TEMPLATE_ROOT, copy_template
 
 #: The bootstrap's script, relative to a project's root.
@@ -74,7 +79,22 @@ def kept_files(root: Path) -> dict[str, str]:
 
 
 def tree(root: Path) -> dict[str, bytes]:
-    return {path.relative_to(root).as_posix(): path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file() and not path.is_symlink()}
+    """Every file under the root by its relative path, ruff's cache aside, which a run that formats leaves behind."""
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.is_symlink() and ".ruff_cache" not in path.relative_to(root).parts
+    }
+
+
+def binding_for(pipe_ref: str) -> str:
+    """`binding.py` as `make create` writes it for a pipe, before the bootstrap renames the package."""
+    domain, _, code = pipe_ref.rpartition(".")
+    return render_binding(ChosenPipe(ref=pipe_ref, domain=domain, code=code), OutputBinding(model="Text", plural=False))
+
+
+#: Whether the tests run as root, who writes into a directory whose mode refuses everyone else.
+AS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 @pytest.fixture
@@ -250,6 +270,118 @@ class TestRuns:
         assert result.returncode == 0, result.stderr
         assert "LICENSE becomes a stub for 'Apache-2.0'" in result.stderr
         assert 'license = "Apache-2.0"' in (copy / "pyproject.toml").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("name", ["anyio", "typing-extensions", "typing_extensions", "annotated-types", "markdown-it-py"])
+    def test_a_dry_run_refuses_the_name_of_a_package_uv_lock_pins(self, name: str, copy: Path):
+        # Each comes with a dependency rather than being one, and a project of that name would take its place.
+        before = tree(copy)
+        result = bootstrap(copy, "--name", name, "--description", "x", "--dry-run")
+        assert result.returncode == 1
+        assert "uv.lock pins a package of that name" in result.stderr
+        assert tree(copy) == before
+
+    def test_a_project_s_own_entry_in_uv_lock_is_no_collision(self, copy: Path):
+        assert bootstrap(copy, "--name", "invoice-extractor", "--description", "x").returncode == 0
+        # What `uv sync` leaves: the lock names the project, which a confirmed re-run keeps.
+        lock = copy / "uv.lock"
+        relocked = lock.read_text(encoding="utf-8").replace(f'name = "{BOOTSTRAP.TEMPLATE_NAME}"', 'name = "invoice-extractor"')
+        lock.write_text(relocked, encoding="utf-8")
+        again = bootstrap(copy, "--name", "invoice-extractor", "--description", "Again.", "--force", "--dry-run")
+        assert again.returncode == 0, again.stderr
+
+    def test_a_value_that_starts_with_dashes_is_taken_in_the_equals_form(self, copy: Path):
+        result = bootstrap(copy, "--name", "cv-screening", "--title=-- CV", "--description=-- draft: screens CVs", "--clean")
+        assert result.returncode == 0, result.stderr
+        assert tomllib.loads((copy / "pyproject.toml").read_text(encoding="utf-8"))["project"]["description"] == "-- draft: screens CVs"
+        assert (copy / "README.md").read_text(encoding="utf-8").startswith("# -- CV\n\n-- draft: screens CVs\n")
+
+    def test_a_description_naming_the_template_is_kept_as_given_in_claude_md_too(self, copy: Path):
+        description = f"A port of {BOOTSTRAP.TEMPLATE_NAME} for invoices"
+        result = bootstrap(copy, "--name", "invoice-port", "--description", description, "--clean")
+        assert result.returncode == 0, result.stderr
+        assert (copy / "CLAUDE.md").read_text(encoding="utf-8").splitlines()[2] == description
+        assert tomllib.loads((copy / "pyproject.toml").read_text(encoding="utf-8"))["project"]["description"] == description
+
+    def test_a_re_run_under_another_name_is_refused_before_anything_is_written(self, copy: Path):
+        assert bootstrap(copy, "--name", "invoice-extractor", "--description", "x").returncode == 0
+        before = tree(copy)
+        result = bootstrap(copy, "--name", "receipt-reader", "--description", "x", "--force")
+        assert result.returncode == 1
+        assert f"neither src/{PACKAGE}/ nor src/receipt_reader/ exists" in result.stderr
+        assert tree(copy) == before
+
+
+class TestTheBinding:
+    """`binding.py`, which `make create` writes before the bootstrap runs: its import follows the rename, and its `PIPE_REF` stays the method's."""
+
+    @pytest.mark.parametrize("pipe_ref", ["planning.create_plan", "scripts.create", f"{PACKAGE}.run"])
+    def test_a_pipe_ref_is_kept_as_the_method_names_it(self, pipe_ref: str, copy: Path):
+        (copy / "src" / PACKAGE / BINDING_FILENAME).write_text(binding_for(pipe_ref), encoding="utf-8")
+        result = bootstrap(copy, "--name", "plan-maker", "--description", "Plans.", "--clean")
+        assert result.returncode == 0, result.stderr
+        text = (copy / "src" / "plan_maker" / BINDING_FILENAME).read_text(encoding="utf-8")
+        assert f'PIPE_REF = "{pipe_ref}"\n' in text
+        assert "from plan_maker.generated.models import Text\n" in text
+
+    def test_a_dry_run_checks_the_binding_it_is_given_and_writes_nothing(self, copy: Path, tmp_path: Path):
+        planned = tmp_path / BINDING_FILENAME
+        planned.write_text(binding_for("planning.create_plan"), encoding="utf-8")
+        before = tree(copy)
+        result = bootstrap(copy, "--name", "plan-maker", "--description", "Plans.", f"--binding={planned}", "--dry-run")
+        assert result.returncode == 0, result.stderr
+        assert f"edit    src/plan_maker/{BINDING_FILENAME}" in result.stdout
+        assert tree(copy) == before
+
+    def test_a_dry_run_refuses_a_binding_that_would_name_the_gesture(self, copy: Path, tmp_path: Path):
+        planned = tmp_path / BINDING_FILENAME
+        planned.write_text(binding_for("x.y").replace('"""The binding', '"""Written by make create. The binding', 1), encoding="utf-8")
+        before = tree(copy)
+        result = bootstrap(copy, "--name", "plan-maker", "--description", "Plans.", f"--binding={planned}", "--dry-run")
+        assert result.returncode == 1
+        assert f"src/{PACKAGE}/{BINDING_FILENAME}:1: " in result.stderr
+        assert tree(copy) == before
+
+    def test_the_binding_flag_is_for_a_dry_run_only(self, copy: Path, tmp_path: Path):
+        planned = tmp_path / BINDING_FILENAME
+        planned.write_text(binding_for("x.y"), encoding="utf-8")
+        before = tree(copy)
+        result = bootstrap(copy, "--name", "plan-maker", "--description", "Plans.", f"--binding={planned}")
+        assert result.returncode == 1
+        assert "--binding is for a --dry-run" in result.stderr
+        assert tree(copy) == before
+
+
+@pytest.mark.skipif(AS_ROOT, reason="root writes into a directory whose mode refuses everyone else")
+class TestAFailedRun:
+    def test_a_write_that_fails_part_way_truncates_nothing_and_the_same_command_finishes(self, tmp_path: Path):
+        args = ("--name", "invoice-extractor", "--description", "Reads invoices.", "--clean")
+        names = BOOTSTRAP.Names(name="invoice-extractor", package="invoice_extractor", title="Invoice Extractor")
+        clean = copy_template(tmp_path / "clean")
+        assert bootstrap(clean, *args).returncode == 0
+        finished = tree(clean)
+        copy = copy_template(tmp_path / "failed")
+        original = tree(copy)
+        locked = copy / "src" / PACKAGE / "lib"
+        locked.chmod(0o555)
+        try:
+            failed = bootstrap(copy, *args)
+        finally:
+            locked.chmod(0o755)
+        assert failed.returncode == 1
+        assert "Traceback" not in failed.stderr
+        assert "run the same command again" in failed.stderr
+        # pyproject.toml, written last, still names the template, so the re-run needs no --force.
+        assert (copy / "pyproject.toml").read_bytes() == original["pyproject.toml"]
+        # Every file is whole: as the template had it, as the run planned it (a Python file is formatted once
+        # every file is written), or as a run that did not fail leaves it.
+        for relative, content in tree(copy).items():
+            whole = {original.get(relative), finished.get(BOOTSTRAP.moved(relative, names))}
+            if relative in original and relative.endswith(".py"):
+                whole.add(BOOTSTRAP.transform_generic(original[relative].decode("utf-8"), relative, names).encode("utf-8"))
+            assert content in whole, relative
+        again = bootstrap(copy, *args)
+        assert again.returncode == 0, again.stderr
+        assert tree(copy) == finished
 
 
 class TestStripTemplateOnly:

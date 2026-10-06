@@ -22,16 +22,22 @@ doc), and the passages of the files a project keeps that describe them sit betwe
 `template-only:begin` and `template-only:end` marker lines, which are removed with everything
 between them, in every file that carries a pair.
 
-Everything is planned in memory first, and nothing is written until every transform has run and a
-survivor check has passed: no file the project keeps may still name the template, the gesture or a
-marker, which would be a transform rule that missed a context. Every Python file it writes then goes
-through the project's own ruff, so that `make check` is green straight after a run.
+Everything is decided before anything is written: every value is checked, the name against every
+package `uv.lock` pins too, every transform runs in memory, and a survivor check passes over what
+they produce: no file the project keeps may still name the template, the gesture or
+a marker, which would be a transform rule that missed a context. `binding.py`'s `PIPE_REF` is the one
+value exempt, since it is the method's own pipe reference, and a dry run given `--binding` checks the
+`binding.py` that `make create` will write before the real run. Only then is anything written, each
+file whole or not at all, in the order that keeps a retry possible: the files in place, the removals,
+the package directory's rename, and `pyproject.toml` last, so that a run that fails part-way leaves a
+template that the same command, run again, finishes without `--force`. Every Python file the project
+keeps then goes through the project's own ruff, so that `make check` is green straight after a run.
 
 The script only transforms files. It does not touch git, re-sync `uv.lock`, run the checks or remove
 the bootstrap skill: the skill's `SKILL.md` sequences those, or `make create` does. Re-running it on
 a project that is not the un-bootstrapped template requires `--force`. It needs nothing beyond the
 standard library, ruff when it is installed, and `packaging` to check an SPDX identifier when that is
-installed too.
+installed too, so it runs on its own, once the gesture it serves is gone.
 """
 
 from __future__ import annotations
@@ -44,8 +50,10 @@ import keyword
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -139,6 +147,19 @@ SKIPPED_DIRS = frozenset(
 # person's local settings and secrets.
 SKIPPED_FILES = frozenset({"uv.lock", ".claude/settings.local.json"})
 
+# The file whose `[project] name` says whether this is the un-bootstrapped template: written last.
+PYPROJECT = "pyproject.toml"
+
+# The lock file, whose packages a project's name must not take.
+LOCK_FILE = "uv.lock"
+
+# `binding.py`, which `make create` writes into the package before this script runs and which the
+# project keeps. Its `PIPE_REF` value is the method's own pipe reference, kept as the method names it,
+# like the method's sources: a pipe named `planning.create_plan` names the method, not the gesture, so
+# neither the token pass nor the survivor check reads that value.
+BINDING_FILENAME = "binding.py"
+_PIPE_REF_VALUE = re.compile(r"""^PIPE_REF[ \t]*(?::[^=\n]*)?=[ \t]*(?P<value>"[^"\n]*"|'[^'\n]*')""", re.MULTILINE)
+
 
 def fail(message: str) -> NoReturn:
     print(f"error: {message}", file=sys.stderr)
@@ -188,6 +209,49 @@ def name_refusal(name: str) -> str | None:
         return f"invalid project name {name!r}: its package, {package}, would shadow the standard library's module of that name."
     if package in RESERVED_PACKAGES:
         return f"invalid project name {name!r}: its package, {package}, would shadow the project's own {package} or a dependency's."
+    return None
+
+
+def normalized(name: str) -> str:
+    """A distribution's name as PEP 503 compares names: lowercase, each run of `-`, `_` and `.` one dash."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def locked_names(root: Path) -> frozenset[str] | None:
+    """Every package `uv.lock` pins, by its normalized name, or `None` when there is no lock to read."""
+    lock = root / LOCK_FILE
+    try:
+        document = tomllib.loads(lock.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        fail(f"{LOCK_FILE} cannot be read ({exc}), and the project's name is checked against every package it pins. Restore it, then run again.")
+    packages: object = document.get("package")
+    if not isinstance(packages, list):
+        return frozenset()
+    found: set[str] = set()
+    for package in packages:
+        entry: object = package.get("name") if isinstance(package, dict) else None
+        if isinstance(entry, str):
+            found.add(normalized(entry))
+    return frozenset(found)
+
+
+def lock_refusal(name: str, locked: frozenset[str], current: object) -> str | None:
+    """Why a name cannot be the project's because `uv.lock` pins a package of that name, or `None` when it can.
+
+    The direct dependencies are reserved by `RESERVED_PACKAGES`, but a dependency's own dependencies,
+    such as `anyio` for httpx or `typing-extensions` for pydantic, are only in the lock. A project of
+    that name would take the package's place: uv resolves the dependency to the project itself, and
+    the package its dependents import is the project's. The project's own entry is not a collision,
+    which is what a confirmed re-run of a project that `uv sync` has re-locked finds there.
+    """
+    own = normalized(current) if isinstance(current, str) else None
+    if normalized(name) in locked and normalized(name) != own:
+        return (
+            f"invalid project name {name!r}: {LOCK_FILE} pins a package of that name, which the project depends on, and a "
+            "project cannot take a dependency's name. Choose another."
+        )
     return None
 
 
@@ -275,6 +339,8 @@ class Options:
     dry_run: bool
     force: bool
     date: str
+    # `binding.py` as `make create` will write it before the real run, which a dry run checks with the tree.
+    binding: str | None = None
 
 
 # The neutral values the survivor check transforms with, so that a user's own title or description
@@ -456,14 +522,19 @@ def strip_charter(text: str) -> str:
 
 
 def transform_claude_md(text: str, names: Names, opts: Options) -> str:
-    text = strip_template_only(text, "CLAUDE.md", required=True)
+    """`CLAUDE.md`: its template-only passages stripped and the names rewritten, then the charter, then the description.
+
+    The description goes in last, as in `pyproject.toml`, so that nothing reads the person's own words
+    again: a description that names the template legitimately is kept as given in both files.
+    """
+    text = apply_name_tokens(strip_template_only(text, "CLAUDE.md", required=True), names)
+    if opts.clean:
+        text = strip_charter(text)
     if CLAUDE_DESCRIPTION in text:
         text = text.replace(CLAUDE_DESCRIPTION, opts.description, 1)
     else:
         warn("CLAUDE.md: template description line not found; left as-is.")
-    if opts.clean:
-        text = strip_charter(text)
-    return apply_name_tokens(text, names)
+    return text
 
 
 def transform_license(text: str, opts: Options) -> str:
@@ -509,6 +580,32 @@ def transform_generic(text: str, rel: str, names: Names) -> str:
     return apply_name_tokens(text, names)
 
 
+def is_binding(rel: str) -> bool:
+    """Whether a path is a package's `binding.py`, under the template's name or, on a re-run, the project's."""
+    parts = rel.split("/")
+    return len(parts) == 3 and parts[0] == "src" and parts[2] == BINDING_FILENAME
+
+
+def pipe_ref_spans(rel: str, text: str) -> list[tuple[int, int]]:
+    """Where `binding.py`'s `PIPE_REF` value sits in its text, quotes included; nowhere in any other file."""
+    if not is_binding(rel):
+        return []
+    return [match.span("value") for match in _PIPE_REF_VALUE.finditer(text)]
+
+
+def transform_binding(text: str, rel: str, names: Names) -> str:
+    """`binding.py`: transformed like any other file, except its `PIPE_REF` value, which stays the method's."""
+    if TEMPLATE_ONLY_BEGIN in text or TEMPLATE_ONLY_END in text:
+        text = strip_template_only(text, rel, required=False)
+    pieces: list[str] = []
+    last = 0
+    for start, end in pipe_ref_spans(rel, text):
+        pieces.extend((apply_name_tokens(text[last:start], names), text[start:end]))
+        last = end
+    pieces.append(apply_name_tokens(text[last:], names))
+    return "".join(pieces)
+
+
 Transform = Callable[[str, Names, Options], str]
 
 TARGETS: dict[str, Transform] = {
@@ -526,7 +623,24 @@ def transform_for(rel: str, text: str, names: Names, opts: Options) -> str:
     target = TARGETS.get(rel)
     if target is not None:
         return target(text, names, opts)
+    if is_binding(rel):
+        return transform_binding(text, rel, names)
     return transform_generic(text, rel, names)
+
+
+def survivor_lines(rel: str, original: str, opts: Options) -> list[str]:
+    """The lines of a file that would still name the template, the gesture or a marker once transformed, as `path:line: text`.
+
+    The file is transformed with neutral values, so that a user's own title or description naming
+    the template or the gesture can never be mistaken for a rule that missed a context, and
+    `binding.py`'s `PIPE_REF` value, which is the method's, is blanked before the lines are read.
+    """
+    # The probe's warnings would repeat the real transform's, so they are not printed.
+    with contextlib.redirect_stderr(io.StringIO()):
+        probe = transform_for(rel, original, PROBE_NAMES, probe_options(opts))
+    for start, end in reversed(pipe_ref_spans(rel, probe)):
+        probe = f'{probe[:start]}""{probe[end:]}'
+    return [f"{rel}:{number}: {line.strip()}" for number, line in enumerate(probe.splitlines(), start=1) if SURVIVORS.search(line) is not None]
 
 
 # ---------------------------------------------------------------------------
@@ -578,7 +692,12 @@ def moved(rel: str, names: Names) -> str:
 
 
 def format_python(root: Path, files: list[str]) -> None:
-    """Sort the imports and format the Python files written, with the project's own ruff and settings."""
+    """Sort the imports and format the project's Python files, with the project's own ruff and settings.
+
+    Every Python file the project keeps is formatted, not only those this run wrote: one that a run
+    which stopped part-way wrote is already transformed, so a re-run finds nothing to write in it, and
+    formats it here. A file ruff already formats is left as it is.
+    """
     if not files:
         return
     for command in (["check", "--select", "I", "--fix", "--quiet", "--exit-zero"], ["format", "--quiet"]):
@@ -588,34 +707,93 @@ def format_python(root: Path, files: list[str]) -> None:
             result = None
         if result is None or result.returncode != 0:
             detail = "" if result is None else (result.stderr.strip() or result.stdout.strip())
-            warn(f"ruff could not format the Python files written{f' ({detail})' if detail else ''}; run `make format`.")
+            warn(f"ruff could not format the project's Python files{f' ({detail})' if detail else ''}; run `make format`.")
             return
+
+
+def write_whole(path: Path, text: str) -> None:
+    """Replace a file's text all at once, keeping its mode: written beside it under a temporary name, then renamed over it.
+
+    A write that fails part-way leaves the original as it was, never truncated.
+    """
+    mode = stat.S_IMODE(path.stat().st_mode)
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".bootstrap")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+
+
+def remove_path(path: Path) -> None:
+    """Remove a file, a link or a directory tree."""
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def project_name(pyproject: Path) -> object:
+    """`pyproject.toml`'s `[project] name`, whatever it is, or `None` when it names none."""
+    try:
+        document = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as exc:
+        fail(f"{PYPROJECT} cannot be read: {exc}")
+    except tomllib.TOMLDecodeError as exc:
+        fail(f"{PYPROJECT} is not valid TOML: {exc}")
+    project: object = document.get("project")
+    return project.get("name") if isinstance(project, dict) else None
+
+
+@dataclass(frozen=True)
+class Edit:
+    """One file to rewrite: where it is now, where it lands once the package is renamed, and its new text."""
+
+    rel: str
+    target: str
+    text: str
 
 
 def run(root: Path, names: Names, opts: Options) -> None:
     # Guard: confirm this is the un-bootstrapped template before anything is rewritten. In a wrong
     # directory or an already-bootstrapped project, proceeding would clobber that project's version,
     # changelog and identity. --force is the explicit opt-in for a confirmed re-run.
-    pyproject = root / "pyproject.toml"
+    pyproject = root / PYPROJECT
     if not pyproject.is_file():
-        fail(f"no pyproject.toml found in {root} — run this from the project root.")
-    try:
-        current = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project", {}).get("name")
-    except tomllib.TOMLDecodeError as exc:
-        fail(f"pyproject.toml is not valid TOML: {exc}")
+        fail(f"no {PYPROJECT} found in {root} — run this from the project root.")
+    current = project_name(pyproject)
     if current != TEMPLATE_NAME:
         if not opts.force:
             fail(
-                f'pyproject.toml\'s name is not "{TEMPLATE_NAME}" — this does not look like the un-bootstrapped template. Pass --force '
+                f'{PYPROJECT}\'s name is not "{TEMPLATE_NAME}" — this does not look like the un-bootstrapped template. Pass --force '
                 "only if you really mean to re-bootstrap this project (the changelog and the README will be rewritten again)."
             )
-        warn(f'pyproject.toml\'s name is not "{TEMPLATE_NAME}"; proceeding (--force).')
+        warn(f'{PYPROJECT}\'s name is not "{TEMPLATE_NAME}"; proceeding (--force).')
+
+    locked = locked_names(root)
+    if locked is None:
+        warn(f"no {LOCK_FILE} found, so the name is not checked against the packages the project depends on.")
+    else:
+        refusal = lock_refusal(names.name, locked, current)
+        if refusal is not None:
+            fail(refusal)
 
     old_package = root / "src" / TEMPLATE_PACKAGE
     new_package = root / "src" / names.package
     rename = old_package.is_dir() and old_package != new_package
     if rename and (new_package.exists() or new_package.is_symlink()):
         fail(f"src/{names.package} already exists, so src/{TEMPLATE_PACKAGE} cannot be renamed to it.")
+    if not old_package.is_dir() and not new_package.is_dir():
+        # A run that stopped after the rename left the package under the project's name, which a re-run
+        # with the same name finds; under any other name, the identifier it rewrites is gone.
+        fail(
+            f"neither src/{TEMPLATE_PACKAGE}/ nor src/{names.package}/ exists: the bootstrap renames the template's package, and "
+            "cannot rename a package that already has a name of its own. Run it again with the name the project already has."
+        )
 
     print(f"Bootstrapping template -> {names.title!r}")
     print(f"  name={names.name}  package={names.package}  title={names.title}  license={opts.lic.spdx}")
@@ -623,53 +801,62 @@ def run(root: Path, names: Names, opts: Options) -> None:
         print("  (dry run — no files will be modified)")
     print()
 
-    # Transform everything in memory first and write second: a transform that throws, or a survivor
-    # the check below finds, must not leave a half-applied tree.
-    edits: list[tuple[str, str]] = []
+    # Decide everything in memory first: a transform that throws, or a survivor the check below finds,
+    # must not leave a half-applied tree.
+    kept = kept_text_files(root)
+    if opts.binding is not None:
+        planned = f"src/{TEMPLATE_PACKAGE if old_package.is_dir() else names.package}/{BINDING_FILENAME}"
+        kept = [(rel, text) for rel, text in kept if rel != planned] + [(planned, opts.binding)]
+    edits: list[Edit] = []
     survivors: list[str] = []
-    for rel, original in kept_text_files(root):
+    for rel, original in kept:
         updated = transform_for(rel, original, names, opts)
-        target = moved(rel, names) if rename else rel
         if updated != original:
-            edits.append((target, updated))
-        # The probe's warnings would repeat the real transform's, so they are not printed.
-        with contextlib.redirect_stderr(io.StringIO()):
-            probe = transform_for(rel, original, PROBE_NAMES, probe_options(opts))
-        survivors.extend(
-            f"{rel}:{number}: {line.strip()}" for number, line in enumerate(probe.splitlines(), start=1) if SURVIVORS.search(line) is not None
-        )
+            edits.append(Edit(rel=rel, target=moved(rel, names) if rename else rel, text=updated))
+        survivors.extend(survivor_lines(rel, original, opts))
     if survivors:
         joined = "\n  ".join(survivors)
         fail(f"the template's name, the create gesture or a marker would survive the bootstrap in these lines:\n  {joined}")
-    removals = [rel for rel in REMOVALS if (root / rel).exists()]
+    removals = [rel for rel in REMOVALS if (root / rel).exists() or (root / rel).is_symlink()]
+    # pyproject.toml goes last: until it is written, the tree is the template's, which a re-run takes without --force.
+    in_place = [edit for edit in edits if edit.rel != PYPROJECT]
+    last = [edit for edit in edits if edit.rel == PYPROJECT]
+    python_files = [moved(rel, names) if rename else rel for rel, _ in kept if rel.endswith(".py")]
 
     print("Edits:")
-    if rename:
-        print(f"  {'move  ' if opts.dry_run else 'moved '}  src/{TEMPLATE_PACKAGE}/ -> src/{names.package}/")
-        if not opts.dry_run:
-            os.rename(old_package, new_package)
-    for rel, updated in edits:
-        if opts.dry_run:
-            print(f"  edit    {rel}")
-        else:
-            with (root / rel).open("w", encoding="utf-8", newline="") as handle:
-                handle.write(updated)
-            print(f"  edited  {rel}")
-    for rel in removals:
-        path = root / rel
-        shown = f"{rel}/" if path.is_dir() else rel
-        if opts.dry_run:
-            print(f"  remove  {shown}")
-        else:
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-            print(f"  removed {shown}")
+    if opts.dry_run:
+        for edit in in_place:
+            print(f"  edit    {edit.target}")
+        for rel in removals:
+            print(f"  remove  {rel}{'/' if (root / rel).is_dir() else ''}")
+        if rename:
+            print(f"  move    src/{TEMPLATE_PACKAGE}/ -> src/{names.package}/")
+        for edit in last:
+            print(f"  edit    {edit.target}")
+    else:
+        try:
+            for edit in in_place:
+                write_whole(root / edit.rel, edit.text)
+                print(f"  edited  {edit.target}")
+            for rel in removals:
+                shown = f"{rel}/" if (root / rel).is_dir() else rel
+                remove_path(root / rel)
+                print(f"  removed {shown}")
+            if rename:
+                os.rename(old_package, new_package)
+                print(f"  moved   src/{TEMPLATE_PACKAGE}/ -> src/{names.package}/")
+            for edit in last:
+                write_whole(root / edit.rel, edit.text)
+                print(f"  edited  {edit.target}")
+        except OSError as exc:
+            fail(
+                f"the bootstrap stopped part-way: {exc}. Every file it wrote is whole, and {PYPROJECT}, which it writes last, "
+                "is not written yet: fix the cause, then run the same command again, which finishes what this run started."
+            )
     if not edits and not removals and not rename:
         print("  (no content changes)")
     if not opts.dry_run:
-        format_python(root, [rel for rel, _ in edits if rel.endswith(".py") and (root / rel).is_file()])
+        format_python(root, [rel for rel in python_files if (root / rel).is_file()])
     print()
     would = "would be " if opts.dry_run else ""
     print(f"Done. {len(edits)} file(s) {would}edited, {len(removals)} template-only path(s) {would}removed.")
@@ -704,10 +891,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--clean", action="store_true", help="Strip CLAUDE.md's template charter paragraph")
     parser.add_argument("--dry-run", action="store_true", help="Print the plan and change nothing")
     parser.add_argument("--force", action="store_true", help="Run on a project that is not the un-bootstrapped template")
+    parser.add_argument("--binding", help="With --dry-run: binding.py as make create will write it, checked with the tree")
     # A value that looks like the next flag almost certainly means the real one was dropped, and the
-    # flag would be swallowed: `--description --dry-run` turning a rehearsal into a real run.
+    # flag would be swallowed: `--description --dry-run` turning a rehearsal into a real run. A value
+    # given as `--flag=value` cannot be mistaken for a flag, whatever it starts with: `make create`
+    # hands every value over that way, since a derived title or description may start with dashes.
     for index, arg in enumerate(argv[:-1]):
-        if arg.startswith("--") and arg not in ("--clean", "--dry-run", "--force") and argv[index + 1].startswith("--"):
+        if arg.startswith("--") and "=" not in arg and arg not in ("--clean", "--dry-run", "--force") and argv[index + 1].startswith("--"):
             fail(f"missing value for {arg}")
     return parser.parse_args(argv)
 
@@ -748,6 +938,16 @@ def main(argv: list[str]) -> None:
         if value is not None:
             one_line(value, flag)
 
+    binding = None
+    if args.binding is not None:
+        # The binding a real run reads is the one on disk: a planned one only describes what a rehearsal checks.
+        if not args.dry_run:
+            fail("--binding is for a --dry-run: a real run reads the binding.py that is in the package.")
+        try:
+            binding = Path(args.binding).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            fail(f"--binding {args.binding} cannot be read: {exc}")
+
     opts = Options(
         description=description,
         author_name=author_name,
@@ -758,6 +958,7 @@ def main(argv: list[str]) -> None:
         dry_run=args.dry_run,
         force=args.force,
         date=datetime.date.today().isoformat(),
+        binding=binding,
     )
     run(Path(args.root).resolve(), Names(name=name, package=package_of(name), title=title), opts)
 

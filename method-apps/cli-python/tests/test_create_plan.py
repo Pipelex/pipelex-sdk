@@ -6,6 +6,7 @@ halves: `plan_method` over the recorded client, refusing before any write, and `
 removes what it wrote when a write fails.
 """
 
+import getpass
 import os
 from pathlib import Path
 
@@ -13,9 +14,11 @@ import pytest
 from mthds.protocol.pipe_io_contracts import PipeIOContract
 from pipelex_sdk.crate_models import CodegenValidReport, MthdsFileItem, PipeIORequest, PipeIOValidReport
 
+from pipelex_method_cli_python.lib import inputs
 from pipelex_method_cli_python.lib.binding import BINDING_FILENAME
 from pipelex_method_cli_python.lib.manifest import MethodSelector
 from pipelex_method_cli_python.lib.method_source import PACKAGE
+from scripts import create_plan
 from scripts.codegen_shared import Layout
 from scripts.create_plan import (
     BundlePath,
@@ -35,6 +38,7 @@ from scripts.create_plan import (
     read_bundle_arg,
     refuse_a_method_in_place,
     render_binding,
+    resolve_given,
     respell_acronyms,
     slug_source,
     spelled_words,
@@ -42,6 +46,9 @@ from scripts.create_plan import (
     write_method,
 )
 from tests.support_create import RECEIPT_REVIEW_BUNDLE, RECORDED, STORED_METHOD_ID, TEMPLATE_ROOT, TEXT_STATS_REF, RecordedClient
+
+#: Whether the tests run as root, who reads a file whose mode refuses everyone else.
+AS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 def recorded_codegen(name: str) -> CodegenValidReport:
@@ -99,6 +106,13 @@ class TestParseMethodArg:
         with pytest.raises(PlanError, match=says):
             parse_method_arg(arg, lambda _: False)
 
+    def test_a_home_is_expanded_as_the_command_expands_a_file_input_s_path(self, tmp_path: Path):
+        # One rule for both: `METHOD=~alice/x` and the command's `@~alice/x` name the same file.
+        assert create_plan.expand_home is inputs.expand_home
+        user = getpass.getuser()
+        assert resolve_given(f"~{user}/methods/cv", tmp_path) == Path(os.path.expanduser(f"~{user}")) / "methods" / "cv"
+        assert resolve_given("~$report.mthds", tmp_path) == tmp_path / "~$report.mthds"
+
     @pytest.mark.parametrize(("value", "path"), [("a/b", True), ("../cv", True), ("C:\\cv", True), ("x.mthds", True), ("github.com/o/r", False)])
     def test_tells_a_path_from_an_address(self, value: str, path: bool):
         assert looks_like_path(value) is path
@@ -145,6 +159,20 @@ class TestReadBundleArg:
         with pytest.raises(PlanError, match="not valid UTF-8"):
             read_bundle_arg("latin.mthds", cwd=tmp_path, root=tmp_path / "project", layout=package)
 
+    @pytest.mark.skipif(AS_ROOT, reason="root reads what a mode refuses everyone else")
+    @pytest.mark.parametrize("unreadable", ["cv.mthds", "bundle/cv.mthds", "bundle/inner"])
+    def test_refuses_a_file_or_a_directory_it_cannot_read_naming_it(self, unreadable: str, package: Layout, tmp_path: Path):
+        (tmp_path / "bundle" / "inner").mkdir(parents=True)
+        for relative in ("cv.mthds", "bundle/cv.mthds", "bundle/inner/more.mthds"):
+            (tmp_path / relative).write_text('domain = "cv"\n', encoding="utf-8")
+        locked = tmp_path / unreadable
+        locked.chmod(0)
+        try:
+            with pytest.raises(PlanError, match=f"{locked} cannot be read"):
+                read_bundle_arg(unreadable.split("/")[0], cwd=tmp_path, root=tmp_path / "project", layout=package)
+        finally:
+            locked.chmod(0o755)
+
     def test_refuses_a_directory_that_contains_the_project(self, package: Layout, tmp_path: Path):
         with pytest.raises(PlanError, match="contains this project"):
             read_bundle_arg(".", cwd=tmp_path, root=tmp_path / "project", layout=package)
@@ -153,7 +181,18 @@ class TestReadBundleArg:
 
 
 class TestNames:
-    @pytest.mark.parametrize(("text", "slug"), [("text_stats", "text-stats"), ("CV screening", "cv-screening"), ("Test-1", "test-1")])
+    @pytest.mark.parametrize(
+        ("text", "slug"),
+        [
+            ("text_stats", "text-stats"),
+            ("CV screening", "cv-screening"),
+            ("Test-1", "test-1"),
+            # A letter with an accent keeps its letter, as a person would spell it without one.
+            ("Résumé screening", "resume-screening"),
+            ("Straße", "strasse"),
+            ("İstanbul trips", "istanbul-trips"),
+        ],
+    )
     def test_kebab_cases_a_name(self, text: str, slug: str):
         assert kebab_case(text) == slug
 
@@ -250,6 +289,26 @@ class TestBindOutput:
         )
         with pytest.raises(PlanError, match="defines no Text"):
             bind_output(contract("text-stats", "text_stats.analyze_text"), renamed)
+
+    def test_binds_a_model_the_generated_module_exposes_however_it_defines_it(self):
+        report = recorded_codegen("text-stats")
+        models = next(artifact for artifact in report.artifacts if artifact.path == "models.py")
+        aliased = models.content.replace("class Text(", "class _Text(") + "\nText = _Text\n"
+        bound = bind_output(
+            contract("text-stats", "text_stats.analyze_text"),
+            report.model_copy(update={"artifacts": [models.model_copy(update={"content": aliased})]}),
+        )
+        assert bound == OutputBinding(model="Text", plural=False)
+
+    def test_refuses_a_name_that_is_no_pydantic_model(self):
+        report = recorded_codegen("text-stats")
+        models = next(artifact for artifact in report.artifacts if artifact.path == "models.py")
+        rebound = models.content + "\nText = 'not a model'\n"
+        with pytest.raises(PlanError, match="is not a pydantic model"):
+            bind_output(
+                contract("text-stats", "text_stats.analyze_text"),
+                report.model_copy(update={"artifacts": [models.model_copy(update={"content": rebound})]}),
+            )
 
     def test_refuses_models_that_cannot_be_imported(self):
         # A generated tree the CLI could not load, as one using a native date is today, is refused before any write.
@@ -355,3 +414,24 @@ class TestWriteMethod:
             write_method(plan, package)
         assert sorted(os.listdir(package.package_dir)) == [BINDING_FILENAME]
         assert (package.package_dir / BINDING_FILENAME).read_text(encoding="utf-8") == "# mine\n"
+
+    async def test_a_generated_directory_that_appeared_meanwhile_is_refused_and_kept(self, package: Layout, tmp_path: Path):
+        plan = await plan_method(MethodArgs(method=TEXT_STATS_REF), RecordedClient(), layout=package, root=tmp_path / "project", cwd=tmp_path)
+        # A person's tree appears between the planning and the write: this run did not create it, so it never removes it.
+        package.generated_dir.mkdir()
+        (package.generated_dir / "mine.py").write_text("# mine\n", encoding="utf-8")
+        with pytest.raises(FileExistsError, match="appeared while the gesture ran"):
+            write_method(plan, package)
+        assert sorted(os.listdir(package.package_dir)) == ["generated"]
+        assert sorted(os.listdir(package.generated_dir)) == ["mine.py"]
+        assert (package.generated_dir / "mine.py").read_text(encoding="utf-8") == "# mine\n"
+
+    async def test_a_tree_holding_only_bytecode_is_written_into_and_only_what_was_written_is_removed(self, package: Layout, tmp_path: Path):
+        plan = await plan_method(MethodArgs(method=TEXT_STATS_REF), RecordedClient(), layout=package, root=tmp_path / "project", cwd=tmp_path)
+        (package.generated_dir / "__pycache__").mkdir(parents=True)
+        (package.generated_dir / "__pycache__" / "models.cpython-313.pyc").write_bytes(b"")
+        (package.package_dir / BINDING_FILENAME).write_text("# mine\n", encoding="utf-8")
+        with pytest.raises(FileExistsError):
+            write_method(plan, package)
+        assert sorted(os.listdir(package.generated_dir)) == ["__pycache__"]
+        assert sorted(os.listdir(package.package_dir)) == [BINDING_FILENAME, "generated"]

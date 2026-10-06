@@ -16,13 +16,15 @@ the project takes when none is given, and renders `binding.py`, formatted by ruf
 refusal happens there, with nothing on disk changed.
 
 `write_method` is the write half. It writes the three parts, the tree through the kit's own
-`write_generated`, so that it is the tree `make codegen` would write, and removes everything it
-wrote when a write fails, so that the template is left as it was.
+`write_generated`, so that it is the tree `make codegen` would write. Each part is claimed
+exclusively before anything is written into it, and a write that fails removes what this run
+created and nothing else, so that the template is left as it was.
 
 This module leaves the project with the gesture. The ported module is `webapp-js`'s
 `scripts/lib/add-method.mts`, for one method where the web app takes several.
 """
 
+import errno
 import json
 import os
 import re
@@ -31,6 +33,7 @@ import stat
 import subprocess
 import sys
 import tomllib
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,7 +51,7 @@ from pipelex_method_cli_python.cli import RESERVED_FLAGS
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.binding import BINDING_FILENAME
 from pipelex_method_cli_python.lib.contracts import GENERATED_DIRNAME, ContractsDocument, contracts_for_pipe
-from pipelex_method_cli_python.lib.inputs import InputOption, derive_options
+from pipelex_method_cli_python.lib.inputs import InputOption, derive_options, expand_home
 from pipelex_method_cli_python.lib.manifest import MANIFEST_FILENAME, MethodSelector, render_manifest
 from pipelex_method_cli_python.lib.method_source import BUNDLE_SUFFIX, METHOD_DIRNAME, PACKAGE
 from scripts.codegen import CodegenClient, Fetched, GenerateFailure, fetch_generated, write_generated
@@ -165,19 +168,12 @@ def address_segments(method_ref: str) -> list[str]:
     return method_ref.split("@", maxsplit=1)[0].split("/")
 
 
-def expand_home(given: str) -> str:
-    """`~` and `~/…` the way a shell would have expanded them, had it been asked to; anything else as given."""
-    if given != "~" and not given.startswith("~/"):
-        return given
-    try:
-        home = Path.home()
-    except RuntimeError:
-        return given
-    return str(home / given[2:]) if given.startswith("~/") else str(home)
-
-
 def resolve_given(given: str, cwd: Path) -> Path:
-    """Where a path given on the command line points, relative to `cwd`, its `..` folded and no link followed."""
+    """Where a path given on the command line points, relative to `cwd`, its `..` folded and no link followed.
+
+    A leading `~` or `~user` is expanded by the command's own rule (`lib/inputs.py`'s `expand_home`),
+    so that `METHOD=~alice/x` and the command's `@~alice/x` name the same file.
+    """
     return Path(os.path.normpath(cwd / expand_home(given)))
 
 
@@ -216,6 +212,13 @@ def _is_inside(root: Path, candidate: Path) -> bool:
     return candidate != root and candidate.is_relative_to(root)
 
 
+def unreadable_refusal(exc: OSError, fallback: str) -> str:
+    """The refusal of a bundle path the gesture cannot read, naming the file or directory the system named."""
+    filename: object = exc.filename
+    where = filename if isinstance(filename, str) else fallback
+    return f"{where} cannot be read: {exc.strerror or exc}. A bundle is read whole, so every file and directory in it must be readable."
+
+
 def read_bundle_arg(given: str, *, cwd: Path, root: Path, layout: Layout) -> Bundle:
     """Read the bundle a path names: a `.mthds` file alone, or every `.mthds` file under a directory.
 
@@ -225,15 +228,17 @@ def read_bundle_arg(given: str, *, cwd: Path, root: Path, layout: Layout) -> Bun
 
     Raises:
         PlanError: The path is missing, a link, not a `.mthds` file, holds no `.mthds` file, contains
-            the project, or holds something the policies refuse.
+            the project, holds something the policies refuse, or cannot be read.
     """
     resolved = resolve_given(given, cwd)
     # `lstat`, not `stat`: the path itself is held to the rule its entries are, so a link is refused rather than followed.
     try:
         mode = resolved.lstat().st_mode
-    except OSError as exc:
+    except (FileNotFoundError, NotADirectoryError) as exc:
         msg = f'"{given}" is not a file or a directory (looked for {resolved}).\n  METHOD is {METHOD_ARG_FORMS}.'
         raise PlanError(msg) from exc
+    except OSError as exc:
+        raise PlanError(unreadable_refusal(exc, str(resolved))) from exc
     if stat.S_ISLNK(mode):
         raise PlanError(not_regular_refusal(f'"{given}"', "a symlink"))
     shown = resolved.relative_to(cwd).as_posix() if _is_inside(cwd, resolved) else str(resolved)
@@ -257,6 +262,8 @@ def read_bundle_arg(given: str, *, cwd: Path, root: Path, layout: Layout) -> Bun
         raise PlanError(not_regular_refusal(exc.where, exc.kind)) from exc
     except NonUtf8FileError as exc:
         raise PlanError(str(exc)) from exc
+    except OSError as exc:
+        raise PlanError(unreadable_refusal(exc, display)) from exc
     if not contents:
         msg = f"{display} holds no .mthds file: there is no bundle to create the project from."
         raise PlanError(msg)
@@ -269,6 +276,8 @@ def _read_utf8(path: Path, layout: Layout) -> str:
         return read_text_file(path, layout)
     except NonUtf8FileError as exc:
         raise PlanError(str(exc)) from exc
+    except OSError as exc:
+        raise PlanError(unreadable_refusal(exc, str(path))) from exc
 
 
 # ── Names ───────────────────────────────────────────────────────────────────
@@ -281,10 +290,16 @@ SLUG_PATTERN = re.compile(r"[a-z][a-z0-9]*(-[a-z0-9]+)*")
 def kebab_case(text: str) -> str:
     """`text_stats` is `text-stats` and `CV screening` is `cv-screening`; a text that yields no usable name is refused.
 
+    A letter with an accent keeps its letter, `Résumé screening` giving `resume-screening` rather
+    than `r-sum-screening`: the text is case-folded, which spells `ß` as `ss`, then decomposed, and
+    the accents, which decomposition leaves as marks of their own, are dropped.
+
     Raises:
         PlanError: The text yields no kebab-case name starting with a letter, such as `3D model`.
     """
-    slug = re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
+    folded = unicodedata.normalize("NFKD", text.strip().casefold())
+    unaccented = "".join(character for character in folded if not unicodedata.combining(character))
+    slug = re.sub(r"[^a-z0-9]+", "-", unaccented).strip("-")
     if SLUG_PATTERN.fullmatch(slug) is None:
         msg = (
             f'"{text}" does not yield a usable project name (got "{slug}"). Pass --name with a kebab-case name of your own that starts with a letter.'
@@ -486,13 +501,14 @@ class OutputBinding:
 def bind_output(contract: PipeIOContract, report: CodegenValidReport) -> OutputBinding:
     """Bind the chosen pipe's output to the model the codegen generated for its concept.
 
-    The generated `models.py` must define the model, and must import: it is executed here, in memory,
-    so that a tree the CLI could not load is refused before anything is written rather than found by
-    the checks afterwards. A method whose concepts use a native date or time is the known case today.
+    The generated `models.py` must import, and must then expose the model, which is what
+    `binding.py`'s `from … import` needs: it is executed here, in memory, so that a tree the CLI could
+    not load is refused before anything is written rather than found by the checks afterwards. A
+    method whose concepts use a native date or time is the known case today.
 
     Raises:
-        PlanError: The concept's code is no class name, `models.py` is missing or does not define it,
-            or `models.py` cannot be imported.
+        PlanError: The concept's code is no class name, `models.py` is missing, cannot be imported,
+            or exposes no pydantic model of that name.
     """
     concept_ref = contract.output.concept_ref
     model = concept_ref.rpartition(".")[2]
@@ -503,14 +519,14 @@ def bind_output(contract: PipeIOContract, report: CodegenValidReport) -> OutputB
     if content is None:
         msg = f"the codegen response carries no {MODELS_FILENAME} to bind the output to. Nothing was written; report it upstream."
         raise PlanError(msg)
-    if f"class {model}(" not in content:
+    module = import_models(content)
+    found: object = getattr(module, model, None)
+    if found is None:
         msg = (
             f'the generated {MODELS_FILENAME} defines no {model} for the pipe\'s output concept "{concept_ref}". '
             "Nothing was written; report it upstream."
         )
         raise PlanError(msg)
-    module = import_models(content)
-    found: object = getattr(module, model, None)
     if not isinstance(found, type) or not issubclass(found, BaseModel):
         msg = f"the generated {MODELS_FILENAME}'s {model} is not a pydantic model. Nothing was written; report it upstream."
         raise PlanError(msg)
@@ -650,22 +666,18 @@ def refuse_a_method_in_place(layout: Layout) -> None:
     A `generated/` holding nothing but Python's bytecode cache is no tree, and is written into.
 
     Raises:
-        PlanError: `method/`, `binding.py` or a generated tree is there, or is a link.
+        PlanError: `method/`, `binding.py` or a generated tree is there, or is a link, or the package
+            cannot be read.
     """
-    binding = layout.package_dir / BINDING_FILENAME
-    taken = [path for path in (layout.method_dir, binding) if path.exists() or path.is_symlink()]
-    generated = layout.generated_dir
-    if generated.is_symlink():
-        taken.append(generated)
-    elif generated.is_dir():
-        try:
-            files = walk(generated, layout)
-        except CodegenSetupError as exc:
-            raise PlanError(str(exc)) from exc
-        if files:
-            taken.append(generated)
-    elif generated.exists():
-        taken.append(generated)
+    try:
+        taken = _parts_in_place(layout)
+    except CodegenSetupError as exc:
+        raise PlanError(str(exc)) from exc
+    except OSError as exc:
+        filename: object = exc.filename
+        where = filename if isinstance(filename, str) else layout.describe(layout.package_dir)
+        msg = f"{where} cannot be read, so the gesture cannot tell whether the package holds a method already: {exc.strerror or exc}."
+        raise PlanError(msg) from exc
     if taken:
         where = ", ".join(layout.describe(path) for path in taken)
         msg = (
@@ -673,6 +685,26 @@ def refuse_a_method_in_place(layout: Layout) -> None:
             "into a template that holds none, and never overwrites: remove what is there, or start again from a fresh copy."
         )
         raise PlanError(msg)
+
+
+def _parts_in_place(layout: Layout) -> list[Path]:
+    """The parts of a method the package already holds, a generated tree holding nothing but bytecode aside.
+
+    Raises:
+        CodegenSetupError: Something under `generated/` is a link or a special file.
+        OSError: The package or its tree cannot be read.
+    """
+    binding = layout.package_dir / BINDING_FILENAME
+    taken = [path for path in (layout.method_dir, binding) if path.exists() or path.is_symlink()]
+    generated = layout.generated_dir
+    if generated.is_symlink():
+        taken.append(generated)
+    elif generated.is_dir():
+        if walk(generated, layout):
+            taken.append(generated)
+    elif generated.exists():
+        taken.append(generated)
+    return taken
 
 
 async def plan_method(args: MethodArgs, client: CreateClient, *, layout: Layout, root: Path, cwd: Path) -> MethodPlan:
@@ -782,36 +814,71 @@ def _options_for(report: PipeIOValidReport, pipe: ChosenPipe) -> tuple[InputOpti
 def write_method(plan: MethodPlan, layout: Layout) -> list[str]:
     """Write `method/`, the generated tree and `binding.py`, and return what was written, one line per part.
 
-    Nothing is overwritten: `method/` and `binding.py` are created exclusively. A failure part-way
-    removes every part this call wrote, so the template is left as it was and the gesture can run again.
+    Nothing is overwritten, and each part is claimed before anything is written into it: `method/`,
+    `generated/` and `binding.py` are created exclusively. The one exception is a `generated/` that
+    planning found holding nothing but Python's bytecode cache, which is written into when it still
+    holds nothing else. A failure part-way removes what this call created, and nothing else, so the
+    template is left as it was and the gesture can run again.
 
     Raises:
-        OSError: A part could not be written.
+        OSError: A part could not be written, or appeared since planning.
         CodegenSetupError: The tree's directory holds a link or a special file.
         CodegenError: The SDK's writer refused the tree.
         RuntimeError: The offline check called a file the codegen writes an orphan.
     """
     written: list[Path] = []
+    undo: list[Callable[[], None]] = []
     try:
         layout.method_dir.mkdir()
         written.append(layout.method_dir)
+        undo.append(lambda: _remove(layout.method_dir))
         for relative, content in plan.method_files:
             target = layout.method_dir / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             # The bytes as read: the sidecar's hashes fold line endings, and the files are the person's.
             with target.open("x", encoding="utf-8", newline="") as handle:
                 handle.write(content)
+        undo.append(_claim_generated(layout))
         written.append(layout.generated_dir)
         write_generated(layout, plan.fetched, plan.source)
         binding = layout.package_dir / BINDING_FILENAME
         with binding.open("x", encoding="utf-8", newline="\n") as handle:
             written.append(binding)
+            undo.append(lambda: _remove(binding))
             handle.write(plan.binding)
     except BaseException:
-        for path in reversed(written):
-            _remove(path)
+        for step in reversed(undo):
+            step()
         raise
     return [f"wrote {layout.describe(path)}{'/' if path.is_dir() else ''}" for path in written]
+
+
+def _claim_generated(layout: Layout) -> Callable[[], None]:
+    """Claim `generated/` for this run, and return what removes, on a failure, what the run then writes there.
+
+    The directory is created exclusively, and is then this run's to remove. One that exists already is
+    taken only when it still holds nothing but Python's bytecode cache, as planning found it, and only
+    the entries this run adds to it are removed: a directory this run did not create is never removed.
+
+    Raises:
+        FileExistsError: The directory appeared since planning and holds a file, or is a link or a file.
+        CodegenSetupError: Something under it is a link or a special file.
+    """
+    generated = layout.generated_dir
+    try:
+        generated.mkdir()
+    except FileExistsError:
+        if generated.is_symlink() or not generated.is_dir() or walk(generated, layout):
+            msg = f"{layout.describe(generated)} appeared while the gesture ran, and is not this run's to write into"
+            raise FileExistsError(errno.EEXIST, msg, str(generated)) from None
+        before = set(os.listdir(generated))
+
+        def remove_what_was_added() -> None:
+            for name in set(os.listdir(generated)) - before:
+                _remove(generated / name)
+
+        return remove_what_was_added
+    return lambda: _remove(generated)
 
 
 def _remove(path: Path) -> None:
