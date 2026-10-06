@@ -231,6 +231,14 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
                 print_error(stderr, present_error(exc, mode=plan.mode))
                 # Raised without `from`, so the refusal keeps its own cause; the download's failure, printed above, is its context.
                 raise shape_error
+            except Exception as exc:
+                # A failure neither the SDK nor the CLI words, such as an `OSError` from an unwritable `--out`,
+                # must not hide the refusal either; without one, it stays what it is.
+                if shape_error is None:
+                    raise
+                failure = AppError(f"Saving the run's files failed: {type(exc).__name__}: {exc}")
+                print_error(stderr, present_error(failure, mode=plan.mode))
+                raise shape_error
             print_downloads(stderr, downloaded)
             if _incomplete(downloaded):
                 said = "its result is complete above" if shape_error is None else "its result was not printed, for the reason below"

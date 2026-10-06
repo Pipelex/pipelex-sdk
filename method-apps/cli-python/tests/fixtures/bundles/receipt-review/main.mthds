@@ -1,0 +1,16 @@
+domain      = "receipt_review"
+description = "Read a batch of receipts and list, for each one, who issued it, when, and the total paid."
+main_pipe   = "review_receipts"
+
+[pipe.review_receipts]
+type        = "PipeLLM"
+description = "Read every receipt and summarize each one: the merchant, the date and the total."
+inputs      = { receipts = "Document[]" }
+output      = "ReceiptSummary[]"
+prompt      = """
+Read the following receipts and summarize each one, in the order given.
+
+@receipts
+
+For each receipt, give the merchant that issued it, the date printed on it when there is one, and the total amount paid.
+"""

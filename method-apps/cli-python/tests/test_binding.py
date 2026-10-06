@@ -1,4 +1,4 @@
-"""`lib/binding.py`: the seam between the generic CLI and the one method `make create` binds it to."""
+"""`lib/binding.py`: the seam between the generic CLI and the one method it runs."""
 
 import sys
 from pathlib import Path
@@ -16,7 +16,7 @@ from pipelex_method_cli_python.lib.binding import (
     has_binding,
     load_binding,
 )
-from pipelex_method_cli_python.lib.contracts import ContractsDocument, ContractsError, TreeState
+from pipelex_method_cli_python.lib.contracts import ContractsDocument, ContractsError, TreeState, tree_state
 from pipelex_method_cli_python.lib.method_source import MethodSource
 from tests.support import GREET, Greeting, greet_contracts
 
@@ -46,8 +46,14 @@ def _halves(monkeypatch: pytest.MonkeyPatch, *, binding: bool, tree: TreeState, 
 
 
 class TestLoadBinding:
-    def test_the_template_as_shipped_holds_no_method(self):
-        assert load_binding() is None
+    def test_the_package_s_own_method_loads(self):
+        # A project holds one method, which loads against its committed contracts.
+        binding = load_binding()
+        assert binding is None or binding.contracts.pipe_ref == binding.pipe_ref
+        # template-only:begin
+        # The template as shipped holds none.
+        assert binding is None
+        # template-only:end
 
     def test_a_generated_tree_without_a_binding_is_refused(self, monkeypatch: pytest.MonkeyPatch):
         _halves(monkeypatch, binding=False, tree=TreeState.COMPLETE)
@@ -105,8 +111,12 @@ class TestHasBinding:
         (tmp_path / "binding" / "__pycache__").mkdir(parents=True)
         assert not has_binding(tmp_path)
 
-    def test_the_template_as_shipped_has_none(self):
+    def test_the_package_s_own_binding_comes_with_its_tree(self):
+        assert has_binding() == (tree_state()[0] is not TreeState.ABSENT)
+        # template-only:begin
+        # The template as shipped has neither.
         assert not has_binding()
+        # template-only:end
 
 
 class TestBindingFromModule:

@@ -1,0 +1,9 @@
+domain = "receipt_review"
+
+[concept.ReceiptSummary]
+description = "The key facts of one receipt"
+
+[concept.ReceiptSummary.structure]
+merchant = { type = "text", description = "Who issued the receipt", required = true }
+date     = { type = "text", description = "The date printed on the receipt, when there is one" }
+total    = { type = "number", description = "The total amount paid", required = true }

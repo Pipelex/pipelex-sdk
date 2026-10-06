@@ -59,9 +59,11 @@ Two templates fill a run's inputs: `webapp-js` through the TypeScript form kerne
 
 The recorder lives here because it reads two templates, and a template never reaches above its own directory. Its test, `scripts/record-wire-table.test.mjs`, runs it with `--check`, which fails when the committed table is not what the installed kernel sends, byte for byte, so a kernel upgrade that changes a payload fails `test-family` until the table is recorded again (`node scripts/record-wire-table.mjs`) and the CLI agrees with it. The deliberate disagreements, and why, are in `cli-python/docs/cli-kernel.md`.
 
+A project created from `cli-python` keeps the table, its contracts and `tests/test_wire_table.py`, as a self-contained regression of its `lib/wire.py`: the CLI's own tests read them, and a project that changes how its options become inputs should learn that it no longer sends what the form kernel sends. The project has neither the recorder nor `webapp-js`, so every comment the recorder writes names neither, and the template's sentences that do sit in the passages its bootstrap removes.
+
 ## The lineage records
 
-Each template was extracted from a gallery, and a record of what it took and the rule that came out of it tells a maintainer where a fix to shared code goes next. `webapp-js`'s is its `docs/chrome-lineage.md`, which its bootstrap removes from a project. `cli-python`'s is [`docs/cli-python-lineage.md`](cli-python-lineage.md), here, since `cli-python` has no bootstrap yet and a record of the repository has no place in a project.
+Each template was extracted from a gallery, and a record of what it took and the rule that came out of it tells a maintainer where a fix to shared code goes next. `webapp-js`'s is its `docs/chrome-lineage.md`, which its bootstrap removes from a project. `cli-python`'s is [`docs/cli-python-lineage.md`](cli-python-lineage.md), here at the family's root rather than in the template, since a record of the repository has no place in a project and a file outside the template needs no removal.
 
 ## The initializers
 

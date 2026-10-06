@@ -1,11 +1,12 @@
-"""The wire-format table, replayed: the CLI sends what the web app template's form kernel sends.
+"""The wire-format table, replayed: the CLI sends what the form kernel, `@pipelex/mthds-form`, sends.
 
-`fixtures/wire/table.json` is recorded by the family's `scripts/record-wire-table.mjs` from the real
-`@pipelex/mthds-form` that `webapp-js` installs, over every contract fixture `webapp-js` carries and a
-contract assembled to reach every field kind. Each case is one pipe given every input, the required
-ones only, or none, with the value each control holds, the option values the CLI is given for the same
-value, and the kernel's verdict. This test gives the CLI those option values on a real command line,
-over the fake client, and holds it to the verdict:
+`fixtures/wire/table.json` is recorded from the real kernel, at the version it names, over the
+contract fixtures in `fixtures/wire/contracts/`, one of them assembled to reach every field kind. It
+is a regression of `lib/wire.py` and `lib/inputs.py`, so never edit it to make a test pass: it
+records what the kernel sends, not what the CLI does. Each case is one pipe given every input, the
+required ones only, or none, with the value each control holds, the option values the CLI is given
+for the same value, and the kernel's verdict. This test gives the CLI those option values on a real
+command line, over the fake client, and holds it to the verdict:
 
 - where the kernel sends inputs, the run the CLI starts carries exactly the same inputs, uploads
   included, since a local file given to an option goes through the SDK's `prepare_inputs`;

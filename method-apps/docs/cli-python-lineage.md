@@ -34,5 +34,5 @@ Each of these came across with its behaviour and its tests, moved under `cli-pyt
 - **The mode groups**, `widget/blocking/`, `widget/attended/` and `widget/detached/`, and `test_mode_symmetry.py`, which held the three to one shape.
 - **`widget/inputs.py`**: its text, file and sample inputs were the demos'. Its upload of a local file as a `Document` input came back as the SDK's `prepare_inputs`, which the command calls before a run whose method declares a file input, and whose errors `lib/errors.py` presents.
 - **`make add-method`** and `scripts/add_method.py`, since a CLI holds one method for good, and the starter's `scripts/codegen.py` and `scripts/codegen_check.py`, which the codegen kit ported from the web app template replaced.
-- **The bootstrap skill**, which a later version of this template rewrites for its own rename.
+- **The bootstrap skill**, which `cli-python` rewrote for its own rename and its own create gesture (`cli-python/docs/create.md`).
 - **mypy, `plxt` and the `.vscode/` settings**: pyright strict is the one type checker, and the template carries no `.mthds` file to format.

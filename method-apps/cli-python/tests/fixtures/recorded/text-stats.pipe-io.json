@@ -1,5 +1,6 @@
 {
-  "comment": "A contract fixture, the three payloads of one pipe-io answer, recorded with table.json. Do not edit.",
+  "is_valid": true,
+  "pipe_ref": "text_stats.analyze_text",
   "pipe_io_contracts": {
     "text_stats.analyze_text": {
       "inputs": {
@@ -73,5 +74,14 @@
         "required": true
       }
     }
-  }
+  },
+  "default_pipe_ref": "text_stats.analyze_text",
+  "pending_signatures": [],
+  "is_runnable": true,
+  "files": [
+    {
+      "content": "domain      = \"text_stats\"\ndescription = \"Deterministic text statistics: counts, vocabulary richness, most frequent words, and estimated reading and speaking times — computed by a sandboxed Python function, no LLM involved.\"\nmain_pipe   = \"analyze_text\"\n\n[pipe.analyze_text]\ntype          = \"PipeFunc\"\ndescription   = \"Compute deterministic statistics about the input text (counts, averages, top words, reading time) and format them as a Markdown report.\"\ninputs        = { text = \"Text\" }\noutput        = \"Text\"\nfunction_name = \"text_stats_report\"\n",
+      "source": "text_stats.mthds"
+    }
+  ]
 }

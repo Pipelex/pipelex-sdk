@@ -438,7 +438,8 @@ class ValueReader:
     def text(self, raw: str, *, flag: str) -> str:
         """The value an option stands for: itself, a file's text for `@path`, stdin's for `@-`, `@…` for `@@…`.
 
-        A leading `~` in `@path` names the home directory, as it does for a file input's path.
+        A leading `~` in `@path` names the home directory, as it does for a file input's path, and one that
+        names no user is left as written, as a shell leaves it (`expand_home`).
 
         Raises:
             InputUsageError: The file cannot be read or is not UTF-8, or stdin is read already.
@@ -455,7 +456,7 @@ class ValueReader:
             self.stdin_owner = flag
             return sys.stdin.read()
         try:
-            return Path(source).expanduser().read_text(encoding="utf-8")
+            return expand_home(source).read_text(encoding="utf-8")
         except OSError as exc:
             msg = f"{flag} reads {source}, which cannot be read: {exc.strerror or exc}."
             raise InputUsageError(msg) from exc
@@ -573,11 +574,30 @@ def _read_file(raw: str, *, flag: str) -> dict[str, str]:
     """A file input's content: a URL as it is, or a local file with its name, which `prepare_inputs` uploads."""
     if _PASSTHROUGH_URL.match(raw):
         return file_content(raw)
-    path = Path(raw).expanduser()
-    if not path.is_file():
+    path = expand_home(raw)
+    try:
+        is_file = path.is_file()
+    except OSError as exc:
+        # Python 3.11 and 3.12 raise here under a directory the user cannot search, where 3.13 answers False.
+        msg = f"{flag} names {raw}, which cannot be read: {exc.strerror or exc}."
+        raise InputUsageError(msg) from exc
+    if not is_file:
         msg = f"{flag} names {raw}, which is not a file: give a local file, or an https:// or pipelex-storage:// URL."
         raise InputUsageError(msg)
     return file_content(str(path), path.name)
+
+
+def expand_home(raw: str) -> Path:
+    """A path with a leading `~` or `~user` naming a home directory, or the path as written when it names none.
+
+    A shell leaves a word such as `~$report.docx`, Word's lock file, as it is, since `$report.docx`
+    is no user's name, while `Path.expanduser` raises for it: the word is then the file's own name.
+    """
+    path = Path(raw)
+    try:
+        return path.expanduser()
+    except RuntimeError:
+        return path
 
 
 def _read_json(option: InputOption, text: str) -> object:

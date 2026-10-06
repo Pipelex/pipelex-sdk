@@ -1,5 +1,5 @@
 {
-  "comment": "The contract fixture webapp-js carries as src/test/fixtures/contracts/extract-entities.ts, recorded as JSON by method-apps/scripts/record-wire-table.mjs. Do not edit.",
+  "comment": "A contract fixture, the three payloads of one pipe-io answer, recorded with table.json. Do not edit.",
   "pipe_io_contracts": {
     "extract_entities.extract_entities": {
       "inputs": {

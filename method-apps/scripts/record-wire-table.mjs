@@ -246,7 +246,9 @@ export async function loadFixtures() {
     fixtures.push({
       name: name.slice(0, -".ts".length),
       contracts: {
-        comment: `The contract fixture webapp-js carries as src/test/fixtures/contracts/${name}, recorded as JSON by method-apps/scripts/record-wire-table.mjs. Do not edit.`,
+        // Every comment the recording writes is kept by the projects created from cli-python, which
+        // have neither the recorder nor the web app template, so it names neither (docs/family.md).
+        comment: `A contract fixture, the three payloads of one pipe-io answer, recorded with table.json. Do not edit.`,
         pipe_io_contracts: module.PIPE_IO_CONTRACTS,
         input_form: module.INPUT_FORM,
         output_form: module.OUTPUT_FORM,
@@ -272,9 +274,9 @@ export async function recording() {
   }
   files["table.json"] = render({
     comment:
-      "What @pipelex/mthds-form sends for each case, recorded by method-apps/scripts/record-wire-table.mjs from the kernel webapp-js installs. " +
-      "`control` is the value the form's control holds, `cli` the option values cli-python is given for the same value, and `uploads` the local files " +
-      "a case names with the reference their upload answers. Do not edit: rerun the recorder.",
+      "What the form kernel, @pipelex/mthds-form, sends for each case, recorded from the kernel named below. " +
+      "`control` is the value the form's control holds, `cli` the option values the CLI is given for the same value, and `uploads` the local files " +
+      "a case names with the reference their upload answers. Do not edit.",
     kernel: `${manifest.name} ${manifest.version}`,
     cases,
   });

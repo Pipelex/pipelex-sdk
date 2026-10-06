@@ -4,7 +4,7 @@ The full project guide for AI coding agents is [`CLAUDE.md`](CLAUDE.md) — read
 
 <!-- template-only:begin -->
 
-- **In a fresh copy of the template, `make create METHOD=<bundle path | mt_… | address>` will be the whole setup.** In this version it is not written yet: it parses its arguments and refuses, changing nothing, so do not try to bind a method by hand.
+- **In a fresh copy of the template, `make create METHOD=<bundle path | mt_… | address>` is the whole setup**, with `PIPELEX_API_KEY` in the shell. It writes the method into the package, names the project after it, writes `.env` and leaves `make all` green, and `DRY_RUN=1` shows the plan first. Never bind a method by hand, and never run the bootstrap on its own except to finish a `make create` whose message says to ([`docs/create.md`](docs/create.md)).
 
 <!-- template-only:end -->
 

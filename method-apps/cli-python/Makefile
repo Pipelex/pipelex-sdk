@@ -2,29 +2,20 @@
 .PHONY: help install install-if-missing lock lint format format-check typecheck codegen codegen-check codegen-verify check test agent-check agent-test build all clean use-local use-published local-status ul un
 
 # ── Arguments ──────────────────────────────────────────────────────────────
-# The gestures take their values as make variables (`make create METHOD=…
-# NAME=…`) and hand them to a script as flags. Three rules keep that faithful:
+# A target that takes values reads them as make variables (`make use-local
+# SDK_DIR=…`). Two rules keep that faithful:
 #
 #   - Only a value given on the command line counts. A variable of the same name
-#     exported by the shell (NAME, TITLE and LICENSE all exist in the wild) is
-#     not a request, so `opt` reads a variable's origin before its value.
-#   - The value reaches the script exactly as typed. `shq` wraps it in single
+#     exported by the shell is not a request, so `given` reads a variable's
+#     origin before its value. A blank value is not given either: `SDK_DIR=` is
+#     how a person clears a value, not how they ask for an empty one.
+#   - The value reaches the shell exactly as typed. `shq` wraps it in single
 #     quotes, closing and escaping any quote inside, and `$(value …)` keeps a `$`
-#     in it from being expanded by make, so a title such as `Bob's "$5" app`
-#     arrives intact.
-#   - A blank value is not given: `NAME=` is how a person clears a value, not
-#     how they ask for an empty one. For a switch, `0` is not given either.
+#     in it from being expanded by make.
 #
-# `$(call opt,NAME,--name)` expands to `--name '<value>'`, or to nothing.
 # tests/test_makefile.py pins the expansions with `make -n`.
 shq = '$(subst ','\'',$(1))'
 given = $(if $(filter command line,$(origin $(1))),$(strip $(value $(1))))
-opt = $(if $(call given,$(1)),$(2) $(call shq,$(value $(1))))
-flag = $(if $(filter-out 0,$(call given,$(1))),$(2))
-# Refuse a gesture run without its required variable. Decided by make from the
-# variable's origin and value, so the value itself never reaches a shell line
-# unquoted.
-require = @$(if $(call given,$(1)),:,echo "$(2)"; exit 2)
 
 # ── Tools ──────────────────────────────────────────────────────────────────
 # Every tool runs from the virtual environment's own bin/, never through
@@ -108,15 +99,25 @@ clean: ## Remove build artifacts and caches
 	find . -path ./.venv -prune -o -type d -name __pycache__ -exec rm -rf {} +
 
 # template-only:begin — this block leaves with the gesture when the template becomes a project.
-# Turns this template into the CLI for one method. The gesture's arguments are
-# the method-app family's contract, forwarded exactly as the web app template
-# forwards them, so one step drives either template. A relative bundle path is
-# read from the directory make runs in.
+# Turns this template into the CLI for one method (docs/create.md). The
+# gesture's arguments are the method-app family's contract, forwarded exactly as
+# the web app template forwards them, so one step drives either template. On top
+# of `shq` and `given`: `$(call opt,NAME,--name)` expands to `--name '<value>'`,
+# or to nothing; `flag` forwards a switch as its flag alone, and `0` is not
+# given; and `require` refuses a run without its variable, decided by make from
+# the variable's origin and value, so the value never reaches a shell line
+# unquoted. A value such as `TITLE=Bob's "$5" app` arrives intact, and a
+# relative bundle path is read from the directory make runs in.
+# tests/test_create.py pins the expansions with `make -n`.
+opt = $(if $(call given,$(1)),$(2) $(call shq,$(value $(1))))
+flag = $(if $(filter-out 0,$(call given,$(1))),$(2))
+require = @$(if $(call given,$(1)),:,echo "$(2)"; exit 2)
+
 .PHONY: create
 create: ## Turn this template into the CLI for METHOD=<path/to/bundle | mt_… | address> (one-shot; needs PIPELEX_API_KEY)
 	$(call require,METHOD,usage: make create METHOD=<path/to/bundle | mt_… | github.com/owner/repo[/pkg][@tag]> [NAME=<package>] [TITLE=<title>] [DESCRIPTION=<text>] [PIPE=<pipe_code>] [AUTHOR_NAME=…] [AUTHOR_EMAIL=…] [REPO_URL=…] [LICENSE=mit|proprietary|<spdx>] [LICENSE_HOLDER=…] [LICENSE_YEAR=…] [DRY_RUN=1])
 	@[ -x $(PYTHON) ] || uv sync
-	$(PYTHON) scripts/create.py $(call shq,$(value METHOD)) $(call opt,NAME,--name) $(call opt,TITLE,--title) $(call opt,DESCRIPTION,--description) $(call opt,PIPE,--pipe) $(call opt,AUTHOR_NAME,--author-name) $(call opt,AUTHOR_EMAIL,--author-email) $(call opt,REPO_URL,--repo-url) $(call opt,LICENSE,--license) $(call opt,LICENSE_HOLDER,--license-holder) $(call opt,LICENSE_YEAR,--license-year) $(call flag,DRY_RUN,--dry-run)
+	$(PYTHON) -m scripts.create $(call shq,$(value METHOD)) $(call opt,NAME,--name) $(call opt,TITLE,--title) $(call opt,DESCRIPTION,--description) $(call opt,PIPE,--pipe) $(call opt,AUTHOR_NAME,--author-name) $(call opt,AUTHOR_EMAIL,--author-email) $(call opt,REPO_URL,--repo-url) $(call opt,LICENSE,--license) $(call opt,LICENSE_HOLDER,--license-holder) $(call opt,LICENSE_YEAR,--license-year) $(call flag,DRY_RUN,--dry-run)
 # template-only:end
 
 # ── Local Pipelex package development ──────────────────────────────────────

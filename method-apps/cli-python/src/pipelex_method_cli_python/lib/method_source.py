@@ -22,8 +22,8 @@ from pipelex_sdk.crate_models import MthdsFileItem
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.manifest import MANIFEST_FILENAME, parse_manifest
 
-#: The import package, read from this module's own name so that the rename `make create` makes
-#: needs no second edit here.
+#: The import package, read from this module's own name so that renaming the package needs no edit
+#: here.
 PACKAGE = __name__.split(".", maxsplit=1)[0]
 
 #: The directory, inside the package, that holds the method.

@@ -60,11 +60,14 @@ from tests.support import (
 
 
 class TestEmptyState:
-    def test_help_says_to_run_make_create(self):
+    def test_help_says_there_is_no_method(self):
         result = invoke(None, ["--help"])
         assert result.exit_code == 0
+        assert "holds no method" in result.stdout
+        # template-only:begin
         assert "make create METHOD=" in result.stdout
-        # The empty state takes no option: there is nothing to run yet.
+        # template-only:end
+        # The empty state takes no option: there is nothing to run.
         assert "--blocking" not in result.stdout
 
     def test_a_bare_run_refuses_on_stderr(self):
@@ -580,6 +583,20 @@ class TestDownloads:
         assert refusal in result.stderr
         # The download's failure as it happened, then the refusal last, as the error the command exits with.
         assert result.stderr.index("cannot be created or used") < result.stderr.index(refusal)
+
+    def test_a_download_that_fails_unforeseen_never_hides_a_refused_result(self, fake_client: FakeClient, tmp_path: Path):
+        # Neither a `PipelineRequestError` nor an `AppError`: an unwritable `--out` can surface as a bare `OSError`.
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        fake_client.download_answer = PermissionError(13, "Permission denied", str(tmp_path))
+        result = invoke(make_binding(output_model=Greeting), ["--out", str(tmp_path)])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "Permission denied" in result.stderr
+        assert "No inference calls" in result.stderr
+        refusal = f"Run {RUN_ID} returned a result that Greeting refuses, first at text, so it is not printed."
+        assert refusal in result.stderr
+        assert result.stderr.index("Permission denied") < result.stderr.index(refusal)
+        assert "Traceback" not in result.stderr
 
     def test_a_default_directory_refused_never_hides_a_refused_result(self, fake_client: FakeClient):
         fake_client.wait_answer = run_results(IMAGE_OUTPUT, run_id="../escape")

@@ -24,13 +24,17 @@ git init -q && git add -A && git commit -q -m "pipelex-method-cli-python $TAG, a
 make install
 ```
 
-Then turn it into the command for your method, where `METHOD` is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`), or a published method's address:
+Then turn it into the command for your method, with your API key in the shell, where `METHOD` is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`), or a published method's address:
 
 ```bash
+export PIPELEX_API_KEY=…
+make create METHOD=./receipt_review.mthds DRY_RUN=1   # print the plan, write nothing
 make create METHOD=./receipt_review.mthds
 ```
 
-**`make create` is not written yet in this version of the template.** It reads its whole argument contract, the method-app family's, and then refuses, changing nothing. Until it lands, the template installs, checks, tests and builds, and its command explains that it holds no method:
+`make create` fetches the method once, writes it into the package with its generated models, its contracts and a `binding.py` naming the pipe the command runs, and names the project after it: the distribution, the import package and the command, here `receipt-review` for a method whose domain is `receipt_review`. It writes `.env` with the base URL it ran against and the key from your shell, readable by you alone, re-syncs `uv.lock`, and runs `make all`, which must be green before it removes its own scaffolding. Nothing asks a question: a value it cannot derive from the method is a refusal naming the variable that supplies it, `NAME`, `TITLE`, `DESCRIPTION` or `PIPE`, and `AUTHOR_NAME`, `AUTHOR_EMAIL`, `REPO_URL`, `LICENSE`, `LICENSE_HOLDER` and `LICENSE_YEAR` fill in the rest. Nothing is committed: review the result with `git status` and `git diff`. [`docs/create.md`](docs/create.md) is the reference.
+
+The gesture is one-shot, and the command holds one method for good. Until it has run, the template installs, checks, tests and builds, and its command explains that it holds no method:
 
 ```bash
 .venv/bin/pipelex-method-cli-python --help
