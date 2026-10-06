@@ -25,22 +25,8 @@ The recorded responses are real: they were returned for `github.com/Pipelex/meth
 
 This template is developed as the `method-apps/webapp-js/` directory of the `pipelex-sdk` mono-repo, and GitHub reads a repository's workflows only at its root, so the workflow files above never run from there. The repository's root carries twins of each, rendered from them by its `make workflows`. The standalone twin, which the root CI calls, extracts this directory with `git archive` into a folder outside the checkout, gives it a repository of its own and runs the same jobs and steps there, installed from the registry with this directory's own lockfile, exactly as a project made from it would be. The next-SDK twin runs them again with `@pipelex/sdk` built from the same commit installed after `npm ci`, and is reported, not required. The root's `make check-workflows` fails when a twin no longer matches its source, so a change to a workflow here is carried to the root by re-rendering it in the same commit. A project copied out of the mono-repo runs these files as they are.
 
-## The live half of the proof for `make create` (template only)
+## The live proof of `make create` (template only)
 
-No workflow runs `make create` against the live API, because no workflow is given a Pipelex API key. The fixture test above proves what the gesture writes; that it still works against the API is proven by hand, with a local run, before a release that touches the gesture, the scaffold or the shared code an emitted file imports.
-
-Run it twice against the default base URL, `https://api.pipelex.com`, each time in a fresh copy of this directory with its own `git init`, with a key in the shell:
-
-- once with the bundle fixture, `make create METHOD=scripts/lib/fixtures/bundles/receipt-review`;
-- once with a published address, `make create METHOD=github.com/Pipelex/methods/text_stats@v0.1.1`.
-
-The gesture runs `make all` itself, so a red check fails the run. Then check that each copy is what the gesture promised:
-
-- `package.json` no longer carries the template's name;
-- the bootstrap skill, `scripts/create.mts` and `docs/create.md` are gone;
-- `.env.local` holds exactly one `PIPELEX_BASE_URL` line, the one the run used;
-- `make dev` serves a page titled after the method, showing its form, which `npx playwright test e2e/home.spec.ts` also checks.
-
-The run executes no method, so it spends no model call. The copies are discarded afterwards.
+No workflow runs `make create` against the live API, because none is given an API key, so it is proven by hand before a release, as a check of the repository's rather than of this directory: the `pipelex-sdk` repository's root `docs/live-create-proofs.md` describes it.
 
 <!-- template-only:end -->

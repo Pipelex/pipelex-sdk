@@ -10,8 +10,8 @@ created project: ruff, pyright in strict mode, the project's own tests, the offl
 the created command's `--help`, which must list the method's inputs.
 
 A change to the template that breaks what the gesture writes, or what the bootstrap leaves, fails
-here rather than in the next person's project. `docs/ci.md` describes the live proof, which runs the
-same gesture against the API by hand.
+here rather than in the next person's project. The live proof, which runs the same gesture against
+the API by hand before a release, is the repository's, in its root `docs/live-create-proofs.md`.
 """
 
 import asyncio
@@ -131,6 +131,8 @@ def test_is_named_after_the_method_and_keeps_nothing_of_the_gesture(project: Cre
     assert sorted(path.name for path in (root / "src").iterdir()) == [project.package]
     for gone in (BOOTSTRAP_DIR, "scripts/create.py", "scripts/create_plan.py", "docs/create.md", "tests/test_create_tree.py"):
         assert not (root / gone).exists(), gone
+    # Removing the bootstrap leaves the skill a project runs to move its SDK.
+    assert (root / ".claude" / "skills" / "bump-sdk" / "SKILL.md").is_file()
     env = root / ".env"
     assert [line for line in env.read_text(encoding="utf-8").splitlines() if line.startswith("PIPELEX_BASE_URL")] == [
         "PIPELEX_BASE_URL='https://api.example.com'"

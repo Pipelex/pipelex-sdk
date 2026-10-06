@@ -22,8 +22,9 @@ from pipelex_sdk.errors import (
     PipelineExecuteTimeoutError,
     RunFailedError,
     RunLifecycleUnavailableError,
+    RunTimeoutError,
 )
-from pipelex_sdk.runs import RunResults, RunStatus, WaitForResultOptions
+from pipelex_sdk.runs import PollInfo, RunResults, RunStatus, WaitForResultOptions
 from pydantic import ValidationError
 
 from pipelex_method_cli_python.cli import (
@@ -341,6 +342,30 @@ class TestAttended:
         assert result.exit_code == 130
         assert result.stdout == ""
         assert f"{COMMAND_NAME} --resume {RUN_ID}" in result.stderr
+
+    @pytest.mark.parametrize("args", [pytest.param([], id="attended"), pytest.param(["--resume", RUN_ID], id="resumed")])
+    def test_a_wait_the_sdk_gives_up_on_is_followed_by_another(self, fake_client: FakeClient, args: list[str]):
+        # The SDK's wait gives up after its timeout, which takes no None; the command waits until the run ends.
+        answers: list[RunResults | BaseException] = [
+            RunTimeoutError("too slow", run_id=RUN_ID, timeout_seconds=1200.0),
+            RunTimeoutError("too slow", run_id=RUN_ID, timeout_seconds=1200.0),
+            run_results(TEXT_OUTPUT),
+        ]
+
+        async def slow(options: WaitForResultOptions | None) -> RunResults:
+            if options is not None and options.on_poll is not None:
+                options.on_poll(PollInfo(attempt=1, elapsed_seconds=2.0))
+            answer = answers.pop(0)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+        fake_client.wait_answer = slow
+        result = invoke(make_binding(), args)
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout == render_json(TEXT_OUTPUT) + "\n"
+        assert fake_client.waited == [RUN_ID, RUN_ID, RUN_ID]
+        assert "too slow" not in result.stderr
 
     def test_ctrl_c_during_the_start_says_a_run_may_have_started(self, fake_client: FakeClient):
         async def interrupted() -> str:

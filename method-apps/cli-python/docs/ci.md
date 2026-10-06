@@ -28,27 +28,10 @@ The recorded responses are real: they were returned by `api.pipelex.com` on 2026
 
 The bundle is sent with each file's `source` as `method/<file>`, the label the gesture's tree records and the one the gesture itself sends, as `make codegen` does for that tree; `tests/test_create_plan.py` pins it.
 
+No workflow runs the gesture against the live API, because none is given an API key, so its live half is taken by hand before a release, as a check of the repository's rather than of this directory: the `pipelex-sdk` repository's root `docs/live-create-proofs.md` describes it.
+
 ## Where these workflows run (template only)
 
 This template is developed as the `method-apps/cli-python/` directory of the `pipelex-sdk` mono-repo, and GitHub reads a repository's workflows only at its root, so the workflow files above never run from there. The repository's root carries twins of each, rendered from them by its `make workflows`. The standalone twin extracts this directory into a folder outside the checkout, gives it a repository of its own and runs the same jobs there, installed from PyPI with this directory's own `uv.lock`, exactly as a project made from it would be. The next-SDK twin runs them again with `pipelex-sdk` built from the same commit installed over the locked one, and is reported, not required. The root's `make check-workflows` fails when a twin no longer matches its source, so a change to a workflow here is carried to the root by re-rendering it in the same commit. A project copied out of the mono-repo runs these files as they are.
-
-## The live half of the proof for `make create` (template only)
-
-No workflow runs `make create` against the live API, because no workflow is given a Pipelex API key. The offline test above proves what the gesture writes; that it still works against the API is proven by hand, before a release that touches the gesture, the bootstrap or the code a created project runs.
-
-Run it twice against the default base URL, `https://api.pipelex.com`, each time in a fresh copy of this directory with its own `git init` and `make install`, with a key in the shell:
-
-- once with the bundle fixture, `make create METHOD=tests/fixtures/bundles/receipt-review`;
-- once with a published address, `make create METHOD=github.com/Pipelex/methods/text_stats@v0.1.1`.
-
-The gesture runs `make all` itself, so a red check fails the run. Then check that each copy is what the gesture promised:
-
-- `pyproject.toml`, the package directory under `src/` and the command are named after the method, and `grep -rn pipelex_method_cli_python --exclude-dir=.venv .` finds nothing;
-- the bootstrap skill, `scripts/create.py`, `scripts/create_plan.py` and `docs/create.md` are gone;
-- `.env` is readable by you alone and holds exactly one `PIPELEX_BASE_URL` line, the one the run used;
-- `.venv/bin/<name> --help` lists the method's inputs, one option each;
-- one run prints its JSON result on stdout, and its run id and cost report on stderr: `.venv/bin/text-stats --text "Hello there. Two sentences."`, and for the receipt review a run with a receipt image, `.venv/bin/receipt-review --receipts ./receipt.png`.
-
-The runs spend a few model calls. The copies are discarded afterwards.
 
 <!-- template-only:end -->

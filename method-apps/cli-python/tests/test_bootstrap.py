@@ -160,6 +160,14 @@ class TestWhatAProjectKeeps:
         assert ".venv/bin/invoice-extractor --help" in readme
         assert "This project is licensed under the [MIT license](LICENSE)." in readme
 
+    def test_the_bump_sdk_skill_stays_and_speaks_to_the_project(self, created: Path):
+        # The project moves pipelex-sdk itself, so its skill stays, without the passages about the gesture.
+        skill = (created / ".claude" / "skills" / "bump-sdk" / "SKILL.md").read_text(encoding="utf-8")
+        assert skill.startswith("---\nname: bump-sdk\n")
+        assert "src/<package>/lib/run.py" in skill
+        assert "tests/fixtures/recorded" not in skill
+        assert "/bump-sdk" not in skill
+
     def test_the_version_history_and_license_restart(self, created: Path):
         changelog = (created / "CHANGELOG.md").read_text(encoding="utf-8")
         assert re.match(r"# Changelog\n\n## \[v0\.1\.0\] - \d{4}-\d{2}-\d{2}\n", changelog)

@@ -36,7 +36,6 @@ from pipelex_sdk.errors import (
     RejectedAssetError,
     RunFailedError,
     RunLifecycleUnavailableError,
-    RunTimeoutError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
 )
@@ -111,11 +110,6 @@ def present_error(exc: PipelineRequestError | AppError, *, mode: RunMode | None 
         )
     if isinstance(exc, RunFailedError):
         return present_failed_run(run_id=exc.run_id, status=exc.status, report=exc.error, platform_message=str(exc))
-    if isinstance(exc, RunTimeoutError):
-        return ErrorPresentation(
-            message=f"Gave up waiting for run {exc.run_id} after {exc.timeout_seconds:.0f}s; the run is still going on the server.",
-            hint=f"Wait for it again with `{resume_command(exc.run_id)}`.",
-        )
     # Preparing a file input fails before any run is created.
     if isinstance(exc, InputPreparationError):
         return _present_upload_error(exc)

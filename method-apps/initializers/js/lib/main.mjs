@@ -138,10 +138,16 @@ function chooseTemplate(args, table) {
   const template = args.template ?? table.defaultTemplate;
   if (!Object.hasOwn(table.templates, template)) {
     const other = table.otherEcosystemOf(template);
-    if (other !== null) {
+    if (other?.initializer !== undefined) {
       throw Verdict.refused(
         "other-ecosystem",
-        `${template} is not a Node template, and ${other} serves it: run ${other} <dir> --template ${template} --method …`,
+        `${template} is not a Node template, and ${other.initializer} serves it: run ${other.initializer} <dir> --template ${template} --method …`,
+      );
+    }
+    if (other?.copyOut !== undefined) {
+      throw Verdict.refused(
+        "other-ecosystem",
+        `${template} is not a Node template, and no initializer serves it yet: copy it out of a release of Pipelex/pipelex-sdk as ${other.copyOut} shows, then run its make create`,
       );
     }
     throw Verdict.refused(

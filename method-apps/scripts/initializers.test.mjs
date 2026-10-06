@@ -5,7 +5,9 @@
 // its language, so this reads each `initializers/<language>/templates.json`. A
 // template's ecosystem is the last word of its name, `js` for `webapp-js`, and
 // an ecosystem whose initializer is not written yet has no directory there: its
-// templates are served by none until it is. Run with `node --test`.
+// templates are served by none until it is, and every other initializer sends
+// a request for one of them to the copy-out its README shows. Run with
+// `node --test`.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -75,6 +77,53 @@ describe("the initializers", () => {
           template.endsWith(`-${name}`),
           `initializers/${name} serves ${template}, a template of another ecosystem`,
         );
+      }
+    }
+  });
+
+  it("send another ecosystem's template to its initializer, or to its README's copy-out while it has none", () => {
+    for (const [name, table] of Object.entries(tables)) {
+      const others = new Set(TEMPLATES.map(ecosystemOf).filter((ecosystem) => ecosystem !== name));
+      assert.deepEqual(
+        new Set(Object.keys(table.otherEcosystems)),
+        others,
+        `initializers/${name}: otherEcosystems names every other ecosystem of TEMPLATES, and only those`,
+      );
+      for (const [ecosystem, other] of Object.entries(table.otherEcosystems)) {
+        const where = `initializers/${name}: otherEcosystems.${ecosystem}`;
+        if (ecosystem in tables) {
+          assert.deepEqual(
+            Object.keys(other),
+            ["initializer"],
+            `${where} names that ecosystem's initializer`,
+          );
+          continue;
+        }
+        assert.deepEqual(
+          Object.keys(other),
+          ["copyOut"],
+          `${where} has no initializer to name yet`,
+        );
+        for (const template of TEMPLATES.filter((t) => ecosystemOf(t) === ecosystem)) {
+          const url = new URL(other.copyOut.replaceAll("{template}", template));
+          assert.equal(
+            `${url.origin}${url.pathname}`,
+            `https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/${template}`,
+            `${where} points at ${template}'s directory`,
+          );
+          const readme = fs.readFileSync(path.join(ROOT, template, "README.md"), "utf8");
+          const anchors = [...readme.matchAll(/^#{1,6} (.+)$/gm)].map(([, heading]) =>
+            heading
+              .trim()
+              .toLowerCase()
+              .replace(/[^\w\- ]/g, "")
+              .replaceAll(" ", "-"),
+          );
+          assert.ok(
+            anchors.includes(url.hash.slice(1)),
+            `${template}'s README has no heading ${url.hash}`,
+          );
+        }
       }
     }
   });

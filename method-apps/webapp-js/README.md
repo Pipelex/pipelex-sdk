@@ -113,7 +113,7 @@ Next.js 16 (App Router), React 19, TypeScript 5 (strict), Tailwind CSS 4 (config
 - [`docs/codegen.md`](docs/codegen.md) — the generated types and the checks that keep them current.
 - [`docs/input-form.md`](docs/input-form.md) — how the input form and the result view are rendered from a method's contract.
 - [`docs/errors.md`](docs/errors.md) — what a person reads when something fails, and where a failed run's reason comes from.
-- [`docs/ci.md`](docs/ci.md) — what the pull-request checks prove, and how `make create` is proven against the live API.
+- [`docs/ci.md`](docs/ci.md) — what the pull-request checks prove.
 - [`docs/chrome-lineage.md`](docs/chrome-lineage.md) — what this template took from the gallery, and what it changed.
 - [`CLAUDE.md`](CLAUDE.md) — the project guide for coding agents.
 

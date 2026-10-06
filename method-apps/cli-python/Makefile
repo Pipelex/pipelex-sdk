@@ -125,7 +125,7 @@ create: ## Turn this template into the CLI for METHOD=<path/to/bundle | mt_… |
 # packages uv.lock pins. `make use-local` installs the checkouts beside the
 # project instead, as editable packages, so you can develop them and the CLI
 # side by side: the SDK is the `python/` directory of a `Pipelex/pipelex-sdk`
-# checkout, and `mthds` a checkout of `Pipelex/mthds-python`. `make
+# checkout, and `mthds` a checkout of `mthds-ai/mthds-python`. `make
 # use-published` switches back, and `make local-status` says which is installed.
 #
 # The checkouts are looked for in the parent directory. SIBLINGS_DIR=<dir> names

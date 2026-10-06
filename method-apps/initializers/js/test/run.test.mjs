@@ -8,6 +8,7 @@ import process from "node:process";
 import { describe, it } from "node:test";
 
 import { decodePack } from "../lib/pack.mjs";
+import { loadTable, TABLE_FILE } from "../lib/templates.mjs";
 import {
   git,
   makeRecord,
@@ -455,6 +456,43 @@ describe("a run", () => {
       assert.equal(verdict, "refused: unknown-template", output);
       assert.ok(!output.includes("native code"), output);
     }
+    assert.deepEqual(fs.readdirSync(work), []);
+  });
+
+  it("sends a Python template to the copy-out its README shows, writing nothing", async () => {
+    const { root, work } = workspace();
+    const { output, verdict } = await runInitializer(
+      ["app", "--method", "mt_1", "--template", "cli-python"],
+      { cwd: work, env: runEnv(root) },
+    );
+    assert.equal(verdict, "refused: other-ecosystem", output);
+    assert.ok(
+      output.includes(
+        "no initializer serves it yet: copy it out of a release of Pipelex/pipelex-sdk as https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/cli-python#start-a-project-from-the-template shows",
+      ),
+      output,
+    );
+    assert.ok(!output.includes("uvx"), output);
+    assert.deepEqual(fs.readdirSync(work), []);
+  });
+
+  it("sends another ecosystem's template to that ecosystem's initializer once it has one", async () => {
+    const { root, work } = workspace();
+    const raw = JSON.parse(fs.readFileSync(TABLE_FILE, "utf8"));
+    raw.otherEcosystems.python = { initializer: "uvx create-pipelex-method-app" };
+    const file = path.join(root, "templates.json");
+    fs.writeFileSync(file, JSON.stringify(raw));
+    const { output, verdict } = await runInitializer(
+      ["app", "--method", "mt_1", "--template", "cli-python"],
+      { cwd: work, env: runEnv(root), table: loadTable(file) },
+    );
+    assert.equal(verdict, "refused: other-ecosystem", output);
+    assert.ok(
+      output.includes(
+        "uvx create-pipelex-method-app serves it: run uvx create-pipelex-method-app <dir> --template cli-python --method",
+      ),
+      output,
+    );
     assert.deepEqual(fs.readdirSync(work), []);
   });
 

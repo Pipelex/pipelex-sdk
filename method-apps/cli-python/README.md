@@ -12,17 +12,20 @@ This is a **template**: it ships no method. A copy of it becomes the command for
 
 ## Start a project from the template
 
-Copy the template out of a release of [`Pipelex/pipelex-sdk`](https://github.com/Pipelex/pipelex-sdk/releases), whose notes list the method apps among what it shipped, into a new directory. Nothing else is needed: no Node, no clone of the repository.
+Copy the template out of a release of [`Pipelex/pipelex-sdk`](https://github.com/Pipelex/pipelex-sdk/releases) into a new directory. `v0.32.0` is the first release that ships it, and any later release whose notes list the method apps among what it shipped carries it too. Nothing else is needed: no Node, no clone of the repository.
 
 ```bash
-TAG=vX.Y.Z   # a pipelex-sdk release that shipped the method apps
-mkdir my-cli
-curl -fsSL "https://codeload.github.com/Pipelex/pipelex-sdk/tar.gz/refs/tags/$TAG" \
-  | tar -xz -C my-cli --strip-components=3 "pipelex-sdk-${TAG#v}/method-apps/cli-python"
-cd my-cli
-git init -q && git add -A && git commit -q -m "pipelex-method-cli-python $TAG, as copied"
-make install
+TAG=v0.32.0   # the first pipelex-sdk release that ships cli-python, or a later one
+mkdir my-cli \
+  && curl -fsSL -o my-cli.tar.gz "https://codeload.github.com/Pipelex/pipelex-sdk/tar.gz/refs/tags/$TAG" \
+  && tar -xzf my-cli.tar.gz -C my-cli --strip-components=3 "pipelex-sdk-${TAG#v}/method-apps/cli-python" \
+  && rm my-cli.tar.gz \
+  && cd my-cli \
+  && git init -q && git add -A && git commit -q -m "pipelex-method-cli-python $TAG, as copied" \
+  && make install
 ```
+
+Each step runs only when the one before it succeeded, so a failed download or extraction stops the copy before anything is committed: remove `my-cli` and `my-cli.tar.gz`, and run it again.
 
 Then turn it into the command for your method, with your API key in the shell, where `METHOD` is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`), or a published method's address:
 
@@ -90,7 +93,7 @@ Every tool runs from `.venv/bin/`, never through `uv run`, so a package installe
 
 ## Developing against local checkouts
 
-`make use-local` installs a checkout of `Pipelex/pipelex-sdk` (its `python/` directory is the SDK) and, when it is there, a checkout of `Pipelex/mthds-python`, as editable packages in place of the PyPI releases, so an edit to either takes effect at once. It looks for both in the project's parent directory; `SIBLINGS_DIR=<dir>` names another parent, and `SDK_DIR=<dir>` and `MTHDS_DIR=<dir>` name either checkout directly. `make use-published` puts back the versions `uv.lock` pins, and `make local-status` says which is installed. Neither changes `pyproject.toml` or `uv.lock`.
+`make use-local` installs a checkout of `Pipelex/pipelex-sdk` (its `python/` directory is the SDK) and, when it is there, a checkout of `mthds-ai/mthds-python`, as editable packages in place of the PyPI releases, so an edit to either takes effect at once. It looks for both in the project's parent directory; `SIBLINGS_DIR=<dir>` names another parent, and `SDK_DIR=<dir>` and `MTHDS_DIR=<dir>` name either checkout directly. `make use-published` puts back the versions `uv.lock` pins, and `make local-status` says which is installed. Neither changes `pyproject.toml` or `uv.lock`.
 
 <!-- template-only:begin -->
 

@@ -34,7 +34,7 @@ A durable start (`start`, then polling) survives the hosted gateway's cut-off of
 - A durable start against a deployment that cannot hold runs is an error that names `--blocking`: a bare runner's `404` (`RunLifecycleUnavailableError`) and an orchestration that serves only synchronous runs (`StartRequiresAsyncOrchestration`) both say to add the flag, and for a `--detach` invocation to drop that flag too, since a blocking run cannot be detached.
 - A blocking run cut off by the gateway (`PipelineExecuteTimeoutError`, or a `502` or `504` on the blocking path) is an error that says to drop the flag.
 
-**An attended or resumed run is waited on for up to twenty minutes**, the SDK's default for `wait_for_result`. Past that, the command exits 1 saying the run is still going on the server and printing the `--resume` command, which waits again from that moment. Losing the API during the wait, unreachable or answering a server fault or a rate limit, prints the same command before the error, since the run may well still be going; a refusal such as a `404` for an unknown run id does not.
+**An attended or resumed run is waited on for as long as it takes.** The SDK's `wait_for_result` gives up after twenty minutes by default, and its `timeout_seconds` takes no `None` for no limit, so when it gives up the command starts the next wait at once, and the status line keeps counting the time and the polls from the start of the first. Ctrl-C is the way out, below. Losing the API during the wait, unreachable or answering a server fault or a rate limit, ends the command with exit code 1 and prints the `--resume` command before the error, since the run may well still be going; a refusal such as a `404` for an unknown run id does not.
 
 ## Ctrl-C
 
