@@ -45,7 +45,7 @@ from pipelex_sdk.validation_models import ValidationErrorItem
 from rich.console import Console
 from rich.markup import escape
 
-from pipelex_method_cli_python.lib.app import COMMAND_NAME, AppError, RunMode
+from pipelex_method_cli_python.lib.app import AppError, RunMode, command_name
 
 #: A sentence for each kind of advice the runner names, for a report whose `user_action` carries no
 #: `detail`. The kinds are an open set on the wire, so a kind missing here prints no next step rather
@@ -81,8 +81,8 @@ class ErrorPresentation(NamedTuple):
 
 
 def resume_command(run_id: str) -> str:
-    """The command that reattaches to a run still going, as the hints print it."""
-    return f"{COMMAND_NAME} --resume {run_id}"
+    """The command that reattaches to a run still going, as the hints print it: named as it was invoked (`lib/app.py`)."""
+    return f"{command_name()} --resume {run_id}"
 
 
 def present_error(exc: PipelineRequestError | AppError, *, mode: RunMode | None = None) -> ErrorPresentation:
@@ -94,7 +94,7 @@ def present_error(exc: PipelineRequestError | AppError, *, mode: RunMode | None 
     `/start` on a server with no run store each have a class of their own.
     """
     if isinstance(exc, AppError):
-        return ErrorPresentation(message=exc.message, hint=exc.hint)
+        return ErrorPresentation(message=exc.message, hint=exc.hint, details=exc.details)
     if isinstance(exc, PipelineExecuteTimeoutError):
         return ErrorPresentation(
             message=f"The blocking run exceeded the hosted gateway's ~30s synchronous cap ({exc.elapsed_seconds:.0f}s elapsed).",

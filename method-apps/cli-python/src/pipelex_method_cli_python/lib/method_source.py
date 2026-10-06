@@ -12,10 +12,12 @@ installed CLI (`uv tool install .`, or a wheel) has no repository around it, and
 `method/` as package data.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from typing import TypedDict
+
+from pipelex_sdk.crate_models import MthdsFileItem
 
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.manifest import MANIFEST_FILENAME, parse_manifest
@@ -43,6 +45,14 @@ class RunSourceKwargs(TypedDict):
     method_ref: str | None
 
 
+class CrateSourceKwargs(TypedDict):
+    """The keyword arguments the SDK's `prepare_inputs` takes to name the method, as the crate routes do."""
+
+    files: list[MthdsFileItem] | None
+    method_id: str | None
+    method_ref: str | None
+
+
 @dataclass(frozen=True)
 class MethodSource:
     """The one way a run names its method; exactly one field is set.
@@ -55,6 +65,9 @@ class MethodSource:
     mthds_contents: tuple[str, ...] | None = None
     method_id: str | None = None
     method_ref: str | None = None
+    #: Where each of a bundle's files comes from, `method/<path>`, beside its contents: the label the
+    #: server names in a diagnostic about the file. Not part of what the source is.
+    labels: tuple[str, ...] | None = field(default=None, compare=False)
 
     def run_kwargs(self) -> RunSourceKwargs:
         """The source as the keyword arguments of the SDK's `start` and `execute`."""
@@ -63,6 +76,14 @@ class MethodSource:
             method_id=self.method_id,
             method_ref=self.method_ref,
         )
+
+    def crate_kwargs(self) -> CrateSourceKwargs:
+        """The source as the keyword arguments of the SDK's `prepare_inputs`: a bundle as files, each with its label."""
+        bundle: list[MthdsFileItem] | None = None
+        if self.mthds_contents is not None:
+            labels = self.labels if self.labels is not None and len(self.labels) == len(self.mthds_contents) else (None,) * len(self.mthds_contents)
+            bundle = [MthdsFileItem(content=content, source=label) for content, label in zip(self.mthds_contents, labels, strict=True)]
+        return CrateSourceKwargs(files=bundle, method_id=self.method_id, method_ref=self.method_ref)
 
 
 def method_dir() -> Traversable:
@@ -94,7 +115,10 @@ def read_method_source(directory: Traversable | None = None) -> MethodSource:
     if not bundles:
         msg = f"{where} holds neither .mthds files nor a {MANIFEST_FILENAME}."
         raise MethodSourceError(msg, hint="Restore it from version control: it holds the method's .mthds files or its method.json.")
-    return MethodSource(mthds_contents=tuple(_read_utf8(entry, where=f"{where}{relative}") for relative, entry in bundles))
+    return MethodSource(
+        mthds_contents=tuple(_read_utf8(entry, where=f"{where}{relative}") for relative, entry in bundles),
+        labels=tuple(f"{METHOD_DIRNAME}/{relative}" for relative, _ in bundles),
+    )
 
 
 def _read_utf8(entry: Traversable, *, where: str) -> str:

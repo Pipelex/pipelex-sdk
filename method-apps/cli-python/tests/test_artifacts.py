@@ -9,6 +9,8 @@ the files go by default, and how a verdict is rendered.
 """
 
 import io
+import json
+import os
 from pathlib import Path
 from typing import cast
 
@@ -20,6 +22,8 @@ from rich.console import Console
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.artifacts import (
     DEFAULT_OUTPUT_ROOT,
+    MANIFEST_FORMAT,
+    MANIFEST_NAME,
     EarlierDownload,
     default_download_dir,
     download_produced_files,
@@ -57,36 +61,135 @@ class TestDownloadProducedFiles:
         assert downloaded.saved_paths == [str(tmp_path / "main_stuff.png")]
         assert fake.downloaded_to == [tmp_path]
 
-    async def test_without_out_the_files_go_under_outputs_by_run_id(self):
+    async def test_without_out_the_files_go_under_outputs_by_run_id(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
         fake = FakeClient()
         await download_produced_files(_as_client(fake), run_results(IMAGE_OUTPUT), out_dir=None)
         assert fake.downloaded_to == [DEFAULT_OUTPUT_ROOT / RUN_ID]
 
-    async def test_a_default_directory_that_already_holds_files_is_left_alone(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        # Only a second --resume of the same run finds one; the SDK never overwrites, so a second
-        # download would save every file again beside itself.
+
+class TestCompletionEvidence:
+    """Whether a run's default directory holds an earlier download whole is read from its manifest, never from a count."""
+
+    async def _first_download(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, FakeClient]:
         monkeypatch.chdir(tmp_path)
         earlier = DEFAULT_OUTPUT_ROOT / RUN_ID
-        earlier.mkdir(parents=True)
-        (earlier / "main_stuff.png").write_bytes(b"png")
         fake = FakeClient()
-        downloaded = await download_produced_files(_as_client(fake), run_results(IMAGE_OUTPUT), out_dir=None)
-        assert downloaded == EarlierDownload(dir_path=earlier, expected=1, found=1)
-        assert isinstance(downloaded, EarlierDownload) and downloaded.complete
-        assert fake.downloaded_to == []
+        fake.download_answer = download_verdict(
+            DownloadedArtifact(uri=TWO_FILES_OUTPUT["first"]["url"], found_at=["$.first.url"], path=str(earlier / "first.png"), size=3),
+            DownloadedArtifact(uri=TWO_FILES_OUTPUT["second"]["url"], found_at=["$.second.url"], path=str(earlier / "second.png"), size=5),
+        )
+        downloaded = await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
+        assert isinstance(downloaded, DownloadArtifactsResult) and downloaded.all_saved
+        return earlier, fake
 
-    async def test_an_earlier_download_left_short_is_counted_as_incomplete(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        # An interrupted or partly failed download keeps the files it saved, and a file browser's
-        # dotfile is no file the SDK saved.
+    async def test_a_complete_download_leaves_a_manifest_of_each_file_and_its_size(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        earlier, _ = await self._first_download(tmp_path, monkeypatch)
+        manifest = json.loads((earlier / MANIFEST_NAME).read_text(encoding="utf-8"))
+        assert manifest == {
+            "format": MANIFEST_FORMAT,
+            "files": [
+                {"uri": TWO_FILES_OUTPUT["first"]["url"], "path": "first.png", "size": 3},
+                {"uri": TWO_FILES_OUTPUT["second"]["url"], "path": "second.png", "size": 5},
+            ],
+        }
+        # Written to a temporary name and moved into place: nothing of the move is left behind.
+        assert sorted(entry.name for entry in earlier.iterdir()) == [MANIFEST_NAME, "first.png", "second.png"]
+
+    async def test_a_second_resume_finds_the_download_whole_and_fetches_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        earlier, fake = await self._first_download(tmp_path, monkeypatch)
+        downloaded = await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
+        assert downloaded == EarlierDownload(dir_path=earlier, complete=True)
+        assert fake.downloaded_to == [earlier]
+
+    async def test_a_file_cut_short_after_the_download_is_incomplete(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # As a process killed mid-stream leaves it, or a second --resume still writing: the count is right, the size is not.
+        earlier, fake = await self._first_download(tmp_path, monkeypatch)
+        (earlier / "second.png").write_bytes(b"x")
+        downloaded = await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
+        assert isinstance(downloaded, EarlierDownload) and not downloaded.complete
+        assert downloaded.detail == "second.png is not the size it was saved at"
+
+    async def test_a_file_gone_since_the_download_is_incomplete(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        earlier, fake = await self._first_download(tmp_path, monkeypatch)
+        (earlier / "first.png").unlink()
+        downloaded = await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
+        assert isinstance(downloaded, EarlierDownload) and downloaded.detail == "first.png is missing"
+
+    async def test_files_with_no_manifest_are_a_download_that_never_finished(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # Every file there, at whatever size, and still not whole: nothing says the download ended.
         monkeypatch.chdir(tmp_path)
         earlier = DEFAULT_OUTPUT_ROOT / RUN_ID
         earlier.mkdir(parents=True)
         (earlier / "first.png").write_bytes(b"png")
-        (earlier / ".DS_Store").write_bytes(b"")
-        downloaded = await download_produced_files(_as_client(FakeClient()), run_results(TWO_FILES_OUTPUT), out_dir=None)
-        assert downloaded == EarlierDownload(dir_path=earlier, expected=2, found=1)
+        (earlier / "second.png").write_bytes(b"png")
+        fake = FakeClient()
+        downloaded = await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
+        assert downloaded == EarlierDownload(dir_path=earlier, complete=False, detail="it has no record of a download that finished")
+        assert fake.downloaded_to == []
+
+    async def test_a_manifest_that_does_not_name_a_produced_file_is_incomplete(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        earlier, fake = await self._first_download(tmp_path, monkeypatch)
+        manifest = json.loads((earlier / MANIFEST_NAME).read_text(encoding="utf-8"))
+        manifest["files"] = manifest["files"][:1]
+        (earlier / MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+        downloaded = await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
+        assert isinstance(downloaded, EarlierDownload) and downloaded.detail == f"its record does not name {TWO_FILES_OUTPUT['second']['url']}"
+
+    @pytest.mark.parametrize("content", ["{not json", '{"format": "something else", "files": []}', "[]"])
+    async def test_a_manifest_this_cli_did_not_write_is_incomplete(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str):
+        earlier, fake = await self._first_download(tmp_path, monkeypatch)
+        (earlier / MANIFEST_NAME).write_text(content, encoding="utf-8")
+        downloaded = await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
         assert isinstance(downloaded, EarlierDownload) and not downloaded.complete
 
+    async def test_a_manifest_that_cannot_be_written_never_fails_the_download(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        def refused(source: object, target: object) -> None:
+            del source, target
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(os, "replace", refused)
+        earlier, _ = await self._first_download(tmp_path, monkeypatch)
+        assert sorted(entry.name for entry in earlier.iterdir()) == ["first.png", "second.png"]
+
+    async def test_a_partial_download_leaves_no_manifest(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        earlier = DEFAULT_OUTPUT_ROOT / RUN_ID
+        fake = FakeClient()
+        fake.download_answer = download_verdict(
+            DownloadedArtifact(uri=TWO_FILES_OUTPUT["first"]["url"], found_at=["$.first.url"], path=str(earlier / "first.png"), size=3),
+            DownloadedArtifact(
+                uri=TWO_FILES_OUTPUT["second"]["url"], found_at=["$.second.url"], error=ArtifactItemError(code="gone", detail="Gone.")
+            ),
+        )
+        await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
+        assert not (earlier / MANIFEST_NAME).exists()
+
+    async def test_a_directory_holding_only_dotfiles_is_downloaded_into(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # A file browser's .DS_Store is not an earlier download.
+        monkeypatch.chdir(tmp_path)
+        earlier = DEFAULT_OUTPUT_ROOT / RUN_ID
+        earlier.mkdir(parents=True)
+        (earlier / ".DS_Store").write_bytes(b"")
+        fake = FakeClient()
+        await download_produced_files(_as_client(fake), run_results(IMAGE_OUTPUT), out_dir=None)
+        assert fake.downloaded_to == [earlier]
+
+    @pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs POSIX permissions that bind the user running the tests")
+    async def test_an_unreadable_directory_is_refused_naming_out(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        earlier = DEFAULT_OUTPUT_ROOT / RUN_ID
+        earlier.mkdir(parents=True)
+        earlier.chmod(0o000)
+        try:
+            with pytest.raises(AppError, match="cannot be read") as caught:
+                await download_produced_files(_as_client(FakeClient()), run_results(IMAGE_OUTPUT), out_dir=None)
+        finally:
+            earlier.chmod(0o755)
+        assert caught.value.hint == "Name a readable, writable directory for the run's files with --out DIR."
+
+
+class TestOtherDirectories:
     async def test_a_directory_out_names_is_never_checked_for_earlier_files(self, tmp_path: Path):
         (tmp_path / "kept.txt").write_text("mine", encoding="utf-8")
         fake = FakeClient()
@@ -121,14 +224,14 @@ class TestPrintDownloads:
         assert _render(None) == ""
 
     def test_an_earlier_download_says_nothing_was_fetched(self):
-        rendered = _render(EarlierDownload(dir_path=Path("outputs/run-1"), expected=2, found=2))
+        rendered = _render(EarlierDownload(dir_path=Path("outputs/run-1"), complete=True))
         assert "outputs/run-1 already holds this run's files from an earlier download" in rendered
         assert "none were fetched" in rendered
 
-    def test_an_earlier_download_left_short_says_how_short(self):
-        rendered = _render(EarlierDownload(dir_path=Path("outputs/run-1"), expected=2, found=1))
-        assert "outputs/run-1 holds 1 of this run's 2 files" in rendered
-        assert "stopped short" in rendered
+    def test_an_earlier_download_not_whole_says_why(self):
+        rendered = _render(EarlierDownload(dir_path=Path("outputs/run-1"), complete=False, detail="first.png is missing"))
+        assert "outputs/run-1 holds an earlier download of this run that is not whole, since first.png is missing" in rendered
+        assert "none were fetched" in rendered
 
     def test_names_each_saved_file(self):
         rendered = _render(download_verdict(DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path="/tmp/out/cat.png", size=3)))

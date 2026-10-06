@@ -24,9 +24,20 @@ from pipelex_sdk.errors import (
 )
 from pipelex_sdk.runs import RunResults, RunStatus, WaitForResultOptions
 
-from pipelex_method_cli_python.cli import EMPTY_STATE, OWN_FLAGS, OWN_NAMES, OWN_OPTIONS, load_environment
+from pipelex_method_cli_python.cli import (
+    EMPTY_STATE,
+    OWN_FLAGS,
+    OWN_NAMES,
+    OWN_OPTIONS,
+    RESERVED_FLAGS,
+    LifecycleFlags,
+    load_environment,
+    read_flags,
+)
 from pipelex_method_cli_python.lib import output
-from pipelex_method_cli_python.lib.app import COMMAND_NAME
+from pipelex_method_cli_python.lib.app import COMMAND_NAME, RunMode
+from pipelex_method_cli_python.lib.contracts import contracts_for_pipe
+from pipelex_method_cli_python.lib.inputs import InputOptionsError
 from pipelex_method_cli_python.lib.method_source import MethodSource
 from pipelex_method_cli_python.lib.output import render_json
 from tests.support import (
@@ -35,11 +46,16 @@ from tests.support import (
     TEXT_OUTPUT,
     TWO_FILES_OUTPUT,
     FakeClient,
+    Greeting,
     download_verdict,
     execute_result,
+    greet_contracts,
     invoke,
     make_binding,
+    pipe_io_report,
     run_results,
+    text_inputs,
+    wire_contracts,
 )
 
 
@@ -70,8 +86,154 @@ class TestTheCommand:
 
     def test_the_own_flags_and_names_are_read_off_the_own_options(self):
         # Pinned by hand on purpose: a derivation that reads nothing would leave the collision guard empty.
-        assert {"--inputs", "--blocking", "--detach", "--resume", "--out", "--no-download"} == OWN_FLAGS
+        assert {"--inputs", "--inputs-template", "--blocking", "--detach", "--resume", "--out", "--no-download"} == OWN_FLAGS
         assert {parameter.name for parameter in OWN_OPTIONS} == OWN_NAMES
+        assert RESERVED_FLAGS == OWN_FLAGS | {"--help"}
+
+
+class TestLifecycleFlags:
+    """The own options are declared once, as the fields of `LifecycleFlags`, and everything else is read off them."""
+
+    def test_each_own_option_is_a_field_with_its_default(self):
+        defaults = LifecycleFlags()
+        assert [parameter.name for parameter in OWN_OPTIONS] == [name for name in vars(defaults)]
+        for parameter in OWN_OPTIONS:
+            assert parameter.default == getattr(defaults, parameter.name)
+
+    def test_an_invocation_with_no_flag_reads_as_the_defaults(self):
+        assert read_flags({}) == LifecycleFlags()
+        assert read_flags({}).mode is RunMode.ATTENDED
+
+    def test_each_value_typer_passes_lands_on_its_field(self):
+        values = {"inputs_file": Path("in.json"), "blocking": True, "out": Path("files"), "input_text": "ignored"}
+        flags = read_flags(values)
+        assert (flags.inputs_file, flags.blocking, flags.out, flags.detach) == (Path("in.json"), True, Path("files"), False)
+        assert flags.mode is RunMode.BLOCKING
+
+
+class TestInputOptions:
+    """One option per declared input, derived from the committed input form when the command loads."""
+
+    def test_help_lists_each_input_before_the_own_options(self):
+        result = invoke(make_binding(contracts=greet_contracts(**text_inputs("name", "mood", optional=("mood",)))), ["--help"])
+        assert result.exit_code == 0
+        options = result.stdout[result.stdout.index("Options:") :]
+        assert options.index("--name") < options.index("--mood") < options.index("--inputs ")
+        # Click wraps the help to the terminal's width.
+        flowing = " ".join(result.stdout.split())
+        assert "The name. Text, or @FILE to read it from a file and @- from stdin. Required." in flowing
+        assert "The mood. Text, or @FILE to read it from a file and @- from stdin. Optional." in flowing
+
+    def test_every_kind_gets_its_style_of_option(self):
+        contracts = contracts_for_pipe(wire_contracts("every-kind"), "every_kind.take_everything")
+        result = invoke(make_binding(contracts=contracts), ["--help"])
+        assert result.exit_code == 0
+        for shown in ("--agreed / --no-agreed", "--count INTEGER", "--amount N", "--picture PATH|URL", "--lines JSON", "--checks true|false"):
+            assert shown in result.stdout
+
+    def test_an_option_sends_its_input_as_the_form_would(self, fake_client: FakeClient):
+        result = invoke(make_binding(contracts=greet_contracts(**text_inputs("name"))), ["--name", "Marie"])
+        assert result.exit_code == 0, result.stderr
+        assert fake_client.started[0]["inputs"] == {"name": {"concept": "native.Text", "content": {"text": "Marie"}}}
+
+    def test_an_at_path_reads_the_value_from_a_file(self, fake_client: FakeClient, tmp_path: Path):
+        (tmp_path / "name.txt").write_text("Marie\n", encoding="utf-8")
+        result = invoke(make_binding(contracts=greet_contracts(**text_inputs("name"))), ["--name", f"@{tmp_path / 'name.txt'}"])
+        assert result.exit_code == 0, result.stderr
+        assert fake_client.started[0]["inputs"]["name"]["content"] == {"text": "Marie\n"}
+
+    def test_a_double_at_stands_for_a_literal_at(self, fake_client: FakeClient):
+        invoke(make_binding(contracts=greet_contracts(**text_inputs("name"))), ["--name", "@@marie"])
+        assert fake_client.started[0]["inputs"]["name"]["content"] == {"text": "@marie"}
+
+    def test_stdin_is_read_by_one_option_only(self, fake_client: FakeClient):
+        result = invoke(make_binding(contracts=greet_contracts(**text_inputs("name"))), ["--inputs", "-", "--name", "@-"], stdin="{}")
+        assert result.exit_code == 2
+        assert "--name reads stdin, which --inputs reads already" in result.stderr
+        assert fake_client.entered == 0
+
+    def test_a_missing_required_input_is_a_usage_error_naming_its_option(self, fake_client: FakeClient):
+        result = invoke(make_binding(contracts=greet_contracts(**text_inputs("name", "mood", optional=("mood",)))), [])
+        assert result.exit_code == 2
+        assert result.stdout == ""
+        assert "The run needs name (--name)" in result.stderr
+        assert "mood" not in result.stderr.split("Run `")[0]
+        assert fake_client.entered == 0
+
+    def test_the_inputs_file_can_give_a_required_input(self, fake_client: FakeClient, tmp_path: Path):
+        path = tmp_path / "inputs.json"
+        path.write_text(json.dumps({"name": "Marie"}), encoding="utf-8")
+        result = invoke(make_binding(contracts=greet_contracts(**text_inputs("name"))), ["--inputs", str(path)])
+        assert result.exit_code == 0, result.stderr
+        assert fake_client.started[0]["inputs"] == {"name": "Marie"}
+
+    def test_an_option_overrides_the_same_input_in_the_file(self, fake_client: FakeClient, tmp_path: Path):
+        path = tmp_path / "inputs.json"
+        path.write_text(json.dumps({"name": "Marie", "mood": "calm"}), encoding="utf-8")
+        result = invoke(make_binding(contracts=greet_contracts(**text_inputs("name", "mood"))), ["--inputs", str(path), "--mood", "bright"])
+        assert result.exit_code == 0, result.stderr
+        assert fake_client.started[0]["inputs"] == {"name": "Marie", "mood": {"concept": "native.Text", "content": {"text": "bright"}}}
+
+    def test_an_input_option_with_resume_is_refused(self, fake_client: FakeClient):
+        result = invoke(make_binding(contracts=greet_contracts(**text_inputs("name"))), ["--resume", RUN_ID, "--name", "Marie"])
+        assert result.exit_code == 2
+        assert "--resume waits for a run that already has its inputs, and --name would start a new one" in result.stderr
+        assert fake_client.entered == 0
+
+    def test_an_input_named_like_an_own_option_is_offered_under_input(self, fake_client: FakeClient):
+        binding = make_binding(contracts=greet_contracts(**text_inputs("out", "resume")))
+        help_text = invoke(binding, ["--help"]).stdout
+        assert "--input-out" in help_text
+        assert "--input-resume" in help_text
+        result = invoke(binding, ["--input-out", "left", "--input-resume", "right"])
+        assert result.exit_code == 0, result.stderr
+        assert fake_client.started[0]["inputs"]["out"]["content"] == {"text": "left"}
+
+    def test_an_input_that_can_take_no_flag_is_refused_when_the_command_loads(self):
+        # `input_out` would take `--input-out`, which the renamed `out` needs.
+        contracts = greet_contracts(**text_inputs("input_out", "out"))
+        with pytest.raises(InputOptionsError, match="neither as --out nor as --input-out"):
+            invoke(make_binding(contracts=contracts), ["--help"])
+
+    def test_a_local_file_is_uploaded_before_the_run(self, fake_client: FakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        document = wire_contracts("summarize-pdf")
+        contracts = contracts_for_pipe(document, "summarize_pdf.summarize_pdf")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "report.pdf").write_bytes(b"%PDF-1.7")
+        fake_client.pipe_io_answer = pipe_io_report(document)
+        result = invoke(make_binding(contracts=contracts), ["--document", "report.pdf"])
+        assert result.exit_code == 0, result.stderr
+        assert fake_client.uploaded == ["report.pdf"]
+        assert fake_client.prepared[0]["pipe_ref"] == "summarize_pdf.summarize_pdf"
+        assert fake_client.started[0]["inputs"]["document"]["content"] == {"url": "pipelex-storage://uploads/report.pdf", "filename": "report.pdf"}
+        assert "Uploaded report.pdf as pipelex-storage://uploads/report.pdf" in result.stderr
+
+    def test_a_missing_local_file_is_refused_before_anything_is_sent(self, fake_client: FakeClient, tmp_path: Path):
+        contracts = contracts_for_pipe(wire_contracts("summarize-pdf"), "summarize_pdf.summarize_pdf")
+        result = invoke(make_binding(contracts=contracts), ["--document", str(tmp_path / "absent.pdf")])
+        assert result.exit_code == 2
+        assert "which is not a file" in result.stderr
+        assert fake_client.entered == 0
+
+    def test_a_method_with_no_file_input_never_asks_for_its_signature(self, fake_client: FakeClient):
+        invoke(make_binding(contracts=greet_contracts(**text_inputs("name"))), ["--name", "Marie"])
+        assert fake_client.prepared == []
+        assert fake_client.pipe_io_asked == []
+
+
+class TestInputsTemplate:
+    def test_prints_the_template_alone_and_runs_nothing(self, fake_client: FakeClient):
+        result = invoke(make_binding(contracts=greet_contracts(**text_inputs("name"))), ["--inputs-template"])
+        assert result.exit_code == 0, result.stderr
+        assert set(json.loads(result.stdout)) == {"name"}
+        assert fake_client.entered == 0
+
+    @pytest.mark.parametrize("other", [["--blocking"], ["--name", "Marie"], ["--out", "files"]])
+    def test_is_refused_with_anything_else(self, fake_client: FakeClient, other: list[str]):
+        result = invoke(make_binding(contracts=greet_contracts(**text_inputs("name"))), ["--inputs-template", *other])
+        assert result.exit_code == 2
+        assert "--inputs-template prints the inputs template and runs nothing: give it alone." in result.stderr
+        assert fake_client.entered == 0
 
 
 class TestAttended:
@@ -382,27 +544,31 @@ class TestDownloads:
 
     def test_a_second_resume_leaves_the_earlier_download_alone(self, fake_client: FakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "outputs" / RUN_ID).mkdir(parents=True)
-        (tmp_path / "outputs" / RUN_ID / "main_stuff.png").write_bytes(b"png")
+        saved = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path=f"outputs/{RUN_ID}/main_stuff.png", size=3)
         fake_client.wait_answer = run_results(IMAGE_OUTPUT)
+        fake_client.download_answer = download_verdict(saved)
+        first = invoke(make_binding(), ["--resume", RUN_ID])
+        assert first.exit_code == 0, first.stderr
         result = invoke(make_binding(), ["--resume", RUN_ID])
         assert result.exit_code == 0, result.stderr
         assert json.loads(result.stdout) == IMAGE_OUTPUT
-        assert fake_client.downloaded_to == []
+        assert fake_client.downloaded_to == [Path("outputs") / RUN_ID]
         assert "none were fetched" in result.stderr
 
     def test_a_resume_after_a_download_left_short_fails_and_says_how_to_fetch_again(
         self, fake_client: FakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        # A download killed before it finished leaves files and no manifest, however many files it left.
         monkeypatch.chdir(tmp_path)
         (tmp_path / "outputs" / RUN_ID).mkdir(parents=True)
         (tmp_path / "outputs" / RUN_ID / "first.png").write_bytes(b"png")
+        (tmp_path / "outputs" / RUN_ID / "second.png").write_bytes(b"pn")
         fake_client.wait_answer = run_results(TWO_FILES_OUTPUT)
         result = invoke(make_binding(), ["--resume", RUN_ID])
         assert result.exit_code == 1
         assert json.loads(result.stdout) == TWO_FILES_OUTPUT
         assert fake_client.downloaded_to == []
-        assert "1 of this run's 2 files" in result.stderr
+        assert "not whole, since it has no record of a download that finished" in result.stderr
         assert f"{COMMAND_NAME} --resume {RUN_ID} --out DIR" in result.stderr
 
     def test_ctrl_c_while_the_files_come_down_says_how_to_fetch_them_again(self, fake_client: FakeClient, tmp_path: Path):
@@ -489,6 +655,41 @@ class TestPluralOutput:
         assert fake_client.downloaded_to == [tmp_path]
         assert "No inference calls" in result.stderr
         assert "not the list binding.py declares" in result.stderr
+
+
+class TestOutputValidation:
+    """A result is checked against the generated output model before it is printed, and never filtered by it."""
+
+    def test_a_result_the_model_accepts_is_printed_as_it_came(self, fake_client: FakeClient):
+        output = {"text": "Bonjour", "extra": "kept"}
+        fake_client.wait_answer = run_results(output)
+        result = invoke(make_binding(output_model=Greeting), [])
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout) == output
+
+    def test_a_result_the_model_refuses_is_not_printed_and_says_how_to_fetch_it_again(self, fake_client: FakeClient):
+        fake_client.wait_answer = run_results({"title": "Bonjour"}, tokens_usages=[], usage_assembly_error=None)
+        result = invoke(make_binding(output_model=Greeting), [])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert f"Run {RUN_ID} returned a result that Greeting refuses, first at text, so it is not printed." in result.stderr
+        assert "text: Field required" in result.stderr
+        assert f"run `make codegen` and update binding.py, then fetch the result again with `{COMMAND_NAME} --resume {RUN_ID}`" in result.stderr
+        # The cost is reported all the same: the run is paid for.
+        assert "No inference calls" in result.stderr
+
+    def test_a_plural_result_names_the_item_that_failed(self, fake_client: FakeClient):
+        fake_client.wait_answer = run_results([{"text": "a"}, {"title": "b"}])
+        result = invoke(make_binding(output_is_list=True, output_model=Greeting), [])
+        assert result.exit_code == 1
+        assert "a list of Greeting refuses, first at [1].text" in result.stderr
+
+    def test_a_blocking_run_is_not_offered_a_resume(self, fake_client: FakeClient):
+        fake_client.execute_answer = execute_result({"title": "Bonjour"})
+        result = invoke(make_binding(output_model=Greeting), ["--blocking"])
+        assert result.exit_code == 1
+        assert "update binding.py." in result.stderr
+        assert f"{COMMAND_NAME} --resume" not in result.stderr
 
 
 class TestEnvironment:

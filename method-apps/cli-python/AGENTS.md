@@ -13,6 +13,7 @@ The full project guide for AI coding agents is [`CLAUDE.md`](CLAUDE.md) — read
 - **One `asyncio.run`, in `cli.py`.** Everything under `lib/run.py` is a coroutine over the client `execute_plan` opened.
 - **Run tools through the Makefile, never with `uv run`**, which re-syncs the environment and silently undoes `make use-local`.
 - **Tests replace `lib/client.py`'s `make_client` with the `fake_client` fixture, never the `pipelex_sdk` package**, and keep stdout and stderr apart in every assertion.
-- **Never edit anything under `src/pipelex_method_cli_python/generated/`** once it exists: the codegen writes and stamps it.
-- **After any code change, run `make all`** (ruff, the format check, pyright strict, the tests and the build). Do not declare a task done until it passes. If formatting fails, run `make format`.
+- **Never edit anything under `src/pipelex_method_cli_python/generated/`** once it exists: the codegen writes and stamps it. After changing the method, run `make codegen` and commit the tree; `make check` fails until you do.
+- **Never write an option for one input by hand.** The options are derived from the committed input form when the command loads (`lib/inputs.py`), and what each value puts on the wire is held to the web app template's form kernel by `tests/test_wire_table.py`.
+- **After any code change, run `make all`** (ruff, the format check, pyright strict, the offline codegen check, the tests and the build). Do not declare a task done until it passes. If formatting fails, run `make format`.
 - **Prefer `make agent-test` over `make test`**: silent on success, full output on failure.

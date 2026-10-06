@@ -1,11 +1,35 @@
-"""`lib/inputs.py`: the inputs file `--inputs` names, read and checked before any run starts."""
+"""`lib/inputs.py`: the options derived from the input form, the values they read, and the inputs file.
+
+The values each option puts on the wire are held to the TypeScript form kernel by
+`test_wire_table.py`; these pin how options are derived and how a value is read, refused or merged.
+"""
 
 import io
+import json
+from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from pipelex_method_cli_python.lib.inputs import STDIN, InputsFileError, read_inputs_file
+from pipelex_method_cli_python.lib.contracts import PipeContracts, contracts_for_pipe
+from pipelex_method_cli_python.lib.inputs import (
+    STDIN,
+    InputOption,
+    InputOptionsError,
+    InputsFileError,
+    InputUsageError,
+    OptionStyle,
+    ValueReader,
+    collect_inputs,
+    declares_files,
+    derive_options,
+    inputs_template,
+    option_help,
+    read_inputs_file,
+    read_option,
+)
+from tests.support import wire_contracts
 
 
 class TestReadInputsFile:
@@ -35,3 +59,186 @@ class TestReadInputsFile:
         with pytest.raises(InputsFileError, match=says) as caught:
             read_inputs_file(path)
         assert caught.value.hint is not None
+
+
+EVERYTHING = contracts_for_pipe(wire_contracts("every-kind"), "every_kind.take_everything")
+BARE = contracts_for_pipe(wire_contracts("every-kind"), "every_kind.take_bare")
+
+
+def _options(contracts: PipeContracts = EVERYTHING, *, reserved: frozenset[str] | None = None) -> dict[str, InputOption]:
+    return {option.name: option for option in derive_options(contracts, reserved=reserved or frozenset({"--help"}))}
+
+
+def _collect(contracts: PipeContracts, values: dict[str, Any], *, file_inputs: dict[str, Any] | None = None) -> dict[str, Any]:
+    options = derive_options(contracts, reserved=frozenset({"--help"}))
+    raw = {f"input_{name}": value for name, value in values.items()}
+    return collect_inputs(contracts, options, raw, file_inputs=file_inputs, reader=ValueReader())
+
+
+class TestDeriveOptions:
+    def test_one_option_per_input_in_authored_order(self):
+        assert list(_options()) == [field.name for field in EVERYTHING.input_form.fields]
+
+    @pytest.mark.parametrize(
+        ("name", "style", "repeatable"),
+        [
+            ("headline", OptionStyle.TEXT, False),
+            ("clock", OptionStyle.TEXT, False),
+            ("amount", OptionStyle.NUMBER, False),
+            ("agreed", OptionStyle.FLAG, False),
+            ("due", OptionStyle.JSON, False),
+            ("picture", OptionStyle.FILE, False),
+            ("many", OptionStyle.TEXT, True),
+            ("checks", OptionStyle.YES_NO, True),
+            ("gallery", OptionStyle.FILE, True),
+            ("lines", OptionStyle.JSON, False),
+        ],
+    )
+    def test_each_kind_gets_its_style(self, name: str, style: OptionStyle, repeatable: bool):
+        option = _options()[name]
+        assert (option.style, option.repeatable) == (style, repeatable)
+
+    def test_enum_choices_are_checked_by_click(self):
+        level = _options(BARE)["level"]
+        assert level.style is OptionStyle.CHOICE
+        assert level.choices is not None and [member.value for member in level.choices] == ["low", "normal", "high"]
+
+    def test_a_flag_is_kebab_case_and_the_parameter_is_namespaced(self):
+        option = _options()["may_be_absent"]
+        assert (option.flag, option.parameter_name) == ("--may-be-absent", "input_may_be_absent")
+
+    def test_a_boolean_takes_both_halves_of_its_pair(self):
+        assert _options()["agreed"].flags == {"--agreed", "--no-agreed"}
+
+    def test_a_fixed_count_bounds_the_list(self):
+        option = _options()["exactly_three"]
+        assert (option.min_items, option.max_items) == (3, 3)
+        assert "exactly 3 items" in option_help(option)
+
+    def test_a_number_states_its_bounds(self):
+        assert "An integer, at least 1 and at most 10." in option_help(_options()["count"])
+
+    def test_an_input_whose_flag_is_reserved_is_renamed(self):
+        options = _options(reserved=frozenset({"--headline", "--help"}))
+        assert options["headline"].flag == "--input-headline"
+
+    def test_an_input_the_contract_does_not_declare_is_refused(self):
+        broken = PipeContracts(
+            pipe_ref=EVERYTHING.pipe_ref,
+            io=EVERYTHING.io.model_copy(update={"inputs": {}}),
+            input_form=EVERYTHING.input_form,
+            output_form=EVERYTHING.output_form,
+        )
+        with pytest.raises(InputOptionsError, match="declares the input headline, which its IO contract does not"):
+            derive_options(broken, reserved=frozenset())
+
+
+class TestReadOption:
+    @pytest.mark.parametrize(("raw", "sent"), [("2026-07-06", "2026-07-06"), ("2026-07-06T00:00:00Z", "2026-07-06")])
+    def test_a_calendar_date_is_cut_to_its_day(self, raw: str, sent: str):
+        assert read_option(_options(BARE)["day"], raw, ValueReader()) == sent
+
+    def test_a_calendar_date_never_drops_a_time_silently(self):
+        with pytest.raises(InputUsageError, match="a time of day is never dropped silently"):
+            read_option(_options(BARE)["day"], "2026-07-06T15:40:00Z", ValueReader())
+
+    def test_a_date_and_time_is_sent_as_given(self):
+        assert read_option(_options(BARE)["moment"], "2026-07-06T15:40:00+02:00", ValueReader()) == "2026-07-06T15:40:00+02:00"
+
+    @pytest.mark.parametrize(("raw", "says"), [("2.5", "takes an integer"), ("0", "at least 1"), ("11", "at most 10"), ("x", "takes an integer")])
+    def test_a_number_outside_what_the_descriptor_says_is_refused(self, raw: str, says: str):
+        with pytest.raises(InputUsageError, match=says):
+            read_option(_options()["count"], raw, ValueReader())
+
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf"])
+    def test_a_number_must_be_finite(self, raw: str):
+        with pytest.raises(InputUsageError, match="finite"):
+            read_option(_options()["amount"], raw, ValueReader())
+
+    def test_a_number_is_wrapped_in_its_content_model(self):
+        assert read_option(_options()["amount"], "2.5", ValueReader()) == {"number": 2.5}
+
+    def test_a_list_of_booleans_takes_true_or_false(self):
+        assert read_option(_options()["checks"], ["true", "FALSE"], ValueReader()) == [{"yes_no": True}, {"yes_no": False}]
+        with pytest.raises(InputUsageError, match="takes true or false"):
+            read_option(_options()["checks"], ["yes", "no"], ValueReader())
+
+    def test_a_fixed_count_list_given_the_wrong_count_is_refused(self):
+        with pytest.raises(InputUsageError, match="takes exactly 3 items; it was given 2"):
+            read_option(_options()["exactly_three"], ["a", "b"], ValueReader())
+
+    @pytest.mark.parametrize("url", ["https://example.com/a.png", "pipelex-storage://run/a.png", "data:image/png;base64,AA=="])
+    def test_a_url_passes_through(self, url: str):
+        assert read_option(_options()["picture"], url, ValueReader()) == {"url": url}
+
+    def test_a_local_file_carries_its_name(self, tmp_path: Path):
+        (tmp_path / "cat.png").write_bytes(b"png")
+        assert read_option(_options()["picture"], str(tmp_path / "cat.png"), ValueReader()) == {
+            "url": str(tmp_path / "cat.png"),
+            "filename": "cat.png",
+        }
+
+    @pytest.mark.parametrize(("raw", "says"), [("{nope", "takes JSON"), ("[1]", "takes a JSON object; this is a JSON array")])
+    def test_json_must_be_the_kind_the_input_takes(self, raw: str, says: str):
+        with pytest.raises(InputUsageError, match=says):
+            read_option(_options()["priority"], raw, ValueReader())
+
+    def test_json_can_come_from_a_file(self, tmp_path: Path):
+        (tmp_path / "priority.json").write_text('{"level": "urgent"}', encoding="utf-8")
+        assert read_option(_options()["priority"], f"@{tmp_path / 'priority.json'}", ValueReader()) == {"level": "urgent"}
+
+    def test_an_unreadable_file_is_a_usage_error(self, tmp_path: Path):
+        with pytest.raises(InputUsageError, match="cannot be read"):
+            read_option(_options()["headline"], f"@{tmp_path / 'absent.txt'}", ValueReader())
+
+    def test_stdin_is_read_once(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr("sys.stdin", io.StringIO("from stdin"))
+        reader = ValueReader()
+        assert read_option(_options()["headline"], "@-", reader) == {"text": "from stdin"}
+        with pytest.raises(InputUsageError, match="--may-be-absent reads stdin, which --headline reads already"):
+            read_option(_options()["may_be_absent"], "@-", reader)
+
+
+class TestCollectInputs:
+    def test_a_plural_input_given_nowhere_is_the_empty_list_and_an_optional_one_is_left_out(self):
+        sent = _collect(BARE, {"level": _level_choice("high"), "day": "2026-07-06"})
+        assert sent == {
+            "level": {"concept": "every_kind.Level", "content": "high"},
+            "levels": [],
+            "day": {"concept": "every_kind.Day", "content": "2026-07-06"},
+        }
+
+    def test_every_missing_input_is_named_with_its_option(self):
+        with pytest.raises(InputUsageError, match=r"The run needs level \(--level\), day \(--day\)"):
+            _collect(BARE, {})
+
+    def test_an_input_the_file_gives_passes_as_it_is_and_an_option_overrides_it(self):
+        sent = _collect(BARE, {"day": "2026-07-07"}, file_inputs={"level": "low", "day": "2026-07-06"})
+        assert sent["level"] == "low"
+        assert sent["day"] == {"concept": "every_kind.Day", "content": "2026-07-07"}
+
+    def test_an_input_the_file_leaves_empty_is_missing(self):
+        with pytest.raises(InputUsageError, match=r"level \(--level\)"):
+            _collect(BARE, {"day": "2026-07-06"}, file_inputs={"level": "  "})
+
+    def test_a_blank_text_given_to_a_required_option_is_missing(self):
+        contracts = contracts_for_pipe(wire_contracts("text-stats"), "text_stats.analyze_text")
+        with pytest.raises(InputUsageError, match=r"text \(--text\)"):
+            _collect(contracts, {"text": "   "})
+
+
+def _level_choice(value: str) -> Enum:
+    """The member of the `level` option's choices that Click hands the command for `value`."""
+    choices = _options(BARE)["level"].choices
+    assert choices is not None
+    return choices(value)
+
+
+class TestTemplateAndFiles:
+    def test_the_template_names_every_input(self):
+        template = json.loads(inputs_template(BARE))
+        assert set(template) == {"level", "levels", "day", "moment"}
+
+    def test_a_form_declaring_a_file_at_any_depth_is_prepared(self):
+        assert declares_files(EVERYTHING.input_form)
+        assert not declares_files(BARE.input_form)

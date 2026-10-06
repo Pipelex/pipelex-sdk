@@ -13,13 +13,17 @@ The command runs its one method in one of the modes below, chosen with a flag. [
 
 **The result is the same JSON in every mode**: the run's `main_stuff` as the method produced it, a plural output as the bare list of its elements whichever wire shape arrived. After it, on stderr, come the paths of the files the run produced, downloaded under `outputs/<run-id>/` unless `--out DIR` or `--no-download` says otherwise, and the cost report, which is printed whatever the download did.
 
-**A file that did not come down** makes the exit code 1 after the result, and the hint depends on the mode. A durable run's files come down again with `--resume <run-id> --out DIR` into an empty directory: the SDK never overwrites a file, so fetching into the same directory would save the files that did come down a second time, beside themselves. A blocking run has no id to resume by, so its hint says that only running the method again, without `--blocking`, brings the files down. A second `--resume` of a run whose files were already downloaded finds `outputs/<run-id>/` holding files and fetches nothing, saying so. It counts them against the files the run produced: as many is the earlier download, and the command exits 0; fewer is a download that an interruption or a failure left short, which makes the exit code 1 with the same hint, `--out DIR` into an empty directory, since fetching into the short directory would save the files already there a second time.
+**A file that did not come down** makes the exit code 1 after the result, and the hint depends on the mode. A durable run's files come down again with `--resume <run-id> --out DIR` into an empty directory: the SDK never overwrites a file, so fetching into the same directory would save the files that did come down a second time, beside themselves. A blocking run has no id to resume by, so its hint says that only running the method again, without `--blocking`, brings the files down. **A finished download leaves a manifest.** Once every file of a run has come down into `outputs/<run-id>/`, the command writes `.pipelex-download.json` there, moved into place only once it is whole: each file's storage reference, its name and the size it was saved at. A second `--resume` of that run finds the manifest, checks that it names every file the run produced and that each is there at its size, and fetches nothing, saying so, with exit code 0. A directory holding files and no manifest, or a manifest that names a file now missing, cut short or not at all, is a download that an interruption, a failure or a concurrent run left unfinished: the command fetches nothing, says why the download is not whole, and exits 1 with the same hint, `--out DIR` into an empty directory, since fetching into that directory would save the files already there a second time. A directory holding only dotfiles, such as a file browser's `.DS_Store`, is no earlier download, and one the command cannot read is an error that says to name another with `--out`.
 
-**A result in a shape the binding does not declare** (a plural output that is neither a list nor the `items` envelope) is not printed, and the command exits 1; the run's files still come down and the cost report still follows, since the run was paid for and the links to its files expire.
+**A result in a shape the binding does not declare** (a plural output that is neither a list nor the `items` envelope) is not printed, and the command exits 1; the run's files still come down and the cost report still follows, since the run was paid for and the links to its files expire. **So is a result the output model refuses**: before printing, the command validates the result against `OUTPUT_MODEL`, and a method that changed since `make codegen` last ran can return one the model no longer describes. The error names each field that failed, and the hint says to run `make codegen`, update `binding.py`, and fetch the result again with `--resume`, which a blocking run cannot do. The model is a check, never a filter: an accepted result is printed as the method produced it.
 
 **A reader that stops early is not a failure**: `my-cli | head -1` closes the pipe once it has its line, and the command still brings the run's files down and prints its cost report, both on stderr.
 
 **`--detach` and `--resume` are a pair**: `RUN_ID=$(my-cli --inputs inputs.json --detach)` captures exactly the id, and `my-cli --resume "$RUN_ID"` prints the result as an attended run would have. A resumed run takes no inputs, since it already has them.
+
+**A new run's local files are uploaded first.** When the method declares a file input, the inputs go through the SDK's `prepare_inputs` before the run starts, which uploads each local file an option or the inputs file names and prints where it went, on stderr.
+
+**Every hint names the command as it was invoked**: the bare name when that command is on the `PATH`, and the path it was run by otherwise, such as `.venv/bin/my-cli`, so a hint pasted back runs the same command.
 
 ## Why the mode is the person's choice
 
@@ -41,13 +45,13 @@ Under `asyncio.run`, Ctrl-C cancels the running task and then raises `KeyboardIn
 
 ## Flags that are refused
 
-The command refuses, with exit code 2 and before anything is sent: `--detach` with `--blocking`, `--resume` with `--blocking` or `--detach`, `--resume` with `--inputs`, `--out` or `--no-download` with `--detach` (which downloads nothing), `--out` with `--no-download`, and a blank `--resume`.
+The command refuses, with exit code 2 and before anything is sent: `--detach` with `--blocking`, `--resume` with `--blocking` or `--detach`, `--resume` with `--inputs` or with any input's option, `--out` or `--no-download` with `--detach` (which downloads nothing), `--out` with `--no-download`, a blank `--resume`, and `--inputs-template` with anything else. It also refuses, the same way, an input's value it cannot read as the input's kind, two options both reading stdin, and a new run missing an input it needs, naming each missing input with its option ([`cli-kernel.md`](cli-kernel.md)).
 
 ## Exit codes
 
 | Code | When |
 | --- | --- |
 | 0 | The run succeeded, its result was printed and every produced file came down, or was already in `outputs/<run-id>/`; or `--detach` started a run |
-| 1 | A request or the run failed, the API key is missing, the inputs file could not be read, or a produced file did not come down or is missing from an earlier download (the result is printed first, and the hint says how to fetch the files again where the mode allows it) |
-| 2 | A command line the command refuses |
+| 1 | A request or the run failed, the API key is missing, the inputs file could not be read, the result does not match the output model (it is not printed), or a produced file did not come down or is missing from an earlier download (the result is printed first, and the hint says how to fetch the files again where the mode allows it) |
+| 2 | A command line the command refuses, a required input missing among them |
 | 130 | Ctrl-C |

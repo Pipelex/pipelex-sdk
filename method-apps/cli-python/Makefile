@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-if-missing lock lint format format-check typecheck check test agent-check agent-test build all clean use-local use-published local-status ul un
+.PHONY: help install install-if-missing lock lint format format-check typecheck codegen codegen-check codegen-verify check test agent-check agent-test build all clean use-local use-published local-status ul un
 
 # ── Arguments ──────────────────────────────────────────────────────────────
 # The gestures take their values as make variables (`make create METHOD=…
@@ -71,7 +71,23 @@ format-check: ## Check the formatting with ruff
 typecheck: ## Type-check with pyright, in strict mode
 	$(PYRIGHT)
 
-check: lint format-check typecheck ## Run lint, format check and type check
+# ── Codegen ────────────────────────────────────────────────────────────────
+# The package's generated/ tree is derived from its method/ through the hosted
+# API: the typed models and their codegen.lock from POST /v1/codegen, and
+# contracts.json, the input and output forms the CLI derives its options from,
+# from POST /v1/pipe-io. `make codegen` needs PIPELEX_API_KEY and rewrites the
+# tree; `make codegen-check` is offline and part of `make check`;
+# `make codegen-verify` needs the key and writes nothing (docs/codegen.md).
+codegen: ## Regenerate the package's generated/ tree from its method/ (needs PIPELEX_API_KEY)
+	$(PYTHON) -m scripts.codegen
+
+codegen-check: ## Check, offline, that the generated/ tree is current with its method/ and its lock
+	$(PYTHON) -m scripts.codegen_check
+
+codegen-verify: ## Check that the committed tree is what the API resolves the method to, writing nothing (needs PIPELEX_API_KEY)
+	$(PYTHON) -m scripts.codegen_verify
+
+check: lint format-check typecheck codegen-check ## Run lint, format check, type check and the offline codegen check
 
 test: ## Run the tests
 	$(PYTEST)
