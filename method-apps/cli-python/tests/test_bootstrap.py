@@ -280,6 +280,21 @@ class TestRuns:
         assert "uv.lock pins a package of that name" in result.stderr
         assert tree(copy) == before
 
+    @pytest.mark.parametrize("name", ["markdown-it", "markdown_it"])
+    def test_a_dry_run_refuses_a_name_whose_package_an_installed_distribution_provides(self, name: str, copy: Path):
+        # `markdown-it-py`, which rich imports, provides `markdown_it`: the lock pins no package of that name.
+        before = tree(copy)
+        result = bootstrap(copy, "--name", name, "--description", "x", "--dry-run")
+        assert result.returncode == 1
+        assert "its package, markdown_it, is the import name of markdown-it-py" in result.stderr
+        assert tree(copy) == before
+
+    def test_the_project_s_own_distribution_is_no_collision(self):
+        installed = {"invoice_extractor": ["invoice-extractor"], "markdown_it": ["markdown-it-py"]}
+        assert BOOTSTRAP.installed_reason("invoice-extractor", installed, "invoice-extractor") is None
+        assert BOOTSTRAP.installed_reason("invoice-extractor", installed, BOOTSTRAP.TEMPLATE_NAME) is not None
+        assert BOOTSTRAP.installed_reason("markdown-it", installed, BOOTSTRAP.TEMPLATE_NAME) is not None
+
     def test_a_project_s_own_entry_in_uv_lock_is_no_collision(self, copy: Path):
         assert bootstrap(copy, "--name", "invoice-extractor", "--description", "x").returncode == 0
         # What `uv sync` leaves: the lock names the project, which a confirmed re-run keeps.
@@ -382,6 +397,48 @@ class TestAFailedRun:
         again = bootstrap(copy, *args)
         assert again.returncode == 0, again.stderr
         assert tree(copy) == finished
+
+
+class TestPyproject:
+    """`pyproject.toml`'s transform, which a confirmed re-run applies a second time to what the first wrote."""
+
+    NAMES = BOOTSTRAP.Names(name="invoice-extractor", package="invoice_extractor", title="Invoice Extractor")
+
+    @staticmethod
+    def options(*, author_name: str | None, author_email: str | None, repo_url: str | None) -> Any:
+        return BOOTSTRAP.Options(
+            description="Reads invoices.",
+            author_name=author_name,
+            author_email=author_email,
+            repo_url=repo_url,
+            lic=BOOTSTRAP.resolve_license(None, None, 2031),
+            clean=True,
+            dry_run=False,
+            force=True,
+            date="2031-01-01",
+        )
+
+    def test_applied_twice_it_is_valid_toml_equal_to_applied_once(self):
+        opts = self.options(author_name="Ada Lovelace", author_email="ada@example.com", repo_url="https://github.com/acme/invoice-extractor")
+        once = BOOTSTRAP.transform_pyproject((TEMPLATE_ROOT / "pyproject.toml").read_text(encoding="utf-8"), self.NAMES, opts)
+        twice = BOOTSTRAP.transform_pyproject(once, self.NAMES, opts)
+        assert twice == once
+        project = tomllib.loads(twice)["project"]
+        assert project["authors"] == [{"name": "Ada Lovelace", "email": "ada@example.com"}]
+        assert project["urls"] == {"Repository": "https://github.com/acme/invoice-extractor"}
+
+    def test_a_second_run_updates_the_author_and_the_repository_it_wrote(self):
+        first = self.options(author_name="Ada Lovelace", author_email="ada@example.com", repo_url="https://github.com/acme/invoice-extractor")
+        once = BOOTSTRAP.transform_pyproject((TEMPLATE_ROOT / "pyproject.toml").read_text(encoding="utf-8"), self.NAMES, first)
+        again = BOOTSTRAP.transform_pyproject(
+            once, self.NAMES, self.options(author_name="Grace Hopper", author_email=None, repo_url="https://example.com/r")
+        )
+        project = tomllib.loads(again)["project"]
+        assert project["authors"] == [{"name": "Grace Hopper"}]
+        assert project["urls"] == {"Repository": "https://example.com/r"}
+        # A run given neither keeps what the first wrote.
+        kept = BOOTSTRAP.transform_pyproject(once, self.NAMES, self.options(author_name=None, author_email=None, repo_url=None))
+        assert kept == once
 
 
 class TestStripTemplateOnly:

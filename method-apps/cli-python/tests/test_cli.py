@@ -616,6 +616,28 @@ class TestDownloads:
         assert result.stderr.index(says) < result.stderr.index(refusal)
         assert "Traceback" not in result.stderr
 
+    @pytest.mark.parametrize(
+        ("failure", "says"),
+        [
+            (PermissionError(13, "Permission denied", "out"), "PermissionError: [Errno 13] Permission denied: 'out'"),
+            (httpx.DecodingError("Error -3 while decompressing data"), "DecodingError: Error -3 while decompressing data"),
+        ],
+    )
+    def test_a_download_that_fails_unforeseen_after_a_printed_result_is_an_error_never_a_traceback(
+        self, failure: Exception, says: str, fake_client: FakeClient, tmp_path: Path
+    ):
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        fake_client.download_answer = failure
+        result = invoke(make_binding(), ["--out", str(tmp_path)])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == IMAGE_OUTPUT
+        assert f"Error: Saving the run's files failed: {says}" in result.stderr
+        assert "The run succeeded and its result is complete above." in result.stderr
+        assert f"{COMMAND_NAME} --resume {RUN_ID} --out DIR" in result.stderr
+        assert "[bold]" not in result.stderr
+        assert "No inference calls" in result.stderr
+        assert "Traceback" not in result.stderr
+
     def test_a_bug_in_the_download_is_never_worded_as_a_failed_save(self, fake_client: FakeClient, tmp_path: Path):
         # A failure the download path cannot raise is a bug, and crashes loudly rather than reading like an ordinary one.
         fake_client.wait_answer = run_results(IMAGE_OUTPUT, tokens_usages=[], usage_assembly_error=None)

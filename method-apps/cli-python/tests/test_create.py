@@ -9,6 +9,8 @@ run the real bootstrap over copies of the template.
 
 import os
 import shlex
+import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -23,8 +25,10 @@ from pipelex_sdk.product_models import MethodData
 from pipelex_method_cli_python.lib import client as client_module
 from pipelex_method_cli_python.lib.binding import BINDING_FILENAME
 from pipelex_method_cli_python.lib.method_source import PACKAGE
+from scripts import create as create_gesture
 from scripts import create_plan
-from scripts.codegen_shared import Layout
+from scripts.codegen import Fetched
+from scripts.codegen_shared import CodegenSource, Layout
 from scripts.create import (
     BOOTSTRAP_DIR,
     BOOTSTRAP_SCRIPT,
@@ -37,6 +41,7 @@ from scripts.create import (
     ShellEnv,
     bootstrap_flags,
     derive_identity,
+    main,
     parse_create_args,
     plan_env_file,
     quote_env_value,
@@ -45,7 +50,7 @@ from scripts.create import (
     set_env_line,
     write_env_file,
 )
-from scripts.create_plan import CatalogEntry, MethodArgs, MethodPlan, MethodProse, plan_method
+from scripts.create_plan import CatalogEntry, CreateClient, MethodArgs, MethodPlan, MethodProse, plan_method
 from tests.support_create import RECEIPT_REVIEW_BUNDLE, STORED_METHOD_ID, TEMPLATE_ROOT, TEXT_STATS_REF, RecordedClient, copy_template, stored_method
 
 #: Whether the tests run as root, who writes into a directory whose mode refuses everyone else.
@@ -258,6 +263,20 @@ class TestEnvFile:
         assert plan == EnvPlan(action="skip", content=None, notes=plan.notes)
         assert "copies a key only from your shell" in plan.notes[0]
 
+    def test_the_base_url_is_said_to_come_from_where_it_came_from(self, tmp_path: Path):
+        project = tmp_path / "project"
+        project.mkdir()
+        above = tmp_path / ".env"
+        # A file above that sets other variables only leaves the base URL to its default.
+        above.write_text("OTHER=1\n", encoding="utf-8")
+        plan = plan_env_file(project, ShellEnv(key="k"), above, "https://api.pipelex.com")
+        assert "PIPELEX_BASE_URL=https://api.pipelex.com (the default)" in plan.notes[0]
+        above.write_text("PIPELEX_BASE_URL=https://api.example.com\n", encoding="utf-8")
+        plan = plan_env_file(project, ShellEnv(key="k"), above, "https://api.example.com")
+        assert f"PIPELEX_BASE_URL=https://api.example.com (from {above})" in plan.notes[0]
+        plan = plan_env_file(project, ShellEnv(base_url="https://api.example.com", key="k"), above, "https://api.example.com")
+        assert "PIPELEX_BASE_URL=https://api.example.com (from your shell)" in plan.notes[0]
+
     def test_a_file_above_is_named_as_hidden_when_one_is_written(self, tmp_path: Path):
         plan = plan_env_file(tmp_path, ShellEnv(key="k"), tmp_path.parent / ".env", "https://api.pipelex.com")
         assert plan.action == "write"
@@ -302,12 +321,16 @@ class Runner:
 
 @pytest.fixture
 def template(tmp_path: Path) -> Path:
-    """A template of the test's own: its manifest, its bootstrap, an empty package and the env example."""
+    """A template of the test's own: its manifest, its bootstrap, an empty package and the env example.
+
+    The bootstrap is the template's own script, whose name rules the gesture reads; the runner the
+    tests hand the gesture never runs it.
+    """
     root = tmp_path / "template"
     (root / "src" / PACKAGE).mkdir(parents=True)
     (root / "pyproject.toml").write_text(f'[project]\nname = "{TEMPLATE_NAME}"\n', encoding="utf-8")
     (root / BOOTSTRAP_SCRIPT).parent.mkdir(parents=True)
-    (root / BOOTSTRAP_SCRIPT).write_text("", encoding="utf-8")
+    shutil.copyfile(TEMPLATE_ROOT / BOOTSTRAP_SCRIPT, root / BOOTSTRAP_SCRIPT)
     (root / ".env.example").write_text("PIPELEX_BASE_URL=https://api.pipelex.com\nPIPELEX_API_KEY=\n", encoding="utf-8")
     return root
 
@@ -390,6 +413,32 @@ class TestReadOnlyHalf:
         assert tree(template) == before
         assert runner.labels == ["bootstrap --dry-run"]
         assert "the bootstrap refused these values (see above). Nothing was written; pass the flag that fixes it: --name" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("derived", "why"),
+        [
+            ("email", "its package, email, would shadow the standard library's module of that name."),
+            ("markdown-it", "its package, markdown_it, is the import name of markdown-it-py"),
+        ],
+    )
+    async def test_a_derived_name_the_bootstrap_refuses_is_refused_as_derived_naming_name(
+        self, derived: str, why: str, template: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        planned = create_gesture.plan_method
+
+        async def derive(args: MethodArgs, client: CreateClient, *, layout: Layout, root: Path, cwd: Path) -> MethodPlan:
+            # A bundle whose pipe's domain is `email`, say, which the name is derived from.
+            return replace(await planned(args, client, layout=layout, root=root, cwd=cwd), slug=derived)
+
+        monkeypatch.setattr(create_gesture, "plan_method", derive)
+        before = tree(template)
+        runner = Runner()
+        assert await run_create([TEXT_STATS_REF, "--dry-run"], deps(template, runner)) == 1
+        err = capsys.readouterr().err
+        assert f'the project\'s name was derived from the method as "{derived}", and cannot be used: {why}' in err
+        assert "pass --name (NAME=… with make create) with a name of your own." in err
+        assert runner.labels == []
+        assert tree(template) == before
 
     async def test_the_dry_run_checks_the_binding_the_gesture_will_write(self, template: Path, api: RecordedClient):
         planned: list[str] = []
@@ -488,6 +537,65 @@ class TestWriteHalf:
         command = next(line.strip() for line in err.splitlines() if BOOTSTRAP_SCRIPT in line)
         assert command.endswith(" --force") is renamed
 
+    @pytest.mark.parametrize(
+        ("interrupted", "step", "left", "done"),
+        [
+            (
+                "bootstrap",
+                "2/6",
+                [f".venv/bin/python {BOOTSTRAP_SCRIPT} --name=text-stats", "cp .env.example .env", "uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"],
+                [],
+            ),
+            # `.env` is written by then, so it is never copied over.
+            ("uv sync", "4/6", ["uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"], ["cp .env.example .env"]),
+            ("make all", "5/6", ["make all", f"rm -rf {BOOTSTRAP_DIR}"], ["uv sync"]),
+        ],
+    )
+    async def test_a_ctrl_c_after_the_method_is_written_names_the_commands_left(
+        self,
+        interrupted: str,
+        step: str,
+        left: list[str],
+        done: list[str],
+        template: Path,
+        api: RecordedClient,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        def interrupt(command: Sequence[str], cwd: Path, env: Mapping[str, str] | None) -> int:
+            del cwd, env
+            if Runner.label(list(command)) == interrupted:
+                raise KeyboardInterrupt
+            return 0
+
+        assert await run_create([TEXT_STATS_REF], replace(deps(template, Runner()), run=interrupt)) == 130
+        captured = capsys.readouterr()
+        assert f"create: interrupted after the method was written, at step {step} " in captured.err
+        assert "Finish by hand, from this directory:" in captured.err
+        for command in left:
+            assert f"\n  {command}" in captured.err
+        for command in done:
+            assert f"\n  {command}" not in captured.err
+        assert "create: done." not in captured.out
+        assert (template / "src" / PACKAGE / BINDING_FILENAME).is_file()
+        assert (template / BOOTSTRAP_DIR).is_dir()
+
+    async def test_a_ctrl_c_while_the_method_is_written_leaves_the_template_as_it_was(
+        self, template: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        before = tree(template)
+        written = create_plan.write_generated
+
+        def interrupt_after_the_tree(layout: Layout, fetched: Fetched, source: CodegenSource) -> list[str]:
+            written(layout, fetched, source)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(create_plan, "write_generated", interrupt_after_the_tree)
+        runner = Runner()
+        assert await run_create([TEXT_STATS_REF], deps(template, runner)) == 130
+        assert "interrupted while writing the method. What it wrote was removed" in capsys.readouterr().err
+        assert runner.labels == ["bootstrap --dry-run"]
+        assert tree(template) == before
+
     @pytest.mark.skipif(AS_ROOT, reason="root writes into a directory whose mode refuses everyone else")
     async def test_an_env_file_it_cannot_write_names_the_commands_left(self, template: Path, api: RecordedClient, capsys: pytest.CaptureFixture[str]):
         def lock_the_root(command: Sequence[str], cwd: Path, env: Mapping[str, str] | None) -> int:
@@ -505,6 +613,44 @@ class TestWriteHalf:
         for command in ("cp .env.example .env", "uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"):
             assert f"\n  {command}" in err
         assert not (template / ".env").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a Ctrl-C is a console event on Windows, not a signal a process raises")
+class TestARealCtrlC:
+    """`main`, as the console runs it, interrupted by a SIGINT, the signal a Ctrl-C sends."""
+
+    @pytest.fixture(autouse=True)
+    def default_handler(self) -> None:
+        if signal.getsignal(signal.SIGINT) is not signal.default_int_handler:
+            pytest.skip("SIGINT is not handled by Python's default handler in this run")
+
+    def test_in_the_write_half_it_stops_the_gesture_where_it_lands(self, template: Path, api: RecordedClient, capsys: pytest.CaptureFixture[str]):
+        # Under `asyncio.run`, the signal would only cancel the task, which the write half, awaiting nothing, would
+        # meet after removing the bootstrap and saying it was done.
+        def ctrl_c(command: Sequence[str], cwd: Path, env: Mapping[str, str] | None) -> int:
+            del cwd, env
+            if Runner.label(list(command)) == "make all":
+                signal.raise_signal(signal.SIGINT)
+            return 0
+
+        assert main([TEXT_STATS_REF], replace(deps(template, Runner()), run=ctrl_c)) == 130
+        captured = capsys.readouterr()
+        assert "create: done." not in captured.out
+        assert "create: interrupted after the method was written, at step 5/6 (run make all)." in captured.err
+        assert f"\n  make all\n  rm -rf {BOOTSTRAP_DIR}" in captured.err
+        assert (template / BOOTSTRAP_DIR).is_dir()
+
+    def test_before_the_write_half_it_writes_nothing(self, template: Path, api: RecordedClient, capsys: pytest.CaptureFixture[str]):
+        before = tree(template)
+
+        def ctrl_c(command: Sequence[str], cwd: Path, env: Mapping[str, str] | None) -> int:
+            del command, cwd, env
+            signal.raise_signal(signal.SIGINT)
+            return 0
+
+        assert main([TEXT_STATS_REF], replace(deps(template, Runner()), run=ctrl_c)) == 130
+        assert capsys.readouterr().err.endswith("create: interrupted. Nothing was written.\n")
+        assert tree(template) == before
 
 
 @dataclass

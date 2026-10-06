@@ -47,6 +47,7 @@ from pipelex_sdk.runs import PollInfo, RunResults, WaitForResultOptions
 from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
+from rich.text import Text
 
 from pipelex_method_cli_python.lib import client as api
 from pipelex_method_cli_python.lib.app import AppError, RunMode
@@ -59,10 +60,11 @@ from pipelex_method_cli_python.lib.output import OutputShapeError, print_payload
 from pipelex_method_cli_python.lib.usage import print_cost_report
 
 #: What saving a run's files can raise besides the SDK's own errors and the CLI's: an `OSError` from
-#: the filesystem, such as a working directory removed before `--out` is resolved; the `RuntimeError`
-#: Python 3.11 and 3.12 raise when `--out` is a symbolic link loop; a body httpx cannot decode, which
-#: the SDK's transport mapping leaves as httpx's own error; and a malformed answer from the route that
-#: resolves the files' links, as JSON or as its model.
+#: the filesystem, such as a working directory removed before `--out` is resolved or an `--out` the
+#: command may not write; the `RuntimeError` Python 3.11 and 3.12 raise when `--out` is a symbolic link
+#: loop; a body httpx cannot decode, which the SDK's transport mapping leaves as httpx's own error; and
+#: a malformed answer from the route that resolves the files' links, as JSON or as its model. `deliver`
+#: words each of them as an `AppError`.
 UNWORDED_DOWNLOAD_FAILURES = (OSError, RuntimeError, httpx.HTTPError, json.JSONDecodeError, ValidationError)
 
 
@@ -209,7 +211,9 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
     is possible, and whether the result above is complete, and a Ctrl-C while they come down says it
     too before the cancellation goes through. A download that raises after the model refused the
     result is printed here, and the refusal is raised all the same: it is what says the result was
-    not printed, which a failure to save the files must never hide.
+    not printed, which a failure to save the files must never hide. A download failure that neither
+    the SDK nor the CLI words, one of `UNWORDED_DOWNLOAD_FAILURES`, is worded here as an `AppError`
+    whatever the result was, so that it reaches the boundary as an error and never as a traceback.
     """
     exit_code = 0
     shape_error: OutputShapeError | OutputValidationError | None = None
@@ -242,11 +246,15 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
                 # Raised without `from`, so the refusal keeps its own cause; the download's failure, printed above, is its context.
                 raise shape_error
             except UNWORDED_DOWNLOAD_FAILURES as exc:
-                # A failure neither the SDK nor the CLI words must not hide the refusal either; without one, it
-                # stays what it is. Anything else is a bug, and crashes loudly whatever the result was.
+                # A failure neither the SDK nor the CLI words is worded here, so that it reaches the boundary as an
+                # `AppError` and never as a traceback, and it must not hide the refusal either. Anything else is a
+                # bug, and crashes loudly whatever the result was.
+                said = "its result is complete above" if shape_error is None else "its result was not printed, for the reason below"
+                # The hint is plain text, which `print_error` escapes: the advice's markup is dropped, never printed.
+                advice = Text.from_markup(refetch_advice(plan.mode, results.pipeline_run_id)).plain
+                failure = AppError(f"Saving the run's files failed: {type(exc).__name__}: {exc}", hint=f"The run succeeded and {said}. {advice}")
                 if shape_error is None:
-                    raise
-                failure = AppError(f"Saving the run's files failed: {type(exc).__name__}: {exc}")
+                    raise failure from exc
                 print_error(stderr, present_error(failure, mode=plan.mode))
                 raise shape_error
             print_downloads(stderr, downloaded)

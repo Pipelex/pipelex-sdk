@@ -10,10 +10,12 @@ the package (`lib/binding.py`): `method/`, `generated/` and `binding.py`.
 `plan_method` is the read-only half. It parses the argument, reads the bundle or checks that the
 base URL serves the selector, fetches a stored method's catalog entry, and runs the codegen kit's
 `fetch_generated`, so both API calls and every guard `make codegen` holds run here
-(`scripts/codegen.py`). It then chooses the pipe, binds the output to a model the generated tree
-defines and can import, checks that the pipe's inputs can be offered as options, derives the name
-the project takes when none is given, and renders `binding.py`, formatted by ruff, in memory. Every
-refusal happens there, with nothing on disk changed.
+(`scripts/codegen.py`), over the very request `make codegen` sends for the tree written from it: a
+bundle's files are labelled as the package will hold them, `method/<path>`. It then chooses the pipe,
+binds the output to a model the generated tree defines and can import, which executes the generated
+`models.py` in memory, a dry run included, checks that the pipe's inputs can be offered as options,
+derives the name the project takes when none is given, and renders `binding.py`, formatted by ruff,
+in memory. Every refusal happens there, with nothing on disk changed.
 
 `write_method` is the write half. It writes the three parts, the tree through the kit's own
 `write_generated`, so that it is the tree `make codegen` would write. Each part is claimed
@@ -57,6 +59,7 @@ from pipelex_method_cli_python.lib.method_source import BUNDLE_SUFFIX, METHOD_DI
 from scripts.codegen import CodegenClient, Fetched, GenerateFailure, fetch_generated, write_generated
 from scripts.codegen_api import explain, selector_support_refusal
 from scripts.codegen_shared import (
+    BYTECODE_CACHE,
     CodegenSetupError,
     CodegenSource,
     Layout,
@@ -66,6 +69,7 @@ from scripts.codegen_shared import (
     hash_source,
     read_bundle,
     read_text_file,
+    refuse_symlink_root,
     walk,
 )
 
@@ -184,10 +188,8 @@ def resolve_given(given: str, cwd: Path) -> Path:
 class BundleFile:
     """One `.mthds` file of a bundle, as read."""
 
-    #: Where it lands inside `method/`, in POSIX form: `main.mthds`.
+    #: Where it lands inside `method/`, in POSIX form: `main.mthds`, which is also how the API is sent it, as `method/main.mthds`.
     relative: str
-    #: How messages and the API's diagnostics name it: the path it was read from.
-    label: str
     content: str
 
 
@@ -196,7 +198,7 @@ class Bundle:
     """The bundle `METHOD` names, read."""
 
     files: tuple[BundleFile, ...]
-    #: How messages name the bundle as a whole.
+    #: How messages name the bundle as a whole: a directory's path ends with `/`, a single file's does not.
     display: str
 
 
@@ -219,12 +221,59 @@ def unreadable_refusal(exc: OSError, fallback: str) -> str:
     return f"{where} cannot be read: {exc.strerror or exc}. A bundle is read whole, so every file and directory in it must be readable."
 
 
+#: The directories a bundle directory's walk never enters, besides every hidden one (`.git`, `.venv`).
+NOT_BUNDLE_DIRS = frozenset({"node_modules", BYTECODE_CACHE})
+
+#: The file that makes a directory a Python virtual environment, whatever the directory is called.
+VENV_MARKER = "pyvenv.cfg"
+
+
+def walk_bundle(directory: Path, layout: Layout) -> list[str]:
+    """Every regular file under a bundle directory, as sorted POSIX paths relative to it, what is not the bundle's aside.
+
+    A bundle directory is often a methods repository, which holds more than its bundle: version
+    control, a virtual environment whose interpreter is a symbolic link, installed packages that may
+    carry `.mthds` files of their own. So the walk never enters a hidden directory, `node_modules`,
+    Python's bytecode cache, or a virtual environment by any name (a directory holding `pyvenv.cfg`),
+    and skips every hidden entry, whatever it is: nothing in them is read, refused or copied.
+    Everywhere else the codegen kit's policy holds (`codegen_shared.walk`): a symbolic link or a special
+    file is refused, since a bundle that silently loses a file is a method that silently changes.
+
+    Raises:
+        SymlinkRefusedError: Something the walk enters holds a symbolic link or a special file.
+        OSError: A directory cannot be read.
+    """
+    refuse_symlink_root(directory, layout)
+    found: list[str] = []
+    _walk_bundle_into(directory, "", found, layout)
+    return sorted(found)
+
+
+def _walk_bundle_into(directory: Path, prefix: str, found: list[str], layout: Layout) -> None:
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if entry.name.startswith(".") or entry.name in NOT_BUNDLE_DIRS:
+                continue
+            relative = f"{prefix}{entry.name}"
+            mode = entry.stat(follow_symlinks=False).st_mode
+            if stat.S_ISDIR(mode):
+                # `os.path.isfile` answers False for a directory it cannot read, which the walk then refuses by name.
+                if not os.path.isfile(os.path.join(entry.path, VENV_MARKER)):
+                    _walk_bundle_into(Path(entry.path), f"{relative}/", found, layout)
+            elif stat.S_ISREG(mode):
+                found.append(relative)
+            else:
+                raise SymlinkRefusedError(layout.describe(Path(entry.path)), "a symlink" if stat.S_ISLNK(mode) else "a special file")
+
+
 def read_bundle_arg(given: str, *, cwd: Path, root: Path, layout: Layout) -> Bundle:
     """Read the bundle a path names: a `.mthds` file alone, or every `.mthds` file under a directory.
 
     The policies are the codegen kit's: a symbolic link or a special file is refused, at the path
     given and anywhere under a directory, and so is a file that is not UTF-8. Both are refusals
     rather than skips, since a bundle that silently loses a file is a method that silently changes.
+    A directory is walked by `walk_bundle`, which does not enter what a methods repository holds
+    beside its bundle: hidden directories, `node_modules` and virtual environments.
 
     Raises:
         PlanError: The path is missing, a link, not a `.mthds` file, holds no `.mthds` file, contains
@@ -247,7 +296,7 @@ def read_bundle_arg(given: str, *, cwd: Path, root: Path, layout: Layout) -> Bun
             msg = f'"{given}" is not a .mthds file.\n  METHOD is {METHOD_ARG_FORMS}.'
             raise PlanError(msg)
         content = _read_utf8(resolved, layout)
-        return Bundle(files=(BundleFile(relative=resolved.name, label=shown, content=content),), display=shown)
+        return Bundle(files=(BundleFile(relative=resolved.name, content=content),), display=shown)
     if not stat.S_ISDIR(mode):
         msg = f'"{given}" is neither a file nor a directory.'
         raise PlanError(msg)
@@ -256,7 +305,7 @@ def read_bundle_arg(given: str, *, cwd: Path, root: Path, layout: Layout) -> Bun
         raise PlanError(msg)
     display = f"{shown}/"
     try:
-        relatives = bundle_paths(walk(resolved, layout))
+        relatives = bundle_paths(walk_bundle(resolved, layout))
         contents = read_bundle(resolved, relatives, layout)
     except SymlinkRefusedError as exc:
         raise PlanError(not_regular_refusal(exc.where, exc.kind)) from exc
@@ -267,7 +316,7 @@ def read_bundle_arg(given: str, *, cwd: Path, root: Path, layout: Layout) -> Bun
     if not contents:
         msg = f"{display} holds no .mthds file: there is no bundle to create the project from."
         raise PlanError(msg)
-    files = tuple(BundleFile(relative=relative, label=f"{shown}/{relative}", content=content) for relative, content in contents)
+    files = tuple(BundleFile(relative=relative, content=content) for relative, content in contents)
     return Bundle(files=files, display=display)
 
 
@@ -506,9 +555,17 @@ def bind_output(contract: PipeIOContract, report: CodegenValidReport) -> OutputB
     not load is refused before anything is written rather than found by the checks afterwards. A
     method whose concepts use a native date or time is the known case today.
 
+    The model is looked up by the concept's code alone, which names one concept only when no other
+    domain of the method has a concept of that code. When two do, the codegen names every concept of
+    that code after its domain (`cv__Result`, `legal·contracts__Result`), and no class carries the
+    bare code: that is refused as ambiguous rather than bound by a guess. The class must also be one
+    `models.py` defines, never a name it imports, such as pydantic's own `BaseModel`, which a bare
+    code could otherwise reach.
+
     Raises:
         PlanError: The concept's code is no class name, `models.py` is missing, cannot be imported,
-            or exposes no pydantic model of that name.
+            exposes no pydantic model it defines under that name, or names that code's models after
+            their domains.
     """
     concept_ref = contract.output.concept_ref
     model = concept_ref.rpartition(".")[2]
@@ -521,20 +578,42 @@ def bind_output(contract: PipeIOContract, report: CodegenValidReport) -> OutputB
         raise PlanError(msg)
     module = import_models(content)
     found: object = getattr(module, model, None)
-    if found is None:
+    if _defined_model(found, module):
+        return OutputBinding(model=model, plural=contract.output.multiplicity.is_plural)
+    qualified = sorted(name for name, value in vars(module).items() if name.endswith(f"__{model}") and _defined_model(value, module))
+    if qualified:
+        msg = (
+            f'the pipe\'s output concept "{concept_ref}" shares its code with a concept of another domain, so the generated '
+            f"{MODELS_FILENAME} names each after its domain ({', '.join(qualified)}), and the gesture binds an output only to "
+            "a code that is one concept's alone. Nothing was written: rename one of the concepts in the method, or pass --pipe "
+            "to run a pipe whose output is another concept."
+        )
+    elif found is None:
         msg = (
             f'the generated {MODELS_FILENAME} defines no {model} for the pipe\'s output concept "{concept_ref}". '
             "Nothing was written; report it upstream."
         )
-        raise PlanError(msg)
-    if not isinstance(found, type) or not issubclass(found, BaseModel):
+    elif isinstance(found, type) and issubclass(found, BaseModel):
+        msg = (
+            f"the generated {MODELS_FILENAME}'s {model} is {found.__module__}.{found.__qualname__}, a name it imports rather "
+            "than a model it defines. Nothing was written; report it upstream."
+        )
+    else:
         msg = f"the generated {MODELS_FILENAME}'s {model} is not a pydantic model. Nothing was written; report it upstream."
-        raise PlanError(msg)
-    return OutputBinding(model=model, plural=contract.output.multiplicity.is_plural)
+    raise PlanError(msg)
+
+
+def _defined_model(value: object, module: ModuleType) -> bool:
+    """Whether a value is a pydantic model the module itself defines, rather than one it imports."""
+    return isinstance(value, type) and issubclass(value, BaseModel) and value.__module__ == module.__name__
 
 
 def import_models(content: str) -> ModuleType:
     """Execute a generated `models.py` in a module of its own, registered only while it runs, as an import would.
+
+    This runs the code the API generated, in this process, during a dry run too. It is the code the
+    CLI imports on every run, from the API the key is configured for, which is the trust the codegen
+    places in it anyway; the dry run writes nothing, but it does execute it.
 
     Raises:
         PlanError: The code raises as it is imported.
@@ -544,6 +623,7 @@ def import_models(content: str) -> ModuleType:
     try:
         exec(compile(content, f"{GENERATED_DIRNAME}/{MODELS_FILENAME}", "exec"), module.__dict__)
     except Exception as exc:
+        # Unbounded code: the generated module is code the server wrote, and whatever its import raises, the CLI could not load it either.
         msg = (
             f"the generated {MODELS_FILENAME} cannot be imported: {type(exc).__name__}: {exc}. Nothing was written. "
             "A native date or time among the method's concepts is a known cause; report it upstream."
@@ -721,7 +801,7 @@ async def plan_method(args: MethodArgs, client: CreateClient, *, layout: Layout,
         manifest = render_manifest(arg)
         label = f"{METHOD_DIRNAME}/{MANIFEST_FILENAME}"
         source = CodegenSource(selector=arg, source_hashes={label: hash_source(manifest)})
-        fetch_source = source
+        labels_note: str | None = None
         method_files: tuple[tuple[str, str], ...] = ((MANIFEST_FILENAME, manifest),)
         refusal = await selector_support_refusal(client, client.base_url, source)
         if refusal is not None:
@@ -736,23 +816,27 @@ async def plan_method(args: MethodArgs, client: CreateClient, *, layout: Layout,
         origin = describe
     else:
         bundle = read_bundle_arg(arg.path, cwd=cwd, root=root, layout=layout)
+        # Each file is labelled as the package will hold it, `method/<path>`, which is what `make codegen`
+        # and `make codegen-verify` send for the tree written from it, so the request is theirs exactly.
         placed = [(f"{METHOD_DIRNAME}/{file.relative}", file.content) for file in bundle.files]
         source = CodegenSource(
             files=tuple(MthdsFileItem(content=content, source=label) for label, content in placed),
             source_hashes={label: hash_source(content) for label, content in placed},
         )
-        # Sent under the labels they were read by, so that a diagnostic names the file the person pointed at.
-        fetch_source = CodegenSource(files=tuple(MthdsFileItem(content=file.content, source=file.label) for file in bundle.files))
         method_files = tuple((file.relative, file.content) for file in bundle.files)
         count = f"{len(bundle.files)} .mthds file{'' if len(bundle.files) == 1 else 's'}"
         describe = f"the bundle {bundle.display} ({count}, copied to {layout.describe(layout.method_dir)}/)"
         origin = f"the bundle {bundle.display}"
+        # A diagnostic names a file by its label, so a refusal says where the person's file is.
+        placed_as = f"{METHOD_DIRNAME}/" if bundle.display.endswith("/") else f"{METHOD_DIRNAME}/{bundle.files[0].relative}"
+        labels_note = f"The bundle's files are named as the package will hold them: {placed_as} is {bundle.display}"
     try:
-        fetched = await fetch_generated(client, fetch_source, layout, include_files=True)
+        fetched = await fetch_generated(client, source, layout, include_files=True)
     except GenerateFailure as exc:
-        raise PlanError(str(exc)) from exc
+        msg = str(exc) if labels_note is None else f"{exc}\n  {labels_note}"
+        raise PlanError(msg) from exc
     report = fetched.pipe_io
-    prose = method_prose_of(fetch_source.files if fetch_source.files is not None else report.files or [])
+    prose = method_prose_of(source.files if source.files is not None else report.files or [])
     pipe = choose_pipe(report.pipe_io_contracts, report.default_pipe_ref, args.pipe)
     output = bind_output(report.pipe_io_contracts[pipe.ref], fetched.report)
     options = _options_for(report, pipe)

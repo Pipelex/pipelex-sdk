@@ -8,18 +8,27 @@ removes what it wrote when a write fails.
 
 import getpass
 import os
+import sys
 from pathlib import Path
 
 import pytest
 from mthds.protocol.pipe_io_contracts import PipeIOContract
-from pipelex_sdk.crate_models import CodegenValidReport, MthdsFileItem, PipeIORequest, PipeIOValidReport
+from pipelex_sdk.crate_models import (
+    CodegenRequest,
+    CodegenResponse,
+    CodegenValidReport,
+    CrateInvalidReport,
+    MthdsFileItem,
+    PipeIORequest,
+    PipeIOValidReport,
+)
 
 from pipelex_method_cli_python.lib import inputs
 from pipelex_method_cli_python.lib.binding import BINDING_FILENAME
 from pipelex_method_cli_python.lib.manifest import MethodSelector
 from pipelex_method_cli_python.lib.method_source import PACKAGE
 from scripts import create_plan
-from scripts.codegen_shared import Layout
+from scripts.codegen_shared import Layout, discover_source
 from scripts.create_plan import (
     BundlePath,
     ChosenPipe,
@@ -123,12 +132,40 @@ class TestReadBundleArg:
         bundle = read_bundle_arg(str(RECEIPT_REVIEW_BUNDLE), cwd=tmp_path, root=tmp_path / "project", layout=package)
         assert [file.relative for file in bundle.files] == ["concepts.mthds", "main.mthds"]
         assert bundle.display == f"{RECEIPT_REVIEW_BUNDLE}/"
-        assert bundle.files[1].label == f"{RECEIPT_REVIEW_BUNDLE}/main.mthds"
 
     def test_a_relative_path_is_read_from_the_directory_given_and_named_from_it(self, package: Layout, tmp_path: Path):
         (tmp_path / "cv.mthds").write_text('domain = "cv"\n', encoding="utf-8")
         bundle = read_bundle_arg("cv.mthds", cwd=tmp_path, root=tmp_path / "project", layout=package)
-        assert [(file.relative, file.label) for file in bundle.files] == [("cv.mthds", "cv.mthds")]
+        assert [file.relative for file in bundle.files] == ["cv.mthds"]
+        assert bundle.display == "cv.mthds"
+
+    def test_a_methods_repository_s_environments_and_hidden_directories_are_not_entered(self, package: Layout, tmp_path: Path):
+        repository = tmp_path / "methods"
+        for relative in ("main.mthds", "cv/screen.mthds"):
+            (repository / relative).parent.mkdir(parents=True, exist_ok=True)
+            (repository / relative).write_text('domain = "cv"\n', encoding="utf-8")
+        # A virtual environment, hidden or not: its interpreter is a link, and a package in it may carry a .mthds file.
+        for environment in (".venv", "env"):
+            (repository / environment / "bin").mkdir(parents=True)
+            (repository / environment / "bin" / "python").symlink_to(sys.executable)
+            (repository / environment / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+            (repository / environment / "lib" / "site-packages" / "pkg").mkdir(parents=True)
+            (repository / environment / "lib" / "site-packages" / "pkg" / "stray.mthds").write_text('domain = "stray"\n', encoding="utf-8")
+        (repository / "node_modules" / "pkg").mkdir(parents=True)
+        (repository / "node_modules" / "pkg" / "stray.mthds").write_text('domain = "stray"\n', encoding="utf-8")
+        (repository / ".git").mkdir()
+        (repository / ".git" / "stray.mthds").write_text('domain = "stray"\n', encoding="utf-8")
+        (repository / ".python-version").symlink_to(repository / "main.mthds")
+        bundle = read_bundle_arg("methods", cwd=tmp_path, root=tmp_path / "project", layout=package)
+        assert [file.relative for file in bundle.files] == ["cv/screen.mthds", "main.mthds"]
+
+    def test_a_link_anywhere_else_is_still_refused(self, package: Layout, tmp_path: Path):
+        (tmp_path / "methods" / "venv-like").mkdir(parents=True)
+        (tmp_path / "methods" / "main.mthds").write_text('domain = "cv"\n', encoding="utf-8")
+        # A directory holding no `pyvenv.cfg` is no virtual environment, whatever it is called or holds.
+        (tmp_path / "methods" / "venv-like" / "python").symlink_to(sys.executable)
+        with pytest.raises(PlanError, match="refusing a symlink"):
+            read_bundle_arg("methods", cwd=tmp_path, root=tmp_path / "project", layout=package)
 
     def test_refuses_a_missing_path(self, package: Layout, tmp_path: Path):
         with pytest.raises(PlanError, match="is not a file or a directory"):
@@ -310,6 +347,30 @@ class TestBindOutput:
                 report.model_copy(update={"artifacts": [models.model_copy(update={"content": rebound})]}),
             )
 
+    @staticmethod
+    def with_models(report: CodegenValidReport, content: str) -> CodegenValidReport:
+        models = next(artifact for artifact in report.artifacts if artifact.path == "models.py")
+        return report.model_copy(update={"artifacts": [models.model_copy(update={"content": content})]})
+
+    def test_refuses_a_code_two_domains_share_rather_than_guess(self):
+        # The codegen names every concept whose code another domain shares after its domain, so no class carries the bare code.
+        report = recorded_codegen("text-stats")
+        models = next(artifact for artifact in report.artifacts if artifact.path == "models.py")
+        qualified = models.content.replace("class Text(", "class native__Text(") + "\n\nclass text_stats__Text(native__Text):\n    pass\n"
+        with pytest.raises(PlanError, match=r"shares its code with a concept of another domain.*\(native__Text, text_stats__Text\)"):
+            bind_output(contract("text-stats", "text_stats.analyze_text"), self.with_models(report, qualified))
+
+    def test_never_binds_a_model_the_generated_module_imports(self):
+        # A shared code that is also a name models.py imports, such as pydantic's BaseModel, must not reach that import.
+        report = recorded_codegen("text-stats")
+        models = next(artifact for artifact in report.artifacts if artifact.path == "models.py")
+        shadowed = models.content.replace("class Text(", "class native__Text(") + "\nfrom pydantic import BaseModel as Text\n"
+        with pytest.raises(PlanError, match="shares its code with a concept of another domain"):
+            bind_output(contract("text-stats", "text_stats.analyze_text"), self.with_models(report, shadowed))
+        imported = models.content.replace("class Text(", "class Prose(") + "\nfrom pydantic import BaseModel as Text\n"
+        with pytest.raises(PlanError, match="pydantic.main.BaseModel, a name it imports rather than a model it defines"):
+            bind_output(contract("text-stats", "text_stats.analyze_text"), self.with_models(report, imported))
+
     def test_refuses_models_that_cannot_be_imported(self):
         # A generated tree the CLI could not load, as one using a native date is today, is refused before any write.
         report = recorded_codegen("text-stats")
@@ -345,6 +406,43 @@ class TestPlanMethod:
         assert sorted(plan.source.source_hashes) == ["method/concepts.mthds", "method/main.mthds"]
         assert plan.prose.description is not None and plan.prose.description.startswith("Read a batch of receipts")
         assert list(package.package_dir.iterdir()) == []
+
+    async def test_a_bundle_is_fetched_under_the_labels_make_codegen_sends_for_the_tree_it_writes(self, package: Layout, tmp_path: Path):
+        client = RecordedClient()
+        # A relative path that climbs, as a person types it from beside the bundle.
+        plan = await plan_method(MethodArgs(method="../bundles/receipt-review"), client, layout=package, root=tmp_path / "project", cwd=RECORDED)
+        sent = [[item.source for item in request.files or ()] for request in client.requests]
+        write_method(plan, package)
+        tree = discover_source(package)
+        assert tree is not None and tree.files is not None
+        labels = [item.source for item in tree.files]
+        assert labels == ["method/concepts.mthds", "method/main.mthds"]
+        assert sent == [labels, labels, labels]
+        # Field for field, the requests `make codegen` and `make codegen-verify` send for the tree written.
+        assert client.requests == [tree.codegen_request(), tree.pipe_io_request(), tree.codegen_request()]
+
+    @pytest.mark.parametrize(
+        ("method", "where"),
+        [
+            (str(RECEIPT_REVIEW_BUNDLE), f"method/ is {RECEIPT_REVIEW_BUNDLE}/"),
+            (str(RECEIPT_REVIEW_BUNDLE / "main.mthds"), f"method/main.mthds is {RECEIPT_REVIEW_BUNDLE / 'main.mthds'}"),
+        ],
+    )
+    async def test_a_refusal_of_a_bundle_says_where_its_labels_point(
+        self, method: str, where: str, package: Layout, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        client = RecordedClient()
+
+        async def refuse(request: CodegenRequest) -> CodegenResponse:
+            del request
+            item = {"category": "pipe_validation", "message": "unknown concept", "source": "method/main.mthds"}
+            return CrateInvalidReport.model_validate({"is_valid": False, "message": "The bundle does not validate", "validation_errors": [item]})
+
+        monkeypatch.setattr(client, "codegen", refuse)
+        with pytest.raises(PlanError) as caught:
+            await plan_method(MethodArgs(method=method), client, layout=package, root=tmp_path / "project", cwd=tmp_path)
+        assert "method/main.mthds: unknown concept" in str(caught.value)
+        assert str(caught.value).endswith(f"named as the package will hold them: {where}")
 
     async def test_plans_an_address_reading_its_prose_from_the_files_the_route_echoes(self, package: Layout, tmp_path: Path):
         client = RecordedClient()

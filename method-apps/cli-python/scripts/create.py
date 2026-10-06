@@ -11,15 +11,19 @@ The order is the safety story:
 1. **Read-only.** Check that this is the un-bootstrapped template, read the key and the base URL
    from the shell and then from `.env`, plan the method (`create_plan.py`, which fetches it once:
    everything below reads that one fetch), derive the project's name, title and description from
-   it, plan the env file, and run the bootstrap with `--dry-run`, which validates every value it
-   will be given and checks the `binding.py` the gesture will write with the rest of the tree.
-   `--dry-run` stops here, having written nothing.
+   it, check a derived name by the bootstrap's own rules, plan the env file, and run the bootstrap
+   with `--dry-run`, which validates every value it will be given and checks the `binding.py` the
+   gesture will write with the rest of the tree. `--dry-run` stops here, having written nothing.
 2. **Write.** The method first, `method/`, `generated/` and `binding.py`, which are removed again if
    writing them fails, so that the template is as it was and the gesture can run again. Then the
    bootstrap with `--clean`, the env file, `uv sync` to re-sync `uv.lock` and the environment with
    the renamed project, `make all`, and last the bootstrap skill's own removal, once the checks are
    green. A failure after the method is written names the ordinary commands left to run, never a
-   traceback.
+   traceback, and so does a Ctrl-C, which exits 130.
+
+Only the planning of the method talks to the API, so only it runs under `asyncio.run`: the rest runs
+outside the event loop, where a Ctrl-C raises `KeyboardInterrupt` where it lands. Inside the loop,
+asyncio would turn it into a cancellation that code with no `await` meets only once it has finished.
 
 Every value reaches the bootstrap as `--flag=value`, so that a title or a description derived from
 the method may start with dashes without being taken for a flag.
@@ -43,6 +47,7 @@ import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Literal, cast
 
 from dotenv import dotenv_values, load_dotenv
@@ -306,6 +311,23 @@ def unreadable_env_file(path: Path | str, exc: Exception, *, why: str) -> Create
     return CreateError(f"{path} cannot be read ({exc}), and {why}. Fix it or remove it, then run make create again.")
 
 
+def sets_base_url(env_file: Path | None) -> bool:
+    """Whether an env file sets the base URL, which is then where the client read it from when the shell did not set it.
+
+    A file that sets other variables only, the key among them, leaves the base URL to its default.
+
+    Raises:
+        CreateError: The file cannot be read.
+    """
+    if env_file is None:
+        return False
+    try:
+        value = dotenv_values(env_file).get(BASE_URL_KEY)
+    except (OSError, UnicodeError) as exc:
+        raise unreadable_env_file(env_file, exc, why="the CLI reads it") from exc
+    return bool(value and value.strip())
+
+
 def plan_env_file(root: Path, shell: ShellEnv, env_file: Path | None, base_url: str) -> EnvPlan:
     """Decide what happens to `.env`. An existing one is the person's and is never touched.
 
@@ -346,7 +368,7 @@ def plan_env_file(root: Path, shell: ShellEnv, env_file: Path | None, base_url: 
         raise unreadable_env_file(ENV_EXAMPLE, exc, why=f"{ENV_FILE} is written from it") from exc
     text = set_env_line(text, BASE_URL_KEY, quote_env_value(BASE_URL_KEY, base_url))
     text = set_env_line(text, API_KEY_KEY, quote_env_value(API_KEY_KEY, shell.key))
-    origin = "from your shell" if shell.base_url is not None else f"from {env_file}" if env_file is not None else "the default"
+    origin = "from your shell" if shell.base_url is not None else f"from {env_file}" if sets_base_url(env_file) else "the default"
     notes = [f"{ENV_FILE} is written with {BASE_URL_KEY}={base_url} ({origin}) and {API_KEY_KEY} from your shell, readable by you alone."]
     if env_file is not None:
         notes.append(f"it hides {env_file} from the CLI, which reads the nearest {ENV_FILE} only.")
@@ -521,16 +543,57 @@ def print_plan(plan: MethodPlan, identity: Identity, base_url: str, layout: Layo
     print(f"  writes: {package}/method/, {package}/generated/ and {package}/binding.py")
 
 
-async def run_create(argv: Sequence[str], deps: CreateDeps | None = None) -> int:
-    """The whole `make create` behaviour, exit code included. Never raises: a refusal is a printed message and exit 1."""
+@dataclass(frozen=True)
+class Planned:
+    """What the network part of the read-only half leaves for the rest: the arguments, the surroundings and the planned method."""
+
+    args: CreateArgs
+    deps: CreateDeps
+    layout: Layout
+    plan: MethodPlan
+    #: The base URL the client resolved, which `.env` is written with.
+    base_url: str
+
+
+def derived_name_reason(root: Path, name: str) -> str | None:
+    """Why the bootstrap would refuse a name the gesture derived, by the bootstrap's own rules, or `None` when it takes it.
+
+    The rules live in the bootstrap alone, `template_name_reason`, which the gesture loads from the
+    template rather than restating them, so that a derived name it refuses is refused as the derived
+    name, with `--name` as the fix, before the rehearsal runs.
+
+    Raises:
+        CreateError: The bootstrap cannot be loaded, or carries no such check.
+    """
+    script = root / BOOTSTRAP_SCRIPT
+    # Compiled from its text and run in a module of its own rather than imported, so that no bytecode
+    # cache is written into the template by a half that writes nothing.
+    module = ModuleType("_make_create_bootstrap")
+    module.__file__ = str(script)
+    # Registered while it runs, as an import would: its dataclasses look their module up by name.
+    sys.modules[module.__name__] = module
     try:
-        return await _run_create(argv, deps)
-    except (CreateError, PlanError) as exc:
-        print(f"create: {exc}", file=sys.stderr)
-        return EXIT_FAILED
+        exec(compile(script.read_text(encoding="utf-8"), str(script), "exec"), module.__dict__)
+    except (OSError, UnicodeError, SyntaxError, ImportError) as exc:
+        msg = f"{BOOTSTRAP_SCRIPT} cannot be loaded ({exc}), and make create checks the name it derives by its rules. Restore it from the template."
+        raise CreateError(msg) from exc
+    finally:
+        sys.modules.pop(module.__name__, None)
+    check: object = getattr(module, "template_name_reason", None)
+    if not callable(check):
+        msg = f"{BOOTSTRAP_SCRIPT} has no template_name_reason, which make create checks the name it derives with. Restore it from the template."
+        raise CreateError(msg)
+    reason: object = check(root, name)
+    return reason if isinstance(reason, str) else None
 
 
-async def _run_create(argv: Sequence[str], given: CreateDeps | None) -> int:
+async def plan_create(argv: Sequence[str], given: CreateDeps | None) -> Planned:
+    """The read-only half's part that needs the network: the arguments, the template, the key, and the method planned over one client.
+
+    Raises:
+        CreateError: An argument, the template or the key is refused, or the client cannot be built.
+        PlanError: The method cannot be planned.
+    """
     args = parse_create_args(argv)
     root = given.root if given is not None else CLI_ROOT
     assert_template(root)
@@ -546,21 +609,42 @@ async def _run_create(argv: Sequence[str], given: CreateDeps | None) -> int:
     except PipelineRequestError as exc:
         msg = f"{exc}\n  Check {BASE_URL_KEY} in your shell or {ENV_FILE}, or drop it to use the default."
         raise CreateError(msg) from exc
-
-    # ── The read-only half ──
     async with client:
         base_url = client.base_url
         insecure = insecure_base_url_reason(base_url)
         if insecure is not None:
             raise CreateError(insecure)
         method_args = MethodArgs(method=args.method, pipe=args.pipe, named=args.name is not None)
-        plan = await plan_method(method_args, client, layout=layout, root=root, cwd=deps.cwd)
+        plan = await plan_method(method_args, client, layout=layout, root=deps.root, cwd=deps.cwd)
+    return Planned(args=args, deps=deps, layout=layout, plan=plan, base_url=base_url)
+
+
+def finish_create(planned: Planned) -> int:
+    """The rest of the read-only half, which the dry run stops after, then the write half; the exit code.
+
+    It needs no network, and runs outside the event loop when the gesture runs for real (`main`), so
+    that a Ctrl-C raises `KeyboardInterrupt` where it lands, which the write half turns into the
+    commands left to run.
+
+    Raises:
+        CreateError: A value is refused, or a step of the write half failed.
+    """
+    args, deps, plan = planned.args, planned.deps, planned.plan
+    root = deps.root
     identity = derive_identity(plan, args)
-    env_plan = plan_env_file(root, deps.shell, deps.env_file, base_url)
+    if args.name is None:
+        reason = derived_name_reason(root, identity.name)
+        if reason is not None:
+            msg = (
+                f'the project\'s name was derived from the method as "{identity.name}", and cannot be used: {reason} Nothing was written: '
+                "pass --name (NAME=… with make create) with a name of your own."
+            )
+            raise CreateError(msg)
+    env_plan = plan_env_file(root, deps.shell, deps.env_file, planned.base_url)
     flags = bootstrap_flags(identity, args)
     bootstrap = [sys.executable, str(root / BOOTSTRAP_SCRIPT), "--root", str(root), *flags]
 
-    print_plan(plan, identity, base_url, layout)
+    print_plan(plan, identity, planned.base_url, planned.layout)
     for warning in plan.warnings:
         print(f"\n! {warning}")
     for note in env_plan.notes:
@@ -574,119 +658,207 @@ async def _run_create(argv: Sequence[str], given: CreateDeps | None) -> int:
         )
         raise CreateError(msg)
 
-    package = layout.describe(layout.package_dir)
+    package = planned.layout.describe(planned.layout.package_dir)
     env_step = {"write": f"write {ENV_FILE}", "keep": f"leave {ENV_FILE} as it is", "skip": f"leave the project without a {ENV_FILE}"}
-    steps = [
+    steps = (
         f"write the method ({package}/method/, {package}/generated/ and {package}/binding.py)",
         "run the bootstrap with the values above",
         env_step[env_plan.action],
         "re-sync uv.lock and the environment with the renamed project (uv sync)",
         "run make all",
         f"remove {BOOTSTRAP_DIR}/ once make all is green",
-    ]
+    )
     if args.dry_run:
         print("\nWould then:")
         for number, step in enumerate(steps, start=1):
             print(f"  {number}. {step}")
         print("\nNothing was written (--dry-run).")
         return EXIT_OK
+    return WriteHalf(planned=planned, identity=identity, env_plan=env_plan, flags=tuple(flags), bootstrap=tuple(bootstrap), steps=steps).run()
 
-    # ── The write half ──
-    def announce(number: int) -> None:
-        print(f"\ncreate: {number}/{len(steps)} {steps[number - 1]}\n")
 
-    announce(1)
-    try:
-        for line in write_method(plan, layout):
-            print(f"    {line}")
-    except (CodegenSetupError, CodegenError, OSError, RuntimeError) as exc:
-        msg = f"writing the method failed: {exc}. What it wrote was removed, so the template is as it was: fix the cause and run make create again."
-        raise CreateError(msg) from exc
+@dataclass
+class WriteHalf:
+    """The write half: each step in order, and, when one fails or a Ctrl-C stops it, the commands that finish the project by hand."""
 
-    env_line = [f"cp {ENV_EXAMPLE} {ENV_FILE}   # then set {API_KEY_KEY} in it"] if env_plan.action == "write" else []
-    announce(2)
-    if deps.run(bootstrap, root, None) != 0:
-        # The bootstrap writes pyproject.toml last: until then the tree is the template's, and the
-        # same command finishes it; after, it names the project, and the bootstrap needs --force.
-        renamed = not names_the_template(root)
-        command = shlex.join([".venv/bin/python", BOOTSTRAP_SCRIPT, *flags, *(["--force"] if renamed else [])])
-        lines = [command, *env_line, *REMAINING]
-        force_note = "; pyproject.toml already names the project, so the bootstrap runs again with --force" if renamed else ""
-        msg = (
-            f"the bootstrap failed after the method was written (see above). The method is in place{force_note}. Fix the cause, "
-            "then finish by hand, from this directory:\n" + "\n".join(f"  {line}" for line in lines)
-        )
-        raise CreateError(msg)
+    planned: Planned
+    identity: Identity
+    env_plan: EnvPlan
+    flags: tuple[str, ...]
+    bootstrap: tuple[str, ...]
+    steps: tuple[str, ...]
+    #: How many steps have finished.
+    completed: int = 0
 
-    announce(3)
-    if env_plan.action == "write" and env_plan.content is not None:
+    @property
+    def root(self) -> Path:
+        return self.planned.deps.root
+
+    def run(self) -> int:
+        """Run every step; the exit code. A Ctrl-C prints what is left and exits 130, after the method is written as before it.
+
+        Raises:
+            CreateError: A step failed, with the commands left in its message.
+        """
         try:
-            wrote = write_env_file(root / ENV_FILE, env_plan.content)
-        except OSError as exc:
-            left = "\n".join(f"  {line}" for line in (*env_line, *REMAINING))
-            msg = f"writing {ENV_FILE} failed: {exc}. The project is created; fix the cause, then finish by hand, from this directory:\n{left}"
-            raise CreateError(msg) from exc
-        if wrote:
-            print(f"    wrote {ENV_FILE}")
-        else:
-            print(f"! {ENV_FILE} appeared while the gesture ran, and is left as it is.")
+            return self._run()
+        except KeyboardInterrupt:
+            print(f"\ncreate: {self.interrupted()}", file=sys.stderr)
+            return EXIT_INTERRUPTED
 
-    announce(4)
-    if deps.run(["uv", "sync"], root, environment_without(UV_LOCK_GATES)) != 0:
-        msg = f"re-syncing uv.lock failed (see above). The project is created; finish with:\n{remaining(0)}"
-        raise CreateError(msg)
-
-    announce(5)
-    if deps.run(["make", "all"], root, environment_without(MAKE_VARIABLES)) != 0:
-        msg = (
-            f"make all is red (see above). The project is created and nothing is committed; fix the cause, never by editing "
-            f"src/{identity.package}/generated/, then finish with:\n{remaining(1)}"
+    def interrupted(self) -> str:
+        """What a Ctrl-C leaves, by how far the write half went."""
+        if self.completed == 0:
+            # `write_method` removes what it wrote when anything stops it, Ctrl-C included.
+            return "interrupted while writing the method. What it wrote was removed, so the template is as it was: run make create again."
+        left = self.commands_left(self.completed + 1)
+        if not left:
+            return "interrupted once the project was created: nothing is left to run."
+        step = self.steps[self.completed]
+        return (
+            f"interrupted after the method was written, at step {self.completed + 1}/{len(self.steps)} ({step}). "
+            f"Finish by hand, from this directory:\n{indented(left)}"
         )
-        raise CreateError(msg)
 
-    announce(6)
-    shutil.rmtree(root / BOOTSTRAP_DIR, ignore_errors=True)
-    # The directories that held only the bootstrap go with it.
-    for parent in (root / BOOTSTRAP_DIR).parents:
-        if parent == root:
-            break
-        with contextlib.suppress(OSError):
-            parent.rmdir()
+    def commands_left(self, number: int) -> list[str]:
+        """The ordinary commands that finish the project when step `number` did not."""
+        # `cp` only while there is no `.env`: one the gesture or the person wrote meanwhile is never copied over.
+        env_line = [f"cp {ENV_EXAMPLE} {ENV_FILE}   # then set {API_KEY_KEY} in it"]
+        env_left = env_line if self.env_plan.action == "write" and not (self.root / ENV_FILE).exists() else []
+        if number <= 2:
+            # The bootstrap writes pyproject.toml last: until then the tree is the template's, and the same
+            # command finishes it; after, it names the project, and the bootstrap needs --force.
+            force = ["--force"] if not names_the_template(self.root) else []
+            return [shlex.join([".venv/bin/python", BOOTSTRAP_SCRIPT, *self.flags, *force]), *env_left, *REMAINING]
+        if number == 3:
+            return [*env_left, *REMAINING]
+        return list(REMAINING[number - 4 :])
 
-    command = f".venv/bin/{identity.name}"
-    print(
-        "\n".join(
-            (
-                "",
-                f"create: done. {identity.title} ({identity.name}) runs the pipe {plan.pipe.ref} of {plan.origin}.",
-                "",
-                "Nothing is committed: review with `git status` and `git diff`, then commit.",
-                "",
-                "Next:",
-                f"  {command + ' --help':<34}# the method's inputs, one option each",
-                f"  {'uv tool install .':<34}# the command on your PATH",
-                f"  {'make codegen':<34}# after editing the method, or bumping its tag",
+    def announce(self, number: int) -> None:
+        print(f"\ncreate: {number}/{len(self.steps)} {self.steps[number - 1]}\n")
+
+    def _run(self) -> int:
+        planned, identity, root = self.planned, self.identity, self.root
+        self.announce(1)
+        try:
+            for line in write_method(planned.plan, planned.layout):
+                print(f"    {line}")
+        except (CodegenSetupError, CodegenError, OSError, RuntimeError) as exc:
+            msg = (
+                f"writing the method failed: {exc}. What it wrote was removed, so the template is as it was: fix the cause and run make create again."
+            )
+            raise CreateError(msg) from exc
+        self.completed = 1
+
+        self.announce(2)
+        if planned.deps.run(self.bootstrap, root, None) != 0:
+            renamed = not names_the_template(root)
+            force_note = "; pyproject.toml already names the project, so the bootstrap runs again with --force" if renamed else ""
+            msg = (
+                f"the bootstrap failed after the method was written (see above). The method is in place{force_note}. Fix the cause, "
+                f"then finish by hand, from this directory:\n{indented(self.commands_left(2))}"
+            )
+            raise CreateError(msg)
+        self.completed = 2
+
+        self.announce(3)
+        if self.env_plan.action == "write" and self.env_plan.content is not None:
+            try:
+                wrote = write_env_file(root / ENV_FILE, self.env_plan.content)
+            except OSError as exc:
+                msg = f"writing {ENV_FILE} failed: {exc}. The project is created; fix the cause, then finish by hand, from this directory:\n"
+                raise CreateError(msg + indented(self.commands_left(3))) from exc
+            if wrote:
+                print(f"    wrote {ENV_FILE}")
+            else:
+                print(f"! {ENV_FILE} appeared while the gesture ran, and is left as it is.")
+        self.completed = 3
+
+        self.announce(4)
+        if planned.deps.run(["uv", "sync"], root, environment_without(UV_LOCK_GATES)) != 0:
+            msg = f"re-syncing uv.lock failed (see above). The project is created; finish with:\n{indented(self.commands_left(4))}"
+            raise CreateError(msg)
+        self.completed = 4
+
+        self.announce(5)
+        if planned.deps.run(["make", "all"], root, environment_without(MAKE_VARIABLES)) != 0:
+            msg = (
+                f"make all is red (see above). The project is created and nothing is committed; fix the cause, never by editing "
+                f"src/{identity.package}/generated/, then finish with:\n{indented(self.commands_left(5))}"
+            )
+            raise CreateError(msg)
+        self.completed = 5
+
+        self.announce(6)
+        shutil.rmtree(root / BOOTSTRAP_DIR, ignore_errors=True)
+        # The directories that held only the bootstrap go with it.
+        for parent in (root / BOOTSTRAP_DIR).parents:
+            if parent == root:
+                break
+            with contextlib.suppress(OSError):
+                parent.rmdir()
+        self.completed = 6
+
+        command = f".venv/bin/{identity.name}"
+        print(
+            "\n".join(
+                (
+                    "",
+                    f"create: done. {identity.title} ({identity.name}) runs the pipe {planned.plan.pipe.ref} of {planned.plan.origin}.",
+                    "",
+                    "Nothing is committed: review with `git status` and `git diff`, then commit.",
+                    "",
+                    "Next:",
+                    f"  {command + ' --help':<34}# the method's inputs, one option each",
+                    f"  {'uv tool install .':<34}# the command on your PATH",
+                    f"  {'make codegen':<34}# after editing the method, or bumping its tag",
+                )
             )
         )
-    )
-    return EXIT_OK
+        return EXIT_OK
 
 
 #: The ordinary commands that finish a project once the bootstrap has run.
 REMAINING = ("uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}   # once make all is green")
 
 
-def remaining(start: int) -> str:
-    """The commands left to run, from the `start`th, one per indented line."""
-    return "\n".join(f"  {line}" for line in REMAINING[start:])
+def indented(lines: Sequence[str]) -> str:
+    """Commands, one per indented line."""
+    return "\n".join(f"  {line}" for line in lines)
 
 
-def main(argv: Sequence[str]) -> int:
-    """The console entry: run the gesture over the real surroundings."""
+def refused(exc: CreateError | PlanError) -> int:
+    """Print a refusal or a failed step, and return its exit code."""
+    print(f"create: {exc}", file=sys.stderr)
+    return EXIT_FAILED
+
+
+async def run_create(argv: Sequence[str], deps: CreateDeps | None = None) -> int:
+    """The whole `make create` behaviour inside a running event loop, exit code included, as the tests drive it.
+
+    Never raises: a refusal is a printed message and exit 1, and a Ctrl-C in the write half is the
+    commands left and exit 130. `main` runs the same two parts, the second outside the event loop.
+    """
     try:
-        return asyncio.run(run_create(argv))
+        return finish_create(await plan_create(argv, deps))
+    except (CreateError, PlanError) as exc:
+        return refused(exc)
+
+
+def main(argv: Sequence[str], deps: CreateDeps | None = None) -> int:
+    """The console entry: the network part under one `asyncio.run`, then the rest outside the event loop.
+
+    Inside the loop, asyncio turns the first Ctrl-C into the cancellation of the running task, which
+    code with no `await`, as the write half is, would only meet once it had run to its end, the
+    bootstrap removed. Outside it, a Ctrl-C raises `KeyboardInterrupt` where it lands: the write half
+    prints the commands left, and anything before it has written nothing.
+    """
+    try:
+        return finish_create(asyncio.run(plan_create(argv, deps)))
+    except (CreateError, PlanError) as exc:
+        return refused(exc)
     except KeyboardInterrupt:
-        print("\ncreate: interrupted.", file=sys.stderr)
+        print("\ncreate: interrupted. Nothing was written.", file=sys.stderr)
         return EXIT_INTERRUPTED
 
 

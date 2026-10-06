@@ -23,21 +23,23 @@ doc), and the passages of the files a project keeps that describe them sit betwe
 between them, in every file that carries a pair.
 
 Everything is decided before anything is written: every value is checked, the name against every
-package `uv.lock` pins too, every transform runs in memory, and a survivor check passes over what
-they produce: no file the project keeps may still name the template, the gesture or
-a marker, which would be a transform rule that missed a context. `binding.py`'s `PIPE_REF` is the one
-value exempt, since it is the method's own pipe reference, and a dry run given `--binding` checks the
-`binding.py` that `make create` will write before the real run. Only then is anything written, each
-file whole or not at all, in the order that keeps a retry possible: the files in place, the removals,
-the package directory's rename, and `pyproject.toml` last, so that a run that fails part-way leaves a
-template that the same command, run again, finishes without `--force`. Every Python file the project
-keeps then goes through the project's own ruff, so that `make check` is green straight after a run.
+package `uv.lock` pins and every import name the project's environment has installed too, every
+transform runs in memory, and a survivor check passes over what they produce: no file the project
+keeps may still name the template, the gesture or a marker, which would be a transform rule that
+missed a context. `binding.py`'s `PIPE_REF` is the one value exempt, since it is the method's own
+pipe reference, and a dry run given `--binding` checks the `binding.py` that `make create` will write
+before the real run. Only then is anything written, each file whole or not at all, in the order that
+keeps a retry possible: the files in place, the removals, the package directory's rename, and
+`pyproject.toml` last, so that a run that fails part-way leaves a template that the same command, run
+again, finishes without `--force`. Every Python file the project keeps then goes through the
+project's own ruff, so that `make check` is green straight after a run.
 
 The script only transforms files. It does not touch git, re-sync `uv.lock`, run the checks or remove
 the bootstrap skill: the skill's `SKILL.md` sequences those, or `make create` does. Re-running it on
-a project that is not the un-bootstrapped template requires `--force`. It needs nothing beyond the
-standard library, ruff when it is installed, and `packaging` to check an SPDX identifier when that is
-installed too, so it runs on its own, once the gesture it serves is gone.
+a project that is not the un-bootstrapped template requires `--force`, and updates what the first run
+wrote, `pyproject.toml`'s authors and repository URL included, rather than adding to it. It needs
+nothing beyond the standard library, ruff when it is installed, and `packaging` to check an SPDX
+identifier when that is installed too, so it runs on its own, once the gesture it serves is gone.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime
+import importlib.metadata
 import io
 import keyword
 import os
@@ -55,7 +58,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NoReturn
@@ -193,23 +196,34 @@ def title_from_name(name: str) -> str:
     return " ".join(part[:1].upper() + part[1:] for part in re.split(r"[-._]+", name) if part)
 
 
-def name_refusal(name: str) -> str | None:
-    """Why a name cannot be the project's, or `None` when it can."""
+def invalid_name(name: str, reason: str) -> str:
+    """The refusal of a name, worded the one way every rule words it."""
+    return f"invalid project name {name!r}: {reason}"
+
+
+def name_reason(name: str) -> str | None:
+    """Why a name cannot be the project's by the rules on the name alone, or `None` when it can."""
     if NAME_RE.fullmatch(name) is None or len(name) > NAME_MAX_LENGTH:
         return (
-            f"invalid project name {name!r}: use lowercase letters and digits, starting with a letter, with words joined by "
-            f"single dashes or underscores, at most {NAME_MAX_LENGTH} characters (e.g. 'invoice-extractor')."
+            "use lowercase letters and digits, starting with a letter, with words joined by single dashes or underscores, "
+            f"at most {NAME_MAX_LENGTH} characters (e.g. 'invoice-extractor')."
         )
     package = package_of(name)
     if TEMPLATE_PACKAGE in package:
-        return f"invalid project name {name!r}: it is, or contains, the template's own name."
+        return "it is, or contains, the template's own name."
     if keyword.iskeyword(package) or keyword.issoftkeyword(package):
-        return f"invalid project name {name!r}: its package, {package}, is a Python keyword."
+        return f"its package, {package}, is a Python keyword."
     if package in sys.stdlib_module_names:
-        return f"invalid project name {name!r}: its package, {package}, would shadow the standard library's module of that name."
+        return f"its package, {package}, would shadow the standard library's module of that name."
     if package in RESERVED_PACKAGES:
-        return f"invalid project name {name!r}: its package, {package}, would shadow the project's own {package} or a dependency's."
+        return f"its package, {package}, would shadow the project's own {package} or a dependency's."
     return None
+
+
+def name_refusal(name: str) -> str | None:
+    """Why a name cannot be the project's by the rules on the name alone, worded as a refusal, or `None` when it can."""
+    reason = name_reason(name)
+    return None if reason is None else invalid_name(name, reason)
 
 
 def normalized(name: str) -> str:
@@ -217,15 +231,24 @@ def normalized(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+class UnreadableLockError(Exception):
+    """A `uv.lock` that exists and cannot be read, so the name cannot be checked against the packages it pins."""
+
+
 def locked_names(root: Path) -> frozenset[str] | None:
-    """Every package `uv.lock` pins, by its normalized name, or `None` when there is no lock to read."""
+    """Every package `uv.lock` pins, by its normalized name, or `None` when there is no lock to read.
+
+    Raises:
+        UnreadableLockError: The lock exists and cannot be read.
+    """
     lock = root / LOCK_FILE
     try:
         document = tomllib.loads(lock.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-        fail(f"{LOCK_FILE} cannot be read ({exc}), and the project's name is checked against every package it pins. Restore it, then run again.")
+        msg = f"{LOCK_FILE} cannot be read ({exc}), and the project's name is checked against every package it pins. Restore it, then run again."
+        raise UnreadableLockError(msg) from exc
     packages: object = document.get("package")
     if not isinstance(packages, list):
         return frozenset()
@@ -237,7 +260,7 @@ def locked_names(root: Path) -> frozenset[str] | None:
     return frozenset(found)
 
 
-def lock_refusal(name: str, locked: frozenset[str], current: object) -> str | None:
+def lock_reason(name: str, locked: frozenset[str], current: object) -> str | None:
     """Why a name cannot be the project's because `uv.lock` pins a package of that name, or `None` when it can.
 
     The direct dependencies are reserved by `RESERVED_PACKAGES`, but a dependency's own dependencies,
@@ -249,10 +272,57 @@ def lock_refusal(name: str, locked: frozenset[str], current: object) -> str | No
     own = normalized(current) if isinstance(current, str) else None
     if normalized(name) in locked and normalized(name) != own:
         return (
-            f"invalid project name {name!r}: {LOCK_FILE} pins a package of that name, which the project depends on, and a "
-            "project cannot take a dependency's name. Choose another."
+            f"{LOCK_FILE} pins a package of that name, which the project depends on, and a project cannot take a dependency's name. Choose another."
         )
     return None
+
+
+def installed_import_names() -> Mapping[str, list[str]]:
+    """Each top-level import name the environment this script runs in has installed, with the distributions that provide it.
+
+    The script runs under the project's own interpreter, `.venv/bin/python`, as `make create` and the
+    skill both run it, so this is the project's environment: its dependencies, theirs, and its
+    development tools.
+    """
+    return importlib.metadata.packages_distributions()
+
+
+def installed_reason(name: str, installed: Mapping[str, list[str]], current: object) -> str | None:
+    """Why a name cannot be the project's because an installed distribution provides its import package, or `None` when it can.
+
+    A distribution's name and the import name it provides often differ: `markdown-it-py`, which rich
+    imports, provides `markdown_it`, so the project `markdown-it` passes the lock's check and still
+    shadows it. The project's own distribution, under the template's name or the project's, is no
+    collision.
+    """
+    package = package_of(name)
+    own = {normalized(TEMPLATE_NAME)} | ({normalized(current)} if isinstance(current, str) else set[str]())
+    providers = sorted({distribution for distribution in installed.get(package, []) if normalized(distribution) not in own})
+    if not providers:
+        return None
+    return (
+        f"its package, {package}, is the import name of {', '.join(providers)}, which the project's environment has installed, "
+        "and a package of that name under src/ would shadow it. Choose another."
+    )
+
+
+def project_name_reason(name: str, *, current: object, locked: frozenset[str] | None, installed: Mapping[str, list[str]]) -> str | None:
+    """Why a name cannot be the project's by every rule a run holds it to, or `None` when it can."""
+    return name_reason(name) or (lock_reason(name, locked, current) if locked is not None else None) or installed_reason(name, installed, current)
+
+
+def template_name_reason(root: Path, name: str) -> str | None:
+    """Why the un-bootstrapped template at `root` cannot take `name`, by every rule a run holds it to, or `None` when it can.
+
+    This is the check `make create` makes of a name it derived from the method, so that its refusal
+    can say the derived name is the problem and `--name` the fix: the rules stay here, in one place.
+    A lock that cannot be read is left to the run itself, which refuses it.
+    """
+    try:
+        locked = locked_names(root)
+    except UnreadableLockError:
+        locked = None
+    return project_name_reason(name, current=TEMPLATE_NAME, locked=locked, installed=installed_import_names())
 
 
 # ---------------------------------------------------------------------------
@@ -430,13 +500,48 @@ def transform_pyproject(text: str, names: Names, opts: Options) -> str:
     elif opts.author_name:
         author = f"{{ name = {toml_str(opts.author_name)} }}"
     if author is not None:
-        text = re.sub(r"^(license = .*)$", lambda match: f"{match.group(1)}\nauthors = [{author}]", text, count=1, flags=re.MULTILINE)
+        text = _set_authors(text, f"authors = [{author}]")
     if opts.repo_url:
-        urls = f"[project.urls]\nRepository = {toml_str(opts.repo_url)}\n\n"
-        if "\n[project.scripts]" in text:
-            text = text.replace("\n[project.scripts]", f"\n{urls}[project.scripts]", 1)
-        else:
-            warn("pyproject.toml: no [project.scripts] table to place [project.urls] before; the repository URL is not set.")
+        text = _set_repository(text, f"Repository = {toml_str(opts.repo_url)}")
+    return text
+
+
+# One line of `[project]`'s `authors`, as a run writes it.
+_AUTHORS_LINE = re.compile(r"^authors = \[[^\n]*\][ \t]*$", re.MULTILINE)
+
+
+def _set_authors(text: str, line: str) -> str:
+    """Set `[project]`'s `authors` to one line: the line a previous run wrote replaced, or a new one placed after `license`.
+
+    A re-run with `--force` finds the line it wrote the first time, and must update it rather than
+    add a second assignment, which TOML refuses. An `authors` spread over several lines was written
+    by hand, and is left as it is.
+    """
+    if _AUTHORS_LINE.search(text) is not None:
+        return _AUTHORS_LINE.sub(lambda _match: line, text, count=1)
+    if re.search(r"^authors[ \t]*=", text, re.MULTILINE) is not None:
+        warn("pyproject.toml: `authors` is set over several lines; left as-is.")
+        return text
+    return re.sub(r"^(license = .*)$", lambda match: f"{match.group(1)}\n{line}", text, count=1, flags=re.MULTILINE)
+
+
+def _set_repository(text: str, line: str) -> str:
+    """Set `[project.urls]`'s `Repository`: in the table a previous run wrote, or in a new table placed before `[project.scripts]`.
+
+    A re-run with `--force` finds the table it wrote the first time, and must update it rather than
+    add a second one, which TOML refuses.
+    """
+    header = re.search(r"^\[project\.urls\][ \t]*$", text, re.MULTILINE)
+    if header is not None:
+        following = re.search(r"^\[", text[header.end() :], re.MULTILINE)
+        end = header.end() + following.start() if following is not None else len(text)
+        table = text[header.end() : end]
+        assignment = re.compile(r"^Repository[ \t]*=.*$", re.MULTILINE)
+        updated = assignment.sub(lambda _match: line, table, count=1) if assignment.search(table) else f"\n{line}{table}"
+        return text[: header.end()] + updated + text[end:]
+    if "\n[project.scripts]" in text:
+        return text.replace("\n[project.scripts]", f"\n[project.urls]\n{line}\n\n[project.scripts]", 1)
+    warn("pyproject.toml: no [project.scripts] table to place [project.urls] before; the repository URL is not set.")
     return text
 
 
@@ -774,13 +879,15 @@ def run(root: Path, names: Names, opts: Options) -> None:
             )
         warn(f'{PYPROJECT}\'s name is not "{TEMPLATE_NAME}"; proceeding (--force).')
 
-    locked = locked_names(root)
+    try:
+        locked = locked_names(root)
+    except UnreadableLockError as exc:
+        fail(str(exc))
     if locked is None:
         warn(f"no {LOCK_FILE} found, so the name is not checked against the packages the project depends on.")
-    else:
-        refusal = lock_refusal(names.name, locked, current)
-        if refusal is not None:
-            fail(refusal)
+    reason = project_name_reason(names.name, current=current, locked=locked, installed=installed_import_names())
+    if reason is not None:
+        fail(invalid_name(names.name, reason))
 
     old_package = root / "src" / TEMPLATE_PACKAGE
     new_package = root / "src" / names.package
