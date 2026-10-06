@@ -39,6 +39,9 @@ LEAKS = re.compile(
 #: What a project's files are read from: everything but environments, caches and the lock file.
 NOT_READ = frozenset({".venv", "__pycache__", ".ruff_cache", ".pytest_cache"})
 
+#: The console-script names uv refuses to install, which it reserves for the interpreter: those a project's name can spell.
+UV_RESERVED_SCRIPTS = ("python", "python3", "pythonw", "pypy", "pypy2", "pypy3", "graalpy")
+
 #: The license-holder warning, word for word: the scaffold skill greps for it.
 LICENSE_HOLDER_WARNING = "warning: LICENSE copyright line left untouched — pass --license-holder to claim it."
 
@@ -240,6 +243,24 @@ class TestRuns:
         before = tree(copy)
         result = bootstrap(copy, "--name", name, "--description", "Reads invoices.")
         assert result.returncode == 1
+        assert says in result.stderr
+        assert tree(copy) == before
+
+    @pytest.mark.parametrize(
+        ("name", "says"),
+        [
+            *((name, f"uv reserves {name} for the Python interpreter") for name in UV_RESERVED_SCRIPTS),
+            ("activate", "would replace the virtual environment's own activate script"),
+            ("deactivate", "would collide with the deactivate command"),
+        ],
+    )
+    @pytest.mark.parametrize("dry_run", [True, False])
+    def test_refuses_a_name_its_command_cannot_take(self, name: str, says: str, dry_run: bool, copy: Path):
+        # The name is the console script's too, and `uv sync`, which runs after the rename, would refuse it or install it over the environment's own.
+        before = tree(copy)
+        result = bootstrap(copy, "--name", name, "--description", "Reads invoices.", *(["--dry-run"] if dry_run else []))
+        assert result.returncode == 1
+        assert f"invalid project name '{name}': it is also the name of the project's command" in result.stderr
         assert says in result.stderr
         assert tree(copy) == before
 

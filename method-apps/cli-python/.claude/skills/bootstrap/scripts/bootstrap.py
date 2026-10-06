@@ -23,16 +23,17 @@ doc), and the passages of the files a project keeps that describe them sit betwe
 between them, in every file that carries a pair.
 
 Everything is decided before anything is written: every value is checked, the name against every
-package `uv.lock` pins and every import name the project's environment has installed too, every
-transform runs in memory, and a survivor check passes over what they produce: no file the project
-keeps may still name the template, the gesture or a marker, which would be a transform rule that
-missed a context. `binding.py`'s `PIPE_REF` is the one value exempt, since it is the method's own
-pipe reference, and a dry run given `--binding` checks the `binding.py` that `make create` will write
-before the real run. Only then is anything written, each file whole or not at all, in the order that
-keeps a retry possible: the files in place, the removals, the package directory's rename, and
-`pyproject.toml` last, so that a run that fails part-way leaves a template that the same command, run
-again, finishes without `--force`. Every Python file the project keeps then goes through the
-project's own ruff, so that `make check` is green straight after a run.
+package `uv.lock` pins, every import name the project's environment has installed, and every command
+name uv or the virtual environment keeps for itself, every transform runs in memory, and a survivor
+check passes over what they produce: no file the project keeps may still name the template, the
+gesture or a marker, which would be a transform rule that missed a context. `binding.py`'s
+`PIPE_REF` is the one value exempt, since it is the method's own pipe reference, and a dry run given
+`--binding` checks the `binding.py` that `make create` will write before the real run. Only then is
+anything written, each file whole or not at all, in the order that keeps a retry possible: the files
+in place, the removals, the package directory's rename, and `pyproject.toml` last, so that a run that
+fails part-way leaves a template that the same command, run again, finishes without `--force`. Every
+Python file the project keeps then goes through the project's own ruff, so that `make check` is green
+straight after a run.
 
 The script only transforms files. It does not touch git, re-sync `uv.lock`, run the checks or remove
 the bootstrap skill: the skill's `SKILL.md` sequences those, or `make create` does. Re-running it on
@@ -140,6 +141,18 @@ RESERVED_PACKAGES = frozenset(
     }
 )
 
+# Names a project must not take because its name is also its console script's, which `uv sync`
+# installs into `.venv/bin/`, after the bootstrap has renamed the project. uv reserves these for the
+# interpreter and refuses to install a script of that name; only those `NAME_RE` can spell are listed.
+UV_RESERVED_SCRIPTS = frozenset({"python", "python3", "pythonw", "pypy", "pypy2", "pypy3", "graalpy"})
+
+# The virtual environment's own commands, which uv installs a project's script over or beside without
+# a word, and what a script of that name would do to each.
+VENV_COMMANDS = {
+    "activate": "which would replace the virtual environment's own activate script, .venv/bin/activate",
+    "deactivate": "which would collide with the deactivate command that activating the virtual environment defines",
+}
+
 # Directories the sweep never enters, wherever they are: version control, environments, caches and
 # build output, and the local files a run or a person leaves.
 SKIPPED_DIRS = frozenset(
@@ -217,6 +230,13 @@ def name_reason(name: str) -> str | None:
         return f"its package, {package}, would shadow the standard library's module of that name."
     if package in RESERVED_PACKAGES:
         return f"its package, {package}, would shadow the project's own {package} or a dependency's."
+    if name in UV_RESERVED_SCRIPTS:
+        return (
+            f"it is also the name of the project's command, and uv reserves {name} for the Python interpreter, "
+            "so `uv sync` would refuse to install it."
+        )
+    if name in VENV_COMMANDS:
+        return f"it is also the name of the project's command, {VENV_COMMANDS[name]}."
     return None
 
 

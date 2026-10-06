@@ -25,7 +25,7 @@ Each of these came across with its behaviour and its tests, moved under `cli-pyt
 - **`lib/binding.py`, `lib/method_source.py`, `lib/inputs.py`, `lib/client.py` and `lib/app.py`**: the seam to the one method, the method read as package data, `--inputs FILE` and later the options derived from the input form, the one place a client is built (which is what the tests replace), and what every module shares.
 - **The codegen kit and the CLI kernel**, ported from the web app template rather than taken from the starter: `scripts/codegen.py`, `scripts/codegen_check.py` and `scripts/codegen_verify.py` with `lib/contracts.py`, and `lib/wire.py`, the port of the form kernel's payload rules, held to the TypeScript kernel by the family's wire-format table (`cli-python/docs/codegen.md`, `cli-python/docs/cli-kernel.md`).
 - **The Makefile**, rewritten on the method-app family's shape: the `given`, `opt`, `flag`, `require` and `shq` helpers of the web app template, every tool run from `.venv/bin/`, `use-local` and `use-published` over editable installs, and the `create` target forwarding the family's contract.
-- **`scripts/create.py`**, the family's argument contract with the gesture still to write, and **`scripts/local_status.py`**.
+- **`scripts/create.py`**, which `cli-python` wrote as its own create gesture on the family's argument contract, with its planning in `scripts/create_plan.py` (`cli-python/docs/create.md`), and **`scripts/local_status.py`**.
 - **The workflows**, one lint job and one test job over the oldest and newest Python the project supports, installing with `uv sync` under `UV_LOCKED=1`.
 
 ## Left behind

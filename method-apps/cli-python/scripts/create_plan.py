@@ -750,7 +750,7 @@ def refuse_a_method_in_place(layout: Layout) -> None:
             cannot be read.
     """
     try:
-        taken = _parts_in_place(layout)
+        taken = parts_in_place(layout)
     except CodegenSetupError as exc:
         raise PlanError(str(exc)) from exc
     except OSError as exc:
@@ -767,8 +767,11 @@ def refuse_a_method_in_place(layout: Layout) -> None:
         raise PlanError(msg)
 
 
-def _parts_in_place(layout: Layout) -> list[Path]:
+def parts_in_place(layout: Layout) -> list[Path]:
     """The parts of a method the package already holds, a generated tree holding nothing but bytecode aside.
+
+    Planning refuses a package that holds any, and a Ctrl-C that cut short the removal `write_method`
+    runs when it is stopped names those it left.
 
     Raises:
         CodegenSetupError: Something under `generated/` is a link or a special file.

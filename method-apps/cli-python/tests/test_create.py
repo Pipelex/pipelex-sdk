@@ -17,6 +17,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 from dotenv import dotenv_values
@@ -277,6 +278,17 @@ class TestEnvFile:
         plan = plan_env_file(project, ShellEnv(base_url="https://api.example.com", key="k"), above, "https://api.example.com")
         assert "PIPELEX_BASE_URL=https://api.example.com (from your shell)" in plan.notes[0]
 
+    def test_records_a_base_url_that_is_not_the_default_for_a_env_file_written_by_hand(self, tmp_path: Path):
+        project = tmp_path / "project"
+        project.mkdir()
+        above = tmp_path / ".env"
+        above.write_text("OTHER=1\n", encoding="utf-8")
+        assert plan_env_file(project, ShellEnv(key="k"), above, "https://api.pipelex.com").chosen_base_url is None
+        above.write_text("PIPELEX_BASE_URL=https://api.example.com\n", encoding="utf-8")
+        assert plan_env_file(project, ShellEnv(key="k"), above, "https://api.example.com").chosen_base_url == "https://api.example.com"
+        shell = ShellEnv(base_url="https://api.example.com", key="k")
+        assert plan_env_file(project, shell, None, "https://api.example.com").chosen_base_url == "https://api.example.com"
+
     def test_a_file_above_is_named_as_hidden_when_one_is_written(self, tmp_path: Path):
         plan = plan_env_file(tmp_path, ShellEnv(key="k"), tmp_path.parent / ".env", "https://api.pipelex.com")
         assert plan.action == "write"
@@ -357,6 +369,15 @@ def tree(root: Path) -> dict[str, bytes]:
     return {path.relative_to(root).as_posix(): path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
 
 
+def assert_interrupted_with_the_method_written(err: str, runner: Runner, root: Path) -> None:
+    """A Ctrl-C once the method is written says so and gives the commands left, from the bootstrap's on, never to run make create again."""
+    assert "create: interrupted after the method was written, at step 2/6 (run the bootstrap with the values above)." in err
+    assert f"\n  .venv/bin/python {BOOTSTRAP_SCRIPT} --name=text-stats" in err
+    assert "What it wrote was removed" not in err and "run make create again" not in err
+    assert runner.labels == ["bootstrap --dry-run"]
+    assert (root / "src" / PACKAGE / BINDING_FILENAME).is_file()
+
+
 class TestReadOnlyHalf:
     async def test_refuses_anything_but_the_un_bootstrapped_template_before_any_request(
         self, template: Path, api: RecordedClient, capsys: pytest.CaptureFixture[str]
@@ -419,6 +440,13 @@ class TestReadOnlyHalf:
         [
             ("email", "its package, email, would shadow the standard library's module of that name."),
             ("markdown-it", "its package, markdown_it, is the import name of markdown-it-py"),
+            # The name is the command's too, which uv refuses to install, or installs over the environment's own.
+            *(
+                (name, f"it is also the name of the project's command, and uv reserves {name} for the Python interpreter")
+                for name in ("python", "python3", "pythonw", "pypy", "pypy2", "pypy3", "graalpy")
+            ),
+            ("activate", "it is also the name of the project's command, which would replace the virtual environment's own activate script"),
+            ("deactivate", "it is also the name of the project's command, which would collide with the deactivate command"),
         ],
     )
     async def test_a_derived_name_the_bootstrap_refuses_is_refused_as_derived_naming_name(
@@ -595,6 +623,79 @@ class TestWriteHalf:
         assert "interrupted while writing the method. What it wrote was removed" in capsys.readouterr().err
         assert runner.labels == ["bootstrap --dry-run"]
         assert tree(template) == before
+
+    async def test_a_ctrl_c_while_the_written_method_is_listed_names_the_commands_left(
+        self, template: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        # `write_method` has written everything and returned its lines, so no removal follows a Ctrl-C while they print.
+        def print_until_a_written_line(*values: Any, **kwargs: Any) -> None:
+            if values and str(values[0]).lstrip().startswith("wrote "):
+                raise KeyboardInterrupt
+            print(*values, **kwargs)
+
+        monkeypatch.setattr(create_gesture, "print", print_until_a_written_line, raising=False)
+        runner = Runner()
+        assert await run_create([TEXT_STATS_REF], deps(template, runner)) == 130
+        assert_interrupted_with_the_method_written(capsys.readouterr().err, runner, template)
+
+    async def test_a_ctrl_c_as_the_method_s_writing_returns_names_the_commands_left(
+        self, template: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        # Past its last write, `write_method` removes nothing, so a Ctrl-C landing before the step is counted finds the method on disk.
+        written = create_gesture.write_method
+
+        def interrupt_as_it_returns(plan: MethodPlan, layout: Layout) -> list[str]:
+            written(plan, layout)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(create_gesture, "write_method", interrupt_as_it_returns)
+        runner = Runner()
+        assert await run_create([TEXT_STATS_REF], deps(template, runner)) == 130
+        assert_interrupted_with_the_method_written(capsys.readouterr().err, runner, template)
+
+    async def test_a_ctrl_c_that_stops_the_removal_names_what_is_left_to_remove(
+        self, template: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        before = tree(template)
+        written = create_plan.write_generated
+
+        def interrupt_after_the_tree(layout: Layout, fetched: Fetched, source: CodegenSource) -> list[str]:
+            written(layout, fetched, source)
+            raise KeyboardInterrupt
+
+        def interrupt_the_removal(path: Path) -> None:
+            # A second Ctrl-C, landing while the first one's removal runs.
+            del path
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(create_plan, "write_generated", interrupt_after_the_tree)
+        monkeypatch.setattr(create_plan, "_remove", interrupt_the_removal)
+        assert await run_create([TEXT_STATS_REF], deps(template, Runner())) == 130
+        err = capsys.readouterr().err
+        assert "create: interrupted while writing the method, before what it wrote was all removed." in err
+        assert "What it wrote was removed" not in err
+        command = next(line.strip() for line in err.splitlines() if line.strip().startswith("rm -rf "))
+        assert command == f"rm -rf src/{PACKAGE}/method src/{PACKAGE}/generated"
+        subprocess.run(shlex.split(command), cwd=template, check=True)
+        assert tree(template) == before
+        assert sorted(path.name for path in (template / "src" / PACKAGE).iterdir()) == []
+
+    @pytest.mark.parametrize(
+        ("shell_base_url", "env_line"),
+        [
+            (None, "cp .env.example .env   # then set PIPELEX_API_KEY in it"),
+            ("https://api.example.com", "cp .env.example .env   # then set PIPELEX_API_KEY in it, and PIPELEX_BASE_URL to https://api.example.com"),
+        ],
+    )
+    async def test_the_env_file_left_to_write_names_the_base_url_the_method_was_generated_against(
+        self, shell_base_url: str | None, env_line: str, template: Path, api: RecordedClient, capsys: pytest.CaptureFixture[str]
+    ):
+        # The bootstrap fails before `.env` is written: the copy of the example would otherwise point the command at the default API.
+        shell = ShellEnv(base_url=shell_base_url, key="pk_test#1")
+        assert await run_create([TEXT_STATS_REF], deps(template, Runner(statuses={"bootstrap": 1}), shell=shell)) == 1
+        err = capsys.readouterr().err
+        assert [line.strip() for line in err.splitlines() if line.strip().startswith("cp ")] == [env_line]
+        assert "pk_test#1" not in err
 
     @pytest.mark.skipif(AS_ROOT, reason="root writes into a directory whose mode refuses everyone else")
     async def test_an_env_file_it_cannot_write_names_the_commands_left(self, template: Path, api: RecordedClient, capsys: pytest.CaptureFixture[str]):

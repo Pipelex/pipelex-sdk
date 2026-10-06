@@ -64,6 +64,7 @@ from scripts.create_plan import (
     MethodPlan,
     PlanError,
     method_vocabulary,
+    parts_in_place,
     plan_method,
     respell_acronyms,
     title_from_name,
@@ -257,6 +258,9 @@ class EnvPlan:
     action: Literal["write", "keep", "skip"]
     content: str | None
     notes: tuple[str, ...]
+    #: The base URL the `.env` it writes sets when the shell or an env file chose it rather than the default: the API the
+    #: method was generated against, which a `.env` copied from the example by hand must be told to set too.
+    chosen_base_url: str | None = None
 
 
 def find_env_file(root: Path) -> Path | None:
@@ -368,11 +372,13 @@ def plan_env_file(root: Path, shell: ShellEnv, env_file: Path | None, base_url: 
         raise unreadable_env_file(ENV_EXAMPLE, exc, why=f"{ENV_FILE} is written from it") from exc
     text = set_env_line(text, BASE_URL_KEY, quote_env_value(BASE_URL_KEY, base_url))
     text = set_env_line(text, API_KEY_KEY, quote_env_value(API_KEY_KEY, shell.key))
-    origin = "from your shell" if shell.base_url is not None else f"from {env_file}" if sets_base_url(env_file) else "the default"
+    from_shell = shell.base_url is not None
+    from_file = not from_shell and sets_base_url(env_file)
+    origin = "from your shell" if from_shell else f"from {env_file}" if from_file else "the default"
     notes = [f"{ENV_FILE} is written with {BASE_URL_KEY}={base_url} ({origin}) and {API_KEY_KEY} from your shell, readable by you alone."]
     if env_file is not None:
         notes.append(f"it hides {env_file} from the CLI, which reads the nearest {ENV_FILE} only.")
-    return EnvPlan(action="write", content=text, notes=tuple(notes))
+    return EnvPlan(action="write", content=text, notes=tuple(notes), chosen_base_url=base_url if from_shell or from_file else None)
 
 
 def write_env_file(path: Path, content: str) -> bool:
@@ -707,23 +713,55 @@ class WriteHalf:
             return EXIT_INTERRUPTED
 
     def interrupted(self) -> str:
-        """What a Ctrl-C leaves, by how far the write half went."""
-        if self.completed == 0:
-            # `write_method` removes what it wrote when anything stops it, Ctrl-C included.
-            return "interrupted while writing the method. What it wrote was removed, so the template is as it was: run make create again."
-        left = self.commands_left(self.completed + 1)
+        """What a Ctrl-C leaves, by how far the write half went, and while the method is written, by what is on disk.
+
+        `write_method` removes what it wrote when anything stops it, a Ctrl-C included, but only until
+        its last write: one landing after it, before the step is counted, finds the whole method on
+        disk, and a second one can cut the removal short.
+        """
+        done = self.completed
+        if done == 0:
+            if not self.method_written():
+                left = self.method_left()
+                if not left:
+                    return "interrupted while writing the method. What it wrote was removed, so the template is as it was: run make create again."
+                return (
+                    "interrupted while writing the method, before what it wrote was all removed. Remove what is left, then run make create "
+                    f"again, from this directory:\n{indented([shlex.join(['rm', '-rf', *left])])}"
+                )
+            done = 1
+        left = self.commands_left(done + 1)
         if not left:
             return "interrupted once the project was created: nothing is left to run."
-        step = self.steps[self.completed]
+        step = self.steps[done]
         return (
-            f"interrupted after the method was written, at step {self.completed + 1}/{len(self.steps)} ({step}). "
+            f"interrupted after the method was written, at step {done + 1}/{len(self.steps)} ({step}). "
             f"Finish by hand, from this directory:\n{indented(left)}"
         )
 
+    def method_written(self) -> bool:
+        """Whether the whole method is on disk: `binding.py`, which `write_method` writes last and removes first, holds what was planned."""
+        try:
+            return (self.planned.layout.package_dir / BINDING_FILENAME).read_text(encoding="utf-8") == self.planned.plan.binding
+        except (OSError, UnicodeError):
+            return False
+
+    def method_left(self) -> list[str]:
+        """The parts of the method a stopped write left on disk, each as a path from the root."""
+        layout = self.planned.layout
+        try:
+            parts = parts_in_place(layout)
+        except (OSError, CodegenSetupError):
+            parts = [path for path in (layout.method_dir, layout.generated_dir, layout.package_dir / BINDING_FILENAME) if os.path.lexists(path)]
+        return [path.relative_to(self.root).as_posix() if path.is_relative_to(self.root) else str(path) for path in parts]
+
     def commands_left(self, number: int) -> list[str]:
         """The ordinary commands that finish the project when step `number` did not."""
-        # `cp` only while there is no `.env`: one the gesture or the person wrote meanwhile is never copied over.
-        env_line = [f"cp {ENV_EXAMPLE} {ENV_FILE}   # then set {API_KEY_KEY} in it"]
+        # `cp` only while there is no `.env`: one the gesture or the person wrote meanwhile is never copied over. The copy
+        # holds the example's base URL, so a base URL the shell or a file above chose, the method's API, is named with the key.
+        chosen = self.env_plan.chosen_base_url
+        also = f", and {BASE_URL_KEY} to {chosen}" if chosen is not None else ""
+        env_line = [f"cp {ENV_EXAMPLE} {ENV_FILE}   # then set {API_KEY_KEY} in it{also}"]
         env_left = env_line if self.env_plan.action == "write" and not (self.root / ENV_FILE).exists() else []
         if number <= 2:
             # The bootstrap writes pyproject.toml last: until then the tree is the template's, and the same
@@ -741,14 +779,16 @@ class WriteHalf:
         planned, identity, root = self.planned, self.identity, self.root
         self.announce(1)
         try:
-            for line in write_method(planned.plan, planned.layout):
-                print(f"    {line}")
+            written = write_method(planned.plan, planned.layout)
         except (CodegenSetupError, CodegenError, OSError, RuntimeError) as exc:
             msg = (
                 f"writing the method failed: {exc}. What it wrote was removed, so the template is as it was: fix the cause and run make create again."
             )
             raise CreateError(msg) from exc
+        # Counted before its lines print: the method is whole on disk, and nothing removes it any more.
         self.completed = 1
+        for line in written:
+            print(f"    {line}")
 
         self.announce(2)
         if planned.deps.run(self.bootstrap, root, None) != 0:
