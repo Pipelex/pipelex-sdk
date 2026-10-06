@@ -56,7 +56,7 @@ my-cli --inputs - < inputs.json | jq .         # read the inputs from stdin, pip
 - **Files the method produced**, such as images, are downloaded under `outputs/<run-id>/`, or into the directory `--out DIR` names; `--no-download` skips them. Their paths are printed on stderr.
 - **The cost report**, the model calls the run made and what they cost, follows the result on stderr.
 
-The exit code is 0 on success; 1 when the run or a request failed, when the API key is missing, or when a produced file did not come down; 2 for a command line it refuses; and 130 after Ctrl-C.
+The exit code is 0 on success; 1 when the run or a request failed, when the API key is missing, or when a produced file did not come down or is missing from an earlier download; 2 for a command line it refuses; and 130 after Ctrl-C.
 
 ## Configuration
 

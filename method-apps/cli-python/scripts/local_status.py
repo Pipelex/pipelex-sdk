@@ -5,7 +5,8 @@ installed metadata. The version cannot tell the two apart, since a checkout carr
 will be published as; what does is the `direct_url.json` an installer records for a package it
 installed from a path, which a release from PyPI does not carry.
 
-Each line is `<name> <local|pypi|missing> <version>`, and a local one ends with its checkout's path.
+Each line is `<name> <local|pypi> <version>`, a local one ending with its checkout's path, or
+`<name> missing` for a distribution the environment does not hold.
 """
 
 import json

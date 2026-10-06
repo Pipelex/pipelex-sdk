@@ -9,17 +9,38 @@ import json
 import os
 import signal
 from pathlib import Path
+from typing import Any
 
 import pytest
-from pipelex_sdk.artifact_models import ArtifactItemError, DownloadedArtifact
-from pipelex_sdk.errors import ApiResponseError, ArtifactOperationError, PipelineExecuteTimeoutError, RunFailedError, RunLifecycleUnavailableError
+import typer
+from pipelex_sdk.artifact_models import ArtifactItemError, DownloadArtifactsResult, DownloadedArtifact
+from pipelex_sdk.errors import (
+    ApiResponseError,
+    ApiUnreachableError,
+    ArtifactOperationError,
+    PipelineExecuteTimeoutError,
+    RunFailedError,
+    RunLifecycleUnavailableError,
+)
 from pipelex_sdk.runs import RunResults, RunStatus, WaitForResultOptions
 
 from pipelex_method_cli_python.cli import EMPTY_STATE, OWN_FLAGS, OWN_NAMES, OWN_OPTIONS, load_environment
+from pipelex_method_cli_python.lib import output
 from pipelex_method_cli_python.lib.app import COMMAND_NAME
 from pipelex_method_cli_python.lib.method_source import MethodSource
 from pipelex_method_cli_python.lib.output import render_json
-from tests.support import IMAGE_OUTPUT, RUN_ID, TEXT_OUTPUT, FakeClient, download_verdict, execute_result, invoke, make_binding, run_results
+from tests.support import (
+    IMAGE_OUTPUT,
+    RUN_ID,
+    TEXT_OUTPUT,
+    TWO_FILES_OUTPUT,
+    FakeClient,
+    download_verdict,
+    execute_result,
+    invoke,
+    make_binding,
+    run_results,
+)
 
 
 class TestEmptyState:
@@ -139,6 +160,48 @@ class TestAttended:
         assert result.exit_code == 130
         assert result.stdout == ""
         assert f"{COMMAND_NAME} --resume {RUN_ID}" in result.stderr
+
+    def test_ctrl_c_during_the_start_says_a_run_may_have_started(self, fake_client: FakeClient):
+        async def interrupted() -> str:
+            signal.raise_signal(signal.SIGINT)
+            await asyncio.sleep(10)
+            msg = "the start was not cancelled"
+            raise AssertionError(msg)
+
+        fake_client.start_answer = interrupted
+        result = invoke(make_binding(), [])
+        assert result.exit_code == 130
+        # The request may have reached the server: a run may be going, with no id to resume it by.
+        assert "may or may not have started" in result.stderr
+        assert f"{COMMAND_NAME} --resume" not in result.stderr
+
+    def test_losing_the_api_mid_wait_says_how_to_resume(self, fake_client: FakeClient):
+        fake_client.wait_answer = ApiUnreachableError("connection refused", api_url="https://api.pipelex.com")
+        result = invoke(make_binding(), [])
+        assert result.exit_code == 1
+        assert f"{COMMAND_NAME} --resume {RUN_ID}" in result.stderr
+        assert "Could not reach the Pipelex API" in result.stderr
+
+    @pytest.mark.parametrize(("status", "status_text"), [(502, "Bad Gateway"), (429, "Too Many Requests")])
+    def test_a_transient_refusal_mid_wait_says_how_to_resume(self, fake_client: FakeClient, status: int, status_text: str):
+        fake_client.wait_answer = ApiResponseError(
+            f"API GET /v1/runs/{RUN_ID} failed ({status})",
+            api_url="https://api.pipelex.com",
+            status=status,
+            status_text=status_text,
+            response_body="",
+        )
+        result = invoke(make_binding(), [])
+        assert result.exit_code == 1
+        assert f"{COMMAND_NAME} --resume {RUN_ID}" in result.stderr
+
+    def test_an_unknown_run_is_never_offered_a_resume(self, fake_client: FakeClient):
+        fake_client.wait_answer = ApiResponseError(
+            f"API GET /v1/runs/{RUN_ID} failed (404)", api_url="https://api.pipelex.com", status=404, status_text="Not Found", response_body=""
+        )
+        result = invoke(make_binding(), ["--resume", RUN_ID])
+        assert result.exit_code == 1
+        assert f"{COMMAND_NAME} --resume" not in result.stderr
 
     def test_a_failed_run_reads_out_its_stored_reason(self, fake_client: FakeClient):
         fake_client.wait_answer = RunFailedError("Run finished with status FAILED; no result available", run_id=RUN_ID, status=RunStatus.FAILED)
@@ -327,6 +390,53 @@ class TestDownloads:
         assert json.loads(result.stdout) == IMAGE_OUTPUT
         assert fake_client.downloaded_to == []
         assert "none were fetched" in result.stderr
+
+    def test_a_resume_after_a_download_left_short_fails_and_says_how_to_fetch_again(
+        self, fake_client: FakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "outputs" / RUN_ID).mkdir(parents=True)
+        (tmp_path / "outputs" / RUN_ID / "first.png").write_bytes(b"png")
+        fake_client.wait_answer = run_results(TWO_FILES_OUTPUT)
+        result = invoke(make_binding(), ["--resume", RUN_ID])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == TWO_FILES_OUTPUT
+        assert fake_client.downloaded_to == []
+        assert "1 of this run's 2 files" in result.stderr
+        assert f"{COMMAND_NAME} --resume {RUN_ID} --out DIR" in result.stderr
+
+    def test_ctrl_c_while_the_files_come_down_says_how_to_fetch_them_again(self, fake_client: FakeClient, tmp_path: Path):
+        async def interrupted() -> DownloadArtifactsResult:
+            signal.raise_signal(signal.SIGINT)
+            await asyncio.sleep(10)
+            msg = "the download was not cancelled"
+            raise AssertionError(msg)
+
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT)
+        fake_client.download_answer = interrupted
+        result = invoke(make_binding(), ["--out", str(tmp_path)])
+        assert result.exit_code == 130
+        assert json.loads(result.stdout) == IMAGE_OUTPUT
+        assert f"{COMMAND_NAME} --resume {RUN_ID} --out DIR" in result.stderr
+
+    def test_a_reader_that_stops_early_still_gets_the_files_down(self, fake_client: FakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # `my-cli | head -1`: the reader closes the pipe, and the next write to stdout raises.
+        original_echo = typer.echo
+        silenced: list[bool] = []
+
+        def closed_stdout(message: object = None, *, err: bool = False, **kwargs: Any) -> None:
+            if not err:
+                raise BrokenPipeError
+            original_echo(message, err=err, **kwargs)
+
+        monkeypatch.setattr(output.typer, "echo", closed_stdout)
+        monkeypatch.setattr(output, "silence_stdout", lambda: silenced.append(True))
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        result = invoke(make_binding(), ["--out", str(tmp_path)])
+        assert result.exit_code == 0, result.stderr
+        assert fake_client.downloaded_to == [tmp_path]
+        assert "No inference calls" in result.stderr
+        assert silenced == [True]
 
     def test_a_text_result_never_names_the_default_directory(self, fake_client: FakeClient):
         # A run id that cannot name a directory matters only once there is a file to save.

@@ -25,7 +25,7 @@ from pipelex_method_cli_python.lib.artifacts import (
     download_produced_files,
     print_downloads,
 )
-from tests.support import IMAGE_OUTPUT, RUN_ID, TEXT_OUTPUT, FakeClient, download_verdict, run_results
+from tests.support import IMAGE_OUTPUT, RUN_ID, TEXT_OUTPUT, TWO_FILES_OUTPUT, FakeClient, download_verdict, run_results
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -71,8 +71,21 @@ class TestDownloadProducedFiles:
         (earlier / "main_stuff.png").write_bytes(b"png")
         fake = FakeClient()
         downloaded = await download_produced_files(_as_client(fake), run_results(IMAGE_OUTPUT), out_dir=None)
-        assert downloaded == EarlierDownload(dir_path=earlier)
+        assert downloaded == EarlierDownload(dir_path=earlier, expected=1, found=1)
+        assert isinstance(downloaded, EarlierDownload) and downloaded.complete
         assert fake.downloaded_to == []
+
+    async def test_an_earlier_download_left_short_is_counted_as_incomplete(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # An interrupted or partly failed download keeps the files it saved, and a file browser's
+        # dotfile is no file the SDK saved.
+        monkeypatch.chdir(tmp_path)
+        earlier = DEFAULT_OUTPUT_ROOT / RUN_ID
+        earlier.mkdir(parents=True)
+        (earlier / "first.png").write_bytes(b"png")
+        (earlier / ".DS_Store").write_bytes(b"")
+        downloaded = await download_produced_files(_as_client(FakeClient()), run_results(TWO_FILES_OUTPUT), out_dir=None)
+        assert downloaded == EarlierDownload(dir_path=earlier, expected=2, found=1)
+        assert isinstance(downloaded, EarlierDownload) and not downloaded.complete
 
     async def test_a_directory_out_names_is_never_checked_for_earlier_files(self, tmp_path: Path):
         (tmp_path / "kept.txt").write_text("mine", encoding="utf-8")
@@ -107,11 +120,15 @@ class TestPrintDownloads:
     def test_says_nothing_when_the_run_produced_no_file(self):
         assert _render(None) == ""
 
-    def test_an_earlier_download_says_nothing_was_fetched_and_how_to_fetch_again(self):
-        rendered = _render(EarlierDownload(dir_path=Path("outputs/run-1")))
-        assert "outputs/run-1 already holds files from an earlier download" in rendered
+    def test_an_earlier_download_says_nothing_was_fetched(self):
+        rendered = _render(EarlierDownload(dir_path=Path("outputs/run-1"), expected=2, found=2))
+        assert "outputs/run-1 already holds this run's files from an earlier download" in rendered
         assert "none were fetched" in rendered
-        assert "--out DIR" in rendered
+
+    def test_an_earlier_download_left_short_says_how_short(self):
+        rendered = _render(EarlierDownload(dir_path=Path("outputs/run-1"), expected=2, found=1))
+        assert "outputs/run-1 holds 1 of this run's 2 files" in rendered
+        assert "stopped short" in rendered
 
     def test_names_each_saved_file(self):
         rendered = _render(download_verdict(DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path="/tmp/out/cat.png", size=3)))

@@ -9,10 +9,11 @@ itself is presented on stderr.
 **The options are built from data rather than written as a function's parameters.** Typer reads a
 command's parameters from `inspect.signature`, which honours an assigned `__signature__`, so the
 command is a function taking `**values` whose signature is assembled from a list of
-`inspect.Parameter`s: the command's own options, `OWN_OPTIONS`, and, once the method's committed
-input form is read, one option per declared input. A derived option joins the list; nothing here is
-rewritten for it. An input whose flag would collide with one of `OWN_FLAGS` is offered under another
-name, and the Python names of the own options are reserved the same way.
+`inspect.Parameter`s. Today `command_parameters` returns the command's own options, `OWN_OPTIONS`,
+alone; reading the method's committed input form adds one option per declared input to that list,
+and nothing else here is rewritten for it. `OWN_FLAGS` and `OWN_NAMES` are what such a derived
+option must stay clear of: an input whose flag would collide with an own option's is to be offered
+under another name, and so is one whose Python name would.
 
 **With no method yet**, the template as shipped, the command takes no option: its help says to run
 `make create`, and a bare run refuses with that message on stderr and exit code 1.

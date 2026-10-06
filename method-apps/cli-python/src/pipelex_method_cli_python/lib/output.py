@@ -19,9 +19,16 @@ names, and it is a workaround with an expiry: when the runtime settles on one sh
 becomes a one-liner or goes away. Whether the output is plural is the binding's to say
 (`OUTPUT_IS_LIST`), never guessed from the value, since a single output may well be an object with
 an `items` field of its own.
+
+**A reader that stops reading early is not a failure.** `my-cli | head -1` closes the pipe once it
+has its line, and the next write to stdout raises `BrokenPipeError`. What the reader took is what
+it wanted, so the command carries on to the run's files and its cost report, both on stderr, and
+points stdout at the null device so that the interpreter's last flush cannot raise again.
 """
 
 import json
+import os
+import sys
 from typing import Any, cast
 
 import typer
@@ -83,9 +90,33 @@ def render_json(payload: Any) -> str:
 
 def print_result(results: RunResults, *, output_is_list: bool) -> None:
     """Print a run's result on stdout as JSON, and nothing else."""
-    typer.echo(render_json(result_payload(results, output_is_list=output_is_list)))
+    _echo_stdout(render_json(result_payload(results, output_is_list=output_is_list)))
 
 
 def print_run_id(run_id: str) -> None:
     """Print a detached run's id alone on stdout, so `RUN_ID=$(… --detach)` captures exactly it."""
-    typer.echo(run_id)
+    _echo_stdout(run_id)
+
+
+def _echo_stdout(text: str) -> None:
+    """Write `text` and a newline to stdout, letting a reader that closed its end go."""
+    try:
+        typer.echo(text)
+    except BrokenPipeError:
+        silence_stdout()
+
+
+def silence_stdout() -> None:
+    """Point stdout's file descriptor at the null device, so nothing written to it later can raise.
+
+    A stdout with no file descriptor of its own, as a test runner's capture is, is left as it is.
+    """
+    try:
+        descriptor = sys.stdout.fileno()
+    except (OSError, ValueError):
+        return
+    null = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(null, descriptor)
+    finally:
+        os.close(null)

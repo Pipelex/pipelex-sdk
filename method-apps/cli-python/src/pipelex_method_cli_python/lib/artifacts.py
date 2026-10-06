@@ -16,7 +16,9 @@ The files go to `outputs/<run-id>/` under the working directory, or to the direc
 and `--no-download` skips them. The default directory is worked out only once there is a file to
 save, so a run id that could not name one never fails a text-only run. A default directory that
 already holds files is left alone: only a second `--resume` of the same run finds one, and since the
-SDK never overwrites, downloading again would save every file a second time beside itself.
+SDK never overwrites, downloading again would save every file a second time beside itself. What it
+holds is counted against the files the run produced, so a directory an interrupted or partly failed
+download left short is reported as incomplete rather than passed off as the earlier download.
 """
 
 import re
@@ -41,9 +43,21 @@ _SAFE_RUN_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 @dataclass(frozen=True)
 class EarlierDownload:
-    """A run's default directory that already held files, so nothing was downloaded into it."""
+    """A run's default directory that already held files, so nothing was downloaded into it.
+
+    `expected` is the number of files the run produced and `found` the number the directory holds.
+    Fewer than expected is a download known to be incomplete; as many or more is taken as complete,
+    since the SDK writes nothing else there.
+    """
 
     dir_path: Path
+    expected: int
+    found: int
+
+    @property
+    def complete(self) -> bool:
+        """Whether the directory holds as many files as the run produced."""
+        return self.found >= self.expected
 
 
 def default_download_dir(run_id: str) -> Path:
@@ -68,19 +82,30 @@ async def download_produced_files(
     is created and no default directory is named for a run that produced nothing. The scope is the
     main output on purpose: the working memory would also bring down the inputs the run was given
     and every intermediate. Returns an `EarlierDownload` when `out_dir` is `None` and the run's
-    default directory already holds files, which a directory `--out` names is never checked for.
+    default directory already holds files, counted against the files the run produced, which a
+    directory `--out` names is never checked for.
 
     Raises:
         AppError: There is a file to save, `out_dir` is `None`, and the run id cannot name a directory.
     """
-    if not collect_artifacts(results.main_stuff):
+    references = collect_artifacts(results.main_stuff)
+    if not references:
         return None
     if out_dir is not None:
         return await client.download_artifacts(results=results, dir_path=out_dir)
     dir_path = default_download_dir(results.pipeline_run_id)
     if dir_path.is_dir() and any(dir_path.iterdir()):
-        return EarlierDownload(dir_path=dir_path)
+        return EarlierDownload(dir_path=dir_path, expected=len(references), found=_saved_file_count(dir_path))
     return await client.download_artifacts(results=results, dir_path=dir_path)
+
+
+def _saved_file_count(dir_path: Path) -> int:
+    """The files directly under `dir_path` that a download could have saved.
+
+    The SDK saves one file per reference directly in the directory, under a name that never starts
+    with a dot, so a dotfile such as the `.DS_Store` a file browser leaves is not counted.
+    """
+    return sum(1 for entry in dir_path.iterdir() if entry.is_file() and not entry.name.startswith("."))
 
 
 def print_downloads(console: Console, downloaded: DownloadArtifactsResult | EarlierDownload | None) -> None:
@@ -88,11 +113,14 @@ def print_downloads(console: Console, downloaded: DownloadArtifactsResult | Earl
     if downloaded is None:
         return
     if isinstance(downloaded, EarlierDownload):
-        # The directory holds what an earlier download saved, which may not be every file.
-        console.print(
-            f"{escape(str(downloaded.dir_path))} already holds files from an earlier download of this run, so none were fetched; "
-            "fetch them all again into an empty directory with --out DIR."
-        )
+        where = escape(str(downloaded.dir_path))
+        if downloaded.complete:
+            console.print(f"{where} already holds this run's files from an earlier download, so none were fetched.")
+        else:
+            console.print(
+                f"[yellow]{where} holds {downloaded.found} of this run's {downloaded.expected} files: "
+                "an earlier download stopped short, so none were fetched.[/yellow]"
+            )
         return
     for artifact in downloaded.artifacts:
         if artifact.error is not None:

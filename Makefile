@@ -163,7 +163,7 @@ use-local: ## Install this tree's SDK, and the workspace's mthds-form or mthds-p
 	$(refuse_empty_switch)
 	@$(if $(switched),$(MAKE) --no-print-directory use-local-js,:)
 	@set -e; for t in $(switched_py); do \
-		echo "── $$t: installing this tree's python/ and $(MTHDS_PYTHON_DIR) as editable packages"; \
+		echo "── $$t: installing this tree's python/, and $(MTHDS_PYTHON_DIR) where that checkout exists, as editable packages"; \
 		$(MAKE) --no-print-directory -C "$$t" use-local SDK_DIR="$(CURDIR)/python" MTHDS_DIR="$(abspath $(MTHDS_PYTHON_DIR))"; \
 	done
 

@@ -5,7 +5,8 @@ helpers. The mode is the person's choice, made with the command's flags (`lib/ap
 
 - **attended**, the default: `start`, the run id on stderr at once, then `wait_for_result` with a
   one-line status on stderr fed by `on_poll`. Ctrl-C leaves the run going on the server, prints the
-  `--resume` command that reattaches to it, and the command exits with code 130.
+  `--resume` command that reattaches to it, and the command exits with code 130. Losing the API
+  mid-wait prints the same command before the error.
 - **`--blocking`**: one `execute`, lifted onto the same `RunResults` with `results_from_execute`.
   Behind the hosted gateway it is cut off at about 30 seconds, and `lib/errors.py` presents that
   with a hint to drop the flag.
@@ -31,6 +32,7 @@ from typing import Any
 
 from pipelex_sdk.artifact_models import DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
+from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
 from pipelex_sdk.execute_result import results_from_execute
 from pipelex_sdk.runs import PollInfo, RunResults, WaitForResultOptions
 from rich.console import Console
@@ -38,7 +40,7 @@ from rich.markup import escape
 
 from pipelex_method_cli_python.lib import client as api
 from pipelex_method_cli_python.lib.app import RunMode
-from pipelex_method_cli_python.lib.artifacts import download_produced_files, print_downloads
+from pipelex_method_cli_python.lib.artifacts import EarlierDownload, download_produced_files, print_downloads
 from pipelex_method_cli_python.lib.binding import MethodBinding
 from pipelex_method_cli_python.lib.errors import resume_command
 from pipelex_method_cli_python.lib.output import OutputShapeError, print_result, print_run_id
@@ -97,7 +99,10 @@ async def start_run(client: PipelexAPIClient, *, binding: MethodBinding, inputs:
     try:
         started = await client.start(pipe_code=binding.pipe_ref, inputs=inputs, **binding.source.run_kwargs())
     except asyncio.CancelledError:
-        stderr.print("\nInterrupted before the API answered with a run id, so there is no run to resume.")
+        stderr.print(
+            "\nInterrupted before the API answered with a run id. A run may or may not have started on the server, "
+            "and without its id it cannot be resumed."
+        )
         raise
     return started.pipeline_run_id
 
@@ -107,7 +112,9 @@ async def attend_run(client: PipelexAPIClient, *, run_id: str, stderr: Console) 
 
     Cancelling the wait, which is what Ctrl-C does under `asyncio.run`, leaves the run going on the
     server: it prints the command that reattaches to it and lets the cancellation through, which the
-    command's boundary turns into exit code 130.
+    command's boundary turns into exit code 130. Losing the API mid-wait, unreachable or answering a
+    server fault or a rate limit, says the same before the boundary presents the error, since the
+    run may well still be going; a refusal such as a `404` for an unknown id says nothing of the kind.
     """
     short_id = escape(run_id[:8])
     with stderr.status(f"Run {short_id}… in progress") as status:
@@ -120,6 +127,19 @@ async def attend_run(client: PipelexAPIClient, *, run_id: str, stderr: Console) 
         except asyncio.CancelledError:
             stderr.print(f"\nInterrupted. The run is still going on the server; resume it with: [bold]{escape(resume_command(run_id))}[/bold]")
             raise
+        except (ApiUnreachableError, ApiResponseError) as exc:
+            if isinstance(exc, ApiResponseError) and not _is_transient(exc):
+                raise
+            stderr.print(
+                f"\nLost contact with the API while waiting. The run may still be going on the server; "
+                f"resume it with: [bold]{escape(resume_command(run_id))}[/bold]"
+            )
+            raise
+
+
+def _is_transient(exc: ApiResponseError) -> bool:
+    """Whether a poll's refusal says nothing about the run: a server fault, or a rate limit."""
+    return exc.status >= 500 or exc.status == 429
 
 
 async def run_blocking(client: PipelexAPIClient, *, binding: MethodBinding, inputs: dict[str, Any], stderr: Console) -> RunResults:
@@ -141,8 +161,9 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
     raised on the way included. A result in a shape the binding does not declare is not printed, but
     the run's files still come down, since they are paid for and their links expire, and the error
     is raised once the cost report is out. A file that did not come down makes the exit code 1,
-    since the command did not do all it was asked, and the hint says how to fetch the files again
-    where that is possible.
+    since the command did not do all it was asked, and so does a default directory an earlier
+    download left short; the hint says how to fetch the files again where that is possible, and a
+    Ctrl-C while they come down says it too before the cancellation goes through.
     """
     exit_code = 0
     shape_error: OutputShapeError | None = None
@@ -152,9 +173,13 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
         except OutputShapeError as exc:
             shape_error = exc
         if plan.download:
-            downloaded = await download_produced_files(client, results, out_dir=plan.out_dir)
+            try:
+                downloaded = await download_produced_files(client, results, out_dir=plan.out_dir)
+            except asyncio.CancelledError:
+                stderr.print(f"\nInterrupted while saving the run's files. {refetch_advice(plan.mode, results.pipeline_run_id)}")
+                raise
             print_downloads(stderr, downloaded)
-            if isinstance(downloaded, DownloadArtifactsResult) and not downloaded.all_saved:
+            if _incomplete(downloaded):
                 stderr.print(
                     f"[yellow]Hint:[/yellow] The run succeeded and its result is complete above. {refetch_advice(plan.mode, results.pipeline_run_id)}"
                 )
@@ -164,6 +189,13 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
     if shape_error is not None:
         raise shape_error
     return exit_code
+
+
+def _incomplete(downloaded: DownloadArtifactsResult | EarlierDownload | None) -> bool:
+    """Whether the run's files are known not to be all on disk."""
+    if isinstance(downloaded, EarlierDownload):
+        return not downloaded.complete
+    return downloaded is not None and not downloaded.all_saved
 
 
 def refetch_advice(mode: RunMode, run_id: str) -> str:

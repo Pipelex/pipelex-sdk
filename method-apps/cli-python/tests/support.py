@@ -31,6 +31,12 @@ TEXT_OUTPUT: dict[str, Any] = {"text": "Bonjour, Marie — ça va ?"}
 #: short-lived signed link. Only the first is what the artifact stack walks.
 IMAGE_OUTPUT: dict[str, Any] = {"url": f"pipelex-storage://{RUN_ID}/cat.png", "public_url": "https://cdn.example.com/signed/cat.png"}
 
+#: An output referencing two stored files, so a download can be partly done.
+TWO_FILES_OUTPUT: dict[str, Any] = {
+    "first": {"url": f"pipelex-storage://{RUN_ID}/first.png"},
+    "second": {"url": f"pipelex-storage://{RUN_ID}/second.png"},
+}
+
 
 class Greeting(BaseModel):
     """A model standing in for one the codegen writes."""
@@ -83,15 +89,21 @@ def download_verdict(*artifacts: DownloadedArtifact) -> DownloadArtifactsResult:
 #: What the fake's `wait_for_result` answers: results, an error to raise, or a coroutine to run instead.
 WaitAnswer = RunResults | BaseException | Callable[[WaitForResultOptions | None], Awaitable[RunResults]]
 
+#: What the fake's `start` answers: a run id, an error to raise, or a coroutine to run instead.
+StartAnswer = str | BaseException | Callable[[], Awaitable[str]]
+
+#: What the fake's `download_artifacts` answers: a verdict, an error to raise, or a coroutine to run instead.
+DownloadAnswer = DownloadArtifactsResult | BaseException | Callable[[], Awaitable[DownloadArtifactsResult]]
+
 
 class FakeClient:
     """Stands in for `PipelexAPIClient`: records every call and answers what the test set."""
 
     def __init__(self) -> None:
-        self.start_answer: str | BaseException = RUN_ID
+        self.start_answer: StartAnswer = RUN_ID
         self.execute_answer: PipelexExecuteResult | BaseException = execute_result({"text": "hi"})
         self.wait_answer: WaitAnswer = run_results(TEXT_OUTPUT)
-        self.download_answer: DownloadArtifactsResult | BaseException = download_verdict()
+        self.download_answer: DownloadAnswer = download_verdict()
         self.started: list[dict[str, Any]] = []
         self.executed: list[dict[str, Any]] = []
         self.waited: list[str] = []
@@ -108,9 +120,11 @@ class FakeClient:
 
     async def start(self, **kwargs: Any) -> PipelexRunResultStart:
         self.started.append(kwargs)
-        if isinstance(self.start_answer, BaseException):
-            raise self.start_answer
-        return PipelexRunResultStart(pipeline_run_id=self.start_answer)
+        answer = self.start_answer
+        if isinstance(answer, BaseException):
+            raise answer
+        run_id = answer if isinstance(answer, str) else await answer()
+        return PipelexRunResultStart(pipeline_run_id=run_id)
 
     async def execute(self, **kwargs: Any) -> PipelexExecuteResult:
         self.executed.append(kwargs)
@@ -132,9 +146,12 @@ class FakeClient:
     async def download_artifacts(self, *, results: RunResults, dir_path: Path) -> DownloadArtifactsResult:
         del results
         self.downloaded_to.append(dir_path)
-        if isinstance(self.download_answer, BaseException):
-            raise self.download_answer
-        return self.download_answer
+        answer = self.download_answer
+        if isinstance(answer, BaseException):
+            raise answer
+        if isinstance(answer, DownloadArtifactsResult):
+            return answer
+        return await answer()
 
 
 def invoke(binding: MethodBinding | None, args: list[str], *, stdin: str | None = None) -> Result:
