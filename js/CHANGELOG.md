@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The `.mthds` check hook's lint engine moves to `@pipelex/tools-wasm` 0.4.0**: the bundle built by `npm run build:hook` now embeds `@pipelex/tools-wasm` 0.4.0, whose MTHDS schema accepts binding steps in a `PipeSequence`'s steps, a dotted `batch_over` on a sequence step, and the `PipeDocGen` and `PipeJudge` pipe types, and refuses dotted input names, so the hook no longer blocks those valid forms and blocks a dotted input name with a schema error.
+
 ## [v0.30.0] - 2026-10-04
 
 ### Changed
