@@ -11,7 +11,17 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { describe, it } from "node:test";
 
-import { CASES, FAMILY_ROOT, optionStyle, render, sample } from "./record-wire-table.mjs";
+import path from "node:path";
+
+import {
+  CASES,
+  CONTRACTS_SUBDIR,
+  FAMILY_ROOT,
+  optionStyle,
+  render,
+  sample,
+  staleContracts,
+} from "./record-wire-table.mjs";
 
 /** The flags this Node needs to import a TypeScript module. */
 const STRIP_TYPES = process.features.typescript ? [] : ["--experimental-strip-types"];
@@ -36,6 +46,16 @@ describe("the wire-format table", () => {
 
   it("renders two-space JSON with a final newline, so a recording is stable", () => {
     assert.equal(render({ b: [1], a: "x" }), '{\n  "b": [\n    1\n  ],\n  "a": "x"\n}\n');
+  });
+
+  it("counts a recorded contract whose fixture is gone as stale, and nothing else", () => {
+    const kept = path.join(CONTRACTS_SUBDIR, "text-stats.json");
+    const files = { [kept]: "{}\n", "table.json": "{}\n" };
+    assert.deepEqual(staleContracts(["text-stats.json", "removed.json", "notes.txt"], files), [
+      path.join(CONTRACTS_SUBDIR, "removed.json"),
+    ]);
+    assert.deepEqual(staleContracts(["text-stats.json"], files), []);
+    assert.deepEqual(staleContracts([], files), []);
   });
 });
 

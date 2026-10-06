@@ -42,7 +42,7 @@ def _module(**names: object) -> ModuleType:
 
 def _halves(monkeypatch: pytest.MonkeyPatch, *, binding: bool, tree: TreeState, missing: tuple[str, ...] = ()) -> None:
     monkeypatch.setattr(binding_module, "has_binding", lambda: binding)
-    monkeypatch.setattr(binding_module, "generated_tree", lambda: (tree, missing))
+    monkeypatch.setattr(binding_module, "tree_state", lambda: (tree, missing))
 
 
 class TestLoadBinding:

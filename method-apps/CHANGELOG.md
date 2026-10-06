@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- **The web app template's codegen refuses a method that changed while it was being generated**: `npm run codegen`, `make add-method` and `make create` now ask `POST /v1/codegen` again once `POST /v1/pipe-io` has answered, and write nothing when the method resolved to another crate in between, saying so and to run the command again. A method edited or republished between the two requests used to leave the generated types of one revision beside the contracts of another, a tree `codegen:check` called current.
 - **The web app template no longer describes a failed input preparation as a failed upload**: when a run's inputs cannot be prepared, for instance because the API refuses the pipe the action names, the error now reads "Preparing the inputs failed" and names the method's signature or its pipe as the usual cause, with the server's reason in the technical details. It used to say that the app could not upload the file to Pipelex storage, although a run's files are stored before it starts.
 
 ## [v0.29.1] - 2026-10-02

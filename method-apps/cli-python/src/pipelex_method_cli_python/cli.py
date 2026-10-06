@@ -154,9 +154,6 @@ def _flags_of(parameter: inspect.Parameter) -> frozenset[str]:
 #: The command line's names of the own options.
 OWN_FLAGS = frozenset(flag for parameter in OWN_OPTIONS for flag in _flags_of(parameter))
 
-#: The Python names of the own options.
-OWN_NAMES = frozenset(parameter.name for parameter in OWN_OPTIONS)
-
 #: The flags no input's option may take: the own options', and the help Click adds to every command.
 RESERVED_FLAGS = OWN_FLAGS | {"--help"}
 

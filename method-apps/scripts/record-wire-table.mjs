@@ -23,13 +23,15 @@
  * lives here, at the family's root, because it reads two templates, and a
  * template never reaches above its own directory.
  *
- * `node scripts/record-wire-table.mjs` rewrites the files; `--check` compares
- * them with what it would write, byte for byte, and exits 1 on a difference.
+ * `node scripts/record-wire-table.mjs` rewrites the files, and deletes a
+ * recorded contract whose fixture is gone; `--check` compares them with what it
+ * would write, byte for byte, counts such a leftover as a difference, and exits
+ * 1 on any.
  * Node reads `webapp-js`'s TypeScript fixtures directly, which Node 22 before
  * 22.18 does only under `--experimental-strip-types`.
  */
 
-import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -76,6 +78,9 @@ const SCALAR_KINDS = new Set([
 
 /** The scheme an uploaded file's reference carries. */
 const STORAGE = "pipelex-storage://";
+
+/** The directory under `OUT_DIR` that holds one recorded contract per fixture. */
+export const CONTRACTS_SUBDIR = "contracts";
 
 /** The sets of inputs each pipe is recorded with. */
 export const CASES = ["every input", "required only", "nothing"];
@@ -262,7 +267,7 @@ export async function recording() {
   const files = {};
   const cases = [];
   for (const { name, contracts } of fixtures) {
-    files[path.join("contracts", `${name}.json`)] = render(contracts);
+    files[path.join(CONTRACTS_SUBDIR, `${name}.json`)] = render(contracts);
     cases.push(...casesOf(kernel, name, contracts));
   }
   files["table.json"] = render({
@@ -276,10 +281,34 @@ export async function recording() {
   return files;
 }
 
+/**
+ * The recorded contracts a recording would not write, by their path under
+ * `OUT_DIR`, sorted: each is a fixture's, after the fixture was deleted or
+ * renamed. `present` is the names of the files in the output's contracts
+ * directory, and `files` the recording.
+ */
+export function staleContracts(present, files) {
+  return present
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => path.join(CONTRACTS_SUBDIR, name))
+    .filter((relative) => !Object.hasOwn(files, relative))
+    .sort();
+}
+
+/** The names of the files in the output's contracts directory, none when it does not exist. */
+async function presentContracts() {
+  try {
+    return await readdir(path.join(OUT_DIR, CONTRACTS_SUBDIR));
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 async function main(argv) {
   const check = argv.includes("--check");
   const files = await recording();
-  const differing = [];
+  const changed = [];
   for (const [relative, text] of Object.entries(files)) {
     const target = path.join(OUT_DIR, relative);
     let current = null;
@@ -289,12 +318,17 @@ async function main(argv) {
       current = null;
     }
     if (current === text) continue;
-    differing.push(relative);
+    changed.push(relative);
     if (!check) {
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, text, "utf8");
     }
   }
+  const stale = staleContracts(await presentContracts(), files);
+  if (!check) {
+    for (const relative of stale) await rm(path.join(OUT_DIR, relative));
+  }
+  const differing = [...changed, ...stale];
   const where = path.relative(FAMILY_ROOT, OUT_DIR);
   if (check && differing.length > 0) {
     console.error(
@@ -305,10 +339,13 @@ async function main(argv) {
     );
     return 1;
   }
+  if (check) {
+    console.log(`The wire table in ${where}/ is current.`);
+    return 0;
+  }
+  const removed = stale.length ? `; removed ${stale.join(", ")}` : "";
   console.log(
-    check
-      ? `The wire table in ${where}/ is current.`
-      : `Wrote ${differing.length ? differing.join(", ") : "nothing new"} in ${where}/.`,
+    `Wrote ${changed.length ? changed.join(", ") : "nothing new"}${removed} in ${where}/.`,
   );
   return 0;
 }

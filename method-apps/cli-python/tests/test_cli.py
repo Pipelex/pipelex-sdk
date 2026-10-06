@@ -27,7 +27,6 @@ from pipelex_sdk.runs import RunResults, RunStatus, WaitForResultOptions
 from pipelex_method_cli_python.cli import (
     EMPTY_STATE,
     OWN_FLAGS,
-    OWN_NAMES,
     OWN_OPTIONS,
     RESERVED_FLAGS,
     LifecycleFlags,
@@ -37,10 +36,11 @@ from pipelex_method_cli_python.cli import (
 from pipelex_method_cli_python.lib import output
 from pipelex_method_cli_python.lib.app import COMMAND_NAME, RunMode
 from pipelex_method_cli_python.lib.contracts import contracts_for_pipe
-from pipelex_method_cli_python.lib.inputs import InputOptionsError
+from pipelex_method_cli_python.lib.inputs import PARAMETER_PREFIX, InputOptionsError
 from pipelex_method_cli_python.lib.method_source import MethodSource
 from pipelex_method_cli_python.lib.output import render_json
 from tests.support import (
+    ABSENCE_OUTPUT,
     IMAGE_OUTPUT,
     RUN_ID,
     TEXT_OUTPUT,
@@ -84,11 +84,16 @@ class TestTheCommand:
             assert flag in result.stdout
         assert "greetings.greet" in result.stdout
 
-    def test_the_own_flags_and_names_are_read_off_the_own_options(self):
+    def test_the_own_flags_are_read_off_the_own_options(self):
         # Pinned by hand on purpose: a derivation that reads nothing would leave the collision guard empty.
         assert {"--inputs", "--inputs-template", "--blocking", "--detach", "--resume", "--out", "--no-download"} == OWN_FLAGS
-        assert {parameter.name for parameter in OWN_OPTIONS} == OWN_NAMES
         assert RESERVED_FLAGS == OWN_FLAGS | {"--help"}
+
+    def test_no_own_option_takes_a_name_in_the_inputs_namespace(self):
+        # An input's parameter is `input_<name>`, and only flags are checked for collisions: an own
+        # option named in that namespace would let an input's value overwrite it.
+        assert OWN_OPTIONS
+        assert [parameter.name for parameter in OWN_OPTIONS if parameter.name.startswith(PARAMETER_PREFIX)] == []
 
 
 class TestLifecycleFlags:
@@ -521,7 +526,19 @@ class TestDownloads:
         assert result.exit_code == 1
         assert json.loads(result.stdout) == IMAGE_OUTPUT
         assert "Not your run." in result.stderr
+        assert "its result is complete above" in result.stderr
         # Into an empty directory: the SDK never overwrites, so the saved files would come down twice.
+        assert f"{COMMAND_NAME} --resume {RUN_ID} --out DIR" in result.stderr
+
+    def test_a_refused_result_with_a_file_that_did_not_come_down_is_never_called_complete(self, fake_client: FakeClient, tmp_path: Path):
+        failed = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="forbidden", detail="Not your run."))
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT)
+        fake_client.download_answer = download_verdict(failed)
+        result = invoke(make_binding(output_model=Greeting), ["--out", str(tmp_path)])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "complete above" not in result.stderr
+        assert "its result was not printed" in result.stderr
         assert f"{COMMAND_NAME} --resume {RUN_ID} --out DIR" in result.stderr
 
     def test_a_blocking_run_never_offers_to_resume(self, fake_client: FakeClient, tmp_path: Path):
@@ -690,6 +707,27 @@ class TestOutputValidation:
         assert result.exit_code == 1
         assert "update binding.py." in result.stderr
         assert f"{COMMAND_NAME} --resume" not in result.stderr
+
+
+class TestAbsentOutput:
+    """A successful run may leave an optional output absent, which is the method working as declared."""
+
+    def test_an_optional_output_left_absent_prints_null_and_says_why(self, fake_client: FakeClient):
+        fake_client.wait_answer = run_results(ABSENCE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        result = invoke(make_binding(contracts=greet_contracts(output_optional=True), output_model=Greeting), [])
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout == "null\n"
+        assert "The method produced no output this time (The condition chose no branch.)." in result.stderr
+        assert "Its output is optional, so the result is null." in result.stderr
+        assert "No inference calls" in result.stderr
+
+    def test_the_absence_of_an_output_that_is_not_optional_is_refused(self, fake_client: FakeClient):
+        fake_client.wait_answer = run_results(ABSENCE_OUTPUT)
+        result = invoke(make_binding(output_model=Greeting), [])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "Greeting refuses" in result.stderr
+        assert "produced no output" not in result.stderr
 
 
 class TestEnvironment:

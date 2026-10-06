@@ -61,6 +61,17 @@ TWO_FILES_OUTPUT: dict[str, Any] = {
 }
 
 
+#: The runtime's absence document, which a successful durable run delivers for an optional output it left absent.
+ABSENCE_OUTPUT: dict[str, Any] = {
+    "absent": True,
+    "variable_name": "greeting",
+    "kind": "skipped",
+    "reason": "The condition chose no branch.",
+    "producing_pipe": None,
+    "upstream": None,
+}
+
+
 class Greeting(BaseModel):
     """A model standing in for one the codegen writes."""
 
@@ -80,9 +91,16 @@ def wire_contracts(fixture: str) -> ContractsDocument:
 
 
 def greet_contracts(
-    *, output_is_list: bool = False, inputs: dict[str, Any] | None = None, fields: list[dict[str, Any]] | None = None
+    *,
+    output_is_list: bool = False,
+    output_optional: bool = False,
+    inputs: dict[str, Any] | None = None,
+    fields: list[dict[str, Any]] | None = None,
 ) -> PipeContracts:
-    """The contracts of the default pipe: no input unless a test gives some, and a text output, a list of them when plural."""
+    """The contracts of the default pipe: no input unless a test gives some, and a text output, a list of them when plural.
+
+    `output_optional` declares the output optional, which a successful run may leave absent.
+    """
     text_node = {"kind": "prose", "concept_ref": "native.Text", "required": True}
     output_field = {**text_node, "kind": "list", "item": text_node} if output_is_list else text_node
     document = ContractsDocument.model_validate(
@@ -95,7 +113,7 @@ def greet_contracts(
                         "concept_ref": "native.Text",
                         "multiplicity": "variable" if output_is_list else "single",
                         "item_count": None,
-                        "optional": False,
+                        "optional": output_optional,
                         "json_schema": {"type": "array", "items": TEXT_SCHEMA} if output_is_list else TEXT_SCHEMA,
                     },
                 }

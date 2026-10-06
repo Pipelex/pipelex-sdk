@@ -234,10 +234,8 @@ class CodegenSource:
         return CodegenRequest.model_validate({**self._selector_kwargs(), "kind": "types", "target": TARGET})
 
     def pipe_io_request(self) -> PipeIORequest:
-        """The `/v1/pipe-io` request for every pipe the method loads; a named method also asks for its files back."""
-        if self.selector is None:
-            return PipeIORequest.model_validate({**self._selector_kwargs(), "all_pipes": True})
-        return PipeIORequest.model_validate({**self._selector_kwargs(), "all_pipes": True, "include_files": True})
+        """The `/v1/pipe-io` request for every pipe the method loads, a bundle's and a named method's alike."""
+        return PipeIORequest.model_validate({**self._selector_kwargs(), "all_pipes": True})
 
 
 def discover_source(layout: Layout) -> CodegenSource | None:

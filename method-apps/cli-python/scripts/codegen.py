@@ -15,10 +15,14 @@ In order, and nothing is written until every answer is in and checked:
    lands on no file this script writes itself, and the tree it describes passes the offline check
    when written into a scratch directory, the self-check that catches an upstream bug before it
    reaches the package.
-4. `POST /v1/pipe-io`, last, answers the contracts of every pipe the method loads. A method the
-   route reports `is_runnable: false` is refused, naming the pipes still declared as signatures.
-   Being last, a failure of this call leaves the tree as it was.
-5. The tree is written: the codegen tree verbatim through the SDK's `write_codegen_tree`, then
+4. `POST /v1/pipe-io` answers the contracts of every pipe the method loads. A method the route
+   reports `is_runnable: false` is refused, naming the pipes still declared as signatures.
+5. `POST /v1/codegen`, asked again, confirms that the method did not change between the two answers:
+   each request resolves the method on its own, and only the codegen answer names the revision it
+   resolved (`crate_fingerprint`), so a fingerprint that moved in between is refused rather than
+   committing the models of one revision beside the contracts of another. Coming after every
+   codegen guard, a failure of either call leaves the tree as it was.
+6. The tree is written: the codegen tree verbatim through the SDK's `write_codegen_tree`, then
    `contracts.json` and `__init__.py`, then the sidecar, each only when its bytes changed. A stamped
    file the new lock does not track is removed, which is the orphan the offline check would report:
    the check decides what an orphan is, and this script only acts on its verdict.
@@ -34,7 +38,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+import httpx
 from dotenv import find_dotenv, load_dotenv
+from mthds.protocol.exceptions import PipelineRequestError
 from pipelex_sdk.codegen_check import DriftCategory, run_codegen_check
 from pipelex_sdk.codegen_writer import write_codegen_tree
 from pipelex_sdk.crate_models import CodegenRequest, CodegenResponse, CodegenValidReport, PipeIORequest, PipeIOResponse, PipeIOValidReport
@@ -91,20 +97,31 @@ class Fetched:
     pipe_io: PipeIOValidReport
 
 
+async def request_codegen(client: CodegenClient, source: CodegenSource) -> CodegenValidReport:
+    """Ask `POST /v1/codegen` for the typed models of the method, as it resolves now.
+
+    Raises:
+        GenerateFailure: The request failed, or the method does not resolve.
+    """
+    try:
+        response = await client.codegen(source.codegen_request())
+    except (PipelineRequestError, httpx.HTTPError, ValueError) as exc:
+        # A refusal or an unreachable API, a transport error the SDK leaves unmapped, or a body that is not the answer.
+        raise GenerateFailure(explain(exc, client.base_url, "POST /v1/codegen", source)) from exc
+    if not isinstance(response, CodegenValidReport):
+        raise GenerateFailure("\n".join(invalid_lines(response)))
+    return response
+
+
 async def fetch_codegen(client: CodegenClient, source: CodegenSource, layout: Layout) -> CodegenValidReport:
     """Ask `POST /v1/codegen` for the typed models, and hold the answer to the policies.
 
     Raises:
         GenerateFailure: The request failed, the method does not resolve, or the answer breaks a policy.
     """
-    try:
-        response = await client.codegen(source.codegen_request())
-    except Exception as exc:
-        raise GenerateFailure(explain(exc, client.base_url, "POST /v1/codegen", source)) from exc
-    if not isinstance(response, CodegenValidReport):
-        raise GenerateFailure("\n".join(invalid_lines(response)))
-    guard_report(response, layout)
-    return response
+    report = await request_codegen(client, source)
+    guard_report(report, layout)
+    return report
 
 
 def guard_report(report: CodegenValidReport, layout: Layout) -> None:
@@ -162,7 +179,8 @@ async def fetch_pipe_io(client: CodegenClient, source: CodegenSource) -> PipeIOV
     """
     try:
         response = await client.pipe_io(source.pipe_io_request())
-    except Exception as exc:
+    except (PipelineRequestError, httpx.HTTPError, ValueError) as exc:
+        # A refusal or an unreachable API, a transport error the SDK leaves unmapped, or a body that is not the answer.
         raise GenerateFailure(explain(exc, client.base_url, "POST /v1/pipe-io", source if about_the_method(exc) else None)) from exc
     if not isinstance(response, PipeIOValidReport):
         raise GenerateFailure("\n".join(invalid_lines(response)))
@@ -172,14 +190,39 @@ async def fetch_pipe_io(client: CodegenClient, source: CodegenSource) -> PipeIOV
     return response
 
 
-async def fetch_generated(client: CodegenClient, source: CodegenSource, layout: Layout) -> Fetched:
-    """Both answers, the codegen first and the contracts last, so a failure anywhere writes nothing.
+async def confirm_revision(client: CodegenClient, source: CodegenSource, report: CodegenValidReport) -> None:
+    """Ask `POST /v1/codegen` again, and refuse when the method no longer resolves to the crate `report` describes.
+
+    `/v1/codegen` and `/v1/pipe-io` each resolve the method on their own, and only the codegen
+    answer names the revision it resolved. A method edited or republished between the two answers
+    would otherwise commit the models of one revision beside the contracts of another, a tree the
+    offline check would then call current, since it compares the tree only with itself and its sources.
 
     Raises:
-        GenerateFailure: Either request failed or its answer was refused.
+        GenerateFailure: The request failed, the method does not resolve, or it resolves to another crate.
+    """
+    again = await request_codegen(client, source)
+    if again.crate_fingerprint != report.crate_fingerprint:
+        msg = "\n".join(
+            (
+                "the method changed while it was being generated: /v1/codegen resolved it to another crate after /v1/pipe-io answered.",
+                f"    first:  {report.crate_fingerprint}",
+                f"    then:   {again.crate_fingerprint}",
+                "    Nothing was written. Run `make codegen` again.",
+            )
+        )
+        raise GenerateFailure(msg)
+
+
+async def fetch_generated(client: CodegenClient, source: CodegenSource, layout: Layout) -> Fetched:
+    """Both answers, the codegen first and the contracts after it, then the codegen's revision confirmed, so a failure anywhere writes nothing.
+
+    Raises:
+        GenerateFailure: A request failed, its answer was refused, or the method changed between the answers.
     """
     report = await fetch_codegen(client, source, layout)
     pipe_io = await fetch_pipe_io(client, source)
+    await confirm_revision(client, source, report)
     return Fetched(report=report, pipe_io=pipe_io)
 
 
@@ -269,7 +312,7 @@ async def run_codegen(layout: Layout = PACKAGE_LAYOUT) -> int:
     except AppError as exc:
         print(f"codegen: {exc.message} {exc.hint or ''}".rstrip(), file=sys.stderr)
         return EXIT_FAILED
-    except Exception as exc:
+    except PipelineRequestError as exc:
         print(f"codegen: {exc}\n  Check PIPELEX_BASE_URL in .env, or drop it to use the default.", file=sys.stderr)
         return EXIT_FAILED
     async with client:

@@ -165,6 +165,7 @@ def main() -> int:
     try:
         return run_check()
     except Exception as exc:
+        # The root of the command: exit 2 must answer every unforeseen failure, since an uncaught crash's exit 1 reads as drift.
         print(f"codegen-check: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_NO_VERDICT
 

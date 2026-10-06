@@ -23,7 +23,8 @@ hit the blocking cut-off instead of running durably.
 A new run whose method declares a file input anywhere in its input form first goes through the
 SDK's `prepare_inputs`, which uploads each local path the options or the inputs file gave and
 rewrites it to the `pipelex-storage://` reference the run reads; a URL passes through. A finished
-run's result is checked against the generated model before it is printed (`lib/narrow.py`).
+run's result is checked against the generated model before it is printed (`lib/narrow.py`), and an
+optional output the method left absent is printed as `null`, with a line on stderr saying why.
 
 The SDK is async only, so these are coroutines and the command makes one `asyncio.run` call at its
 root (`cli.py`). Every function takes the client it runs on, opened once by `execute_plan` through
@@ -49,7 +50,7 @@ from pipelex_method_cli_python.lib.artifacts import EarlierDownload, download_pr
 from pipelex_method_cli_python.lib.binding import MethodBinding
 from pipelex_method_cli_python.lib.errors import resume_command
 from pipelex_method_cli_python.lib.inputs import declares_files
-from pipelex_method_cli_python.lib.narrow import OutputValidationError, narrow_output
+from pipelex_method_cli_python.lib.narrow import NarrowedOutput, OutputValidationError, narrow_output
 from pipelex_method_cli_python.lib.output import OutputShapeError, print_payload, print_run_id
 from pipelex_method_cli_python.lib.usage import print_cost_report
 
@@ -190,21 +191,31 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
     the run was paid for, and the cost report follows whatever happened after the run, an error
     raised on the way included. A result in a shape the binding does not declare, or one the output
     model refuses, is not printed, but the run's files still come down, since they are paid for and
-    their links expire, and the error is raised once the cost report is out. A file that did not come down makes the exit code 1,
-    since the command did not do all it was asked, and so does a default directory an earlier
-    download left short; the hint says how to fetch the files again where that is possible, and a
-    Ctrl-C while they come down says it too before the cancellation goes through.
+    their links expire, and the error is raised once the cost report is out. An optional output the
+    method left absent is printed as `null`, and a line on stderr says so. A file that did not come
+    down makes the exit code 1, since the command did not do all it was asked, and so does a default
+    directory an earlier download left short; the hint says how to fetch the files again where that
+    is possible, and whether the result above is complete, and a Ctrl-C while they come down says it
+    too before the cancellation goes through.
     """
     exit_code = 0
     shape_error: OutputShapeError | OutputValidationError | None = None
     try:
         resume_hint = None if plan.mode is RunMode.BLOCKING else resume_command(results.pipeline_run_id)
         try:
-            payload = narrow_output(results, output_model=binding.output_model, output_is_list=binding.output_is_list, resume_hint=resume_hint)
+            narrowed = narrow_output(
+                results,
+                output_model=binding.output_model,
+                output_is_list=binding.output_is_list,
+                output_optional=binding.contracts.io.output.optional,
+                resume_hint=resume_hint,
+            )
         except (OutputShapeError, OutputValidationError) as exc:
             shape_error = exc
         else:
-            print_payload(payload)
+            print_payload(narrowed.payload)
+            if narrowed.absent:
+                stderr.print(absence_note(narrowed))
         if plan.download:
             try:
                 downloaded = await download_produced_files(client, results, out_dir=plan.out_dir)
@@ -213,15 +224,20 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
                 raise
             print_downloads(stderr, downloaded)
             if _incomplete(downloaded):
-                stderr.print(
-                    f"[yellow]Hint:[/yellow] The run succeeded and its result is complete above. {refetch_advice(plan.mode, results.pipeline_run_id)}"
-                )
+                said = "its result is complete above" if shape_error is None else "its result was not printed, for the reason below"
+                stderr.print(f"[yellow]Hint:[/yellow] The run succeeded and {said}. {refetch_advice(plan.mode, results.pipeline_run_id)}")
                 exit_code = 1
     finally:
         print_cost_report(stderr, results)
     if shape_error is not None:
         raise shape_error
     return exit_code
+
+
+def absence_note(narrowed: NarrowedOutput) -> str:
+    """What stderr says when the method left its optional output absent, as Rich markup."""
+    reason = f" ({escape(narrowed.absence_reason)})" if narrowed.absence_reason else ""
+    return f"The method produced no output this time{reason}. Its output is optional, so the result is null."
 
 
 def _incomplete(downloaded: DownloadArtifactsResult | EarlierDownload | None) -> bool:

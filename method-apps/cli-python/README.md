@@ -57,7 +57,7 @@ An input's option is `--<name>`, its underscores written as dashes, and takes a 
 - **`--detach`** starts the run and prints its id alone on stdout, for a script to collect later with `--resume`.
 - **Files the method produced**, such as images, are downloaded under `outputs/<run-id>/`, or into the directory `--out DIR` names; `--no-download` skips them. Their paths are printed on stderr.
 - **The cost report**, the model calls the run made and what they cost, follows the result on stderr.
-- **The result is checked against the method's generated model** before it is printed, and printed exactly as the method produced it. A result the model no longer describes, because the method changed since `make codegen` last ran, is not printed: the error names each field that failed and says how to regenerate and fetch the result again.
+- **The result is checked against the method's generated model** before it is printed, and printed exactly as the method produced it. A result the model no longer describes, because the method changed since `make codegen` last ran, is not printed: the error names each field that failed and says how to regenerate and fetch the result again. An output the method declares optional may be absent from a successful run, which prints `null` and says why on stderr.
 
 The exit code is 0 on success; 1 when the run or a request failed, when the API key is missing, when the result does not match the generated model, or when a produced file did not come down or is missing from an earlier download; 2 for a command line it refuses, a required input missing among them; and 130 after Ctrl-C.
 

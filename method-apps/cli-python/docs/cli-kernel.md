@@ -10,7 +10,7 @@ This is why nothing is written per method: a generated module of options would b
 | --- | --- | --- |
 | `text`, `prose` | `--name TEXT` | A string. `@path` reads it from a UTF-8 file, `@-` from stdin, and a leading `@@` stands for a literal `@` |
 | `date` | `--name DATE`, or `--name DATETIME` when the descriptor says `datetime` | An ISO 8601 calendar date, or a date and time. A calendar date given with a time of day is refused unless the time is midnight, rather than silently cut |
-| `number` | `--name N`, or `--name INTEGER` | A finite number, or an integer when the descriptor says so, inside the descriptor's bounds |
+| `number` | `--name N`, or `--name INTEGER` | A finite number, or an integer when the descriptor says so, inside the descriptor's bounds, written in ASCII digits with an optional sign, decimal point and exponent, which is what the form kernel's `Number()` reads: `1_000`, `1_0.5` and digits of other scripts are refused |
 | `boolean` | `--name / --no-name` | One of the pair; without either, the input is not given |
 | `enum` | `--name [a\|b\|c]` | One of the descriptor's choices, which Click checks |
 | `document`, `image` | `--name PATH\|URL` | A local file or a `data:` URL, which the SDK uploads before the run, or an `https://` or `pipelex-storage://` URL, which passes through |
@@ -23,7 +23,7 @@ An input's option is `--<name>` with its underscores written as dashes. An input
 
 ## Which inputs a run needs
 
-The descriptor's `gating` says whether the run cannot start without an input. Once the options and `--inputs FILE` are merged, an input that gates the run and holds nothing, given nowhere or given only blank, is refused as a usage error, exit code 2, naming each missing input with its option, before any request is sent. An optional input given nowhere is left out, so the runtime records a real absence. A plural input given nowhere is sent as the empty list.
+The descriptor's `gating` says whether the run cannot start without an input. Once the options and `--inputs FILE` are merged, an input that gates the run and holds nothing, given nowhere or given only blank, is refused as a usage error, exit code 2, naming each missing input with its option, before any request is sent. A value is judged by what it carries, whether an option or the file gave it: an envelope, an object holding both `concept` and `content`, by its content, so `{"concept": "native.Text", "content": {"text": " "}}` in the file is as blank as `--text " "`, and anything else by itself, a bare structured value with a `content` field of its own included. An optional input given nowhere is left out, so the runtime records a real absence. A plural input given nowhere is sent as the empty list.
 
 **`--inputs FILE` and the options combine.** The file is a JSON object of inputs in the shape `mthds run --inputs` takes, and its values pass as they are; an input given by its option replaces the file's value for it. `--inputs-template` prints the method's inputs template, the JSON object `--inputs` takes with a placeholder for every input, and runs nothing; it must be given alone. A resumed run takes no input option, since it already has its inputs.
 

@@ -10,8 +10,9 @@ so no test writes into the package's tree.
 
 Each policy `webapp-js`'s codegen holds has its test here: symlinks and special files refused,
 UTF-8 fatal, the server's paths contained and clear of the files the script writes itself, the key
-never sent over plaintext to another machine, the selector handshake, the self-check, and
-`/v1/pipe-io` called last, so that its failure writes nothing.
+never sent over plaintext to another machine, the selector handshake, the self-check, the
+revision confirmed by a second `/v1/codegen` after `/v1/pipe-io`, so that a method changed in
+between writes nothing, and the failures each request can raise, caught by name.
 """
 
 import asyncio
@@ -19,8 +20,11 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import NoReturn
 
+import httpx
 import pytest
+from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import VersionInfo
 from pipelex_sdk.codegen_check import run_codegen_check
 from pipelex_sdk.codegen_writer import write_codegen_tree
@@ -52,12 +56,20 @@ def _not_found(route: str) -> ApiResponseError:
     return ApiResponseError(f"API {route} failed (404)", api_url="https://api.example.com", status=404, status_text="Not Found", response_body="")
 
 
+def _refused_base_url() -> NoReturn:
+    """`make_client` refusing the base URL, as the SDK's client does for one that is not host-only."""
+    msg = 'Invalid API base URL "https://api.example.com/v1": must be host-only'
+    raise PipelineRequestError(msg)
+
+
 class FakeCodegenClient:
     """Stands in for `PipelexAPIClient` on the three routes the gestures call, recording the order they are called in."""
 
     def __init__(self) -> None:
         self.base_url = "https://api.example.com"
         self.codegen_answer: CodegenResponse | BaseException = recorded_codegen()
+        #: Answers `codegen` gives first, one per call in order, before it falls back to `codegen_answer`.
+        self.codegen_queue: list[CodegenResponse | BaseException] = []
         self.pipe_io_answer: PipeIOResponse | BaseException = pipe_io_report(wire_contracts("summarize-pdf"))
         #: An origin that advertises no capabilities at all, unless a test says otherwise.
         self.version_answer: VersionInfo | BaseException = VersionInfo.model_validate({"protocol_version": "1"})
@@ -79,9 +91,10 @@ class FakeCodegenClient:
     async def codegen(self, request: CodegenRequest) -> CodegenResponse:
         self.calls.append("codegen")
         self.requests.append(request)
-        if isinstance(self.codegen_answer, BaseException):
-            raise self.codegen_answer
-        return self.codegen_answer
+        answer = self.codegen_queue.pop(0) if self.codegen_queue else self.codegen_answer
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
 
     async def pipe_io(self, request: PipeIORequest) -> PipeIOResponse:
         self.calls.append("pipe_io")
@@ -131,17 +144,18 @@ class TestGenerate:
         assert run_check(layout) == EXIT_CURRENT
         assert "1 current · 0 drift · 0 no verdict" in capsys.readouterr().out
 
-    def test_the_contracts_are_called_for_last(self, api: FakeCodegenClient, layout: Layout):
+    def test_the_contracts_come_after_the_models_and_the_models_are_confirmed_last(self, api: FakeCodegenClient, layout: Layout):
         generate(layout)
-        assert api.calls == ["codegen", "pipe_io"]
+        assert api.calls == ["codegen", "pipe_io", "codegen"]
 
     def test_the_bundle_is_sent_with_package_relative_labels_and_the_contracts_for_every_pipe(self, api: FakeCodegenClient, layout: Layout):
         generate(layout)
-        codegen_request, pipe_io_request = api.requests
+        codegen_request, pipe_io_request, confirming_request = api.requests
         assert isinstance(codegen_request, CodegenRequest) and isinstance(pipe_io_request, PipeIORequest)
         assert [item.source for item in codegen_request.files or []] == ["method/main.mthds"]
         assert (codegen_request.kind, codegen_request.target, codegen_request.pipe_ref) == ("types", "python-pydantic", None)
         assert pipe_io_request.all_pipes
+        assert confirming_request == codegen_request
 
     def test_contracts_json_holds_the_pipe_io_answer_and_reads_back(self, api: FakeCodegenClient, layout: Layout):
         generate(layout)
@@ -164,6 +178,73 @@ class TestGenerate:
         api.pipe_io_answer = _not_found("POST /v1/pipe-io")
         assert generate(layout) == 1
         assert tree_bytes(layout) == before
+
+    def test_a_method_that_changed_between_the_answers_is_refused_leaving_the_tree_as_it_was(
+        self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]
+    ):
+        generate(layout)
+        before = tree_bytes(layout)
+        capsys.readouterr()
+        # The contracts of another revision, which would change contracts.json if they were written.
+        api.pipe_io_answer = pipe_io_report(wire_contracts("text-stats"))
+        api.codegen_queue = [recorded_codegen(), recorded_codegen().model_copy(update={"crate_fingerprint": "e" * 64})]
+        api.calls.clear()
+        assert generate(layout) == 1
+        err = capsys.readouterr().err
+        assert "the method changed while it was being generated" in err
+        assert "Run `make codegen` again." in err
+        assert api.calls == ["codegen", "pipe_io", "codegen"]
+        assert tree_bytes(layout) == before
+
+    def test_a_confirming_request_that_fails_writes_nothing(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
+        api.codegen_queue = [recorded_codegen(), httpx.ReadTimeout("timed out")]
+        assert generate(layout) == 1
+        assert "timed out" in capsys.readouterr().err
+        assert tree_bytes(layout) == {}
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(httpx.ConnectError("connection refused"), id="a transport error the SDK leaves unmapped"),
+            pytest.param(ValueError("the body is not JSON"), id="a body that is not the answer"),
+            pytest.param(PipelineRequestError("the API is unreachable"), id="an SDK error"),
+        ],
+    )
+    def test_a_codegen_request_that_raises_is_reported_writing_nothing(
+        self, api: FakeCodegenClient, layout: Layout, error: Exception, capsys: pytest.CaptureFixture[str]
+    ):
+        api.codegen_answer = error
+        assert generate(layout) == 1
+        assert str(error) in capsys.readouterr().err
+        assert tree_bytes(layout) == {}
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(httpx.ConnectError("connection refused"), id="a transport error the SDK leaves unmapped"),
+            pytest.param(ValueError("the body is not JSON"), id="a body that is not the answer"),
+        ],
+    )
+    def test_a_contracts_request_that_raises_is_reported_writing_nothing(
+        self, api: FakeCodegenClient, layout: Layout, error: Exception, capsys: pytest.CaptureFixture[str]
+    ):
+        api.pipe_io_answer = error
+        assert generate(layout) == 1
+        assert str(error) in capsys.readouterr().err
+        assert tree_bytes(layout) == {}
+
+    def test_an_unforeseen_failure_of_a_request_is_never_swallowed(self, api: FakeCodegenClient, layout: Layout):
+        # Only what a request can raise is caught; a bug surfaces with its traceback.
+        api.codegen_answer = RuntimeError("a bug")
+        with pytest.raises(RuntimeError, match="a bug"):
+            generate(layout)
+
+    def test_a_base_url_the_sdk_refuses_is_reported(self, layout: Layout, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+        monkeypatch.setattr(client_module, "make_client", _refused_base_url)
+        assert generate(layout) == 1
+        err = capsys.readouterr().err
+        assert "must be host-only" in err
+        assert "Check PIPELEX_BASE_URL" in err
 
     def test_a_method_that_is_not_runnable_is_refused_naming_its_signatures(
         self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]
@@ -321,19 +402,28 @@ class TestHandshake:
     def test_a_base_url_serving_the_selector_proceeds_and_sends_no_bundle(self, api: FakeCodegenClient, named: Layout):
         api.version_answer = VersionInfo.model_validate({"protocol_version": "1", "extensions": ["method_ref", "method_id"]})
         assert generate(named) == 0
-        assert api.calls == ["version", "codegen", "pipe_io"]
-        codegen_request, pipe_io_request = api.requests
+        assert api.calls == ["version", "codegen", "pipe_io", "codegen"]
+        codegen_request, pipe_io_request, _ = api.requests
         assert codegen_request.method_ref == "github.com/Pipelex/methods/summarize_pdf@v1.0.0"
         assert codegen_request.files is None
-        assert isinstance(pipe_io_request, PipeIORequest) and pipe_io_request.include_files
+        assert isinstance(pipe_io_request, PipeIORequest) and pipe_io_request.method_ref == codegen_request.method_ref
+        assert pipe_io_request.files is None and pipe_io_request.all_pipes
 
-    def test_a_version_route_that_fails_is_advice_and_the_crate_route_answers(self, api: FakeCodegenClient, named: Layout):
-        api.version_answer = _not_found("GET /v1/version")
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(_not_found("GET /v1/version"), id="a refusal"),
+            pytest.param(httpx.ConnectError("connection refused"), id="a transport error the SDK leaves unmapped"),
+            pytest.param(ValueError("the body is not JSON"), id="a body that is not a version"),
+        ],
+    )
+    def test_a_version_route_that_fails_is_advice_and_the_crate_route_answers(self, api: FakeCodegenClient, named: Layout, error: Exception):
+        api.version_answer = error
         assert generate(named) == 0
 
     def test_an_origin_that_advertises_no_extensions_list_proceeds(self, api: FakeCodegenClient, named: Layout):
         assert generate(named) == 0
-        assert api.calls == ["version", "codegen", "pipe_io"]
+        assert api.calls == ["version", "codegen", "pipe_io", "codegen"]
 
     def test_an_empty_extensions_list_is_a_refusal(self, api: FakeCodegenClient, named: Layout, capsys: pytest.CaptureFixture[str]):
         api.version_answer = VersionInfo.model_validate({"protocol_version": "1", "extensions": []})
@@ -502,6 +592,28 @@ class TestVerify:
         api.calls.clear()
         assert verify(layout) == 1
         assert api.calls == []
+
+    def test_a_codegen_request_that_raises_is_reported(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
+        generate(layout)
+        api.codegen_answer = httpx.ConnectError("connection refused")
+        assert verify(layout) == 1
+        assert "connection refused" in capsys.readouterr().err
+
+    def test_a_contracts_request_that_raises_is_reported(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
+        generate(layout)
+        api.pipe_io_answer = ValueError("the body is not JSON")
+        assert verify(layout) == 1
+        assert "the body is not JSON" in capsys.readouterr().err
+
+    def test_a_base_url_the_sdk_refuses_is_reported(
+        self, api: FakeCodegenClient, layout: Layout, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        generate(layout)
+        monkeypatch.setattr(client_module, "make_client", _refused_base_url)
+        assert verify(layout) == 1
+        err = capsys.readouterr().err
+        assert "must be host-only" in err
+        assert "Check PIPELEX_BASE_URL" in err
 
 
 def test_the_recorded_answer_is_signed_by_its_own_lock(tmp_path: Path) -> None:

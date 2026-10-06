@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from pipelex_method_cli_python.lib.app import COMMAND_NAME, command_name
+from pipelex_method_cli_python.lib import app as app_module
+from pipelex_method_cli_python.lib.app import COMMAND_NAME, command_name, shell_quote
 from pipelex_method_cli_python.lib.errors import resume_command
 
 
@@ -48,7 +49,15 @@ class TestCommandName:
     def test_a_path_with_a_space_is_quoted_for_the_shell(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         script = _script(tmp_path / "my project" / ".venv" / "bin")
         monkeypatch.setattr(shutil, "which", _which(None))
+        monkeypatch.setattr(app_module, "is_windows", lambda: False)
         assert command_name(str(script)) == f"'{script}'"
+
+    def test_a_path_with_a_space_is_double_quoted_for_cmd_on_windows(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # cmd.exe keeps POSIX single quotes as part of the argument, so they would name no file there.
+        script = _script(tmp_path / "my project" / ".venv" / "bin")
+        monkeypatch.setattr(shutil, "which", _which(None))
+        monkeypatch.setattr(app_module, "is_windows", lambda: True)
+        assert command_name(str(script)) == f'"{script}"'
 
     def test_anything_but_this_console_script_is_named_bare(self):
         # Under a test runner, or `python -m`, argv[0] is not the command a person would type.
@@ -61,3 +70,15 @@ class TestCommandName:
         assert resume_command("run-1") == f"{script} --resume run-1"
         monkeypatch.setattr(shutil, "which", _which(script))
         assert resume_command("run-1") == f"{COMMAND_NAME} --resume run-1"
+
+
+class TestShellQuote:
+    def test_posix_quoting_off_windows(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(app_module, "is_windows", lambda: False)
+        assert shell_quote("/home/me/my project/.venv/bin/cli") == "'/home/me/my project/.venv/bin/cli'"
+        assert shell_quote("/usr/local/bin/cli") == "/usr/local/bin/cli"
+
+    def test_cmd_quoting_on_windows(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(app_module, "is_windows", lambda: True)
+        assert shell_quote("C:\\Users\\Me\\my project\\.venv\\Scripts\\cli.exe") == '"C:\\Users\\Me\\my project\\.venv\\Scripts\\cli.exe"'
+        assert shell_quote("C:\\tools\\cli.exe") == "C:\\tools\\cli.exe"

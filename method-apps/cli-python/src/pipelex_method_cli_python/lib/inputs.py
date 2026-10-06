@@ -11,7 +11,9 @@ Each field kind of `mthds.protocol.input_form` gets one style of option:
 - `text` and `prose` take a string; `@path` reads it from a file, `@-` from stdin, and a leading
   `@@` stands for a literal `@`;
 - `date` takes an ISO 8601 date, or a date and time when the descriptor says `datetime`;
-- `number` takes an integer or a number, as `integer` says, inside the descriptor's bounds;
+- `number` takes an integer or a number, as `integer` says, inside the descriptor's bounds, written
+  in ASCII digits with an optional sign, decimal point and exponent, which is what the form kernel's
+  `Number()` reads;
 - `boolean` is a pair of flags, `--<name>` and `--no-<name>`;
 - `enum` takes one of the descriptor's `choices`, which Click checks;
 - `document` and `image` take a local path or a `data:` URL, which the SDK's `prepare_inputs` uploads
@@ -23,7 +25,9 @@ Each field kind of `mthds.protocol.input_form` gets one style of option:
 `--inputs FILE` reads a JSON object of inputs in the shape `mthds run --inputs` and
 `--inputs-template` use, passed as it is; an option given on the command line overrides that input
 from the file. Presence is checked once both are merged, so a required input may come from either,
-and a missing one is refused naming its option.
+and a missing one is refused naming its option. A value is judged by what it carries, whichever side
+gave it: an envelope, an object holding both `concept` and `content`, by its content, and anything
+else by itself.
 
 The value each option puts on the wire is the value `@pipelex/mthds-form`, the web app template's
 form kernel, sends for the same field and value: `lib/wire.py` holds the port of its rules.
@@ -35,6 +39,7 @@ only a flag can collide.
 """
 
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass, field, replace
@@ -60,6 +65,7 @@ from mthds.protocol.pipe_io_contracts import PipeInputContract
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.contracts import REGENERATE_HINT, PipeContracts
 from pipelex_method_cli_python.lib.wire import (
+    CONCEPT_KEY,
     CONTENT_KEY,
     JsonSchema,
     as_calendar_date,
@@ -93,8 +99,16 @@ PARAMETER_PREFIX = "input_"
 #: `data:` URL is uploaded by the SDK itself.
 _PASSTHROUGH_URL = re.compile(r"(?i:https?://)|pipelex-storage://|data:")
 
-#: An integer as a person types it.
-_INTEGER = re.compile(r"[+-]?\d+")
+#: An integer as a person types it, in ASCII digits: `\d` would take any script's digits, which the
+#: form kernel's `Number()` reads as NaN.
+_INTEGER = re.compile(r"[+-]?[0-9]+")
+
+#: A decimal number as a person types it, in ASCII digits with an optional point and exponent. Checked
+#: before `float()`, which also takes `1_000`, `1_0.5` and other digits than ASCII.
+_DECIMAL = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+#: The spellings `float()` reads as a number that is not finite, refused as such rather than as no number.
+_NON_FINITE = frozenset({"inf", "infinity", "nan"})
 
 #: The field kinds a single value on the command line can carry, each in its own style.
 _SCALAR_KINDS = frozenset(
@@ -497,22 +511,27 @@ def _read_date(raw: str, leaf: InputFormItem, *, flag: str) -> str:
 
 
 def _read_number(raw: str, leaf: InputFormItem, *, flag: str) -> int | float:
+    """A number as the form kernel reads the same text: ASCII digits, surrounding whitespace trimmed, and finite."""
     text = raw.strip()
     integer = isinstance(leaf, NumberItem) and leaf.integer
+    value: int | float
     if _INTEGER.fullmatch(text):
-        value: int | float = int(text)
+        value = int(text)
     elif integer:
         msg = f"{flag} takes an integer; {raw!r} is not one."
         raise InputUsageError(msg)
+    elif _DECIMAL.fullmatch(text):
+        value = float(text)
+    elif text.lstrip("+-").lower() in _NON_FINITE:
+        msg = f"{flag} takes a finite number; {raw!r} is not one."
+        raise InputUsageError(msg)
     else:
-        try:
-            value = float(text)
-        except ValueError as exc:
-            msg = f"{flag} takes a number; {raw!r} is not one."
-            raise InputUsageError(msg) from exc
-        if value != value or value in (float("inf"), float("-inf")):
-            msg = f"{flag} takes a finite number; {raw!r} is not one."
-            raise InputUsageError(msg)
+        msg = f"{flag} takes a number; {raw!r} is not one."
+        raise InputUsageError(msg)
+    if isinstance(value, float) and not math.isfinite(value):
+        # A literal past the float range, such as 1e999, reads as infinity.
+        msg = f"{flag} takes a finite number; {raw!r} is not one."
+        raise InputUsageError(msg)
     if isinstance(leaf, NumberItem):
         _check_bounds(value, leaf, flag=flag)
     return value
@@ -645,7 +664,7 @@ def collect_inputs(
             if option.gating and (option.name not in merged or not _wire_filled(merged[option.name])):
                 missing.append(option)
         elif option.name in merged:
-            if option.gating and not is_filled(merged[option.name]):
+            if option.gating and not _wire_filled(merged[option.name]):
                 missing.append(option)
         elif option.gating:
             missing.append(option)
@@ -659,12 +678,18 @@ def collect_inputs(
 
 
 def _wire_filled(wire: object) -> bool:
-    """Whether an input an option gave reaches the wire holding something: its envelope's content, or its bare list."""
+    """Whether an input reaches the wire holding something, from an option or from the inputs file alike.
+
+    An envelope, an object holding both `concept` and `content`, holds what its content holds, so a
+    blank text is missing however it is enveloped. Anything else is judged as itself: a bare list, a
+    bare scalar, or a bare structured value, which may well have a `content` field of its own.
+    """
     if not isinstance(wire, dict):
         return is_filled(wire)
     members = cast("dict[str, Any]", wire)
-    content: object = members[CONTENT_KEY] if CONTENT_KEY in members else members
-    return is_filled(content)
+    if CONCEPT_KEY in members and CONTENT_KEY in members:
+        return is_filled(members[CONTENT_KEY])
+    return is_filled(members)
 
 
 def inputs_template(contracts: PipeContracts) -> str:

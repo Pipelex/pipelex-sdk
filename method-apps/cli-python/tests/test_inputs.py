@@ -63,6 +63,7 @@ class TestReadInputsFile:
 
 EVERYTHING = contracts_for_pipe(wire_contracts("every-kind"), "every_kind.take_everything")
 BARE = contracts_for_pipe(wire_contracts("every-kind"), "every_kind.take_bare")
+TEXT_STATS = contracts_for_pipe(wire_contracts("text-stats"), "text_stats.analyze_text")
 
 
 def _options(contracts: PipeContracts = EVERYTHING, *, reserved: frozenset[str] | None = None) -> dict[str, InputOption]:
@@ -150,13 +151,41 @@ class TestReadOption:
         with pytest.raises(InputUsageError, match=says):
             read_option(_options()["count"], raw, ValueReader())
 
-    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf"])
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "Infinity", "1e999"])
     def test_a_number_must_be_finite(self, raw: str):
         with pytest.raises(InputUsageError, match="finite"):
             read_option(_options()["amount"], raw, ValueReader())
 
     def test_a_number_is_wrapped_in_its_content_model(self):
         assert read_option(_options()["amount"], "2.5", ValueReader()) == {"number": 2.5}
+
+    @pytest.mark.parametrize(
+        ("raw", "read"),
+        [
+            ("12", 12),
+            ("-3", -3),
+            ("+7", 7),
+            (" 42 ", 42),
+            ("2.5", 2.5),
+            ("-0.25", -0.25),
+            (".5", 0.5),
+            ("3.", 3.0),
+            ("1e3", 1000.0),
+            ("2.5E-2", 0.025),
+        ],
+    )
+    def test_ascii_integers_decimals_and_exponents_are_read(self, raw: str, read: float):
+        assert read_option(_options()["amount"], raw, ValueReader()) == {"number": read}
+
+    @pytest.mark.parametrize("raw", ["1_000", "1_0.5", "\u0661\u0662\u0663", "0x10", "1e", "--1", ""])
+    def test_what_the_form_kernel_reads_as_nan_is_refused(self, raw: str):
+        with pytest.raises(InputUsageError, match="takes a number"):
+            read_option(_options()["amount"], raw, ValueReader())
+
+    @pytest.mark.parametrize("raw", ["1_000", "\u0661\u0662\u0663"])
+    def test_an_integer_takes_ascii_digits_only(self, raw: str):
+        with pytest.raises(InputUsageError, match="takes an integer"):
+            read_option(_options()["count"], raw, ValueReader())
 
     def test_a_list_of_booleans_takes_true_or_false(self):
         assert read_option(_options()["checks"], ["true", "FALSE"], ValueReader()) == [{"yes_no": True}, {"yes_no": False}]
@@ -222,9 +251,22 @@ class TestCollectInputs:
             _collect(BARE, {"day": "2026-07-06"}, file_inputs={"level": "  "})
 
     def test_a_blank_text_given_to_a_required_option_is_missing(self):
-        contracts = contracts_for_pipe(wire_contracts("text-stats"), "text_stats.analyze_text")
         with pytest.raises(InputUsageError, match=r"text \(--text\)"):
-            _collect(contracts, {"text": "   "})
+            _collect(TEXT_STATS, {"text": "   "})
+
+    def test_a_blank_text_the_file_envelopes_is_missing_as_it_is_from_an_option(self):
+        blank = {"concept": "native.Text", "content": {"text": "  "}}
+        with pytest.raises(InputUsageError, match=r"The run needs text \(--text\)"):
+            _collect(TEXT_STATS, {}, file_inputs={"text": blank})
+
+    def test_a_text_the_file_envelopes_is_sent_as_it_is(self):
+        filled = {"concept": "native.Text", "content": {"text": "Hello"}}
+        assert _collect(TEXT_STATS, {}, file_inputs={"text": filled}) == {"text": filled}
+
+    def test_a_bare_structured_value_with_a_content_field_is_judged_as_itself(self):
+        # No `concept` beside it, so `content` is one of its fields, not an envelope's payload.
+        bare = {"content": "  ", "title": "A title"}
+        assert _collect(TEXT_STATS, {}, file_inputs={"text": bare}) == {"text": bare}
 
 
 def _level_choice(value: str) -> Enum:

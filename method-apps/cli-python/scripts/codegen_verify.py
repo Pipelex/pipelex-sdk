@@ -18,7 +18,9 @@ named method's selector is sent, and symbolic links refused. The ported module i
 import asyncio
 import sys
 
+import httpx
 from dotenv import find_dotenv, load_dotenv
+from mthds.protocol.exceptions import PipelineRequestError
 from pipelex_sdk.codegen_check import run_codegen_check
 from pipelex_sdk.crate_models import CodegenValidReport, PipeIOValidReport
 from pipelex_sdk.errors import CodegenLockError
@@ -75,7 +77,8 @@ async def verify(client: CodegenClient, source: CodegenSource, layout: Layout) -
     print(f"codegen-verify: {source.describe()}, against {client.base_url}", flush=True)
     try:
         live = await client.codegen(source.codegen_request())
-    except Exception as exc:
+    except (PipelineRequestError, httpx.HTTPError, ValueError) as exc:
+        # A refusal or an unreachable API, a transport error the SDK leaves unmapped, or a body that is not the answer.
         return _fail(f"\n✗ {explain(exc, client.base_url, 'POST /v1/codegen', source)}")
     if not isinstance(live, CodegenValidReport):
         return _fail("\n✗", *invalid_lines(live))
@@ -88,7 +91,8 @@ async def verify(client: CodegenClient, source: CodegenSource, layout: Layout) -
         )
     try:
         answer = await client.pipe_io(source.pipe_io_request())
-    except Exception as exc:
+    except (PipelineRequestError, httpx.HTTPError, ValueError) as exc:
+        # A refusal or an unreachable API, a transport error the SDK leaves unmapped, or a body that is not the answer.
         return _fail(f"\n✗ {explain(exc, client.base_url, 'POST /v1/pipe-io', source if about_the_method(exc) else None)}")
     if not isinstance(answer, PipeIOValidReport):
         return _fail("\n✗", *invalid_lines(answer, lead="the method no longer resolves"))
@@ -123,7 +127,7 @@ async def run_verify(layout: Layout = PACKAGE_LAYOUT) -> int:
         client = api.make_client()
     except AppError as exc:
         return _fail(f"codegen-verify: {exc.message} {exc.hint or ''}".rstrip())
-    except Exception as exc:
+    except PipelineRequestError as exc:
         return _fail(f"codegen-verify: {exc}\n  Check PIPELEX_BASE_URL in .env, or drop it to use the default.")
     async with client:
         insecure = insecure_base_url_reason(client.base_url)

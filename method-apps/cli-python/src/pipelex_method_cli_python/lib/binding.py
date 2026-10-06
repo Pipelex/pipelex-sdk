@@ -102,11 +102,6 @@ def has_binding(package: Traversable | None = None) -> bool:
     return root.joinpath(BINDING_FILENAME).is_file()
 
 
-def generated_tree() -> tuple[TreeState, tuple[str, ...]]:
-    """What the package's generated tree holds, and which of the files `make codegen` writes it misses."""
-    return tree_state()
-
-
 def load_binding() -> MethodBinding | None:
     """The method this CLI runs, or `None` for the template as shipped, which holds none.
 
@@ -119,7 +114,7 @@ def load_binding() -> MethodBinding | None:
         ManifestError: Its `method.json` does not name exactly one method.
     """
     binding_found = has_binding()
-    state, missing = generated_tree()
+    state, missing = tree_state()
     if not binding_found and state is TreeState.ABSENT:
         return None
     if not binding_found:
