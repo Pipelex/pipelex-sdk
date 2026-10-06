@@ -4,7 +4,8 @@ The template ships no method. `make create` turns a copy of it into the CLI for 
 writing these inside the package, and the CLI finds them there at run time:
 
 - `method/`, the method's source (`lib/method_source.py`);
-- `generated/`, the package the codegen writes: the method's typed models and the codegen lock;
+- `generated/`, the package `make codegen` writes: the method's typed models, the codegen lock, and
+  `contracts.json`, the contracts the command derives its options from (`lib/contracts.py`);
 - `binding.py`, written once and the project's own to edit afterwards, which declares:
 
   ```python
@@ -18,33 +19,51 @@ writing these inside the package, and the CLI finds them there at run time:
   OUTPUT_IS_LIST = False
   ```
 
-The package holds no method when it has neither `binding.py` nor `generated/`, which is the template
-as shipped: the command then says to run `make create`. Their presence is read with
-`importlib.util.find_spec`, which looks without importing, so an `ImportError` raised inside a
-binding that exists is never mistaken for a binding that does not. One without the other is a broken
-project, refused by name.
+The package holds no method when it has neither `binding.py` nor a generated tree, which is the
+template as shipped: the command then says to run `make create`. Their presence is read off the
+package's files through `importlib.resources`, without importing anything, so an `ImportError`
+raised inside a binding that exists is never mistaken for a binding that does not. A tree is present
+only when it holds what `make codegen` writes (`lib/contracts.py`'s `GENERATED_FILES`): a leftover
+`generated/` holding nothing but Python's bytecode cache is no tree, and one missing a written file
+is refused by name. One half without the other is a broken project, refused by name too.
 
 The CLI imports `binding.py` dynamically, never with an `import` statement, so the type checker
 passes on the template as shipped; the names it reads are checked here, when the CLI loads, rather
-than failing later as an `AttributeError` in the middle of a run.
+than failing later as an `AttributeError` in the middle of a run. So is the pipe it names: it must
+be described by the committed `contracts.json`, whose payloads for it the binding carries, and
+`OUTPUT_IS_LIST` must say what the contract says about the output's plurality.
 """
 
 import importlib
 import re
 from dataclasses import dataclass
-from importlib.util import find_spec
+from importlib.resources import files
+from importlib.resources.abc import Traversable
 from types import ModuleType
 
 from pydantic import BaseModel
 
 from pipelex_method_cli_python.lib.app import AppError
+from pipelex_method_cli_python.lib.contracts import (
+    GENERATED_DIRNAME,
+    REGENERATE_HINT,
+    ContractsDocument,
+    PipeContracts,
+    TreeState,
+    contracts_for_pipe,
+    load_contracts,
+    tree_state,
+)
 from pipelex_method_cli_python.lib.method_source import PACKAGE, MethodSource, read_method_source
 
 #: The module `make create` writes, which names the pipe and the output model.
 BINDING_MODULE = f"{PACKAGE}.binding"
 
+#: The file that module is, inside the package.
+BINDING_FILENAME = "binding.py"
+
 #: The package the codegen writes the method's typed models into.
-GENERATED_PACKAGE = f"{PACKAGE}.generated"
+GENERATED_PACKAGE = f"{PACKAGE}.{GENERATED_DIRNAME}"
 
 #: A namespaced pipe reference: a domain and a pipe code, each a snake_case identifier, joined by a dot.
 #: A domain may itself be dotted, so only the last segment is the pipe code.
@@ -69,37 +88,44 @@ class MethodBinding:
     output_is_list: bool
     #: How a run names the method.
     source: MethodSource
+    #: The committed contracts for the pipe: its IO contract and both form descriptors.
+    contracts: PipeContracts
 
 
-def has_binding() -> bool:
-    """Whether the package holds `binding.py`, looked for without importing it."""
-    return find_spec(BINDING_MODULE) is not None
+def has_binding(package: Traversable | None = None) -> bool:
+    """Whether the package holds `binding.py` as a file, looked for without importing it.
 
-
-def has_generated_tree() -> bool:
-    """Whether the package holds the generated tree, looked for without importing it."""
-    return find_spec(GENERATED_PACKAGE) is not None
+    A file, not a module: a leftover `binding/` directory would be found by the import system as a
+    namespace package.
+    """
+    root = package if package is not None else files(PACKAGE)
+    return root.joinpath(BINDING_FILENAME).is_file()
 
 
 def load_binding() -> MethodBinding | None:
     """The method this CLI runs, or `None` for the template as shipped, which holds none.
 
     Raises:
-        BindingError: One half of the method is there without the other, `binding.py` cannot be
-            imported, or it does not declare what the CLI reads.
+        BindingError: One half of the method is there without the other, the tree misses a file
+            `make codegen` writes, `binding.py` cannot be imported, or it does not declare what the
+            CLI reads.
+        ContractsError: `contracts.json` cannot be read, or does not describe the pipe `binding.py` names.
         MethodSourceError: `method/` does not name exactly one method.
         ManifestError: Its `method.json` does not name exactly one method.
     """
     binding_found = has_binding()
-    generated_found = has_generated_tree()
-    if not binding_found and not generated_found:
+    state, missing = tree_state()
+    if not binding_found and state is TreeState.ABSENT:
         return None
     if not binding_found:
         msg = f"{GENERATED_PACKAGE} exists but {BINDING_MODULE} does not, so the CLI does not know which pipe to run."
         raise BindingError(msg, hint="Restore binding.py from version control: it names the pipe and the output model.")
-    if not generated_found:
+    if state is TreeState.ABSENT:
         msg = f"{BINDING_MODULE} exists but {GENERATED_PACKAGE} does not, so the method's typed models are missing."
-        raise BindingError(msg, hint="Regenerate the tree with `make codegen`, which needs PIPELEX_API_KEY.")
+        raise BindingError(msg, hint=REGENERATE_HINT)
+    if state is TreeState.INCOMPLETE:
+        msg = f"{GENERATED_PACKAGE} is missing {', '.join(missing)}, which `make codegen` writes into every tree."
+        raise BindingError(msg, hint=REGENERATE_HINT)
     try:
         module = importlib.import_module(BINDING_MODULE)
     except Exception as exc:
@@ -107,14 +133,16 @@ def load_binding() -> MethodBinding | None:
         # models were regenerated, a syntax error, a model the generated tree no longer defines.
         msg = f"{BINDING_MODULE} could not be imported: {type(exc).__name__}: {exc}"
         raise BindingError(msg, hint="Fix binding.py so that it imports what the generated tree defines, after `make codegen` above all.") from exc
-    return binding_from_module(module, source=read_method_source())
+    return binding_from_module(module, source=read_method_source(), contracts=load_contracts())
 
 
-def binding_from_module(module: ModuleType, *, source: MethodSource) -> MethodBinding:
-    """Read and check what a binding module declares.
+def binding_from_module(module: ModuleType, *, source: MethodSource, contracts: ContractsDocument) -> MethodBinding:
+    """Read and check what a binding module declares, against the committed contracts.
 
     Raises:
-        BindingError: `PIPE_REF`, `OUTPUT_MODEL` or `OUTPUT_IS_LIST` is missing or of the wrong kind.
+        BindingError: `PIPE_REF`, `OUTPUT_MODEL` or `OUTPUT_IS_LIST` is missing or of the wrong kind,
+            or `OUTPUT_IS_LIST` disagrees with the pipe's contract.
+        ContractsError: The contracts do not describe the pipe `PIPE_REF` names.
     """
     where = module.__name__
     pipe_ref: object = getattr(module, "PIPE_REF", None)
@@ -129,4 +157,10 @@ def binding_from_module(module: ModuleType, *, source: MethodSource) -> MethodBi
     if not isinstance(output_is_list, bool):
         msg = f"{where}.OUTPUT_IS_LIST must be True or False; found {output_is_list!r}."
         raise BindingError(msg)
-    return MethodBinding(pipe_ref=pipe_ref, output_model=output_model, output_is_list=output_is_list, source=source)
+    pipe = contracts_for_pipe(contracts, pipe_ref)
+    plural = pipe.io.output.multiplicity.is_plural
+    if output_is_list is not plural:
+        said = "a list" if plural else "a single value"
+        msg = f"{where}.OUTPUT_IS_LIST is {output_is_list}, but the pipe {pipe_ref} returns {said} according to its committed contract."
+        raise BindingError(msg, hint=f"Set OUTPUT_IS_LIST = {plural} in binding.py, with the output model the pipe now returns.")
+    return MethodBinding(pipe_ref=pipe_ref, output_model=output_model, output_is_list=output_is_list, source=source, contracts=pipe)

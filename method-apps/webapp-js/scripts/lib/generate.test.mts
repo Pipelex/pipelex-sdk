@@ -413,6 +413,40 @@ describe("generateMethod", () => {
     expect(sidecar).toMatchObject({ sources: { "methods/demo/method.json": "abc123" } });
   });
 
+  it("asks /v1/codegen again after /v1/pipe-io, with the same request", async () => {
+    noDrifts();
+    const client = fakeClient();
+
+    expect(await generateMethod(client, FILES_SOURCE, outDir, "https://api.example")).toBe("ok");
+    expect(client.codegen).toHaveBeenCalledTimes(2);
+    expect(client.codegen.mock.calls[1]).toEqual(client.codegen.mock.calls[0]);
+    expect(client.pipeIo.mock.invocationCallOrder[0]).toBeLessThan(
+      client.codegen.mock.invocationCallOrder[1]!,
+    );
+  });
+
+  // The two routes each resolve the method, and only the codegen answer names
+  // the revision: a method that moved in between would commit the types of one
+  // revision beside the contracts of another.
+  it("refuses a method that changed between the two answers, writing nothing", async () => {
+    noDrifts();
+    const errors = captureErrors();
+    const client = fakeClient({
+      codegen: vi
+        .fn()
+        .mockResolvedValueOnce(VALID_REPORT)
+        .mockResolvedValueOnce({ ...VALID_REPORT, crate_fingerprint: "e".repeat(64) }),
+    });
+
+    expect(await generateMethod(client, FILES_SOURCE, outDir, "https://api.example")).toBe(
+      "failed",
+    );
+    expect(errors.join("\n")).toContain("the method changed while it was being generated");
+    expect(errors.join("\n")).toContain("Run the command again.");
+    expect(client.pipeIo).toHaveBeenCalledTimes(1);
+    await expect(readdir(outDir)).rejects.toThrow();
+  });
+
   it("fails a selector the API cannot resolve, writing nothing", async () => {
     noDrifts();
     const errors = captureErrors();

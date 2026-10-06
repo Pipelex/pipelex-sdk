@@ -1,0 +1,28 @@
+domain      = "summarize_pdf"
+description = "Summarize a PDF document into a title, type, and key points."
+main_pipe   = "summarize_pdf"
+
+[concept.DocumentSummary]
+description = "A structured summary of a document"
+
+[concept.DocumentSummary.structure]
+title      = { type = "text", description = "A concise title for the document", required = true }
+doc_type   = { type = "text", description = "The kind of document, such as invoice, report, article, or contract", required = true }
+key_points = { type = "list", item_type = "text", description = "The main takeaways from the document, one per item", required = true }
+
+[pipe.summarize_pdf]
+type = "PipeLLM"
+description = "Read a PDF document and produce a structured summary"
+inputs = { document = "Document" }
+output = "DocumentSummary"
+model = "gpt-4o-mini"
+prompt = """
+Read the attached document and summarize it.
+
+@document
+
+Produce:
+- title: a short, descriptive title for the document.
+- doc_type: what kind of document this is (e.g. invoice, report, article, contract, letter).
+- key_points: 3 to 6 of the most important takeaways, one per item.
+"""

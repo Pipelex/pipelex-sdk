@@ -1,0 +1,1110 @@
+{
+  "comment": "What @pipelex/mthds-form sends for each case, recorded by method-apps/scripts/record-wire-table.mjs from the kernel webapp-js installs. `control` is the value the form's control holds, `cli` the option values cli-python is given for the same value, and `uploads` the local files a case names with the reference their upload answers. Do not edit: rerun the recorder.",
+  "kernel": "@pipelex/mthds-form 0.10.0",
+  "cases": [
+    {
+      "fixture": "complex-form",
+      "pipe_ref": "complex_form.extract_brief",
+      "case": "every input",
+      "given": {
+        "text": {
+          "control": "Some text.\nOn two lines.",
+          "cli": [
+            "Some text.\nOn two lines."
+          ]
+        },
+        "focus": {
+          "control": {
+            "audience": "technical",
+            "notes": "A notes"
+          },
+          "cli": [
+            "{\"audience\":\"technical\",\"notes\":\"A notes\"}"
+          ]
+        },
+        "must_include": {
+          "control": [
+            "Some must_include-1.\nOn two lines.",
+            "Some must_include-2.\nOn two lines."
+          ],
+          "cli": [
+            "Some must_include-1.\nOn two lines.",
+            "Some must_include-2.\nOn two lines."
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "text": {
+            "concept": "native.Text",
+            "content": {
+              "text": "Some text.\nOn two lines."
+            }
+          },
+          "focus": {
+            "concept": "complex_form.ExtractionFocus",
+            "content": {
+              "audience": "technical",
+              "notes": "A notes"
+            }
+          },
+          "must_include": {
+            "concept": "native.Text",
+            "content": [
+              {
+                "text": "Some must_include-1.\nOn two lines."
+              },
+              {
+                "text": "Some must_include-2.\nOn two lines."
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "fixture": "complex-form",
+      "pipe_ref": "complex_form.extract_brief",
+      "case": "required only",
+      "given": {
+        "text": {
+          "control": "Some text.\nOn two lines.",
+          "cli": [
+            "Some text.\nOn two lines."
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "text": {
+            "concept": "native.Text",
+            "content": {
+              "text": "Some text.\nOn two lines."
+            }
+          },
+          "must_include": []
+        }
+      }
+    },
+    {
+      "fixture": "complex-form",
+      "pipe_ref": "complex_form.extract_brief",
+      "case": "nothing",
+      "given": {},
+      "uploads": {},
+      "verdict": {
+        "ok": false,
+        "missing_inputs": [
+          "text"
+        ],
+        "errors": []
+      }
+    },
+    {
+      "fixture": "extract-entities",
+      "pipe_ref": "extract_entities.extract_entities",
+      "case": "every input",
+      "given": {
+        "text": {
+          "control": "Some text.\nOn two lines.",
+          "cli": [
+            "Some text.\nOn two lines."
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "text": {
+            "concept": "native.Text",
+            "content": {
+              "text": "Some text.\nOn two lines."
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture": "extract-entities",
+      "pipe_ref": "extract_entities.extract_entities",
+      "case": "required only",
+      "given": {
+        "text": {
+          "control": "Some text.\nOn two lines.",
+          "cli": [
+            "Some text.\nOn two lines."
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "text": {
+            "concept": "native.Text",
+            "content": {
+              "text": "Some text.\nOn two lines."
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture": "extract-entities",
+      "pipe_ref": "extract_entities.extract_entities",
+      "case": "nothing",
+      "given": {},
+      "uploads": {},
+      "verdict": {
+        "ok": false,
+        "missing_inputs": [
+          "text"
+        ],
+        "errors": []
+      }
+    },
+    {
+      "fixture": "generate-image",
+      "pipe_ref": "generate_image.generate_image",
+      "case": "every input",
+      "given": {
+        "image_prompt": {
+          "control": "Some image_prompt.\nOn two lines.",
+          "cli": [
+            "Some image_prompt.\nOn two lines."
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "image_prompt": {
+            "concept": "native.Text",
+            "content": {
+              "text": "Some image_prompt.\nOn two lines."
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture": "generate-image",
+      "pipe_ref": "generate_image.generate_image",
+      "case": "required only",
+      "given": {
+        "image_prompt": {
+          "control": "Some image_prompt.\nOn two lines.",
+          "cli": [
+            "Some image_prompt.\nOn two lines."
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "image_prompt": {
+            "concept": "native.Text",
+            "content": {
+              "text": "Some image_prompt.\nOn two lines."
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture": "generate-image",
+      "pipe_ref": "generate_image.generate_image",
+      "case": "nothing",
+      "given": {},
+      "uploads": {},
+      "verdict": {
+        "ok": false,
+        "missing_inputs": [
+          "image_prompt"
+        ],
+        "errors": []
+      }
+    },
+    {
+      "fixture": "summarize-pdf",
+      "pipe_ref": "summarize_pdf.summarize_pdf",
+      "case": "every input",
+      "given": {
+        "document": {
+          "control": {
+            "url": "https://example.com/files/document.pdf"
+          },
+          "cli": [
+            "https://example.com/files/document.pdf"
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "document": {
+            "concept": "native.Document",
+            "content": {
+              "url": "https://example.com/files/document.pdf"
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture": "summarize-pdf",
+      "pipe_ref": "summarize_pdf.summarize_pdf",
+      "case": "required only",
+      "given": {
+        "document": {
+          "control": {
+            "url": "https://example.com/files/document.pdf"
+          },
+          "cli": [
+            "https://example.com/files/document.pdf"
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "document": {
+            "concept": "native.Document",
+            "content": {
+              "url": "https://example.com/files/document.pdf"
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture": "summarize-pdf",
+      "pipe_ref": "summarize_pdf.summarize_pdf",
+      "case": "nothing",
+      "given": {},
+      "uploads": {},
+      "verdict": {
+        "ok": false,
+        "missing_inputs": [
+          "document"
+        ],
+        "errors": []
+      }
+    },
+    {
+      "fixture": "text-stats",
+      "pipe_ref": "text_stats.analyze_text",
+      "case": "every input",
+      "given": {
+        "text": {
+          "control": "Some text.\nOn two lines.",
+          "cli": [
+            "Some text.\nOn two lines."
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "text": {
+            "concept": "native.Text",
+            "content": {
+              "text": "Some text.\nOn two lines."
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture": "text-stats",
+      "pipe_ref": "text_stats.analyze_text",
+      "case": "required only",
+      "given": {
+        "text": {
+          "control": "Some text.\nOn two lines.",
+          "cli": [
+            "Some text.\nOn two lines."
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "text": {
+            "concept": "native.Text",
+            "content": {
+              "text": "Some text.\nOn two lines."
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture": "text-stats",
+      "pipe_ref": "text_stats.analyze_text",
+      "case": "nothing",
+      "given": {},
+      "uploads": {},
+      "verdict": {
+        "ok": false,
+        "missing_inputs": [
+          "text"
+        ],
+        "errors": []
+      }
+    },
+    {
+      "fixture": "every-kind",
+      "pipe_ref": "every_kind.take_bare",
+      "case": "every input",
+      "given": {
+        "level": {
+          "control": "high",
+          "cli": [
+            "high"
+          ]
+        },
+        "levels": {
+          "control": [
+            "high",
+            "high"
+          ],
+          "cli": [
+            "high",
+            "high"
+          ]
+        },
+        "day": {
+          "control": "2026-07-06",
+          "cli": [
+            "2026-07-06"
+          ]
+        },
+        "moment": {
+          "control": "2026-07-06T15:40:00Z",
+          "cli": [
+            "2026-07-06T15:40:00Z"
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "level": {
+            "concept": "every_kind.Level",
+            "content": "high"
+          },
+          "levels": {
+            "concept": "every_kind.Level",
+            "content": [
+              "high",
+              "high"
+            ]
+          },
+          "day": {
+            "concept": "every_kind.Day",
+            "content": "2026-07-06"
+          },
+          "moment": {
+            "concept": "every_kind.Moment",
+            "content": "2026-07-06T15:40:00Z"
+          }
+        }
+      }
+    },
+    {
+      "fixture": "every-kind",
+      "pipe_ref": "every_kind.take_bare",
+      "case": "required only",
+      "given": {
+        "level": {
+          "control": "high",
+          "cli": [
+            "high"
+          ]
+        },
+        "day": {
+          "control": "2026-07-06",
+          "cli": [
+            "2026-07-06"
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "level": {
+            "concept": "every_kind.Level",
+            "content": "high"
+          },
+          "levels": [],
+          "day": {
+            "concept": "every_kind.Day",
+            "content": "2026-07-06"
+          }
+        }
+      }
+    },
+    {
+      "fixture": "every-kind",
+      "pipe_ref": "every_kind.take_bare",
+      "case": "nothing",
+      "given": {},
+      "uploads": {},
+      "verdict": {
+        "ok": false,
+        "missing_inputs": [
+          "level",
+          "day"
+        ],
+        "errors": [
+          {
+            "property": "level",
+            "message": "must have required property 'level'"
+          },
+          {
+            "property": "day",
+            "message": "must have required property 'day'"
+          }
+        ]
+      }
+    },
+    {
+      "fixture": "every-kind",
+      "pipe_ref": "every_kind.take_everything",
+      "case": "every input",
+      "given": {
+        "headline": {
+          "control": "Some headline.\nOn two lines.",
+          "cli": [
+            "Some headline.\nOn two lines."
+          ]
+        },
+        "may_be_absent": {
+          "control": "Some may_be_absent.\nOn two lines.",
+          "cli": [
+            "Some may_be_absent.\nOn two lines."
+          ]
+        },
+        "clock": {
+          "control": "15:40:00",
+          "cli": [
+            "15:40:00"
+          ]
+        },
+        "amount": {
+          "control": 2.5,
+          "cli": [
+            "2.5"
+          ]
+        },
+        "count": {
+          "control": 1,
+          "cli": [
+            "1"
+          ]
+        },
+        "agreed": {
+          "control": false,
+          "cli": [
+            "false"
+          ]
+        },
+        "due": {
+          "control": {
+            "date": "2026-07-06",
+            "time": "15:40:00"
+          },
+          "cli": [
+            "{\"date\":\"2026-07-06\",\"time\":\"15:40:00\"}"
+          ]
+        },
+        "priority": {
+          "control": {
+            "level": "urgent"
+          },
+          "cli": [
+            "{\"level\":\"urgent\"}"
+          ]
+        },
+        "picture": {
+          "control": {
+            "url": "pipelex-storage://wire-table/picture.png",
+            "filename": "picture.png"
+          },
+          "cli": [
+            "picture.png"
+          ]
+        },
+        "cover_letter": {
+          "control": {
+            "url": "https://example.com/files/cover_letter.pdf"
+          },
+          "cli": [
+            "https://example.com/files/cover_letter.pdf"
+          ]
+        },
+        "many": {
+          "control": [
+            "Some many-1.\nOn two lines.",
+            "Some many-2.\nOn two lines."
+          ],
+          "cli": [
+            "Some many-1.\nOn two lines.",
+            "Some many-2.\nOn two lines."
+          ]
+        },
+        "exactly_three": {
+          "control": [
+            "Some exactly_three-1.\nOn two lines.",
+            "Some exactly_three-2.\nOn two lines.",
+            "Some exactly_three-3.\nOn two lines."
+          ],
+          "cli": [
+            "Some exactly_three-1.\nOn two lines.",
+            "Some exactly_three-2.\nOn two lines.",
+            "Some exactly_three-3.\nOn two lines."
+          ]
+        },
+        "scores": {
+          "control": [
+            2.5,
+            2.5
+          ],
+          "cli": [
+            "2.5",
+            "2.5"
+          ]
+        },
+        "checks": {
+          "control": [
+            false,
+            false
+          ],
+          "cli": [
+            "false",
+            "false"
+          ]
+        },
+        "attachments": {
+          "control": [
+            {
+              "url": "https://example.com/files/attachments-1.pdf"
+            },
+            {
+              "url": "https://example.com/files/attachments-2.pdf"
+            }
+          ],
+          "cli": [
+            "https://example.com/files/attachments-1.pdf",
+            "https://example.com/files/attachments-2.pdf"
+          ]
+        },
+        "gallery": {
+          "control": [
+            {
+              "url": "pipelex-storage://wire-table/gallery-1.png",
+              "filename": "gallery-1.png"
+            },
+            {
+              "url": "pipelex-storage://wire-table/gallery-2.png",
+              "filename": "gallery-2.png"
+            }
+          ],
+          "cli": [
+            "gallery-1.png",
+            "gallery-2.png"
+          ]
+        },
+        "lines": {
+          "control": [
+            {
+              "label": "A label",
+              "quantity": 3,
+              "unit_price": 2.5,
+              "taxable": false
+            },
+            {
+              "label": "A label",
+              "quantity": 3,
+              "unit_price": 2.5,
+              "taxable": false
+            }
+          ],
+          "cli": [
+            "[{\"label\":\"A label\",\"quantity\":3,\"unit_price\":2.5,\"taxable\":false},{\"label\":\"A label\",\"quantity\":3,\"unit_price\":2.5,\"taxable\":false}]"
+          ]
+        }
+      },
+      "uploads": {
+        "picture.png": "pipelex-storage://wire-table/picture.png",
+        "gallery-1.png": "pipelex-storage://wire-table/gallery-1.png",
+        "gallery-2.png": "pipelex-storage://wire-table/gallery-2.png"
+      },
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "headline": {
+            "concept": "scalars.Headline",
+            "content": {
+              "text": "Some headline.\nOn two lines."
+            }
+          },
+          "may_be_absent": {
+            "concept": "native.Text",
+            "content": {
+              "text": "Some may_be_absent.\nOn two lines."
+            }
+          },
+          "clock": {
+            "concept": "native.Time",
+            "content": {
+              "time": "15:40:00"
+            }
+          },
+          "amount": {
+            "concept": "native.Number",
+            "content": {
+              "number": 2.5
+            }
+          },
+          "count": {
+            "concept": "every_kind.Count",
+            "content": {
+              "number": 1
+            }
+          },
+          "agreed": {
+            "concept": "native.YesNo",
+            "content": {
+              "yes_no": false
+            }
+          },
+          "due": {
+            "concept": "native.Date",
+            "content": {
+              "date": "2026-07-06",
+              "time": "15:40:00"
+            }
+          },
+          "priority": {
+            "concept": "scalars.Priority",
+            "content": {
+              "level": "urgent"
+            }
+          },
+          "picture": {
+            "concept": "native.Image",
+            "content": {
+              "url": "pipelex-storage://wire-table/picture.png",
+              "filename": "picture.png"
+            }
+          },
+          "cover_letter": {
+            "concept": "native.Document",
+            "content": {
+              "url": "https://example.com/files/cover_letter.pdf"
+            }
+          },
+          "many": {
+            "concept": "scalars.Headline",
+            "content": [
+              {
+                "text": "Some many-1.\nOn two lines."
+              },
+              {
+                "text": "Some many-2.\nOn two lines."
+              }
+            ]
+          },
+          "exactly_three": {
+            "concept": "scalars.Headline",
+            "content": [
+              {
+                "text": "Some exactly_three-1.\nOn two lines."
+              },
+              {
+                "text": "Some exactly_three-2.\nOn two lines."
+              },
+              {
+                "text": "Some exactly_three-3.\nOn two lines."
+              }
+            ]
+          },
+          "scores": {
+            "concept": "native.Number",
+            "content": [
+              {
+                "number": 2.5
+              },
+              {
+                "number": 2.5
+              }
+            ]
+          },
+          "checks": {
+            "concept": "native.YesNo",
+            "content": [
+              {
+                "yes_no": false
+              },
+              {
+                "yes_no": false
+              }
+            ]
+          },
+          "attachments": {
+            "concept": "native.Document",
+            "content": [
+              {
+                "url": "https://example.com/files/attachments-1.pdf"
+              },
+              {
+                "url": "https://example.com/files/attachments-2.pdf"
+              }
+            ]
+          },
+          "gallery": {
+            "concept": "native.Image",
+            "content": [
+              {
+                "url": "pipelex-storage://wire-table/gallery-1.png",
+                "filename": "gallery-1.png"
+              },
+              {
+                "url": "pipelex-storage://wire-table/gallery-2.png",
+                "filename": "gallery-2.png"
+              }
+            ]
+          },
+          "lines": {
+            "concept": "structured.LineItem",
+            "content": [
+              {
+                "label": "A label",
+                "quantity": 3,
+                "unit_price": 2.5,
+                "taxable": false
+              },
+              {
+                "label": "A label",
+                "quantity": 3,
+                "unit_price": 2.5,
+                "taxable": false
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "fixture": "every-kind",
+      "pipe_ref": "every_kind.take_everything",
+      "case": "required only",
+      "given": {
+        "headline": {
+          "control": "Some headline.\nOn two lines.",
+          "cli": [
+            "Some headline.\nOn two lines."
+          ]
+        },
+        "clock": {
+          "control": "15:40:00",
+          "cli": [
+            "15:40:00"
+          ]
+        },
+        "amount": {
+          "control": 2.5,
+          "cli": [
+            "2.5"
+          ]
+        },
+        "count": {
+          "control": 1,
+          "cli": [
+            "1"
+          ]
+        },
+        "agreed": {
+          "control": true,
+          "cli": [
+            "true"
+          ]
+        },
+        "due": {
+          "control": {
+            "date": "2026-07-06"
+          },
+          "cli": [
+            "{\"date\":\"2026-07-06\",\"time\":\"\"}"
+          ]
+        },
+        "priority": {
+          "control": {
+            "level": "urgent"
+          },
+          "cli": [
+            "{\"level\":\"urgent\"}"
+          ]
+        },
+        "picture": {
+          "control": {
+            "url": "pipelex-storage://wire-table/picture.png",
+            "filename": "picture.png"
+          },
+          "cli": [
+            "picture.png"
+          ]
+        },
+        "exactly_three": {
+          "control": [
+            "Some exactly_three-1.\nOn two lines.",
+            "Some exactly_three-2.\nOn two lines.",
+            "Some exactly_three-3.\nOn two lines."
+          ],
+          "cli": [
+            "Some exactly_three-1.\nOn two lines.",
+            "Some exactly_three-2.\nOn two lines.",
+            "Some exactly_three-3.\nOn two lines."
+          ]
+        },
+        "checks": {
+          "control": [
+            true,
+            true
+          ],
+          "cli": [
+            "true",
+            "true"
+          ]
+        }
+      },
+      "uploads": {
+        "picture.png": "pipelex-storage://wire-table/picture.png"
+      },
+      "verdict": {
+        "ok": true,
+        "inputs": {
+          "headline": {
+            "concept": "scalars.Headline",
+            "content": {
+              "text": "Some headline.\nOn two lines."
+            }
+          },
+          "clock": {
+            "concept": "native.Time",
+            "content": {
+              "time": "15:40:00"
+            }
+          },
+          "amount": {
+            "concept": "native.Number",
+            "content": {
+              "number": 2.5
+            }
+          },
+          "count": {
+            "concept": "every_kind.Count",
+            "content": {
+              "number": 1
+            }
+          },
+          "agreed": {
+            "concept": "native.YesNo",
+            "content": {
+              "yes_no": true
+            }
+          },
+          "due": {
+            "concept": "native.Date",
+            "content": {
+              "date": "2026-07-06"
+            }
+          },
+          "priority": {
+            "concept": "scalars.Priority",
+            "content": {
+              "level": "urgent"
+            }
+          },
+          "picture": {
+            "concept": "native.Image",
+            "content": {
+              "url": "pipelex-storage://wire-table/picture.png",
+              "filename": "picture.png"
+            }
+          },
+          "many": [],
+          "exactly_three": {
+            "concept": "scalars.Headline",
+            "content": [
+              {
+                "text": "Some exactly_three-1.\nOn two lines."
+              },
+              {
+                "text": "Some exactly_three-2.\nOn two lines."
+              },
+              {
+                "text": "Some exactly_three-3.\nOn two lines."
+              }
+            ]
+          },
+          "scores": [],
+          "checks": {
+            "concept": "native.YesNo",
+            "content": [
+              {
+                "yes_no": true
+              },
+              {
+                "yes_no": true
+              }
+            ]
+          },
+          "attachments": [],
+          "gallery": [],
+          "lines": []
+        }
+      }
+    },
+    {
+      "fixture": "every-kind",
+      "pipe_ref": "every_kind.take_everything",
+      "case": "nothing",
+      "given": {},
+      "uploads": {},
+      "verdict": {
+        "ok": false,
+        "missing_inputs": [
+          "headline",
+          "clock",
+          "amount",
+          "count",
+          "agreed",
+          "due",
+          "priority",
+          "picture"
+        ],
+        "errors": [
+          {
+            "property": "amount",
+            "message": "must have required property 'amount'"
+          },
+          {
+            "property": "count",
+            "message": "must have required property 'count'"
+          },
+          {
+            "property": "agreed",
+            "message": "must have required property 'agreed'"
+          },
+          {
+            "property": "due",
+            "message": "must have required property 'due'"
+          },
+          {
+            "property": "priority",
+            "message": "must have required property 'priority'"
+          },
+          {
+            "property": ".clock.time",
+            "message": "must match format \"time\""
+          },
+          {
+            "property": ".exactly_three",
+            "message": "must NOT have fewer than 3 items"
+          },
+          {
+            "property": ".checks",
+            "message": "must NOT have fewer than 2 items"
+          }
+        ]
+      }
+    },
+    {
+      "fixture": "every-kind",
+      "pipe_ref": "every_kind.take_json",
+      "case": "every input",
+      "given": {
+        "payload": {
+          "control": "{\"json_obj\":{\"answer\":42}}",
+          "cli": [
+            "{\"json_obj\":{\"answer\":42}}"
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": false,
+        "missing_inputs": [
+          "payload"
+        ],
+        "errors": [
+          {
+            "property": ".payload",
+            "message": "must be object"
+          }
+        ]
+      }
+    },
+    {
+      "fixture": "every-kind",
+      "pipe_ref": "every_kind.take_json",
+      "case": "required only",
+      "given": {
+        "payload": {
+          "control": "{\"json_obj\":{\"answer\":42}}",
+          "cli": [
+            "{\"json_obj\":{\"answer\":42}}"
+          ]
+        }
+      },
+      "uploads": {},
+      "verdict": {
+        "ok": false,
+        "missing_inputs": [
+          "payload"
+        ],
+        "errors": [
+          {
+            "property": ".payload",
+            "message": "must be object"
+          }
+        ]
+      }
+    },
+    {
+      "fixture": "every-kind",
+      "pipe_ref": "every_kind.take_json",
+      "case": "nothing",
+      "given": {},
+      "uploads": {},
+      "verdict": {
+        "ok": false,
+        "missing_inputs": [
+          "payload"
+        ],
+        "errors": [
+          {
+            "property": ".payload",
+            "message": "must be object"
+          }
+        ]
+      }
+    }
+  ]
+}

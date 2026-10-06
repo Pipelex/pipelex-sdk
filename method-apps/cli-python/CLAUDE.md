@@ -4,7 +4,7 @@ A command-line tool that runs one MTHDS method through the [Pipelex](https://pip
 
 <!-- template-only:begin -->
 
-This directory is a **template**. It is the `cli-python/` member of the method-app family, `method-apps/` in the `pipelex-sdk` repository, and it ships the run lifecycle, the error presentation and the result output, and no method at all: `make create` will turn a copy of it into the command for one method, and until that gesture is written it parses the family's arguments and refuses. Keep the template small, generic and high-quality, and when adding anything ask whether every project created from it should inherit it. A worked demonstration of a method belongs in the gallery this template was extracted from, `starter-python/` in the same repository, never here. [`docs/lineage.md`](docs/lineage.md) records that extraction and the rule that came out of it: **this template leads the code it shares with the starter**, so a fix to a module it carries lands here first and is filed in the workspace ledger as a twin task against `starter-python`, which nothing ports for you.
+This directory is a **template**. It is the `cli-python/` member of the method-app family, `method-apps/` in the `pipelex-sdk` repository, and it ships the run lifecycle, the error presentation, the result output, the options derived from a method's input form and the codegen kit, and no method at all: `make create` will turn a copy of it into the command for one method, and until that gesture is written it parses the family's arguments and refuses. Keep the template small, generic and high-quality, and when adding anything ask whether every project created from it should inherit it. A worked demonstration of a method belongs in the gallery this template was extracted from, `starter-python/` in the same repository, never here. The family's `docs/cli-python-lineage.md`, beside this directory, records that extraction and the rule that came out of it: **this template leads the code it shares with the starter**, so a fix to a module it carries lands here first and owes the starter a port, which nothing makes for you.
 
 <!-- template-only:end -->
 
@@ -12,7 +12,7 @@ This directory is a **template**. It is the `cli-python/` member of the method-a
 
 - **Python** 3.11 to 3.14, managed by [uv](https://docs.astral.sh/uv/); `.python-version` names the one a fresh `make install` uses
 - **CLI**: [Typer](https://typer.tiangolo.com/), one command and no subcommands; [Rich](https://rich.readthedocs.io/) for everything on stderr
-- **SDK**: [`pipelex-sdk`](https://pypi.org/project/pipelex-sdk/) (`PipelexAPIClient`, async only), and [`mthds`](https://pypi.org/project/mthds/) for the protocol's error types
+- **SDK**: [`pipelex-sdk`](https://pypi.org/project/pipelex-sdk/) (`PipelexAPIClient`, async only, and the codegen writer and check), and [`mthds`](https://pypi.org/project/mthds/) for the protocol's error types, input-form descriptors and IO contracts
 - **Environment**: `python-dotenv`, which loads `.env` without overriding the shell
 - **Packaging**: hatchling, with the source under `src/`
 - **Checks**: ruff (lint and format) and pyright in strict mode, over `src/`, `tests/` and `scripts/`
@@ -22,36 +22,49 @@ This directory is a **template**. It is the `cli-python/` member of the method-a
 
 ```
 src/pipelex_method_cli_python/
-  cli.py              # the command: its options, .env, the one asyncio.run, the one error boundary, main()
+  cli.py              # the command: its own options (LifecycleFlags), the derived ones, .env, the one asyncio.run, the error boundary
   lib/
-    app.py            # COMMAND_NAME, RunMode, AppError: what every module shares
+    app.py            # COMMAND_NAME, command_name(), RunMode, AppError: what every module shares
     client.py         # make_client(): the one place a PipelexAPIClient is built, and what tests replace
-    run.py            # the lifecycle: attended, --blocking, --detach, --resume, and what a finished run prints
+    run.py            # the lifecycle: uploads, attended, --blocking, --detach, --resume, and what a finished run prints
     output.py         # the result as JSON on stdout; list_items for the two wire shapes of a plural output
+    narrow.py         # the result checked against OUTPUT_MODEL before it is printed
     errors.py         # every SDK error and AppError turned into a message, the details and a hint, on stderr
     usage.py          # the cost report on stderr, rendered from the SDK's usage summary
-    artifacts.py      # produced files downloaded under outputs/<run-id>/ or --out
-    inputs.py         # --inputs FILE, or - for stdin
+    artifacts.py      # produced files downloaded under outputs/<run-id>/ or --out, with a manifest of a finished download
+    inputs.py         # one option per declared input, derived from the input form; --inputs FILE; --inputs-template
+    wire.py           # the form kernel's payload rules, ported: what each option's value puts on the wire
+    contracts.py      # generated/contracts.json read and checked, and what the generated tree must hold
     binding.py        # the seam to the one method: binding.py and generated/, found without importing
     method_source.py  # the method's source, read from the package's method/ through importlib.resources
     manifest.py       # method.json, which names a method by catalog id or published address
 scripts/
   create.py           # make create: parses the family's contract, then refuses (not written yet)
+  codegen.py          # make codegen: the typed models and contracts.json, from POST /v1/codegen and /v1/pipe-io
+  codegen_check.py    # make codegen-check: offline, whether generated/ is current with method/
+  codegen_verify.py   # make codegen-verify: keyed, whether the committed tree is what the method resolves to
+  codegen_shared.py   # what the three share: the layout, the sidecar and the policies
+  codegen_api.py      # the selector handshake and the failures in words
   local_status.py     # make local-status: a local checkout or PyPI, read from direct_url.json
 tests/
-  support.py          # the FakeClient, results built the way the SDK builds them, invoke()
+  support.py          # the FakeClient, results built the way the SDK builds them, contracts and bindings, invoke()
   conftest.py         # the fake_client fixture, and no ambient key in any test
-  test_*.py           # one file per module, test_cli.py driving the command through Typer's CliRunner
+  fixtures/           # the wire-format table and its contracts, and the recorded codegen of a method
+  test_*.py           # one file per module; test_cli.py drives the command through Typer's CliRunner,
+                      # test_wire_table.py replays the table, test_codegen.py runs the three gestures
 ```
 
-The template as shipped holds no method. `make create` will write these inside the package: `method/` (the method's `.mthds` files, or a `method.json`), `generated/` (the method's typed models from the codegen), and `binding.py`, which declares `PIPE_REF`, `OUTPUT_MODEL` and `OUTPUT_IS_LIST`. [`lib/binding.py`](src/pipelex_method_cli_python/lib/binding.py) documents the seam; the CLI finds those files with `importlib.util.find_spec` and imports `binding.py` dynamically, so the template as shipped type-checks with neither.
+The template as shipped holds no method. `make create` will write these inside the package: `method/` (the method's `.mthds` files, or a `method.json`), `generated/` (what `make codegen` writes: the method's typed models, `codegen.lock`, `contracts.json`, `__init__.py` and `sources.json`), and `binding.py`, which declares `PIPE_REF`, `OUTPUT_MODEL` and `OUTPUT_IS_LIST`. [`lib/binding.py`](src/pipelex_method_cli_python/lib/binding.py) documents the seam; the CLI finds those files through `importlib.resources` and imports `binding.py` dynamically, so the template as shipped type-checks with neither. [`docs/codegen.md`](docs/codegen.md) describes the generated tree and its checks, and [`docs/cli-kernel.md`](docs/cli-kernel.md) the options derived from it.
 
 ## Commands
 
 ```bash
 make install          # uv sync: the project and its development tools into .venv, as uv.lock pins them
 make all              # check + test + build: run after any change
-make check            # ruff check, ruff format --check, pyright
+make check            # ruff check, ruff format --check, pyright, codegen-check
+make codegen          # regenerate generated/ from method/ (needs PIPELEX_API_KEY)
+make codegen-check    # offline: is generated/ current with method/? 0 current, 1 drift, 2 no verdict
+make codegen-verify   # keyed: is the committed tree what the method resolves to today? writes nothing
 make test             # pytest, offline
 make agent-check      # check, silent on success
 make agent-test       # the tests, silent on success
@@ -65,7 +78,9 @@ make local-status     # which of the two is installed
 
 ## The command's contract
 
-- **stdout carries the result and nothing else, always as JSON**: the run's `main_stuff` as the method produced it, never a re-serialization of a model, and a plural output (`OUTPUT_IS_LIST`) as the bare list of its elements whichever wire shape arrived. `--detach` prints the run id alone instead. Progress, the run id of an attended run, files, the cost report, errors and hints go to stderr, through the Rich console the command builds on stderr.
+- **stdout carries the result and nothing else, always as JSON**: the run's `main_stuff` as the method produced it, never a re-serialization of a model, a plural output (`OUTPUT_IS_LIST`) as the bare list of its elements whichever wire shape arrived, and `null` for an output the contract declares optional that a successful run left absent. `--detach` prints the run id alone instead. Progress, the run id of an attended run, files, the cost report, errors and hints go to stderr, through the Rich console the command builds on stderr.
+- **The method's inputs are options derived at run time** from the committed input form, one per declared input, in authored order, with nothing written per method: `lib/inputs.py` builds them and `lib/wire.py` builds what each value puts on the wire, which is what the web app template's form kernel sends for the same value. A required input given neither by its option nor by `--inputs FILE` is refused with exit code 2 before anything is sent. [`docs/cli-kernel.md`](docs/cli-kernel.md) has the mapping and the deliberate disagreements with the kernel.
+- **The result is checked, never filtered**: `lib/narrow.py` validates it against `OUTPUT_MODEL` before it is printed, strictly and as the JSON it arrived as, so no value is coerced into a field's type, and prints the payload as the method produced it. A result the model refuses is not printed, and the hint says to run `make codegen`.
 - **The mode is a flag**, never a subcommand: attended by default, `--blocking`, `--detach`, `--resume RUN_ID`. Incompatible flags are refused with exit code 2 before anything is sent. [`docs/run-lifecycle.md`](docs/run-lifecycle.md) describes each mode, Ctrl-C and the exit codes.
 - **No silent downgrade.** A durable start against a server that serves only blocking runs is an error naming `--blocking`. Never call the SDK's `start_and_wait`, which picks the mode by itself.
 - **One `asyncio.run`**, in `cli.py`. Everything under `lib/run.py` is a coroutine taking the client `execute_plan` opened.
@@ -73,7 +88,7 @@ make local-status     # which of the two is installed
 
 ## Where the SDK reaches
 
-These are the files a release of `pipelex-sdk` or `mthds` can reach, which the repository's `/bump-sdk` reads: `lib/client.py` constructs the client and reads `AppInfo`; `lib/run.py` calls `start`, `execute`, `wait_for_result` and `results_from_execute`; `lib/artifacts.py` calls `collect_artifacts` and `download_artifacts`; `lib/usage.py` reads `summarize_usage` and `FieldNotIncludedError`; `lib/errors.py` matches the SDK's error classes and reads `RunErrorReport` and the problem document's fields; `lib/output.py` reads `RunResults`; and `cli.py` catches `mthds.protocol.exceptions.PipelineRequestError`. In the tests, `tests/support.py` and `tests/conftest.py` build the SDK's own result and error types the way the SDK builds them.
+These are the files a release of `pipelex-sdk` or `mthds` can reach, which the repository's `/bump-sdk` reads: `lib/client.py` constructs the client and reads `AppInfo`; `lib/run.py` calls `prepare_inputs`, `start`, `execute`, `wait_for_result` and `results_from_execute`; `lib/contracts.py` reads `mthds.protocol`'s `PipeIOContracts`, `InputForm` and `OutputForm`; `lib/inputs.py` reads the `mthds.protocol.input_form` models and `render_inputs_template`; `lib/wire.py` reads `PipeInputContract`; `scripts/codegen.py`, `scripts/codegen_check.py` and `scripts/codegen_verify.py` call the client's `codegen`, `pipe_io` and `version`, the SDK's `write_codegen_tree` and `run_codegen_check`, and read its `CodegenRequest`, `PipeIORequest` and their reports; `lib/artifacts.py` calls `collect_artifacts` and `download_artifacts`; `lib/usage.py` reads `summarize_usage` and `FieldNotIncludedError`; `lib/errors.py` matches the SDK's error classes and reads `RunErrorReport` and the problem document's fields; `lib/output.py` reads `RunResults`; and `cli.py` catches `mthds.protocol.exceptions.PipelineRequestError`. In the tests, `tests/support.py`, `tests/conftest.py` and `tests/test_codegen.py` build the SDK's own result, report and error types the way the SDK builds them, and the fake client's `prepare_inputs` runs the SDK's own.
 
 ## Rules
 
@@ -82,7 +97,9 @@ These are the files a release of `pipelex-sdk` or `mthds` can reach, which the r
 - **Tests replace `lib/client.py`'s `make_client`, never the `pipelex_sdk` package.** The `fake_client` fixture hands back a `FakeClient` whose answers are the SDK's own types, so every code path runs as it does for real down to the client's methods. Keep stdout and stderr apart in every assertion: `invoke()` returns them separately.
 - **Every module that talks to the API calls `api.make_client()` through the module** (`from pipelex_method_cli_python.lib import client as api`), never by importing the function, or the fixture cannot replace it.
 - **Print server text with `rich.markup.escape`** wherever it reaches the Rich console: a bracketed span in a run's error would otherwise be read as markup.
-- **Never edit anything under `src/pipelex_method_cli_python/generated/`** once a project has one: the codegen writes it verbatim and stamps it. Ruff excludes it on purpose.
+- **Never edit anything under `src/pipelex_method_cli_python/generated/`** once a project has one: the codegen writes it verbatim and stamps it, and `make codegen-check` reports a hand edit to `contracts.json` as drift. Ruff excludes the directory on purpose. After changing the method, run `make codegen` and commit the tree with it.
+- **No input is named in the CLI's code.** A change to how an input is taken belongs in `lib/inputs.py` and `lib/wire.py` for every method at once, and a change to what goes on the wire must keep `tests/test_wire_table.py` green.
+- **Tests that need a method build it from fixtures**, a contracts document and a binding from `tests/support.py`, or a package of their own under `tmp_path` for the codegen gestures, never by writing into the package's own `src/` tree.
 - **The dependencies a module imports are declared in `pyproject.toml`**, even those that arrive transitively, and `uv.lock` moves with them (`make lock`). Moving the `pipelex-sdk` floor is a reviewed change with the SDK's changelog read, never a side effect of local mode.
 
 <!-- template-only:begin -->
@@ -95,7 +112,8 @@ This passage describes the repository the template lives in, and leaves with the
 - **This tree's SDK is installed with the repository root's `make use-local`**, which runs this template's `use-local` with `SDK_DIR` naming the tree's `python/` and `MTHDS_DIR` the workspace's `mthds-python` checkout; the root's `make use-published` switches back. This template's own `use-local`, run here, looks for `../pipelex-sdk/python`, which names nothing.
 - **A workflow is edited in `.github/workflows/` here, then re-rendered** with `make workflows` at the repository's root, which writes its standalone and next-SDK twins into the root `.github/workflows/`; commit them together. The workflows install with `make install` under `UV_LOCKED=1`, so a `uv.lock` that `pyproject.toml` has moved away from fails CI rather than being rewritten, and the next-SDK twin installs the SDK built from the same commit over the locked one right after that step.
 - **The version is the family's.** `pyproject.toml`'s `[project] version` carries the version the family last shipped as, at or below the root `VERSION`, and only a release moves it, with `uv.lock`. Changelog entries go in the family's `method-apps/CHANGELOG.md`; this directory's `CHANGELOG.md` only points there.
-- **There is no git hook.** The repository's pre-commit hook runs a template's `.husky/pre-commit`, and this template has none: `make check` and CI hold it to ruff and pyright.
+- **The wire-format table is the family's.** `tests/fixtures/wire/` is recorded by `method-apps/scripts/record-wire-table.mjs` from the form kernel `webapp-js` installs; never edit it by hand. After a kernel upgrade, rerun the recorder in `method-apps/`, commit the table, and make `lib/wire.py` agree with it.
+- **There is no git hook.** The repository's pre-commit hook runs a template's `.husky/pre-commit`, and this template has none: `make check` and CI hold it to ruff, pyright and the offline codegen check.
 - **Pull requests target `dev`.** `make all` here, and `make check-workflows check-versions` at the repository's root after changing a workflow or a version.
 
 <!-- template-only:end -->

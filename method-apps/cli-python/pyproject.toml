@@ -38,8 +38,9 @@ dependencies = [
 pipelex-method-cli-python = "pipelex_method_cli_python.cli:main"
 
 # Installed by `uv sync` by default, which is what `make install` runs. `httpx` is here because the
-# tests build an SDK error the way the SDK raises it, through a client over a faked transport, which
-# the CLI itself never does: it arrives at run time only as the SDK's own transport.
+# tests build an SDK error the way the SDK raises it, through a client over a faked transport, and
+# because the codegen scripts, which run only in this environment, catch the transport errors the SDK
+# leaves unmapped. The CLI itself never imports it: it arrives at run time only as the SDK's own transport.
 [dependency-groups]
 dev = [
   "httpx>=0.27.0",

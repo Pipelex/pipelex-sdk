@@ -1,0 +1,12 @@
+# Generated codegen artifacts are committed and hashed against their stamps.
+# `-text` disables git's newline translation so a checkout on any platform holds
+# the bytes the API emitted. Diff hygiene rather than correctness — the SDK's
+# offline check and `make codegen-verify` fold line endings before comparing —
+# but worth pinning.
+src/pipelex_method_cli_python/generated/** -text
+
+# The method's sources are hashed into `generated/sources.json`. Same story as
+# above: `hash_source` folds line endings before hashing, so this pin is
+# hygiene rather than correctness — it keeps a Windows checkout holding the
+# bytes the hashes were taken over.
+src/pipelex_method_cli_python/method/** text eol=lf

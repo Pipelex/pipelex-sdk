@@ -13,7 +13,8 @@ GitHub's **Use this template** button is not the way in. It copies a whole repos
 ```
 Makefile                         the family's gate: its own checks, then each template's targets
 CHANGELOG.md                     the family's changelog
-scripts/                         the family's own tooling (the create contract) and its tests
+scripts/                         the family's own tooling (the create contract, the wire-format table) and its tests
+docs/                            the family's documentation: this page, and the CLI template's lineage
 initializers/js/                 @pipelex/create-method-app, the npm initializer that writes the Node templates
 initializers/cases.json          the cases every initializer's suite executes
 webapp-js/                       the Next.js web app template — a complete project on its own
@@ -44,13 +45,23 @@ GitHub reads a repository's workflows only from `.github/workflows/` at its root
 - **The standalone twin**, `method-apps-webapp-js-<file>`, is a reusable workflow that the root CI, `.github/workflows/ci.yml`, calls. It extracts the template with `git archive` into a folder beside the checkout, gives the copy a repository of its own, and runs the template's jobs there, so the template installs from the registry with its own lockfile, exactly as a project made from it would.
 - **The next-SDK twin**, `method-apps-webapp-js-next-sdk-<file>`, runs the same jobs on its own pull-request trigger, and installs the SDK the template depends on, `@pipelex/sdk` or `pipelex-sdk`, built from the same commit over the registry's copy after the template's install step. It is reported, not required: it warns an SDK pull request that would break the template without blocking it.
 
-The renderer finds a template's install step by its command, `npm ci` or one ending with `make install`, and leaves a setup-uv step exactly as written. So `cli-python`'s workflows install with a step whose command is `make install`, which runs `uv sync`, with `UV_LOCKED=1` in the job's environment: the standalone twin then fails on a `uv.lock` that `pyproject.toml` has moved away from instead of rewriting it, and the next-SDK twin's `uv pip install` over the locked SDK stays in place, since every later step runs its tools from `.venv/bin/` rather than through `uv run`, which would re-sync.
+The renderer finds a template's install step by its command, `npm ci` or one ending with `make install`, and keys a dependency cache on the template's own lock file, since GitHub runs an action at the repository root: an npm cache through `cache-dependency-path`, and a setup-uv step that sets `enable-cache: true` through `cache-dependency-glob: <template>/uv.lock`. It refuses a setup-uv step that leaves `enable-cache` to the action's default. So `cli-python`'s workflows install with a step whose command is `make install`, which runs `uv sync`, with `UV_LOCKED=1` in the job's environment: the standalone twin then fails on a `uv.lock` that `pyproject.toml` has moved away from instead of rewriting it, and the next-SDK twin's `uv pip install` over the locked SDK stays in place, since every later step runs its tools from `.venv/bin/` rather than through `uv run`, which would re-sync.
 
 The rendering is a text transform rather than a YAML round trip, so a twin keeps the source's comments and layout, and it refuses a source it cannot carry faithfully rather than guessing. What it changes and what it refuses are listed at the head of the root `scripts/workflows.mjs`, and the root `docs/ci.md` describes how the root CI runs the twins.
 
 The root's `make check-workflows` renders every twin in memory and compares it with the file on disk. It reports a twin that is **missing**, one that is **stale** (its source changed, or the twin was edited by hand), and one that is **orphaned** (its source is gone), and `make workflows` fixes each of them. A root workflow that does not open with the rendering's header, such as `ci.yml`, is hand-written and left alone, and a hand-written file that has a twin's name makes both commands refuse rather than overwrite it.
 
 **So a workflow is edited in its template, then re-rendered at the repository's root, in the same commit.**
+
+## The wire-format table
+
+Two templates fill a run's inputs: `webapp-js` through the TypeScript form kernel, `@pipelex/mthds-form`, and `cli-python` from its command line, through a port of that kernel's payload rules in its `lib/wire.py`. A method must receive the same inputs from both, so the family holds the port to the kernel with a recorded table. `scripts/record-wire-table.mjs` runs the real kernel, the one `webapp-js` has installed, over every contract fixture `webapp-js` carries and over `scripts/wire-table/every-kind.json`, a contract assembled to reach the field kinds those fixtures do not, and writes into `cli-python/tests/fixtures/wire/` each fixture's contracts and `table.json`: one case per pipe and per set of inputs given (every input, the required ones only, none), with the value each control holds, the option values the CLI is given for the same value, and the kernel's verdict. `cli-python/tests/test_wire_table.py` replays every case through the CLI.
+
+The recorder lives here because it reads two templates, and a template never reaches above its own directory. Its test, `scripts/record-wire-table.test.mjs`, runs it with `--check`, which fails when the committed table is not what the installed kernel sends, byte for byte, so a kernel upgrade that changes a payload fails `test-family` until the table is recorded again (`node scripts/record-wire-table.mjs`) and the CLI agrees with it. The deliberate disagreements, and why, are in `cli-python/docs/cli-kernel.md`.
+
+## The lineage records
+
+Each template was extracted from a gallery, and a record of what it took and the rule that came out of it tells a maintainer where a fix to shared code goes next. `webapp-js`'s is its `docs/chrome-lineage.md`, which its bootstrap removes from a project. `cli-python`'s is [`docs/cli-python-lineage.md`](cli-python-lineage.md), here, since `cli-python` has no bootstrap yet and a record of the repository has no place in a project.
 
 ## The initializers
 
@@ -81,7 +92,7 @@ A template's own `CHANGELOG.md` only points at the family's. Its bootstrap repla
 
 A template that has a hook wires it with Husky's `prepare` script, which needs the repository's `.git` in the directory it runs in. Here, a template's `npm install` prints Husky's `.git can't be found` notice instead, and wires nothing. The repository root's `make install` points git at the root's `.githooks/`, whose `pre-commit` runs, for each template the commit touches, that template's own `.husky/pre-commit` from inside its directory, where lint-staged only sees that template's staged files.
 
-A template may carry no hook at all. `cli-python` has none: `make check` and its workflows hold it to ruff and pyright, and `.githooks/pre-commit` skips a template without a `.husky/pre-commit`, so it needed no change for it.
+A template may carry no hook at all. `cli-python` has none: `make check` and its workflows hold it to ruff, pyright and the offline codegen check, and `.githooks/pre-commit` skips a template without a `.husky/pre-commit`, so it needed no change for it.
 
 The family root's own files pass through no hook; `make check-family` holds them to Prettier, locally and in the root CI.
 

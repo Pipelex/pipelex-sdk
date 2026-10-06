@@ -1,0 +1,1251 @@
+{
+  "comment": "A contract no method produces, assembled to reach the field kinds the webapp-js fixtures do not: every input of every_kind.take_everything but clock, count, scores and checks is an engine-emitted node copied from the story fixtures of @pipelex/mthds-form (src/__stories__/_generated/scalars.ts, files.ts and structured.ts, at commit 1284f366e44fb466e186ca59687776e556e5e8fc, v0.14.1); those four, and every input of every_kind.take_bare and every_kind.take_json, are written by hand to the same shapes, the bare kinds being positions the engine only emits inside a structure. The wire table records what the form kernel sends for each, and tests/test_wire_table.py in cli-python replays it.",
+  "pipe_io_contracts": {
+    "every_kind.take_everything": {
+      "inputs": {
+        "headline": {
+          "concept_ref": "scalars.Headline",
+          "item_count": null,
+          "json_schema": {
+            "description": "A single line of text",
+            "properties": {
+              "text": {
+                "description": "The text",
+                "title": "Text",
+                "type": "string"
+              }
+            },
+            "required": ["text"],
+            "title": "scalars.Headline",
+            "type": "object"
+          },
+          "multiplicity": "single",
+          "presence": "plain"
+        },
+        "may_be_absent": {
+          "concept_ref": "native.Text",
+          "item_count": null,
+          "json_schema": {
+            "description": "A text",
+            "properties": {
+              "text": {
+                "description": "The text",
+                "title": "Text",
+                "type": "string"
+              }
+            },
+            "required": ["text"],
+            "title": "native.Text",
+            "type": "object"
+          },
+          "multiplicity": "single",
+          "presence": "optional"
+        },
+        "clock": {
+          "concept_ref": "native.Time",
+          "presence": "plain",
+          "multiplicity": "single",
+          "item_count": null,
+          "json_schema": {
+            "description": "A time of day",
+            "properties": {
+              "time": {
+                "description": "The time of day, in ISO 8601 (e.g. 15:40:00, or 15:40:00+02:00 with a UTC offset).",
+                "format": "time",
+                "title": "Time",
+                "type": "string"
+              }
+            },
+            "required": ["time"],
+            "title": "native.Time",
+            "type": "object"
+          }
+        },
+        "amount": {
+          "concept_ref": "native.Number",
+          "item_count": null,
+          "json_schema": {
+            "description": "A number",
+            "properties": {
+              "number": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "description": "The number",
+                "title": "Number"
+              }
+            },
+            "required": ["number"],
+            "title": "native.Number",
+            "type": "object"
+          },
+          "multiplicity": "single",
+          "presence": "plain"
+        },
+        "count": {
+          "concept_ref": "every_kind.Count",
+          "presence": "plain",
+          "multiplicity": "single",
+          "item_count": null,
+          "json_schema": {
+            "description": "How many",
+            "properties": {
+              "number": {
+                "description": "The number",
+                "maximum": 10,
+                "minimum": 1,
+                "title": "Number",
+                "type": "integer"
+              }
+            },
+            "required": ["number"],
+            "title": "every_kind.Count",
+            "type": "object"
+          }
+        },
+        "agreed": {
+          "concept_ref": "native.YesNo",
+          "item_count": null,
+          "json_schema": {
+            "description": "The answer to a yes/no question",
+            "properties": {
+              "yes_no": {
+                "description": "Whether the answer is yes (true) or no (false).",
+                "title": "Yes No",
+                "type": "boolean"
+              }
+            },
+            "required": ["yes_no"],
+            "title": "native.YesNo",
+            "type": "object"
+          },
+          "multiplicity": "single",
+          "presence": "plain"
+        },
+        "due": {
+          "concept_ref": "native.Date",
+          "item_count": null,
+          "json_schema": {
+            "description": "A calendar date, optionally with a time of day — as precise as its source states.",
+            "properties": {
+              "date": {
+                "description": "The calendar date, in ISO 8601 (e.g. 2026-07-07). Always required.",
+                "format": "date",
+                "title": "Date",
+                "type": "string"
+              },
+              "time": {
+                "anyOf": [
+                  {
+                    "format": "time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The time of day, in ISO 8601 (e.g. 15:40:00, or 15:40:00+02:00 with a UTC offset). Include it only when the source states a time — never invent a time. Keep the UTC offset exactly when the source states one.",
+                "title": "Time"
+              }
+            },
+            "required": ["date"],
+            "title": "native.Date",
+            "type": "object"
+          },
+          "multiplicity": "single",
+          "presence": "plain"
+        },
+        "priority": {
+          "concept_ref": "scalars.Priority",
+          "item_count": null,
+          "json_schema": {
+            "description": "How urgent the request is",
+            "properties": {
+              "level": {
+                "description": "The urgency level",
+                "enum": ["low", "normal", "high", "urgent"],
+                "title": "Level",
+                "type": "string"
+              }
+            },
+            "required": ["level"],
+            "title": "scalars.Priority",
+            "type": "object"
+          },
+          "multiplicity": "single",
+          "presence": "plain"
+        },
+        "picture": {
+          "concept_ref": "native.Image",
+          "item_count": null,
+          "json_schema": {
+            "description": "An image",
+            "properties": {
+              "caption": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The caption of the image",
+                "title": "Caption"
+              },
+              "filename": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The original filename of the image",
+                "title": "Filename"
+              },
+              "height": {
+                "anyOf": [
+                  {
+                    "exclusiveMinimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The height of the image, in pixels",
+                "title": "Height"
+              },
+              "mime_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The MIME type of the image",
+                "title": "Mime Type"
+              },
+              "public_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The public URL of the image",
+                "title": "Public Url"
+              },
+              "source_negative_prompt": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The source negative prompt of the image",
+                "title": "Source Negative Prompt"
+              },
+              "source_prompt": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The source prompt of the image",
+                "title": "Source Prompt"
+              },
+              "url": {
+                "description": "The image URL: a storage URI, an HTTP(S) URL, or a base64 data URL",
+                "title": "Url",
+                "type": "string"
+              },
+              "width": {
+                "anyOf": [
+                  {
+                    "exclusiveMinimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The width of the image, in pixels",
+                "title": "Width"
+              }
+            },
+            "required": ["url"],
+            "title": "native.Image",
+            "type": "object"
+          },
+          "multiplicity": "single",
+          "presence": "plain"
+        },
+        "cover_letter": {
+          "concept_ref": "native.Document",
+          "item_count": null,
+          "json_schema": {
+            "description": "A document",
+            "properties": {
+              "filename": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The original filename of the document",
+                "title": "Filename"
+              },
+              "mime_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The MIME type of the document",
+                "title": "Mime Type"
+              },
+              "public_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The public HTTPS URL of the document",
+                "title": "Public Url"
+              },
+              "snippet": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "A text snippet or excerpt from the document",
+                "title": "Snippet"
+              },
+              "title": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The title of the document or source",
+                "title": "Title"
+              },
+              "url": {
+                "description": "The document URL: a storage URI, an HTTP(S) URL, or a base64 data URL",
+                "title": "Url",
+                "type": "string"
+              }
+            },
+            "required": ["url"],
+            "title": "native.Document",
+            "type": "object"
+          },
+          "multiplicity": "single",
+          "presence": "optional"
+        },
+        "many": {
+          "concept_ref": "scalars.Headline",
+          "item_count": null,
+          "json_schema": {
+            "items": {
+              "description": "A single line of text",
+              "properties": {
+                "text": {
+                  "description": "The text",
+                  "title": "Text",
+                  "type": "string"
+                }
+              },
+              "required": ["text"],
+              "title": "scalars.Headline",
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "multiplicity": "variable",
+          "presence": "plain"
+        },
+        "exactly_three": {
+          "concept_ref": "scalars.Headline",
+          "item_count": 3,
+          "json_schema": {
+            "items": {
+              "description": "A single line of text",
+              "properties": {
+                "text": {
+                  "description": "The text",
+                  "title": "Text",
+                  "type": "string"
+                }
+              },
+              "required": ["text"],
+              "title": "scalars.Headline",
+              "type": "object"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "multiplicity": "fixed",
+          "presence": "plain"
+        },
+        "scores": {
+          "concept_ref": "native.Number",
+          "presence": "plain",
+          "multiplicity": "variable",
+          "item_count": null,
+          "json_schema": {
+            "items": {
+              "description": "A number",
+              "properties": {
+                "number": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "description": "The number",
+                  "title": "Number"
+                }
+              },
+              "required": ["number"],
+              "title": "native.Number",
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "checks": {
+          "concept_ref": "native.YesNo",
+          "presence": "plain",
+          "multiplicity": "fixed",
+          "item_count": 2,
+          "json_schema": {
+            "items": {
+              "description": "The answer to a yes/no question",
+              "properties": {
+                "yes_no": {
+                  "description": "Whether the answer is yes (true) or no (false).",
+                  "title": "Yes No",
+                  "type": "boolean"
+                }
+              },
+              "required": ["yes_no"],
+              "title": "native.YesNo",
+              "type": "object"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          }
+        },
+        "attachments": {
+          "concept_ref": "native.Document",
+          "item_count": null,
+          "json_schema": {
+            "items": {
+              "description": "A document",
+              "properties": {
+                "filename": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The original filename of the document",
+                  "title": "Filename"
+                },
+                "mime_type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The MIME type of the document",
+                  "title": "Mime Type"
+                },
+                "public_url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The public HTTPS URL of the document",
+                  "title": "Public Url"
+                },
+                "snippet": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "A text snippet or excerpt from the document",
+                  "title": "Snippet"
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The title of the document or source",
+                  "title": "Title"
+                },
+                "url": {
+                  "description": "The document URL: a storage URI, an HTTP(S) URL, or a base64 data URL",
+                  "title": "Url",
+                  "type": "string"
+                }
+              },
+              "required": ["url"],
+              "title": "native.Document",
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "multiplicity": "variable",
+          "presence": "plain"
+        },
+        "gallery": {
+          "concept_ref": "native.Image",
+          "item_count": null,
+          "json_schema": {
+            "items": {
+              "description": "An image",
+              "properties": {
+                "caption": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The caption of the image",
+                  "title": "Caption"
+                },
+                "filename": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The original filename of the image",
+                  "title": "Filename"
+                },
+                "height": {
+                  "anyOf": [
+                    {
+                      "exclusiveMinimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The height of the image, in pixels",
+                  "title": "Height"
+                },
+                "mime_type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The MIME type of the image",
+                  "title": "Mime Type"
+                },
+                "public_url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The public URL of the image",
+                  "title": "Public Url"
+                },
+                "source_negative_prompt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The source negative prompt of the image",
+                  "title": "Source Negative Prompt"
+                },
+                "source_prompt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The source prompt of the image",
+                  "title": "Source Prompt"
+                },
+                "url": {
+                  "description": "The image URL: a storage URI, an HTTP(S) URL, or a base64 data URL",
+                  "title": "Url",
+                  "type": "string"
+                },
+                "width": {
+                  "anyOf": [
+                    {
+                      "exclusiveMinimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The width of the image, in pixels",
+                  "title": "Width"
+                }
+              },
+              "required": ["url"],
+              "title": "native.Image",
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "multiplicity": "variable",
+          "presence": "plain"
+        },
+        "lines": {
+          "concept_ref": "structured.LineItem",
+          "item_count": null,
+          "json_schema": {
+            "items": {
+              "description": "One billable line of an invoice",
+              "properties": {
+                "label": {
+                  "description": "What was sold",
+                  "title": "Label",
+                  "type": "string"
+                },
+                "quantity": {
+                  "description": "How many units",
+                  "title": "Quantity",
+                  "type": "integer"
+                },
+                "taxable": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "Whether VAT applies",
+                  "title": "Taxable"
+                },
+                "unit_price": {
+                  "description": "Price of one unit",
+                  "title": "Unit Price",
+                  "type": "number"
+                }
+              },
+              "required": ["label", "quantity", "unit_price"],
+              "title": "structured.LineItem",
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "multiplicity": "variable",
+          "presence": "plain"
+        }
+      },
+      "output": {
+        "concept_ref": "native.Text",
+        "item_count": null,
+        "json_schema": {
+          "description": "A text",
+          "properties": {
+            "text": {
+              "description": "The text",
+              "title": "Text",
+              "type": "string"
+            }
+          },
+          "required": ["text"],
+          "title": "native.Text",
+          "type": "object"
+        },
+        "multiplicity": "single",
+        "optional": false
+      }
+    },
+    "every_kind.take_bare": {
+      "inputs": {
+        "level": {
+          "concept_ref": "every_kind.Level",
+          "presence": "plain",
+          "multiplicity": "single",
+          "item_count": null,
+          "json_schema": {
+            "description": "A level",
+            "enum": ["low", "normal", "high"],
+            "title": "every_kind.Level",
+            "type": "string"
+          }
+        },
+        "levels": {
+          "concept_ref": "every_kind.Level",
+          "presence": "plain",
+          "multiplicity": "variable",
+          "item_count": null,
+          "json_schema": {
+            "items": {
+              "description": "A level",
+              "enum": ["low", "normal", "high"],
+              "title": "every_kind.Level",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "day": {
+          "concept_ref": "every_kind.Day",
+          "presence": "plain",
+          "multiplicity": "single",
+          "item_count": null,
+          "json_schema": {
+            "description": "A calendar day",
+            "format": "date",
+            "title": "every_kind.Day",
+            "type": "string"
+          }
+        },
+        "moment": {
+          "concept_ref": "every_kind.Moment",
+          "presence": "optional",
+          "multiplicity": "single",
+          "item_count": null,
+          "json_schema": {
+            "description": "A point in time",
+            "format": "date-time",
+            "title": "every_kind.Moment",
+            "type": "string"
+          }
+        }
+      },
+      "output": {
+        "concept_ref": "native.Text",
+        "item_count": null,
+        "json_schema": {
+          "description": "A text",
+          "properties": {
+            "text": {
+              "description": "The text",
+              "title": "Text",
+              "type": "string"
+            }
+          },
+          "required": ["text"],
+          "title": "native.Text",
+          "type": "object"
+        },
+        "multiplicity": "single",
+        "optional": false
+      }
+    },
+    "every_kind.take_json": {
+      "inputs": {
+        "payload": {
+          "concept_ref": "native.JSON",
+          "presence": "plain",
+          "multiplicity": "single",
+          "item_count": null,
+          "json_schema": {
+            "description": "A JSON object",
+            "properties": {
+              "json_obj": {
+                "additionalProperties": true,
+                "description": "The JSON object",
+                "title": "Json Obj",
+                "type": "object"
+              }
+            },
+            "required": ["json_obj"],
+            "title": "native.JSON",
+            "type": "object"
+          }
+        }
+      },
+      "output": {
+        "concept_ref": "native.Text",
+        "item_count": null,
+        "json_schema": {
+          "description": "A text",
+          "properties": {
+            "text": {
+              "description": "The text",
+              "title": "Text",
+              "type": "string"
+            }
+          },
+          "required": ["text"],
+          "title": "native.Text",
+          "type": "object"
+        },
+        "multiplicity": "single",
+        "optional": false
+      }
+    }
+  },
+  "input_form": {
+    "every_kind.take_everything": {
+      "fields": [
+        {
+          "concept_ref": "scalars.Headline",
+          "description": "A single line of text",
+          "gating": true,
+          "kind": "prose",
+          "name": "headline",
+          "presence": "plain",
+          "refines": ["native.Text"],
+          "required": true
+        },
+        {
+          "concept_ref": "native.Text",
+          "description": "A text",
+          "gating": false,
+          "kind": "prose",
+          "name": "may_be_absent",
+          "presence": "optional",
+          "required": false
+        },
+        {
+          "concept_ref": "native.Time",
+          "description": "A time of day",
+          "format": "time",
+          "gating": true,
+          "kind": "text",
+          "name": "clock",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "native.Number",
+          "description": "A number",
+          "gating": true,
+          "integer": false,
+          "kind": "number",
+          "name": "amount",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "every_kind.Count",
+          "description": "How many",
+          "gating": true,
+          "integer": true,
+          "kind": "number",
+          "maximum": 10,
+          "minimum": 1,
+          "name": "count",
+          "presence": "plain",
+          "refines": ["native.Number"],
+          "required": true
+        },
+        {
+          "concept_ref": "native.YesNo",
+          "description": "The answer to a yes/no question",
+          "gating": true,
+          "kind": "boolean",
+          "name": "agreed",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "native.Date",
+          "description": "A calendar date, optionally with a time of day — as precise as its source states.",
+          "fields": [
+            {
+              "datetime": false,
+              "description": "The calendar date, in ISO 8601 (e.g. 2026-07-07). Always required.",
+              "kind": "date",
+              "name": "date",
+              "required": true
+            },
+            {
+              "description": "The time of day, in ISO 8601 (e.g. 15:40:00, or 15:40:00+02:00 with a UTC offset). Include it only when the source states a time — never invent a time. Keep the UTC offset exactly when the source states one.",
+              "format": "time",
+              "kind": "text",
+              "name": "time",
+              "required": false
+            }
+          ],
+          "gating": true,
+          "kind": "object",
+          "name": "due",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "scalars.Priority",
+          "description": "How urgent the request is",
+          "fields": [
+            {
+              "choices": ["low", "normal", "high", "urgent"],
+              "description": "The urgency level",
+              "kind": "enum",
+              "name": "level",
+              "required": true
+            }
+          ],
+          "gating": true,
+          "kind": "object",
+          "name": "priority",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "native.Image",
+          "description": "An image",
+          "gating": true,
+          "kind": "image",
+          "name": "picture",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "native.Document",
+          "description": "A document",
+          "gating": false,
+          "kind": "document",
+          "name": "cover_letter",
+          "presence": "optional",
+          "required": false
+        },
+        {
+          "concept_ref": "scalars.Headline",
+          "description": "A single line of text",
+          "gating": false,
+          "item": {
+            "concept_ref": "scalars.Headline",
+            "description": "A single line of text",
+            "kind": "prose",
+            "refines": ["native.Text"],
+            "required": true
+          },
+          "kind": "list",
+          "name": "many",
+          "presence": "plain",
+          "refines": ["native.Text"],
+          "required": true
+        },
+        {
+          "concept_ref": "scalars.Headline",
+          "description": "A single line of text",
+          "gating": true,
+          "item": {
+            "concept_ref": "scalars.Headline",
+            "description": "A single line of text",
+            "kind": "prose",
+            "refines": ["native.Text"],
+            "required": true
+          },
+          "item_count": 3,
+          "kind": "list",
+          "name": "exactly_three",
+          "presence": "plain",
+          "refines": ["native.Text"],
+          "required": true
+        },
+        {
+          "concept_ref": "native.Number",
+          "description": "A number",
+          "gating": false,
+          "item": {
+            "concept_ref": "native.Number",
+            "description": "A number",
+            "integer": false,
+            "kind": "number",
+            "required": true
+          },
+          "kind": "list",
+          "name": "scores",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "native.YesNo",
+          "description": "The answer to a yes/no question",
+          "gating": true,
+          "item": {
+            "concept_ref": "native.YesNo",
+            "description": "The answer to a yes/no question",
+            "kind": "boolean",
+            "required": true
+          },
+          "item_count": 2,
+          "kind": "list",
+          "name": "checks",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "native.Document",
+          "description": "A document",
+          "gating": false,
+          "item": {
+            "concept_ref": "native.Document",
+            "description": "A document",
+            "kind": "document",
+            "required": true
+          },
+          "kind": "list",
+          "name": "attachments",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "native.Image",
+          "description": "An image",
+          "gating": false,
+          "item": {
+            "concept_ref": "native.Image",
+            "description": "An image",
+            "kind": "image",
+            "required": true
+          },
+          "kind": "list",
+          "name": "gallery",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "structured.LineItem",
+          "description": "One billable line of an invoice",
+          "gating": false,
+          "item": {
+            "concept_ref": "structured.LineItem",
+            "description": "One billable line of an invoice",
+            "fields": [
+              {
+                "description": "What was sold",
+                "kind": "text",
+                "name": "label",
+                "required": true
+              },
+              {
+                "description": "How many units",
+                "integer": true,
+                "kind": "number",
+                "name": "quantity",
+                "required": true
+              },
+              {
+                "description": "Price of one unit",
+                "integer": false,
+                "kind": "number",
+                "name": "unit_price",
+                "required": true
+              },
+              {
+                "description": "Whether VAT applies",
+                "kind": "boolean",
+                "name": "taxable",
+                "required": false
+              }
+            ],
+            "kind": "object",
+            "required": true
+          },
+          "kind": "list",
+          "name": "lines",
+          "presence": "plain",
+          "required": true
+        }
+      ]
+    },
+    "every_kind.take_bare": {
+      "fields": [
+        {
+          "choices": ["low", "normal", "high"],
+          "concept_ref": "every_kind.Level",
+          "description": "A level",
+          "gating": true,
+          "kind": "enum",
+          "name": "level",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "every_kind.Level",
+          "description": "A level",
+          "gating": false,
+          "item": {
+            "choices": ["low", "normal", "high"],
+            "concept_ref": "every_kind.Level",
+            "description": "A level",
+            "kind": "enum",
+            "required": true
+          },
+          "kind": "list",
+          "name": "levels",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "every_kind.Day",
+          "datetime": false,
+          "description": "A calendar day",
+          "gating": true,
+          "kind": "date",
+          "name": "day",
+          "presence": "plain",
+          "required": true
+        },
+        {
+          "concept_ref": "every_kind.Moment",
+          "datetime": true,
+          "description": "A point in time",
+          "gating": false,
+          "kind": "date",
+          "name": "moment",
+          "presence": "optional",
+          "required": false
+        }
+      ]
+    },
+    "every_kind.take_json": {
+      "fields": [
+        {
+          "concept_ref": "native.JSON",
+          "description": "A JSON object",
+          "gating": true,
+          "kind": "unknown",
+          "name": "payload",
+          "presence": "plain",
+          "required": true
+        }
+      ]
+    }
+  },
+  "output_form": {
+    "every_kind.take_everything": {
+      "field": {
+        "concept_ref": "native.Text",
+        "description": "A text",
+        "kind": "prose",
+        "name": "output",
+        "required": true
+      }
+    },
+    "every_kind.take_bare": {
+      "field": {
+        "concept_ref": "native.Text",
+        "description": "A text",
+        "kind": "prose",
+        "name": "output",
+        "required": true
+      }
+    },
+    "every_kind.take_json": {
+      "field": {
+        "concept_ref": "native.Text",
+        "description": "A text",
+        "kind": "prose",
+        "name": "output",
+        "required": true
+      }
+    }
+  }
+}

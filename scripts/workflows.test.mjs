@@ -270,19 +270,61 @@ describe("renderStandaloneTwin", () => {
     assert.equal(rendered.match(/working-directory: \.\.\/standalone\/app-py$/gm).length, 1);
   });
 
-  it("leaves a setup-uv step exactly as written", () => {
-    const rendered = renderStandaloneTwin("app-py", "package-check.yml", UV_SOURCE);
+  it("keys a setup-uv cache on the template's uv.lock, and leaves the rest of the step as written", () => {
+    // The action runs at the repository root, where its default glob reads every uv.lock in the repository.
+    const rendered = renderStandaloneTwin("family/app-py", "package-check.yml", UV_SOURCE);
     assert.ok(
       rendered.includes(
-        "      - name: Install uv\n        uses: astral-sh/setup-uv@v3\n        with:\n          enable-cache: true\n\n",
+        "      - name: Install uv\n        uses: astral-sh/setup-uv@v3\n        with:\n          enable-cache: true\n          cache-dependency-glob: family/app-py/uv.lock\n\n",
       ),
     );
-    const bare = UV_SOURCE.replace("        with:\n          enable-cache: true\n", "");
+    for (const spelling of ['enable-cache: "true"', "enable-cache: True # cached"]) {
+      assert.ok(
+        renderStandaloneTwin(
+          "app-py",
+          "package-check.yml",
+          UV_SOURCE.replace("enable-cache: true", spelling),
+        ).includes(`          ${spelling}\n          cache-dependency-glob: app-py/uv.lock\n`),
+        spelling,
+      );
+    }
+  });
+
+  it("leaves a setup-uv step that turns its cache off exactly as written", () => {
+    const off = UV_SOURCE.replace("enable-cache: true", "enable-cache: false");
+    const rendered = renderStandaloneTwin("app-py", "package-check.yml", off);
     assert.ok(
-      renderStandaloneTwin("app-py", "package-check.yml", bare).includes(
-        "        uses: astral-sh/setup-uv@v3\n\n",
+      rendered.includes(
+        "        uses: astral-sh/setup-uv@v3\n        with:\n          enable-cache: false\n\n",
       ),
     );
+    assert.doesNotMatch(rendered, /cache-dependency-glob/);
+  });
+
+  it("refuses a setup-uv step that leaves its cache to the action's default, naming the step", () => {
+    const bare = UV_SOURCE.replace("        with:\n          enable-cache: true\n", "");
+    assert.throws(
+      () => renderStandaloneTwin("app-py", "package-check.yml", bare),
+      /cannot render "- name: Install uv": a setup-uv step that leaves enable-cache to the action's default/,
+    );
+    assert.throws(
+      () =>
+        renderStandaloneTwin(
+          "app-py",
+          "package-check.yml",
+          UV_SOURCE.replace("enable-cache: true", "enable-cache: auto"),
+        ),
+      /cannot render "enable-cache: auto"/,
+    );
+  });
+
+  it("keys the setup-uv cache in a next-SDK twin too", () => {
+    const withInstall = UV_SOURCE.replace(
+      "      - name: Check if uv.lock is up to date",
+      "      - name: Install\n        run: make install\n\n      - name: Check if uv.lock is up to date",
+    );
+    const twin = renderNextSdkTwin("app-py", "package-check.yml", withInstall, PYPI);
+    assert.match(twin, /enable-cache: true\n {10}cache-dependency-glob: app-py\/uv\.lock\n/);
   });
 
   it("runs every job that checks out in the extracted folder", () => {
@@ -318,6 +360,10 @@ describe("renderStandaloneTwin", () => {
       "a job that sets defaults": SOURCE.replace(
         "    runs-on: ubuntu-latest",
         "    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: bash",
+      ),
+      "a cache-dependency-glob": SOURCE.replace(
+        '          cache: "npm"',
+        '          cache: "npm"\n          cache-dependency-glob: "**/uv.lock"',
       ),
       "a cache-dependency-path": SOURCE.replace(
         '          cache: "npm"',

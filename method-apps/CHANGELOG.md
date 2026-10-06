@@ -5,6 +5,7 @@
 ### Added
 
 - **`cli-python`, the Python command-line template**: a uv project whose one command runs one MTHDS method through `pipelex-sdk` and prints its result as JSON on stdout, with the run id, progress, downloaded files, the cost report and errors on stderr. A run is followed until its result arrives by default, `--blocking` runs it in one request, `--detach` prints the run id alone for `--resume <run-id>` to collect later, and Ctrl-C leaves a run going and prints the `--resume` command that picks it up; a server that cannot hold runs is an error naming `--blocking`, never a silent fallback. The template ships no method, so its command says to run `make create`, whose argument contract is the family's but which refuses, changing nothing, until the gesture is written. No initializer serves it yet: its README copies it out of a release's tag with `curl` and `tar`.
+- **`cli-python` takes the method's inputs as options and checks its result, from contracts it generates**: `make codegen` writes the method's typed models and its contracts into the package through the API, `make codegen-check` says offline, as part of `make check`, whether they are still current with the method, and `make codegen-verify` asks the API whether they are still what the method resolves to. The command takes one option per input the method declares, derived from the committed input form when it loads, puts on the wire what the web app template's form sends for the same values, uploads a local file before the run, prints the inputs template with `--inputs-template`, and refuses a run missing a required input with exit code 2. A result the generated output model refuses is not printed, every hint names the command as it was invoked, and a finished download leaves a manifest by which a second `--resume` tells it whole.
 
 ### Changed
 
@@ -14,6 +15,7 @@
 
 ### Fixed
 
+- **The web app template's codegen refuses a method that changed while it was being generated**: `npm run codegen`, `make add-method` and `make create` now ask `POST /v1/codegen` again once `POST /v1/pipe-io` has answered, and write nothing when the method resolved to another crate in between, saying so and to run the command again. A method edited or republished between the two requests used to leave the generated types of one revision beside the contracts of another, a tree `codegen:check` called current.
 - **The web app template no longer describes a failed input preparation as a failed upload**: when a run's inputs cannot be prepared, for instance because the API refuses the pipe the action names, the error now reads "Preparing the inputs failed" and names the method's signature or its pipe as the usual cause, with the server's reason in the technical details. It used to say that the app could not upload the file to Pipelex storage, although a run's files are stored before it starts.
 
 ## [v0.29.1] - 2026-10-02

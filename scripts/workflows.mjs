@@ -35,20 +35,26 @@
  * the extraction step right after the checkout, points every
  * `${{ github.workspace }}` at the extracted folder, and gives an npm cache the
  * template's lock file, the monorepo's copy of the one the extraction carries.
- * A setup-uv step is left exactly as written: uv finds the project from the
- * working directory of the steps that run it.
+ * A setup-uv step that sets `enable-cache: true` gets the same: its cache is
+ * keyed on the template's `uv.lock` through `cache-dependency-glob`, since
+ * the action runs at the repository root, where its default glob reads every
+ * `uv.lock` and `pyproject.toml` in the repository. The rest of a setup-uv step
+ * is left as written: uv finds the project from the working directory of the
+ * steps that run it.
  *
  * It refuses a source it cannot render faithfully rather than guessing: a
  * quoted name, a job that already sets `defaults`, a job that calls a reusable
  * workflow, a job that checks out with no inline `runs-on` to set its working
  * directory after, a job that checks out twice or runs a step before its
  * checkout, a flow mapping, a `cache:` input other than npm's whichever action
- * takes it, `github.workspace` anywhere the rewrite cannot reach, the shell's
- * `GITHUB_WORKSPACE`, a workflow with no job that checks out, and everything
- * GitHub resolves from the repository root rather than from the template's
- * directory — a key named for a path, a file or a directory, a local action,
- * and `hashFiles`. For a next-SDK twin, it also refuses a job with more than
- * one install step, and an install written inside a multi-line `run:`. An
+ * takes it, a setup-uv step that leaves `enable-cache` to the action's default,
+ * which caches on a key read from the whole repository, `github.workspace`
+ * anywhere the rewrite cannot reach, the shell's `GITHUB_WORKSPACE`, a workflow
+ * with no job that checks out, and everything GitHub resolves from the
+ * repository root rather than from the template's directory — a key named for
+ * a path, a file, a directory or a glob, a local action, and `hashFiles`. For
+ * a next-SDK twin, it also refuses a job with more than one install step, and
+ * an install written inside a multi-line `run:`. An
  * action input that holds a path under any other name is not recognised, so a
  * new workflow's twins are read before they are committed. It also refuses to
  * write over a hand-written root workflow that has a twin's name.
@@ -127,6 +133,9 @@ const BLOCK_SCALAR = /^[|>][-+0-9]*\s*(#.*)?$/;
 
 /** The one spelling of the workspace the rewrite reaches. */
 const WORKSPACE = /\$\{\{\s*github\.workspace\s*\}\}/g;
+
+/** The action that installs uv, whose cache a twin keys on the template's lock file. */
+const SETUP_UV = /^astral-sh\/setup-uv(@|$)/;
 
 /** Whether a command is a template's install: `npm ci`, or one ending with `make install`. */
 function isInstall(command) {
@@ -221,7 +230,7 @@ function parseWorkflow(origin, source) {
     }
 
     expressions(line, at);
-    if (/^\s+(- )?[\w-]*(path|paths|file|files|directory)(-ignore)?:/.test(line)) {
+    if (/^\s+(- )?[\w-]*(path|paths|file|files|directory|glob)(-ignore)?:/.test(line)) {
       refuse(line, "a key naming a path is read from the repository root");
     }
     if (/^\s+(- )?uses:\s*["']?\.\//.test(line)) {
@@ -265,6 +274,7 @@ function parseWorkflow(origin, source) {
           run: null,
           runBlock: false,
           hiddenInstall: null,
+          enableCache: null,
         };
         job.steps.push(step);
       } else if (indent <= (steps.dash ?? steps.key)) {
@@ -281,6 +291,10 @@ function parseWorkflow(origin, source) {
         if (BLOCK_SCALAR.test(key.value)) step.runBlock = true;
         else step.run = scalar(key.value);
       }
+    }
+    // An action input, under the step's `with:`, whichever action the step turns out to use.
+    if (step && key && key.key === "enable-cache" && step.keys !== null && key.column > step.keys) {
+      step.enableCache = { at, column: key.column, value: scalar(key.value).toLowerCase() };
     }
     if (key && key.key === "cache") {
       if (scalar(key.value) !== "npm") {
@@ -428,6 +442,19 @@ function render(template, file, source, sdk) {
       after[cache.at].push(
         `${" ".repeat(cache.column)}cache-dependency-path: ${template}/package-lock.json`,
       );
+    }
+    for (const step of job.steps.filter((each) => SETUP_UV.test(each.uses ?? ""))) {
+      const cache = step.enableCache;
+      if (cache?.value === "true") {
+        after[cache.at].push(
+          `${" ".repeat(cache.column)}cache-dependency-glob: ${template}/uv.lock`,
+        );
+      } else if (cache?.value !== "false") {
+        refuse(
+          cache?.at ?? step.start,
+          "a setup-uv step that leaves enable-cache to the action's default caches on every uv.lock in the repository: set it to true, which the twin keys on the template's uv.lock, or to false",
+        );
+      }
     }
     insertStep(job.checkout.last, extractionStep(template, job.checkout.dash));
     if (!sdk) continue;

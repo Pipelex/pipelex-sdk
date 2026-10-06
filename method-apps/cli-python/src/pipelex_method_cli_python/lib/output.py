@@ -5,9 +5,10 @@ script the same way wherever it runs, a terminal, a script or an agent. Progress
 attended run, the cost report, the paths of downloaded files, errors and hints all go to stderr.
 
 What is printed is the payload as the method produced it, `RunResults.main_stuff`, never a
-re-serialization of a model, so no field is dropped, renamed or reordered. It includes the
-short-lived signed `public_url` of any produced file, which expires within minutes; the file itself
-is downloaded beside it (`lib/artifacts.py`).
+re-serialization of a model, so no field is dropped, renamed or reordered. The generated model
+`binding.py` names checks it first (`lib/narrow.py`), and a result it refuses is not printed. It
+includes the short-lived signed `public_url` of any produced file, which expires within minutes;
+the file itself is downloaded beside it (`lib/artifacts.py`).
 
 **A plural output is read through `list_items`**, because the runtime renders a list in two shapes
 depending on the execution path, not on the method: the blocking `execute` response carries the
@@ -88,9 +89,9 @@ def render_json(payload: Any) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
-def print_result(results: RunResults, *, output_is_list: bool) -> None:
-    """Print a run's result on stdout as JSON, and nothing else."""
-    _echo_stdout(render_json(result_payload(results, output_is_list=output_is_list)))
+def print_payload(payload: Any) -> None:
+    """Print a run's result on stdout as JSON, and nothing else: the payload `lib/narrow.py` checked, as it came."""
+    _echo_stdout(render_json(payload))
 
 
 def print_run_id(run_id: str) -> None:

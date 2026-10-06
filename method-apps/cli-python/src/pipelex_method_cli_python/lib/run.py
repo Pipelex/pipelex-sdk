@@ -20,6 +20,12 @@ between the two from the `/v1/version` handshake, is deliberately not used here:
 would make `--detach` and `--resume` quietly inapplicable, and on the hosted gateway a long run would
 hit the blocking cut-off instead of running durably.
 
+A new run whose method declares a file input anywhere in its input form first goes through the
+SDK's `prepare_inputs`, which uploads each local path the options or the inputs file gave and
+rewrites it to the `pipelex-storage://` reference the run reads; a URL passes through. A finished
+run's result is checked against the generated model before it is printed (`lib/narrow.py`), and an
+optional output the method left absent is printed as `null`, with a line on stderr saying why.
+
 The SDK is async only, so these are coroutines and the command makes one `asyncio.run` call at its
 root (`cli.py`). Every function takes the client it runs on, opened once by `execute_plan` through
 `lib/client.py`, which is where a test replaces it.
@@ -30,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mthds.protocol.exceptions import PipelineRequestError
 from pipelex_sdk.artifact_models import DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
@@ -39,11 +46,13 @@ from rich.console import Console
 from rich.markup import escape
 
 from pipelex_method_cli_python.lib import client as api
-from pipelex_method_cli_python.lib.app import RunMode
+from pipelex_method_cli_python.lib.app import AppError, RunMode
 from pipelex_method_cli_python.lib.artifacts import EarlierDownload, download_produced_files, print_downloads
 from pipelex_method_cli_python.lib.binding import MethodBinding
-from pipelex_method_cli_python.lib.errors import resume_command
-from pipelex_method_cli_python.lib.output import OutputShapeError, print_result, print_run_id
+from pipelex_method_cli_python.lib.errors import present_error, print_error, resume_command
+from pipelex_method_cli_python.lib.inputs import declares_files
+from pipelex_method_cli_python.lib.narrow import NarrowedOutput, OutputValidationError, narrow_output
+from pipelex_method_cli_python.lib.output import OutputShapeError, print_payload, print_run_id
 from pipelex_method_cli_python.lib.usage import print_cost_report
 
 
@@ -70,24 +79,47 @@ async def execute_plan(plan: RunPlan, *, binding: MethodBinding, stderr: Console
         AppError: A failure the CLI detected itself, which the boundary presents the same way.
     """
     async with api.make_client() as client:
+        inputs = plan.inputs
+        if plan.mode is not RunMode.RESUME:
+            inputs = await prepare_run_inputs(client, binding=binding, inputs=inputs, stderr=stderr)
         match plan.mode:
             case RunMode.DETACH:
-                run_id = await start_run(client, binding=binding, inputs=plan.inputs, stderr=stderr)
+                run_id = await start_run(client, binding=binding, inputs=inputs, stderr=stderr)
                 print_run_id(run_id)
                 stderr.print(f"Run {escape(run_id)} started. Collect its result with: [bold]{escape(resume_command(run_id))}[/bold]")
                 return 0
             case RunMode.BLOCKING:
-                results = await run_blocking(client, binding=binding, inputs=plan.inputs, stderr=stderr)
+                results = await run_blocking(client, binding=binding, inputs=inputs, stderr=stderr)
             case RunMode.RESUME:
                 if plan.resume_run_id is None:
                     msg = "A resumed run needs the id of the run to resume."
                     raise ValueError(msg)
                 results = await attend_run(client, run_id=plan.resume_run_id, stderr=stderr)
             case RunMode.ATTENDED:
-                run_id = await start_run(client, binding=binding, inputs=plan.inputs, stderr=stderr)
+                run_id = await start_run(client, binding=binding, inputs=inputs, stderr=stderr)
                 stderr.print(f"Run started: [bold]{escape(run_id)}[/bold]")
                 results = await attend_run(client, run_id=run_id, stderr=stderr)
         return await deliver(client, results, plan=plan, binding=binding, stderr=stderr)
+
+
+async def prepare_run_inputs(client: PipelexAPIClient, *, binding: MethodBinding, inputs: dict[str, Any], stderr: Console) -> dict[str, Any]:
+    """Upload the local files a new run's inputs name, when its method declares a file input anywhere.
+
+    The SDK's `prepare_inputs` asks the API for the pipe's signature, walks the inputs by each
+    input's declared kind, uploads every local path at a file position and rewrites it to the
+    `pipelex-storage://` reference the run reads; a URL and a reference already uploaded pass through.
+    A method with no file input skips the request altogether.
+
+    Raises:
+        InputPreparationError: A file cannot be read or uploaded, raised before any run starts.
+    """
+    if not inputs or not declares_files(binding.contracts.input_form):
+        return inputs
+    with stderr.status("Preparing the input files…"):
+        prepared = await client.prepare_inputs(pipe_ref=binding.pipe_ref, inputs=inputs, **binding.source.crate_kwargs())
+    for upload in prepared.uploads:
+        stderr.print(f"Uploaded {escape(upload.filename)} as {escape(upload.uri)}")
+    return prepared.inputs
 
 
 async def start_run(client: PipelexAPIClient, *, binding: MethodBinding, inputs: dict[str, Any], stderr: Console) -> str:
@@ -158,37 +190,63 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
 
     The result is printed first, so a failure to bring a file down never costs the reader the result
     the run was paid for, and the cost report follows whatever happened after the run, an error
-    raised on the way included. A result in a shape the binding does not declare is not printed, but
-    the run's files still come down, since they are paid for and their links expire, and the error
-    is raised once the cost report is out. A file that did not come down makes the exit code 1,
-    since the command did not do all it was asked, and so does a default directory an earlier
-    download left short; the hint says how to fetch the files again where that is possible, and a
-    Ctrl-C while they come down says it too before the cancellation goes through.
+    raised on the way included. A result in a shape the binding does not declare, or one the output
+    model refuses, is not printed, but the run's files still come down, since they are paid for and
+    their links expire, and the error is raised once the cost report is out. An optional output the
+    method left absent is printed as `null`, and a line on stderr says so. A file that did not come
+    down makes the exit code 1, since the command did not do all it was asked, and so does a default
+    directory an earlier download left short; the hint says how to fetch the files again where that
+    is possible, and whether the result above is complete, and a Ctrl-C while they come down says it
+    too before the cancellation goes through. A download that raises after the model refused the
+    result is printed here, and the refusal is raised all the same: it is what says the result was
+    not printed, which a failure to save the files must never hide.
     """
     exit_code = 0
-    shape_error: OutputShapeError | None = None
+    shape_error: OutputShapeError | OutputValidationError | None = None
     try:
+        resume_hint = None if plan.mode is RunMode.BLOCKING else resume_command(results.pipeline_run_id)
         try:
-            print_result(results, output_is_list=binding.output_is_list)
-        except OutputShapeError as exc:
+            narrowed = narrow_output(
+                results,
+                output_model=binding.output_model,
+                output_is_list=binding.output_is_list,
+                output_optional=binding.contracts.io.output.optional,
+                resume_hint=resume_hint,
+            )
+        except (OutputShapeError, OutputValidationError) as exc:
             shape_error = exc
+        else:
+            print_payload(narrowed.payload)
+            if narrowed.absent:
+                stderr.print(absence_note(narrowed))
         if plan.download:
             try:
                 downloaded = await download_produced_files(client, results, out_dir=plan.out_dir)
             except asyncio.CancelledError:
                 stderr.print(f"\nInterrupted while saving the run's files. {refetch_advice(plan.mode, results.pipeline_run_id)}")
                 raise
+            except (PipelineRequestError, AppError) as exc:
+                if shape_error is None:
+                    raise
+                print_error(stderr, present_error(exc, mode=plan.mode))
+                # Raised without `from`, so the refusal keeps its own cause; the download's failure, printed above, is its context.
+                raise shape_error
             print_downloads(stderr, downloaded)
             if _incomplete(downloaded):
-                stderr.print(
-                    f"[yellow]Hint:[/yellow] The run succeeded and its result is complete above. {refetch_advice(plan.mode, results.pipeline_run_id)}"
-                )
+                said = "its result is complete above" if shape_error is None else "its result was not printed, for the reason below"
+                stderr.print(f"[yellow]Hint:[/yellow] The run succeeded and {said}. {refetch_advice(plan.mode, results.pipeline_run_id)}")
                 exit_code = 1
     finally:
         print_cost_report(stderr, results)
     if shape_error is not None:
         raise shape_error
     return exit_code
+
+
+def absence_note(narrowed: NarrowedOutput) -> str:
+    """What stderr says when the method left its optional output absent, as Rich markup."""
+    reason = f" ({escape(narrowed.absence_reason)})" if narrowed.absence_reason else ""
+    return f"The method produced no output this time{reason}. Its output is optional, so the result is null."
 
 
 def _incomplete(downloaded: DownloadArtifactsResult | EarlierDownload | None) -> bool:

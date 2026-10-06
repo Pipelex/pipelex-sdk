@@ -44,6 +44,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+          cache-dependency-glob: method-apps/cli-python/uv.lock
 
       - name: Install dependencies
         run: make install
