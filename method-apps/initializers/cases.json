@@ -4,7 +4,7 @@
     "destination": "What stands at the destination before the run. missing: nothing; empty: an empty directory; git-without-commit: a directory holding only the .git of git init; git-with-history: a directory holding only the .git of a repository with a commit, its files deleted; git-with-staged-file: a directory holding only the .git of git init whose index holds notes.txt, added and then deleted from the directory; ds-store: a directory holding .DS_Store; user-file: a directory holding notes.txt; beneath-a-file: the destination is typed as notes.txt/my-app, notes.txt being a file, so nothing can stand there.",
     "spelled": "How the destination is typed. name: my-app, from its parent; space: my app, from its parent; dot: ., from inside it (the destination must exist); absent: no directory at all.",
     "within": "Where the destination's parent is. nothing: a directory no repository tracks; work-tree: inside the work tree of a repository with a commit and an origin of its own; template-checkout: inside the work tree of a repository whose origin is https://github.com/Pipelex/pipelex-sdk.git; ignored-parent: under the tmp/ directory of a repository as in work-tree, whose committed .gitignore holds tmp/; ignored-by-name: at the root of a repository as in work-tree, whose committed .gitignore holds the directory-only pattern my-app/, which matches the destination only when it is read as a directory; re-included: under the apps/ directory of a repository as in work-tree, whose committed .gitignore holds apps/* and then !apps/my-app/, so that the destination itself is not ignored when it is read as a directory; ignores-everything: at the root of a repository as in work-tree, whose committed .gitignore holds *, as a home directory kept as a repository often does; ignores-files-only: at the root of a repository as in work-tree, whose committed .gitignore holds * and then !*/, which ignores every file but no directory; contents-ignored: at the root of a repository as in work-tree, whose committed .gitignore holds my-app/* and then !my-app/package.json, which ignores what the destination holds but not the destination itself.",
-    "args": "The arguments after the destination. {other-ecosystem} stands for a template the other ecosystem's initializer serves.",
+    "args": "The arguments after the destination. {other-ecosystem} stands for a template of another ecosystem, which this initializer refuses by naming that ecosystem's initializer or, while the ecosystem has none, the template's copy-out instructions.",
     "method": "Whether --method mt_case is passed. Defaults to true.",
     "key": "Whether PIPELEX_API_KEY is set. Defaults to true.",
     "tools": "Which of make and git are on the PATH. Defaults to both.",
@@ -323,7 +323,7 @@
       "expect": { "verdict": "refused: unknown-template", "written": false, "make": false }
     },
     {
-      "name": "the other ecosystem's template names the other initializer",
+      "name": "the other ecosystem's template is refused, naming where it is served",
       "destination": "missing",
       "args": ["--template", "{other-ecosystem}"],
       "expect": { "verdict": "refused: other-ecosystem", "written": false, "make": false }
