@@ -317,6 +317,17 @@ class TestDownloads:
         assert "No inference calls" in result.stderr
         assert "outputs/ is a file" in result.stderr
 
+    def test_a_second_resume_leaves_the_earlier_download_alone(self, fake_client: FakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "outputs" / RUN_ID).mkdir(parents=True)
+        (tmp_path / "outputs" / RUN_ID / "main_stuff.png").write_bytes(b"png")
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT)
+        result = invoke(make_binding(), ["--resume", RUN_ID])
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout) == IMAGE_OUTPUT
+        assert fake_client.downloaded_to == []
+        assert "none were fetched" in result.stderr
+
     def test_a_text_result_never_names_the_default_directory(self, fake_client: FakeClient):
         # A run id that cannot name a directory matters only once there is a file to save.
         fake_client.wait_answer = run_results(TEXT_OUTPUT, run_id="run.1")
@@ -357,6 +368,16 @@ class TestPluralOutput:
         result = invoke(make_binding(output_is_list=True), [])
         assert result.exit_code == 1
         assert result.stdout == ""
+        assert "not the list binding.py declares" in result.stderr
+
+    def test_a_refused_shape_still_brings_the_files_down_and_reports_the_cost(self, fake_client: FakeClient, tmp_path: Path):
+        # The run is paid for and its links expire: only the printing is refused.
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        result = invoke(make_binding(output_is_list=True), ["--out", str(tmp_path)])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert fake_client.downloaded_to == [tmp_path]
+        assert "No inference calls" in result.stderr
         assert "not the list binding.py declares" in result.stderr
 
 

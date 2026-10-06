@@ -13,7 +13,9 @@ The command runs its one method in one of the modes below, chosen with a flag. [
 
 **The result is the same JSON in every mode**: the run's `main_stuff` as the method produced it, a plural output as the bare list of its elements whichever wire shape arrived. After it, on stderr, come the paths of the files the run produced, downloaded under `outputs/<run-id>/` unless `--out DIR` or `--no-download` says otherwise, and the cost report, which is printed whatever the download did.
 
-**A file that did not come down** makes the exit code 1 after the result, and the hint depends on the mode. A durable run's files come down again with `--resume <run-id> --out DIR` into an empty directory: the SDK never overwrites a file, so fetching into the same directory would save the files that did come down a second time, beside themselves. A blocking run has no id to resume by, so its hint says that only running the method again, without `--blocking`, brings the files down.
+**A file that did not come down** makes the exit code 1 after the result, and the hint depends on the mode. A durable run's files come down again with `--resume <run-id> --out DIR` into an empty directory: the SDK never overwrites a file, so fetching into the same directory would save the files that did come down a second time, beside themselves. A blocking run has no id to resume by, so its hint says that only running the method again, without `--blocking`, brings the files down. A second `--resume` of a run whose files were already downloaded finds `outputs/<run-id>/` holding files and fetches nothing, saying so: the directory may hold every file or only those an interrupted or partly failed download saved, so the way to fetch them all again is the same `--out DIR` into an empty directory.
+
+**A result in a shape the binding does not declare** (a plural output that is neither a list nor the `items` envelope) is not printed, and the command exits 1; the run's files still come down and the cost report still follows, since the run was paid for and the links to its files expire.
 
 **`--detach` and `--resume` are a pair**: `RUN_ID=$(my-cli --inputs inputs.json --detach)` captures exactly the id, and `my-cli --resume "$RUN_ID"` prints the result as an attended run would have. A resumed run takes no inputs, since it already has them.
 
@@ -21,8 +23,10 @@ The command runs its one method in one of the modes below, chosen with a flag. [
 
 A durable start (`start`, then polling) survives the hosted gateway's cut-off of about 30 seconds, can be followed later and resumed after Ctrl-C. A blocking run (`execute`) is one request, which a deployment without a run store can still serve. The SDK's `start_and_wait` picks between the two from the `/v1/version` handshake, and this command deliberately does not use it: a silent fallback would make `--detach` and `--resume` quietly inapplicable, and on the hosted gateway a long method would hit the blocking cut-off instead of running durably. So:
 
-- A durable start against a deployment that cannot hold runs is an error that names `--blocking`: a bare runner's `404` (`RunLifecycleUnavailableError`) and an orchestration that serves only synchronous runs (`StartRequiresAsyncOrchestration`) both say to add the flag.
+- A durable start against a deployment that cannot hold runs is an error that names `--blocking`: a bare runner's `404` (`RunLifecycleUnavailableError`) and an orchestration that serves only synchronous runs (`StartRequiresAsyncOrchestration`) both say to add the flag, and for a `--detach` invocation to drop that flag too, since a blocking run cannot be detached.
 - A blocking run cut off by the gateway (`PipelineExecuteTimeoutError`, or a `502` or `504` on the blocking path) is an error that says to drop the flag.
+
+**An attended or resumed run is waited on for up to twenty minutes**, the SDK's default for `wait_for_result`. Past that, the command exits 1 saying the run is still going on the server and printing the `--resume` command, which waits again from that moment.
 
 ## Ctrl-C
 

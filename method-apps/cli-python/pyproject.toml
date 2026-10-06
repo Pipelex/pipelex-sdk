@@ -17,15 +17,18 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 
-# Every package imported at module level by the CLI is declared here, including the two that also
-# arrive transitively: `mthds` comes with `pipelex-sdk` and `rich` comes with `typer`, and both are
-# imported directly (`mthds.protocol.exceptions` in the error layer and the lifecycle, `rich` in the
-# cost report and the status line). A transitive dependency is not a contract. The `mthds` floor is
-# the version `pipelex-sdk` pins exactly today, which is a floor and not a second pin: the SDK's exact
-# pin always satisfies it, so bumping the SDK never has to be matched here.
+# Every package imported at module level by the CLI is declared here, including those that also
+# arrive transitively: `mthds` and `pydantic` come with `pipelex-sdk` and `rich` comes with `typer`,
+# and each is imported directly (`mthds.protocol.exceptions` in the error layer and the lifecycle,
+# `pydantic.BaseModel` in the binding and in the generated models, `rich` in the cost report and the
+# status line). A transitive dependency is not a contract. The `mthds` floor is the version
+# `pipelex-sdk` pins exactly today, which is a floor and not a second pin: the SDK's exact pin always
+# satisfies it, so bumping the SDK never has to be matched here. The `pydantic` range is the SDK's
+# own, since the generated models are pydantic 2 models.
 dependencies = [
   "mthds>=0.19.0",
   "pipelex-sdk>=0.31.0",
+  "pydantic>=2.10.6,<3.0.0",
   "python-dotenv>=1.0.0",
   "rich>=13.0.0",
   "typer>=0.15.0",

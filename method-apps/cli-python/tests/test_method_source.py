@@ -41,6 +41,12 @@ class TestReadMethodSource:
         with pytest.raises(MethodSourceError, match="neither"):
             read_method_source(tmp_path)
 
+    @pytest.mark.parametrize("name", ["a.mthds", "method.json"])
+    def test_a_file_that_is_not_utf8_is_refused_naming_it(self, tmp_path: Path, name: str):
+        (tmp_path / name).write_bytes(b"domain = '\xff'\n")
+        with pytest.raises(MethodSourceError, match=f"{name} is not UTF-8"):
+            read_method_source(tmp_path)
+
     def test_a_broken_manifest_is_the_manifest_reader_s_refusal(self, tmp_path: Path):
         _write(tmp_path / "method.json", "{}")
         with pytest.raises(ManifestError):

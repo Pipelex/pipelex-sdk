@@ -96,6 +96,12 @@ class TestPresentError:
         assert presentation.hint is not None
         assert "--blocking" in presentation.hint
 
+    def test_lifecycle_unavailable_on_detach_says_to_drop_the_flag(self):
+        # A blocking run cannot be detached, and `--detach --blocking` is refused.
+        presentation = present_error(RunLifecycleUnavailableError("no run store", api_url="http://localhost:8081"), mode=RunMode.DETACH)
+        assert presentation.hint is not None
+        assert "drop --detach" in presentation.hint
+
     def test_lifecycle_unavailable_on_resume_says_there_is_nothing_to_resume(self):
         presentation = present_error(RunLifecycleUnavailableError("no run store", api_url="http://localhost:8081"), mode=RunMode.RESUME)
         assert presentation.hint is not None
@@ -129,6 +135,12 @@ class TestPresentError:
         presentation = present_error(_api_response_error(500, "Internal Server Error", title="Internal error"))
         assert presentation.details == ("Reason: Internal error",)
         assert presentation.hint is None
+
+    def test_start_without_async_orchestration_on_detach_says_to_drop_the_flag(self):
+        exc = _api_response_error(400, "Bad Request", detail="no async", error_type="StartRequiresAsyncOrchestration")
+        presentation = present_error(exc, mode=RunMode.DETACH)
+        assert presentation.hint is not None
+        assert "drop --detach" in presentation.hint
 
     def test_start_without_async_orchestration_names_blocking(self):
         detail = "Orchestration mode 'direct' cannot honor fire-and-forget delivery. Use /execute instead."

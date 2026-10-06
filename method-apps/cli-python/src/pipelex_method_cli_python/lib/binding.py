@@ -85,8 +85,8 @@ def load_binding() -> MethodBinding | None:
     """The method this CLI runs, or `None` for the template as shipped, which holds none.
 
     Raises:
-        BindingError: One half of the method is there without the other, or `binding.py` does not
-            declare what the CLI reads.
+        BindingError: One half of the method is there without the other, `binding.py` cannot be
+            imported, or it does not declare what the CLI reads.
         MethodSourceError: `method/` does not name exactly one method.
         ManifestError: Its `method.json` does not name exactly one method.
     """
@@ -100,7 +100,14 @@ def load_binding() -> MethodBinding | None:
     if not generated_found:
         msg = f"{BINDING_MODULE} exists but {GENERATED_PACKAGE} does not, so the method's typed models are missing."
         raise BindingError(msg, hint="Regenerate the tree with `make codegen`, which needs PIPELEX_API_KEY.")
-    return binding_from_module(importlib.import_module(BINDING_MODULE), source=read_method_source())
+    try:
+        module = importlib.import_module(BINDING_MODULE)
+    except Exception as exc:
+        # `binding.py` is the project's own code, so anything can fail in it: a stale import after the
+        # models were regenerated, a syntax error, a model the generated tree no longer defines.
+        msg = f"{BINDING_MODULE} could not be imported: {type(exc).__name__}: {exc}"
+        raise BindingError(msg, hint="Fix binding.py so that it imports what the generated tree defines, after `make codegen` above all.") from exc
+    return binding_from_module(module, source=read_method_source())
 
 
 def binding_from_module(module: ModuleType, *, source: MethodSource) -> MethodBinding:

@@ -75,7 +75,7 @@ def read_method_source(directory: Traversable | None = None) -> MethodSource:
 
     Raises:
         MethodSourceError: The directory is missing, holds neither `.mthds` files nor a `method.json`,
-            or holds both.
+            holds both, or holds a file that is not UTF-8.
         ManifestError: The `method.json` does not name exactly one method.
     """
     root = directory if directory is not None else method_dir()
@@ -89,12 +89,25 @@ def read_method_source(directory: Traversable | None = None) -> MethodSource:
         msg = f"{where} holds both .mthds files and a {MANIFEST_FILENAME}, so it names two methods."
         raise MethodSourceError(msg, hint=f"Keep the bundle or the {MANIFEST_FILENAME}, not both.")
     if manifest.is_file():
-        selector = parse_manifest(manifest.read_text(encoding="utf-8"), origin=f"{where}{MANIFEST_FILENAME}")
+        selector = parse_manifest(_read_utf8(manifest, where=f"{where}{MANIFEST_FILENAME}"), origin=f"{where}{MANIFEST_FILENAME}")
         return MethodSource(method_id=selector.method_id, method_ref=selector.method_ref)
     if not bundles:
         msg = f"{where} holds neither .mthds files nor a {MANIFEST_FILENAME}."
         raise MethodSourceError(msg, hint="Restore it from version control: it holds the method's .mthds files or its method.json.")
-    return MethodSource(mthds_contents=tuple(entry.read_text(encoding="utf-8") for _, entry in bundles))
+    return MethodSource(mthds_contents=tuple(_read_utf8(entry, where=f"{where}{relative}") for relative, entry in bundles))
+
+
+def _read_utf8(entry: Traversable, *, where: str) -> str:
+    """A method file's text, which must be UTF-8.
+
+    Raises:
+        MethodSourceError: The file is not UTF-8, which neither the API nor the codegen would read.
+    """
+    try:
+        return entry.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        msg = f"{where} is not UTF-8 text: {exc.reason} at byte {exc.start}."
+        raise MethodSourceError(msg, hint="Save the file as UTF-8.") from exc
 
 
 def _bundle_files(directory: Traversable, *, prefix: str) -> list[tuple[str, Traversable]]:

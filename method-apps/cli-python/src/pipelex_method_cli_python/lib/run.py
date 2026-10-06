@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pipelex_sdk.artifact_models import DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.execute_result import results_from_execute
 from pipelex_sdk.runs import PollInfo, RunResults, WaitForResultOptions
@@ -40,7 +41,7 @@ from pipelex_method_cli_python.lib.app import RunMode
 from pipelex_method_cli_python.lib.artifacts import download_produced_files, print_downloads
 from pipelex_method_cli_python.lib.binding import MethodBinding
 from pipelex_method_cli_python.lib.errors import resume_command
-from pipelex_method_cli_python.lib.output import print_result, print_run_id
+from pipelex_method_cli_python.lib.output import OutputShapeError, print_result, print_run_id
 from pipelex_method_cli_python.lib.usage import print_cost_report
 
 
@@ -136,23 +137,32 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
     """Print a finished run's result on stdout, then its files and its cost on stderr; return the exit code.
 
     The result is printed first, so a failure to bring a file down never costs the reader the result
-    the run was paid for, and the cost report follows whatever the download did, an error raised on
-    the way included. A file that did not come down makes the exit code 1, since the command did not
-    do all it was asked, and the hint says how to fetch the files again where that is possible.
+    the run was paid for, and the cost report follows whatever happened after the run, an error
+    raised on the way included. A result in a shape the binding does not declare is not printed, but
+    the run's files still come down, since they are paid for and their links expire, and the error
+    is raised once the cost report is out. A file that did not come down makes the exit code 1,
+    since the command did not do all it was asked, and the hint says how to fetch the files again
+    where that is possible.
     """
-    print_result(results, output_is_list=binding.output_is_list)
     exit_code = 0
+    shape_error: OutputShapeError | None = None
     try:
+        try:
+            print_result(results, output_is_list=binding.output_is_list)
+        except OutputShapeError as exc:
+            shape_error = exc
         if plan.download:
             downloaded = await download_produced_files(client, results, out_dir=plan.out_dir)
             print_downloads(stderr, downloaded)
-            if downloaded is not None and not downloaded.all_saved:
+            if isinstance(downloaded, DownloadArtifactsResult) and not downloaded.all_saved:
                 stderr.print(
                     f"[yellow]Hint:[/yellow] The run succeeded and its result is complete above. {refetch_advice(plan.mode, results.pipeline_run_id)}"
                 )
                 exit_code = 1
     finally:
         print_cost_report(stderr, results)
+    if shape_error is not None:
+        raise shape_error
     return exit_code
 
 

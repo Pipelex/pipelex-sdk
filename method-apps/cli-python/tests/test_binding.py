@@ -39,6 +39,17 @@ class TestLoadBinding:
         with pytest.raises(BindingError, match="typed models are missing"):
             load_binding()
 
+    def test_a_binding_that_cannot_be_imported_is_refused_naming_the_error(self, monkeypatch: pytest.MonkeyPatch):
+        # The project's own code: a stale import after the models were regenerated, a syntax error.
+        _halves(monkeypatch, binding=True, generated=True)
+
+        def broken(name: str) -> ModuleType:
+            raise SyntaxError(f"invalid syntax in {name}")
+
+        monkeypatch.setattr(binding_module.importlib, "import_module", broken)
+        with pytest.raises(BindingError, match="could not be imported: SyntaxError"):
+            load_binding()
+
     def test_both_halves_load_the_binding_with_its_method(self, monkeypatch: pytest.MonkeyPatch):
         _halves(monkeypatch, binding=True, generated=True)
         monkeypatch.setitem(sys.modules, BINDING_MODULE, _module(PIPE_REF="greetings.greet", OUTPUT_MODEL=Greeting, OUTPUT_IS_LIST=False))

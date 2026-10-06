@@ -302,12 +302,24 @@ def _present_lifecycle_unavailable(exc: RunLifecycleUnavailableError, *, mode: R
     """A server with no run store: durable runs, `--detach` and `--resume` are not served there.
 
     It is never a silent downgrade to a blocking run. The fix is the person's to choose, so the hint
-    names `--blocking`, and for a resumed run it says why there is nothing to resume.
+    names `--blocking`, for a resumed run it says why there is nothing to resume, and for a detached
+    one it says to drop `--detach`, which a blocking run cannot take.
     """
     message = f"The server at {exc.api_url} does not serve durable runs: it has no run store."
     if mode is RunMode.RESUME:
         return ErrorPresentation(message=message, hint="No run started there can be resumed; run the method again with --blocking.")
-    return ErrorPresentation(message=message, hint="Run the same command with --blocking, which this server serves.")
+    return ErrorPresentation(message=message, hint=_blocking_hint(mode, "this server serves"))
+
+
+def _blocking_hint(mode: RunMode | None, serves: str) -> str:
+    """The hint that sends a durable run a server cannot hold to `--blocking`, which `serves` it.
+
+    A blocking run cannot be detached, so for a `--detach` invocation the hint drops that flag rather
+    than send the person into the refusal of `--detach --blocking`.
+    """
+    if mode is RunMode.DETACH:
+        return f"A blocking run cannot be detached: drop --detach and run it with --blocking, which {serves}."
+    return f"Run the same command with --blocking, which {serves}."
 
 
 def _present_upload_error(exc: InputPreparationError) -> ErrorPresentation:
@@ -351,7 +363,7 @@ def _present_api_response_error(exc: ApiResponseError, *, mode: RunMode | None) 
     if exc.error_type == _START_REQUIRES_ASYNC_ORCHESTRATION:
         return ErrorPresentation(
             message=_text(exc.server_message) or "This deployment cannot start durable runs: it has no async orchestration.",
-            hint="This deployment serves only blocking runs; run the same command with --blocking.",
+            hint=_blocking_hint(mode, "this deployment serves"),
         )
     if exc.status in (401, 403):
         return ErrorPresentation(message=f"The API rejected the request ({status}).", hint=_API_KEY_HINT, details=problem_lines(exc))
