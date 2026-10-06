@@ -19,7 +19,7 @@ from rich.console import Console
 
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.artifacts import DEFAULT_OUTPUT_ROOT, default_download_dir, download_produced_files, print_downloads
-from tests.support import IMAGE_OUTPUT, TEXT_OUTPUT, FakeClient, download_verdict, run_results
+from tests.support import IMAGE_OUTPUT, RUN_ID, TEXT_OUTPUT, FakeClient, download_verdict, run_results
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -38,7 +38,7 @@ def _as_client(fake: FakeClient) -> PipelexAPIClient:
 class TestDownloadProducedFiles:
     async def test_a_text_output_asks_the_client_for_nothing(self, tmp_path: Path):
         fake = FakeClient()
-        downloaded = await download_produced_files(_as_client(fake), run_results(TEXT_OUTPUT), dir_path=tmp_path)
+        downloaded = await download_produced_files(_as_client(fake), run_results(TEXT_OUTPUT), out_dir=tmp_path)
         assert downloaded is None
         assert fake.downloaded_to == []
 
@@ -46,10 +46,20 @@ class TestDownloadProducedFiles:
         fake = FakeClient()
         saved = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path=str(tmp_path / "main_stuff.png"), size=3)
         fake.download_answer = download_verdict(saved)
-        downloaded = await download_produced_files(_as_client(fake), run_results(IMAGE_OUTPUT), dir_path=tmp_path)
+        downloaded = await download_produced_files(_as_client(fake), run_results(IMAGE_OUTPUT), out_dir=tmp_path)
         assert downloaded is not None
         assert downloaded.saved_paths == [str(tmp_path / "main_stuff.png")]
         assert fake.downloaded_to == [tmp_path]
+
+    async def test_without_out_the_files_go_under_outputs_by_run_id(self):
+        fake = FakeClient()
+        await download_produced_files(_as_client(fake), run_results(IMAGE_OUTPUT), out_dir=None)
+        assert fake.downloaded_to == [DEFAULT_OUTPUT_ROOT / RUN_ID]
+
+    async def test_a_text_output_never_names_the_default_directory(self):
+        # A run id that cannot name a directory matters only once there is a file to save.
+        fake = FakeClient()
+        assert await download_produced_files(_as_client(fake), run_results(TEXT_OUTPUT, run_id="run.1"), out_dir=None) is None
 
 
 class TestDefaultDownloadDir:

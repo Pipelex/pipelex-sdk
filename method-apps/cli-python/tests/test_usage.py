@@ -72,6 +72,22 @@ class TestUsage:
         assert "event read failed" in output
         assert "failed" in output.lower()
 
+    def test_server_text_is_printed_literally_and_never_read_as_markup(self):
+        # A pydantic error quoted in the assembly error carries a bracketed span, and an unmatched
+        # closing tag would raise after the run's result was already printed.
+        error = "1 validation error: field required [type=missing, input_value={}, input_type=dict] [/usage]"
+        output = _render(_results(tokens_usages=None, usage_assembly_error=error))
+        assert error in output
+
+    def test_pipe_and_model_names_are_printed_literally(self):
+        results = _results(
+            tokens_usages=[_record(pipe_code="p[/y]", inference_model_name="m[bold]", cost=0.01, nb_tokens_by_category={"input": 1, "output": 1})],
+            usage_assembly_error=None,
+        )
+        output = _render(results)
+        assert "p[/y]" in output
+        assert "m[bold]" in output
+
     def test_none_usage_says_nothing_reported(self):
         # None (off, or a run from before the artifact) is distinct from the assembly-error case above.
         output = _render(_results(tokens_usages=None, usage_assembly_error=None))

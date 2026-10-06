@@ -103,16 +103,19 @@ clean: ## Remove every template's build artifacts and caches
 	$(call each,clean)
 
 # A template's own `make use-local` looks for the checkouts beside a project,
-# `pipelex-sdk` and `mthds-form`, and here none of them is there. The SDK is
-# this repository's own `js/`, which no SIBLINGS_DIR reaches from a worktree,
-# so `use-local` is the repository root's, narrowed to the family's templates
-# (docs/family.md, "The sibling packages"). The form kernel alone comes from
-# the workspace's `mthds-form` checkout, which sits beside the repository's
-# root, three levels above a template's directory, whether that root is the
-# main checkout or a worktree. To use checkouts anywhere else, run the target
-# inside the template directory with SIBLINGS_DIR set there. The names are the
-# family's, whatever registry a template's packages come from.
-use-local: ## Install this repository's js/ and the workspace's mthds-form checkout into every template
+# `pipelex-sdk` and `mthds-form` for a JavaScript template, `pipelex-sdk` and
+# `mthds-python` for a Python one, and here none of them is there. The SDK is
+# this repository's own `js/` or `python/`, which no SIBLINGS_DIR reaches from
+# a worktree, so `use-local` is the repository root's, narrowed to the
+# family's templates (docs/family.md, "The sibling packages"). The form kernel
+# and the Python `mthds` package come from the workspace's `mthds-form` and
+# `mthds-python` checkouts, which sit beside the repository's root, three
+# levels above a template's directory, whether that root is the main checkout
+# or a worktree. To use checkouts anywhere else, run the target inside the
+# template directory with SIBLINGS_DIR, or a Python template's SDK_DIR and
+# MTHDS_DIR, set there. The names are the family's, whatever registry a
+# template's packages come from.
+use-local: ## Install this repository's SDKs, and the workspace's mthds-form or mthds-python checkout, into every template
 	@$(MAKE) --no-print-directory -C .. use-local IN=method-apps
 
 use-local-form: ## Install the workspace's mthds-form checkout alone into every template that uses the form kernel

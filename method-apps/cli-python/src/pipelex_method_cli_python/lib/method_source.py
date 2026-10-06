@@ -15,6 +15,7 @@ installed CLI (`uv tool install .`, or a wheel) has no repository around it, and
 from dataclasses import dataclass
 from importlib.resources import files
 from importlib.resources.abc import Traversable
+from typing import TypedDict
 
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.manifest import MANIFEST_FILENAME, parse_manifest
@@ -34,27 +35,34 @@ class MethodSourceError(AppError):
     """A `method/` directory that does not name exactly one method."""
 
 
+class RunSourceKwargs(TypedDict):
+    """The keyword arguments the SDK's `start` and `execute` take to name a run's method."""
+
+    mthds_contents: list[str] | None
+    method_id: str | None
+    method_ref: str | None
+
+
 @dataclass(frozen=True)
 class MethodSource:
     """The one way a run names its method; exactly one field is set.
 
-    The three are the SDK's own run sources: inline bundle contents, a catalog id, or a published
+    The fields are the SDK's own run sources: inline bundle contents, a catalog id, or a published
     address. `run_kwargs` hands them to `start` and `execute` as the keyword arguments of the same
-    names.
+    names, so both kinds of run name the method the same way.
     """
 
     mthds_contents: tuple[str, ...] | None = None
     method_id: str | None = None
     method_ref: str | None = None
 
-    def describe(self) -> str:
-        """The source in a few words, for a message."""
-        if self.method_ref is not None:
-            return f"the published method {self.method_ref}"
-        if self.method_id is not None:
-            return f"the catalog method {self.method_id}"
-        count = len(self.mthds_contents or ())
-        return f"the bundle of {count} .mthds file{'s' if count != 1 else ''}"
+    def run_kwargs(self) -> RunSourceKwargs:
+        """The source as the keyword arguments of the SDK's `start` and `execute`."""
+        return RunSourceKwargs(
+            mthds_contents=list(self.mthds_contents) if self.mthds_contents is not None else None,
+            method_id=self.method_id,
+            method_ref=self.method_ref,
+        )
 
 
 def method_dir() -> Traversable:

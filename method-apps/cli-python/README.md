@@ -33,7 +33,7 @@ make create METHOD=./receipt_review.mthds
 **`make create` is not written yet in this version of the template.** It reads its whole argument contract, the method-app family's, and then refuses, changing nothing. Until it lands, the template installs, checks, tests and builds, and its command explains that it holds no method:
 
 ```bash
-uv run pipelex-method-cli-python --help
+.venv/bin/pipelex-method-cli-python --help
 ```
 
 ## Running the method
@@ -48,7 +48,7 @@ my-cli --resume "$RUN_ID"                      # follow a run started earlier, a
 my-cli --inputs - < inputs.json | jq .         # read the inputs from stdin, pipe the result
 ```
 
-`--inputs` takes a JSON object mapping each of the method's input names to its value, in the shape `mthds run --inputs` takes. Run the command with `uv run my-cli …` from the project's directory, or install it once with `uv tool install .` to have it on your `PATH`.
+`--inputs` takes a JSON object mapping each of the method's input names to its value, in the shape `mthds run --inputs` takes. Run the command as `.venv/bin/my-cli …` from the project's directory once `make install` has built the environment, or install it once with `uv tool install .` to have it on your `PATH`. Never run it through `uv run`, which re-syncs the environment against `uv.lock` first and silently undoes `make use-local`.
 
 - **A run is followed here by default.** It starts on the server, its id is printed on stderr at once, and a status line follows it until its result arrives. **Ctrl-C leaves the run going on the server**, prints the `--resume` command that picks it up again, and exits with code 130.
 - **`--blocking`** runs the method in one request. Behind the hosted API that request is cut off after about 30 seconds, so it suits a short method; the error says to drop the flag when a run hits that limit. A server that cannot hold runs, such as a local runner without a run store, answers a run started without `--blocking` with an error that names the flag: the command never falls back on its own.

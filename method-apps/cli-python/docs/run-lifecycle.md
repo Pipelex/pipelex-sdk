@@ -1,6 +1,6 @@
 # The run lifecycle
 
-The command runs its one method in one of four modes, chosen with a flag. [`lib/run.py`](../src/pipelex_method_cli_python/lib/run.py) holds one function per mode over one client, and [`cli.py`](../src/pipelex_method_cli_python/cli.py) reads the flags, refuses the combinations that make no sense, and makes the one `asyncio.run` call at the command's root.
+The command runs its one method in one of the modes below, chosen with a flag. [`lib/run.py`](../src/pipelex_method_cli_python/lib/run.py) holds one function per mode over one client, and [`cli.py`](../src/pipelex_method_cli_python/cli.py) reads the flags, refuses the combinations that make no sense, and makes the one `asyncio.run` call at the command's root.
 
 ## The modes
 
@@ -11,7 +11,9 @@ The command runs its one method in one of four modes, chosen with a flag. [`lib/
 | `--detach` | `start`, then the command returns | the run id alone |
 | `--resume RUN_ID` | `wait_for_result` on a run started earlier | the result |
 
-**The result is the same JSON in every mode**: the run's `main_stuff` as the method produced it, a plural output as the bare list of its elements whichever of its two wire shapes arrived. After it, on stderr, come the paths of the files the run produced, downloaded under `outputs/<run-id>/` unless `--out DIR` or `--no-download` says otherwise, and the cost report.
+**The result is the same JSON in every mode**: the run's `main_stuff` as the method produced it, a plural output as the bare list of its elements whichever wire shape arrived. After it, on stderr, come the paths of the files the run produced, downloaded under `outputs/<run-id>/` unless `--out DIR` or `--no-download` says otherwise, and the cost report, which is printed whatever the download did.
+
+**A file that did not come down** makes the exit code 1 after the result, and the hint depends on the mode. A durable run's files come down again with `--resume <run-id> --out DIR` into an empty directory: the SDK never overwrites a file, so fetching into the same directory would save the files that did come down a second time, beside themselves. A blocking run has no id to resume by, so its hint says that only running the method again, without `--blocking`, brings the files down.
 
 **`--detach` and `--resume` are a pair**: `RUN_ID=$(my-cli --inputs inputs.json --detach)` captures exactly the id, and `my-cli --resume "$RUN_ID"` prints the result as an attended run would have. A resumed run takes no inputs, since it already has them.
 
@@ -39,6 +41,6 @@ The command refuses, with exit code 2 and before anything is sent: `--detach` wi
 | Code | When |
 | --- | --- |
 | 0 | The run succeeded, its result was printed and every produced file came down; or `--detach` started a run |
-| 1 | A request or the run failed, the API key is missing, the inputs file could not be read, or a produced file did not come down (the result is printed first, and the hint says how to fetch the files again) |
+| 1 | A request or the run failed, the API key is missing, the inputs file could not be read, or a produced file did not come down (the result is printed first, and the hint says how to fetch the files again where the mode allows it) |
 | 2 | A command line the command refuses |
 | 130 | Ctrl-C |

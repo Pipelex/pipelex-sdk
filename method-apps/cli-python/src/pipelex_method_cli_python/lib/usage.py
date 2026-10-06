@@ -6,7 +6,7 @@ rule the SDK's `docs/run-usage.md` states: a call the runtime could not price (`
 kept apart from one priced at zero, only `input` and `output` are summed because the other token
 categories are subsets of them, and an empty record list is a run that did no inference rather than
 a run nothing is known about. Re-deriving any of that here would be a second implementation to keep
-in step with the first, so the three-way `state` and the totals are read off the summary and nothing
+in step with the first, so the summary's `state` and its totals are read off the summary and nothing
 is folded by hand.
 
 Every mode holds a `RunResults`: the durable ones because that is what the lifecycle returns, and
@@ -20,23 +20,27 @@ thing the summary does not carry, since it rolls up per pipe, so they are read s
 The report never fails a run that succeeded. The SDK refuses to summarize results whose body did not
 carry `tokens_usages` at all, since that is a gap in the read rather than a fact about the run; the
 CLI reads every artifact, so that only happens when the platform left the key out, and the report
-then says so in place of the table.
+then says so in place of the table. Every string the server wrote, the assembly error and each
+call's pipe and model, goes through `rich.markup.escape` before Rich reads it: a pydantic error
+quoted in an assembly error carries `[type=missing, …]`, which Rich would otherwise swallow, and an
+unmatched closing tag such as `[/usage]` would raise after the result was already printed.
 """
 
 from pipelex_sdk.errors import FieldNotIncludedError
 from pipelex_sdk.runs import RunResults, TokensUsageRecord
 from pipelex_sdk.usage import UsageSummary, UsageSummaryState, summarize_usage
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 
 def print_cost_report(console: Console, results: RunResults) -> None:
     """Print a run's cost report to `console`, which is stderr, so stdout stays the pipeable result.
 
-    The three states the SDK's summary distinguishes each get their own rendering: a run that
-    reported calls gets the table, a run that made no inference call says so, and a run nothing is
-    known about says that instead, with the assembly error when there is one, which is the only
-    thing that tells a broken usage assembly apart from usage that was simply off.
+    Each state the SDK's summary distinguishes gets its own rendering: a run that reported calls
+    gets the table, a run that made no inference call says so, and a run nothing is known about
+    says that instead, with the assembly error when there is one, which is the only thing that
+    tells a broken usage assembly apart from usage that was simply off.
     """
     try:
         summary = summarize_usage(results)
@@ -53,7 +57,7 @@ def print_cost_report(console: Console, results: RunResults) -> None:
             if summary.assembly_error is None:
                 console.print("[dim]No usage was reported for this run.[/dim]")
             else:
-                console.print(f"[dim]Cost report unavailable: usage assembly failed: {summary.assembly_error}[/dim]")
+                console.print(f"[dim]Cost report unavailable: usage assembly failed: {escape(summary.assembly_error)}[/dim]")
 
 
 def _print_call_table(console: Console, records: list[TokensUsageRecord]) -> None:
@@ -70,7 +74,8 @@ def _print_call_table(console: Console, records: list[TokensUsageRecord]) -> Non
         tokens_str = f"{tokens.get('input', 0)}→{tokens.get('output', 0)}"
         cost_str = "—" if record.cost is None else f"${record.cost:.4f}"
         model = record.inference_model_name or record.model_type or "—"
-        table.add_row(record.pipe_code or "—", model, tokens_str, cost_str)
+        # Rich reads a cell's string as markup too, and these two are the server's.
+        table.add_row(escape(record.pipe_code or "—"), escape(model), tokens_str, cost_str)
 
     console.print(table)
 

@@ -47,15 +47,14 @@ class TestReadMethodSource:
             read_method_source(tmp_path)
 
 
-class TestDescribe:
+class TestRunKwargs:
     @pytest.mark.parametrize(
-        ("source", "described"),
+        ("source", "kwargs"),
         [
-            (MethodSource(method_ref="github.com/o/r@v1"), "the published method github.com/o/r@v1"),
-            (MethodSource(method_id="mt_abc"), "the catalog method mt_abc"),
-            (MethodSource(mthds_contents=("a",)), "the bundle of 1 .mthds file"),
-            (MethodSource(mthds_contents=("a", "b")), "the bundle of 2 .mthds files"),
+            (MethodSource(method_ref="github.com/o/r@v1"), {"mthds_contents": None, "method_id": None, "method_ref": "github.com/o/r@v1"}),
+            (MethodSource(method_id="mt_abc"), {"mthds_contents": None, "method_id": "mt_abc", "method_ref": None}),
+            (MethodSource(mthds_contents=("a", "b")), {"mthds_contents": ["a", "b"], "method_id": None, "method_ref": None}),
         ],
     )
-    def test_names_the_source_in_a_few_words(self, source: MethodSource, described: str):
-        assert source.describe() == described
+    def test_names_the_source_as_the_sdk_keyword_arguments(self, source: MethodSource, kwargs: dict[str, object]):
+        assert source.run_kwargs() == kwargs

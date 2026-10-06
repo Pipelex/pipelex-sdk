@@ -6,14 +6,15 @@ provider signed when the run wrote it. That signed link is short-lived; the refe
 permanent. Turning references into files is the SDK's artifact stack, whose page is
 `docs/artifact-download.md` in `pipelex-sdk`.
 
-Two layers of the stack are used, and the SDK owns both: `collect_artifacts` lists a result's
+The SDK owns every layer of the stack this module uses: `collect_artifacts` lists a result's
 references without touching the network, which is how a text-only run costs nothing here, and
 `download_artifacts` mints a fresh link for each reference and saves the files. It never reads the
 embedded `public_url`, never overwrites a file, and answers a verdict naming every reference it
 walked with errors as values, so a file that did not come down is reported, not raised.
 
 The files go to `outputs/<run-id>/` under the working directory, or to the directory `--out` names,
-and `--no-download` skips them.
+and `--no-download` skips them. The default directory is worked out only once there is a file to
+save, so a run id that could not name one never fails a text-only run.
 """
 
 import re
@@ -47,16 +48,21 @@ def default_download_dir(run_id: str) -> Path:
     return DEFAULT_OUTPUT_ROOT / run_id
 
 
-async def download_produced_files(client: PipelexAPIClient, results: RunResults, *, dir_path: Path) -> DownloadArtifactsResult | None:
-    """Save every file the run's main output references under `dir_path`.
+async def download_produced_files(client: PipelexAPIClient, results: RunResults, *, out_dir: Path | None) -> DownloadArtifactsResult | None:
+    """Save every file the run's main output references under `out_dir`, or `outputs/<run-id>/`.
 
     Returns `None` when the output references no file at all, the ordinary case for a text result.
-    That question is answered offline by `collect_artifacts`, so nothing is requested and no
-    directory is created for a run that produced nothing. The scope is the main output on purpose:
-    the working memory would also bring down the inputs the run was given and every intermediate.
+    That question is answered offline by `collect_artifacts`, so nothing is requested, no directory
+    is created and no default directory is named for a run that produced nothing. The scope is the
+    main output on purpose: the working memory would also bring down the inputs the run was given
+    and every intermediate.
+
+    Raises:
+        AppError: There is a file to save, `out_dir` is `None`, and the run id cannot name a directory.
     """
     if not collect_artifacts(results.main_stuff):
         return None
+    dir_path = out_dir if out_dir is not None else default_download_dir(results.pipeline_run_id)
     return await client.download_artifacts(results=results, dir_path=dir_path)
 
 

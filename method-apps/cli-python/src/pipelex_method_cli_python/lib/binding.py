@@ -1,7 +1,7 @@
 """The binding: the one seam between this generic CLI and the one method it runs.
 
 The template ships no method. `make create` turns a copy of it into the CLI for one method by
-writing three things inside the package, and the CLI finds them there at run time:
+writing these inside the package, and the CLI finds them there at run time:
 
 - `method/`, the method's source (`lib/method_source.py`);
 - `generated/`, the package the codegen writes: the method's typed models and the codegen lock;

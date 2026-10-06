@@ -44,7 +44,7 @@ tests/
   test_*.py           # one file per module, test_cli.py driving the command through Typer's CliRunner
 ```
 
-The template as shipped holds no method. `make create` will write three things inside the package: `method/` (the method's `.mthds` files, or a `method.json`), `generated/` (the method's typed models from the codegen), and `binding.py`, which declares `PIPE_REF`, `OUTPUT_MODEL` and `OUTPUT_IS_LIST`. [`lib/binding.py`](src/pipelex_method_cli_python/lib/binding.py) documents the seam; the CLI finds those files with `importlib.util.find_spec` and imports `binding.py` dynamically, so the template as shipped type-checks with neither.
+The template as shipped holds no method. `make create` will write these inside the package: `method/` (the method's `.mthds` files, or a `method.json`), `generated/` (the method's typed models from the codegen), and `binding.py`, which declares `PIPE_REF`, `OUTPUT_MODEL` and `OUTPUT_IS_LIST`. [`lib/binding.py`](src/pipelex_method_cli_python/lib/binding.py) documents the seam; the CLI finds those files with `importlib.util.find_spec` and imports `binding.py` dynamically, so the template as shipped type-checks with neither.
 
 ## Commands
 

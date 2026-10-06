@@ -37,7 +37,7 @@ from rich.markup import escape
 
 from pipelex_method_cli_python.lib import client as api
 from pipelex_method_cli_python.lib.app import RunMode
-from pipelex_method_cli_python.lib.artifacts import default_download_dir, download_produced_files, print_downloads
+from pipelex_method_cli_python.lib.artifacts import download_produced_files, print_downloads
 from pipelex_method_cli_python.lib.binding import MethodBinding
 from pipelex_method_cli_python.lib.errors import resume_command
 from pipelex_method_cli_python.lib.output import print_result, print_run_id
@@ -93,15 +93,8 @@ async def start_run(client: PipelexAPIClient, *, binding: MethodBinding, inputs:
     A Ctrl-C while the start request is in flight is the one moment with no id to resume from: the
     request may or may not have reached the server, which this says rather than guessing.
     """
-    source = binding.source
     try:
-        started = await client.start(
-            pipe_code=binding.pipe_ref,
-            inputs=inputs,
-            mthds_contents=list(source.mthds_contents) if source.mthds_contents is not None else None,
-            method_id=source.method_id,
-            method_ref=source.method_ref,
-        )
+        started = await client.start(pipe_code=binding.pipe_ref, inputs=inputs, **binding.source.run_kwargs())
     except asyncio.CancelledError:
         stderr.print("\nInterrupted before the API answered with a run id, so there is no run to resume.")
         raise
@@ -130,16 +123,9 @@ async def attend_run(client: PipelexAPIClient, *, run_id: str, stderr: Console) 
 
 async def run_blocking(client: PipelexAPIClient, *, binding: MethodBinding, inputs: dict[str, Any], stderr: Console) -> RunResults:
     """Run the bound pipe in one request and lift the response onto `RunResults`, as a durable run returns it."""
-    source = binding.source
     with stderr.status("Running…"):
         try:
-            result = await client.execute(
-                pipe_code=binding.pipe_ref,
-                inputs=inputs,
-                mthds_contents=list(source.mthds_contents) if source.mthds_contents is not None else None,
-                method_id=source.method_id,
-                method_ref=source.method_ref,
-            )
+            result = await client.execute(pipe_code=binding.pipe_ref, inputs=inputs, **binding.source.run_kwargs())
         except asyncio.CancelledError:
             stderr.print("\nInterrupted. A blocking run has no id to resume it by.")
             raise
@@ -150,21 +136,38 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
     """Print a finished run's result on stdout, then its files and its cost on stderr; return the exit code.
 
     The result is printed first, so a failure to bring a file down never costs the reader the result
-    the run was paid for. A file that did not come down makes the exit code 1, since the command did
-    not do all it was asked, and the hint says how to fetch the files again.
+    the run was paid for, and the cost report follows whatever the download did, an error raised on
+    the way included. A file that did not come down makes the exit code 1, since the command did not
+    do all it was asked, and the hint says how to fetch the files again where that is possible.
     """
     print_result(results, output_is_list=binding.output_is_list)
     exit_code = 0
-    if plan.download:
-        dir_path = plan.out_dir if plan.out_dir is not None else default_download_dir(results.pipeline_run_id)
-        downloaded = await download_produced_files(client, results, dir_path=dir_path)
-        print_downloads(stderr, downloaded)
-        if downloaded is not None and not downloaded.all_saved:
-            run_id = results.pipeline_run_id
-            stderr.print(
-                "[yellow]Hint:[/yellow] The run succeeded and its result is complete above; "
-                f"fetch its files again with [bold]{escape(resume_command(run_id))}[/bold]."
-            )
-            exit_code = 1
-    print_cost_report(stderr, results)
+    try:
+        if plan.download:
+            downloaded = await download_produced_files(client, results, out_dir=plan.out_dir)
+            print_downloads(stderr, downloaded)
+            if downloaded is not None and not downloaded.all_saved:
+                stderr.print(
+                    f"[yellow]Hint:[/yellow] The run succeeded and its result is complete above. {refetch_advice(plan.mode, results.pipeline_run_id)}"
+                )
+                exit_code = 1
+    finally:
+        print_cost_report(stderr, results)
     return exit_code
+
+
+def refetch_advice(mode: RunMode, run_id: str) -> str:
+    """How to bring a finished run's files down again, as Rich markup.
+
+    A durable run is read again with `--resume`, into a directory of its own: the SDK never
+    overwrites a file, so fetching into the same directory would save the files that did come down
+    a second time, beside themselves. A blocking run has no id to resume by, since a bare runner
+    keeps no run and the hosted API files a blocking run under an id of its own, so the only way to
+    its files is to run the method again.
+    """
+    if mode is RunMode.BLOCKING:
+        return (
+            "A blocking run cannot be resumed, so its files come down again only by running the method again, "
+            "without --blocking so that --resume can fetch them later."
+        )
+    return f"Fetch its files again into an empty directory with [bold]{escape(resume_command(run_id))} --out DIR[/bold]."

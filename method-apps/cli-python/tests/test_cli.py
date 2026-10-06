@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from pipelex_sdk.artifact_models import ArtifactItemError, DownloadedArtifact
-from pipelex_sdk.errors import ApiResponseError, PipelineExecuteTimeoutError, RunFailedError, RunLifecycleUnavailableError
+from pipelex_sdk.errors import ApiResponseError, ArtifactOperationError, PipelineExecuteTimeoutError, RunFailedError, RunLifecycleUnavailableError
 from pipelex_sdk.runs import RunResults, RunStatus, WaitForResultOptions
 
 from pipelex_method_cli_python.cli import EMPTY_STATE, OWN_FLAGS, OWN_NAMES, OWN_OPTIONS, load_environment
@@ -47,8 +47,9 @@ class TestTheCommand:
             assert flag in result.stdout
         assert "greetings.greet" in result.stdout
 
-    def test_the_own_flags_and_names_describe_the_own_options(self):
-        assert len(OWN_FLAGS) == len(OWN_OPTIONS)
+    def test_the_own_flags_and_names_are_read_off_the_own_options(self):
+        # Pinned by hand on purpose: a derivation that reads nothing would leave the collision guard empty.
+        assert {"--inputs", "--blocking", "--detach", "--resume", "--out", "--no-download"} == OWN_FLAGS
         assert {parameter.name for parameter in OWN_OPTIONS} == OWN_NAMES
 
 
@@ -295,7 +296,33 @@ class TestDownloads:
         assert result.exit_code == 1
         assert json.loads(result.stdout) == IMAGE_OUTPUT
         assert "Not your run." in result.stderr
-        assert f"{COMMAND_NAME} --resume {RUN_ID}" in result.stderr
+        # Into an empty directory: the SDK never overwrites, so the saved files would come down twice.
+        assert f"{COMMAND_NAME} --resume {RUN_ID} --out DIR" in result.stderr
+
+    def test_a_blocking_run_never_offers_to_resume(self, fake_client: FakeClient, tmp_path: Path):
+        failed = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="forbidden", detail="Not your run."))
+        fake_client.execute_answer = execute_result(IMAGE_OUTPUT)
+        fake_client.download_answer = download_verdict(failed)
+        result = invoke(make_binding(), ["--blocking", "--out", str(tmp_path)])
+        assert result.exit_code == 1
+        assert f"{COMMAND_NAME} --resume" not in result.stderr
+        assert "cannot be resumed" in result.stderr
+
+    def test_a_download_that_raises_still_reports_the_cost(self, fake_client: FakeClient, tmp_path: Path):
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        fake_client.download_answer = ArtifactOperationError("outputs/ is a file")
+        result = invoke(make_binding(), ["--out", str(tmp_path)])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == IMAGE_OUTPUT
+        assert "No inference calls" in result.stderr
+        assert "outputs/ is a file" in result.stderr
+
+    def test_a_text_result_never_names_the_default_directory(self, fake_client: FakeClient):
+        # A run id that cannot name a directory matters only once there is a file to save.
+        fake_client.wait_answer = run_results(TEXT_OUTPUT, run_id="run.1")
+        result = invoke(make_binding(), [])
+        assert result.exit_code == 0, result.stderr
+        assert fake_client.downloaded_to == []
 
     def test_a_run_id_that_cannot_name_a_directory_asks_for_out(self, fake_client: FakeClient):
         fake_client.wait_answer = run_results(IMAGE_OUTPUT, run_id="../escape")

@@ -22,12 +22,13 @@ import asyncio
 import inspect
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, NoReturn
+from typing import Annotated, Any, NoReturn, get_args
 
 import typer
 from dotenv import find_dotenv, load_dotenv
 from mthds.protocol.exceptions import PipelineRequestError
 from rich.console import Console
+from typer.models import OptionInfo
 
 from pipelex_method_cli_python.lib.app import COMMAND_NAME, AppError, RunMode
 from pipelex_method_cli_python.lib.binding import MethodBinding, load_binding
@@ -117,8 +118,23 @@ OWN_OPTIONS: tuple[inspect.Parameter, ...] = (
     ),
 )
 
+
+def _flags_of(parameter: inspect.Parameter) -> frozenset[str]:
+    """The command-line flags an own option is declared with, read off its `typer.Option`.
+
+    In an `Annotated` declaration Typer keeps the first flag as the option's `default` and any
+    further ones in `param_decls`, which is where both are read.
+    """
+    flags: set[str] = set()
+    for metadata in get_args(parameter.annotation)[1:]:
+        if isinstance(metadata, OptionInfo):
+            declared: tuple[object, ...] = (metadata.default, *(metadata.param_decls or ()))
+            flags.update(flag for flag in declared if isinstance(flag, str) and flag.startswith("-"))
+    return frozenset(flags)
+
+
 #: The command line's names of the own options, which a derived input option must not take.
-OWN_FLAGS = frozenset({"--inputs", "--blocking", "--detach", "--resume", "--out", "--no-download"})
+OWN_FLAGS = frozenset(flag for parameter in OWN_OPTIONS for flag in _flags_of(parameter))
 
 #: The Python names of the own options, which a derived input option's parameter must not take.
 OWN_NAMES = frozenset(parameter.name for parameter in OWN_OPTIONS)
