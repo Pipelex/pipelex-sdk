@@ -11,6 +11,12 @@
  * `AUTHOR_EMAIL` is `--author-email`, and a switch such as `DRY_RUN` is
  * `--dry-run`, taking no value. Those are also the flags of a template's own
  * `npm run create`.
+ *
+ * `otherEcosystems` says, for each other language of the family, where a
+ * person asking this initializer for that language's template is sent: to
+ * `initializer`, the command of that language's own initializer, or, while it
+ * has none, to `copyOut`, the page showing how to copy the template out of a
+ * release, with `{template}` standing for the template asked for.
  */
 
 import fs from "node:fs";
@@ -50,11 +56,22 @@ export function loadTable(file = TABLE_FILE) {
     variablesOf(template) {
       return [...raw.create.shared, ...raw.templates[template].extras];
     },
-    /** The command serving another ecosystem's template, or null. The suffix is the family's naming rule. */
+    /**
+     * Where another ecosystem's template comes from, or null: `{ initializer }`,
+     * the command of that ecosystem's initializer, or `{ copyOut }`, the page
+     * showing how to copy this template out of a release. The suffix is the
+     * family's naming rule.
+     */
     otherEcosystemOf(template) {
       const language = /-([a-z0-9]+)$/.exec(template)?.[1];
       if (language === undefined || language === raw.ecosystem) return null;
-      return Object.hasOwn(raw.otherEcosystems, language) ? raw.otherEcosystems[language] : null;
+      if (!Object.hasOwn(raw.otherEcosystems, language)) return null;
+      const other = raw.otherEcosystems[language];
+      if (typeof other.initializer === "string") return { initializer: other.initializer };
+      if (typeof other.copyOut === "string") {
+        return { copyOut: other.copyOut.replaceAll("{template}", template) };
+      }
+      return null;
     },
   };
 }

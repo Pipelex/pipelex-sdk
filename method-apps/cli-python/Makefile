@@ -125,7 +125,7 @@ create: ## Turn this template into the CLI for METHOD=<path/to/bundle | mt_… |
 # packages uv.lock pins. `make use-local` installs the checkouts beside the
 # project instead, as editable packages, so you can develop them and the CLI
 # side by side: the SDK is the `python/` directory of a `Pipelex/pipelex-sdk`
-# checkout, and `mthds` a checkout of `Pipelex/mthds-python`. `make
+# checkout, and `mthds` a checkout of `mthds-ai/mthds-python`. `make
 # use-published` switches back, and `make local-status` says which is installed.
 #
 # The checkouts are looked for in the parent directory. SIBLINGS_DIR=<dir> names
@@ -133,8 +133,11 @@ create: ## Turn this template into the CLI for METHOD=<path/to/bundle | mt_… |
 # directly; each goes through `given` like every variable here. The SDK checkout
 # is required. The mthds checkout is installed with it when it is there, in the
 # same `uv pip install`, so one resolution decides both; when it is not, `mthds`
-# stays as uv.lock pins it. The SDK pins `mthds` exactly, so a checkout of
-# another version is refused by that resolution, naming both.
+# stays as it is installed, unless the SDK pins another version, so after an
+# earlier `make use-local` it can still be that run's checkout: `make
+# local-status` says which, and `make use-published` puts it back on uv.lock.
+# The SDK pins `mthds` exactly, so a checkout of another version is refused by
+# that resolution, naming both.
 #
 # Editable installs change nothing in pyproject.toml or uv.lock: moving a pin is
 # a reviewed change with a changelog to read, never a side effect of local mode.
@@ -152,7 +155,7 @@ use-local: install-if-missing ## Install the sibling pipelex-sdk (its python/) a
 		echo "Installing $$sdk and $$mthds as editable packages..."; \
 		uv pip install --quiet --python $(PYTHON) --editable "$$sdk" --editable "$$mthds"; \
 	else \
-		echo "Installing $$sdk as an editable package; $$mthds not found, so mthds stays as uv.lock pins it..."; \
+		echo "Installing $$sdk as an editable package; $$mthds not found, so mthds stays as it is installed, unless the SDK pins another version, and the status below says which it is..."; \
 		uv pip install --quiet --python $(PYTHON) --editable "$$sdk"; \
 	fi
 	@$(PYTHON) scripts/local_status.py $(LOCAL_PACKAGES)

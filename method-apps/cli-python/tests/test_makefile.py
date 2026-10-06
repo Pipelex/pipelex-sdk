@@ -53,6 +53,15 @@ class TestSiblingCheckouts:
         assert _checkouts([], env={"SIBLINGS_DIR": "/elsewhere", "SDK_DIR": "/elsewhere/sdk"}) == ("'../pipelex-sdk/python'", "'../mthds-python'")
         assert _checkouts(["SIBLINGS_DIR=", "SDK_DIR= "]) == ("'../pipelex-sdk/python'", "'../mthds-python'")
 
+    def test_without_the_mthds_checkout_says_mthds_stays_as_installed_not_as_locked(self):
+        # Installing the SDK alone leaves the mthds already installed, which an earlier use-local
+        # may have made a checkout, so the line never claims uv.lock's version.
+        result = _make(["-n", "use-local"])
+        assert result.returncode == 0, result.stderr
+        said = "not found, so mthds stays as it is installed, unless the SDK pins another version, and the status below says which it is"
+        assert said in result.stdout
+        assert "uv.lock pins it" not in result.stdout
+
 
 class TestLocalStatus:
     def test_says_every_package_is_missing_when_nothing_is_installed(self, tmp_path: Path):

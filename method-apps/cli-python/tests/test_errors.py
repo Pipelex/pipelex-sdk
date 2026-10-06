@@ -21,7 +21,6 @@ from pipelex_sdk.errors import (
     RejectedAssetError,
     RunFailedError,
     RunLifecycleUnavailableError,
-    RunTimeoutError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
 )
@@ -29,7 +28,7 @@ from pipelex_sdk.runs import RunStatus
 from pipelex_sdk.validation_models import ValidationErrorCategory, ValidationErrorItem
 from rich.console import Console
 
-from pipelex_method_cli_python.lib.app import COMMAND_NAME, AppError, RunMode
+from pipelex_method_cli_python.lib.app import AppError, RunMode
 from pipelex_method_cli_python.lib.errors import ErrorPresentation, present_error, print_error, problem_lines, report_lines
 
 # A failed run's stored report as the runner writes it for an inference failure, and the platform's
@@ -203,11 +202,6 @@ class TestPresentError:
         presentation = present_error(RunFailedError(UNREPORTED_DETAIL, run_id="run-9", status=RunStatus.TIMED_OUT, error=RunErrorReport()))
         assert presentation.message == "Run run-9 timed out, and no reason was recorded for it."
         assert presentation.details == (f"The platform said: {UNREPORTED_DETAIL}",)
-
-    def test_run_timeout_names_resume(self):
-        presentation = present_error(RunTimeoutError("too slow", run_id="run-9", timeout_seconds=1200.0))
-        assert presentation.hint is not None
-        assert f"{COMMAND_NAME} --resume run-9" in presentation.hint
 
     def test_unsupported_upload_capability_hints_the_hosted_api(self):
         presentation = present_error(UnsupportedUploadCapabilityError("no /v1/upload route here"))

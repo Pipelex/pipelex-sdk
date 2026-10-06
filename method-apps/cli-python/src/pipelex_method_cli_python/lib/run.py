@@ -4,9 +4,9 @@ The counterpart of the web app template's `useRun` hook with its `blockingRun` a
 helpers. The mode is the person's choice, made with the command's flags (`lib/app.py`'s `RunMode`):
 
 - **attended**, the default: `start`, the run id on stderr at once, then `wait_for_result` with a
-  one-line status on stderr fed by `on_poll`. Ctrl-C leaves the run going on the server, prints the
-  `--resume` command that reattaches to it, and the command exits with code 130. Losing the API
-  mid-wait prints the same command before the error.
+  one-line status on stderr fed by `on_poll`, for as long as the run takes. Ctrl-C leaves the run
+  going on the server, prints the `--resume` command that reattaches to it, and the command exits
+  with code 130. Losing the API mid-wait prints the same command before the error.
 - **`--blocking`**: one `execute`, lifted onto the same `RunResults` with `results_from_execute`.
   Behind the hosted gateway it is cut off at about 30 seconds, and `lib/errors.py` presents that
   with a hint to drop the flag.
@@ -33,6 +33,7 @@ root (`cli.py`). Every function takes the client it runs on, opened once by `exe
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -41,7 +42,7 @@ import httpx
 from mthds.protocol.exceptions import PipelineRequestError
 from pipelex_sdk.artifact_models import DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
+from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, RunTimeoutError
 from pipelex_sdk.execute_result import results_from_execute
 from pipelex_sdk.runs import PollInfo, RunResults, WaitForResultOptions
 from pydantic import ValidationError
@@ -152,22 +153,37 @@ async def start_run(client: PipelexAPIClient, *, binding: MethodBinding, inputs:
 
 
 async def attend_run(client: PipelexAPIClient, *, run_id: str, stderr: Console) -> RunResults:
-    """Wait here for a durable run's result, with a one-line status on stderr.
+    """Wait here for a durable run's result, with a one-line status on stderr, for as long as the run takes.
 
-    Cancelling the wait, which is what Ctrl-C does under `asyncio.run`, leaves the run going on the
-    server: it prints the command that reattaches to it and lets the cancellation through, which the
-    command's boundary turns into exit code 130. Losing the API mid-wait, unreachable or answering a
-    server fault or a rate limit, says the same before the boundary presents the error, since the
-    run may well still be going; a refusal such as a `404` for an unknown id says nothing of the kind.
+    The SDK's `wait_for_result` gives up after its `timeout_seconds`, twenty minutes by default, and
+    takes no `None` for no limit, so a `RunTimeoutError` starts the next wait at once: the run is
+    still going on the server, and the command promised to wait here. The status line counts the
+    time and the polls from the first wait, since each wait counts its own from zero.
+
+    Cancelling the wait, which is what Ctrl-C does under `asyncio.run`, is the way out: it leaves the
+    run going on the server, prints the command that reattaches to it and lets the cancellation
+    through, which the command's boundary turns into exit code 130. Losing the API mid-wait,
+    unreachable or answering a server fault or a rate limit, says the same before the boundary
+    presents the error, since the run may well still be going; a refusal such as a `404` for an
+    unknown id says nothing of the kind.
     """
     short_id = escape(run_id[:8])
+    started_at = time.monotonic()
+    polls = 0
     with stderr.status(f"Run {short_id}… in progress") as status:
 
         def on_poll(info: PollInfo) -> None:
-            status.update(f"Run {short_id}… in progress, {info.elapsed_seconds:.0f}s, poll #{info.attempt}")
+            nonlocal polls
+            del info  # its count and its time start again with each wait
+            polls += 1
+            status.update(f"Run {short_id}… in progress, {time.monotonic() - started_at:.0f}s, poll #{polls}")
 
         try:
-            return await client.wait_for_result(run_id, options=WaitForResultOptions(on_poll=on_poll))
+            while True:
+                try:
+                    return await client.wait_for_result(run_id, options=WaitForResultOptions(on_poll=on_poll))
+                except RunTimeoutError:
+                    continue
         except asyncio.CancelledError:
             stderr.print(f"\nInterrupted. The run is still going on the server; resume it with: [bold]{escape(resume_command(run_id))}[/bold]")
             raise

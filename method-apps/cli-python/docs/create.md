@@ -77,7 +77,7 @@ The gesture runs in two halves, and nothing is written until the first has finis
 3. **Write `.env`**, unless it already exists or the key is to be left where it was found (see below).
 4. **Re-sync `uv.lock` and the environment** with `uv sync`, since the project was renamed, its command with it, and CI installs with a locked `uv.lock`.
 5. **Run `make all`.**
-6. **Remove the bootstrap skill**, only once `make all` is green, with `.claude/` when that leaves it empty.
+6. **Remove the bootstrap skill**, only once `make all` is green. The project keeps its other skill, `bump-sdk`, which moves `pipelex-sdk` and `mthds` onto a newer release.
 
 A failure after step 1 cannot be undone by running the gesture again, because the package now holds a method and the gesture refuses it. The message names the steps that are left, and so does a Ctrl-C, which then exits with code 130; a Ctrl-C while the method is being written leaves the template as it was, and one before that has written nothing. Which of these a Ctrl-C left is read from the disk: one landing once the method's last file is written finds the whole method there, which counts as written, and a second Ctrl-C that cuts the removal short leaves parts of it, which the message names with the `rm -rf` that removes them before the gesture runs again. The gesture plans the method under `asyncio.run` and does everything else outside the event loop, where a Ctrl-C stops it where it lands, rather than as a cancellation that code with no `await` would meet only once it had finished. The steps left are ordinary commands: when the bootstrap is what failed or was interrupted, its own command line with the values the gesture planned, with `--force` when it had already written `pyproject.toml`, which then names the project; the copy of `.env.example` to `.env` when the gesture was to write one and none exists yet, which is also what is left when writing `.env` failed, naming the base URL to set in it beside the key when your shell or a `.env` above chose one rather than the default, since the method was generated against that API; then `uv sync`, `make all`, and `rm -rf .claude/skills/bootstrap`. Fix the cause first, and never by editing `src/<package>/generated/`.
 
@@ -111,6 +111,6 @@ The contract, the two halves, the refusals and the warning prefixes are `webapp-
 ## References
 
 - [`codegen.md`](codegen.md) — the codegen kit the gesture fetches and writes through.
-- [`ci.md`](ci.md) — how the gesture is proven: the offline test that creates a project per kind of method, and the live proof taken by hand.
+- [`ci.md`](ci.md) — how the gesture is proven offline: the test that creates a project per kind of method, and how its recorded responses are refreshed. The live proof, taken by hand before a release, is the `pipelex-sdk` repository's, in its root `docs/live-create-proofs.md`.
 - `scripts/create.py` and `scripts/create_plan.py` — the behavior, tested in `tests/test_create.py`, `tests/test_create_plan.py` and `tests/test_create_tree.py`.
 - `.claude/skills/bootstrap/SKILL.md` — the bootstrap the gesture drives, and its interactive path.

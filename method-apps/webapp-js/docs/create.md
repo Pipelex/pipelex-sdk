@@ -84,6 +84,6 @@ The file is created readable by you alone. An existing `.env.local` is yours and
 ## References
 
 - [`add-method.md`](add-method.md) — the scaffold the gesture runs, and its three source kinds.
-- [`ci.md`](ci.md) — how the gesture is proven: the offline fixture test, and a local run against the live API.
+- [`ci.md`](ci.md) — how the gesture is proven offline, by the fixture test. The local run against the live API, taken before a release, is the `pipelex-sdk` repository's, in its root `docs/live-create-proofs.md`.
 - `scripts/lib/create.mts` — the behavior, with its helpers unit-tested in `create.test.mts`.
 - `.claude/skills/bootstrap/SKILL.md` — the bootstrap the gesture drives, and its interactive path.
