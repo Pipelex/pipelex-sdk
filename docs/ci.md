@@ -48,3 +48,14 @@ The source repositories are the five whose trees were copied at the import (see 
 The source repositories' publish workflows (`publish.yml` in both SDKs, `release.yml` in the method apps, `github-release.yml` in the Python starter) gated no pull request. The repository's release workflow, `release.yml`, replaces them and runs on a push to `main` and on a manual dispatch, never on a pull request; `mirrors.yml` compares the starters' template repositories with their exports on a schedule ([`release-model.md`](release-model.md), [`export.md`](export.md)). The scripts both run, `scripts/publish.mjs` and `scripts/export.mjs`, are tested by the `Root` job with the root's other scripts, which is the only check they get before a release, since neither workflow runs on a pull request.
 
 **One difference from the sources is deliberate.** The Python starter's ruleset required its contributor-agreement check, and here it is reported rather than required, because the rulesets require only the two aggregates, and because it cannot pass on this repository until the organization's secrets for it and its GitHub App reach the repository. Its branch-guard, version and changelog checks, which it also required, are inside `Lint (all)`.
+
+## Templates added since the import
+
+A template added after the import joins `ci.yml` the same way: `make workflows` renders its twins, `ci.yml` calls each standalone twin in a job gated on its directory's `Changes` output, and each job joins the aggregate its workflow belongs to.
+
+| Template | Its workflow | Job | Aggregate |
+| --- | --- | --- | --- |
+| `method-apps/cli-python` | `lint-check.yml`: `make install`, then `make check` (ruff and pyright), on Python 3.11 and 3.14 | `method-apps-cli-python-lint`, the standalone twin `method-apps-cli-python-lint-check.yml` | `Lint (all)` |
+| `method-apps/cli-python` | `tests-check.yml`: `make install`, `make test`, `make build`, on Python 3.11 and 3.14 | `method-apps-cli-python-tests`, the standalone twin `method-apps-cli-python-tests-check.yml` | `Tests (all)` |
+
+`cli-python`'s workflows set up uv and the matrix's Python with `astral-sh/setup-uv`, whose cache the renderer leaves as written, and install with a step whose command is exactly `make install`, which is how the renderer finds the install step its next-SDK twin follows with `pipelex-sdk` built from `python/`. `UV_LOCKED=1` in each job's environment makes `make install`'s `uv sync` refuse a `uv.lock` that `pyproject.toml` has moved away from, rather than rewrite it, and every later step runs its tools from `.venv/bin/`, never through `uv run`, so the next SDK installed over the locked one stays in place. Both twins run under the `method-apps` output of `Changes`, so a change anywhere in the family runs them.

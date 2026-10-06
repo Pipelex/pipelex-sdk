@@ -1,0 +1,48 @@
+# Rendered by `make workflows` from method-apps/cli-python/.github/workflows/lint-check.yml — edit that file and re-render.
+# It runs method-apps/cli-python extracted exactly as the export ships it, installed from the registry
+# with its own lockfile, as a project made from it would be. The root CI calls it.
+name: Lint check (method-apps/cli-python)
+
+on:
+  workflow_call:
+
+jobs:
+  lint:
+    name: Lint on Python ${{ matrix.python-version }} (method-apps/cli-python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ../standalone/method-apps-cli-python
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor of requires-python, and the latest version it allows.
+        python-version: ["3.11", "3.14"]
+    env:
+      # `make install` runs `uv sync`, which then refuses a uv.lock that
+      # pyproject.toml has moved away from instead of rewriting it.
+      UV_LOCKED: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Extract method-apps/cli-python as the export ships it
+        working-directory: .
+        run: |
+          rm -rf ../standalone/method-apps-cli-python && mkdir -p ../standalone/method-apps-cli-python
+          git archive HEAD:method-apps/cli-python | tar -x -C ../standalone/method-apps-cli-python
+          cd ../standalone/method-apps-cli-python
+          git init -q -b main
+          git add -A -f
+          git -c user.name=ci -c user.email=ci@localhost commit -q -m "method-apps/cli-python, as a project made from it starts"
+
+      - name: Set up uv and Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install dependencies
+        run: make install
+
+      - name: Run check (lint + format + typecheck)
+        run: make check

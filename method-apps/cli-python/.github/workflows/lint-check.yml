@@ -1,0 +1,32 @@
+name: Lint check
+
+on:
+  pull_request:
+
+jobs:
+  lint:
+    name: Lint on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor of requires-python, and the latest version it allows.
+        python-version: ["3.11", "3.14"]
+    env:
+      # `make install` runs `uv sync`, which then refuses a uv.lock that
+      # pyproject.toml has moved away from instead of rewriting it.
+      UV_LOCKED: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up uv and Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install dependencies
+        run: make install
+
+      - name: Run check (lint + format + typecheck)
+        run: make check

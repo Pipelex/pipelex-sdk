@@ -198,7 +198,7 @@ describe("this repository", () => {
   it("holds every unit of the root Makefile at or below VERSION, each carrying one version", () => {
     const makefile = fs.readFileSync(path.join(ROOT, "Makefile"), "utf8");
     const units = /^UNITS := (.+)$/m.exec(makefile)[1].trim().split(/\s+/);
-    assert.ok(units.includes("method-apps:webapp-js,initializers/js"));
+    assert.ok(units.includes("method-apps:webapp-js,cli-python,initializers/js"));
     assert.deepEqual(checkVersions(ROOT, units).problems, []);
   });
 });
