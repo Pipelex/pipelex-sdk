@@ -138,6 +138,20 @@ class TestDates:
     def test_a_date_time_is_a_real_point_in_time(self, value: str, acceptable: bool):
         assert is_acceptable_date_time(value) is acceptable
 
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("\u0662\u0660\u0662\u0666-\u0660\u0667-\u0660\u0666", id="Arabic-Indic digits"),
+            pytest.param("\uff12\uff10\uff12\uff16-\uff10\uff17-\uff10\uff16", id="fullwidth digits"),
+        ],
+    )
+    def test_digits_of_another_script_are_no_date(self, value: str):
+        # The kernel's `\d` is ASCII; Python's would take these, and send them.
+        assert as_calendar_date(value) is None
+        assert as_calendar_date(f"{value}T00:00") is None
+        assert is_acceptable_date_time(value) is False
+        assert is_acceptable_date_time(f"{value}T15:40") is False
+
 
 class TestRepair:
     def test_a_lone_text_wrapper_where_a_string_is_wanted_is_unwrapped(self):

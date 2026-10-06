@@ -30,6 +30,7 @@ dotfiles, the `.DS_Store` a file browser leaves, is empty, and the files are dow
 import json
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -97,7 +98,8 @@ async def download_produced_files(
 
     Raises:
         AppError: There is a file to save, `out_dir` is `None`, and the run id cannot name a
-            directory, or its directory exists and cannot be listed.
+            directory, or its directory cannot be used: it, or a part of its path, is a file, or it
+            cannot be read.
     """
     references = collect_artifacts(results.main_stuff)
     if not references:
@@ -118,13 +120,28 @@ def _listing(dir_path: Path) -> list[str]:
     """The names directly under `dir_path`, none when it does not exist.
 
     Raises:
-        AppError: The directory exists but cannot be listed, which no download into it could fix.
+        AppError: The path, or a part of it, is a file rather than a directory, or the directory
+            cannot be read, none of which a download into it could fix.
     """
+    hint = "Name a readable, writable directory for the run's files with --out DIR."
     try:
-        return [entry.name for entry in dir_path.iterdir()] if dir_path.is_dir() else []
-    except PermissionError as exc:
+        mode = dir_path.stat().st_mode
+    except FileNotFoundError:
+        return []
+    except NotADirectoryError as exc:
+        msg = f"A part of {dir_path} is a file rather than a directory, so the run's files cannot be saved there."
+        raise AppError(msg, hint=hint) from exc
+    except OSError as exc:
+        msg = f"{dir_path} cannot be read, so the CLI cannot tell what an earlier download left there."
+        raise AppError(msg, hint=hint) from exc
+    if not stat.S_ISDIR(mode):
+        msg = f"{dir_path} exists and is not a directory, so the run's files cannot be saved there."
+        raise AppError(msg, hint=hint)
+    try:
+        return [entry.name for entry in dir_path.iterdir()]
+    except OSError as exc:
         msg = f"{dir_path} exists but cannot be read, so the CLI cannot tell what an earlier download left there."
-        raise AppError(msg, hint="Name a readable, writable directory for the run's files with --out DIR.") from exc
+        raise AppError(msg, hint=hint) from exc
 
 
 def write_manifest(dir_path: Path, downloaded: DownloadArtifactsResult) -> None:
@@ -171,10 +188,16 @@ def earlier_download(dir_path: Path, references: list[str]) -> EarlierDownload:
         if found is None:
             return EarlierDownload(dir_path, complete=False, detail=f"its record does not name {reference}")
         name, size = found
-        path = dir_path / name
-        if Path(name).name != name or not path.is_file():
+        if Path(name).name != name:
             return EarlierDownload(dir_path, complete=False, detail=f"{name} is missing")
-        if path.stat().st_size != size:
+        try:
+            # One `stat` answers both questions, so a file removed between two calls is read as missing, never raised.
+            status = (dir_path / name).stat()
+        except OSError:
+            return EarlierDownload(dir_path, complete=False, detail=f"{name} is missing")
+        if not stat.S_ISREG(status.st_mode):
+            return EarlierDownload(dir_path, complete=False, detail=f"{name} is missing")
+        if status.st_size != size:
             return EarlierDownload(dir_path, complete=False, detail=f"{name} is not the size it was saved at")
     return EarlierDownload(dir_path, complete=True)
 

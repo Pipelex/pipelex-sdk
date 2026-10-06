@@ -568,6 +568,13 @@ class TestVerify:
         assert verify(layout) == 1
         assert f"the committed {CONTRACTS_FILENAME} is not what /v1/pipe-io returns" in capsys.readouterr().err
 
+    def test_contracts_checked_out_with_crlf_are_no_difference(self, api: FakeCodegenClient, layout: Layout):
+        # What `core.autocrlf=true` does to the file: the offline check folds it, and so must this one.
+        generate(layout)
+        contracts = layout.generated_dir / CONTRACTS_FILENAME
+        contracts.write_bytes(contracts.read_bytes().replace(b"\n", b"\r\n"))
+        assert verify(layout) == 0
+
     def test_an_engine_that_moved_alone_is_a_note(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
         generate(layout)
         api.codegen_answer = recorded_codegen().model_copy(update={"engine_version": "9.9.9"})

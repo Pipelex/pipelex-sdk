@@ -56,14 +56,15 @@ _PRIMITIVE_TYPES = frozenset({"string", "number", "integer", "boolean", "null"})
 #: The keys a simple primitive branch may carry besides its `type`.
 _SIMPLE_BRANCH_KEYS = frozenset({"type", "default", "description", "title"})
 
-#: `YYYY-MM-DD`, with no time.
-_FULL_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+#: `YYYY-MM-DD`, with no time. Every date pattern here is ASCII: Python's `\d` would otherwise take
+#: any script's digits, an Arabic-Indic or a fullwidth date, which the kernel's `\d` refuses.
+_FULL_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})", re.ASCII)
 
 #: A timestamp whose clock reads exactly zero, which denotes nothing but its day.
-_ZERO_TIME_DATE_TIME = re.compile(r"(\d{4}-\d{2}-\d{2})[T ]00:00(?::00(?:\.0+)?)?(?:Z|z|[+-]\d{2}:?\d{2})?")
+_ZERO_TIME_DATE_TIME = re.compile(r"(\d{4}-\d{2}-\d{2})[T ]00:00(?::00(?:\.0+)?)?(?:Z|z|[+-]\d{2}:?\d{2})?", re.ASCII)
 
 #: A timestamp the runtime reads as a point in time.
-_DATE_TIME = re.compile(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|z|[+-]\d{2}:?\d{2})?")
+_DATE_TIME = re.compile(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|z|[+-]\d{2}:?\d{2})?", re.ASCII)
 
 
 def collect_defs(schema: JsonSchema, *, traverse_arrays: bool) -> dict[str, JsonSchema]:

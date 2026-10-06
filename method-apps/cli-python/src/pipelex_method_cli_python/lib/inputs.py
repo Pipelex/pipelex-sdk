@@ -96,8 +96,9 @@ PARAMETER_PREFIX = "input_"
 
 #: A reference the reader takes as it is rather than as a local path, spelled as the SDK's
 #: `prepare_inputs` recognises it: an `http(s)://` or `pipelex-storage://` URL passes through, and a
-#: `data:` URL is uploaded by the SDK itself.
-_PASSTHROUGH_URL = re.compile(r"(?i:https?://)|pipelex-storage://|data:")
+#: `data:` URL is uploaded by the SDK itself. The scheme's case is folded in ASCII only: Unicode
+#: folding would read `httpſ://`, with a long s, as `https://`, which the form kernel does not.
+_PASSTHROUGH_URL = re.compile(r"(?i:https?://)|pipelex-storage://|data:", re.ASCII)
 
 #: An integer as a person types it, in ASCII digits: `\d` would take any script's digits, which the
 #: form kernel's `Number()` reads as NaN.
@@ -437,6 +438,8 @@ class ValueReader:
     def text(self, raw: str, *, flag: str) -> str:
         """The value an option stands for: itself, a file's text for `@path`, stdin's for `@-`, `@…` for `@@…`.
 
+        A leading `~` in `@path` names the home directory, as it does for a file input's path.
+
         Raises:
             InputUsageError: The file cannot be read or is not UTF-8, or stdin is read already.
         """
@@ -452,7 +455,7 @@ class ValueReader:
             self.stdin_owner = flag
             return sys.stdin.read()
         try:
-            return Path(source).read_text(encoding="utf-8")
+            return Path(source).expanduser().read_text(encoding="utf-8")
         except OSError as exc:
             msg = f"{flag} reads {source}, which cannot be read: {exc.strerror or exc}."
             raise InputUsageError(msg) from exc

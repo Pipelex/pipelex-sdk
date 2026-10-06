@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mthds.protocol.exceptions import PipelineRequestError
 from pipelex_sdk.artifact_models import DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
@@ -45,10 +46,10 @@ from rich.console import Console
 from rich.markup import escape
 
 from pipelex_method_cli_python.lib import client as api
-from pipelex_method_cli_python.lib.app import RunMode
+from pipelex_method_cli_python.lib.app import AppError, RunMode
 from pipelex_method_cli_python.lib.artifacts import EarlierDownload, download_produced_files, print_downloads
 from pipelex_method_cli_python.lib.binding import MethodBinding
-from pipelex_method_cli_python.lib.errors import resume_command
+from pipelex_method_cli_python.lib.errors import present_error, print_error, resume_command
 from pipelex_method_cli_python.lib.inputs import declares_files
 from pipelex_method_cli_python.lib.narrow import NarrowedOutput, OutputValidationError, narrow_output
 from pipelex_method_cli_python.lib.output import OutputShapeError, print_payload, print_run_id
@@ -196,7 +197,9 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
     down makes the exit code 1, since the command did not do all it was asked, and so does a default
     directory an earlier download left short; the hint says how to fetch the files again where that
     is possible, and whether the result above is complete, and a Ctrl-C while they come down says it
-    too before the cancellation goes through.
+    too before the cancellation goes through. A download that raises after the model refused the
+    result is printed here, and the refusal is raised all the same: it is what says the result was
+    not printed, which a failure to save the files must never hide.
     """
     exit_code = 0
     shape_error: OutputShapeError | OutputValidationError | None = None
@@ -222,6 +225,12 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
             except asyncio.CancelledError:
                 stderr.print(f"\nInterrupted while saving the run's files. {refetch_advice(plan.mode, results.pipeline_run_id)}")
                 raise
+            except (PipelineRequestError, AppError) as exc:
+                if shape_error is None:
+                    raise
+                print_error(stderr, present_error(exc, mode=plan.mode))
+                # Raised without `from`, so the refusal keeps its own cause; the download's failure, printed above, is its context.
+                raise shape_error
             print_downloads(stderr, downloaded)
             if _incomplete(downloaded):
                 said = "its result is complete above" if shape_error is None else "its result was not printed, for the reason below"

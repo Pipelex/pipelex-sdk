@@ -8,11 +8,12 @@ What is pinned here is this module's own half: when the client is called at all,
 the files go by default, and how a verdict is rendered.
 """
 
+import errno
 import io
 import json
 import os
 from pathlib import Path
-from typing import cast
+from typing import Any, NoReturn, cast
 
 import pytest
 from pipelex_sdk.artifact_models import ArtifactItemError, DownloadArtifactsResult, DownloadedArtifact
@@ -187,6 +188,63 @@ class TestCompletionEvidence:
         finally:
             earlier.chmod(0o755)
         assert caught.value.hint == "Name a readable, writable directory for the run's files with --out DIR."
+
+    async def test_a_directory_that_fails_to_list_is_refused_naming_out(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        def failing(self: Path) -> NoReturn:
+            raise OSError(errno.EIO, "Input/output error", str(self))
+
+        monkeypatch.chdir(tmp_path)
+        (DEFAULT_OUTPUT_ROOT / RUN_ID).mkdir(parents=True)
+        monkeypatch.setattr(Path, "iterdir", failing)
+        with pytest.raises(AppError, match="cannot be read") as caught:
+            await download_produced_files(_as_client(FakeClient()), run_results(IMAGE_OUTPUT), out_dir=None)
+        assert caught.value.hint == "Name a readable, writable directory for the run's files with --out DIR."
+
+    @pytest.mark.parametrize(
+        ("file_at", "says"),
+        [
+            pytest.param(DEFAULT_OUTPUT_ROOT / RUN_ID, "exists and is not a directory", id="the run's directory"),
+            pytest.param(DEFAULT_OUTPUT_ROOT, "is a file rather than a directory", id="the output root"),
+        ],
+    )
+    async def test_a_file_where_the_directory_should_be_is_refused_naming_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file_at: Path, says: str
+    ):
+        monkeypatch.chdir(tmp_path)
+        file_at.parent.mkdir(parents=True, exist_ok=True)
+        file_at.write_text("not a directory", encoding="utf-8")
+        fake = FakeClient()
+        with pytest.raises(AppError, match=says) as caught:
+            await download_produced_files(_as_client(fake), run_results(IMAGE_OUTPUT), out_dir=None)
+        assert caught.value.hint == "Name a readable, writable directory for the run's files with --out DIR."
+        assert fake.downloaded_to == []
+
+    async def test_a_file_gone_while_it_is_checked_is_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # Removed by a concurrent cleanup after any earlier look found it: read as missing, never raised.
+        earlier, fake = await self._first_download(tmp_path, monkeypatch)
+        real_stat = Path.stat
+        real_is_file = Path.is_file
+
+        def vanishing(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if self.name == "first.png":
+                raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(self))
+            return real_stat(self, follow_symlinks=follow_symlinks)
+
+        def seen_a_moment_ago(self: Path, **kwargs: Any) -> bool:
+            # Its keywords passed as they came: `follow_symlinks` exists only from Python 3.13.
+            return self.name == "first.png" or real_is_file(self, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", vanishing)
+        monkeypatch.setattr(Path, "is_file", seen_a_moment_ago)
+        downloaded = await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
+        assert downloaded == EarlierDownload(dir_path=earlier, complete=False, detail="first.png is missing")
+
+    async def test_a_directory_where_a_file_was_saved_is_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        earlier, fake = await self._first_download(tmp_path, monkeypatch)
+        (earlier / "first.png").unlink()
+        (earlier / "first.png").mkdir()
+        downloaded = await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
+        assert isinstance(downloaded, EarlierDownload) and downloaded.detail == "first.png is missing"
 
 
 class TestOtherDirectories:

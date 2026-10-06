@@ -6,7 +6,8 @@ resolve to another crate when a published dependency moved, and a method named b
 elsewhere entirely. Two comparisons, both against a fresh answer:
 
 - the crate fingerprint `POST /v1/codegen` returns, against the one `codegen.lock` records;
-- `contracts.json` re-rendered from `POST /v1/pipe-io`'s answer, against the committed bytes.
+- `contracts.json` re-rendered from `POST /v1/pipe-io`'s answer, against the committed file, its line
+  endings folded to LF as the offline check folds them, so a CRLF checkout is no difference.
 
 A difference in either exits 1 and says to run `make codegen`. An engine that moved while the crate
 did not is a note, not a failure: regenerating would restamp the tree with no change of meaning. The
@@ -36,6 +37,7 @@ from scripts.codegen_shared import (
     CodegenSource,
     Layout,
     discover_source,
+    hash_source,
     insecure_base_url_reason,
     invalid_lines,
     not_runnable_reason,
@@ -104,7 +106,8 @@ async def verify(client: CodegenClient, source: CodegenSource, layout: Layout) -
         on_disk = read_text_file(out_dir / CONTRACTS_FILENAME, layout)
     except (OSError, CodegenSetupError):
         on_disk = None
-    if rendered != on_disk:
+    # Compared as the offline check hashes it, line endings folded, so a CRLF checkout is no drift.
+    if on_disk is None or hash_source(on_disk) != hash_source(rendered):
         return _fail(f"\n✗ the committed {CONTRACTS_FILENAME} is not what /v1/pipe-io returns.", "    Run `make codegen` and commit the result.")
     print(f"\n✓ crate {(committed.crate_fingerprint or '?')[:12]} matches the engine, {CONTRACTS_FILENAME} matches /v1/pipe-io", flush=True)
     if live.engine_version != committed.engine_version:

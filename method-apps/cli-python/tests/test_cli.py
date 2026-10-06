@@ -559,6 +559,27 @@ class TestDownloads:
         assert "No inference calls" in result.stderr
         assert "outputs/ is a file" in result.stderr
 
+    def test_a_download_that_raises_never_hides_a_refused_result(self, fake_client: FakeClient, tmp_path: Path):
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT, tokens_usages=[], usage_assembly_error=None)
+        fake_client.download_answer = ArtifactOperationError("The download directory cannot be created or used.")
+        result = invoke(make_binding(output_model=Greeting), ["--out", str(tmp_path)])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "The download directory cannot be created or used." in result.stderr
+        assert "No inference calls" in result.stderr
+        refusal = f"Run {RUN_ID} returned a result that Greeting refuses, first at text, so it is not printed."
+        assert refusal in result.stderr
+        # The download's failure as it happened, then the refusal last, as the error the command exits with.
+        assert result.stderr.index("cannot be created or used") < result.stderr.index(refusal)
+
+    def test_a_default_directory_refused_never_hides_a_refused_result(self, fake_client: FakeClient):
+        fake_client.wait_answer = run_results(IMAGE_OUTPUT, run_id="../escape")
+        result = invoke(make_binding(output_model=Greeting), [])
+        assert result.exit_code == 1
+        assert "cannot name a directory" in result.stderr
+        assert "returned a result that Greeting refuses" in result.stderr
+        assert fake_client.downloaded_to == []
+
     def test_a_second_resume_leaves_the_earlier_download_alone(self, fake_client: FakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
         saved = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path=f"outputs/{RUN_ID}/main_stuff.png", size=3)

@@ -200,6 +200,14 @@ class TestReadOption:
     def test_a_url_passes_through(self, url: str):
         assert read_option(_options()["picture"], url, ValueReader()) == {"url": url}
 
+    def test_a_scheme_in_capitals_passes_through(self):
+        assert read_option(_options()["picture"], "HTTPS://example.com/a.png", ValueReader()) == {"url": "HTTPS://example.com/a.png"}
+
+    def test_a_scheme_is_folded_in_ascii_only(self):
+        # Unicode case folding reads the long s as an s; the form kernel does not, so this is a path, and no file.
+        with pytest.raises(InputUsageError, match="which is not a file"):
+            read_option(_options()["picture"], "http\u017f://example.com/a.png", ValueReader())
+
     def test_a_local_file_carries_its_name(self, tmp_path: Path):
         (tmp_path / "cat.png").write_bytes(b"png")
         assert read_option(_options()["picture"], str(tmp_path / "cat.png"), ValueReader()) == {
@@ -215,6 +223,15 @@ class TestReadOption:
     def test_json_can_come_from_a_file(self, tmp_path: Path):
         (tmp_path / "priority.json").write_text('{"level": "urgent"}', encoding="utf-8")
         assert read_option(_options()["priority"], f"@{tmp_path / 'priority.json'}", ValueReader()) == {"level": "urgent"}
+
+    def test_a_tilde_names_the_home_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # No shell expands a `~` after an `@`, so the reader does, for a text and a JSON value alike.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        (tmp_path / "note.txt").write_text("from home", encoding="utf-8")
+        (tmp_path / "priority.json").write_text('{"level": "urgent"}', encoding="utf-8")
+        assert read_option(_options()["headline"], "@~/note.txt", ValueReader()) == {"text": "from home"}
+        assert read_option(_options()["priority"], "@~/priority.json", ValueReader()) == {"level": "urgent"}
 
     def test_an_unreadable_file_is_a_usage_error(self, tmp_path: Path):
         with pytest.raises(InputUsageError, match="cannot be read"):

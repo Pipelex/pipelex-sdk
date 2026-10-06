@@ -4,9 +4,9 @@ from datetime import date, datetime, time
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from pipelex_method_cli_python.lib.narrow import MAX_LISTED_ERRORS, NarrowedOutput, OutputValidationError, narrow_output
+from pipelex_method_cli_python.lib.narrow import MAX_LISTED_ERRORS, NarrowedOutput, OutputValidationError, is_absence, narrow_output
 from pipelex_method_cli_python.lib.output import OutputShapeError
 from tests.support import ABSENCE_OUTPUT, RUN_ID, Greeting, run_results
 
@@ -24,6 +24,19 @@ class Measured(BaseModel):
 
 #: A payload `Measured` accepts, each value as the runtime's JSON carries it.
 MEASURED: dict[str, Any] = {"count": 12, "ratio": 2, "agreed": True, "day": "2026-07-06", "moment": "2026-07-06T15:40:00Z", "clock": "15:40:00"}
+
+
+class Attendance(BaseModel):
+    """A model standing in for a generated one that declares an `absent` field of its own."""
+
+    absent: bool
+    employee: str
+
+
+class Opaque(BaseModel):
+    """A model standing in for an opaque concept's, which takes any key."""
+
+    model_config = ConfigDict(extra="allow")
 
 
 class TestNarrowOutput:
@@ -106,3 +119,40 @@ class TestAbsentOutput:
     def test_the_absence_document_of_an_output_that_is_not_optional_is_refused(self):
         with pytest.raises(OutputValidationError, match="Greeting refuses"):
             narrow_output(run_results(ABSENCE_OUTPUT), output_model=Greeting, output_is_list=False, output_optional=False)
+
+    def test_a_payload_whose_own_absent_field_is_true_is_data(self):
+        payload = {"absent": True, "employee": "Alice"}
+        narrowed = narrow_output(run_results(payload), output_model=Attendance, output_is_list=False, output_optional=True)
+        assert narrowed == NarrowedOutput(payload=payload)
+
+    def test_the_absence_document_is_an_absence_even_where_the_model_would_take_it(self):
+        # An opaque model allows any key, so validating first would print the document as data.
+        narrowed = narrow_output(run_results(ABSENCE_OUTPUT), output_model=Opaque, output_is_list=False, output_optional=True)
+        assert narrowed == NarrowedOutput(payload=None, absent=True, absence_reason="The condition chose no branch.")
+
+    def test_the_absence_document_with_one_more_key_is_data(self):
+        payload = {**ABSENCE_OUTPUT, "employee": "Alice"}
+        narrowed = narrow_output(run_results(payload), output_model=Opaque, output_is_list=False, output_optional=True)
+        assert narrowed == NarrowedOutput(payload=payload)
+
+    def test_an_absence_chained_to_an_upstream_one_is_an_absence(self):
+        upstream = {key: value for key, value in ABSENCE_OUTPUT.items() if key != "absent"}
+        assert is_absence({**ABSENCE_OUTPUT, "kind": "declared_absent", "producing_pipe": "greetings.pick", "upstream": upstream})
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            pytest.param("absent", "true", id="absent as a string"),
+            pytest.param("variable_name", None, id="no variable name"),
+            pytest.param("kind", "forgotten", id="a kind the runtime never writes"),
+            pytest.param("kind", ["skipped"], id="a kind that is not a string"),
+            pytest.param("reason", None, id="no reason"),
+            pytest.param("producing_pipe", 3, id="a producing pipe that is not a string"),
+            pytest.param("upstream", "greeting", id="an upstream that is not a record"),
+        ],
+    )
+    def test_the_absence_document_with_a_value_of_another_type_is_not_one(self, key: str, value: object):
+        assert not is_absence({**ABSENCE_OUTPUT, key: value})
+
+    def test_the_absence_document_missing_a_key_is_not_one(self):
+        assert not is_absence({key: value for key, value in ABSENCE_OUTPUT.items() if key != "upstream"})

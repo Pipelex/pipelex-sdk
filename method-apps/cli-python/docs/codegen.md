@@ -26,7 +26,7 @@ The keyed scripts read `PIPELEX_API_KEY` and `PIPELEX_BASE_URL` from the shell o
 
 `contracts.json` is rendered through the same `mthds.protocol` models the command reads it back with, with two-space indentation and the models' member order, so the same answer always gives the same bytes and a file the command could not read is never written. The command reads it with `lib/contracts.py`, and the binding refuses to load when the pipe `binding.py` names is not in it.
 
-Nothing under `generated/` is edited by hand: ruff excludes the directory so that no reformat breaks a stamp, and pyright still checks it.
+Nothing under `generated/` is edited by hand: ruff excludes the directory so that no reformat breaks a stamp, and pyright still checks it. The project's `.gitattributes` marks `generated/` as `-text`, so that git never translates its line endings and every checkout holds the bytes the API emitted, and pins `method/` to LF, the bytes its hashes in `sources.json` were taken over. Both are hygiene rather than correctness: the checks fold line endings before they hash or compare, so a checkout made under `core.autocrlf=true` is no edit.
 
 ## In what order, and what is refused
 
@@ -59,7 +59,7 @@ Each of these replaced a way the gates could be silently wrong, and each has its
 
 The exit code is the verdict: `0` current, `1` drift, `2` no verdict (a missing or unreadable lock, a symbolic link, or a method that cannot be read). Verdicts fold by precedence, no verdict over drift over current, and a summary line counts them. **The template as shipped holds no method and no tree, and that is current**, so `make check` is green on a fresh copy; a method with no tree is drift, and so is a tree with no method behind it, since regeneration never removes a whole tree.
 
-**The keyed check** (`make codegen-verify`) answers what the offline one cannot: whether the method, as the API resolves it today, is still the one the tree was generated from. A bundle that did not change can resolve to another crate when a published dependency moved, and a method named by `method.json` lives elsewhere entirely. It compares the crate fingerprint `/v1/codegen` returns with the lock's, and `contracts.json` re-rendered from a fresh `/v1/pipe-io` answer with the committed bytes; either difference exits `1`. An engine that moved while the crate did not is a note: regenerating would restamp every file with no change of meaning.
+**The keyed check** (`make codegen-verify`) answers what the offline one cannot: whether the method, as the API resolves it today, is still the one the tree was generated from. A bundle that did not change can resolve to another crate when a published dependency moved, and a method named by `method.json` lives elsewhere entirely. It compares the crate fingerprint `/v1/codegen` returns with the lock's, and `contracts.json` re-rendered from a fresh `/v1/pipe-io` answer with the committed file, its line endings folded to LF as the offline check folds them; either difference exits `1`. An engine that moved while the crate did not is a note: regenerating would restamp every file with no change of meaning.
 
 ## The output model is a check
 

@@ -18,11 +18,17 @@ is not printed at all: the error names every field that failed, and the hint say
 regenerate and fetch the result again.
 
 **An optional output may be absent.** A pipe whose output contract says `optional` may succeed
-without producing it, and the run then delivers the runtime's absence document,
-`{"absent": true, "variable_name": …, "kind": …, "reason": …}`, or nothing at all, in place of the
-output. That is the method working as declared, so it is not refused: the result is `null`, and the
-caller says why on stderr. The same document from a pipe whose output is not optional is refused as
-any other result the model does not describe.
+without producing it, and the run then delivers the runtime's absence document, `{"absent": true,
+"variable_name": …, "kind": …, "reason": …, "producing_pipe": …, "upstream": …}`, or nothing at
+all, in place of the output. That is the method working as declared, so it is not refused: the
+result is `null`, and the caller says why on stderr. The same document from a pipe whose output is
+not optional is refused as any other result the model does not describe.
+
+The document is recognised by its whole shape, exactly those keys each holding the type the
+runtime writes, and never by its `absent` key alone: a model of the method's own may declare an
+`absent` field, and a payload of it is data. Validating against the model first would not tell the
+two apart either, since a generated model ignores the keys it does not declare and an opaque one
+allows them, so the absence document would pass as data.
 """
 
 import json
@@ -43,6 +49,13 @@ ABSENT_KEY = "absent"
 #: The key of the absence document that says why the output is absent.
 REASON_KEY = "reason"
 
+#: Every key of the runtime's absence document and no other: `absent`, then the fields of the
+#: runtime's `AbsenceRecord`, which forbids extra ones and writes each of them, `null` included.
+ABSENCE_KEYS = frozenset({ABSENT_KEY, "variable_name", "kind", REASON_KEY, "producing_pipe", "upstream"})
+
+#: The values the absence document's `kind` takes, the runtime's `AbsenceKind`.
+ABSENCE_KINDS = frozenset({"declared_absent", "skipped", "not_provided"})
+
 
 class OutputValidationError(AppError):
     """A run's result that the output model `binding.py` names refuses."""
@@ -60,10 +73,30 @@ class NarrowedOutput(NamedTuple):
 
 
 def is_absence(main_stuff: object) -> bool:
-    """Whether a run's main output is the absence of one: nothing, or the runtime's absence document."""
+    """Whether a run's main output is the absence of one: nothing, or the runtime's absence document.
+
+    The document is matched by its whole shape, exactly `ABSENCE_KEYS` with the types the runtime
+    writes, so that a payload which merely carries `"absent": true` is never taken for one.
+    """
     if main_stuff is None:
         return True
-    return isinstance(main_stuff, dict) and cast("dict[str, Any]", main_stuff).get(ABSENT_KEY) is True
+    if not isinstance(main_stuff, dict):
+        return False
+    document = cast("dict[str, Any]", main_stuff)
+    if document.keys() != ABSENCE_KEYS:
+        return False
+    kind: object = document["kind"]
+    producing_pipe: object = document["producing_pipe"]
+    upstream: object = document["upstream"]
+    return (
+        document[ABSENT_KEY] is True
+        and isinstance(document["variable_name"], str)
+        and isinstance(kind, str)
+        and kind in ABSENCE_KINDS
+        and isinstance(document[REASON_KEY], str)
+        and (producing_pipe is None or isinstance(producing_pipe, str))
+        and (upstream is None or isinstance(upstream, dict))
+    )
 
 
 def narrow_output(

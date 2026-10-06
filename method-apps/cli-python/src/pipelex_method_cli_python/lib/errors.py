@@ -340,8 +340,9 @@ def _present_upload_error(exc: InputPreparationError) -> ErrorPresentation:
 def _present_artifact_error(exc: ArtifactOperationError) -> ErrorPresentation:
     """Present a failure to bring a run's produced files down.
 
-    It is raised after the run itself succeeded and its result was printed, so no hint here ever says
-    to rerun it: the run has been paid for, and what is left is to recover the files it produced.
+    It is raised after the run itself succeeded and its result was printed, or refused by the output
+    model, so no hint here ever says to rerun it: the run has been paid for, and what is left is to
+    recover the files it produced.
     """
     if isinstance(exc, ArtifactAuthenticationError):
         hint = _API_KEY_HINT

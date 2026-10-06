@@ -8,14 +8,14 @@ This is why nothing is written per method: a generated module of options would b
 
 | Field kind | Option | What it takes |
 | --- | --- | --- |
-| `text`, `prose` | `--name TEXT` | A string. `@path` reads it from a UTF-8 file, `@-` from stdin, and a leading `@@` stands for a literal `@` |
+| `text`, `prose` | `--name TEXT` | A string. `@path` reads it from a UTF-8 file, a leading `~` in the path naming the home directory, `@-` from stdin, and a leading `@@` stands for a literal `@` |
 | `date` | `--name DATE`, or `--name DATETIME` when the descriptor says `datetime` | An ISO 8601 calendar date, or a date and time. A calendar date given with a time of day is refused unless the time is midnight, rather than silently cut |
 | `number` | `--name N`, or `--name INTEGER` | A finite number, or an integer when the descriptor says so, inside the descriptor's bounds, written in ASCII digits with an optional sign, decimal point and exponent, which is what the form kernel's `Number()` reads: `1_000`, `1_0.5` and digits of other scripts are refused |
 | `boolean` | `--name / --no-name` | One of the pair; without either, the input is not given |
 | `enum` | `--name [a\|b\|c]` | One of the descriptor's choices, which Click checks |
 | `document`, `image` | `--name PATH\|URL` | A local file or a `data:` URL, which the SDK uploads before the run, or an `https://` or `pipelex-storage://` URL, which passes through |
 | `list` of any kind above | the same option, repeated | One value per item. A list of booleans, whose flag could not repeat, takes `true` or `false` per item. A fixed `item_count`, or the schema's `minItems` and `maxItems`, is enforced |
-| `object`, `unknown`, and a list of objects or of lists | `--name JSON` | JSON, inline or `@file.json`. An object must be a JSON object and a list a JSON array of the right length; what is inside is left to the API, which validates the run's inputs against the contract before any inference runs |
+| `object`, `unknown`, and a list of objects or of lists | `--name JSON` | JSON, inline or `@file.json`, a file read as `@path` reads one for a text input. An object must be a JSON object and a list a JSON array of the right length; what is inside is left to the API, which validates the run's inputs against the contract before any inference runs |
 
 An input's option is `--<name>` with its underscores written as dashes. An input whose option would take one of the command's own flags, or a flag an earlier input took, is offered as `--input-<name>` instead; one for which both are taken is refused when the command loads, saying to rename the input. The Python parameter behind every input's option is `input_<name>`, a namespace the command's own options never use.
 
