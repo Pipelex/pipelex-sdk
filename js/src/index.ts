@@ -220,11 +220,14 @@ export type {
 } from "./usage.js";
 
 // ── Typed errors (PipelineRequestError rides the protocol re-export above) ──
+// Every one carries a verdict — `retryable` and `errorDomain` — read with `errorVerdictOf`.
 export {
+  PipelexRequestError,
+  errorVerdictOf,
   ApiResponseError,
   ApiUnreachableError,
-  ClientAuthenticationError,
   MissingMainStuffError,
+  PagingNotTerminatingError,
   PipelineExecuteTimeoutError,
   RunFailedError,
   RunTimeoutError,
@@ -242,7 +245,13 @@ export {
   ArtifactFetchError,
   ScopeUnavailableError,
 } from "./errors.js";
-export type { ApiResponseErrorOptions, RejectedAssetCode, UploadTransportCode } from "./errors.js";
+export type {
+  ApiResponseErrorOptions,
+  ErrorDomain,
+  ErrorVerdict,
+  RejectedAssetCode,
+  UploadTransportCode,
+} from "./errors.js";
 
 // ── Error reports (a failed run's stored report, a problem document's typed members) ──
 export type {

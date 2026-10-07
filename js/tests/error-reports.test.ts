@@ -277,10 +277,13 @@ describe("ApiResponseError — the problem document's members", () => {
         detail: "String should have at least 1 character",
       },
     ]);
-    // The platform does not classify its own refusals yet.
-    expect(e.errorDomain).toBeUndefined();
-    expect(e.retryable).toBeUndefined();
+    // The platform does not classify its own refusals yet, so the verdict is the fallback's
+    // reading of a 422; the document still shows the server sent neither member.
+    expect(e.errorDomain).toBe("input");
+    expect(e.retryable).toBe(false);
     expect(e.problemDocument).toEqual(PLATFORM_422);
+    expect(e.problemDocument).not.toHaveProperty("error_domain");
+    expect(e.problemDocument).not.toHaveProperty("retryable");
   });
 
   it("exposes each member a runner's problem carries", async () => {
@@ -363,9 +366,10 @@ describe("ApiResponseError — the problem document's members", () => {
     expect(e.type).toBeUndefined();
     expect(e.title).toBeUndefined();
     expect(e.requestId).toBeUndefined();
-    expect(e.errorDomain).toBeUndefined();
+    // A verdict member of the wrong type is not taken: the fallback's reading of a 422 is.
+    expect(e.errorDomain).toBe("input");
     expect(e.errorCategory).toBeUndefined();
-    expect(e.retryable).toBeUndefined();
+    expect(e.retryable).toBe(false);
     expect(e.userAction).toBeUndefined();
     expect(e.model).toBeUndefined();
     expect(e.providerMetadata).toBeUndefined();

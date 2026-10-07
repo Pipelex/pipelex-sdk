@@ -31,6 +31,8 @@
 
 import { parse as parseToml } from "smol-toml";
 
+import type { ErrorDomain } from "./errors.js";
+
 // ── Stamp grammar (mirror of pipelex's `codegen/stamp.py`) ───────────────
 
 const STAMP_BEGIN_MARKER = ">>> pipelex-codegen-stamp >>>";
@@ -251,8 +253,17 @@ async function computeContentHash(body: string): Promise<string> {
  * over the wire, and the check could not produce a verdict at all. A CLI consumer
  * maps a drift report to its exit-1 path and this error to exit 2, per the codegen
  * spec's exit-code policy.
+ *
+ * Being outside the `PipelexRequestError` family, it declares the error verdict every SDK
+ * error carries itself, so `errorVerdictOf` reads it like any other: `input`, not retryable,
+ * since the lock and the tree are the caller's own files.
  */
 export class CodegenLockError extends Error {
+  /** Whether asking again can succeed: never, until the lock or the tree changes. */
+  public readonly retryable: boolean = false;
+  /** Who can fix it: the caller, whose own files the lock and the tree are. */
+  public readonly errorDomain: ErrorDomain = "input";
+
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "CodegenLockError";

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
-import { MissingMainStuffError, RunLifecycleUnavailableError } from "../src/errors.js";
+import {
+  ApiResponseError,
+  ApiUnreachableError,
+  MissingMainStuffError,
+  RunLifecycleUnavailableError,
+} from "../src/errors.js";
 
 function makeClient(): PipelexApiClient {
   return new PipelexApiClient({ baseUrl: "http://localhost:8081", apiKey: "test-token" });
@@ -585,6 +590,55 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
     await client.health();
     expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/health");
     expect(fetchSpy.mock.calls[0]![0]).not.toBe("http://localhost:8081/v1/health");
+  });
+
+  it("health throws a typed ApiResponseError naming /health on a non-2xx answer", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(404, { detail: "Not Found" }))
+      .mockResolvedValueOnce(
+        new Response("<html>Service Unavailable</html>", {
+          status: 503,
+          statusText: "Service Unavailable",
+        }),
+      );
+
+    const missing = await client.health().then(
+      () => expect.fail("expected health to throw"),
+      (err: unknown) => err,
+    );
+    const down = await client.health().then(
+      () => expect.fail("expected health to throw"),
+      (err: unknown) => err,
+    );
+
+    expect(missing).toBeInstanceOf(ApiResponseError);
+    const notServed = missing as ApiResponseError;
+    expect(notServed.message).toBe("API GET /health failed (404): Not Found");
+    expect(notServed.status).toBe(404);
+    // A bare 404: the origin does not serve the probe, which the base URL fixes.
+    expect(notServed.errorDomain).toBe("config");
+    expect(notServed.retryable).toBe(false);
+    expect(down).toBeInstanceOf(ApiResponseError);
+    expect((down as ApiResponseError).errorDomain).toBe("runtime");
+    expect((down as ApiResponseError).retryable).toBe(true);
+  });
+
+  it("health throws an ApiUnreachableError when the origin cannot be reached", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } }),
+    );
+
+    const err = await client.health().then(
+      () => expect.fail("expected health to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(ApiUnreachableError);
+    expect((err as ApiUnreachableError).code).toBe("ECONNREFUSED");
+    expect((err as ApiUnreachableError).errorDomain).toBe("config");
+    expect((err as ApiUnreachableError).retryable).toBe(true);
   });
 });
 

@@ -423,9 +423,11 @@ function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor 
     const described = isPlainObject(inputForm)
       ? Object.keys(inputForm).join(", ") || "none"
       : "none";
+    // The route broke its own contract, which no change to the request fixes.
     throw new InputPreparationError(
       `Cannot prepare inputs: the pipe I/O answer selected ${pipeRef === undefined ? "no pipe" : `"${pipeRef}"`}, ` +
         `but its \`input_form\` does not describe it (it describes: ${described}).`,
+      { verdict: { errorDomain: "runtime", retryable: false } },
     );
   }
   return (inputForm as InputForm)[pipeRef] as PipeInputFormDescriptor;

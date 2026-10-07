@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
-import { ApiResponseError } from "../src/errors.js";
+import { ApiResponseError, PagingNotTerminatingError } from "../src/errors.js";
 import type { RunErrorReport } from "../src/error-models.js";
 import type { PipelineRun, RunHistoryItem, RunPage } from "../src/product-models.js";
 import type { RunStatus } from "../src/runs.js";
@@ -177,11 +177,22 @@ describe("methods catalog", () => {
       return Promise.resolve(jsonResponse(200, { items: [], next_cursor: `c${n}` }));
     });
 
-    await expect(async () => {
+    const err = await (async () => {
       for await (const _ of client.iterateMethods()) {
         // no-op
       }
-    }).rejects.toThrow(/did not terminate/i);
+    })().then(
+      () => expect.fail("expected iterateMethods to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(PagingNotTerminatingError);
+    const paging = err as PagingNotTerminatingError;
+    expect(paging.message).toMatch(/did not terminate/i);
+    expect(paging.pageLimit).toBe(10_000);
+    // A server minting cursors forever is its own fault, and asking again meets it again.
+    expect(paging.errorDomain).toBe("runtime");
+    expect(paging.retryable).toBe(false);
   });
 
   it("iterateMethods stops when the server stops advancing the cursor", async () => {

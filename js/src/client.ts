@@ -83,6 +83,7 @@ import {
   ApiUnreachableError,
   EmptyMethodSourceError,
   MissingMainStuffError,
+  PagingNotTerminatingError,
   PipelineExecuteTimeoutError,
   PipelineRequestError,
   RunLifecycleUnavailableError,
@@ -497,26 +498,6 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
-   * Issue a request and parse the JSON body, throwing a plain `Error` on a non-2xx
-   * response. Used only by `health` — the origin-level liveness probe, which sits
-   * outside `/v1` and outside the RFC 7807 error taxonomy the `/v1` routes share.
-   * Every `/v1` route goes through a helper that maps its problem body to the typed
-   * `ApiResponseError` instead.
-   */
-  private async requestJson<T>(method: HttpMethod, url: string, body?: unknown): Promise<T> {
-    const res = await fetch(url, {
-      method,
-      headers: this.requestHeaders(body !== undefined),
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`API ${method} ${url} failed (${res.status}): ${text || res.statusText}`);
-    }
-    return res.json() as Promise<T>;
-  }
-
-  /**
    * Issue a Pipelex-product request (`/v1/me`, `/v1/methods`, `/v1/billing/*`,
    * …) and parse its JSON body, mapping a non-2xx response to the typed
    * `ApiResponseError` so callers branch on its `errorDomain` and `type`, not the
@@ -542,6 +523,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   private throwApiResponseError(method: HttpMethod, endpoint: string, res: RawResponse): never {
+    this.throwApiResponseErrorAt(method, `/${API_PREFIX}/${endpoint}`, res);
+  }
+
+  /**
+   * Throw the `ApiResponseError` of a non-2xx answer, naming the route by its `path` from the
+   * origin (`/v1/...`, or `/health` for the liveness probe).
+   */
+  private throwApiResponseErrorAt(method: HttpMethod, path: string, res: RawResponse): never {
     const { errorType, serverMessage, validationErrors, code, problem, document } = parseErrorBody(
       res.body,
     );
@@ -549,7 +538,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     // carries none (a gateway error page, a non-problem body).
     const requestId = problem.requestId ?? nonEmptyHeader(res.headers, REQUEST_ID_HEADER);
     throw new ApiResponseError(
-      `API ${method} /${API_PREFIX}/${endpoint} failed (${res.status}): ${serverMessage ?? (res.body || res.statusText)}`,
+      `API ${method} ${path} failed (${res.status}): ${serverMessage ?? (res.body || res.statusText)}`,
       this.baseUrl,
       res.status,
       res.statusText,
@@ -608,9 +597,23 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   // ── Health ────────────────────────────────────────────────────────
 
+  /**
+   * The origin-level liveness probe — `GET /health`, which sits at the origin, NOT under the
+   * `/v1` prefix. A bare runner serves it; a hosted origin answers `/v1/health` instead, so
+   * there this throws.
+   *
+   * It goes through the same transport as every route: an unreachable origin is an
+   * `ApiUnreachableError`, and a non-2xx answer an `ApiResponseError` whose verdict the SDK's
+   * fallback reads from the status, since the probe answers no problem document.
+   */
   async health(): Promise<Record<string, unknown>> {
-    // `/health` is origin-level, NOT under the `/v1` prefix.
-    return this.requestJson("GET", `${this.originUrl}/health`);
+    const res = await this.requestRaw("GET", `${this.originUrl}/health`, {
+      timeoutMs: POLL_REQUEST_TIMEOUT_MS,
+    });
+    if (res.status < 200 || res.status >= 300) {
+      this.throwApiResponseErrorAt("GET", "/health", res);
+    }
+    return JSON.parse(res.body) as Record<string, unknown>;
   }
 
   // ── Protocol surface ─────────────────────────────────────────────────
@@ -1413,9 +1416,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         // partial answer with no error is back to the original bug one layer
         // up; an error is the only honest response to a server that will not
         // finish. Unreachable on real data — see MAX_PAGES.
-        throw new Error(
+        throw new PagingNotTerminatingError(
           `listMethods did not terminate after ${MAX_PAGES} pages; refusing to keep paging. ` +
             `This is a server-side fault, not a coverage limit.`,
+          MAX_PAGES,
         );
       }
       cursor = page.nextCursor;
