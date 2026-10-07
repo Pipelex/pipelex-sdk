@@ -224,6 +224,7 @@ export type {
 export {
   PipelexRequestError,
   errorVerdictOf,
+  RequestArgumentError,
   ApiResponseError,
   ApiUnreachableError,
   MissingMainStuffError,

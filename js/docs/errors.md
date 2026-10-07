@@ -32,13 +32,14 @@ try {
 
 **"Retryable" means a retry can succeed, not that it is safe.** The verdict says whether asking again can plausibly succeed; it says nothing about whether the first attempt had an effect, and it does not depend on the route. A `start` answered with a `500` is retryable by its status, yet it may already have created a run, so a caller that must not start a run twice keeps its own rule for that until the SDK can send an idempotency key.
 
-**What carries no verdict.** `errorVerdictOf` returns `undefined` for what is not an SDK failure: the `RangeError`, `TypeError` or bare `PipelineRequestError` the SDK raises for a misused argument before any request is sent (a `timeoutMs` out of range, a malformed `appInfo`, an empty artifact selection, two method selectors given to `validate` or `execute`, a base URL with a path), which names a bug in the calling code; and the caller's own abort, which the client rethrows untouched. The per-reference errors inside a `downloadArtifacts` verdict are values with a `code`, not thrown errors, and carry none either.
+**What carries no verdict.** `errorVerdictOf` returns `undefined` for what is not an SDK failure: the `RangeError` or `TypeError` the SDK raises for an argument of the wrong type or range before any request is sent (a `timeoutMs` out of range, a malformed `appInfo`, an empty artifact selection), which names a bug in the calling code; and the caller's own abort, which the client rethrows untouched. The per-reference errors inside a `downloadArtifacts` verdict are values with a `code`, not thrown errors, and carry none either. An argument the client refuses for what it asks, such as two method selectors given to `validate` or `execute`, or a base URL with a path, is a `RequestArgumentError`, which carries a verdict like every SDK error.
 
 ### Each class's verdict
 
 | Class | `errorDomain` | `retryable` | Why |
 |---|---|---|---|
 | `ApiResponseError` | the server's, else the fallback | the server's, else the fallback | See [below](#a-refused-requests-verdict). |
+| `RequestArgumentError` | `input` | no | The client refused a call's arguments before sending any request: no run source given to `execute` or `start`, run sources or method selectors that exclude each other, a selector rule of `validate`, an empty `validateFiles`, a reserved key in `extra`. Its options take an optional `verdict`, and the client declares `config` for a base URL that is not host-only, since it typically comes from `PIPELEX_BASE_URL`. It is a `PipelineRequestError`, as the bare refusal it replaced was, and a refusal the standard's own run-source check raises keeps that original as `cause`. |
 | `ApiUnreachableError` | `config` | yes | The address or the network must be checked, and a later attempt can get through. With the code `ABORT_TIMEOUT`, the SDK's own request timeout, it is `runtime`: the API took the request and did not answer in time. |
 | `PipelineExecuteTimeoutError` | `input` | no | The blocking `execute` cannot outlast the gateway's limit; start the run and poll instead. |
 | `RunFailedError` | the report's | the report's | See [a failed run](#a-failed-run--runerrorreport). |

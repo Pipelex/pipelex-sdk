@@ -41,6 +41,7 @@ import {
   PipelineExecuteTimeoutError,
   PipelineRequestError,
   RejectedAssetError,
+  RequestArgumentError,
   RunFailedError,
   RunLifecycleUnavailableError,
   RunStillRunningError,
@@ -196,6 +197,11 @@ const BUILDERS: Record<string, (given: Given) => Promise<Error> | Error> = {
     new RunLifecycleUnavailableError("No run lifecycle here.", BASE_URL),
   MissingMainStuffError: () => new MissingMainStuffError("No main stuff.", "run-1"),
   PagingNotTerminatingError: () => new PagingNotTerminatingError("Paging forever.", 10_000),
+  RequestArgumentError: (given) =>
+    new RequestArgumentError(
+      "Refused before sending.",
+      given.verdict === undefined ? undefined : { verdict: toVerdict(given.verdict) },
+    ),
   InputPreparationError: (given) =>
     new InputPreparationError(
       "Cannot prepare inputs.",
@@ -544,5 +550,98 @@ describe("uploadFile's wrapper takes its cause's verdict, through the real clien
     expect(wrapper.cause).toBeInstanceOf(ApiResponseError);
     expect(wrapper.errorDomain).toBe("runtime");
     expect(wrapper.retryable).toBe(false);
+  });
+});
+
+describe("every argument the client refuses carries a verdict, before any request", () => {
+  const BUNDLE = { "bundle.mthds": "domain = 'x'" };
+  const client = (): PipelexApiClient =>
+    new PipelexApiClient({ baseUrl: BASE_URL, apiKey: "test-token" });
+
+  it.each([
+    ["execute() with no run source", () => client().execute({})],
+    ["start() with no run source", () => client().start({})],
+    ["validate() with no selector object", () => client().validate(null as unknown as string[])],
+    [
+      "validate() with two method selectors",
+      () => client().validate({ method_ref: "github.com/a/b", method_id: "mt_1" } as never),
+    ],
+    [
+      "validate() with source labels beside a selector",
+      () => client().validate({ method_id: "mt_1" }, false, ["a.mthds"]),
+    ],
+    ["validateFiles() with no file", () => client().validateFiles([])],
+    [
+      "a reserved key in extra",
+      () => client().execute({ pipe_code: "p", extra: { method_id: "mt_1" } }),
+    ],
+    [
+      "method_ref beside inline contents",
+      () => client().execute({ method_ref: "github.com/a/b", mthds_contents: ["x"] }),
+    ],
+    [
+      "method_ref beside a bundle",
+      () => client().start({ method_ref: "github.com/a/b", files: BUNDLE }),
+    ],
+    [
+      "method_ref beside method_id",
+      () => client().execute({ method_ref: "github.com/a/b", method_id: "mt_1" }),
+    ],
+  ])("%s is an input RequestArgumentError", async (_, call) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const err = await call().then(
+      () => expect.fail("expected the call to be refused"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect(err).toBeInstanceOf(PipelineRequestError);
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["two bundle encodings", { files: BUNDLE, bundle_b64: "UEs=" }, /mutually exclusive/],
+    [
+      "a bundle beside inline contents",
+      { bundle_b64: "UEs=", mthds_contents: ["x"] },
+      /self-contained/,
+    ],
+  ])(
+    "rethrows the standard's refusal of %s as a RequestArgumentError, the original as its cause",
+    async (_, options, message) => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+      for (const call of [() => client().execute(options), () => client().start(options)]) {
+        const err = await call().then(
+          () => expect.fail("expected the call to be refused"),
+          (thrown: unknown) => thrown,
+        );
+
+        expect(err).toBeInstanceOf(RequestArgumentError);
+        const refusal = err as RequestArgumentError;
+        expect(refusal.message).toMatch(message);
+        expect(refusal.cause).toBeInstanceOf(PipelineRequestError);
+        expect(refusal.cause).not.toBeInstanceOf(PipelexRequestError);
+        expect((refusal.cause as Error).message).toBe(refusal.message);
+        expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "input", retryable: false });
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a base URL that is not host-only with a config verdict", () => {
+    let err: unknown;
+    try {
+      new PipelexApiClient({ baseUrl: "https://api.pipelex.com/v1" });
+    } catch (thrown) {
+      err = thrown;
+    }
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).message).toMatch(/host-only/);
+    // The value typically comes from PIPELEX_BASE_URL, so the environment changes.
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "config", retryable: false });
   });
 });

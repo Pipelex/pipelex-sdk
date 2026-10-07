@@ -115,6 +115,13 @@
       ]
     },
     {
+      "class": "RequestArgumentError",
+      "variants": [
+        { "variant": "an argument the SDK refuses before sending anything", "given": {}, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a base URL that is not host-only, a verdict the client declares", "given": { "verdict": { "error_domain": "config", "retryable": false } }, "expected": { "error_domain": "config", "retryable": false } }
+      ]
+    },
+    {
       "class": "InputPreparationError",
       "variants": [
         { "variant": "the family's own verdict", "given": {}, "expected": { "error_domain": "input", "retryable": false } },

@@ -86,6 +86,7 @@ import {
   PagingNotTerminatingError,
   PipelineExecuteTimeoutError,
   PipelineRequestError,
+  RequestArgumentError,
   RunLifecycleUnavailableError,
   RunStillRunningError,
 } from "./errors.js";
@@ -373,12 +374,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     // this constructor and must be held to that rule, or a path-prefixed value
     // (e.g. `.../v1`) composes as `/v1/v1/...` and fails with a misleading
     // endpoint error instead of a clear base-URL one. Trailing slashes are
-    // stripped first; a remaining path/query/fragment/credentials is rejected.
+    // stripped first; a remaining path/query/fragment/credentials is rejected. The
+    // refusal is `config`: the value typically comes from PIPELEX_BASE_URL, the environment.
     if (!isValidBaseUrl(normalizedBaseUrl)) {
-      throw new PipelineRequestError(
+      throw new RequestArgumentError(
         `Invalid API base URL "${normalizedBaseUrl}": must be host-only ` +
           `(http/https, no path, query, fragment, or credentials). Endpoints ` +
           `compose as {base}/v1/{endpoint}.`,
+        { verdict: { errorDomain: "config", retryable: false } },
       );
     }
     this.baseUrl = normalizedBaseUrl;
@@ -677,11 +680,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       Object.keys(hosted).length === 0 &&
       Object.keys(extensions).length === 0
     ) {
-      throw new PipelineRequestError(
+      throw new RequestArgumentError(
         "Either pipe_code, mthds_contents, a method bundle (files/bundle_b64), a method_ref, a hosted method_id or a server-specific extension arg (extra) must be provided to execute().",
       );
     }
-    assertExclusiveRunSources(options);
+    assertRunSourcesExclusive(options);
     assertMethodRefPairsWithNothing(options);
 
     const request: RunRequest & Record<string, unknown> = {
@@ -750,11 +753,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       Object.keys(hosted).length === 0 &&
       Object.keys(extensions).length === 0
     ) {
-      throw new PipelineRequestError(
+      throw new RequestArgumentError(
         "Either pipe_code, mthds_contents, a method bundle (files/bundle_b64), a method_ref, a hosted method_id or a server-specific extension arg (extra) must be provided to start().",
       );
     }
-    assertExclusiveRunSources(options);
+    assertRunSourcesExclusive(options);
     assertMethodRefPairsWithNothing(options);
 
     // `?? undefined` so JSON.stringify drops absent fields from the wire body.
@@ -881,10 +884,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // A selector object. The illegal shapes are compile errors for typed
       // callers (`ValidateMethodSelector` pins the other key to `never`); the
       // runtime checks back them for untyped (JS) callers — a typed
-      // `PipelineRequestError`, never a native TypeError off a null source —
+      // `RequestArgumentError`, never a native TypeError off a null source —
       // mirroring the server's strict tooling XOR instead of silently picking.
       if (source === null || source === undefined || typeof source !== "object") {
-        throw new PipelineRequestError(
+        throw new RequestArgumentError(
           "validate() takes inline contents (a string[]) or a method selector object " +
             "({ method_ref } or { method_id }).",
         );
@@ -892,12 +895,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       const methodRef = nonEmptyString(source.method_ref);
       const methodId = nonEmptyString(source.method_id);
       if ((methodRef === undefined) === (methodId === undefined)) {
-        throw new PipelineRequestError(
+        throw new RequestArgumentError(
           "validate() takes exactly one method selector: inline contents, { method_ref }, or { method_id }.",
         );
       }
       if (mthdsSources !== undefined) {
-        throw new PipelineRequestError(
+        throw new RequestArgumentError(
           "mthds_sources labels inline mthds_contents; a method_ref / method_id validation gets " +
             "its source labels from the package's (or the stored method's) real file names.",
         );
@@ -933,7 +936,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     options: ValidateFilesOptions = {},
   ): Promise<PipelexValidationResult> {
     if (files.length === 0) {
-      throw new PipelineRequestError(
+      throw new RequestArgumentError(
         "At least one MTHDS file must be provided to validateFiles().",
       );
     }
@@ -1982,7 +1985,7 @@ function buildExtensions(
   const snapshot = { ...extra };
   const reserved = Object.keys(snapshot).filter((key) => RESERVED_EXTRA_KEYS.has(key));
   if (reserved.length > 0) {
-    throw new PipelineRequestError(
+    throw new RequestArgumentError(
       `extra carries reserved request args [${reserved.sort().join(", ")}] — pass them as named options instead.`,
     );
   }
@@ -2039,6 +2042,23 @@ function buildHostedRunExtensions(options: PipelexHostedRunExtensions): Record<s
 }
 
 /**
+ * The standard's run-source exclusivity check (`assertExclusiveRunSources`: the two bundle
+ * encodings together, or a bundle beside inline contents), its refusal rethrown as a
+ * `RequestArgumentError` with the same message and the standard's error as `cause`, so it carries
+ * a verdict like every other argument the client refuses.
+ */
+function assertRunSourcesExclusive(options: RunRequest): void {
+  try {
+    assertExclusiveRunSources(options);
+  } catch (err) {
+    if (err instanceof PipelineRequestError) {
+      throw new RequestArgumentError(err.message, { cause: err });
+    }
+    throw err;
+  }
+}
+
+/**
  * Enforce the run routes' `method_ref` exclusivity, mirroring the server's own
  * 422s so an illegal pairing fails before anything hits the wire. A
  * `method_ref` is a complete run source (the fetched package carries its
@@ -2059,17 +2079,17 @@ function assertMethodRefPairsWithNothing(
 ): void {
   if (nonEmptyString(options.method_ref) === undefined) return;
   if (options.mthds_contents != null && options.mthds_contents.length > 0) {
-    throw new PipelineRequestError(
+    throw new RequestArgumentError(
       "method_ref and inline mthds_contents are mutually exclusive; send one or the other.",
     );
   }
   if (options.files != null || options.bundle_b64 != null) {
-    throw new PipelineRequestError(
+    throw new RequestArgumentError(
       "method_ref and a method bundle (bundle_b64 / files) are mutually exclusive; send one or the other.",
     );
   }
   if (nonEmptyString(options.method_id) !== undefined) {
-    throw new PipelineRequestError(
+    throw new RequestArgumentError(
       "method_ref and method_id are mutually exclusive: an address run carries its own provenance " +
         "and takes no run-history linkage id. Send exactly one method selector.",
     );

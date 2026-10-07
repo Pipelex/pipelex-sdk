@@ -8,6 +8,7 @@ import {
   MissingMainStuffError,
   PipelineExecuteTimeoutError,
   PipelineRequestError,
+  RequestArgumentError,
   RunStillRunningError,
 } from "../src/errors.js";
 
@@ -121,9 +122,9 @@ describe("PipelexApiClient constructor", () => {
 });
 
 describe("PipelexApiClient.execute argument validation", () => {
-  it("throws PipelineRequestError when neither pipe_code nor mthds_contents provided", async () => {
+  it("throws RequestArgumentError when neither pipe_code nor mthds_contents provided", async () => {
     const client = makeClient();
-    await expect(client.execute({})).rejects.toBeInstanceOf(PipelineRequestError);
+    await expect(client.execute({})).rejects.toBeInstanceOf(RequestArgumentError);
   });
 });
 
@@ -195,7 +196,7 @@ describe("PipelexApiClient hosted method_id option", () => {
     );
     await expect(
       client.start({ pipe_code: "p", extra: { method_id: "mt_1" } }),
-    ).rejects.toBeInstanceOf(PipelineRequestError);
+    ).rejects.toBeInstanceOf(RequestArgumentError);
   });
 
   it("never ships an empty method_id (it selects nothing and links nothing)", async () => {
@@ -204,7 +205,7 @@ describe("PipelexApiClient hosted method_id option", () => {
     await client.execute({ pipe_code: "p", method_id: "" }).catch(() => undefined);
     expect(bodyOf(fetchSpy).method_id).toBeUndefined();
     // And it does not satisfy the precondition on its own.
-    await expect(client.execute({ method_id: "" })).rejects.toBeInstanceOf(PipelineRequestError);
+    await expect(client.execute({ method_id: "" })).rejects.toBeInstanceOf(RequestArgumentError);
   });
 
   it("keeps method_id on the blocking fallback, so a bare runner can diagnose it", async () => {
@@ -318,7 +319,7 @@ describe("PipelexApiClient method_ref run source", () => {
     ).rejects.toThrow(/mutually exclusive/);
     await expect(
       client.execute({ method_ref: ADDRESS, mthds_contents: ["domain = 'x'"] }),
-    ).rejects.toBeInstanceOf(PipelineRequestError);
+    ).rejects.toBeInstanceOf(RequestArgumentError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -359,7 +360,7 @@ describe("PipelexApiClient method_ref run source", () => {
     await client.execute({ pipe_code: "p", method_ref: "" }).catch(() => undefined);
     expect(bodyOf(fetchSpy).method_ref).toBeUndefined();
     // And it does not satisfy the precondition on its own.
-    await expect(client.execute({ method_ref: "" })).rejects.toBeInstanceOf(PipelineRequestError);
+    await expect(client.execute({ method_ref: "" })).rejects.toBeInstanceOf(RequestArgumentError);
   });
 
   it("rejects method_ref smuggled through `extra` — one argument, one path", async () => {
@@ -369,7 +370,7 @@ describe("PipelexApiClient method_ref run source", () => {
     );
     await expect(
       client.start({ pipe_code: "p", extra: { method_ref: ADDRESS } }),
-    ).rejects.toBeInstanceOf(PipelineRequestError);
+    ).rejects.toBeInstanceOf(RequestArgumentError);
   });
 
   it("keeps method_ref on the blocking fallback, so a bare runner runs the same package", async () => {
@@ -895,12 +896,12 @@ describe("PipelexApiClient.start", () => {
     const client = makeClient();
     await expect(
       client.start({ mthds_contents: ["domain d"], extra: { pipe_code: "smuggled" } }),
-    ).rejects.toBeInstanceOf(PipelineRequestError);
+    ).rejects.toBeInstanceOf(RequestArgumentError);
   });
 
-  it("throws PipelineRequestError when pipe_code, mthds_contents, and extra are all missing", async () => {
+  it("throws RequestArgumentError when pipe_code, mthds_contents, and extra are all missing", async () => {
     const client = makeClient();
-    await expect(client.start({})).rejects.toBeInstanceOf(PipelineRequestError);
+    await expect(client.start({})).rejects.toBeInstanceOf(RequestArgumentError);
   });
 
   it("surfaces a non-2xx start as ApiResponseError (hosted 422 on client pipeline_run_id)", async () => {
@@ -1265,7 +1266,7 @@ describe("PipelexApiClient.validate method selectors", () => {
       client.validate({ method_ref: ADDRESS, method_id: "mt_1" } as never),
     ).rejects.toThrow(/exactly one method selector/);
     // An empty selector object is just as under-specified.
-    await expect(client.validate({} as never)).rejects.toBeInstanceOf(PipelineRequestError);
+    await expect(client.validate({} as never)).rejects.toBeInstanceOf(RequestArgumentError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -1274,10 +1275,10 @@ describe("PipelexApiClient.validate method selectors", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     // An untyped caller can pass anything; every malformed source must stay
     // inside the documented error hierarchy.
-    await expect(client.validate(null as never)).rejects.toBeInstanceOf(PipelineRequestError);
-    await expect(client.validate(undefined as never)).rejects.toBeInstanceOf(PipelineRequestError);
+    await expect(client.validate(null as never)).rejects.toBeInstanceOf(RequestArgumentError);
+    await expect(client.validate(undefined as never)).rejects.toBeInstanceOf(RequestArgumentError);
     await expect(client.validate("domain = 'x'" as never)).rejects.toBeInstanceOf(
-      PipelineRequestError,
+      RequestArgumentError,
     );
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -1372,7 +1373,7 @@ describe("PipelexApiClient.validateFiles", () => {
     const client = makeClient();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
-    await expect(client.validateFiles([])).rejects.toBeInstanceOf(PipelineRequestError);
+    await expect(client.validateFiles([])).rejects.toBeInstanceOf(RequestArgumentError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

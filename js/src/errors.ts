@@ -1,6 +1,6 @@
 /**
- * Pipelex SDK errors — the transport, run-lifecycle, input-preparation and artifact errors
- * `PipelexApiClient` raises. Every one derives from `PipelexRequestError`, itself a
+ * Pipelex SDK errors — the argument, transport, run-lifecycle, input-preparation and artifact
+ * errors `PipelexApiClient` raises. Every one derives from `PipelexRequestError`, itself a
  * `PipelineRequestError` (the protocol base, re-exported from `mthds/protocol`), and so carries
  * a verdict: `retryable` and `errorDomain`, always decided. The one exported error outside the
  * family, `CodegenLockError`, declares the same two members itself.
@@ -94,15 +94,37 @@ export abstract class PipelexRequestError extends PipelineRequestError implement
  * The check is structural rather than `instanceof`, so it reads every error of this SDK, of
  * another copy of it installed beside this one, of a consumer's own subclass, and an `mthds`
  * `ApiResponseError` whose runner sent both members. `undefined` means the error carries no
- * verdict: the `RangeError`, `TypeError` or bare `PipelineRequestError` the SDK raises for a
- * misused argument before any request is sent (a bug in the calling code), the caller's own
- * abort, which the client rethrows untouched, or anything else a `try` block threw.
+ * verdict: the `RangeError` or `TypeError` the SDK raises for an argument of the wrong type or
+ * range before any request is sent (a bug in the calling code), the caller's own abort, which the
+ * client rethrows untouched, or anything else a `try` block threw. An argument the client refuses
+ * for what it asks is a `RequestArgumentError`, which carries one.
  */
 export function errorVerdictOf(err: unknown): ErrorVerdict | undefined {
   if (!(err instanceof Error)) return undefined;
   const { retryable, errorDomain } = err as { retryable?: unknown; errorDomain?: unknown };
   if (typeof retryable !== "boolean" || !isErrorDomain(errorDomain)) return undefined;
   return { retryable, errorDomain };
+}
+
+// ── Argument refusals ────────────────────────────────────────────────
+
+/**
+ * The SDK refused a call's arguments before sending any request: no run source given to
+ * `execute()` or `start()`, run sources or method selectors that exclude each other, a selector
+ * rule of `validate()`, an empty `validateFiles()`, a reserved key in `extra`, or a base URL that
+ * is not host-only. Nothing reached the API, so the message says what to change.
+ *
+ * Its verdict is `input`, not retryable — the caller must change the arguments — unless
+ * `options.verdict` declares another: the client declares `config` for a base URL that is not
+ * host-only, since it typically comes from `PIPELEX_BASE_URL`. A refusal the standard's own
+ * check raises (`assertExclusiveRunSources`) is rethrown as this class with the same message, the
+ * standard's error as `cause`.
+ */
+export class RequestArgumentError extends PipelexRequestError {
+  constructor(message: string, options?: { cause?: unknown; verdict?: ErrorVerdict }) {
+    super(message, options?.verdict ?? makeVerdict("input", false), options);
+    this.name = "RequestArgumentError";
+  }
 }
 
 // ── Input preparation ────────────────────────────────────────────────
