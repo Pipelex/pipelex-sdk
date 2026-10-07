@@ -47,6 +47,6 @@ The gesture runs `make all` itself, so a red check fails the run. Then check tha
 - the bootstrap skill, `scripts/create.py`, `scripts/create_plan.py` and `docs/create.md` are gone, and the `bump-sdk` skill is still there;
 - `.env` is readable by you alone and holds exactly one `PIPELEX_BASE_URL` line, the one the run used;
 - `.venv/bin/<name> --help` lists the method's inputs, one option each;
-- one run prints its JSON result on stdout, and its run id and cost report on stderr: `.venv/bin/text-stats --text "Hello there. Two sentences."`, and for the receipt review a run with a receipt image, `.venv/bin/receipt-review --receipts ./receipt.png`.
+- one run prints its JSON result on stdout, and its run id and cost report on stderr: `.venv/bin/text-stats --text "Hello there. Two sentences."`, and for the receipt review a run with a receipt or an invoice as a PDF, such as the repository's own sample, `.venv/bin/receipt-review --receipts <repository>/starter-python/samples/sample-invoice.pdf`. Its input is a `Document`, which the plane hands the model as a file, and the model refuses an image there, so a run given a PNG fails at the provider whatever the template does.
 
 The runs spend a few model calls.
