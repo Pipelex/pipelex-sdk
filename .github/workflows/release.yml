@@ -239,6 +239,13 @@ jobs:
         if: steps.check.outputs.publish == 'true'
         run: node method-apps/initializers/js/scripts/pack-templates.mjs --publish
 
+      # The family's tests check the wire-format table against the form kernel the web app
+      # template installs, so the build installs what the pull request's family job installs.
+      - name: Install the first template's dependencies, whose form kernel the family's tests read
+        if: steps.check.outputs.publish == 'true'
+        working-directory: method-apps/webapp-js
+        run: npm ci
+
       - name: Test the family's scripts and the initializer
         if: steps.check.outputs.publish == 'true'
         run: make -C method-apps test-family
