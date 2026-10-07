@@ -179,6 +179,9 @@ jobs:
       - name: Run quality checks and tests
         run: make all
 
+      - name: Run the pipelex-sdk command from the packed tarball through npx
+        run: make test-pack
+
   python-lint:
     name: python lint (${{ matrix.python-version }})
     needs: changes
