@@ -640,6 +640,79 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
     expect((err as ApiUnreachableError).errorDomain).toBe("config");
     expect((err as ApiUnreachableError).retryable).toBe(true);
   });
+
+  it.each([
+    ["an HTML page", "<html>Gateway</html>", "a body that is not JSON"],
+    ["an empty body", null, "an empty body where JSON was expected"],
+  ])("health throws a typed ApiResponseError on a 200 answering %s", async (_, body, what) => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(body, { status: 200, statusText: "OK", headers: { "X-Request-ID": "gw-1" } }),
+    );
+
+    const err = await client.health().then(
+      () => expect.fail("expected health to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    const unreadable = err as ApiResponseError;
+    expect(unreadable.message).toBe(`API GET /health answered 200 with ${what}`);
+    expect(unreadable.status).toBe(200);
+    expect(unreadable.responseBody).toBe(body ?? "");
+    expect(unreadable.problemDocument).toBeUndefined();
+    expect(unreadable.serverMessage).toBeUndefined();
+    expect(unreadable.requestId).toBe("gw-1");
+    expect(unreadable.cause).toBeInstanceOf(SyntaxError);
+    // A 2xx is no refusal the fallback names: runtime, and nothing says a retry helps.
+    expect(unreadable.errorDomain).toBe("runtime");
+    expect(unreadable.retryable).toBe(false);
+  });
+});
+
+describe("PipelexApiClient answers it cannot read", () => {
+  it.each([
+    ["version", (client: PipelexApiClient) => client.version(), "/v1/version"],
+    [
+      "getRunStatus",
+      (client: PipelexApiClient) => client.getRunStatus("run-1"),
+      "/v1/runs/run-1/status",
+    ],
+    [
+      "getRunResult",
+      (client: PipelexApiClient) => client.getRunResult("run-1"),
+      "/v1/runs/run-1/results",
+    ],
+    ["getMe", (client: PipelexApiClient) => client.getMe(), "/v1/me"],
+  ])(
+    "%s throws a typed ApiResponseError on a 200 whose body is not JSON",
+    async (_, call, path) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("<html>Maintenance</html>", { status: 200, statusText: "OK" }),
+      );
+
+      const err = await call(client).then(
+        () => expect.fail("expected the read to throw"),
+        (thrown: unknown) => thrown,
+      );
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      const unreadable = err as ApiResponseError;
+      expect(unreadable.message).toBe(`API GET ${path} answered 200 with a body that is not JSON`);
+      expect(unreadable.status).toBe(200);
+      expect(unreadable.responseBody).toBe("<html>Maintenance</html>");
+      expect(unreadable.errorDomain).toBe("runtime");
+      expect(unreadable.retryable).toBe(false);
+    },
+  );
+
+  it("still reads an empty 2xx body on a product route as no answer", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(client.revokePipelexApiKey("key-1")).resolves.toBeUndefined();
+  });
 });
 
 describe("PipelexApiClient run-lifecycle delegation", () => {

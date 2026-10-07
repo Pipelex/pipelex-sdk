@@ -696,12 +696,18 @@ export interface ApiResponseErrorOptions {
 }
 
 /**
- * A non-2xx response that DID come back from the API, with its problem document parsed.
+ * A response that DID come back from the API and that the SDK cannot hand back as a result: a
+ * non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read
+ * because its body is not JSON. The second carries the answer's status and raw text, no problem
+ * member, the parse failure as `cause`, and the verdict the fallback gives a 2xx: `runtime`, not
+ * retryable.
  *
  * Every error the hosted API answers is an RFC 9457 `application/problem+json` document, and
  * this error carries its members as typed fields, each `undefined` when the document did not
- * carry it (a member of the wrong type reads as absent rather than as a wrong value) — except
- * the verdict, which is always decided:
+ * carry it (a member of the wrong type reads as absent rather than as a wrong value, and the
+ * nested members `providerMetadata`, `migration`, `validationErrors` and `errors` are checked
+ * field by field as a failed run's stored report is) — except the verdict, which is always
+ * decided:
  *
  * - **The verdict.** `errorDomain` says who can fix the failure — `input` (the caller),
  *   `config` (a configuration change), `runtime` (nobody beforehand) — and `retryable` whether

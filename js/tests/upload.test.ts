@@ -204,6 +204,7 @@ describe("uploadFile", () => {
     ["a 503", apiError(503), "server_error"],
     ["a 500", apiError(500), "server_error"],
     ["a 429", apiError(429), "unexpected"],
+    ["a 2xx the client could not read", apiError(200), "unexpected"],
     [
       "the client's own timeout",
       new ApiUnreachableError("timed out", "https://api.pipelex.com", "ABORT_TIMEOUT"),
@@ -230,8 +231,8 @@ describe("uploadFile", () => {
   });
 
   it("wraps an unexpected non-transport error as UploadTransportError, preserving the cause", async () => {
-    // A malformed 2xx upload body surfaces from the client as a SyntaxError, not one of
-    // the two mapped transport types — it must still land in the preparation-error family.
+    // A custom client can throw anything, such as a SyntaxError of its own, which is not one
+    // of the two mapped transport types — it must still land in the preparation-error family.
     const original = new SyntaxError("Unexpected token < in JSON");
     const client = throwingClient(original);
 

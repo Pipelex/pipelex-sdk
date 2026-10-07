@@ -31,6 +31,7 @@
 
 import { parse as parseToml } from "smol-toml";
 
+import { isPlainObject } from "./error-models.js";
 import type { ErrorDomain } from "./errors.js";
 
 // ── Stamp grammar (mirror of pipelex's `codegen/stamp.py`) ───────────────
@@ -224,7 +225,7 @@ function isJsonObject(raw: string): boolean {
   } catch {
     return false;
   }
-  return isRecord(loaded);
+  return isPlainObject(loaded);
 }
 
 // ── Content hash (mirror of `compute_content_hash`) ──────────────────────
@@ -490,7 +491,7 @@ function parseLock(lockContent: string): ParsedCodegenLock {
   } catch (err) {
     throw new CodegenLockError(`Malformed codegen lock: ${describeError(err)}`, { cause: err });
   }
-  if (!isRecord(data)) {
+  if (!isPlainObject(data)) {
     throw new CodegenLockError("Malformed codegen lock: the top level is not a TOML table.");
   }
   rejectUnknownLockVersion(data);
@@ -505,7 +506,7 @@ function parseLock(lockContent: string): ParsedCodegenLock {
   }
   const hashByPath = new Map<string, string>();
   for (const rawArtifact of rawArtifacts) {
-    if (!isRecord(rawArtifact)) {
+    if (!isPlainObject(rawArtifact)) {
       throw new CodegenLockError("Malformed codegen lock: each artifact must be a TOML table.");
     }
     rejectUnknownKeys(rawArtifact, LOCK_ARTIFACT_KEYS, "codegen lock artifact");
@@ -648,10 +649,6 @@ function raisePathError(path: string, reason: string): never {
  */
 function normalizeNewlines(text: string): string {
   return text.replace(/\r\n?/g, "\n");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Entries in ascending path order — the deterministic order drifts are reported in. */

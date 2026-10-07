@@ -21,7 +21,10 @@
  * **A stored report is checked, not cast.** Every read that hands one back runs it through
  * `readRunErrorReport`, which keeps each named field only when it has the type declared here and
  * reads it as absent otherwise, as the Python twin does: a report written by an older runner, or
- * stored by hand, cannot hand a consumer a number where a string is typed.
+ * stored by hand, cannot hand a consumer a number where a string is typed. The client checks the
+ * nested members of a problem document with the same readers, so `ApiResponseError`'s
+ * `providerMetadata`, `migration`, `validationErrors` and `errors` hold to their types as a stored
+ * report's do.
  *
  * **Nothing else is stripped.** The platform serves the runner's VERBOSE report, so `message` and
  * `provider_metadata` can hold a provider's raw text. Deciding what of it a person should see
@@ -210,7 +213,10 @@ export interface ProblemDetails {
   errors?: FieldError[];
 }
 
-// ── Checking a stored report ─────────────────────────────────────────
+// ── Checking a stored report, and a problem document's nested members ─
+//
+// The readers below that are exported serve the client's problem-document parser as well; they
+// stay internal, out of the package entry.
 
 /** The string fields of a report, kept when they are a string (empty included) or `null`. */
 const REPORT_STRING_FIELDS = [
@@ -239,7 +245,11 @@ const PROVIDER_STRING_FIELDS = [
 /** The fields of `provider_metadata` the hosted store may serve as strings: a number or a string. */
 const PROVIDER_NUMERIC_FIELDS = ["status_code", "retry_after_seconds"] as const;
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** The string fields of an item of a platform problem document's `errors[]`. */
+const FIELD_ERROR_STRING_FIELDS = ["field", "code", "detail"] as const;
+
+/** Whether a value is a plain object: an object that is neither `null` nor an array. */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -271,14 +281,22 @@ function readUserAction(value: Record<string, unknown>): UserAction | undefined 
     : undefined;
 }
 
-function readProviderMetadata(value: Record<string, unknown>): ProviderErrorMetadata {
+/**
+ * `provider_metadata`, its named string fields kept as strings and `status_code` and
+ * `retry_after_seconds` as a number or a string; its other members are relayed as sent.
+ */
+export function readProviderMetadata(value: Record<string, unknown>): ProviderErrorMetadata {
   const metadata: Record<string, unknown> = { ...value };
   dropUnfit(metadata, PROVIDER_STRING_FIELDS, isString);
   dropUnfit(metadata, PROVIDER_NUMERIC_FIELDS, isNumberOrString);
   return metadata as ProviderErrorMetadata;
 }
 
-function readMigration(value: Record<string, unknown>): MigrationErrorBlock {
+/**
+ * `migration`, its `remedy` kept as a string, `would_write` and `needs_attention` as booleans, and
+ * `plans` as an array keeping only its objects; its other members are relayed as sent.
+ */
+export function readMigration(value: Record<string, unknown>): MigrationErrorBlock {
   const migration: Record<string, unknown> = { ...value };
   dropUnfit(migration, ["remedy"], isString);
   dropUnfit(migration, ["would_write", "needs_attention"], isBoolean);
@@ -289,9 +307,22 @@ function readMigration(value: Record<string, unknown>): MigrationErrorBlock {
   return migration as MigrationErrorBlock;
 }
 
-/** A validation item is kept when it is an object with a string `category` and `message`. */
-function isValidationItem(value: unknown): boolean {
+/**
+ * A validation item is kept when it is an object with a string `category` and `message`, its other
+ * members relayed as sent: the depth the validate report checks too.
+ */
+export function isValidationItem(value: unknown): value is ValidationErrorItem {
   return isPlainObject(value) && isString(value.category) && isString(value.message);
+}
+
+/**
+ * An item of a platform problem document's `errors[]`, its `field`, `code` and `detail` kept when
+ * they are strings and its other members relayed as sent.
+ */
+export function readFieldError(value: Record<string, unknown>): FieldError {
+  const item: Record<string, unknown> = { ...value };
+  dropUnfit(item, FIELD_ERROR_STRING_FIELDS, isString);
+  return item as FieldError;
 }
 
 /**

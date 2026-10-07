@@ -37,8 +37,8 @@ const API_KEY_LIMIT_CODE = "pipelex_api_key_limit_reached";
  *
  * Every `4xx` the table does not list is the caller's request refused (`input`, not retryable),
  * every `5xx` it does not list is a fault in the service that may pass (`runtime`, retryable),
- * and any other status is one no route answers with, so nothing says a retry helps (`runtime`,
- * not retryable).
+ * and any other status is one no refusal carries, such as the `2xx` of an answer the client could
+ * not read, so nothing says a retry helps (`runtime`, not retryable).
  */
 export function fallbackVerdict(
   status: number,

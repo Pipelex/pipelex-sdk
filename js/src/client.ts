@@ -89,14 +89,15 @@ import {
   RunLifecycleUnavailableError,
   RunStillRunningError,
 } from "./errors.js";
-import { readRunErrorReport } from "./error-models.js";
-import type {
-  FieldError,
-  MigrationErrorBlock,
-  ProblemDetails,
-  ProviderErrorMetadata,
-  UserAction,
+import {
+  isPlainObject,
+  isValidationItem,
+  readFieldError,
+  readMigration,
+  readProviderMetadata,
+  readRunErrorReport,
 } from "./error-models.js";
+import type { ProblemDetails, UserAction } from "./error-models.js";
 import { methodSourceToContents } from "./method-source.js";
 import { buildUserAgent } from "./user-agent.js";
 import type { AppInfo } from "./user-agent.js";
@@ -519,11 +520,43 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError(method, endpoint, res);
     }
-    return (res.body ? JSON.parse(res.body) : undefined) as T;
+    return (res.body ? this.readAnswer<T>(method, endpoint, res) : undefined) as T;
   }
 
   private throwApiResponseError(method: HttpMethod, endpoint: string, res: RawResponse): never {
     this.throwApiResponseErrorAt(method, `/${API_PREFIX}/${endpoint}`, res);
+  }
+
+  /** The JSON body of a `/v1` route's 2xx answer; see `readAnswerAt`. */
+  private readAnswer<T>(method: HttpMethod, endpoint: string, res: RawResponse): T {
+    return this.readAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res);
+  }
+
+  /**
+   * The JSON body of a 2xx answer, naming the route by its `path` from the origin as a refusal
+   * does. A body that is not JSON, an empty one included, is an answer the SDK cannot read, so it
+   * throws an `ApiResponseError` built from that answer: its status, its raw text as
+   * `responseBody`, no problem member, the parse failure as `cause`, and the verdict the fallback
+   * gives a 2xx, `runtime` and not retryable. The one place a success body is parsed.
+   */
+  private readAnswerAt<T>(method: HttpMethod, path: string, res: RawResponse): T {
+    try {
+      return JSON.parse(res.body) as T;
+    } catch (err) {
+      throw new ApiResponseError(
+        `API ${method} ${path} answered ${res.status} with ` +
+          (res.body ? "a body that is not JSON" : "an empty body where JSON was expected"),
+        this.baseUrl,
+        res.status,
+        res.statusText,
+        res.body,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { cause: err, problem: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) } },
+      );
+    }
   }
 
   /**
@@ -604,7 +637,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *
    * It goes through the same transport as every route: an unreachable origin is an
    * `ApiUnreachableError`, and a non-2xx answer an `ApiResponseError` whose verdict the SDK's
-   * fallback reads from the status, since the probe answers no problem document.
+   * fallback reads from the status, since the probe answers no problem document. So is a 2xx
+   * whose body is not JSON, such as a gateway's HTML page: `runtime`, not retryable.
    */
   async health(): Promise<Record<string, unknown>> {
     const res = await this.requestRaw("GET", `${this.originUrl}/health`, {
@@ -613,7 +647,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseErrorAt("GET", "/health", res);
     }
-    return JSON.parse(res.body) as Record<string, unknown>;
+    return this.readAnswerAt<Record<string, unknown>>("GET", "/health", res);
   }
 
   // ── Protocol surface ─────────────────────────────────────────────────
@@ -675,7 +709,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       }
       // Wrap the base result in the enriched subtype (adds the `.main_stuff` accessor; the
       // `main_stuff_name` extension + working memory ride `pipe_output`).
-      return new PipelexExecuteResult(JSON.parse(res.body) as DictRunResultExecute);
+      return new PipelexExecuteResult(
+        this.readAnswer<DictRunResultExecute>("POST", "execute", res),
+      );
     } catch (err) {
       if (err instanceof RunStillRunningError) throw err;
       // The hosted gateway terminates synchronous requests at ~30s. A run that
@@ -759,7 +795,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", "start", res);
     }
-    return JSON.parse(res.body) as PipelexRunResultStart;
+    return this.readAnswer<PipelexRunResultStart>("POST", "start", res);
   }
 
   /**
@@ -881,7 +917,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", "validate", res);
     }
-    return JSON.parse(res.body) as PipelexValidationResult;
+    return this.readAnswer<PipelexValidationResult>("POST", "validate", res);
   }
 
   /**
@@ -1030,7 +1066,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", endpoint, res);
     }
-    return JSON.parse(res.body) as T;
+    return this.readAnswer<T>("POST", endpoint, res);
   }
 
   /** The model deck the runner can route to — `GET /v1/models[?type=]`. */
@@ -1042,7 +1078,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    return JSON.parse(res.body) as ModelDeck;
+    return this.readAnswer<ModelDeck>("GET", endpoint, res);
   }
 
   /**
@@ -1056,7 +1092,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", "version", res);
     }
-    return JSON.parse(res.body) as VersionInfo;
+    return this.readAnswer<VersionInfo>("GET", "version", res);
   }
 
   // ── Crate extensions (Pipelex API — `/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`) ──
@@ -1192,7 +1228,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    const run = withCheckedReport(JSON.parse(res.body) as RunRead);
+    const run = withCheckedReport(this.readAnswer<RunRead>("GET", endpoint, res));
     const retryAfter = parseRetryAfter(res.headers);
     return retryAfter !== null ? { ...run, retry_after_seconds: retryAfter } : run;
   }
@@ -1248,7 +1284,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    const result = JSON.parse(res.body) as RunResults;
+    const result = this.readAnswer<RunResults>("GET", endpoint, res);
     if (selectionIncludesMainStuff(options.artifacts) && result.main_stuff == null) {
       throw new MissingMainStuffError(
         `Completed run '${runId}' returned no main stuff — a completed run always delivers a main stuff.`,
@@ -2190,8 +2226,9 @@ function statusFromDetail(detail: string): RunStatus | undefined {
  * on a non-JSON or non-object body.
  *
  * Each typed member is kept only when it has the type the problem document gives it, so a
- * malformed member reads as absent rather than as a wrong value; `document` keeps the decoded
- * object whole, members named or not.
+ * malformed member reads as absent rather than as a wrong value, and the nested members
+ * (`provider_metadata`, `migration`, `validation_errors`, `errors`) are checked field by field as a
+ * stored report's are; `document` keeps the decoded object whole, members named or not.
  */
 function parseErrorBody(body: string): {
   errorType: string | undefined;
@@ -2234,10 +2271,10 @@ function parseErrorBody(body: string): {
   if (serverMessage === undefined && typeof root.message === "string") serverMessage = root.message;
   // `validation_errors` rides the problem envelope as a top-level array (the
   // VERBOSE projection of `ErrorReport.validation_errors`, retained under STRICT
-  // too — it describes the caller's own bundle, not server internals). Kept as a
-  // shallow array guard; per-item shape is the typed `ValidationErrorItem` contract.
+  // too — it describes the caller's own bundle, not server internals). Each item is
+  // kept when it is an object with a string `category` and `message`, as on a stored report.
   const validationErrors = Array.isArray(root.validation_errors)
-    ? (root.validation_errors as ValidationErrorItem[])
+    ? root.validation_errors.filter(isValidationItem)
     : undefined;
   // The platform's closed native code (`conflict`, `not_found`, …), one-to-one with `type`.
   const code = typeof root.code === "string" ? root.code : undefined;
@@ -2252,19 +2289,17 @@ function parseErrorBody(body: string): {
     userAction: parseUserAction(root.user_action),
     model: stringMember(root.model),
     provider: stringMember(root.provider),
+    // The nested members are checked one level down by the readers a stored report goes
+    // through, so a misfit field reads as absent here exactly as it does there.
     providerMetadata: isPlainObject(root.provider_metadata)
-      ? (root.provider_metadata as ProviderErrorMetadata)
+      ? readProviderMetadata(root.provider_metadata)
       : undefined,
-    migration: isPlainObject(root.migration) ? (root.migration as MigrationErrorBlock) : undefined,
+    migration: isPlainObject(root.migration) ? readMigration(root.migration) : undefined,
     errors: Array.isArray(root.errors)
-      ? ((root.errors as unknown[]).filter(isPlainObject) as FieldError[])
+      ? root.errors.filter(isPlainObject).map(readFieldError)
       : undefined,
   };
   return { errorType, serverMessage, validationErrors, code, problem, document: root };
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** A problem member kept only when it is a non-empty string. */

@@ -72,7 +72,7 @@ The fallback reads the HTTP status, the platform's `code`, and whether the body 
 | `409` with code `pipelex_api_key_limit_reached` | `config` | no | The organization holds as many keys as it may; someone removes one. |
 | `501` | `config` | no | The deployment does not implement it, and asking again will not change that. |
 | `500`, `502`, `503`, `504`, and any `5xx` not listed here | `runtime` | yes | A fault in the service, which may pass. |
-| Anything else | `runtime` | no | A status no route answers with; nothing says a retry helps. |
+| Anything else | `runtime` | no | A status no refusal carries, such as the `2xx` of an answer the SDK could not read; nothing says a retry helps. |
 
 On the platform today the fallback decides both members, since the platform does not send them on its own refusals yet; a runner's problem usually carries its own. **Nothing on the error says which of the two a value came from**: `problemDocument` keeps the document whole, so a reader that must tell a server-sent verdict from a derived one reads it there.
 
@@ -150,7 +150,9 @@ A field a newer runner adds is reachable through the interface's index signature
 
 ## A refused request — `ApiResponseError`
 
-Every non-2xx answer from a `/v1` route is a problem document, and the SDK throws an `ApiResponseError` whose fields are its members. Each field is `undefined` when the document did not carry it, and a member of the wrong type (a numeric `type`, a `retryable` of `"no"`, a `user_action` without a `detail`) reads as absent rather than as a wrong value. The verdict is the exception: `errorDomain` and `retryable` are always decided, the server's value when it sent a valid one and the [fallback's](#a-refused-requests-verdict) otherwise.
+Every non-2xx answer from a `/v1` route is a problem document, and the SDK throws an `ApiResponseError` whose fields are its members. Each field is `undefined` when the document did not carry it, and a member of the wrong type (a numeric `type`, a `retryable` of `"no"`, a `user_action` without a `detail`) reads as absent rather than as a wrong value. The nested members are checked one level down, exactly as a [stored report's](#a-failed-run--runerrorreport) are: `providerMetadata` and `migration` keep each named field only when it has its type, `validationErrors` keeps only the items that are objects with a string `category` and `message`, and each item of `errors` keeps its `field`, `code` and `detail` only when they are strings; members the SDK does not name are relayed as sent. The verdict is the exception: `errorDomain` and `retryable` are always decided, the server's value when it sent a valid one and the [fallback's](#a-refused-requests-verdict) otherwise.
+
+**An answer the SDK could not read is an `ApiResponseError` too.** A `2xx` whose body is not JSON, such as a gateway's HTML page or an empty body where the route answers one, is no result the SDK can hand back, so every route throws an `ApiResponseError` for it instead of letting the runtime's `SyntaxError` escape. Its `status` is the `2xx`, `responseBody` the raw text, `cause` the parse failure, `problemDocument` and the problem members are `undefined`, and its verdict is the fallback's for a status no refusal carries: `runtime`, not retryable. A product route that answers a `2xx` with no body at all, such as `revokePipelexApiKey`, still resolves to `undefined`.
 
 | Field | Wire member | Meaning |
 |---|---|---|

@@ -16,6 +16,8 @@
 
 - **A failed run's stored report is checked field by field**: the report on `getRunResult`'s failed arm, on `RunFailedError`, on `getRunStatus`, on each row of `listRuns` and `iterateRuns` and on `getRunDetail` was handed back as cast; each named field is now kept only when it has its declared type and reads as absent otherwise, `user_action` only whole, and members the SDK does not name are relayed as sent.
 - **A wrapped upload refusal carries its cause's verdict**: an `UploadTransportError` from `uploadFile` takes the verdict of the `ApiResponseError` or `ApiUnreachableError` it wraps, so a `402` plan refusal, whose transport `code` is `unexpected`, reads as `config` and not retryable rather than as a transient fault.
+- **`ApiResponseError`'s nested members are checked**: `providerMetadata`, `migration`, `validationErrors` and each item of `errors` were cast from the problem document once they were an object or an array; each is now checked field by field as a failed run's stored report is, so a misfit field reads as absent and a validation item without a string `category` and `message` is dropped.
+- **An unreadable 2xx answer throws an `ApiResponseError`**: a `2xx` whose body is not JSON, on any route and on `health()`, let the runtime's bare `SyntaxError` escape with no verdict; it now throws an `ApiResponseError` carrying the status and the raw text, `runtime` and not retryable, which `uploadFile` wraps as an `UploadTransportError` with code `unexpected`.
 
 ### Removed
 

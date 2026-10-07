@@ -526,4 +526,23 @@ describe("uploadFile's wrapper takes its cause's verdict, through the real clien
     expect(wrapper.errorDomain).toBe("config");
     expect(wrapper.retryable).toBe(true);
   });
+
+  it("is runtime and not retryable when the API answers a 2xx it cannot read", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(answer(200, "<html>Uploaded?</html>"));
+    const client = new PipelexApiClient({ baseUrl: BASE_URL, apiKey: "test-token" });
+
+    const err = await client.uploadFile(new Uint8Array([1, 2, 3]), { filename: "a.pdf" }).then(
+      () => expect.fail("expected the upload to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(UploadTransportError);
+    const wrapper = err as UploadTransportError;
+    expect(wrapper.code).toBe("unexpected");
+    expect(wrapper.status).toBe(200);
+    expect(wrapper.message).toContain("could not read");
+    expect(wrapper.cause).toBeInstanceOf(ApiResponseError);
+    expect(wrapper.errorDomain).toBe("runtime");
+    expect(wrapper.retryable).toBe(false);
+  });
 });

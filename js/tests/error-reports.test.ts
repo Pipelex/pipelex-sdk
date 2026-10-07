@@ -379,6 +379,34 @@ describe("ApiResponseError — the problem document's members", () => {
     expect(e.errors).toEqual([{ field: "document", code: "missing" }]);
   });
 
+  it("checks the nested members field by field, as on a stored report", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse(422, {
+        error_type: "PipelexBundleValidationError",
+        detail: "The bundle failed validation.",
+        validation_errors: ["oops", 5, null, { category: "x", message: "m" }],
+        migration: { plans: 5, remedy: 7, would_write: "yes" },
+        provider_metadata: { status_code: { a: 1 }, provider: 42 },
+        errors: [{ field: 5, code: "missing", detail: null, extra: true }],
+      }),
+    );
+
+    const e = (await caught(
+      client.execute({ pipe_code: "p", mthds_contents: ["x"] }),
+    )) as ApiResponseError;
+
+    expect(e).toBeInstanceOf(ApiResponseError);
+    // Only the conforming item survives; the rest are dropped rather than cast.
+    expect(e.validationErrors).toEqual([{ category: "x", message: "m" }]);
+    // Each misfit field reads as absent, and the object around it stays.
+    expect(e.migration).toEqual({});
+    expect(e.providerMetadata).toEqual({});
+    expect(e.errors).toEqual([{ code: "missing", detail: null, extra: true }]);
+    // The document keeps what the server sent, misfits included.
+    expect(e.problemDocument?.migration).toEqual({ plans: 5, remedy: 7, would_write: "yes" });
+  });
+
   it("keeps the problem members when constructed directly", () => {
     const e = new ApiResponseError(
       "boom",
