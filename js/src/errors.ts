@@ -767,9 +767,11 @@ export interface ApiResponseErrorOptions {
  *   `config` (a configuration change), `runtime` (nobody beforehand) — and `retryable` whether
  *   asking again can succeed. Each is the document's member when the server sent a valid one,
  *   and otherwise the SDK's fallback, read from the status, the platform `code` and whether the
- *   body names what it refused; the two resolve independently, since a runner often sends
- *   `error_domain` without `retryable`. Nothing on the error says which of the two a value came
- *   from: `problemDocument` keeps what the server sent.
+ *   body names what it refused. A runner often sends `error_domain` without `retryable`, and
+ *   then the domain it sent decides `retryable`: `input` and `config` are not retryable, as a
+ *   stored report that says nothing is not, since the caller or the environment must change,
+ *   while `runtime` takes the fallback's. Nothing on the error says which a value came from:
+ *   `problemDocument` keeps what the server sent.
  * - **The branch fields.** `errorDomain`, and `type`, the stable URI naming the error class.
  *   Branch on these, never on the HTTP status or on the wording of a message.
  * - **The native codes.** `code` is the platform's own closed code (`conflict`, `not_found`,
@@ -904,7 +906,8 @@ export class ApiResponseError extends PipelexRequestError {
 
 /**
  * The verdict of a refused request: each member the document's own when it is valid, and the
- * fallback's otherwise. A `404` is named when the body carries a platform `code` or a runner
+ * fallback's otherwise, except that a sent `input` or `config` domain with no sent `retryable` is
+ * not retryable. A `404` is named when the body carries a platform `code` or a runner
  * `error_type`, read from the constructor's arguments, so an `ApiResponseError` a consumer builds
  * by hand gets the verdict the client would give it.
  */
@@ -917,8 +920,15 @@ function responseVerdict(
   const fallback = fallbackVerdict(status, code, code !== undefined || errorType !== undefined);
   const sentDomain = problem?.errorDomain;
   const sentRetryable = problem?.retryable;
-  return makeVerdict(
-    isErrorDomain(sentDomain) ? sentDomain : fallback.errorDomain,
-    typeof sentRetryable === "boolean" ? sentRetryable : fallback.retryable,
-  );
+  if (!isErrorDomain(sentDomain)) {
+    return makeVerdict(
+      fallback.errorDomain,
+      typeof sentRetryable === "boolean" ? sentRetryable : fallback.retryable,
+    );
+  }
+  if (typeof sentRetryable === "boolean") return makeVerdict(sentDomain, sentRetryable);
+  // The server said who fixes the failure and nothing of a retry. When the caller or the
+  // environment must change, asking again unchanged meets the same answer, whatever the status
+  // would suggest; only a `runtime` fault keeps the status's reading.
+  return makeVerdict(sentDomain, sentDomain === "runtime" ? fallback.retryable : false);
 }

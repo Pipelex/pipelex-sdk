@@ -5,8 +5,9 @@
  * them (see `ApiResponseError`). When it does not — the platform does not classify its own
  * refusals yet, a gateway answers an HTML page, a bare runner answers Starlette's
  * `{"detail": "Not Found"}` — each missing member is read off this table instead, so a consumer
- * never has to choose its own default. The table reads only the HTTP status, the platform's
- * native `code`, and whether the body names what it refused.
+ * never has to choose its own default. The one exception is a `retryable` missing beside a sent
+ * `input` or `config` domain, which is not retryable whatever the status. The table reads only the
+ * HTTP status, the platform's native `code`, and whether the body names what it refused.
  *
  * It is also the platform's reference: the verdicts the platform will send on its own refusals
  * are decided against this table, so a refusal keeps its verdict when the platform starts
