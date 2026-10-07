@@ -331,10 +331,23 @@ type MethodDataWire = Omit<MethodData, "python"> & { python?: string };
 /** `MethodWriteInput` as it travels on the wire — `python` is the serialized catalog string. */
 type MethodWriteWire = Omit<MethodWriteInput, "python"> & { python?: string };
 
-/** Parse a wire method into the public shape (`python` → `MethodFile[]`). */
-function methodDataFromWire(wire: MethodDataWire): MethodData {
+/**
+ * Parse a wire method into the public shape (`python` → `MethodFile[]`). A stored `python` that
+ * is not the serialized `[{ name, content }]` list is server data the SDK cannot read, not a
+ * caller's argument, so `mthds`'s refusal is handed to `unreadable`, which builds the error to
+ * throw from the answer that carried it.
+ */
+function methodDataFromWire(
+  wire: MethodDataWire,
+  unreadable: (cause: unknown) => Error,
+): MethodData {
   const { python, ...rest } = wire;
-  return python == null ? rest : { ...rest, python: parseMethodFiles(python) };
+  if (python == null) return rest;
+  try {
+    return { ...rest, python: parseMethodFiles(python) };
+  } catch (err) {
+    throw unreadable(err);
+  }
 }
 
 /**
@@ -515,6 +528,57 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     body?: unknown,
     options: { signal?: AbortSignal } = {},
   ): Promise<T> {
+    const res = await this.requestProductAnswer(method, endpoint, body, options);
+    return (res.body ? this.readAnswer<T>(method, endpoint, res) : undefined) as T;
+  }
+
+  /**
+   * A product request whose answer is an object the SDK reads before handing it back — a page's
+   * `items`, an upload's `uri`, a bulk resolution's `items`. Unlike `requestProduct`, an empty
+   * 2xx is no answer here: it and a body that is not a JSON object throw the `ApiResponseError`
+   * of an answer the SDK cannot read (see `readObjectAnswerAt`).
+   */
+  private async requestProductObject<T extends object>(
+    method: HttpMethod,
+    endpoint: string,
+    body?: unknown,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<T> {
+    const res = await this.requestProductAnswer(method, endpoint, body, options);
+    return this.readObjectAnswer<T>(method, endpoint, res);
+  }
+
+  /**
+   * A methods-catalog route answering one stored method (`getMethod`, `createMethod`,
+   * `updateMethod`), parsed into the public shape. A stored `python` the SDK cannot parse is an
+   * answer it cannot read, so it throws an `ApiResponseError` built from that answer, with
+   * `mthds`'s refusal as `cause`: `runtime`, not retryable, since no change to the call fixes it.
+   */
+  private async requestMethodData(
+    method: HttpMethod,
+    endpoint: string,
+    body?: unknown,
+  ): Promise<MethodData> {
+    const res = await this.requestProductAnswer(method, endpoint, body);
+    const wire = this.readObjectAnswer<MethodDataWire>(method, endpoint, res);
+    return methodDataFromWire(wire, (cause) =>
+      this.unreadableAnswer(
+        method,
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a stored method whose `python` field could not be read",
+        cause,
+      ),
+    );
+  }
+
+  /** Issue a product request and return its 2xx answer, a non-2xx thrown as `ApiResponseError`. */
+  private async requestProductAnswer(
+    method: HttpMethod,
+    endpoint: string,
+    body: unknown,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RawResponse> {
     const res = await this.requestRaw(method, this.url(endpoint), {
       body,
       timeoutMs: POLL_REQUEST_TIMEOUT_MS,
@@ -523,7 +587,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError(method, endpoint, res);
     }
-    return (res.body ? this.readAnswer<T>(method, endpoint, res) : undefined) as T;
+    return res;
   }
 
   private throwApiResponseError(method: HttpMethod, endpoint: string, res: RawResponse): never {
@@ -535,31 +599,77 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     return this.readAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res);
   }
 
+  /** The JSON object body of a `/v1` route's 2xx answer; see `readObjectAnswerAt`. */
+  private readObjectAnswer<T extends object>(
+    method: HttpMethod,
+    endpoint: string,
+    res: RawResponse,
+  ): T {
+    return this.readObjectAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res);
+  }
+
   /**
    * The JSON body of a 2xx answer, naming the route by its `path` from the origin as a refusal
    * does. A body that is not JSON, an empty one included, is an answer the SDK cannot read, so it
-   * throws an `ApiResponseError` built from that answer: its status, its raw text as
-   * `responseBody`, no problem member, the parse failure as `cause`, and the verdict the fallback
-   * gives a 2xx, `runtime` and not retryable. The one place a success body is parsed.
+   * throws the `ApiResponseError` `unreadableAnswer` builds, with the parse failure as `cause`.
+   * The one place a success body is parsed.
    */
   private readAnswerAt<T>(method: HttpMethod, path: string, res: RawResponse): T {
     try {
       return JSON.parse(res.body) as T;
     } catch (err) {
-      throw new ApiResponseError(
-        `API ${method} ${path} answered ${res.status} with ` +
-          (res.body ? "a body that is not JSON" : "an empty body where JSON was expected"),
-        this.baseUrl,
-        res.status,
-        res.statusText,
-        res.body,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        { cause: err, problem: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) } },
+      throw this.unreadableAnswer(
+        method,
+        path,
+        res,
+        res.body ? "a body that is not JSON" : "an empty body where JSON was expected",
+        err,
       );
     }
+  }
+
+  /**
+   * The JSON body of a 2xx answer from a route that answers an object, read as `readAnswerAt`
+   * reads it. A body that is JSON but not an object — `null`, a number, a string, an array — is
+   * an answer the SDK cannot read either, and throws the same `ApiResponseError`, with no `cause`.
+   */
+  private readObjectAnswerAt<T extends object>(
+    method: HttpMethod,
+    path: string,
+    res: RawResponse,
+  ): T {
+    const answer = this.readAnswerAt<unknown>(method, path, res);
+    if (!isPlainObject(answer)) {
+      throw this.unreadableAnswer(method, path, res, "a body that is not an object");
+    }
+    return answer as T;
+  }
+
+  /**
+   * The `ApiResponseError` of a 2xx answer the SDK cannot read, its message
+   * `API <method> <path> answered <status> with <what>`: the answer's status, its raw text as
+   * `responseBody`, no problem member but the `X-Request-ID` header, the failure that made it
+   * unreadable as `cause`, and the verdict the fallback gives a 2xx, `runtime` and not retryable.
+   */
+  private unreadableAnswer(
+    method: HttpMethod,
+    path: string,
+    res: RawResponse,
+    what: string,
+    cause?: unknown,
+  ): ApiResponseError {
+    return new ApiResponseError(
+      `API ${method} ${path} answered ${res.status} with ${what}`,
+      this.baseUrl,
+      res.status,
+      res.statusText,
+      res.body,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { cause, problem: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) } },
+    );
   }
 
   /**
@@ -641,7 +751,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * It goes through the same transport as every route: an unreachable origin is an
    * `ApiUnreachableError`, and a non-2xx answer an `ApiResponseError` whose verdict the SDK's
    * fallback reads from the status, since the probe answers no problem document. So is a 2xx
-   * whose body is not JSON, such as a gateway's HTML page: `runtime`, not retryable.
+   * whose body is not a JSON object, such as a gateway's HTML page: `runtime`, not retryable.
    */
   async health(): Promise<Record<string, unknown>> {
     const res = await this.requestRaw("GET", `${this.originUrl}/health`, {
@@ -650,7 +760,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseErrorAt("GET", "/health", res);
     }
-    return this.readAnswerAt<Record<string, unknown>>("GET", "/health", res);
+    return this.readObjectAnswerAt<Record<string, unknown>>("GET", "/health", res);
   }
 
   // ── Protocol surface ─────────────────────────────────────────────────
@@ -713,7 +823,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // Wrap the base result in the enriched subtype (adds the `.main_stuff` accessor; the
       // `main_stuff_name` extension + working memory ride `pipe_output`).
       return new PipelexExecuteResult(
-        this.readAnswer<DictRunResultExecute>("POST", "execute", res),
+        this.readObjectAnswer<DictRunResultExecute>("POST", "execute", res),
       );
     } catch (err) {
       if (err instanceof RunStillRunningError) throw err;
@@ -798,7 +908,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", "start", res);
     }
-    return this.readAnswer<PipelexRunResultStart>("POST", "start", res);
+    return this.readObjectAnswer<PipelexRunResultStart>("POST", "start", res);
   }
 
   /**
@@ -920,7 +1030,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", "validate", res);
     }
-    return this.readAnswer<PipelexValidationResult>("POST", "validate", res);
+    return this.readObjectAnswer<PipelexValidationResult>("POST", "validate", res);
   }
 
   /**
@@ -1057,7 +1167,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * uniform transport-options parameter in a single pass — do not bolt it onto one
    * route.
    */
-  private async requestExtension<T>(
+  private async requestExtension<T extends object>(
     endpoint: string,
     body: unknown,
     options: { timeoutMs?: number } = {},
@@ -1069,7 +1179,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", endpoint, res);
     }
-    return this.readAnswer<T>("POST", endpoint, res);
+    return this.readObjectAnswer<T>("POST", endpoint, res);
   }
 
   /** The model deck the runner can route to — `GET /v1/models[?type=]`. */
@@ -1081,7 +1191,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    return this.readAnswer<ModelDeck>("GET", endpoint, res);
+    return this.readObjectAnswer<ModelDeck>("GET", endpoint, res);
   }
 
   /**
@@ -1095,7 +1205,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", "version", res);
     }
-    return this.readAnswer<VersionInfo>("GET", "version", res);
+    return this.readObjectAnswer<VersionInfo>("GET", "version", res);
   }
 
   // ── Crate extensions (Pipelex API — `/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`) ──
@@ -1231,7 +1341,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    const run = withCheckedReport(this.readAnswer<RunRead>("GET", endpoint, res));
+    const run = withCheckedReport(this.readObjectAnswer<RunRead>("GET", endpoint, res));
     const retryAfter = parseRetryAfter(res.headers);
     return retryAfter !== null ? { ...run, retry_after_seconds: retryAfter } : run;
   }
@@ -1287,7 +1397,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    const result = this.readAnswer<RunResults>("GET", endpoint, res);
+    const result = this.readObjectAnswer<RunResults>("GET", endpoint, res);
     if (selectionIncludesMainStuff(options.artifacts) && result.main_stuff == null) {
       throw new MissingMainStuffError(
         `Completed run '${runId}' returned no main stuff — a completed run always delivers a main stuff.`,
@@ -1397,7 +1507,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.cursor !== undefined) params.set("cursor", query.cursor);
     const suffix = params.toString();
-    const page = await this.requestProduct<{
+    const page = await this.requestProductObject<{
       items: MethodSummary[];
       next_cursor: string | null;
     }>("GET", suffix ? `methods?${suffix}` : "methods");
@@ -1469,11 +1579,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /** Fetch one method by id — `GET /v1/methods/{id}`. */
   async getMethod(methodId: string): Promise<MethodData> {
-    const wire = await this.requestProduct<MethodDataWire>(
-      "GET",
-      `methods/${encodeURIComponent(methodId)}`,
-    );
-    return methodDataFromWire(wire);
+    return this.requestMethodData("GET", `methods/${encodeURIComponent(methodId)}`);
   }
 
   /**
@@ -1507,22 +1613,16 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /** Create a method — `POST /v1/methods`. */
   async createMethod(input: MethodWriteInput): Promise<MethodData> {
-    const wire = await this.requestProduct<MethodDataWire>(
-      "POST",
-      "methods",
-      methodWriteToWire(input),
-    );
-    return methodDataFromWire(wire);
+    return this.requestMethodData("POST", "methods", methodWriteToWire(input));
   }
 
   /** Replace a method (rename = changed `name`) — `PUT /v1/methods/{id}`. */
   async updateMethod(methodId: string, input: MethodWriteInput): Promise<MethodData> {
-    const wire = await this.requestProduct<MethodDataWire>(
+    return this.requestMethodData(
       "PUT",
       `methods/${encodeURIComponent(methodId)}`,
       methodWriteToWire(input),
     );
-    return methodDataFromWire(wire);
   }
 
   /**
@@ -1647,7 +1747,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     input: BulkResolveStorageUrlsInput,
     options: { signal?: AbortSignal } = {},
   ): Promise<BulkResolvedStorageUrls> {
-    return this.requestProduct("POST", "resolve-storage-url/bulk", input, options);
+    return this.requestProductObject("POST", "resolve-storage-url/bulk", input, options);
   }
 
   /**
@@ -1689,7 +1789,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /** Upload a base64 file — `POST /v1/upload`. */
   async upload(input: UploadInput): Promise<UploadedFile> {
-    return this.requestProduct("POST", "upload", input);
+    return this.requestProductObject("POST", "upload", input);
   }
 
   /**
@@ -1785,10 +1885,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (query.createdTo !== undefined) params.set("created_to", query.createdTo);
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.cursor !== undefined) params.set("cursor", query.cursor);
-    const page = await this.requestProduct<{ items: RunHistoryItem[]; next_cursor: string | null }>(
-      "GET",
-      `runs?${params.toString()}`,
-    );
+    const page = await this.requestProductObject<{
+      items: RunHistoryItem[];
+      next_cursor: string | null;
+    }>("GET", `runs?${params.toString()}`);
     const items = Array.isArray(page.items) ? page.items.map(withCheckedReport) : page.items;
     return { items, nextCursor: page.next_cursor };
   }

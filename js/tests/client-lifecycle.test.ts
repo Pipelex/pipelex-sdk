@@ -4,7 +4,9 @@ import {
   ApiResponseError,
   ApiUnreachableError,
   MissingMainStuffError,
+  PipelineRequestError,
   RunLifecycleUnavailableError,
+  errorVerdictOf,
 } from "../src/errors.js";
 
 function makeClient(): PipelexApiClient {
@@ -713,6 +715,194 @@ describe("PipelexApiClient answers it cannot read", () => {
 
     await expect(client.revokePipelexApiKey("key-1")).resolves.toBeUndefined();
   });
+
+  it.each([
+    ["null", "null"],
+    ["a number", "42"],
+    ["an array", "[]"],
+    ["a string", '"done"'],
+  ])(
+    "getRunResult throws a typed ApiResponseError on a 200 whose body is %s, not an object",
+    async (_, body) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(body, { status: 200, statusText: "OK", headers: { "X-Request-ID": "req-7" } }),
+      );
+
+      const err = await client.getRunResult("run-1").then(
+        () => expect.fail("expected the read to throw"),
+        (thrown: unknown) => thrown,
+      );
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      const unreadable = err as ApiResponseError;
+      expect(unreadable.message).toBe(
+        "API GET /v1/runs/run-1/results answered 200 with a body that is not an object",
+      );
+      expect(unreadable.status).toBe(200);
+      expect(unreadable.responseBody).toBe(body);
+      expect(unreadable.problemDocument).toBeUndefined();
+      expect(unreadable.requestId).toBe("req-7");
+      // The body parsed, so there is no parse failure to carry.
+      expect(unreadable.cause).toBeUndefined();
+      expect(errorVerdictOf(unreadable)).toEqual({ errorDomain: "runtime", retryable: false });
+    },
+  );
+
+  it.each([
+    ["health", (client: PipelexApiClient) => client.health(), "GET /health"],
+    ["version", (client: PipelexApiClient) => client.version(), "GET /v1/version"],
+    ["models", (client: PipelexApiClient) => client.models(), "GET /v1/models"],
+    [
+      "getRunStatus",
+      (client: PipelexApiClient) => client.getRunStatus("run-1"),
+      "GET /v1/runs/run-1/status",
+    ],
+    [
+      "execute",
+      (client: PipelexApiClient) => client.execute({ pipe_code: "p", mthds_contents: ["x"] }),
+      "POST /v1/execute",
+    ],
+    [
+      "start",
+      (client: PipelexApiClient) => client.start({ pipe_code: "p", mthds_contents: ["x"] }),
+      "POST /v1/start",
+    ],
+    ["validate", (client: PipelexApiClient) => client.validate(["x"]), "POST /v1/validate"],
+    [
+      "pipeIo",
+      (client: PipelexApiClient) => client.pipeIo({ files: [{ content: "x" }] }),
+      "POST /v1/pipe-io",
+    ],
+    ["listMethods", (client: PipelexApiClient) => client.listMethods(), "GET /v1/methods"],
+    ["getMethod", (client: PipelexApiClient) => client.getMethod("m1"), "GET /v1/methods/m1"],
+    ["listRuns", (client: PipelexApiClient) => client.listRuns("m1"), "GET /v1/runs?method_id=m1"],
+    [
+      "upload",
+      (client: PipelexApiClient) =>
+        client.upload({ filename: "a.txt", data: "eA==", content_type: "text/plain" }),
+      "POST /v1/upload",
+    ],
+    [
+      "resolveStorageUrls",
+      (client: PipelexApiClient) => client.resolveStorageUrls({ uris: ["pipelex-storage://a"] }),
+      "POST /v1/resolve-storage-url/bulk",
+    ],
+  ])("%s throws a typed ApiResponseError on a 200 whose body is null", async (_, call, route) => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("null", { status: 200, statusText: "OK" }),
+    );
+
+    const err = await call(client).then(
+      () => expect.fail("expected the read to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      `API ${route} answered 200 with a body that is not an object`,
+    );
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+  });
+
+  it("a product route the SDK reads refuses an empty 2xx body as an unreadable answer", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
+
+    const err = await client.listMethods().then(
+      () => expect.fail("expected the read to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      "API GET /v1/methods answered 200 with an empty body where JSON was expected",
+    );
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+  });
+
+  it.each([
+    ["not JSON", "not json"],
+    ["an entry without string name and content", '[{"name": 1}]'],
+    ["a JSON object rather than a list", '{"name": "a.py", "content": "x"}'],
+    ["not a string", 42],
+  ])(
+    "getMethod throws a typed ApiResponseError when the stored python is %s",
+    async (_, python) => {
+      const client = makeClient();
+      const body = JSON.stringify({ method_id: "m1", name: "M", mthds: "src", python });
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(body, { status: 200, statusText: "OK", headers: { "X-Request-ID": "req-8" } }),
+      );
+
+      const err = await client.getMethod("m1").then(
+        () => expect.fail("expected the read to throw"),
+        (thrown: unknown) => thrown,
+      );
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      const unreadable = err as ApiResponseError;
+      expect(unreadable.message).toBe(
+        "API GET /v1/methods/m1 answered 200 with a stored method whose `python` field could " +
+          "not be read",
+      );
+      expect(unreadable.status).toBe(200);
+      expect(unreadable.responseBody).toBe(body);
+      expect(unreadable.requestId).toBe("req-8");
+      // mthds's own refusal, which carries no verdict, rides as the cause.
+      expect(unreadable.cause).toBeInstanceOf(Error);
+      expect(errorVerdictOf(unreadable.cause)).toBeUndefined();
+      // Server data the caller cannot fix: runtime, and nothing says a retry helps.
+      expect(errorVerdictOf(unreadable)).toEqual({ errorDomain: "runtime", retryable: false });
+    },
+  );
+
+  it("getMethod hands mthds's refusal of a malformed python list on as the cause", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ method_id: "m1", python: "not json" }), { status: 200 }),
+    );
+
+    const err = await client.getMethod("m1").catch((thrown: unknown) => thrown);
+
+    expect((err as ApiResponseError).cause).toBeInstanceOf(PipelineRequestError);
+    expect(((err as ApiResponseError).cause as Error).message).toMatch(/not valid JSON/);
+  });
+
+  it.each([
+    [
+      "createMethod",
+      (client: PipelexApiClient) => client.createMethod({ name: "M", mthds: "src" }),
+      "POST /v1/methods",
+    ],
+    [
+      "updateMethod",
+      (client: PipelexApiClient) => client.updateMethod("m1", { name: "M", mthds: "src" }),
+      "PUT /v1/methods/m1",
+    ],
+  ])(
+    "%s throws a typed ApiResponseError when the stored python it answers is unreadable",
+    async (_, call, route) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ method_id: "m1", python: '[{"name": 1}]' }), {
+          status: 200,
+        }),
+      );
+
+      const err = await call(client).then(
+        () => expect.fail("expected the write to throw"),
+        (thrown: unknown) => thrown,
+      );
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      expect((err as ApiResponseError).message).toBe(
+        `API ${route} answered 200 with a stored method whose \`python\` field could not be read`,
+      );
+      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    },
+  );
 });
 
 describe("PipelexApiClient run-lifecycle delegation", () => {

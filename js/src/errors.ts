@@ -719,10 +719,12 @@ export interface ApiResponseErrorOptions {
 
 /**
  * A response that DID come back from the API and that the SDK cannot hand back as a result: a
- * non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read
- * because its body is not JSON. The second carries the answer's status and raw text, no problem
- * member, the parse failure as `cause`, and the verdict the fallback gives a 2xx: `runtime`, not
- * retryable.
+ * non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read —
+ * a body that is not JSON, JSON that is not the object the route answers, or a stored method
+ * whose `python` field is not the serialized file list. The second carries the answer's status
+ * and raw text, no problem member, what made it unreadable as `cause` (the parse failure, or
+ * `mthds`'s refusal of the `python` field), and the verdict the fallback gives a 2xx: `runtime`,
+ * not retryable.
  *
  * Every error the hosted API answers is an RFC 9457 `application/problem+json` document, and
  * this error carries its members as typed fields, each `undefined` when the document did not
