@@ -57,7 +57,7 @@ describe("PipelexApiClient User-Agent", () => {
     expect(headersOf(spy)["User-Agent"]).toBe(LIBRARY_UA);
   });
 
-  it("sends it on the origin-level health probe (requestJson)", async () => {
+  it("sends it on the origin-level health probe (requestRaw, outside /v1)", async () => {
     const client = new PipelexApiClient({ baseUrl: BASE_URL });
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, { ok: true }));
     await client.health();

@@ -36,11 +36,28 @@ import {
   RunStillRunningError,
   ScopeUnavailableError,
 } from "./errors.js";
+import type { ErrorVerdict } from "./errors.js";
 import type { GetRunResultOptions, RunResults, RunResultState } from "./runs.js";
 import { isNodeRuntime } from "./upload.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // ── Constants ────────────────────────────────────────────────────────
+
+/**
+ * The verdict of an argument the artifact operations refuse (a `scope`, a bound, a location):
+ * the caller's to fix, and asking again unchanged cannot pass.
+ */
+const ARGUMENT_REFUSED: { verdict: ErrorVerdict } = {
+  verdict: { errorDomain: "input", retryable: false },
+};
+
+/**
+ * The verdict of an environment that cannot hold a download (a runtime with no filesystem, a
+ * directory that cannot be created): someone changes the environment first.
+ */
+const ENVIRONMENT_REFUSED: { verdict: ErrorVerdict } = {
+  verdict: { errorDomain: "config", retryable: false },
+};
 
 /** The scheme of a durable storage reference. */
 export const PIPELEX_STORAGE_SCHEME = "pipelex-storage://";
@@ -492,6 +509,7 @@ export function artifactFilename(
   if (typeof uri !== "string") {
     throw new ArtifactOperationError(
       `artifactFilename needs a location carrying its reference as a string "uri"; got ${String(uri)}.`,
+      ARGUMENT_REFUSED,
     );
   }
   const foundAt: unknown = loose?.found_at;
@@ -501,6 +519,7 @@ export function artifactFilename(
     throw new ArtifactOperationError(
       `artifactFilename needs a location whose first "found_at" entry is a path such as ` +
         `"$.items[0].url"; got ${typeof first === "string" ? JSON.stringify(first) : String(first)}.`,
+      ARGUMENT_REFUSED,
     );
   }
   return filenameFor(segments, uri, contentType, scope);
@@ -585,6 +604,7 @@ function requireScope(scope: unknown): asserts scope is ArtifactScope {
   if (scope !== "main_stuff" && scope !== "working_memory") {
     throw new ArtifactOperationError(
       `"scope" must be "main_stuff" or "working_memory", got ${String(scope)}.`,
+      ARGUMENT_REFUSED,
     );
   }
 }
@@ -680,6 +700,7 @@ function fetchBounds(options: FetchArtifactOptions): FetchBounds {
     throw new ArtifactOperationError(
       `"timeoutMs" must be a positive number no larger than ${MAX_TIMER_DELAY_MS}, got ` +
         `${String(timeoutMs)}.`,
+      ARGUMENT_REFUSED,
     );
   }
   return { maxBytes, timeoutMs, allowHttp: options.allowHttp ?? false, signal: options.signal };
@@ -687,7 +708,10 @@ function fetchBounds(options: FetchArtifactOptions): FetchBounds {
 
 function requirePositive(name: string, value: number): void {
   if (!Number.isFinite(value) || value <= 0) {
-    throw new ArtifactOperationError(`"${name}" must be a positive number, got ${String(value)}.`);
+    throw new ArtifactOperationError(
+      `"${name}" must be a positive number, got ${String(value)}.`,
+      ARGUMENT_REFUSED,
+    );
   }
 }
 
@@ -1183,6 +1207,7 @@ export async function downloadArtifacts(
     throw new ArtifactOperationError(
       "downloadArtifacts writes to a filesystem and is Node-only. In another runtime, resolve " +
         "with resolveArtifacts or stream with fetchArtifact instead.",
+      ENVIRONMENT_REFUSED,
     );
   }
   const scope = request.scope ?? "main_stuff";
@@ -1192,6 +1217,7 @@ export async function downloadArtifacts(
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new ArtifactOperationError(
       `"concurrency" must be a positive integer, got ${String(concurrency)}.`,
+      ARGUMENT_REFUSED,
     );
   }
   requirePositive("maxTotalBytes", maxTotalBytes);
@@ -1203,6 +1229,7 @@ export async function downloadArtifacts(
     throw new ArtifactOperationError(
       "downloadArtifacts takes exactly one of `run_id` (the results are re-read) or `results` " +
         "(a RunResults in hand).",
+      ARGUMENT_REFUSED,
     );
   }
   const results = hasResults
@@ -1236,7 +1263,7 @@ export async function downloadArtifacts(
   } catch (cause) {
     throw new ArtifactOperationError(
       `The download directory "${dir}" cannot be created or used: ${cause instanceof Error ? cause.message : String(cause)}.`,
-      { cause },
+      { cause, ...ENVIRONMENT_REFUSED },
     );
   }
 

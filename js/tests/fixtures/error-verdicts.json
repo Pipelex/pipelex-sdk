@@ -1,0 +1,243 @@
+{
+  "about": "The error verdicts the two Pipelex SDKs must agree on, every expected value an error domain (input, config or runtime) and a retryable boolean. 'fallback' holds the table an ApiResponseError falls back to when the server sent no usable member: the HTTP status, the platform code (or null), and whether the body is named (it carries a platform code or a runner error_type). 'server_sent' holds refused requests whose problem document carries members of its own, each member taken when valid and read from the fallback otherwise, except that a valid input or config domain sent without a boolean retryable is not retryable; a 'body' is sent as JSON when it is an object, as raw text when it is a string, and as an empty body when it is null. 'classes' holds every exported error class, by its class name, with the expected verdict of each variant: 'given' names what the variant is built from (a code, a status, a body, a report, a wrapped cause, or a declared verdict), and in a cause the class name Error means the language's own base error, which carries no verdict. A class or a variant marked 'only_in' exists in that SDK alone, and the other skips it; a class marked 'abstract' is the base of the family and has no variant. Each SDK's suite is to drive its own code through every case and fail on a class it cannot build. This file is meant to exist twice, as js/tests/fixtures/error-verdicts.json and python/tests/fixtures/error-verdicts.json: the Python copy is to be added with the Python suite that drives it and a check at the repository's root, and from then on the two copies must stay byte for byte identical, so change both together.",
+  "fallback": [
+    { "case": "a bad request", "status": 400, "code": null, "named": false, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "an unauthenticated request", "status": 401, "code": null, "named": false, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "a plan that does not cover the request", "status": 402, "code": null, "named": false, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "a forbidden request", "status": 403, "code": null, "named": false, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "a named 404, by a platform code", "status": 404, "code": "not_found", "named": true, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "a named 404, by a runner error_type", "status": 404, "code": null, "named": true, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "a run with no results, a named 404", "status": 404, "code": "run_no_results", "named": true, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "a bare 404, a route the deployment does not serve", "status": 404, "code": null, "named": false, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "a method the route does not serve", "status": 405, "code": null, "named": false, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "a request timeout", "status": 408, "code": null, "named": false, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "a conflict with the stored state", "status": 409, "code": "conflict", "named": true, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "a conflict with no code", "status": 409, "code": null, "named": false, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "the organization's API key limit", "status": 409, "code": "pipelex_api_key_limit_reached", "named": true, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "a body past the size cap", "status": 413, "code": null, "named": false, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "a 4xx the table does not list", "status": 418, "code": null, "named": false, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "an unprocessable request", "status": 422, "code": "validation_failed", "named": true, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "a rate limit", "status": 429, "code": null, "named": false, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "an internal error", "status": 500, "code": null, "named": false, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "a storage backend failure", "status": 500, "code": "storage_backend_failed", "named": true, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "a feature the deployment does not implement", "status": 501, "code": null, "named": false, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "a bad gateway", "status": 502, "code": null, "named": false, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "a promotional credit still pending", "status": 502, "code": "promo_credit_pending", "named": true, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "a service unavailable", "status": 503, "code": null, "named": false, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "a gateway timeout", "status": 504, "code": null, "named": false, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "a 5xx the table does not list", "status": 507, "code": null, "named": false, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "a redirect no route answers with", "status": 302, "code": null, "named": false, "expected": { "error_domain": "runtime", "retryable": false } },
+    { "case": "a success status no refusal carries", "status": 200, "code": null, "named": false, "expected": { "error_domain": "runtime", "retryable": false } }
+  ],
+  "server_sent": [
+    { "case": "both members sent override the fallback of a 5xx", "status": 500, "body": { "error_type": "LLMCompletionError", "error_domain": "config", "retryable": false }, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "both members sent override the fallback of a 4xx", "status": 422, "body": { "error_type": "InferenceCapacityError", "error_domain": "runtime", "retryable": true }, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "an input domain sent without retryable is not retryable", "status": 500, "body": { "error_type": "PipeRunError", "error_domain": "input" }, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "a config domain sent without retryable is not retryable", "status": 500, "body": { "error_type": "PipelexConfigError", "error_domain": "config" }, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "a runtime domain sent without retryable takes the fallback's retryable", "status": 503, "body": { "error_type": "InferenceProviderError", "error_domain": "runtime" }, "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "a runtime domain sent without retryable on a 4xx takes the fallback's retryable", "status": 422, "body": { "error_type": "InferenceCapacityError", "error_domain": "runtime" }, "expected": { "error_domain": "runtime", "retryable": false } },
+    { "case": "a retryable sent beside a config domain wins", "status": 500, "body": { "error_type": "PipelexConfigError", "error_domain": "config", "retryable": true }, "expected": { "error_domain": "config", "retryable": true } },
+    { "case": "retryable sent without a domain takes the fallback's domain", "status": 400, "body": { "detail": "Busy, try again.", "retryable": true }, "expected": { "error_domain": "input", "retryable": true } },
+    { "case": "a domain outside the three reads as absent", "status": 503, "body": { "error_domain": "network", "retryable": false }, "expected": { "error_domain": "runtime", "retryable": false } },
+    { "case": "a retryable that is not a boolean reads as absent", "status": 429, "body": { "error_domain": "input", "retryable": "yes" }, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "an empty domain reads as absent", "status": 401, "body": { "detail": "Invalid API key.", "error_domain": "" }, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "null members read as absent", "status": 403, "body": { "detail": "Forbidden.", "error_domain": null, "retryable": null }, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "a 404 named by a legacy detail object", "status": 404, "body": { "detail": { "error_type": "PipeNotFoundError", "message": "No pipe 'summarize'." } }, "expected": { "error_domain": "input", "retryable": false } },
+    { "case": "a bare runner's 404", "status": 404, "body": { "detail": "Not Found" }, "expected": { "error_domain": "config", "retryable": false } },
+    { "case": "a gateway's HTML page", "status": 502, "body": "<html>Bad Gateway</html>", "expected": { "error_domain": "runtime", "retryable": true } },
+    { "case": "an empty body", "status": 504, "body": null, "expected": { "error_domain": "runtime", "retryable": true } }
+  ],
+  "classes": [
+    {
+      "class": "PipelexRequestError",
+      "abstract": true,
+      "variants": []
+    },
+    {
+      "class": "ApiResponseError",
+      "variants": [
+        { "variant": "a refusal carrying no member", "given": { "status": 402, "body": { "detail": "Insufficient credits." } }, "expected": { "error_domain": "config", "retryable": false } },
+        { "variant": "a runner's own verdict", "given": { "status": 500, "body": { "error_type": "LLMCompletionError", "error_domain": "config", "retryable": false } }, "expected": { "error_domain": "config", "retryable": false } }
+      ]
+    },
+    {
+      "class": "ApiUnreachableError",
+      "variants": [
+        { "variant": "a refused connection", "given": { "code": "ECONNREFUSED" }, "expected": { "error_domain": "config", "retryable": true } },
+        { "variant": "an unknown host", "given": { "code": "ENOTFOUND" }, "expected": { "error_domain": "config", "retryable": true } },
+        { "variant": "no code", "given": { "code": null }, "expected": { "error_domain": "config", "retryable": true } },
+        { "variant": "the SDK's own request timeout", "given": { "code": "ABORT_TIMEOUT" }, "expected": { "error_domain": "runtime", "retryable": true } }
+      ]
+    },
+    {
+      "class": "PipelineExecuteTimeoutError",
+      "variants": [
+        { "variant": "the gateway's limit", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
+      ]
+    },
+    {
+      "class": "RunFailedError",
+      "variants": [
+        { "variant": "a report saying retryable", "given": { "report": { "error_type": "InferenceProviderError", "error_domain": "runtime", "retryable": true } }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a report saying not retryable", "given": { "report": { "error_type": "LLMCompletionError", "error_domain": "config", "retryable": false } }, "expected": { "error_domain": "config", "retryable": false } },
+        { "variant": "a report saying nothing about retrying", "given": { "report": { "error_type": "PipeInputError", "error_domain": "input" } }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a report saying retryable is unknown", "given": { "report": { "error_domain": "config", "retryable": null } }, "expected": { "error_domain": "config", "retryable": false } },
+        { "variant": "a report with a domain outside the three", "given": { "report": { "error_domain": "network", "retryable": true } }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "an empty report", "given": { "report": {} }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "no report", "given": { "report": null }, "expected": { "error_domain": "runtime", "retryable": false } }
+      ]
+    },
+    {
+      "class": "RunTimeoutError",
+      "variants": [
+        { "variant": "a wait that ran out", "given": {}, "expected": { "error_domain": "runtime", "retryable": true } }
+      ]
+    },
+    {
+      "class": "RunStillRunningError",
+      "only_in": "js",
+      "variants": [
+        { "variant": "an execute degraded to a start", "given": {}, "expected": { "error_domain": "runtime", "retryable": true } }
+      ]
+    },
+    {
+      "class": "RunLifecycleUnavailableError",
+      "variants": [
+        { "variant": "a bare runner", "given": {}, "expected": { "error_domain": "config", "retryable": false } }
+      ]
+    },
+    {
+      "class": "MissingMainStuffError",
+      "variants": [
+        { "variant": "a completed run without its main stuff", "given": {}, "expected": { "error_domain": "runtime", "retryable": false } }
+      ]
+    },
+    {
+      "class": "PagingNotTerminatingError",
+      "variants": [
+        { "variant": "a server minting cursors forever", "given": {}, "expected": { "error_domain": "runtime", "retryable": false } }
+      ]
+    },
+    {
+      "class": "RequestArgumentError",
+      "variants": [
+        { "variant": "an argument the SDK refuses before sending anything", "given": {}, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a base URL that is not host-only, a verdict the client declares", "given": { "verdict": { "error_domain": "config", "retryable": false } }, "expected": { "error_domain": "config", "retryable": false } }
+      ]
+    },
+    {
+      "class": "InputPreparationError",
+      "variants": [
+        { "variant": "the family's own verdict", "given": {}, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a verdict a subclass declares", "given": { "verdict": { "error_domain": "config", "retryable": false } }, "expected": { "error_domain": "config", "retryable": false } }
+      ]
+    },
+    {
+      "class": "EmptyMethodSourceError",
+      "only_in": "js",
+      "variants": [
+        { "variant": "a stored method with no source", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
+      ]
+    },
+    {
+      "class": "InvalidLocalSourceError",
+      "variants": [
+        { "variant": "a missing path", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
+      ]
+    },
+    {
+      "class": "RejectedAssetError",
+      "variants": [
+        { "variant": "an asset past the size cap", "given": { "status": 413 }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a used upload grant", "only_in": "js", "given": { "status": 412, "code": "grant_used" }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "an expired upload grant", "only_in": "js", "given": { "status": 403, "code": "grant_expired" }, "expected": { "error_domain": "input", "retryable": false } }
+      ]
+    },
+    {
+      "class": "UnsupportedUploadCapabilityError",
+      "variants": [
+        { "variant": "a deployment without upload", "given": {}, "expected": { "error_domain": "config", "retryable": false } }
+      ]
+    },
+    {
+      "class": "UploadAuthenticationError",
+      "variants": [
+        { "variant": "an unauthenticated upload", "given": { "status": 401 }, "expected": { "error_domain": "config", "retryable": false } },
+        { "variant": "a forbidden upload", "given": { "status": 403 }, "expected": { "error_domain": "config", "retryable": false } }
+      ]
+    },
+    {
+      "class": "UploadTransportError",
+      "variants": [
+        { "variant": "a wrapped plan refusal", "given": { "cause": { "class": "ApiResponseError", "status": 402, "body": { "detail": "Insufficient credits." } } }, "expected": { "error_domain": "config", "retryable": false } },
+        { "variant": "a wrapped service fault", "given": { "cause": { "class": "ApiResponseError", "status": 503, "body": null } }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a wrapped refusal carrying the server's verdict", "given": { "cause": { "class": "ApiResponseError", "status": 500, "body": { "error_domain": "input", "retryable": false } } }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a wrapped unreachable API", "given": { "cause": { "class": "ApiUnreachableError", "code": "ECONNREFUSED" } }, "expected": { "error_domain": "config", "retryable": true } },
+        { "variant": "a wrapped request timeout", "given": { "cause": { "class": "ApiUnreachableError", "code": "ABORT_TIMEOUT" } }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a wrapped error carrying no verdict", "given": { "cause": { "class": "Error" } }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "no cause and no code", "given": {}, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "the cause wins over the code", "only_in": "js", "given": { "code": "unexpected", "cause": { "class": "ApiResponseError", "status": 402, "body": { "detail": "Insufficient credits." } } }, "expected": { "error_domain": "config", "retryable": false } },
+        { "variant": "a time limit that ran out", "only_in": "js", "given": { "code": "timeout" }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "no response reached the SDK", "only_in": "js", "given": { "code": "unreachable" }, "expected": { "error_domain": "config", "retryable": true } },
+        { "variant": "a 5xx from storage", "only_in": "js", "given": { "code": "server_error", "status": 503 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a 501 from storage", "only_in": "js", "given": { "code": "server_error", "status": 501 }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "a server error with no status", "only_in": "js", "given": { "code": "server_error", "status": null }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "storage stopped waiting for the bytes", "only_in": "js", "given": { "code": "storage_timeout", "status": 400 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "another write with the same grant in flight", "only_in": "js", "given": { "code": "conflict", "status": 409 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a refused redirect", "only_in": "js", "given": { "code": "redirected", "status": 307 }, "expected": { "error_domain": "config", "retryable": false } },
+        { "variant": "a grant url that cannot be sent to", "only_in": "js", "given": { "code": "invalid_grant_url" }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "an unmapped failure", "only_in": "js", "given": { "code": "unexpected" }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "storage timing out the request", "only_in": "js", "given": { "code": "unexpected", "status": 408 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "storage throttling the request", "only_in": "js", "given": { "code": "unexpected", "status": 429 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "an unmapped status", "only_in": "js", "given": { "code": "unexpected", "status": 418 }, "expected": { "error_domain": "runtime", "retryable": false } }
+      ]
+    },
+    {
+      "class": "ArtifactOperationError",
+      "variants": [
+        { "variant": "the family's own verdict", "given": {}, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "an argument the operation refuses", "given": { "verdict": { "error_domain": "input", "retryable": false } }, "expected": { "error_domain": "input", "retryable": false } }
+      ]
+    },
+    {
+      "class": "ScopeUnavailableError",
+      "variants": [
+        { "variant": "a scope the results do not carry", "given": {}, "expected": { "error_domain": "runtime", "retryable": false } }
+      ]
+    },
+    {
+      "class": "ArtifactAuthenticationError",
+      "variants": [
+        { "variant": "a refused credential", "given": { "status": 401 }, "expected": { "error_domain": "config", "retryable": false } }
+      ]
+    },
+    {
+      "class": "ArtifactFetchError",
+      "variants": [
+        { "variant": "an invalid storage reference", "given": { "code": "invalid_storage_uri" }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a reference outside the organization", "given": { "code": "forbidden" }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "an unsupported url", "given": { "code": "unsupported_url" }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a plain http link refused", "given": { "code": "plain_http_refused" }, "expected": { "error_domain": "config", "retryable": false } },
+        { "variant": "a redirect refused", "given": { "code": "redirect_refused", "status": 302 }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "the store refusing the link", "given": { "code": "store_refused", "status": 403 }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "an object that is gone", "given": { "code": "not_found", "status": 404 }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a 5xx from the store", "given": { "code": "store_error", "status": 503 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a request timeout from the store", "given": { "code": "store_error", "status": 408 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a rate limit from the store", "given": { "code": "store_error", "status": 429 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a 501 from the store", "given": { "code": "store_error", "status": 501 }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "a 4xx from the store", "given": { "code": "store_error", "status": 400 }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "a store error with no status", "given": { "code": "store_error", "status": null }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "a file past the byte cap", "given": { "code": "too_large" }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a fetch that ran out of time", "given": { "code": "timeout" }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a network failure", "given": { "code": "network" }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a code this version does not know", "given": { "code": "some_new_code" }, "expected": { "error_domain": "runtime", "retryable": false } }
+      ]
+    },
+    {
+      "class": "CodegenLockError",
+      "variants": [
+        { "variant": "a malformed lock", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
+      ]
+    }
+  ]
+}

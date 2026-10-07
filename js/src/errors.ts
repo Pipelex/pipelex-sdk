@@ -1,10 +1,13 @@
 /**
- * Pipelex SDK errors — transport and run-lifecycle errors raised by
- * `PipelexApiClient`. All derive from the protocol-base `PipelineRequestError`
- * (re-exported from `mthds/protocol`), except `ClientAuthenticationError`.
+ * Pipelex SDK errors — the argument, transport, run-lifecycle, input-preparation and artifact
+ * errors `PipelexApiClient` raises. Every one derives from `PipelexRequestError`, itself a
+ * `PipelineRequestError` (the protocol base, re-exported from `mthds/protocol`), and so carries
+ * a verdict: `retryable` and `errorDomain`, always decided. The one exported error outside the
+ * family, `CodegenLockError`, declares the same two members itself.
  */
 
 import { PipelineRequestError } from "mthds/protocol";
+import { fallbackVerdict } from "./error-verdicts.js";
 import type { ValidationErrorItem } from "./models.js";
 import type { ArtifactScope, DownloadArtifactsResult } from "./artifacts.js";
 import type {
@@ -19,22 +22,126 @@ import type { RunStatus } from "./runs.js";
 
 export { PipelineRequestError };
 
-export class ClientAuthenticationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ClientAuthenticationError";
+// ── The verdict every error carries ──────────────────────────────────
+
+/**
+ * Who can fix a failure:
+ *
+ * - `input` — the caller, by changing the request: the inputs, the method, a reference, an
+ *   argument.
+ * - `config` — someone changing the environment: the base URL, the credential, the plan, the
+ *   deployment.
+ * - `runtime` — nobody beforehand: a fault during execution or in the service.
+ *
+ * The set is closed: the hosted envelope spec names these three, so a fourth would be a contract
+ * change and would reach the SDK as one.
+ */
+export type ErrorDomain = "input" | "config" | "runtime";
+
+const ERROR_DOMAINS: ReadonlySet<string> = new Set<ErrorDomain>(["input", "config", "runtime"]);
+
+/** Whether a value is one of the three error domains. */
+export function isErrorDomain(value: unknown): value is ErrorDomain {
+  return typeof value === "string" && ERROR_DOMAINS.has(value);
+}
+
+/**
+ * The verdict an error carries: whether asking again can plausibly succeed (`retryable`), and who
+ * can fix the failure (`errorDomain`). Both are always decided.
+ *
+ * "Retryable" says a retry can succeed, never that it is safe: it says nothing about whether the
+ * first attempt had an effect. A start answered with a `500` may already have created a run, so a
+ * caller that must not start a run twice decides that for itself.
+ */
+export interface ErrorVerdict {
+  readonly retryable: boolean;
+  readonly errorDomain: ErrorDomain;
+}
+
+/** Build a verdict; each class below declares its own with it. */
+function makeVerdict(errorDomain: ErrorDomain, retryable: boolean): ErrorVerdict {
+  return Object.freeze({ errorDomain, retryable });
+}
+
+/**
+ * The base of every error this SDK raises over a request, carrying the verdict as two readonly
+ * own properties: `retryable` and `errorDomain`. Each subclass passes its verdict to this
+ * constructor, so a class that forgets one does not compile, and every class says its verdict
+ * where it is defined.
+ *
+ * It refines the standard's `PipelineRequestError`, so `instanceof PipelineRequestError` still
+ * matches every SDK error. To read a verdict from anything a `catch` holds, use
+ * `errorVerdictOf`, which also reads it off an error raised by another copy of this SDK.
+ */
+export abstract class PipelexRequestError extends PipelineRequestError implements ErrorVerdict {
+  /** Whether asking again can plausibly succeed. Always decided. */
+  public readonly retryable: boolean;
+  /** Who can fix the failure: `input`, `config` or `runtime`. Always decided. */
+  public readonly errorDomain: ErrorDomain;
+
+  constructor(message: string, verdict: ErrorVerdict, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "PipelexRequestError";
+    this.retryable = verdict.retryable;
+    this.errorDomain = verdict.errorDomain;
   }
 }
+
+/**
+ * The verdict of anything a `catch` holds: the pair from an `Error` carrying a boolean
+ * `retryable` and a known `errorDomain`, and `undefined` otherwise.
+ *
+ * The check is structural rather than `instanceof`, so it reads every error of this SDK, of
+ * another copy of it installed beside this one, of a consumer's own subclass, and an `mthds`
+ * `ApiResponseError` whose runner sent both members. `undefined` means the error carries no
+ * verdict: the `RangeError` or `TypeError` the SDK raises for an argument of the wrong type or
+ * range before any request is sent (a bug in the calling code), the caller's own abort, which the
+ * client rethrows untouched, or anything else a `try` block threw. An argument the client refuses
+ * for what it asks is a `RequestArgumentError`, which carries one.
+ */
+export function errorVerdictOf(err: unknown): ErrorVerdict | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const { retryable, errorDomain } = err as { retryable?: unknown; errorDomain?: unknown };
+  if (typeof retryable !== "boolean" || !isErrorDomain(errorDomain)) return undefined;
+  return { retryable, errorDomain };
+}
+
+// ── Argument refusals ────────────────────────────────────────────────
+
+/**
+ * The SDK refused a call's arguments before sending any request: no run source given to
+ * `execute()` or `start()`, run sources or method selectors that exclude each other, a selector
+ * rule of `validate()`, an empty `validateFiles()`, a reserved key in `extra`, or a base URL that
+ * is not host-only. Nothing reached the API, so the message says what to change.
+ *
+ * Its verdict is `input`, not retryable — the caller must change the arguments — unless
+ * `options.verdict` declares another: the client declares `config` for a base URL that is not
+ * host-only, since it typically comes from `PIPELEX_BASE_URL`. A refusal the standard's own
+ * check raises (`assertExclusiveRunSources`) is rethrown as this class with the same message, the
+ * standard's error as `cause`.
+ */
+export class RequestArgumentError extends PipelexRequestError {
+  constructor(message: string, options?: { cause?: unknown; verdict?: ErrorVerdict }) {
+    super(message, options?.verdict ?? makeVerdict("input", false), options);
+    this.name = "RequestArgumentError";
+  }
+}
+
+// ── Input preparation ────────────────────────────────────────────────
 
 /**
  * Base class for every failure raised by input preparation (`uploadFile` /
  * `prepareInputs`). Catch this to handle any preparation failure; catch a
  * subclass to branch on the semantic category. All preparation failures are
  * raised BEFORE any run is created — a run never triggers a hidden upload.
+ *
+ * Its verdict is `input`, not retryable — the asset, the inputs or the method selector must
+ * change — unless `options.verdict` declares another: the SDK's own subclasses do, and so can a
+ * consumer's, such as a form reporting a missing input in its own words.
  */
-export class InputPreparationError extends PipelineRequestError {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
+export class InputPreparationError extends PipelexRequestError {
+  constructor(message: string, options?: { cause?: unknown; verdict?: ErrorVerdict }) {
+    super(message, options?.verdict ?? makeVerdict("input", false), options);
     this.name = "InputPreparationError";
   }
 }
@@ -83,7 +190,9 @@ export class InvalidLocalSourceError extends InputPreparationError {
  * `grant_expired` — the grant's validity window has passed; `signature_mismatch` —
  * the file's size, content type or metadata differ from what the grant signed;
  * `unsigned_header` — the request carried a storage header the grant did not sign;
- * `store_refused` — any other refusal from storage.
+ * `store_refused` — any other refusal from storage. Storage's `408` and `429` are no
+ * refusal of the asset: they refuse the request for its timing, and are an
+ * `UploadTransportError`.
  */
 export type RejectedAssetCode =
   | "too_large"
@@ -95,7 +204,10 @@ export type RejectedAssetCode =
 
 /**
  * The server or storage refused the asset — most commonly a `413` past the
- * service-defined size cap, or storage refusing an upload with a grant. The SDK
+ * service-defined size cap, or storage refusing an upload with a grant. A storage
+ * `4xx` that says nothing about the file is not among them: a `408` or a `429`, which
+ * time out or throttle the request, a `400 RequestTimeout` and a `409
+ * ConditionalRequestConflict` are an `UploadTransportError`. The SDK
  * does not impose a client-side cap; it surfaces the refusal. `filename` and
  * `status` locate it, and `code` says why: the SDK sets it on every one it raises,
  * so it is undefined only on one a caller constructs without it.
@@ -122,21 +234,25 @@ export class RejectedAssetError extends InputPreparationError {
 /**
  * The configured deployment does not support upload (no `/v1/upload` route, seen
  * as a `404`). Upload is a hosted Pipelex-product capability even though the SDK
- * can be pointed at other base URLs.
+ * can be pointed at other base URLs. Its verdict is `config`, not retryable: the base URL
+ * must point at a deployment that serves upload.
  */
 export class UnsupportedUploadCapabilityError extends InputPreparationError {
   constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
+    super(message, { ...options, verdict: makeVerdict("config", false) });
     this.name = "UnsupportedUploadCapabilityError";
   }
 }
 
-/** Upload was not authorized — a `401`/`403` from the upload route. */
+/**
+ * Upload was not authorized — a `401`/`403` from the upload route. Its verdict is `config`, not
+ * retryable: the credential must change.
+ */
 export class UploadAuthenticationError extends InputPreparationError {
   public readonly status: number;
 
   constructor(message: string, status: number, options?: { cause?: unknown }) {
-    super(message, options);
+    super(message, { ...options, verdict: makeVerdict("config", false) });
     this.name = "UploadAuthenticationError";
     this.status = status;
   }
@@ -152,7 +268,8 @@ export class UploadAuthenticationError extends InputPreparationError {
  *   `uploadFile`. Whether the file was stored is unknown.
  * - `unreachable` — no response reached the SDK. In a browser, a refused cross-origin
  *   request looks like this.
- * - `server_error` — a `5xx`. Whether the file was stored is unknown.
+ * - `server_error` — a `5xx`. Whether the file was stored is unknown, except after a `501`:
+ *   storage does not implement the request it was sent, and stored nothing.
  * - `storage_timeout` — storage's `400 RequestTimeout`: it stopped waiting for the
  *   file's bytes and stored nothing.
  * - `conflict` — storage's `409 ConditionalRequestConflict`: another `PUT` with the
@@ -160,7 +277,9 @@ export class UploadAuthenticationError extends InputPreparationError {
  * - `redirected` — storage redirected the `PUT`, and the redirect was refused.
  * - `invalid_grant_url` — the grant's `url` is not an absolute `http(s)` URL free of
  *   user info, so nothing was sent.
- * - `unexpected` — a status or a failure the SDK has no specific mapping for.
+ * - `unexpected` — a status or a failure the SDK has no specific mapping for. From
+ *   `uploadWithGrant`, storage's `408` or `429`: it timed out or throttled the request,
+ *   which a later attempt can pass.
  */
 export type UploadTransportCode =
   | "timeout"
@@ -174,13 +293,29 @@ export type UploadTransportCode =
 
 /**
  * A network or server fault reaching the upload route or storage — an unreachable
- * host, a timeout, a `5xx`, a refused redirect, storage timing out on the body, or
- * any other unexpected `upload()` failure. `code` says which: the SDK sets it on
+ * host, a timeout, a `5xx`, a refused redirect, storage timing out on the body,
+ * storage timing out or throttling the request (a `408` or a `429`), or any other
+ * unexpected `upload()` failure. `code` says which: the SDK sets it on
  * every one it raises, so it is undefined only on one a caller constructs without
  * it. `status` is the HTTP status when a response produced it, and undefined when
  * none did. From `uploadFile` the wrapped `ApiResponseError` is also reachable via
  * `cause`; `uploadWithGrant` wraps no response, because storage's error body can
  * echo the grant's credential.
+ *
+ * Its verdict is the wrapped error's when `cause` carries one: `uploadFile` wraps the
+ * `ApiResponseError` or `ApiUnreachableError` the client's `upload()` threw, and `code` is too
+ * coarse to judge it by (a `402` plan limit is `unexpected`, like a malformed answer). Otherwise
+ * — always the case from `uploadWithGrant`, which wraps no response — `code` decides: `timeout`,
+ * `storage_timeout` and `conflict` are `runtime` and retryable, `conflict` because storage
+ * documents its `409 ConditionalRequestConflict` as retryable and the grant is not spent by it (a
+ * spent grant is the `412` of a `RejectedAssetError` with code `grant_used`); `server_error` is
+ * `runtime`, and retryable when the fallback table a refused API request reads would call its
+ * `status` retryable — any `5xx` but a `501`, which storage answers for a request it does not
+ * implement — or when it carries no status; `unexpected` is `runtime`, and retryable when that
+ * table would call its `status` retryable — storage's `408` or `429`, refused for its timing —
+ * and not retryable for any other status or none; `unreachable` is `config` and retryable, like
+ * `ApiUnreachableError`; `redirected` is `config` and not retryable; `invalid_grant_url` and no
+ * code at all are `runtime` and not retryable.
  */
 export class UploadTransportError extends InputPreparationError {
   public readonly status: number | undefined;
@@ -190,10 +325,48 @@ export class UploadTransportError extends InputPreparationError {
     message: string,
     options?: { cause?: unknown; status?: number; code?: UploadTransportCode },
   ) {
-    super(message, options);
+    super(message, {
+      ...options,
+      verdict:
+        errorVerdictOf(options?.cause) ?? uploadTransportVerdict(options?.code, options?.status),
+    });
     this.name = "UploadTransportError";
     this.status = options?.status;
     this.code = options?.code;
+  }
+}
+
+/** The verdict of an upload transport failure that wraps no error carrying one. */
+function uploadTransportVerdict(
+  code: UploadTransportCode | undefined,
+  status: number | undefined,
+): ErrorVerdict {
+  switch (code) {
+    case "timeout":
+    case "storage_timeout":
+    case "conflict":
+      return makeVerdict("runtime", true);
+    case "server_error":
+      // A fault in storage may pass, but a 501 says storage does not implement the request, and
+      // sending it again will not change that. The status reads as an API's would.
+      return makeVerdict(
+        "runtime",
+        status === undefined || fallbackVerdict(status, undefined, true).retryable,
+      );
+    case "unexpected":
+      // Storage's 408 or 429 refused the request for its timing, which a later attempt can pass;
+      // any other status, or none, says nothing of the kind.
+      return makeVerdict(
+        "runtime",
+        status !== undefined && fallbackVerdict(status, undefined, true).retryable,
+      );
+    case "unreachable":
+      return makeVerdict("config", true);
+    case "redirected":
+      return makeVerdict("config", false);
+    default:
+      // `invalid_grant_url`, no code, and a code this version does not know.
+      return makeVerdict("runtime", false);
   }
 }
 
@@ -206,10 +379,15 @@ export class UploadTransportError extends InputPreparationError {
  * operation throws only when it can produce no verdict at all. Transport
  * failures on the resolve route (`ApiResponseError`, `ApiUnreachableError`)
  * and the run-lifecycle errors propagate unchanged, so they are not subclasses.
+ *
+ * Its verdict is `runtime`, not retryable, unless `options.verdict` declares another: the SDK
+ * declares `input` where it refuses an argument (a `scope`, a bound, a location) and `config`
+ * where the environment refuses the download (a runtime with no filesystem, a directory that
+ * cannot be created).
  */
-export class ArtifactOperationError extends PipelineRequestError {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
+export class ArtifactOperationError extends PipelexRequestError {
+  constructor(message: string, options?: { cause?: unknown; verdict?: ErrorVerdict }) {
+    super(message, options?.verdict ?? makeVerdict("runtime", false), options);
     this.name = "ArtifactOperationError";
   }
 }
@@ -247,6 +425,14 @@ export class ScopeUnavailableError extends ArtifactOperationError {
  * (any other non-2xx), `too_large`, `timeout`, `network`. `status` is the
  * store's HTTP status when one was received. `downloadArtifacts` never lets
  * this escape: it becomes the item's `error`.
+ *
+ * Its verdict follows `code`: `invalid_storage_uri`, `forbidden`, `unsupported_url`, `not_found`
+ * and `too_large` are `input` and not retryable, since the reference or the bound must change;
+ * `plain_http_refused` is `config` and not retryable; `redirect_refused` and `store_refused` are
+ * `runtime` and not retryable; `timeout` and `network` are `runtime` and retryable; `store_error`
+ * is `runtime`, and retryable when the fallback table a refused API request reads would call its
+ * `status` retryable — a `408`, a `429` or a `5xx` other than `501` — and not retryable for any
+ * other status or none. A code this version does not know is `runtime` and not retryable.
  */
 export class ArtifactFetchError extends ArtifactOperationError {
   public readonly uri: string;
@@ -260,11 +446,38 @@ export class ArtifactFetchError extends ArtifactOperationError {
     status?: number,
     options?: { cause?: unknown },
   ) {
-    super(message, options);
+    super(message, { ...options, verdict: artifactFetchVerdict(code, status) });
     this.name = "ArtifactFetchError";
     this.uri = uri;
     this.code = code;
     this.status = status;
+  }
+}
+
+/** The verdict of one reference's fetch failure, by its code and the store's status. */
+function artifactFetchVerdict(code: string, status: number | undefined): ErrorVerdict {
+  switch (code) {
+    case "invalid_storage_uri":
+    case "forbidden":
+    case "unsupported_url":
+    case "not_found":
+    case "too_large":
+      return makeVerdict("input", false);
+    case "plain_http_refused":
+      return makeVerdict("config", false);
+    case "timeout":
+    case "network":
+      return makeVerdict("runtime", true);
+    case "store_error":
+      // The store's status reads as an API's would: refused for its timing (408, 429) or a fault
+      // that may pass (a 5xx) can succeed on a retry, while a 501 or a 4xx will not.
+      return makeVerdict(
+        "runtime",
+        status !== undefined && fallbackVerdict(status, undefined, true).retryable,
+      );
+    default:
+      // `redirect_refused`, `store_refused`, and a code this version does not know.
+      return makeVerdict("runtime", false);
   }
 }
 
@@ -274,7 +487,9 @@ export class ArtifactFetchError extends ArtifactOperationError {
  * the download stops — but the files already saved are real, and `verdict`
  * carries the result as it stood: every item saved before the refusal, and
  * the rest marked `aborted`. `status` is the route's status; the wrapped
- * `ApiResponseError` is reachable via `cause`.
+ * `ApiResponseError` is reachable via `cause`. (`verdict` is the download's result, not the
+ * error's own: that is `retryable` and `errorDomain`, `config` and not retryable, since the
+ * credential must change.)
  */
 export class ArtifactAuthenticationError extends ArtifactOperationError {
   public readonly status: number;
@@ -286,7 +501,7 @@ export class ArtifactAuthenticationError extends ArtifactOperationError {
     verdict: DownloadArtifactsResult,
     options?: { cause?: unknown },
   ) {
-    super(message, options);
+    super(message, { ...options, verdict: makeVerdict("config", false) });
     this.name = "ArtifactAuthenticationError";
     this.status = status;
     this.verdict = verdict;
@@ -301,8 +516,13 @@ export class ArtifactAuthenticationError extends ArtifactOperationError {
  *
  * `code` is the underlying network error code when available
  * (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, `EAI_AGAIN`, `ABORT_TIMEOUT`).
+ *
+ * Its verdict is `config` and retryable: the address or the network must be checked, and a later
+ * attempt can get through. With the code `ABORT_TIMEOUT`, the SDK's own request timeout, it is
+ * `runtime` and retryable instead: the API took the request and did not answer in time, which is
+ * no fault of the base URL.
  */
-export class ApiUnreachableError extends PipelineRequestError {
+export class ApiUnreachableError extends PipelexRequestError {
   public readonly apiUrl: string;
   public readonly code: string | undefined;
 
@@ -312,7 +532,7 @@ export class ApiUnreachableError extends PipelineRequestError {
     code: string | undefined,
     options?: { cause?: unknown },
   ) {
-    super(message, options);
+    super(message, makeVerdict(code === "ABORT_TIMEOUT" ? "runtime" : "config", true), options);
     this.name = "ApiUnreachableError";
     this.apiUrl = apiUrl;
     this.code = code;
@@ -324,8 +544,11 @@ export class ApiUnreachableError extends PipelineRequestError {
  * hosted gateway's ~30s synchronous-request limit. The blocking path cannot
  * run methods longer than 30s behind the hosted gateway — use the durable run
  * lifecycle (start + poll) instead.
+ *
+ * Its verdict is `input`, not retryable: asking again meets the same limit, and the caller fixes
+ * it by starting the run and polling.
  */
-export class PipelineExecuteTimeoutError extends PipelineRequestError {
+export class PipelineExecuteTimeoutError extends PipelexRequestError {
   public readonly elapsedMs: number;
 
   constructor(elapsedMs: number, options?: { cause?: unknown }) {
@@ -334,6 +557,7 @@ export class PipelineExecuteTimeoutError extends PipelineRequestError {
       `The Pipelex Hosted API times out synchronous requests after ~30s — this run took ${seconds}s. ` +
         "The blocking execute path can't run methods longer than 30s behind the gateway. " +
         "Start the run and poll for its result instead: `start()` then `waitForResult(runId)`.",
+      makeVerdict("input", false),
       options,
     );
     this.name = "PipelineExecuteTimeoutError";
@@ -362,8 +586,15 @@ export class PipelineExecuteTimeoutError extends PipelineRequestError {
  *   report's message (`Run finished with status FAILED: <message>`), so printing the error
  *   already tells the reason.
  * - `runId` locates the run, for a status read or a support request.
+ *
+ * Its verdict comes from the report. `errorDomain` is the report's `error_domain` when it is one
+ * of the three domains, and `runtime` otherwise, including a run with no report. `retryable` is
+ * true only when the report's `retryable` is `true`: a report that says nothing, and a run with
+ * none, read as not retryable, since starting the run again spends credit and nothing says it
+ * would succeed. The report keeps its own `retryable` as written, so a consumer that words the
+ * unknown differently still can.
  */
-export class RunFailedError extends PipelineRequestError {
+export class RunFailedError extends PipelexRequestError {
   public readonly runId: string;
   public readonly status: RunStatus;
   public readonly error: RunErrorReport | null;
@@ -374,12 +605,22 @@ export class RunFailedError extends PipelineRequestError {
     status: RunStatus,
     options?: { cause?: unknown; error?: RunErrorReport | null },
   ) {
-    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
+    super(
+      message,
+      runFailureVerdict(options?.error ?? null),
+      options?.cause === undefined ? undefined : { cause: options.cause },
+    );
     this.name = "RunFailedError";
     this.runId = runId;
     this.status = status;
     this.error = options?.error ?? null;
   }
+}
+
+/** The verdict of a failed run, read from its stored report. */
+function runFailureVerdict(report: RunErrorReport | null): ErrorVerdict {
+  const domain = report?.error_domain;
+  return makeVerdict(isErrorDomain(domain) ? domain : "runtime", report?.retryable === true);
 }
 
 /**
@@ -391,12 +632,14 @@ export class RunFailedError extends PipelineRequestError {
  * `execute` response named a `main_stuff_name` whose stuff is absent from the returned working
  * memory. `runId` locates the run. (An empty-but-present main stuff — `{ items: [] }`, `{ text:
  * "" }` — is a valid output and does NOT throw; only a genuinely absent one does.)
+ *
+ * Its verdict is `runtime`, not retryable: the API broke its own contract on a completed run.
  */
-export class MissingMainStuffError extends PipelineRequestError {
+export class MissingMainStuffError extends PipelexRequestError {
   public readonly runId: string;
 
   constructor(message: string, runId: string) {
-    super(message);
+    super(message, makeVerdict("runtime", false));
     this.name = "MissingMainStuffError";
     this.runId = runId;
   }
@@ -406,13 +649,15 @@ export class MissingMainStuffError extends PipelineRequestError {
  * Thrown when `waitForResult` exceeds its `timeoutMs` before the run reaches a
  * terminal state. The run is NOT cancelled — it keeps executing server-side and
  * can be resumed later by `runId` (the poll loop just stopped waiting).
+ *
+ * Its verdict is `runtime` and retryable: the run is still going, and waiting again can succeed.
  */
-export class RunTimeoutError extends PipelineRequestError {
+export class RunTimeoutError extends PipelexRequestError {
   public readonly runId: string;
   public readonly timeoutMs: number;
 
   constructor(message: string, runId: string, timeoutMs: number) {
-    super(message);
+    super(message, makeVerdict("runtime", true));
     this.name = "RunTimeoutError";
     this.runId = runId;
     this.timeoutMs = timeoutMs;
@@ -427,8 +672,10 @@ export class RunTimeoutError extends PipelineRequestError {
  * when it cannot hold the connection open. The run keeps executing
  * server-side — resume by `runId` (`getRunResult` / `waitForResult` on a
  * hosted deployment, or the `location` status resource when provided).
+ *
+ * Its verdict is `runtime` and retryable: the run is still going, and is resumed by its id.
  */
-export class RunStillRunningError extends PipelineRequestError {
+export class RunStillRunningError extends PipelexRequestError {
   public readonly runId: string;
   public readonly retryAfterSeconds: number | null;
   public readonly location: string | null;
@@ -440,7 +687,7 @@ export class RunStillRunningError extends PipelineRequestError {
     location: string | null = null,
     options?: { cause?: unknown },
   ) {
-    super(message, options);
+    super(message, makeVerdict("runtime", true), options);
     this.name = "RunStillRunningError";
     this.runId = runId;
     this.retryAfterSeconds = retryAfterSeconds;
@@ -457,14 +704,35 @@ export class RunStillRunningError extends PipelineRequestError {
  * it 404s those routes; only a deployment that includes the platform block
  * (the Pipelex Hosted API) serves status/results. Distinguished from a genuine
  * run-not-found 404, which carries the server's structured error envelope.
+ *
+ * Its verdict is `config`, not retryable: the base URL points at a bare runner without the run
+ * lifecycle.
  */
-export class RunLifecycleUnavailableError extends PipelineRequestError {
+export class RunLifecycleUnavailableError extends PipelexRequestError {
   public readonly apiUrl: string;
 
   constructor(message: string, apiUrl: string, options?: { cause?: unknown }) {
-    super(message, options);
+    super(message, makeVerdict("config", false), options);
     this.name = "RunLifecycleUnavailableError";
     this.apiUrl = apiUrl;
+  }
+}
+
+/**
+ * Thrown when a paged-list iterator (`iterateMethods`) refuses to keep following cursors.
+ *
+ * The ceiling, `pageLimit` pages, sits far beyond any real catalog, so reaching it is a
+ * server-side fault — an endpoint minting a fresh cursor forever — not a coverage limit the caller
+ * can raise. Throwing beats returning, because a silently truncated list is exactly the bug
+ * paging was introduced to remove. Its verdict is `runtime`, not retryable.
+ */
+export class PagingNotTerminatingError extends PipelexRequestError {
+  public readonly pageLimit: number;
+
+  constructor(message: string, pageLimit: number) {
+    super(message, makeVerdict("runtime", false));
+    this.name = "PagingNotTerminatingError";
+    this.pageLimit = pageLimit;
   }
 }
 
@@ -480,16 +748,32 @@ export interface ApiResponseErrorOptions {
 }
 
 /**
- * A non-2xx response that DID come back from the API, with its problem document parsed.
+ * A response that DID come back from the API and that the SDK cannot hand back as a result: a
+ * non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read —
+ * a body that is not JSON, JSON that is not the object the route answers, or a stored method
+ * whose `python` field is not the serialized file list. The second carries the answer's status
+ * and raw text, no problem member, what made it unreadable as `cause` (the parse failure, or
+ * `mthds`'s refusal of the `python` field), and the verdict the fallback gives a 2xx: `runtime`,
+ * not retryable.
  *
  * Every error the hosted API answers is an RFC 9457 `application/problem+json` document, and
  * this error carries its members as typed fields, each `undefined` when the document did not
- * carry it (a member of the wrong type reads as absent rather than as a wrong value):
+ * carry it (a member of the wrong type reads as absent rather than as a wrong value, and the
+ * nested members `providerMetadata`, `migration`, `validationErrors` and `errors` are checked
+ * field by field as a failed run's stored report is) — except the verdict, which is always
+ * decided:
  *
- * - **The branch fields.** `errorDomain` says who can fix the failure — `input` (the caller),
- *   `config` (a configuration change), `runtime` (nobody beforehand) — and `type` is the stable
- *   URI naming the error class. `retryable` says whether a retry can succeed, `undefined`
- *   meaning unknown. Branch on these, never on the HTTP status or on the wording of a message.
+ * - **The verdict.** `errorDomain` says who can fix the failure — `input` (the caller),
+ *   `config` (a configuration change), `runtime` (nobody beforehand) — and `retryable` whether
+ *   asking again can succeed. Each is the document's member when the server sent a valid one,
+ *   and otherwise the SDK's fallback, read from the status, the platform `code` and whether the
+ *   body names what it refused. A runner often sends `error_domain` without `retryable`, and
+ *   then the domain it sent decides `retryable`: `input` and `config` are not retryable, as a
+ *   stored report that says nothing is not, since the caller or the environment must change,
+ *   while `runtime` takes the fallback's. Nothing on the error says which a value came from:
+ *   `problemDocument` keeps what the server sent.
+ * - **The branch fields.** `errorDomain`, and `type`, the stable URI naming the error class.
+ *   Branch on these, never on the HTTP status or on the wording of a message.
  * - **The native codes.** `code` is the platform's own closed code (`conflict`, `not_found`,
  *   `pipelex_api_key_limit_reached`, …) and `errorType` the runner's open exception class
  *   name. Each is finer than `errorDomain` and specific to the surface that emits it; the
@@ -507,11 +791,11 @@ export interface ApiResponseErrorOptions {
  * `problemDocument` is the decoded document whole, so a member this SDK does not name stays
  * reachable without re-parsing `responseBody`, which is the raw text; it is `undefined` when
  * the body was not a JSON object. The members `mthds`'s own `ApiResponseError` carries have the
- * same names and types here, and the rest (`code`, `errorCategory`, `model`, `provider`,
- * `providerMetadata`, `migration`, `errors`) are the Pipelex members the standard's client
- * leaves to this SDK.
+ * same names here, and the same types except the verdict, which this SDK narrows from optional
+ * to decided; the rest (`code`, `errorCategory`, `model`, `provider`, `providerMetadata`,
+ * `migration`, `errors`) are the Pipelex members the standard's client leaves to this SDK.
  */
-export class ApiResponseError extends PipelineRequestError {
+export class ApiResponseError extends PipelexRequestError {
   public readonly apiUrl: string;
   public readonly status: number;
   public readonly statusText: string;
@@ -541,23 +825,10 @@ export class ApiResponseError extends PipelineRequestError {
    */
   public readonly requestId: string | undefined;
   /**
-   * The body's `error_domain`: who can fix the failure. `input` — the caller (a malformed
-   * bundle, a bad argument, a missing input); `config` — a configuration change (a missing
-   * secret, a model the backend does not serve); `runtime` — nobody beforehand (a provider
-   * outage during execution). Typed open, as the server owns the vocabulary; `undefined` when
-   * the server did not classify it.
-   */
-  public readonly errorDomain: string | undefined;
-  /**
    * The body's `error_category`: the finer classification of an inference failure — known
    * values `transient`, `configuration`, `content`, `capacity`, `ambiguous`, `unknown`.
    */
   public readonly errorCategory: string | undefined;
-  /**
-   * The body's `retryable`: whether retrying the same request can plausibly succeed.
-   * `undefined` means unknown, which is not the same as `false`.
-   */
-  public readonly retryable: boolean | undefined;
   /** The body's `user_action`: what the caller should do next, when the server can say. */
   public readonly userAction: UserAction | undefined;
   /** The body's `model`: the model an inference failure used. */
@@ -603,7 +874,11 @@ export class ApiResponseError extends PipelineRequestError {
     code: string | undefined,
     options?: ApiResponseErrorOptions,
   ) {
-    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
+    super(
+      message,
+      responseVerdict(status, errorType, code, options?.problem),
+      options?.cause === undefined ? undefined : { cause: options.cause },
+    );
     this.name = "ApiResponseError";
     this.apiUrl = apiUrl;
     this.status = status;
@@ -618,9 +893,7 @@ export class ApiResponseError extends PipelineRequestError {
     this.title = problem?.title;
     this.instance = problem?.instance;
     this.requestId = problem?.requestId;
-    this.errorDomain = problem?.errorDomain;
     this.errorCategory = problem?.errorCategory;
-    this.retryable = problem?.retryable;
     this.userAction = problem?.userAction;
     this.model = problem?.model;
     this.provider = problem?.provider;
@@ -629,4 +902,33 @@ export class ApiResponseError extends PipelineRequestError {
     this.errors = problem?.errors;
     this.problemDocument = options?.problemDocument;
   }
+}
+
+/**
+ * The verdict of a refused request: each member the document's own when it is valid, and the
+ * fallback's otherwise, except that a sent `input` or `config` domain with no sent `retryable` is
+ * not retryable. A `404` is named when the body carries a platform `code` or a runner
+ * `error_type`, read from the constructor's arguments, so an `ApiResponseError` a consumer builds
+ * by hand gets the verdict the client would give it.
+ */
+function responseVerdict(
+  status: number,
+  errorType: string | undefined,
+  code: string | undefined,
+  problem: ProblemDetails | undefined,
+): ErrorVerdict {
+  const fallback = fallbackVerdict(status, code, code !== undefined || errorType !== undefined);
+  const sentDomain = problem?.errorDomain;
+  const sentRetryable = problem?.retryable;
+  if (!isErrorDomain(sentDomain)) {
+    return makeVerdict(
+      fallback.errorDomain,
+      typeof sentRetryable === "boolean" ? sentRetryable : fallback.retryable,
+    );
+  }
+  if (typeof sentRetryable === "boolean") return makeVerdict(sentDomain, sentRetryable);
+  // The server said who fixes the failure and nothing of a retry. When the caller or the
+  // environment must change, asking again unchanged meets the same answer, whatever the status
+  // would suggest; only a `runtime` fault keeps the status's reading.
+  return makeVerdict(sentDomain, sentDomain === "runtime" ? fallback.retryable : false);
 }

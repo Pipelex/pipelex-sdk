@@ -25,9 +25,11 @@ import type {
 } from "mthds/errors";
 
 import { PipelexApiClient } from "../src/client.js";
+import { readRunErrorReport } from "../src/error-models.js";
 import type { ProblemDetails, RunErrorReport, UserAction } from "../src/error-models.js";
 import { ApiResponseError, RunFailedError } from "../src/errors.js";
 import type { RunRead, RunResultState } from "../src/runs.js";
+import type { RunHistoryItem } from "../src/product-models.js";
 
 const BASE_URL = "http://localhost:8081";
 const FIXTURES = new URL("./fixtures/problems/", import.meta.url);
@@ -277,10 +279,13 @@ describe("ApiResponseError — the problem document's members", () => {
         detail: "String should have at least 1 character",
       },
     ]);
-    // The platform does not classify its own refusals yet.
-    expect(e.errorDomain).toBeUndefined();
-    expect(e.retryable).toBeUndefined();
+    // The platform does not classify its own refusals yet, so the verdict is the fallback's
+    // reading of a 422; the document still shows the server sent neither member.
+    expect(e.errorDomain).toBe("input");
+    expect(e.retryable).toBe(false);
     expect(e.problemDocument).toEqual(PLATFORM_422);
+    expect(e.problemDocument).not.toHaveProperty("error_domain");
+    expect(e.problemDocument).not.toHaveProperty("retryable");
   });
 
   it("exposes each member a runner's problem carries", async () => {
@@ -363,14 +368,43 @@ describe("ApiResponseError — the problem document's members", () => {
     expect(e.type).toBeUndefined();
     expect(e.title).toBeUndefined();
     expect(e.requestId).toBeUndefined();
-    expect(e.errorDomain).toBeUndefined();
+    // A verdict member of the wrong type is not taken: the fallback's reading of a 422 is.
+    expect(e.errorDomain).toBe("input");
     expect(e.errorCategory).toBeUndefined();
-    expect(e.retryable).toBeUndefined();
+    expect(e.retryable).toBe(false);
     expect(e.userAction).toBeUndefined();
     expect(e.model).toBeUndefined();
     expect(e.providerMetadata).toBeUndefined();
     expect(e.migration).toBeUndefined();
     expect(e.errors).toEqual([{ field: "document", code: "missing" }]);
+  });
+
+  it("checks the nested members field by field, as on a stored report", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse(422, {
+        error_type: "PipelexBundleValidationError",
+        detail: "The bundle failed validation.",
+        validation_errors: ["oops", 5, null, { category: "x", message: "m" }],
+        migration: { plans: 5, remedy: 7, would_write: "yes" },
+        provider_metadata: { status_code: { a: 1 }, provider: 42 },
+        errors: [{ field: 5, code: "missing", detail: null, extra: true }],
+      }),
+    );
+
+    const e = (await caught(
+      client.execute({ pipe_code: "p", mthds_contents: ["x"] }),
+    )) as ApiResponseError;
+
+    expect(e).toBeInstanceOf(ApiResponseError);
+    // Only the conforming item survives; the rest are dropped rather than cast.
+    expect(e.validationErrors).toEqual([{ category: "x", message: "m" }]);
+    // Each misfit field reads as absent, and the object around it stays.
+    expect(e.migration).toEqual({});
+    expect(e.providerMetadata).toEqual({});
+    expect(e.errors).toEqual([{ code: "missing", detail: null, extra: true }]);
+    // The document keeps what the server sent, misfits included.
+    expect(e.problemDocument?.migration).toEqual({ plans: 5, remedy: 7, would_write: "yes" });
   });
 
   it("keeps the problem members when constructed directly", () => {
@@ -409,5 +443,280 @@ describe("the vocabulary is the standard client's", () => {
     expectTypeOf<
       Pick<ProblemDetails, keyof MthdsProblemDetails>
     >().toEqualTypeOf<MthdsProblemDetails>();
+  });
+});
+
+// ── A stored report is checked field by field ────────────────────────
+
+/**
+ * A report with a field of the wrong type in each kind the check knows: a string field, a
+ * boolean, `user_action` without a `detail`, `provider_metadata` with a numeric `message`,
+ * `validation_errors` holding a non-object, and a `migration` with a mistyped flag and a stray
+ * plan — beside fields that fit, `null`s, an empty string and members the SDK does not name.
+ */
+const MALFORMED_REPORT = {
+  error_type: "LLMCompletionError",
+  message: 42,
+  title: "",
+  type_uri: null,
+  error_domain: "config",
+  error_category: ["configuration"],
+  retryable: "no",
+  caller_facing_message: true,
+  user_action: { kind: "change_model" },
+  model: "claude-4.8-opus",
+  provider: 7,
+  provider_metadata: {
+    provider: "openai",
+    message: 412,
+    status_code: "412",
+    retry_after_seconds: 1.5,
+    request_id: ["req"],
+    gateway_region: "eu-west-1",
+  },
+  migration: {
+    remedy: "pipelex-agent migrate",
+    would_write: "yes",
+    needs_attention: false,
+    plans: [{ file: "backends.toml" }, "not a plan", null],
+  },
+  validation_errors: [
+    {
+      category: "dry_run",
+      message: "Pipe 'summarize' failed its dry run.",
+      pipe_code: "summarize",
+    },
+    "not an item",
+    { category: "dry_run" },
+    null,
+  ],
+  runner_trace_id: "tr-1",
+};
+
+/** What the check keeps of it: each misfit read as absent, the rest and the extensions kept. */
+const CHECKED_REPORT = {
+  error_type: "LLMCompletionError",
+  title: "",
+  type_uri: null,
+  error_domain: "config",
+  caller_facing_message: true,
+  model: "claude-4.8-opus",
+  provider_metadata: {
+    provider: "openai",
+    status_code: "412",
+    retry_after_seconds: 1.5,
+    gateway_region: "eu-west-1",
+  },
+  migration: {
+    remedy: "pipelex-agent migrate",
+    needs_attention: false,
+    plans: [{ file: "backends.toml" }],
+  },
+  validation_errors: [
+    {
+      category: "dry_run",
+      message: "Pipe 'summarize' failed its dry run.",
+      pipe_code: "summarize",
+    },
+  ],
+  runner_trace_id: "tr-1",
+};
+
+function failedRun(error?: unknown): Record<string, unknown> {
+  const run: Record<string, unknown> = {
+    pipeline_run_id: "run-1",
+    status: "FAILED",
+    created_at: "2026-09-26T10:00:00+00:00",
+    finished_at: "2026-09-26T10:01:00+00:00",
+    pipe_code: "summarize",
+  };
+  if (error !== undefined) run.error = error;
+  return run;
+}
+
+function failed409(error: unknown): Record<string, unknown> {
+  return {
+    ...CANCELLED_409,
+    detail: "Run finished with status FAILED: boom",
+    run_status: "FAILED",
+    error,
+  };
+}
+
+/**
+ * Each read that hands a report back, given the run record (or the `409`'s `error` member) the
+ * server answers with, and returning the report the caller gets — `undefined` when the record
+ * carries no `error` key at all.
+ */
+const READS: [string, (error?: unknown) => Promise<{ present: boolean; report: unknown }>][] = [
+  [
+    "getRunResult's failed arm",
+    async (error) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        problemResponse(409, failed409(error ?? null)),
+      );
+      const state = await makeClient().getRunResult("run-1");
+      if (state.state !== "failed") return expect.fail("expected the failed arm");
+      return { present: true, report: state.error };
+    },
+  ],
+  [
+    "getRunStatus",
+    async (error) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        problemResponse(200, { ...failedRun(error), degraded: false }),
+      );
+      const run = await makeClient().getRunStatus("run-1");
+      return { present: Object.hasOwn(run, "error"), report: run.error };
+    },
+  ],
+  [
+    "listRuns",
+    async (error) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        problemResponse(200, { items: [failedRun(error)], next_cursor: null }),
+      );
+      const page = await makeClient().listRuns("mt_1");
+      const row = page.items[0]!;
+      return { present: Object.hasOwn(row, "error"), report: row.error };
+    },
+  ],
+  [
+    "iterateRuns",
+    async (error) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        problemResponse(200, { items: [failedRun(error)], next_cursor: null }),
+      );
+      const rows: RunHistoryItem[] = [];
+      for await (const run of makeClient().iterateRuns("mt_1")) rows.push(run);
+      const row = rows[0]!;
+      return { present: Object.hasOwn(row, "error"), report: row.error };
+    },
+  ],
+  [
+    "getRunDetail",
+    async (error) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        problemResponse(200, { ...failedRun(error), method_id: "mt_1", mthds_contents: ["x"] }),
+      );
+      const detail = await makeClient().getRunDetail("run-1");
+      return { present: Object.hasOwn(detail, "error"), report: detail.error };
+    },
+  ],
+];
+
+describe("a stored report is checked field by field on every read", () => {
+  describe.each(READS)("%s", (_, read) => {
+    it("reads each misfit field as absent and keeps the rest and its extension members", async () => {
+      const { report } = await read(MALFORMED_REPORT);
+
+      expect(report).toEqual(CHECKED_REPORT);
+    });
+
+    it("keeps a report that fits whole", async () => {
+      const { report } = await read(FAILED_409.error);
+
+      expect(report).toEqual(FAILED_409.error);
+    });
+
+    it("reads a report that is not an object as null", async () => {
+      expect((await read("not a report")).report).toBeNull();
+      expect((await read(["not", "a", "report"])).report).toBeNull();
+      expect((await read(42)).report).toBeNull();
+      expect((await read(null)).report).toBeNull();
+    });
+  });
+
+  it.each(READS.filter(([name]) => name !== "getRunResult's failed arm"))(
+    "%s leaves an absent error key absent",
+    async (_, read) => {
+      const { present, report } = await read(undefined);
+
+      expect(present).toBe(false);
+      expect(report).toBeUndefined();
+    },
+  );
+});
+
+describe("readRunErrorReport", () => {
+  it("keeps an empty string, null and a user_action whole, extra members included", () => {
+    const report = readRunErrorReport({
+      message: "",
+      title: null,
+      retryable: null,
+      user_action: { kind: "unknown", detail: "", hint: "kept" },
+    });
+
+    expect(report).toEqual({
+      message: "",
+      title: null,
+      retryable: null,
+      user_action: { kind: "unknown", detail: "", hint: "kept" },
+    });
+  });
+
+  it("drops a nested member that is not an object, and plans or items that are not arrays", () => {
+    const report = readRunErrorReport({
+      user_action: "change the model",
+      provider_metadata: ["openai"],
+      migration: { plans: "all of them", remedy: 3 },
+      validation_errors: { category: "dry_run", message: "not a list" },
+    });
+
+    expect(report).toEqual({ migration: {} });
+  });
+
+  it("does not change the value it reads", () => {
+    const sent = structuredClone(MALFORMED_REPORT);
+
+    readRunErrorReport(sent);
+
+    expect(sent).toEqual(MALFORMED_REPORT);
+  });
+});
+
+describe("RunFailedError's verdict follows the run's report", () => {
+  const cases: [string, unknown, { errorDomain: string; retryable: boolean }][] = [
+    [
+      "a report saying retryable",
+      { error_domain: "runtime", retryable: true },
+      { errorDomain: "runtime", retryable: true },
+    ],
+    [
+      "a report saying not retryable",
+      { error_domain: "config", retryable: false },
+      { errorDomain: "config", retryable: false },
+    ],
+    [
+      "a report saying nothing about retrying",
+      { error_domain: "input" },
+      { errorDomain: "input", retryable: false },
+    ],
+    ["no report", null, { errorDomain: "runtime", retryable: false }],
+  ];
+
+  it.each(cases)("%s", async (_, report, expected) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(problemResponse(409, failed409(report)));
+
+    const err = await caught(makeClient().waitForResult("run-1", { intervalMs: 0 }));
+
+    expect(err).toBeInstanceOf(RunFailedError);
+    const failure = err as RunFailedError;
+    expect(failure.error).toEqual(report);
+    expect({ errorDomain: failure.errorDomain, retryable: failure.retryable }).toEqual(expected);
+  });
+
+  it("carries the checked report, and a mistyped retryable reads as not retryable", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse(409, failed409(MALFORMED_REPORT)),
+    );
+
+    const err = (await caught(
+      makeClient().waitForResult("run-1", { intervalMs: 0 }),
+    )) as RunFailedError;
+
+    expect(err.error).toEqual(CHECKED_REPORT);
+    expect(err.errorDomain).toBe("config");
+    expect(err.retryable).toBe(false);
   });
 });

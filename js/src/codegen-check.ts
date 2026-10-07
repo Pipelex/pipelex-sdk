@@ -31,6 +31,9 @@
 
 import { parse as parseToml } from "smol-toml";
 
+import { isPlainObject } from "./error-models.js";
+import type { ErrorDomain } from "./errors.js";
+
 // ── Stamp grammar (mirror of pipelex's `codegen/stamp.py`) ───────────────
 
 const STAMP_BEGIN_MARKER = ">>> pipelex-codegen-stamp >>>";
@@ -222,7 +225,7 @@ function isJsonObject(raw: string): boolean {
   } catch {
     return false;
   }
-  return isRecord(loaded);
+  return isPlainObject(loaded);
 }
 
 // ── Content hash (mirror of `compute_content_hash`) ──────────────────────
@@ -251,8 +254,17 @@ async function computeContentHash(body: string): Promise<string> {
  * over the wire, and the check could not produce a verdict at all. A CLI consumer
  * maps a drift report to its exit-1 path and this error to exit 2, per the codegen
  * spec's exit-code policy.
+ *
+ * Being outside the `PipelexRequestError` family, it declares the error verdict every SDK
+ * error carries itself, so `errorVerdictOf` reads it like any other: `input`, not retryable,
+ * since the lock and the tree are the caller's own files.
  */
 export class CodegenLockError extends Error {
+  /** Whether asking again can succeed: never, until the lock or the tree changes. */
+  public readonly retryable: boolean = false;
+  /** Who can fix it: the caller, whose own files the lock and the tree are. */
+  public readonly errorDomain: ErrorDomain = "input";
+
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "CodegenLockError";
@@ -479,7 +491,7 @@ function parseLock(lockContent: string): ParsedCodegenLock {
   } catch (err) {
     throw new CodegenLockError(`Malformed codegen lock: ${describeError(err)}`, { cause: err });
   }
-  if (!isRecord(data)) {
+  if (!isPlainObject(data)) {
     throw new CodegenLockError("Malformed codegen lock: the top level is not a TOML table.");
   }
   rejectUnknownLockVersion(data);
@@ -494,7 +506,7 @@ function parseLock(lockContent: string): ParsedCodegenLock {
   }
   const hashByPath = new Map<string, string>();
   for (const rawArtifact of rawArtifacts) {
-    if (!isRecord(rawArtifact)) {
+    if (!isPlainObject(rawArtifact)) {
       throw new CodegenLockError("Malformed codegen lock: each artifact must be a TOML table.");
     }
     rejectUnknownKeys(rawArtifact, LOCK_ARTIFACT_KEYS, "codegen lock artifact");
@@ -637,10 +649,6 @@ function raisePathError(path: string, reason: string): never {
  */
 function normalizeNewlines(text: string): string {
   return text.replace(/\r\n?/g, "\n");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Entries in ascending path order — the deterministic order drifts are reported in. */

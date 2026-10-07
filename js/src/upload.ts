@@ -190,12 +190,28 @@ export async function uploadFile(
   } catch (error) {
     throw mapUploadError(error, filename);
   }
-  return { uri: uploaded.uri, filename: uploaded.filename, contentType, size: bytes.length };
+  // The record guarantees a filename: an answer that names none keeps the one sent.
+  const stored: unknown = uploaded.filename;
+  return {
+    uri: uploaded.uri,
+    filename: typeof stored === "string" ? stored : filename,
+    contentType,
+    size: bytes.length,
+  };
 }
 
 /** Translate a raw `upload()` transport error into the matching preparation error. */
 function mapUploadError(error: unknown, filename: string): Error {
   if (error instanceof ApiResponseError) {
+    // A 2xx the client could not read: storage may hold the file, but under no reference the SDK
+    // can return.
+    if (error.status >= 200 && error.status < 300) {
+      return new UploadTransportError(
+        `Upload of "${filename}" was answered (${error.status}) with a body the SDK could not ` +
+          "read, so whether and where the file was stored is unknown.",
+        { cause: error, status: error.status, code: "unexpected" },
+      );
+    }
     switch (error.status) {
       case 413:
         return new RejectedAssetError(
@@ -237,9 +253,9 @@ function mapUploadError(error: unknown, filename: string): Error {
   }
   // Only errors thrown by the `client.upload()` call reach here — the local-source
   // and asset-type failures are raised in `toAssetBytes`, before this try block. Any
-  // error that is neither of the two mapped types (a malformed 2xx body surfacing as a
-  // SyntaxError, a custom client throwing a plain Error) is wrapped so every upload
-  // failure stays catchable as an InputPreparationError, never a raw escape.
+  // error that is neither of the two mapped types (a custom client throwing a plain
+  // Error or a SyntaxError of its own) is wrapped so every upload failure stays
+  // catchable as an InputPreparationError, never a raw escape.
   const detail = error instanceof Error ? error.message : String(error);
   return new UploadTransportError(`Upload of "${filename}" failed unexpectedly: ${detail}.`, {
     cause: error,
