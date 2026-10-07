@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.32.1] - 2026-10-07
+
+### Fixed
+
+- **The template repository receives what v0.32.0 lists**: the release of v0.32.0 failed before it exported the starter, so `Pipelex/pipelex-starter-js` never received 0.32.0, and this version is the first it receives since 0.29.1, carrying the changes listed under v0.32.0.
+
 ## [v0.32.0] - 2026-10-07
 
 ### Changed
