@@ -584,6 +584,39 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     );
   }
 
+  /**
+   * One page of a cursor-paged product route (`listMethods`, `listRuns`), read as the platform
+   * always serializes it: `items` an array, `next_cursor` a string or `null`. A page breaking
+   * either is an answer the SDK cannot read, so it throws the `ApiResponseError` `unreadableAnswer`
+   * builds, `runtime` and not retryable, rather than handing the iterators a page they cannot
+   * walk: `items` that is not iterable, or a missing cursor that is neither the end nor a next
+   * page, which `iterateRuns` would follow forever.
+   */
+  private async requestPage<T>(
+    endpoint: string,
+  ): Promise<{ items: T[]; nextCursor: string | null }> {
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
+    const page = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const { items, next_cursor: nextCursor } = page;
+    if (!Array.isArray(items)) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a page whose `items` is not an array",
+      );
+    }
+    if (nextCursor !== null && typeof nextCursor !== "string") {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a page whose `next_cursor` is neither a string nor null",
+      );
+    }
+    return { items: items as T[], nextCursor };
+  }
+
   /** Issue a product request and return its 2xx answer, a non-2xx thrown as `ApiResponseError`. */
   private async requestProductAnswer(
     method: HttpMethod,
@@ -1519,11 +1552,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.cursor !== undefined) params.set("cursor", query.cursor);
     const suffix = params.toString();
-    const page = await this.requestProductObject<{
-      items: MethodSummary[];
-      next_cursor: string | null;
-    }>("GET", suffix ? `methods?${suffix}` : "methods");
-    return { items: page.items, nextCursor: page.next_cursor };
+    return this.requestPage<MethodSummary>(suffix ? `methods?${suffix}` : "methods");
   }
 
   /**
@@ -1915,12 +1944,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (query.createdTo !== undefined) params.set("created_to", query.createdTo);
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.cursor !== undefined) params.set("cursor", query.cursor);
-    const page = await this.requestProductObject<{
-      items: RunHistoryItem[];
-      next_cursor: string | null;
-    }>("GET", `runs?${params.toString()}`);
-    const items = Array.isArray(page.items) ? page.items.map(withCheckedReport) : page.items;
-    return { items, nextCursor: page.next_cursor };
+    const page = await this.requestPage<RunHistoryItem>(`runs?${params.toString()}`);
+    return { items: page.items.map(withCheckedReport), nextCursor: page.nextCursor };
   }
 
   /**
