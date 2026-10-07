@@ -77,18 +77,20 @@ export interface GrantedUpload {
  *   `403` when the file's size, type or metadata differ from what the grant signed
  *   (`signature_mismatch`), when the request carried a header the grant did not sign
  *   (`unsigned_header`), or when the grant has expired (`grant_expired`); any other
- *   `4xx` (`store_refused`). Each asks for a new grant, or for the file the grant
- *   was requested for.
+ *   `4xx` but a `408` or a `429` (`store_refused`). Each asks for a new grant, or for
+ *   the file the grant was requested for.
  * - `UploadTransportError` (`status` is storage's when it answered, `code` says
  *   which) — the time limit running out (`timeout`), storage unreachable
  *   (`unreachable`), a `5xx` (`server_error`), storage timing out on the body
  *   (`storage_timeout`, a `400 RequestTimeout`, which wrote nothing), another upload
  *   with the same grant still in progress (`conflict`, a `409
- *   ConditionalRequestConflict`), or a redirect, which is refused rather than
- *   followed (`redirected`). In a browser a refused cross-origin request looks like
- *   an unreachable host, so the message names that too. A grant whose `url` is not
- *   an absolute `http(s)` URL free of user info is refused the same way, before
- *   anything is sent (`invalid_grant_url`).
+ *   ConditionalRequestConflict`), storage timing out or throttling the request
+ *   (`unexpected`, a `408` or a `429`, refused for its timing rather than for the
+ *   file), or a redirect, which is refused rather than followed (`redirected`). In a
+ *   browser a refused cross-origin request looks like an unreachable host, so the
+ *   message names that too. A grant whose `url` is not an absolute `http(s)` URL free
+ *   of user info is refused the same way, before anything is sent
+ *   (`invalid_grant_url`).
  *
  * The whole exchange runs under a time limit: `timeoutMs` when given, else 60 s plus
  * 1 s for every started 128 KiB of the file. A caller's `signal` can end it sooner,
@@ -101,11 +103,12 @@ export interface GrantedUpload {
  * A timeout, a `5xx`, a conflict and a connection lost after the file went out leave
  * it unknown whether the object was written: retrying with the same grant before it
  * expires either stores it or answers the `412` of a used grant, and then the
- * grant's `uri` already names the file. A `501` is the exception: storage does not
- * implement the request it was sent, stored nothing, and answers a retry the same
- * way, so its error is not retryable. The grant is a bearer capability: nothing
- * here logs it, and no error this throws carries its URL, storage's error body or a
- * runtime error that could hold either.
+ * grant's `uri` already names the file. After a `408` or a `429` the same retry
+ * applies, later, since storage refused the request for its timing. A `501` is the
+ * exception: storage does not implement the request it was sent, stored nothing, and
+ * answers a retry the same way, so its error is not retryable. The grant is a bearer
+ * capability: nothing here logs it, and no error this throws carries its URL,
+ * storage's error body or a runtime error that could hold either.
  */
 export async function uploadWithGrant(
   grant: UploadGrant,
@@ -206,7 +209,10 @@ export async function uploadWithGrant(
         { status, code: "conflict" },
       );
     }
-    if (status >= 400 && status < 500) {
+    // A 408 or a 429 refuses the request for its timing, never the file: storage timed it out or
+    // throttled it, so it falls through to the transport failure below, whose verdict reads its
+    // status as retryable.
+    if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
       const { code, advice } = classifyRefusal(status, refusal, grant);
       throw new RejectedAssetError(
         `Storage refused the upload of "${label}" (${describeStatus(response, refusal)}): ${advice}`,
@@ -226,6 +232,13 @@ export async function uploadWithGrant(
         `${failure}. Storage does not implement the request it was sent, so it stored nothing, ` +
           "and sending the file again will meet the same answer.",
         { status, code: "server_error" },
+      );
+    }
+    if (status === 408 || status === 429) {
+      throw new UploadTransportError(
+        `${failure}. Storage ${status === 429 ? "throttled" : "timed out"} the request rather ` +
+          `than refusing the file, so a later attempt can succeed. ${sameGrantRetry(grant)}`,
+        { status, code: "unexpected" },
       );
     }
     throw new UploadTransportError(
@@ -405,9 +418,9 @@ function describeStatus(response: Response, refusal: StorageRefusal): string {
 }
 
 /**
- * What a `4xx` from storage means for the caller: the code it branches on, and words
- * it can act on. An expired grant and an unsigned header both answer `403
- * AccessDenied`, so only S3's message tells them apart.
+ * What a `4xx` from storage, a `408` and a `429` aside, means for the caller: the code
+ * it branches on, and words it can act on. An expired grant and an unsigned header both
+ * answer `403 AccessDenied`, so only S3's message tells them apart.
  */
 function classifyRefusal(
   status: number,

@@ -190,7 +190,9 @@ export class InvalidLocalSourceError extends InputPreparationError {
  * `grant_expired` — the grant's validity window has passed; `signature_mismatch` —
  * the file's size, content type or metadata differ from what the grant signed;
  * `unsigned_header` — the request carried a storage header the grant did not sign;
- * `store_refused` — any other refusal from storage.
+ * `store_refused` — any other refusal from storage. Storage's `408` and `429` are no
+ * refusal of the asset: they refuse the request for its timing, and are an
+ * `UploadTransportError`.
  */
 export type RejectedAssetCode =
   | "too_large"
@@ -202,7 +204,10 @@ export type RejectedAssetCode =
 
 /**
  * The server or storage refused the asset — most commonly a `413` past the
- * service-defined size cap, or storage refusing an upload with a grant. The SDK
+ * service-defined size cap, or storage refusing an upload with a grant. A storage
+ * `4xx` that says nothing about the file is not among them: a `408` or a `429`, which
+ * time out or throttle the request, a `400 RequestTimeout` and a `409
+ * ConditionalRequestConflict` are an `UploadTransportError`. The SDK
  * does not impose a client-side cap; it surfaces the refusal. `filename` and
  * `status` locate it, and `code` says why: the SDK sets it on every one it raises,
  * so it is undefined only on one a caller constructs without it.
@@ -272,7 +277,9 @@ export class UploadAuthenticationError extends InputPreparationError {
  * - `redirected` — storage redirected the `PUT`, and the redirect was refused.
  * - `invalid_grant_url` — the grant's `url` is not an absolute `http(s)` URL free of
  *   user info, so nothing was sent.
- * - `unexpected` — a status or a failure the SDK has no specific mapping for.
+ * - `unexpected` — a status or a failure the SDK has no specific mapping for. From
+ *   `uploadWithGrant`, storage's `408` or `429`: it timed out or throttled the request,
+ *   which a later attempt can pass.
  */
 export type UploadTransportCode =
   | "timeout"
@@ -286,8 +293,9 @@ export type UploadTransportCode =
 
 /**
  * A network or server fault reaching the upload route or storage — an unreachable
- * host, a timeout, a `5xx`, a refused redirect, storage timing out on the body, or
- * any other unexpected `upload()` failure. `code` says which: the SDK sets it on
+ * host, a timeout, a `5xx`, a refused redirect, storage timing out on the body,
+ * storage timing out or throttling the request (a `408` or a `429`), or any other
+ * unexpected `upload()` failure. `code` says which: the SDK sets it on
  * every one it raises, so it is undefined only on one a caller constructs without
  * it. `status` is the HTTP status when a response produced it, and undefined when
  * none did. From `uploadFile` the wrapped `ApiResponseError` is also reachable via
@@ -303,9 +311,11 @@ export type UploadTransportCode =
  * spent grant is the `412` of a `RejectedAssetError` with code `grant_used`); `server_error` is
  * `runtime`, and retryable when the fallback table a refused API request reads would call its
  * `status` retryable — any `5xx` but a `501`, which storage answers for a request it does not
- * implement — or when it carries no status; `unreachable` is `config` and retryable, like
- * `ApiUnreachableError`; `redirected` is `config` and not retryable; `invalid_grant_url`,
- * `unexpected` and no code at all are `runtime` and not retryable.
+ * implement — or when it carries no status; `unexpected` is `runtime`, and retryable when that
+ * table would call its `status` retryable — storage's `408` or `429`, refused for its timing —
+ * and not retryable for any other status or none; `unreachable` is `config` and retryable, like
+ * `ApiUnreachableError`; `redirected` is `config` and not retryable; `invalid_grant_url` and no
+ * code at all are `runtime` and not retryable.
  */
 export class UploadTransportError extends InputPreparationError {
   public readonly status: number | undefined;
@@ -343,12 +353,19 @@ function uploadTransportVerdict(
         "runtime",
         status === undefined || fallbackVerdict(status, undefined, true).retryable,
       );
+    case "unexpected":
+      // Storage's 408 or 429 refused the request for its timing, which a later attempt can pass;
+      // any other status, or none, says nothing of the kind.
+      return makeVerdict(
+        "runtime",
+        status !== undefined && fallbackVerdict(status, undefined, true).retryable,
+      );
     case "unreachable":
       return makeVerdict("config", true);
     case "redirected":
       return makeVerdict("config", false);
     default:
-      // `invalid_grant_url`, `unexpected`, no code, and a code this version does not know.
+      // `invalid_grant_url`, no code, and a code this version does not know.
       return makeVerdict("runtime", false);
   }
 }

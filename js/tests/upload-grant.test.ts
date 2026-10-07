@@ -694,6 +694,54 @@ describe("uploadWithGrant — transport failures", () => {
     expect((error as Error).message).toContain(`expires at ${GRANT.expires_at}`);
   });
 
+  it.each([
+    [
+      "429 SlowDown",
+      xmlResponse(429, s3Error("SlowDown", "Please reduce your request rate.")),
+      429,
+      "throttled",
+      "(429 SlowDown): Please reduce your request rate. Storage throttled",
+    ],
+    ["429 with an empty body", new Response(null, { status: 429 }), 429, "throttled", "(429)."],
+    [
+      "408 RequestTimeout",
+      xmlResponse(
+        408,
+        s3Error(
+          "RequestTimeout",
+          "Your socket connection to the server was not read from or written to within the timeout period.",
+        ),
+      ),
+      408,
+      "timed out",
+      "(408 RequestTimeout): Your socket connection",
+    ],
+    ["408 with an empty body", new Response(null, { status: 408 }), 408, "timed out", "(408)."],
+  ])(
+    "maps storage's %s onto a retryable UploadTransportError, not a refusal of the file",
+    async (_case, response, status, verb, described) => {
+      const error = await refusalFor(response);
+
+      expect(error).toBeInstanceOf(UploadTransportError);
+      expect(error).not.toBeInstanceOf(RejectedAssetError);
+      const transport = error as UploadTransportError;
+      expect(transport.status).toBe(status);
+      expect(transport.code).toBe("unexpected");
+      expect(transport.cause).toBeUndefined();
+      expect(transport.message).toContain(described);
+      expect(transport.message).toContain(
+        `Storage ${verb} the request rather than refusing the file, so a later attempt can succeed.`,
+      );
+      expect(transport.message).toContain(
+        `Retrying with the same grant before it expires at ${GRANT.expires_at}`,
+      );
+      expect(transport.message).not.toContain("request a new grant");
+      // Refused for its timing, so a later attempt can pass.
+      expect(transport.errorDomain).toBe("runtime");
+      expect(transport.retryable).toBe(true);
+    },
+  );
+
   it("refuses a redirect rather than following it", async () => {
     const error = await refusalFor(
       new Response(null, {

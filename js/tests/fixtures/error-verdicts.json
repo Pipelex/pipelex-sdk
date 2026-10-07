@@ -182,7 +182,10 @@
         { "variant": "another write with the same grant in flight", "only_in": "js", "given": { "code": "conflict", "status": 409 }, "expected": { "error_domain": "runtime", "retryable": true } },
         { "variant": "a refused redirect", "only_in": "js", "given": { "code": "redirected", "status": 307 }, "expected": { "error_domain": "config", "retryable": false } },
         { "variant": "a grant url that cannot be sent to", "only_in": "js", "given": { "code": "invalid_grant_url" }, "expected": { "error_domain": "runtime", "retryable": false } },
-        { "variant": "an unmapped failure", "only_in": "js", "given": { "code": "unexpected" }, "expected": { "error_domain": "runtime", "retryable": false } }
+        { "variant": "an unmapped failure", "only_in": "js", "given": { "code": "unexpected" }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "storage timing out the request", "only_in": "js", "given": { "code": "unexpected", "status": 408 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "storage throttling the request", "only_in": "js", "given": { "code": "unexpected", "status": 429 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "an unmapped status", "only_in": "js", "given": { "code": "unexpected", "status": 418 }, "expected": { "error_domain": "runtime", "retryable": false } }
       ]
     },
     {
