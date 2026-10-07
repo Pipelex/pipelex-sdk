@@ -76,7 +76,7 @@ Before the verdict come the warnings `make create` printed, each once, and the g
 
 Everything the initializer prints goes to standard output, `make create`'s output included when `--quiet` is not given. Under `npm create`, a run that exits 1 is followed by npm's own `npm error` lines on standard error, so read the verdict from standard output rather than from the last line of everything printed. `npm create --loglevel=silent @pipelex/method-app@latest …` removes npm's lines and leaves the initializer's alone.
 
-A Python template gets its own initializer, run with `uvx create-pipelex-method-app`, and this one refuses it with `refused: other-ecosystem`.
+A Python template, such as `cli-python`, is refused with `refused: other-ecosystem`. No initializer serves the Python templates yet, so the line points at the template's README, which shows how to copy it out of a release of `Pipelex/pipelex-sdk` and run its `make create`.
 
 ## License
 

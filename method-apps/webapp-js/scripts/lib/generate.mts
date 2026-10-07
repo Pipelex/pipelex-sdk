@@ -30,6 +30,7 @@ import {
   DEFAULT_API_BASE_URL,
   PipelexApiClient,
   runCodegenCheck,
+  type CodegenRequest,
   type CodegenValidReport,
   type GeneratedArtifact,
   type InputForm,
@@ -398,14 +399,51 @@ export interface FetchedMethod {
 }
 
 /**
+ * Ask `POST /v1/codegen` for one method's typed artifacts, as the method
+ * resolves now.
+ *
+ * Returns `null` after reporting why the request failed or the closure does not
+ * resolve.
+ */
+async function requestCodegen(
+  client: Pick<PipelexApiClient, "codegen">,
+  source: MethodSource,
+  baseUrl: string,
+): Promise<CodegenValidReport | null> {
+  // No `pipe_ref`: `kind: "types"` is concept-set-wide and rejects it with a 422.
+  const request: CodegenRequest =
+    source.kind === "files"
+      ? { files: source.files, kind: "types", target: "ts-zod" }
+      : { ...source.selector, kind: "types", target: "ts-zod" };
+  try {
+    const response = await client.codegen(request);
+    if (!response.is_valid) {
+      console.error(`\n✗ ${source.name} — the closure does not resolve:`);
+      for (const item of response.validation_errors) {
+        console.error(`    ${item.source ?? "?"}: ${item.message}`);
+      }
+      return null;
+    }
+    return response;
+  } catch (error) {
+    console.error(`\n✗ ${source.name} — ${explain(error, baseUrl, "POST /v1/codegen", source)}`);
+    return null;
+  }
+}
+
+/**
  * The read-and-guard half of generating one method: both API calls, and every
  * refusal that must happen before a byte is written.
  *
  * Split from the writing half so the scaffold can run the same guards without
  * committing to a write — `--dry-run` is exactly this function and nothing else.
- * The ordering inside is load-bearing and unchanged: by the time the pipe-io
- * call is made, every codegen guard has passed, so a failure there leaves the
- * tree untouched rather than half-updated.
+ * The ordering inside is load-bearing: by the time the pipe-io call is made,
+ * every codegen guard has passed, so a failure there leaves the tree untouched
+ * rather than half-updated. The last call asks `/v1/codegen` again, because the
+ * two routes each resolve the method on their own and only the codegen answer
+ * names the revision it resolved: a method edited or republished between them
+ * would otherwise commit the types of one revision beside the contracts of
+ * another, a tree the offline check would then call current.
  *
  * Returns `null` after reporting the reason; the caller fails the method.
  */
@@ -415,26 +453,8 @@ export async function fetchGenerated(
   outDir: string,
   baseUrl: string,
 ): Promise<FetchedMethod | null> {
-  let report: CodegenValidReport;
-  try {
-    // No `pipe_ref`: `kind: "types"` is concept-set-wide and rejects it with a 422.
-    const response = await client.codegen(
-      source.kind === "files"
-        ? { files: source.files, kind: "types", target: "ts-zod" }
-        : { ...source.selector, kind: "types", target: "ts-zod" },
-    );
-    if (!response.is_valid) {
-      console.error(`\n✗ ${source.name} — the closure does not resolve:`);
-      for (const item of response.validation_errors) {
-        console.error(`    ${item.source ?? "?"}: ${item.message}`);
-      }
-      return null;
-    }
-    report = response;
-  } catch (error) {
-    console.error(`\n✗ ${source.name} — ${explain(error, baseUrl, "POST /v1/codegen", source)}`);
-    return null;
-  }
+  const report = await requestCodegen(client, source, baseUrl);
+  if (report === null) return null;
 
   // Self-verify BEFORE writing: `GeneratedArtifact` and `CodegenTreeFile` are
   // structurally identical on purpose, so the response feeds in with no mapping.
@@ -501,11 +521,25 @@ export async function fetchGenerated(
     return null;
   }
 
-  // The form's half of the tree, and the last thing that can fail this method:
-  // by here every codegen guard has passed, so a failure now leaves the whole
-  // tree untouched rather than half-updated.
+  // The form's half of the tree: by here every codegen guard has passed, so a
+  // failure now leaves the whole tree untouched rather than half-updated.
   const contracts = await fetchPipeIoArtifacts(client, source, baseUrl);
   if (contracts === null) return null;
+
+  // The last thing that can fail this method: the revision both answers
+  // describe, confirmed by asking `/v1/codegen` again after `/v1/pipe-io`.
+  const again = await requestCodegen(client, source, baseUrl);
+  if (again === null) return null;
+  if (again.crate_fingerprint !== report.crate_fingerprint) {
+    console.error(
+      `\n✗ ${source.name} — the method changed while it was being generated: ` +
+        "/v1/codegen resolved it to another crate after /v1/pipe-io answered.",
+    );
+    console.error(`    first: ${report.crate_fingerprint}`);
+    console.error(`    then:  ${again.crate_fingerprint}`);
+    console.error("    Nothing was written. Run the command again.");
+    return null;
+  }
 
   return { report, contracts };
 }

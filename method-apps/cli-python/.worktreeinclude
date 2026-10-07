@@ -1,0 +1,7 @@
+# .worktreeinclude — the gitignored files a fresh git worktree of this repo needs.
+# Claude Code reads it when it creates a worktree, and so does any tool that
+# honours the same convention. A pattern copies a file only when it matches AND
+# is gitignored, so nothing tracked is ever duplicated.
+.env
+.env.local
+.claude/settings.local.json

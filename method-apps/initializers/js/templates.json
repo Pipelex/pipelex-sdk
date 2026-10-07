@@ -25,6 +25,8 @@
     "switches": ["DRY_RUN"]
   },
   "otherEcosystems": {
-    "python": "uvx create-pipelex-method-app"
+    "python": {
+      "copyOut": "https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/{template}#start-a-project-from-the-template"
+    }
   }
 }

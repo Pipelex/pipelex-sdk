@@ -2,6 +2,7 @@
 // what it refuses. Run with `node --test` — the root has no dependencies.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +13,7 @@ import {
   VersionError,
   checkVersions,
   compareVersions,
+  copyOutTags,
   parseUnit,
   pyprojectVersion,
   rootVersion,
@@ -148,6 +150,150 @@ describe("checkVersions --release", () => {
   });
 });
 
+describe("checkVersions --release, with a copy-out", () => {
+  // The machine's own git configuration stays out of the throwaway repositories:
+  // no hooks, no signing, no identity it may lack.
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Release Test",
+    GIT_AUTHOR_EMAIL: "release-test@example.com",
+    GIT_COMMITTER_NAME: "Release Test",
+    GIT_COMMITTER_EMAIL: "release-test@example.com",
+  };
+  const git = (root, ...args) => execFileSync("git", args, { cwd: root, env: gitEnv, encoding: "utf8" });
+  const changelog = (version) => `# Changelog\n\n## [v${version}] - 2026-10-01\n\n- A change.\n`;
+  const readme = (tag) =>
+    `# A template\n\n## Start a project from the template\n\n\`\`\`bash\nTAG=${tag}   # the first release that ships it, or a later one\ncurl -fsSL -o x.tar.gz "https://example.com/$TAG"\n\`\`\`\n`;
+  const units = ["a-js", "apps:web-js,cli-python"];
+  const copyOuts = ["apps/cli-python/README.md"];
+
+  /**
+   * A repository whose v0.1.0 predates the template `apps/cli-python/`, whose
+   * v0.2.0 is the first release that holds it, and whose working tree is a
+   * release of 0.3.0: `a-js` ships in it, and `apps` carries `apps`, shipping
+   * when that is 0.3.0. The README's copy-out sets `TAG=<tag>`.
+   */
+  function released({ tag, apps = "0.3.0" }) {
+    const root = repository("0.1.0\n", { "apps/web-js/package.json": pkg("0.1.0") });
+    git(root, "init", "-q", "-b", "main");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "Release v0.1.0");
+    git(root, "tag", "v0.1.0");
+    fs.writeFileSync(path.join(root, "VERSION"), "0.2.0\n");
+    fs.writeFileSync(path.join(root, "apps/web-js/package.json"), pkg("0.2.0"));
+    fs.mkdirSync(path.join(root, "apps/cli-python"));
+    fs.writeFileSync(path.join(root, "apps/cli-python/pyproject.toml"), pyproject("0.2.0"));
+    fs.writeFileSync(path.join(root, "apps/cli-python/README.md"), readme("v0.2.0"));
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "Release v0.2.0");
+    git(root, "tag", "v0.2.0");
+    const files = {
+      VERSION: "0.3.0\n",
+      "a-js/package.json": pkg("0.3.0"),
+      "a-js/CHANGELOG.md": changelog("0.3.0"),
+      "apps/web-js/package.json": pkg(apps),
+      "apps/cli-python/pyproject.toml": pyproject(apps),
+      "apps/cli-python/README.md": readme(tag),
+      "apps/CHANGELOG.md": changelog(apps),
+    };
+    for (const [rel, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), text);
+    }
+    return root;
+  }
+
+  it("accepts this release's own tag when the unit holding the template ships in it", () => {
+    const root = released({ tag: "v0.3.0" });
+    const result = checkVersions(root, units, { release: true, copyOuts });
+    assert.deepEqual(result.problems, []);
+    assert.deepEqual(result.shipped, ["a-js", "apps"]);
+  });
+
+  it("refuses a tag above the version the unit holding the template carries", () => {
+    const root = released({ tag: "v0.4.0" });
+    const { problems } = checkVersions(root, units, { release: true, copyOuts });
+    assert.deepEqual(
+      problems.map((problem) => problem.message),
+      [
+        "apps/cli-python/README.md's copy-out names v0.4.0, above the 0.3.0 apps carries: no release ships apps/cli-python/ at that version.",
+      ],
+    );
+    // A pull request into dev checks no copy-out: before the release, the README rightly names a tag that does not exist yet.
+    assert.deepEqual(checkVersions(root, units).problems, []);
+  });
+
+  it("refuses this release's own tag when the unit holding the template is held back", () => {
+    const root = released({ tag: "v0.3.0", apps: "0.2.0" });
+    const { problems } = checkVersions(root, units, { release: true, copyOuts });
+    assert.deepEqual(kinds({ problems }), ["copy-out"]);
+    assert.match(problems[0].message, /names v0\.3\.0, above the 0\.2\.0 apps carries/);
+  });
+
+  it("refuses a tag the repository does not have that is not this release's", () => {
+    const root = released({ tag: "v0.2.5" });
+    const { problems } = checkVersions(root, units, { release: true, copyOuts });
+    assert.deepEqual(
+      problems.map((problem) => problem.message),
+      [
+        "apps/cli-python/README.md's copy-out names v0.2.5, which is neither a tag of this repository nor this release's, v0.3.0: the copy-out downloads nothing.",
+      ],
+    );
+  });
+
+  it("accepts a tag that exists and holds the template, whether the unit ships or not", () => {
+    assert.deepEqual(checkVersions(released({ tag: "v0.2.0" }), units, { release: true, copyOuts }).problems, []);
+    const held = released({ tag: "v0.2.0", apps: "0.2.0" });
+    assert.deepEqual(checkVersions(held, units, { release: true, copyOuts }).problems, []);
+  });
+
+  it("refuses a tag that exists but predates the template", () => {
+    const root = released({ tag: "v0.1.0" });
+    const { problems } = checkVersions(root, units, { release: true, copyOuts });
+    assert.deepEqual(
+      problems.map((problem) => problem.message),
+      [
+        "apps/cli-python/README.md's copy-out names v0.1.0, a release that holds no apps/cli-python/, so the copy-out extracts nothing.",
+      ],
+    );
+  });
+
+  it("refuses a copy-out that sets no tag, or one that is not a release tag", () => {
+    const root = released({ tag: "v0.3.0" });
+    fs.writeFileSync(path.join(root, "apps/cli-python/README.md"), "# A template\n\nnpx create-it\n");
+    assert.match(
+      checkVersions(root, units, { release: true, copyOuts }).problems[0].message,
+      /^apps\/cli-python\/README\.md sets no TAG= for a copy-out/,
+    );
+    fs.writeFileSync(path.join(root, "apps/cli-python/README.md"), readme("latest"));
+    assert.deepEqual(
+      checkVersions(root, units, { release: true, copyOuts }).problems.map((problem) => problem.message),
+      ["apps/cli-python/README.md's copy-out sets TAG=latest, which is not a release tag such as v0.3.0."],
+    );
+  });
+
+  it("cannot check a copy-out that is missing or in none of the units", () => {
+    const root = released({ tag: "v0.3.0" });
+    assert.throws(
+      () => checkVersions(root, units, { release: true, copyOuts: ["apps/cli-python/MISSING.md"] }),
+      VersionError,
+    );
+    assert.throws(() => checkVersions(root, units, { release: true, copyOuts: ["README.md"] }), VersionError);
+  });
+});
+
+describe("copyOutTags", () => {
+  it("reads every TAG= set at the start of a line, and nothing else", () => {
+    assert.deepEqual(copyOutTags("TAG=v0.32.0   # a comment\n  TAG=v9.9.9\nexport TAG=v8.8.8\nTAG=v0.33.0\n"), [
+      "v0.32.0",
+      "v0.33.0",
+    ]);
+    assert.deepEqual(copyOutTags("npm create something\n"), []);
+  });
+});
+
 describe("compareVersions", () => {
   it("orders numbers as numbers, and a prerelease below its release", () => {
     const ordered = [
@@ -198,7 +344,18 @@ describe("this repository", () => {
   it("holds every unit of the root Makefile at or below VERSION, each carrying one version", () => {
     const makefile = fs.readFileSync(path.join(ROOT, "Makefile"), "utf8");
     const units = /^UNITS := (.+)$/m.exec(makefile)[1].trim().split(/\s+/);
-    assert.ok(units.includes("method-apps:webapp-js,initializers/js"));
+    assert.ok(units.includes("method-apps:webapp-js,cli-python,initializers/js"));
     assert.deepEqual(checkVersions(ROOT, units).problems, []);
+  });
+
+  it("lists cli-python's copy-out among the root Makefile's, each setting a release tag", () => {
+    const makefile = fs.readFileSync(path.join(ROOT, "Makefile"), "utf8");
+    const copyOuts = /^COPY_OUTS := (.+)$/m.exec(makefile)[1].trim().split(/\s+/);
+    assert.ok(copyOuts.includes("method-apps/cli-python/README.md"));
+    for (const file of copyOuts) {
+      const tags = copyOutTags(fs.readFileSync(path.join(ROOT, file), "utf8"));
+      assert.ok(tags.length > 0, `${file} sets no TAG=`);
+      for (const tag of tags) assert.match(tag, /^v\d+\.\d+\.\d+$/, file);
+    }
   });
 });

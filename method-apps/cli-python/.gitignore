@@ -1,0 +1,32 @@
+# virtual environment, made by `make install`
+.venv/
+
+# python bytecode and tool caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# build artifacts, made by `make build`
+build/
+dist/
+*.egg-info/
+
+# env files
+.env
+.env*.local
+
+# the files a run produced, downloaded under outputs/<run-id>/ unless --out says otherwise
+outputs/
+
+# pipelex / mthds tooling artifacts (traces, caches)
+.pipelex/
+
+# misc
+.DS_Store
+
+# claude code local settings (per-user, never commit)
+.claude/settings.local.json
+
+# internal planning notes — kept local, never shipped with the template
+/wip/

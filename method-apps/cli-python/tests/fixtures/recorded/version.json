@@ -1,0 +1,12 @@
+{
+  "protocol_version": "0.1.0",
+  "runner_version": null,
+  "implementation": "pipelex-hosted",
+  "implementation_version": "0.30.0",
+  "runtime_version": null,
+  "extensions": [
+    "runs",
+    "method_id",
+    "method_ref"
+  ]
+}

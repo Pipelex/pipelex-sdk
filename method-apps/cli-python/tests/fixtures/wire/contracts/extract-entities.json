@@ -1,0 +1,130 @@
+{
+  "comment": "A contract fixture, the three payloads of one pipe-io answer, recorded with table.json. Do not edit.",
+  "pipe_io_contracts": {
+    "extract_entities.extract_entities": {
+      "inputs": {
+        "text": {
+          "concept_ref": "native.Text",
+          "presence": "plain",
+          "multiplicity": "single",
+          "item_count": null,
+          "json_schema": {
+            "description": "A text",
+            "properties": {
+              "text": {
+                "description": "The text",
+                "title": "Text",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "title": "native.Text",
+            "type": "object"
+          }
+        }
+      },
+      "output": {
+        "concept_ref": "extract_entities.ExtractedEntities",
+        "multiplicity": "single",
+        "item_count": null,
+        "optional": false,
+        "json_schema": {
+          "description": "Named entities extracted from a piece of text.",
+          "properties": {
+            "people": {
+              "description": "Names of people mentioned in the text",
+              "items": {
+                "type": "string"
+              },
+              "title": "People",
+              "type": "array"
+            },
+            "orgs": {
+              "description": "Names of organizations mentioned in the text",
+              "items": {
+                "type": "string"
+              },
+              "title": "Orgs",
+              "type": "array"
+            },
+            "dates": {
+              "description": "Dates or time references mentioned in the text",
+              "items": {
+                "type": "string"
+              },
+              "title": "Dates",
+              "type": "array"
+            }
+          },
+          "required": [
+            "people",
+            "orgs",
+            "dates"
+          ],
+          "title": "extract_entities.ExtractedEntities",
+          "type": "object"
+        }
+      }
+    }
+  },
+  "input_form": {
+    "extract_entities.extract_entities": {
+      "fields": [
+        {
+          "kind": "prose",
+          "name": "text",
+          "concept_ref": "native.Text",
+          "description": "A text",
+          "required": true,
+          "presence": "plain",
+          "gating": true
+        }
+      ]
+    }
+  },
+  "output_form": {
+    "extract_entities.extract_entities": {
+      "field": {
+        "kind": "object",
+        "name": "output",
+        "concept_ref": "extract_entities.ExtractedEntities",
+        "description": "Named entities extracted from a piece of text.",
+        "required": true,
+        "fields": [
+          {
+            "kind": "list",
+            "name": "people",
+            "description": "Names of people mentioned in the text",
+            "required": true,
+            "item": {
+              "kind": "text",
+              "required": true
+            }
+          },
+          {
+            "kind": "list",
+            "name": "orgs",
+            "description": "Names of organizations mentioned in the text",
+            "required": true,
+            "item": {
+              "kind": "text",
+              "required": true
+            }
+          },
+          {
+            "kind": "list",
+            "name": "dates",
+            "description": "Dates or time references mentioned in the text",
+            "required": true,
+            "item": {
+              "kind": "text",
+              "required": true
+            }
+          }
+        ]
+      }
+    }
+  }
+}

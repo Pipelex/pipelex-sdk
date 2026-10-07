@@ -588,7 +588,7 @@ describe("this repository", () => {
   it("selects over the root Makefile's units, the method apps as one", () => {
     const makefile = fs.readFileSync(path.join(ROOT, "Makefile"), "utf8");
     const units = /^UNITS := (.+)$/m.exec(makefile)[1].trim().split(/\s+/);
-    assert.ok(units.includes("method-apps:webapp-js,initializers/js"));
+    assert.ok(units.includes("method-apps:webapp-js,cli-python,initializers/js"));
     const { units: proposed } = proposeUnits(ROOT, units);
     assert.deepEqual(
       proposed.map((each) => each.name),
