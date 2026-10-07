@@ -230,6 +230,22 @@ describe("uploadFile", () => {
     expect((error as UploadTransportError).code).toBe(code);
   });
 
+  it("keeps the filename it sent when the client's answer names none", async () => {
+    const client: UploadCapableClient = {
+      async upload() {
+        return {
+          uri: "pipelex-storage://user/assets/abc.bin",
+          filename: null as unknown as string,
+        };
+      },
+    };
+
+    const record = await uploadFile(client, new Uint8Array([1]), { filename: "scan.pdf" });
+
+    expect(record.filename).toBe("scan.pdf");
+    expect(record.uri).toBe("pipelex-storage://user/assets/abc.bin");
+  });
+
   it("wraps an unexpected non-transport error as UploadTransportError, preserving the cause", async () => {
     // A custom client can throw anything, such as a SyntaxError of its own, which is not one
     // of the two mapped transport types — it must still land in the preparation-error family.

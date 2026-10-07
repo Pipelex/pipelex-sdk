@@ -533,8 +533,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
-   * A product request whose answer is an object the SDK reads before handing it back — a page's
-   * `items`, an upload's `uri`, a bulk resolution's `items`. Unlike `requestProduct`, an empty
+   * A product request whose answer is an object the SDK or its caller reads before anything else
+   * — a bulk resolution's `items`, a run record's `error`, an upload grant's `url`. Unlike
+   * `requestProduct`, an empty
    * 2xx is no answer here: it and a body that is not a JSON object throw the `ApiResponseError`
    * of an answer the SDK cannot read (see `readObjectAnswerAt`).
    */
@@ -550,9 +551,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /**
    * A methods-catalog route answering one stored method (`getMethod`, `createMethod`,
-   * `updateMethod`), parsed into the public shape. A stored `python` the SDK cannot parse is an
-   * answer it cannot read, so it throws an `ApiResponseError` built from that answer, with
-   * `mthds`'s refusal as `cause`: `runtime`, not retryable, since no change to the call fixes it.
+   * `updateMethod`), parsed into the public shape. A stored `mthds` that is neither a string nor
+   * absent (`null` stays "no source", which `getMethodClosure` reports), and a stored `python`
+   * the SDK cannot parse, are an answer it cannot read, so each throws an `ApiResponseError` built
+   * from that answer, the latter with `mthds`'s refusal as `cause`: `runtime`, not retryable,
+   * since no change to the call fixes it.
    */
   private async requestMethodData(
     method: HttpMethod,
@@ -561,6 +564,15 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   ): Promise<MethodData> {
     const res = await this.requestProductAnswer(method, endpoint, body);
     const wire = this.readObjectAnswer<MethodDataWire>(method, endpoint, res);
+    const source: unknown = wire.mthds;
+    if (source != null && typeof source !== "string") {
+      throw this.unreadableAnswer(
+        method,
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a stored method whose `mthds` field is not a string",
+      );
+    }
     return methodDataFromWire(wire, (cause) =>
       this.unreadableAnswer(
         method,
@@ -1787,9 +1799,27 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     return downloadArtifactsImpl(this, request);
   }
 
-  /** Upload a base64 file — `POST /v1/upload`. */
+  /**
+   * Upload a base64 file — `POST /v1/upload`. An answer with no non-empty string `uri` names no
+   * stored file, so it is an answer the SDK cannot read: an `ApiResponseError`, `runtime` and
+   * not retryable, which `uploadFile` wraps as an `UploadTransportError` with code `unexpected`.
+   */
   async upload(input: UploadInput): Promise<UploadedFile> {
-    return this.requestProductObject("POST", "upload", input);
+    const res = await this.requestProductAnswer("POST", "upload", input);
+    const uploaded = this.readObjectAnswer<Partial<Record<keyof UploadedFile, unknown>>>(
+      "POST",
+      "upload",
+      res,
+    );
+    if (typeof uploaded.uri !== "string" || uploaded.uri === "") {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/upload`,
+        res,
+        "an answer with no string `uri`",
+      );
+    }
+    return uploaded as UploadedFile;
   }
 
   /**
@@ -1812,7 +1842,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     input: UploadGrantInput,
     options: { signal?: AbortSignal } = {},
   ): Promise<UploadGrant> {
-    return this.requestProduct("POST", "upload/grant", input, options);
+    return this.requestProductObject("POST", "upload/grant", input, options);
   }
 
   /**
@@ -1955,7 +1985,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    */
   async getRunDetail(runId: string): Promise<RunDetail> {
     return withCheckedReport(
-      await this.requestProduct<RunDetail>("GET", `runs/${encodeURIComponent(runId)}`),
+      await this.requestProductObject<RunDetail>("GET", `runs/${encodeURIComponent(runId)}`),
     );
   }
 

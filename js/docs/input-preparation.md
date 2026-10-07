@@ -27,10 +27,10 @@ The returned **upload record** guarantees, beyond the source identity:
 
 | Field | Guarantee |
 | --- | --- |
-| `uri` | The `pipelex-storage://` reference for the uploaded asset. |
+| `uri` | The `pipelex-storage://` reference for the uploaded asset. An upload answer without a non-empty string `uri` names no stored file, so it is a transport failure with code `unexpected`, never a record. |
 | `contentType` (MIME) | Known client-side at upload time. |
 | `size` (bytes) | Known client-side at upload time. |
-| `filename` | Already in the wire model. |
+| `filename` | Already in the wire model; the name the asset was sent under when the answer names none. |
 | checksum | **Not present.** Within-preparation dedup relies on source identity, not hashing; cross-preparation dedup is a hosted storage-policy concern (Phase 5). |
 
 The MIME type and size are known client-side, so the record is assembled without extending the `/v1/upload` response.
@@ -50,7 +50,7 @@ const grant = await client.requestUploadGrant({
 // { uri, url, headers, expires_at, max_bytes }
 ```
 
-The file is described, never sent. The grant (`UploadGrant`) is a presigned, create-only `PUT` for one new object under the caller's organization: `url` is where to send it, `headers` are the signed headers to send unchanged, `uri` is the `pipelex-storage://` reference the object will carry, and `expires_at` is when storage stops accepting it, a few minutes later. The wire is snake_case like every product route, so the grant can travel to the page as JSON without a remap. A declared `size` over the limit is a `413` `ApiResponseError` whose `code` is `payload_too_large`, and a deployment without the route answers a `404`.
+The file is described, never sent. The grant (`UploadGrant`) is a presigned, create-only `PUT` for one new object under the caller's organization: `url` is where to send it, `headers` are the signed headers to send unchanged, `uri` is the `pipelex-storage://` reference the object will carry, and `expires_at` is when storage stops accepting it, a few minutes later. The wire is snake_case like every product route, so the grant can travel to the page as JSON without a remap. A declared `size` over the limit is a `413` `ApiResponseError` whose `code` is `payload_too_large`, a deployment without the route answers a `404`, and a `2xx` whose body is not a JSON object is an `ApiResponseError` the SDK cannot read, `runtime` and not retryable, rather than a grant.
 
 **The grant is a bearer capability.** Until it expires, whoever holds it can write that one object, so the SDK never logs it, and its caller should not either. The route never replays a grant for a repeated request: a caller that lost one asks for a new one.
 
@@ -221,17 +221,17 @@ Upload is a **hosted Pipelex-product capability**, even though the SDK can be po
 
 The contract distinguishes these semantic outcomes, each a typed subclass of `InputPreparationError` (catch the base to handle any preparation failure, a subclass to branch on category):
 
-- **an unresolvable signature** (`InputPreparationError`) — a bare or alias-qualified `pipe_ref`, refused before any request; a closure that does not load (`is_valid: false`, carrying the first error's message); or a pipe selection the route refused (its `422` typed `EntryPipeNotFoundError` or `EntryPipeAmbiguousError`, carrying the server's detail). Any other failure from `/v1/pipe-io` — a malformed selector, an over-limit file, an unknown or foreign-org `method_id`, no package at the address or one with no `.mthds` file, auth, a server fault, a deployment that does not serve the route — stays an `ApiResponseError` and propagates unchanged;
+- **an unresolvable signature** (`InputPreparationError`) — a bare or alias-qualified `pipe_ref`, refused before any request; a closure that does not load (`is_valid: false`, carrying the first validation item's message, else the answer's own `message`); or a pipe selection the route refused (its `422` typed `EntryPipeNotFoundError` or `EntryPipeAmbiguousError`, carrying the server's detail). Any other failure from `/v1/pipe-io` — a malformed selector, an over-limit file, an unknown or foreign-org `method_id`, no package at the address or one with no `.mthds` file, auth, a server fault, a deployment that does not serve the route — stays an `ApiResponseError` and propagates unchanged;
 - **empty method source** (`EmptyMethodSourceError`, carries `methodId`) — `getMethodClosure` found the stored method but its `mthds` source parses to nothing (the row exists, no runnable source yet). Distinct from the `getMethod` `404` for an unknown/foreign id, which stays an `ApiResponseError`. `prepareInputs` never raises it: it hands the id to the server, which answers a sourceless method with a `422`;
 - **invalid local source** (`InvalidLocalSourceError`) — missing, unreadable, or a path string outside Node;
 - **rejected asset** (`RejectedAssetError`) — the server refused it (e.g. a `413` past the service-defined size cap — see "Storage policy" — surfaced as a clear rejection with `code` `too_large`, not a raw transport error), or storage refused an upload with a grant (a used or expired grant, or a file that differs from what the grant signed — see the table above for each `code`);
 - **unsupported server capability** (`UnsupportedUploadCapabilityError`) — the configured deployment has no upload route;
 - **authentication / authorization failure** (`UploadAuthenticationError`) — `401` / `403`;
-- **transport failure** (`UploadTransportError`) — a network or server fault, or any other unexpected upload failure; its `status` is the HTTP status when a response produced it, and its `code` says which failure it was. From `uploadFile` the code is `server_error` for a `5xx`, `timeout` when the client's own request timeout ran out, `unreachable` when no response came back, and `unexpected` for any other status or failure; `uploadWithGrant`'s codes are in the table above.
+- **transport failure** (`UploadTransportError`) — a network or server fault, or any other unexpected upload failure; its `status` is the HTTP status when a response produced it, and its `code` says which failure it was. From `uploadFile` the code is `server_error` for a `5xx`, `timeout` when the client's own request timeout ran out, `unreachable` when no response came back, and `unexpected` for any other status or failure, a `2xx` answer the SDK cannot read included, such as one with no string `uri`; `uploadWithGrant`'s codes are in the table above.
 
 A malformed data URL — no comma, bad base64, bad percent-encoding — is a plain `InputPreparationError`, raised while the asset is read and before anything is uploaded.
 
-Each of these carries the verdict every SDK error does, `retryable` and `errorDomain` ([errors.md](./errors.md#each-classs-verdict)): the family's own is `input` and not retryable, an unsupported deployment and a refused credential are `config`, and a transport failure takes the verdict of the error it wraps, so a `402` plan refusal wrapped by `uploadFile` is `config` and not retryable, or, wrapping none, the verdict its `code` gives (`timeout`, `storage_timeout` and `conflict` retryable, `server_error` retryable unless storage answered a `501`, `unreachable` and `redirected` the environment's). A pipe I/O answer whose `input_form` does not describe the pipe it selected is a plain `InputPreparationError` with a `runtime` verdict, since the route broke its own contract.
+Each of these carries the verdict every SDK error does, `retryable` and `errorDomain` ([errors.md](./errors.md#each-classs-verdict)): the family's own is `input` and not retryable, an unsupported deployment and a refused credential are `config`, and a transport failure takes the verdict of the error it wraps, so a `402` plan refusal wrapped by `uploadFile` is `config` and not retryable, or, wrapping none, the verdict its `code` gives (`timeout`, `storage_timeout` and `conflict` retryable, `server_error` retryable unless storage answered a `501`, `unreachable` and `redirected` the environment's). A pipe I/O answer whose `is_valid` is not a boolean, or whose `input_form` does not describe the pipe it selected, is a plain `InputPreparationError` with a `runtime` verdict, since the route broke its own contract.
 
 All preparation failures are raised **before any run is created**.
 

@@ -190,7 +190,14 @@ export async function uploadFile(
   } catch (error) {
     throw mapUploadError(error, filename);
   }
-  return { uri: uploaded.uri, filename: uploaded.filename, contentType, size: bytes.length };
+  // The record guarantees a filename: an answer that names none keeps the one sent.
+  const stored: unknown = uploaded.filename;
+  return {
+    uri: uploaded.uri,
+    filename: typeof stored === "string" ? stored : filename,
+    contentType,
+    size: bytes.length,
+  };
 }
 
 /** Translate a raw `upload()` transport error into the matching preparation error. */

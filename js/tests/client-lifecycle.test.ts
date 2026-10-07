@@ -6,6 +6,7 @@ import {
   MissingMainStuffError,
   PipelineRequestError,
   RunLifecycleUnavailableError,
+  UploadTransportError,
   errorVerdictOf,
 } from "../src/errors.js";
 
@@ -788,6 +789,16 @@ describe("PipelexApiClient answers it cannot read", () => {
       (client: PipelexApiClient) => client.resolveStorageUrls({ uris: ["pipelex-storage://a"] }),
       "POST /v1/resolve-storage-url/bulk",
     ],
+    [
+      "getRunDetail",
+      (client: PipelexApiClient) => client.getRunDetail("run-1"),
+      "GET /v1/runs/run-1",
+    ],
+    [
+      "requestUploadGrant",
+      (client: PipelexApiClient) => client.requestUploadGrant({ filename: "a.pdf", size: 5 }),
+      "POST /v1/upload/grant",
+    ],
   ])("%s throws a typed ApiResponseError on a 200 whose body is null", async (_, call, route) => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -806,20 +817,140 @@ describe("PipelexApiClient answers it cannot read", () => {
     expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
   });
 
-  it("a product route the SDK reads refuses an empty 2xx body as an unreadable answer", async () => {
+  it.each([
+    ["listMethods", (client: PipelexApiClient) => client.listMethods(), "GET /v1/methods"],
+    [
+      "getRunDetail",
+      (client: PipelexApiClient) => client.getRunDetail("run-1"),
+      "GET /v1/runs/run-1",
+    ],
+    [
+      "requestUploadGrant",
+      (client: PipelexApiClient) => client.requestUploadGrant({ filename: "a.pdf", size: 5 }),
+      "POST /v1/upload/grant",
+    ],
+  ])(
+    "%s, a product route the SDK reads, refuses an empty 2xx body as an unreadable answer",
+    async (_, call, route) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
+
+      const err = await call(client).then(
+        () => expect.fail("expected the read to throw"),
+        (thrown: unknown) => thrown,
+      );
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      expect((err as ApiResponseError).message).toBe(
+        `API ${route} answered 200 with an empty body where JSON was expected`,
+      );
+      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    },
+  );
+
+  const UPLOAD_WITHOUT_URI = [
+    ["no uri at all", "{}"],
+    ["a null uri", '{"uri": null, "filename": "a.txt"}'],
+    ["an empty uri", '{"uri": "", "filename": "a.txt"}'],
+  ];
+
+  it.each(UPLOAD_WITHOUT_URI)(
+    "uploadFile refuses an upload answer with %s as an answer the SDK cannot read",
+    async (_, body) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(body, { status: 200, headers: { "X-Request-ID": "req-9" } }),
+      );
+
+      const err = await client.uploadFile(new Uint8Array([1]), { filename: "a.txt" }).then(
+        () => expect.fail("expected the upload to throw"),
+        (thrown: unknown) => thrown,
+      );
+
+      expect(err).toBeInstanceOf(UploadTransportError);
+      const transport = err as UploadTransportError;
+      expect(transport.code).toBe("unexpected");
+      expect(transport.status).toBe(200);
+      expect(transport.cause).toBeInstanceOf(ApiResponseError);
+      const unreadable = transport.cause as ApiResponseError;
+      expect(unreadable.message).toBe(
+        "API POST /v1/upload answered 200 with an answer with no string `uri`",
+      );
+      expect(unreadable.responseBody).toBe(body);
+      expect(unreadable.requestId).toBe("req-9");
+      // Storage may hold the file, but under no reference: nothing says a retry helps.
+      expect(errorVerdictOf(transport)).toEqual({ errorDomain: "runtime", retryable: false });
+    },
+  );
+
+  it.each(UPLOAD_WITHOUT_URI)(
+    "prepareInputs starts nothing past an upload answer with %s",
+    async (_, body) => {
+      const client = makeClient();
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
+        Promise.resolve(
+          String(input).endsWith("/v1/pipe-io")
+            ? jsonResponse(200, {
+                is_valid: true,
+                pipe_ref: "demo.main",
+                pipe_io_contracts: {},
+                input_form: {
+                  "demo.main": {
+                    fields: [
+                      {
+                        name: "photo",
+                        kind: "image",
+                        required: true,
+                        presence: "plain",
+                        gating: true,
+                      },
+                    ],
+                  },
+                },
+                output_form: {},
+                default_pipe_ref: "demo.main",
+                pending_signatures: [],
+                is_runnable: true,
+              })
+            : new Response(body, { status: 200 }),
+        ),
+      );
+
+      const err = await client
+        .prepareInputs({
+          files: [{ content: 'domain = "demo"' }],
+          inputs: { photo: new Uint8Array([1]) },
+        })
+        .then(
+          () => expect.fail("expected the preparation to throw"),
+          (thrown: unknown) => thrown,
+        );
+
+      expect(err).toBeInstanceOf(UploadTransportError);
+      expect((err as UploadTransportError).code).toBe("unexpected");
+      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+      // No prepared input carrying no URL ever reaches a run.
+      expect(fetchSpy.mock.calls.map((call) => String(call[0]))).toEqual([
+        "http://localhost:8081/v1/pipe-io",
+        "http://localhost:8081/v1/upload",
+      ]);
+    },
+  );
+
+  it("uploadFile keeps the filename it sent when the upload answer names none", async () => {
     const client = makeClient();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
-
-    const err = await client.listMethods().then(
-      () => expect.fail("expected the read to throw"),
-      (thrown: unknown) => thrown,
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { uri: "pipelex-storage://org/assets/1.txt" }),
     );
 
-    expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).message).toBe(
-      "API GET /v1/methods answered 200 with an empty body where JSON was expected",
-    );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    const record = await client.uploadFile(new Uint8Array([1, 2]), { filename: "a.txt" });
+
+    expect(record).toEqual({
+      uri: "pipelex-storage://org/assets/1.txt",
+      filename: "a.txt",
+      contentType: "text/plain",
+      size: 2,
+    });
   });
 
   it.each([
