@@ -583,6 +583,34 @@ describe("the environments that guard publishing and the export", () => {
   });
 });
 
+// The initializer's build runs the family's tests before it packs the package, and those tests
+// read what the pull request's family job installs first, the web app template's form kernel
+// among it. A test that passes on the pull request but cannot run in the release fails the
+// publish after the tag is cut, which is how npm never received the initializer at v0.32.0.
+describe("the initializer's build", () => {
+  /** A job of a workflow under `.github/workflows/`, by its id, as the text of its block. */
+  function job(file, id) {
+    const text = fs.readFileSync(path.join(ROOT, ".github/workflows", file), "utf8");
+    const blocks = text.slice(text.indexOf("\njobs:\n")).split(/^(?=  [\w-]+:\n)/m).slice(1);
+    const block = blocks.find((each) => each.startsWith(`  ${id}:\n`));
+    assert.ok(block, `${file} has the job ${id}`);
+    return block;
+  }
+
+  /** The directories a job runs `npm ci` in before the step that runs the family's tests. */
+  function installedBeforeFamilyTests(block) {
+    const tests = block.search(/^\s+run: make -C method-apps (?:check-family )?test-family$/m);
+    assert.ok(tests > 0, "the job runs the family's tests");
+    return [...block.slice(0, tests).matchAll(/^\s+working-directory: (\S+)\n\s+run: npm ci$/gm)].map((match) => match[1]);
+  }
+
+  it("installs every directory the pull request's family job installs, before the family's tests", () => {
+    const pullRequest = installedBeforeFamilyTests(job("ci.yml", "method-apps-family"));
+    assert.ok(pullRequest.length > 0, "the pull request's family job installs a template");
+    assert.deepEqual(installedBeforeFamilyTests(job("release.yml", "npm-initializer-build")), pullRequest);
+  });
+});
+
 // npm reads a package argument shaped like `owner/repo` as a GitHub shorthand before it considers
 // a file (npm-package-arg), so `npm publish tarball/x.tgz` tries to clone
 // github.com/tarball/x.tgz.git and never reaches the registry: that is how both npm publishes of

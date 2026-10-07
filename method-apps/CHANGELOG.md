@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`@pipelex/create-method-app` reaches npm with what v0.32.0 lists**: the release of v0.32.0 failed to build the initializer, so npm never received `@pipelex/create-method-app` 0.32.0, and this version is the first published since 0.29.1, carrying the changes listed under v0.32.0. `cli-python`'s copy-out still names v0.32.0, whose tag holds the template.
+
 ## [v0.32.0] - 2026-10-07
 
 ### Added
