@@ -1,14 +1,21 @@
 """Tests for the transport extension layer — `_request_product` / `_request_json`, httpx mocked."""
 
+from __future__ import annotations
+
 import asyncio
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 from mthds.protocol.exceptions import PipelineRequestError
-from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+
+    from tests.unit.conftest import UnreachableClientBuilder
 
 _BASE_URL = "http://localhost:8081"
 
@@ -63,18 +70,16 @@ class TestClientTransport:
         assert err.error_type == "Conflict"
         assert err.api_url == _BASE_URL
 
-    def test_request_product_connect_failure_maps_to_unreachable(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=httpx.ConnectError("refused")))
+    def test_request_product_connect_failure_maps_to_unreachable(self, unreachable_client: UnreachableClientBuilder) -> None:
+        client = unreachable_client(httpx.ConnectError)
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client._request_product("GET", "me"))
         err = exc_info.value
         assert err.api_url == _BASE_URL
         assert err.code == "ConnectError"
 
-    def test_request_product_timeout_maps_to_unreachable_abort(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=httpx.ConnectTimeout("slow")))
+    def test_request_product_timeout_maps_to_unreachable_abort(self, unreachable_client: UnreachableClientBuilder) -> None:
+        client = unreachable_client(httpx.ConnectTimeout)
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client._request_product("GET", "me"))
         assert exc_info.value.code == "ABORT_TIMEOUT"
@@ -94,8 +99,7 @@ class TestClientTransport:
             asyncio.run(client._request_json("GET", f"{client.origin_url}/health"))
         assert not isinstance(exc_info.value, ApiResponseError)
 
-    def test_request_json_transport_failure_maps_to_unreachable(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=httpx.ReadError("reset")))
+    def test_request_json_transport_failure_maps_to_unreachable(self, unreachable_client: UnreachableClientBuilder) -> None:
+        client = unreachable_client(httpx.ReadError)
         with pytest.raises(ApiUnreachableError):
             asyncio.run(client._request_json("GET", f"{client.origin_url}/health"))

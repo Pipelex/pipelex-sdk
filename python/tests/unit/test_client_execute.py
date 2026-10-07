@@ -4,18 +4,26 @@ Mirrors `pipelex-sdk-js/tests/client.test.ts` "execute gateway 30s timeout": a 5
 client-side request timeout — at/after the ~28s ceiling becomes a clear `PipelineExecuteTimeoutError`
 pointing at start+poll, while a fast 503 stays the `ApiResponseError` every non-2xx raises (runner down,
 not a timeout) and the 202 async-degrade stays the inherited `RunStillRunningError`. The translation reads
-the typed error the inherited route raises through the client's `_raise_api_response_error` override, so
-each case here proves it still fires on that error rather than on httpx's.
+the typed errors the inherited route raises through the client's overrides — `_raise_api_response_error`
+for an answer, `_send` for a timeout, which arrives as the `ApiUnreachableError` whose code is
+`ABORT_TIMEOUT` — so each case here proves it still fires on those errors rather than on httpx's.
 """
 
+from __future__ import annotations
+
 import asyncio
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
-from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.errors import ApiResponseError, MissingMainStuffError, PipelineExecuteTimeoutError, RunStillRunningError
+from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, MissingMainStuffError, PipelineExecuteTimeoutError, RunStillRunningError
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+
+    from tests.unit.conftest import UnreachableClientBuilder
 
 _BASE_URL = "http://localhost:8081"
 
@@ -73,13 +81,37 @@ class TestClientExecute:
         assert isinstance(exc_info.value.__cause__, ApiResponseError)
         assert exc_info.value.__cause__.status == 504
 
-    def test_client_timeout_past_ceiling_translates_to_timeout(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=httpx.ReadTimeout("timed out")))
+    def test_client_timeout_past_ceiling_translates_to_timeout(self, mocker: MockerFixture, unreachable_client: UnreachableClientBuilder) -> None:
+        client = unreachable_client(httpx.ReadTimeout)
         mocker.patch("pipelex_sdk.client.monotonic", side_effect=[0.0, 30.5])
 
-        with pytest.raises(PipelineExecuteTimeoutError):
+        with pytest.raises(PipelineExecuteTimeoutError) as exc_info:
             asyncio.run(client.execute(pipe_code="p"))
+
+        error = exc_info.value
+        assert error.elapsed_seconds == 30.5
+        # The timeout is kept as the cause, as the SDK's own unreachable error rather than httpx's.
+        assert isinstance(error.__cause__, ApiUnreachableError)
+        assert error.__cause__.code == "ABORT_TIMEOUT"
+        assert isinstance(error.__cause__.__cause__, httpx.ReadTimeout)
+
+    def test_client_timeout_under_ceiling_stays_unreachable(self, mocker: MockerFixture, unreachable_client: UnreachableClientBuilder) -> None:
+        client = unreachable_client(httpx.ReadTimeout)
+        # Cut off at 2s: the client's own timeout, not the gateway's ~30s ceiling.
+        mocker.patch("pipelex_sdk.client.monotonic", side_effect=[0.0, 2.0])
+
+        with pytest.raises(ApiUnreachableError) as exc_info:
+            asyncio.run(client.execute(pipe_code="p"))
+        assert exc_info.value.code == "ABORT_TIMEOUT"
+
+    def test_refused_connection_past_ceiling_stays_unreachable(self, mocker: MockerFixture, unreachable_client: UnreachableClientBuilder) -> None:
+        client = unreachable_client(httpx.ConnectError)
+        # However long it took, a request that never connected is no gateway cut-off.
+        mocker.patch("pipelex_sdk.client.monotonic", side_effect=[0.0, 30.5])
+
+        with pytest.raises(ApiUnreachableError) as exc_info:
+            asyncio.run(client.execute(pipe_code="p"))
+        assert exc_info.value.code == "ConnectError"
 
     def test_fast_503_stays_an_api_response_error(self, mocker: MockerFixture) -> None:
         client = self._client()

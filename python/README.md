@@ -204,6 +204,19 @@ except ApiResponseError as exc:
 
 On a problem the runner rendered, branch on `error_domain` for the class — `if exc.error_domain == "input":` shows the caller what to fix, whatever the exact error. The rest of the document rides beside them: `server_message` (the `detail`), `title`, `instance`, `retryable`, `user_action` (the `mthds` `UserAction`, kept only when it has a `kind` and a non-empty `detail`), `error_category`, the platform's field-level `errors`, `validation_errors` for a bundle fault, and `request_id` for a support request, read from the body or from the `X-Request-ID` header. The answer itself stays reachable as plain data: `status`, `headers` (lower-case names, so `exc.headers.get("retry-after")` reads a `429`'s delay) and `request_url`. `code` (the platform's closed code, such as `conflict`) and `error_type` (the runner's exception class name) are each surface's own finer code — useful for display and support, not the field to branch on. `problem` is the decoded document whole, for any member the SDK does not name.
 
+### No answer at all: `ApiUnreachableError`
+
+When a request gets no answer — a refused connection, a host name that does not resolve, a TLS failure, a timeout — every method of the client raises `ApiUnreachableError`, never httpx's own exception: the protocol routes (`execute`, `start`, `validate`, `models`, `version`) as well as the run reads, `wait_for_result`, `start_and_wait`, the product routes and `health`. It carries `api_url`, the base URL that could not be reached, and `code`: `ABORT_TIMEOUT` when the client's own timeout cut the request off, and otherwise the name of the httpx failure (`ConnectError`, `ReadError`, …), which stays reachable as `__cause__`. Like `ApiResponseError`, it is a `PipelineRequestError`, so one `except PipelineRequestError` covers every failed request. A blocking `execute` cut off by a timeout after about 28 seconds raises `PipelineExecuteTimeoutError` instead, pointing at `start_and_wait`.
+
+```python
+from pipelex_sdk.errors import ApiUnreachableError
+
+try:
+    result = await client.start_and_wait(pipe_code="pitch_product", mthds_contents=[bundle])
+except ApiUnreachableError as exc:
+    print(f"Could not reach the Pipelex API at {exc.api_url} ({exc.code}); check PIPELEX_BASE_URL and your network.")
+```
+
 ## Public import paths (no barrel)
 
 There is no barrel import — package `__init__.py` files stay empty. Import each symbol from its module:
