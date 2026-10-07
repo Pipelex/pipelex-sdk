@@ -77,9 +77,25 @@ try {
 
 ### Errors
 
-A refused request throws an `ApiResponseError` carrying every member of the server's RFC 9457 problem document. **Branch on `errorDomain` and `type`**, as the hosted-envelope spec says, never on the HTTP status or the message: `errorDomain` says who can fix the failure (`input` for the caller, `config` for a configuration change, `runtime` for nobody beforehand) and `type` is the stable URI of the error class, the same on every occurrence. `retryable` says whether a retry can succeed, `userAction` gives the next step, and `requestId` — from the body, or the `X-Request-ID` header — is the id to hand to support. `code` (the platform's native code, one-to-one with `type`) and `errorType` (the runner's exception class name) stay available as each surface's finer code, and `errors` carries the platform's field-level failures.
+Every error the SDK throws carries a verdict: `retryable`, whether asking again can succeed, and `errorDomain`, who can fix the failure (`input` for the caller, `config` for a change to the environment such as the credential, the plan or the base URL, `runtime` for nobody beforehand). Both are always decided, and `errorVerdictOf` reads them from anything a `catch` holds, returning `undefined` for what is not an SDK error, such as a bug in the calling code or your own abort. "Retryable" means a retry can succeed, not that it is safe: a start answered with a `500` may already have created a run.
 
-On the hosted API, a run that ends without completing throws a `RunFailedError` from `waitForResult`, `startAndWaitForResult` and `downloadArtifacts`, and comes back as the `failed` arm of `getRunResult`. (Against a bare `pipelex-api` runner, `startAndWaitForResult` runs the method with the blocking `execute`, so a failed run there throws the runner's `ApiResponseError`, whose problem members carry the same classification.) Its `status` is the run's terminal status and its `error` is the run's stored error report, typed whole as `RunErrorReport`: the reason in `message`, `error_domain`, `type_uri` and `retryable` to branch on, `user_action` as the next step, and the inference details. It is `null` when the run ended without a report. The report is the runner's VERBOSE one, provider text included, so what a person sees is your presentation:
+```ts
+import { errorVerdictOf } from "@pipelex/sdk";
+
+try {
+  await client.startAndWaitForResult({ method_id: "mt_abc123", inputs });
+} catch (err) {
+  const verdict = errorVerdictOf(err);
+  if (verdict === undefined) throw err; // not an SDK error: a bug, or the caller's own abort
+  if (verdict.retryable) return scheduleRetry();
+  if (verdict.errorDomain === "input") return askTheUserToFix(err);
+  return reportToOperator(err);
+}
+```
+
+A refused request throws an `ApiResponseError` carrying every member of the server's RFC 9457 problem document. **Branch on `errorDomain` and `type`**, as the hosted-envelope spec says, never on the HTTP status or the message: `errorDomain` is the verdict's domain and `type` is the stable URI of the error class, the same on every occurrence. The verdict is the server's when it sent a valid one, and otherwise the SDK's fallback, read from the status, except that an `input` or `config` domain the server sent without `retryable` is not retryable; `problemDocument` keeps what the server sent. `userAction` gives the next step, and `requestId` — from the body, or the `X-Request-ID` header — is the id to hand to support. `code` (the platform's native code, one-to-one with `type`) and `errorType` (the runner's exception class name) stay available as each surface's finer code, and `errors` carries the platform's field-level failures.
+
+On the hosted API, a run that ends without completing throws a `RunFailedError` from `waitForResult`, `startAndWaitForResult` and `downloadArtifacts`, and comes back as the `failed` arm of `getRunResult`. (Against a bare `pipelex-api` runner, `startAndWaitForResult` runs the method with the blocking `execute`, so a failed run there throws the runner's `ApiResponseError`, whose problem members carry the same classification.) Its `status` is the run's terminal status and its `error` is the run's stored error report, checked field by field and typed as `RunErrorReport`: the reason in `message`, `error_domain`, `type_uri` and `retryable` to branch on, `user_action` as the next step, and the inference details. It is `null` when the run ended without a report, and the error's own verdict comes from it: the report's domain, and retryable only when the report says so. The report is the runner's VERBOSE one, provider text included, so what a person sees is your presentation:
 
 ```ts
 import { RunFailedError } from "@pipelex/sdk";
@@ -94,7 +110,7 @@ try {
 }
 ```
 
-[`docs/errors.md`](./docs/errors.md) lists every field of both.
+[`docs/errors.md`](./docs/errors.md) gives each class's verdict, the fallback table, and every field of both.
 
 ### Client identification
 
@@ -137,7 +153,7 @@ These pages ship inside the published package, so a reader who has only installe
 | [`docs/input-preparation.md`](./docs/input-preparation.md) | The other direction — `uploadFile` and `prepareInputs`, which turn local files into references a run can take, and the upload grant a browser page sends a file with |
 | [`docs/crate-routes.md`](./docs/crate-routes.md) | `resolve`, `codegen` and `pipeIo` — the normalized crate, the stamped types, and a method's I/O artifacts without a validation — and the offline `runCodegenCheck` that guards a committed tree |
 | [`docs/client-identification.md`](./docs/client-identification.md) | The `User-Agent` every API request carries, and `appInfo`, the option that puts your program's name in front of it |
-| [`docs/errors.md`](./docs/errors.md) | A failed run's stored error report on `RunFailedError` and `RunRead`, and every member of a refused request's `ApiResponseError`, with the fields to branch on |
+| [`docs/errors.md`](./docs/errors.md) | The verdict every error carries (`retryable`, `errorDomain`, `errorVerdictOf`), a failed run's stored error report on `RunFailedError` and `RunRead`, and every member of a refused request's `ApiResponseError`, with the fields to branch on |
 
 ## Develop
 

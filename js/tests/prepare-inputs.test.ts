@@ -934,6 +934,61 @@ describe("prepareInputs verdicts and guards", () => {
     await expect(failure).rejects.toThrow(/unknown pipe type/);
   });
 
+  it.each([
+    ["no validation_errors", { is_valid: false, message: "bad" }],
+    ["a null validation_errors", { is_valid: false, message: "bad", validation_errors: null }],
+    ["an empty validation_errors", { is_valid: false, message: "bad", validation_errors: [] }],
+    [
+      "a first item that is not an object",
+      { is_valid: false, message: "bad", validation_errors: ["oops"] },
+    ],
+  ])("reads an invalid answer with %s by its own message", async (_, result) => {
+    const client = makeClient([], { result: result as unknown as PipeIOResponse });
+
+    const err = await prepareInputs(client, { files: FILES, inputs: {} }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(InputPreparationError);
+    expect((err as Error).message).toBe(
+      "Cannot prepare inputs: the method signature did not resolve — bad",
+    );
+    // The closure does not load: the caller's method must change.
+    expect((err as InputPreparationError).errorDomain).toBe("input");
+    expect((err as InputPreparationError).retryable).toBe(false);
+  });
+
+  it("still fails an invalid answer that gives no reason at all", async () => {
+    const client = makeClient([], {
+      result: { is_valid: false, validation_errors: null } as unknown as PipeIOResponse,
+    });
+
+    await expect(prepareInputs(client, { files: FILES, inputs: {} })).rejects.toThrow(
+      "the method signature did not resolve — the answer gives no reason",
+    );
+  });
+
+  it.each([
+    ["no is_valid at all", {}],
+    ["a null is_valid", { is_valid: null, message: "bad" }],
+    ["a string is_valid", { is_valid: "false", message: "bad" }],
+  ])(
+    "refuses a pipe I/O answer with %s as a broken contract, not the caller's",
+    async (_, result) => {
+      const client = makeClient([], { result: result as unknown as PipeIOResponse });
+
+      const err = await prepareInputs(client, {
+        files: FILES,
+        inputs: { photo: new Uint8Array([1]) },
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(InputPreparationError);
+      expect((err as Error).message).toMatch(/carries no boolean `is_valid`/);
+      // The route broke its own contract, which no change to the request fixes.
+      expect((err as InputPreparationError).errorDomain).toBe("runtime");
+      expect((err as InputPreparationError).retryable).toBe(false);
+      expect(client.uploadCalls).toHaveLength(0);
+    },
+  );
+
   it("prepares a pipe whose method still has a pending signature elsewhere", async () => {
     // Preparation needs the pipe's DECLARED inputs; whether the method runs is the
     // run's verdict. The route reports runnability beside the form and refuses nothing.

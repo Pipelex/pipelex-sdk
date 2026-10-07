@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PipelexApiClient } from "../src/client.js";
-import { ApiResponseError, EmptyMethodSourceError } from "../src/errors.js";
+import { ApiResponseError, EmptyMethodSourceError, errorVerdictOf } from "../src/errors.js";
 
 const BASE_URL = "http://localhost:8081";
 
@@ -16,8 +16,11 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-/** A `GET /v1/methods/{id}` 200 carrying `mthds` as its polymorphic source. */
-function methodResponse(methodId: string, mthds: string): Response {
+/**
+ * A `GET /v1/methods/{id}` 200 carrying `mthds` as its polymorphic source — or, for the
+ * cases that test what the SDK refuses, any other JSON value.
+ */
+function methodResponse(methodId: string, mthds: unknown): Response {
   return jsonResponse(200, {
     method_id: methodId,
     org_id: "o1",
@@ -82,6 +85,53 @@ describe("getMethodClosure", () => {
       EmptyMethodSourceError,
     );
   });
+
+  it("throws EmptyMethodSourceError for a null source, which is no source", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(methodResponse("mt_null", null));
+
+    await expect(client.getMethodClosure("mt_null")).rejects.toBeInstanceOf(EmptyMethodSourceError);
+  });
+
+  const SOURCES_NOT_STRINGS: [string, unknown][] = [
+    ["a number", 42],
+    ["a boolean", true],
+    ["an object", {}],
+    ["an array", ["a"]],
+  ];
+
+  it.each(SOURCES_NOT_STRINGS)(
+    "getMethodClosure throws a typed ApiResponseError for a stored source that is %s",
+    async (_, mthds) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(methodResponse("mt_odd", mthds));
+
+      const err = await client.getMethodClosure("mt_odd").catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      expect((err as ApiResponseError).message).toBe(
+        "API GET /v1/methods/mt_odd answered 200 with a stored method whose `mthds` field is " +
+          "not a string",
+      );
+      expect((err as ApiResponseError).status).toBe(200);
+      // Server data no change to the call fixes: runtime, and nothing says a retry helps.
+      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    },
+  );
+
+  it.each(SOURCES_NOT_STRINGS)(
+    "getMethod throws a typed ApiResponseError for a stored source that is %s",
+    async (_, mthds) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(methodResponse("mt_odd", mthds));
+
+      const err = await client.getMethod("mt_odd").catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      expect((err as ApiResponseError).message).toMatch(/whose `mthds` field is not a string$/);
+      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    },
+  );
 
   it("propagates the getMethod 404 for an unknown/foreign-org id (not EmptyMethodSourceError)", async () => {
     const client = makeClient();

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
-import { ApiResponseError } from "../src/errors.js";
+import { ApiResponseError, PagingNotTerminatingError } from "../src/errors.js";
 import type { RunErrorReport } from "../src/error-models.js";
 import type { PipelineRun, RunHistoryItem, RunPage } from "../src/product-models.js";
 import type { RunStatus } from "../src/runs.js";
@@ -177,11 +177,22 @@ describe("methods catalog", () => {
       return Promise.resolve(jsonResponse(200, { items: [], next_cursor: `c${n}` }));
     });
 
-    await expect(async () => {
+    const err = await (async () => {
       for await (const _ of client.iterateMethods()) {
         // no-op
       }
-    }).rejects.toThrow(/did not terminate/i);
+    })().then(
+      () => expect.fail("expected iterateMethods to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(PagingNotTerminatingError);
+    const paging = err as PagingNotTerminatingError;
+    expect(paging.message).toMatch(/did not terminate/i);
+    expect(paging.pageLimit).toBe(10_000);
+    // A server minting cursors forever is its own fault, and asking again meets it again.
+    expect(paging.errorDomain).toBe("runtime");
+    expect(paging.retryable).toBe(false);
   });
 
   it("iterateMethods stops when the server stops advancing the cursor", async () => {
@@ -937,6 +948,64 @@ describe("runs list / update", () => {
     expect(req.url).toBe("http://localhost:8081/v1/runs/r1");
     expect(req.body).toEqual({ status: "COMPLETED", result_url: "https://x" });
   });
+});
+
+describe("a page the SDK cannot read", () => {
+  const ITEMS_NOT_AN_ARRAY = "a page whose `items` is not an array";
+  const NO_CURSOR = "a page whose `next_cursor` is neither a string nor null";
+  const ROW = { method_id: "m1", pipeline_run_id: "r1", name: "A", created_at: "t" };
+  const MALFORMED_PAGES: [string, unknown, string][] = [
+    ["no items", { next_cursor: null }, ITEMS_NOT_AN_ARRAY],
+    ["null items", { items: null, next_cursor: null }, ITEMS_NOT_AN_ARRAY],
+    ["items that are an object", { items: {}, next_cursor: null }, ITEMS_NOT_AN_ARRAY],
+    ["no next_cursor", { items: [ROW] }, NO_CURSOR],
+    ["a numeric next_cursor", { items: [ROW], next_cursor: 42 }, NO_CURSOR],
+  ];
+  /** Every row an iterator yields, so a case reads its whole stream as a list call reads a page. */
+  async function drain<T>(rows: AsyncIterable<T>): Promise<T[]> {
+    const seen: T[] = [];
+    for await (const row of rows) seen.push(row);
+    return seen;
+  }
+  const ROUTES: [string, (client: PipelexApiClient) => Promise<unknown>, string][] = [
+    ["listMethods", (client) => client.listMethods(), "/v1/methods"],
+    ["iterateMethods", (client) => drain(client.iterateMethods()), "/v1/methods"],
+    ["listRuns", (client) => client.listRuns("m1"), "/v1/runs?method_id=m1"],
+    ["iterateRuns", (client) => drain(client.iterateRuns("m1")), "/v1/runs?method_id=m1"],
+  ];
+  const CASES = ROUTES.flatMap(([name, call, path]) =>
+    MALFORMED_PAGES.map(([shape, page, what]) => [name, shape, call, path, page, what] as const),
+  );
+
+  it.each(CASES)(
+    "%s throws a typed ApiResponseError on a page with %s, after one request",
+    async (_, __, call, path, page, what) => {
+      const client = makeClient();
+      // A fresh Response per call, so a loop that kept paging would show in the call count
+      // rather than fail on a body already read.
+      const spy = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(() =>
+          Promise.resolve(jsonResponse(200, page, { "X-Request-ID": "req-p" })),
+        );
+
+      const err = await call(client).then(
+        () => expect.fail("expected the read to throw"),
+        (thrown: unknown) => thrown,
+      );
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      const unreadable = err as ApiResponseError;
+      expect(unreadable.message).toBe(`API GET ${path} answered 200 with ${what}`);
+      expect(unreadable.status).toBe(200);
+      expect(unreadable.responseBody).toBe(JSON.stringify(page));
+      expect(unreadable.requestId).toBe("req-p");
+      // A page the platform never serializes: runtime, and nothing says a retry helps.
+      expect(unreadable.errorDomain).toBe("runtime");
+      expect(unreadable.retryable).toBe(false);
+      expect(spy).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 describe("product transport", () => {

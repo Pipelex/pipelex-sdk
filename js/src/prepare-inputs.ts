@@ -376,7 +376,9 @@ function normalizePipeRef(raw: unknown): string | undefined {
  * arm means the closure does not load, which is a preparation failure. So is a
  * selection the route refuses — an unknown `pipe_ref`, no entry pipe, several —
  * which it answers with a `422` typed by one of {@link PIPE_SELECTION_ERROR_TYPES};
- * every other failure is re-thrown unchanged.
+ * every other failure is re-thrown unchanged. An answer with no boolean `is_valid`
+ * is neither arm, so it fails the preparation with a `runtime` verdict, as an
+ * `input_form` that does not describe the selected pipe does.
  */
 async function fetchSignature(
   client: PrepareCapableClient,
@@ -401,13 +403,34 @@ async function fetchSignature(
     throw error;
   }
 
-  if (!result.is_valid) {
-    const first = result.validation_errors[0]?.message ?? result.message;
+  const answer: unknown = result;
+  if (!isPlainObject(answer) || typeof answer.is_valid !== "boolean") {
+    // An answer with no boolean discriminant is neither arm: the route broke its own contract,
+    // which no change to the request fixes.
     throw new InputPreparationError(
-      `Cannot prepare inputs: the method signature did not resolve — ${first}`,
+      "Cannot prepare inputs: the pipe I/O answer carries no boolean `is_valid`, so it says " +
+        "neither that the method loaded nor why it did not.",
+      { verdict: { errorDomain: "runtime", retryable: false } },
     );
   }
-  return result;
+  if (!answer.is_valid) {
+    throw new InputPreparationError(
+      `Cannot prepare inputs: the method signature did not resolve — ${invalidReason(answer)}`,
+    );
+  }
+  return result as PipeIOValidReport;
+}
+
+/**
+ * Why an invalid pipe I/O answer says the closure did not load: its first validation item's
+ * message, else its own `message`. Each is read only when it has its declared type, since the
+ * answer is the server's, and an answer carrying neither still fails the preparation.
+ */
+function invalidReason(answer: Record<string, unknown>): string {
+  const items = answer.validation_errors;
+  const first: unknown = Array.isArray(items) ? items[0] : undefined;
+  if (isPlainObject(first) && typeof first.message === "string") return first.message;
+  return typeof answer.message === "string" ? answer.message : "the answer gives no reason";
 }
 
 /**
@@ -423,9 +446,11 @@ function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor 
     const described = isPlainObject(inputForm)
       ? Object.keys(inputForm).join(", ") || "none"
       : "none";
+    // The route broke its own contract, which no change to the request fixes.
     throw new InputPreparationError(
       `Cannot prepare inputs: the pipe I/O answer selected ${pipeRef === undefined ? "no pipe" : `"${pipeRef}"`}, ` +
         `but its \`input_form\` does not describe it (it describes: ${described}).`,
+      { verdict: { errorDomain: "runtime", retryable: false } },
     );
   }
   return (inputForm as InputForm)[pipeRef] as PipeInputFormDescriptor;

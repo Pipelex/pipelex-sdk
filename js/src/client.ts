@@ -83,19 +83,22 @@ import {
   ApiUnreachableError,
   EmptyMethodSourceError,
   MissingMainStuffError,
+  PagingNotTerminatingError,
   PipelineExecuteTimeoutError,
   PipelineRequestError,
+  RequestArgumentError,
   RunLifecycleUnavailableError,
   RunStillRunningError,
 } from "./errors.js";
-import type {
-  FieldError,
-  MigrationErrorBlock,
-  ProblemDetails,
-  ProviderErrorMetadata,
-  RunErrorReport,
-  UserAction,
+import {
+  isPlainObject,
+  isValidationItem,
+  readFieldError,
+  readMigration,
+  readProviderMetadata,
+  readRunErrorReport,
 } from "./error-models.js";
+import type { ProblemDetails, UserAction } from "./error-models.js";
 import { methodSourceToContents } from "./method-source.js";
 import { buildUserAgent } from "./user-agent.js";
 import type { AppInfo } from "./user-agent.js";
@@ -328,10 +331,23 @@ type MethodDataWire = Omit<MethodData, "python"> & { python?: string };
 /** `MethodWriteInput` as it travels on the wire — `python` is the serialized catalog string. */
 type MethodWriteWire = Omit<MethodWriteInput, "python"> & { python?: string };
 
-/** Parse a wire method into the public shape (`python` → `MethodFile[]`). */
-function methodDataFromWire(wire: MethodDataWire): MethodData {
+/**
+ * Parse a wire method into the public shape (`python` → `MethodFile[]`). A stored `python` that
+ * is not the serialized `[{ name, content }]` list is server data the SDK cannot read, not a
+ * caller's argument, so `mthds`'s refusal is handed to `unreadable`, which builds the error to
+ * throw from the answer that carried it.
+ */
+function methodDataFromWire(
+  wire: MethodDataWire,
+  unreadable: (cause: unknown) => Error,
+): MethodData {
   const { python, ...rest } = wire;
-  return python == null ? rest : { ...rest, python: parseMethodFiles(python) };
+  if (python == null) return rest;
+  try {
+    return { ...rest, python: parseMethodFiles(python) };
+  } catch (err) {
+    throw unreadable(err);
+  }
 }
 
 /**
@@ -371,12 +387,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     // this constructor and must be held to that rule, or a path-prefixed value
     // (e.g. `.../v1`) composes as `/v1/v1/...` and fails with a misleading
     // endpoint error instead of a clear base-URL one. Trailing slashes are
-    // stripped first; a remaining path/query/fragment/credentials is rejected.
+    // stripped first; a remaining path/query/fragment/credentials is rejected. The
+    // refusal is `config`: the value typically comes from PIPELEX_BASE_URL, the environment.
     if (!isValidBaseUrl(normalizedBaseUrl)) {
-      throw new PipelineRequestError(
+      throw new RequestArgumentError(
         `Invalid API base URL "${normalizedBaseUrl}": must be host-only ` +
           `(http/https, no path, query, fragment, or credentials). Endpoints ` +
           `compose as {base}/v1/{endpoint}.`,
+        { verdict: { errorDomain: "config", retryable: false } },
       );
     }
     this.baseUrl = normalizedBaseUrl;
@@ -497,26 +515,6 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
-   * Issue a request and parse the JSON body, throwing a plain `Error` on a non-2xx
-   * response. Used only by `health` — the origin-level liveness probe, which sits
-   * outside `/v1` and outside the RFC 7807 error taxonomy the `/v1` routes share.
-   * Every `/v1` route goes through a helper that maps its problem body to the typed
-   * `ApiResponseError` instead.
-   */
-  private async requestJson<T>(method: HttpMethod, url: string, body?: unknown): Promise<T> {
-    const res = await fetch(url, {
-      method,
-      headers: this.requestHeaders(body !== undefined),
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`API ${method} ${url} failed (${res.status}): ${text || res.statusText}`);
-    }
-    return res.json() as Promise<T>;
-  }
-
-  /**
    * Issue a Pipelex-product request (`/v1/me`, `/v1/methods`, `/v1/billing/*`,
    * …) and parse its JSON body, mapping a non-2xx response to the typed
    * `ApiResponseError` so callers branch on its `errorDomain` and `type`, not the
@@ -530,6 +528,102 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     body?: unknown,
     options: { signal?: AbortSignal } = {},
   ): Promise<T> {
+    const res = await this.requestProductAnswer(method, endpoint, body, options);
+    return (res.body ? this.readAnswer<T>(method, endpoint, res) : undefined) as T;
+  }
+
+  /**
+   * A product request whose answer is an object the SDK or its caller reads before anything else
+   * — a bulk resolution's `items`, a run record's `error`, an upload grant's `url`. Unlike
+   * `requestProduct`, an empty
+   * 2xx is no answer here: it and a body that is not a JSON object throw the `ApiResponseError`
+   * of an answer the SDK cannot read (see `readObjectAnswerAt`).
+   */
+  private async requestProductObject<T extends object>(
+    method: HttpMethod,
+    endpoint: string,
+    body?: unknown,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<T> {
+    const res = await this.requestProductAnswer(method, endpoint, body, options);
+    return this.readObjectAnswer<T>(method, endpoint, res);
+  }
+
+  /**
+   * A methods-catalog route answering one stored method (`getMethod`, `createMethod`,
+   * `updateMethod`), parsed into the public shape. A stored `mthds` that is neither a string nor
+   * absent (`null` stays "no source", which `getMethodClosure` reports), and a stored `python`
+   * the SDK cannot parse, are an answer it cannot read, so each throws an `ApiResponseError` built
+   * from that answer, the latter with `mthds`'s refusal as `cause`: `runtime`, not retryable,
+   * since no change to the call fixes it.
+   */
+  private async requestMethodData(
+    method: HttpMethod,
+    endpoint: string,
+    body?: unknown,
+  ): Promise<MethodData> {
+    const res = await this.requestProductAnswer(method, endpoint, body);
+    const wire = this.readObjectAnswer<MethodDataWire>(method, endpoint, res);
+    const source: unknown = wire.mthds;
+    if (source != null && typeof source !== "string") {
+      throw this.unreadableAnswer(
+        method,
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a stored method whose `mthds` field is not a string",
+      );
+    }
+    return methodDataFromWire(wire, (cause) =>
+      this.unreadableAnswer(
+        method,
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a stored method whose `python` field could not be read",
+        cause,
+      ),
+    );
+  }
+
+  /**
+   * One page of a cursor-paged product route (`listMethods`, `listRuns`), read as the platform
+   * always serializes it: `items` an array, `next_cursor` a string or `null`. A page breaking
+   * either is an answer the SDK cannot read, so it throws the `ApiResponseError` `unreadableAnswer`
+   * builds, `runtime` and not retryable, rather than handing the iterators a page they cannot
+   * walk: `items` that is not iterable, or a missing cursor that is neither the end nor a next
+   * page, which `iterateRuns` would follow forever.
+   */
+  private async requestPage<T>(
+    endpoint: string,
+  ): Promise<{ items: T[]; nextCursor: string | null }> {
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
+    const page = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const { items, next_cursor: nextCursor } = page;
+    if (!Array.isArray(items)) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a page whose `items` is not an array",
+      );
+    }
+    if (nextCursor !== null && typeof nextCursor !== "string") {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a page whose `next_cursor` is neither a string nor null",
+      );
+    }
+    return { items: items as T[], nextCursor };
+  }
+
+  /** Issue a product request and return its 2xx answer, a non-2xx thrown as `ApiResponseError`. */
+  private async requestProductAnswer(
+    method: HttpMethod,
+    endpoint: string,
+    body: unknown,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RawResponse> {
     const res = await this.requestRaw(method, this.url(endpoint), {
       body,
       timeoutMs: POLL_REQUEST_TIMEOUT_MS,
@@ -538,10 +632,96 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError(method, endpoint, res);
     }
-    return (res.body ? JSON.parse(res.body) : undefined) as T;
+    return res;
   }
 
   private throwApiResponseError(method: HttpMethod, endpoint: string, res: RawResponse): never {
+    this.throwApiResponseErrorAt(method, `/${API_PREFIX}/${endpoint}`, res);
+  }
+
+  /** The JSON body of a `/v1` route's 2xx answer; see `readAnswerAt`. */
+  private readAnswer<T>(method: HttpMethod, endpoint: string, res: RawResponse): T {
+    return this.readAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res);
+  }
+
+  /** The JSON object body of a `/v1` route's 2xx answer; see `readObjectAnswerAt`. */
+  private readObjectAnswer<T extends object>(
+    method: HttpMethod,
+    endpoint: string,
+    res: RawResponse,
+  ): T {
+    return this.readObjectAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res);
+  }
+
+  /**
+   * The JSON body of a 2xx answer, naming the route by its `path` from the origin as a refusal
+   * does. A body that is not JSON, an empty one included, is an answer the SDK cannot read, so it
+   * throws the `ApiResponseError` `unreadableAnswer` builds, with the parse failure as `cause`.
+   * The one place a success body is parsed.
+   */
+  private readAnswerAt<T>(method: HttpMethod, path: string, res: RawResponse): T {
+    try {
+      return JSON.parse(res.body) as T;
+    } catch (err) {
+      throw this.unreadableAnswer(
+        method,
+        path,
+        res,
+        res.body ? "a body that is not JSON" : "an empty body where JSON was expected",
+        err,
+      );
+    }
+  }
+
+  /**
+   * The JSON body of a 2xx answer from a route that answers an object, read as `readAnswerAt`
+   * reads it. A body that is JSON but not an object — `null`, a number, a string, an array — is
+   * an answer the SDK cannot read either, and throws the same `ApiResponseError`, with no `cause`.
+   */
+  private readObjectAnswerAt<T extends object>(
+    method: HttpMethod,
+    path: string,
+    res: RawResponse,
+  ): T {
+    const answer = this.readAnswerAt<unknown>(method, path, res);
+    if (!isPlainObject(answer)) {
+      throw this.unreadableAnswer(method, path, res, "a body that is not an object");
+    }
+    return answer as T;
+  }
+
+  /**
+   * The `ApiResponseError` of a 2xx answer the SDK cannot read, its message
+   * `API <method> <path> answered <status> with <what>`: the answer's status, its raw text as
+   * `responseBody`, no problem member but the `X-Request-ID` header, the failure that made it
+   * unreadable as `cause`, and the verdict the fallback gives a 2xx, `runtime` and not retryable.
+   */
+  private unreadableAnswer(
+    method: HttpMethod,
+    path: string,
+    res: RawResponse,
+    what: string,
+    cause?: unknown,
+  ): ApiResponseError {
+    return new ApiResponseError(
+      `API ${method} ${path} answered ${res.status} with ${what}`,
+      this.baseUrl,
+      res.status,
+      res.statusText,
+      res.body,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { cause, problem: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) } },
+    );
+  }
+
+  /**
+   * Throw the `ApiResponseError` of a non-2xx answer, naming the route by its `path` from the
+   * origin (`/v1/...`, or `/health` for the liveness probe).
+   */
+  private throwApiResponseErrorAt(method: HttpMethod, path: string, res: RawResponse): never {
     const { errorType, serverMessage, validationErrors, code, problem, document } = parseErrorBody(
       res.body,
     );
@@ -549,7 +729,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     // carries none (a gateway error page, a non-problem body).
     const requestId = problem.requestId ?? nonEmptyHeader(res.headers, REQUEST_ID_HEADER);
     throw new ApiResponseError(
-      `API ${method} /${API_PREFIX}/${endpoint} failed (${res.status}): ${serverMessage ?? (res.body || res.statusText)}`,
+      `API ${method} ${path} failed (${res.status}): ${serverMessage ?? (res.body || res.statusText)}`,
       this.baseUrl,
       res.status,
       res.statusText,
@@ -608,9 +788,24 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   // ── Health ────────────────────────────────────────────────────────
 
+  /**
+   * The origin-level liveness probe — `GET /health`, which sits at the origin, NOT under the
+   * `/v1` prefix. A bare runner serves it; a hosted origin answers `/v1/health` instead, so
+   * there this throws.
+   *
+   * It goes through the same transport as every route: an unreachable origin is an
+   * `ApiUnreachableError`, and a non-2xx answer an `ApiResponseError` whose verdict the SDK's
+   * fallback reads from the status, since the probe answers no problem document. So is a 2xx
+   * whose body is not a JSON object, such as a gateway's HTML page: `runtime`, not retryable.
+   */
   async health(): Promise<Record<string, unknown>> {
-    // `/health` is origin-level, NOT under the `/v1` prefix.
-    return this.requestJson("GET", `${this.originUrl}/health`);
+    const res = await this.requestRaw("GET", `${this.originUrl}/health`, {
+      timeoutMs: POLL_REQUEST_TIMEOUT_MS,
+    });
+    if (res.status < 200 || res.status >= 300) {
+      this.throwApiResponseErrorAt("GET", "/health", res);
+    }
+    return this.readObjectAnswerAt<Record<string, unknown>>("GET", "/health", res);
   }
 
   // ── Protocol surface ─────────────────────────────────────────────────
@@ -640,11 +835,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       Object.keys(hosted).length === 0 &&
       Object.keys(extensions).length === 0
     ) {
-      throw new PipelineRequestError(
+      throw new RequestArgumentError(
         "Either pipe_code, mthds_contents, a method bundle (files/bundle_b64), a method_ref, a hosted method_id or a server-specific extension arg (extra) must be provided to execute().",
       );
     }
-    assertExclusiveRunSources(options);
+    assertRunSourcesExclusive(options);
     assertMethodRefPairsWithNothing(options);
 
     const request: RunRequest & Record<string, unknown> = {
@@ -672,7 +867,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       }
       // Wrap the base result in the enriched subtype (adds the `.main_stuff` accessor; the
       // `main_stuff_name` extension + working memory ride `pipe_output`).
-      return new PipelexExecuteResult(JSON.parse(res.body) as DictRunResultExecute);
+      return new PipelexExecuteResult(
+        this.readObjectAnswer<DictRunResultExecute>("POST", "execute", res),
+      );
     } catch (err) {
       if (err instanceof RunStillRunningError) throw err;
       // The hosted gateway terminates synchronous requests at ~30s. A run that
@@ -711,11 +908,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       Object.keys(hosted).length === 0 &&
       Object.keys(extensions).length === 0
     ) {
-      throw new PipelineRequestError(
+      throw new RequestArgumentError(
         "Either pipe_code, mthds_contents, a method bundle (files/bundle_b64), a method_ref, a hosted method_id or a server-specific extension arg (extra) must be provided to start().",
       );
     }
-    assertExclusiveRunSources(options);
+    assertRunSourcesExclusive(options);
     assertMethodRefPairsWithNothing(options);
 
     // `?? undefined` so JSON.stringify drops absent fields from the wire body.
@@ -756,7 +953,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", "start", res);
     }
-    return JSON.parse(res.body) as PipelexRunResultStart;
+    return this.readObjectAnswer<PipelexRunResultStart>("POST", "start", res);
   }
 
   /**
@@ -842,10 +1039,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // A selector object. The illegal shapes are compile errors for typed
       // callers (`ValidateMethodSelector` pins the other key to `never`); the
       // runtime checks back them for untyped (JS) callers — a typed
-      // `PipelineRequestError`, never a native TypeError off a null source —
+      // `RequestArgumentError`, never a native TypeError off a null source —
       // mirroring the server's strict tooling XOR instead of silently picking.
       if (source === null || source === undefined || typeof source !== "object") {
-        throw new PipelineRequestError(
+        throw new RequestArgumentError(
           "validate() takes inline contents (a string[]) or a method selector object " +
             "({ method_ref } or { method_id }).",
         );
@@ -853,12 +1050,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       const methodRef = nonEmptyString(source.method_ref);
       const methodId = nonEmptyString(source.method_id);
       if ((methodRef === undefined) === (methodId === undefined)) {
-        throw new PipelineRequestError(
+        throw new RequestArgumentError(
           "validate() takes exactly one method selector: inline contents, { method_ref }, or { method_id }.",
         );
       }
       if (mthdsSources !== undefined) {
-        throw new PipelineRequestError(
+        throw new RequestArgumentError(
           "mthds_sources labels inline mthds_contents; a method_ref / method_id validation gets " +
             "its source labels from the package's (or the stored method's) real file names.",
         );
@@ -878,7 +1075,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", "validate", res);
     }
-    return JSON.parse(res.body) as PipelexValidationResult;
+    return this.readObjectAnswer<PipelexValidationResult>("POST", "validate", res);
   }
 
   /**
@@ -894,7 +1091,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     options: ValidateFilesOptions = {},
   ): Promise<PipelexValidationResult> {
     if (files.length === 0) {
-      throw new PipelineRequestError(
+      throw new RequestArgumentError(
         "At least one MTHDS file must be provided to validateFiles().",
       );
     }
@@ -1015,7 +1212,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * uniform transport-options parameter in a single pass — do not bolt it onto one
    * route.
    */
-  private async requestExtension<T>(
+  private async requestExtension<T extends object>(
     endpoint: string,
     body: unknown,
     options: { timeoutMs?: number } = {},
@@ -1027,7 +1224,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", endpoint, res);
     }
-    return JSON.parse(res.body) as T;
+    return this.readObjectAnswer<T>("POST", endpoint, res);
   }
 
   /** The model deck the runner can route to — `GET /v1/models[?type=]`. */
@@ -1039,7 +1236,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    return JSON.parse(res.body) as ModelDeck;
+    return this.readObjectAnswer<ModelDeck>("GET", endpoint, res);
   }
 
   /**
@@ -1053,7 +1250,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", "version", res);
     }
-    return JSON.parse(res.body) as VersionInfo;
+    return this.readObjectAnswer<VersionInfo>("GET", "version", res);
   }
 
   // ── Crate extensions (Pipelex API — `/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`) ──
@@ -1173,8 +1370,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Self-healing: a finished-but-unrecorded run resolves to its true terminal
    * status on read. `degraded: true` means Temporal was unreachable and
    * `status` is the last-known value; `retry_after_seconds` carries the
-   * server's backoff hint when present. Throws `RunLifecycleUnavailableError`
-   * when the lifecycle routes are absent (a bare runner).
+   * server's backoff hint when present. A failed run's stored report, `error`,
+   * is checked field by field (see `RunErrorReport`). Throws
+   * `RunLifecycleUnavailableError` when the lifecycle routes are absent (a bare
+   * runner).
    */
   async getRunStatus(runId: string, options: { signal?: AbortSignal } = {}): Promise<RunRead> {
     const endpoint = `${RUNS}/${encodeURIComponent(runId)}/status`;
@@ -1187,7 +1386,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    const run = JSON.parse(res.body) as RunRead;
+    const run = withCheckedReport(this.readObjectAnswer<RunRead>("GET", endpoint, res));
     const retryAfter = parseRetryAfter(res.headers);
     return retryAfter !== null ? { ...run, retry_after_seconds: retryAfter } : run;
   }
@@ -1243,7 +1442,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    const result = JSON.parse(res.body) as RunResults;
+    const result = this.readObjectAnswer<RunResults>("GET", endpoint, res);
     if (selectionIncludesMainStuff(options.artifacts) && result.main_stuff == null) {
       throw new MissingMainStuffError(
         `Completed run '${runId}' returned no main stuff — a completed run always delivers a main stuff.`,
@@ -1353,11 +1552,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.cursor !== undefined) params.set("cursor", query.cursor);
     const suffix = params.toString();
-    const page = await this.requestProduct<{
-      items: MethodSummary[];
-      next_cursor: string | null;
-    }>("GET", suffix ? `methods?${suffix}` : "methods");
-    return { items: page.items, nextCursor: page.next_cursor };
+    return this.requestPage<MethodSummary>(suffix ? `methods?${suffix}` : "methods");
   }
 
   /**
@@ -1413,9 +1608,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         // partial answer with no error is back to the original bug one layer
         // up; an error is the only honest response to a server that will not
         // finish. Unreachable on real data — see MAX_PAGES.
-        throw new Error(
+        throw new PagingNotTerminatingError(
           `listMethods did not terminate after ${MAX_PAGES} pages; refusing to keep paging. ` +
             `This is a server-side fault, not a coverage limit.`,
+          MAX_PAGES,
         );
       }
       cursor = page.nextCursor;
@@ -1424,11 +1620,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /** Fetch one method by id — `GET /v1/methods/{id}`. */
   async getMethod(methodId: string): Promise<MethodData> {
-    const wire = await this.requestProduct<MethodDataWire>(
-      "GET",
-      `methods/${encodeURIComponent(methodId)}`,
-    );
-    return methodDataFromWire(wire);
+    return this.requestMethodData("GET", `methods/${encodeURIComponent(methodId)}`);
   }
 
   /**
@@ -1462,22 +1654,16 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /** Create a method — `POST /v1/methods`. */
   async createMethod(input: MethodWriteInput): Promise<MethodData> {
-    const wire = await this.requestProduct<MethodDataWire>(
-      "POST",
-      "methods",
-      methodWriteToWire(input),
-    );
-    return methodDataFromWire(wire);
+    return this.requestMethodData("POST", "methods", methodWriteToWire(input));
   }
 
   /** Replace a method (rename = changed `name`) — `PUT /v1/methods/{id}`. */
   async updateMethod(methodId: string, input: MethodWriteInput): Promise<MethodData> {
-    const wire = await this.requestProduct<MethodDataWire>(
+    return this.requestMethodData(
       "PUT",
       `methods/${encodeURIComponent(methodId)}`,
       methodWriteToWire(input),
     );
-    return methodDataFromWire(wire);
   }
 
   /**
@@ -1602,7 +1788,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     input: BulkResolveStorageUrlsInput,
     options: { signal?: AbortSignal } = {},
   ): Promise<BulkResolvedStorageUrls> {
-    return this.requestProduct("POST", "resolve-storage-url/bulk", input, options);
+    return this.requestProductObject("POST", "resolve-storage-url/bulk", input, options);
   }
 
   /**
@@ -1642,9 +1828,27 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     return downloadArtifactsImpl(this, request);
   }
 
-  /** Upload a base64 file — `POST /v1/upload`. */
+  /**
+   * Upload a base64 file — `POST /v1/upload`. An answer with no non-empty string `uri` names no
+   * stored file, so it is an answer the SDK cannot read: an `ApiResponseError`, `runtime` and
+   * not retryable, which `uploadFile` wraps as an `UploadTransportError` with code `unexpected`.
+   */
   async upload(input: UploadInput): Promise<UploadedFile> {
-    return this.requestProduct("POST", "upload", input);
+    const res = await this.requestProductAnswer("POST", "upload", input);
+    const uploaded = this.readObjectAnswer<Partial<Record<keyof UploadedFile, unknown>>>(
+      "POST",
+      "upload",
+      res,
+    );
+    if (typeof uploaded.uri !== "string" || uploaded.uri === "") {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/upload`,
+        res,
+        "an answer with no string `uri`",
+      );
+    }
+    return uploaded as UploadedFile;
   }
 
   /**
@@ -1667,7 +1871,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     input: UploadGrantInput,
     options: { signal?: AbortSignal } = {},
   ): Promise<UploadGrant> {
-    return this.requestProduct("POST", "upload/grant", input, options);
+    return this.requestProductObject("POST", "upload/grant", input, options);
   }
 
   /**
@@ -1740,11 +1944,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (query.createdTo !== undefined) params.set("created_to", query.createdTo);
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.cursor !== undefined) params.set("cursor", query.cursor);
-    const page = await this.requestProduct<{ items: RunHistoryItem[]; next_cursor: string | null }>(
-      "GET",
-      `runs?${params.toString()}`,
-    );
-    return { items: page.items, nextCursor: page.next_cursor };
+    const page = await this.requestPage<RunHistoryItem>(`runs?${params.toString()}`);
+    return { items: page.items.map(withCheckedReport), nextCursor: page.nextCursor };
   }
 
   /**
@@ -1804,10 +2005,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *
    * The ONLY call that returns `mthds_contents` (what the run actually
    * executed) and `inputs`. Kept off the status read, which pollers hit every
-   * few seconds.
+   * few seconds. A failed run's stored report, `error`, is checked field by
+   * field (see `RunErrorReport`).
    */
   async getRunDetail(runId: string): Promise<RunDetail> {
-    return this.requestProduct("GET", `runs/${encodeURIComponent(runId)}`);
+    return withCheckedReport(
+      await this.requestProductObject<RunDetail>("GET", `runs/${encodeURIComponent(runId)}`),
+    );
   }
 
   /** Patch a run's status (admin/manual) — `PUT /v1/runs/{id}`. */
@@ -1936,7 +2140,7 @@ function buildExtensions(
   const snapshot = { ...extra };
   const reserved = Object.keys(snapshot).filter((key) => RESERVED_EXTRA_KEYS.has(key));
   if (reserved.length > 0) {
-    throw new PipelineRequestError(
+    throw new RequestArgumentError(
       `extra carries reserved request args [${reserved.sort().join(", ")}] — pass them as named options instead.`,
     );
   }
@@ -1993,6 +2197,23 @@ function buildHostedRunExtensions(options: PipelexHostedRunExtensions): Record<s
 }
 
 /**
+ * The standard's run-source exclusivity check (`assertExclusiveRunSources`: the two bundle
+ * encodings together, or a bundle beside inline contents), its refusal rethrown as a
+ * `RequestArgumentError` with the same message and the standard's error as `cause`, so it carries
+ * a verdict like every other argument the client refuses.
+ */
+function assertRunSourcesExclusive(options: RunRequest): void {
+  try {
+    assertExclusiveRunSources(options);
+  } catch (err) {
+    if (err instanceof PipelineRequestError) {
+      throw new RequestArgumentError(err.message, { cause: err });
+    }
+    throw err;
+  }
+}
+
+/**
  * Enforce the run routes' `method_ref` exclusivity, mirroring the server's own
  * 422s so an illegal pairing fails before anything hits the wire. A
  * `method_ref` is a complete run source (the fetched package carries its
@@ -2013,17 +2234,17 @@ function assertMethodRefPairsWithNothing(
 ): void {
   if (nonEmptyString(options.method_ref) === undefined) return;
   if (options.mthds_contents != null && options.mthds_contents.length > 0) {
-    throw new PipelineRequestError(
+    throw new RequestArgumentError(
       "method_ref and inline mthds_contents are mutually exclusive; send one or the other.",
     );
   }
   if (options.files != null || options.bundle_b64 != null) {
-    throw new PipelineRequestError(
+    throw new RequestArgumentError(
       "method_ref and a method bundle (bundle_b64 / files) are mutually exclusive; send one or the other.",
     );
   }
   if (nonEmptyString(options.method_id) !== undefined) {
-    throw new PipelineRequestError(
+    throw new RequestArgumentError(
       "method_ref and method_id are mutually exclusive: an address run carries its own provenance " +
         "and takes no run-history linkage id. Send exactly one method selector.",
     );
@@ -2130,20 +2351,30 @@ const REQUEST_ID_HEADER = "x-request-id";
  * `Run finished with status <STATUS>` the platform keeps for exactly this reader, so the status
  * word is recovered from it then; a `409` that yields no known status either way (the one this
  * route answers for a stored result it refuses to read) reads as `FAILED`, and its `detail`
- * still says what happened. The report is relayed whole, as the runner wrote it: an object is
- * taken as the report, anything else reads as no report.
+ * still says what happened. The report is checked field by field by `readRunErrorReport`: an
+ * object is taken as the report, each named field kept when it has its declared type, and
+ * anything that is not an object reads as no report.
  */
 function runResultFailed(runId: string, body: string): RunResultState {
   const { serverMessage, document } = parseErrorBody(body);
   const message = serverMessage ?? "Run finished without a result.";
-  const rawReport = document?.error;
   return {
     state: "failed",
     pipeline_run_id: runId,
     status: knownRunStatus(document?.run_status) ?? statusFromDetail(message) ?? "FAILED",
     message,
-    error: isPlainObject(rawReport) ? (rawReport as RunErrorReport) : null,
+    error: readRunErrorReport(document?.error),
   };
+}
+
+/**
+ * A run record with its stored report checked by `readRunErrorReport`. Only when the record
+ * carries the `error` key, so a server that does not serve it still leaves it absent; a record
+ * that is not an object is returned as it came.
+ */
+function withCheckedReport<T>(record: T): T {
+  if (!isPlainObject(record) || !Object.hasOwn(record, "error")) return record;
+  return { ...record, error: readRunErrorReport(record.error) } as T;
 }
 
 function knownRunStatus(value: unknown): RunStatus | undefined {
@@ -2170,8 +2401,9 @@ function statusFromDetail(detail: string): RunStatus | undefined {
  * on a non-JSON or non-object body.
  *
  * Each typed member is kept only when it has the type the problem document gives it, so a
- * malformed member reads as absent rather than as a wrong value; `document` keeps the decoded
- * object whole, members named or not.
+ * malformed member reads as absent rather than as a wrong value, and the nested members
+ * (`provider_metadata`, `migration`, `validation_errors`, `errors`) are checked field by field as a
+ * stored report's are; `document` keeps the decoded object whole, members named or not.
  */
 function parseErrorBody(body: string): {
   errorType: string | undefined;
@@ -2214,10 +2446,10 @@ function parseErrorBody(body: string): {
   if (serverMessage === undefined && typeof root.message === "string") serverMessage = root.message;
   // `validation_errors` rides the problem envelope as a top-level array (the
   // VERBOSE projection of `ErrorReport.validation_errors`, retained under STRICT
-  // too — it describes the caller's own bundle, not server internals). Kept as a
-  // shallow array guard; per-item shape is the typed `ValidationErrorItem` contract.
+  // too — it describes the caller's own bundle, not server internals). Each item is
+  // kept when it is an object with a string `category` and `message`, as on a stored report.
   const validationErrors = Array.isArray(root.validation_errors)
-    ? (root.validation_errors as ValidationErrorItem[])
+    ? root.validation_errors.filter(isValidationItem)
     : undefined;
   // The platform's closed native code (`conflict`, `not_found`, …), one-to-one with `type`.
   const code = typeof root.code === "string" ? root.code : undefined;
@@ -2232,19 +2464,17 @@ function parseErrorBody(body: string): {
     userAction: parseUserAction(root.user_action),
     model: stringMember(root.model),
     provider: stringMember(root.provider),
+    // The nested members are checked one level down by the readers a stored report goes
+    // through, so a misfit field reads as absent here exactly as it does there.
     providerMetadata: isPlainObject(root.provider_metadata)
-      ? (root.provider_metadata as ProviderErrorMetadata)
+      ? readProviderMetadata(root.provider_metadata)
       : undefined,
-    migration: isPlainObject(root.migration) ? (root.migration as MigrationErrorBlock) : undefined,
+    migration: isPlainObject(root.migration) ? readMigration(root.migration) : undefined,
     errors: Array.isArray(root.errors)
-      ? ((root.errors as unknown[]).filter(isPlainObject) as FieldError[])
+      ? root.errors.filter(isPlainObject).map(readFieldError)
       : undefined,
   };
   return { errorType, serverMessage, validationErrors, code, problem, document: root };
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** A problem member kept only when it is a non-empty string. */
