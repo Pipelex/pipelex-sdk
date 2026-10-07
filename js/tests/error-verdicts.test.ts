@@ -1,9 +1,10 @@
 /**
  * The verdict every error carries — `retryable` and `errorDomain` — driven through the case file
- * both SDKs share, `fixtures/error-verdicts.json`.
+ * `fixtures/error-verdicts.json`.
  *
- * The file is the contract between this package and `pipelex-sdk` (Python), which keeps a
- * byte-for-byte copy and drives its own code through the same cases. Here:
+ * The file is the contract between this package and `pipelex-sdk` (Python), which must follow it
+ * too: the Python suite is to keep a byte-for-byte copy and drive its own code through the same
+ * cases, with a check at the repository's root holding the two copies identical. Here:
  *
  * - every `fallback` case drives the fallback table directly, and an `ApiResponseError` built
  *   with nothing but that status, code and naming;
