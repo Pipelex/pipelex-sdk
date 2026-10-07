@@ -309,7 +309,8 @@ export function readMigration(value: Record<string, unknown>): MigrationErrorBlo
 
 /**
  * A validation item is kept when it is an object with a string `category` and `message`, its other
- * members relayed as sent: the depth the validate report checks too.
+ * members relayed as sent. It checks a problem document's items and a stored report's only:
+ * `validate()` and the crate routes hand their reports' items back unchecked.
  */
 export function isValidationItem(value: unknown): value is ValidationErrorItem {
   return isPlainObject(value) && isString(value.category) && isString(value.message);
