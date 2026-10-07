@@ -170,7 +170,7 @@
         { "variant": "no response reached the SDK", "only_in": "js", "given": { "code": "unreachable" }, "expected": { "error_domain": "config", "retryable": true } },
         { "variant": "a 5xx from storage", "only_in": "js", "given": { "code": "server_error", "status": 503 }, "expected": { "error_domain": "runtime", "retryable": true } },
         { "variant": "storage stopped waiting for the bytes", "only_in": "js", "given": { "code": "storage_timeout", "status": 400 }, "expected": { "error_domain": "runtime", "retryable": true } },
-        { "variant": "another write with the same grant in flight", "only_in": "js", "given": { "code": "conflict", "status": 409 }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "another write with the same grant in flight", "only_in": "js", "given": { "code": "conflict", "status": 409 }, "expected": { "error_domain": "runtime", "retryable": true } },
         { "variant": "a refused redirect", "only_in": "js", "given": { "code": "redirected", "status": 307 }, "expected": { "error_domain": "config", "retryable": false } },
         { "variant": "a grant url that cannot be sent to", "only_in": "js", "given": { "code": "invalid_grant_url" }, "expected": { "error_domain": "runtime", "retryable": false } },
         { "variant": "an unmapped failure", "only_in": "js", "given": { "code": "unexpected" }, "expected": { "error_domain": "runtime", "retryable": false } }
@@ -206,6 +206,9 @@
         { "variant": "the store refusing the link", "given": { "code": "store_refused", "status": 403 }, "expected": { "error_domain": "runtime", "retryable": false } },
         { "variant": "an object that is gone", "given": { "code": "not_found", "status": 404 }, "expected": { "error_domain": "input", "retryable": false } },
         { "variant": "a 5xx from the store", "given": { "code": "store_error", "status": 503 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a request timeout from the store", "given": { "code": "store_error", "status": 408 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a rate limit from the store", "given": { "code": "store_error", "status": 429 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a 501 from the store", "given": { "code": "store_error", "status": 501 }, "expected": { "error_domain": "runtime", "retryable": false } },
         { "variant": "a 4xx from the store", "given": { "code": "store_error", "status": 400 }, "expected": { "error_domain": "runtime", "retryable": false } },
         { "variant": "a store error with no status", "given": { "code": "store_error", "status": null }, "expected": { "error_domain": "runtime", "retryable": false } },
         { "variant": "a file past the byte cap", "given": { "code": "too_large" }, "expected": { "error_domain": "input", "retryable": false } },

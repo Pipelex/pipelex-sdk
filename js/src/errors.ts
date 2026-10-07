@@ -275,10 +275,12 @@ export type UploadTransportCode =
  * `ApiResponseError` or `ApiUnreachableError` the client's `upload()` threw, and `code` is too
  * coarse to judge it by (a `402` plan limit is `unexpected`, like a malformed answer). Otherwise
  * — always the case from `uploadWithGrant`, which wraps no response — `code` decides: `timeout`,
- * `server_error` and `storage_timeout` are `runtime` and retryable; `unreachable` is `config` and
- * retryable, like `ApiUnreachableError`; `conflict` is `input` and not retryable, since a grant is
- * single-use; `redirected` is `config` and not retryable; `invalid_grant_url`, `unexpected` and no
- * code at all are `runtime` and not retryable.
+ * `server_error`, `storage_timeout` and `conflict` are `runtime` and retryable, `conflict` because
+ * storage documents its `409 ConditionalRequestConflict` as retryable and the grant is not spent
+ * by it (a spent grant is the `412` of a `RejectedAssetError` with code `grant_used`);
+ * `unreachable` is `config` and retryable, like `ApiUnreachableError`; `redirected` is `config`
+ * and not retryable; `invalid_grant_url`, `unexpected` and no code at all are `runtime` and not
+ * retryable.
  */
 export class UploadTransportError extends InputPreparationError {
   public readonly status: number | undefined;
@@ -304,11 +306,10 @@ function uploadTransportVerdict(code: UploadTransportCode | undefined): ErrorVer
     case "timeout":
     case "server_error":
     case "storage_timeout":
+    case "conflict":
       return makeVerdict("runtime", true);
     case "unreachable":
       return makeVerdict("config", true);
-    case "conflict":
-      return makeVerdict("input", false);
     case "redirected":
       return makeVerdict("config", false);
     default:
@@ -377,8 +378,9 @@ export class ScopeUnavailableError extends ArtifactOperationError {
  * and `too_large` are `input` and not retryable, since the reference or the bound must change;
  * `plain_http_refused` is `config` and not retryable; `redirect_refused` and `store_refused` are
  * `runtime` and not retryable; `timeout` and `network` are `runtime` and retryable; `store_error`
- * is `runtime`, retryable when `status` is a `5xx`. A code this version does not know is
- * `runtime` and not retryable.
+ * is `runtime`, and retryable when the fallback table a refused API request reads would call its
+ * `status` retryable — a `408`, a `429` or a `5xx` other than `501` — and not retryable for any
+ * other status or none. A code this version does not know is `runtime` and not retryable.
  */
 export class ArtifactFetchError extends ArtifactOperationError {
   public readonly uri: string;
@@ -415,7 +417,12 @@ function artifactFetchVerdict(code: string, status: number | undefined): ErrorVe
     case "network":
       return makeVerdict("runtime", true);
     case "store_error":
-      return makeVerdict("runtime", status !== undefined && status >= 500 && status < 600);
+      // The store's status reads as an API's would: refused for its timing (408, 429) or a fault
+      // that may pass (a 5xx) can succeed on a retry, while a 501 or a 4xx will not.
+      return makeVerdict(
+        "runtime",
+        status !== undefined && fallbackVerdict(status, undefined, true).retryable,
+      );
     default:
       // `redirect_refused`, `store_refused`, and a code this version does not know.
       return makeVerdict("runtime", false);
