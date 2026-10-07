@@ -49,3 +49,5 @@ An answer that is not a problem document, or carries none of these members, keep
 ## Other failures
 
 Every other kind (an unreachable API, a missing key, a `PIPELEX_BASE_URL` naming more than a host, which the SDK refuses before sending anything, a durable-run lifecycle the URL does not serve, a file upload that failed, an output that does not match the method's contract) has its own branch in `classifyPipelineError`, and [`CLAUDE.md`](../CLAUDE.md) says how to add one.
+
+**A refused `PIPELEX_BASE_URL` is never quoted.** The SDK refuses a value that names more than a host, and its message quotes that value whole, credentials, query and all, while the technical details reach every visitor of a deployed app. So `classifyConfigRefusal` leaves the SDK's message out and shows the value cut down to its scheme and host, naming the parts beyond them without their content: `PIPELEX_BASE_URL: https://proxy.example.com, with credentials and a query (not shown)`.

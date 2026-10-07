@@ -169,7 +169,7 @@ export function classifyPipelineError(
   // the person's to fix; any other is this app building a call wrong, which the
   // unknown fallback reports with the SDK's own message.
   if (err instanceof RequestArgumentError && err.errorDomain === "config") {
-    return classifyConfigRefusal(err);
+    return classifyConfigRefusal(err, env);
   }
   // Run-lifecycle errors (both extend the protocol's PipelineRequestError, but
   // are distinct concrete classes, so order among them is irrelevant).
@@ -424,9 +424,11 @@ function classifyServerError(err: ApiResponseError, details: string): PipelineEr
  * such refusal is PIPELEX_BASE_URL naming more than a host: endpoints compose
  * as `{base}/v1/{endpoint}`, so a value ending in `/v1` would double the
  * prefix. An unset variable is no refusal, since the SDK falls back to the
- * hosted API. The SDK's message, which quotes the value, is in the details.
+ * hosted API. The details never relay the SDK's message: it quotes the value
+ * whole, and a value is refused exactly when it carries more than a host, which
+ * may be credentials or a token, while the details reach every visitor.
  */
-function classifyConfigRefusal(err: RequestArgumentError): PipelineError {
+function classifyConfigRefusal(err: RequestArgumentError, env: ClassifyEnv): PipelineError {
   return {
     kind: "config_invalid",
     title: "Pipelex API URL not usable",
@@ -438,8 +440,42 @@ function classifyConfigRefusal(err: RequestArgumentError): PipelineError {
       code: "PIPELEX_BASE_URL=https://api.pipelex.com",
       codeLanguage: "env",
     },
-    details: `${err.name}: ${err.message}`,
+    details: [
+      `${err.name}: the SDK refused PIPELEX_BASE_URL (its message quotes the value, so it is left out)`,
+      describeRefusedBaseUrl(env.apiUrl),
+    ].join("\n"),
   };
+}
+
+/**
+ * What a refused PIPELEX_BASE_URL may show a visitor: its scheme and host, and
+ * the names of the parts beyond them, never their content, since a password, a
+ * token in the query or a key in the path is a secret all the same.
+ */
+function describeRefusedBaseUrl(value: string | undefined): string {
+  if (value === undefined) return "PIPELEX_BASE_URL: not set";
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return "PIPELEX_BASE_URL: not a URL (the value is not shown)";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "PIPELEX_BASE_URL: not an http or https URL (the value is not shown)";
+  }
+  const extras = [
+    parsed.username || parsed.password ? "credentials" : null,
+    parsed.pathname.replace(/\/+$/, "") ? "a path" : null,
+    parsed.search ? "a query" : null,
+    parsed.hash ? "a fragment" : null,
+  ].filter((part): part is string => part !== null);
+  const origin = `${parsed.protocol}//${parsed.host}`;
+  if (extras.length === 0) return `PIPELEX_BASE_URL: ${origin}`;
+  const parts =
+    extras.length === 1
+      ? extras[0]
+      : `${extras.slice(0, -1).join(", ")} and ${extras[extras.length - 1]}`;
+  return `PIPELEX_BASE_URL: ${origin}, with ${parts} (not shown)`;
 }
 
 /**

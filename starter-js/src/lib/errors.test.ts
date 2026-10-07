@@ -331,18 +331,50 @@ describe("classifyPipelineError — ApiResponseError 4xx (non-auth)", () => {
 });
 
 describe("classifyPipelineError — RequestArgumentError", () => {
-  it("returns config_invalid for a base URL the SDK refused, steering to PIPELEX_BASE_URL", () => {
-    const err = new RequestArgumentError(
-      'Invalid API base URL "https://api.pipelex.com/v1": must be host-only (http/https, no path, query, fragment, or credentials). Endpoints compose as {base}/v1/{endpoint}.',
+  // The SDK's own refusal, quoting the value whole as the SDK does.
+  const refuseBaseUrl = (value: string) =>
+    new RequestArgumentError(
+      `Invalid API base URL "${value}": must be host-only (http/https, no path, query, fragment, or credentials). Endpoints compose as {base}/v1/{endpoint}.`,
       { verdict: { errorDomain: "config", retryable: false } },
     );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
+
+  it("returns config_invalid for a base URL the SDK refused, steering to PIPELEX_BASE_URL", () => {
+    const apiUrl = "https://api.pipelex.com/v1";
+    const result = classifyPipelineError(refuseBaseUrl(apiUrl), { apiUrl, hasApiKey: true });
     expect(result.kind).toBe("config_invalid");
     expect(result.message).toMatch(/PIPELEX_BASE_URL/);
     expect(result.hint?.code).toBe("PIPELEX_BASE_URL=https://api.pipelex.com");
-    // The SDK's message quotes the value it refused.
-    expect(result.details).toContain('"https://api.pipelex.com/v1"');
+    expect(result.details).toBe(
+      "RequestArgumentError: the SDK refused PIPELEX_BASE_URL (its message quotes the value, so it is left out)\n" +
+        "PIPELEX_BASE_URL: https://api.pipelex.com, with a path (not shown)",
+    );
     expect(result.retry).toBeUndefined();
+  });
+
+  // The details reach every visitor, and a value is refused exactly when it
+  // carries more than a host: none of what lies beyond the host is shown.
+  it.each([
+    [
+      "https://user:secret@proxy.example.com/key-in-path?token=abc123#section-9",
+      "PIPELEX_BASE_URL: https://proxy.example.com, with credentials, a path, a query and a fragment (not shown)",
+    ],
+    [
+      "https://proxy.example.com?token=abc123",
+      "PIPELEX_BASE_URL: https://proxy.example.com, with a query (not shown)",
+    ],
+    // Without a scheme, the user name parses as one.
+    [
+      "user:secret@proxy.example.com",
+      "PIPELEX_BASE_URL: not an http or https URL (the value is not shown)",
+    ],
+    ["not a url secret", "PIPELEX_BASE_URL: not a URL (the value is not shown)"],
+  ])("never shows a visitor what %s carries beyond its host", (apiUrl, line) => {
+    const result = classifyPipelineError(refuseBaseUrl(apiUrl), { apiUrl, hasApiKey: true });
+    expect(result.kind).toBe("config_invalid");
+    expect(result.details?.split("\n")[1]).toBe(line);
+    for (const secret of ["user", "secret", "abc123", "key-in-path", "section-9"]) {
+      expect(result.details).not.toContain(secret);
+    }
   });
 
   it("reports an argument refusal of the app's own call as unknown, with the SDK's message", () => {
