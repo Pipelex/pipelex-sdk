@@ -389,9 +389,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     // endpoint error instead of a clear base-URL one. Trailing slashes are
     // stripped first; a remaining path/query/fragment/credentials is rejected. The
     // refusal is `config`: the value typically comes from PIPELEX_BASE_URL, the environment.
+    // It never quotes the value whole: what the rule refuses is where a secret travels
+    // (a password, a token in a query), so it names those parts without their text.
     if (!isValidBaseUrl(normalizedBaseUrl)) {
       throw new RequestArgumentError(
-        `Invalid API base URL "${normalizedBaseUrl}": must be host-only ` +
+        `Invalid API base URL ${describeRefusedBaseUrl(normalizedBaseUrl)}: it must be host-only ` +
           `(http/https, no path, query, fragment, or credentials). Endpoints ` +
           `compose as {base}/v1/{endpoint}.`,
         { verdict: { errorDomain: "config", retryable: false } },
@@ -2076,6 +2078,38 @@ function isValidBaseUrl(value: string): boolean {
   if (parsed.pathname !== "/" && parsed.pathname !== "") return false;
   if (parsed.username || parsed.password) return false;
   return !parsed.search && !parsed.hash;
+}
+
+/**
+ * A refused base URL as its refusal may show it: the scheme and the host, then the names of the
+ * parts beyond them that the URL carried, never their text. Credentials, a query and a path are
+ * exactly where a secret travels in a URL, and the refusal reaches logs and, through an app that
+ * relays an error's message, a browser. A value that is not an http or https URL is not shown at
+ * all, since nothing says which of its characters are a secret: `localhost:8081`, with no scheme,
+ * parses as a URL whose scheme is `localhost:`.
+ */
+function describeRefusedBaseUrl(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return "(not shown: it is not an absolute URL)";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "(not shown: it is not an http or https URL)";
+  }
+  const parts: string[] = [];
+  if (parsed.username || parsed.password) parts.push("credentials");
+  if (parsed.pathname !== "/" && parsed.pathname !== "") parts.push("a path");
+  if (parsed.search) parts.push("a query");
+  if (parsed.hash) parts.push("a fragment");
+  const shown = `"${parsed.protocol}//${parsed.host}"`;
+  if (parts.length === 0) return shown;
+  const named =
+    parts.length === 1
+      ? parts[0]
+      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  return `${shown} with ${named} (not shown)`;
 }
 
 // The protocol's own request fields — `extra` is for extension args only.
