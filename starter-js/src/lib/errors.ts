@@ -100,9 +100,10 @@ export interface PipelineError {
   /**
    * Whether running it again can succeed. Set only from a verdict: a failed
    * run's report carries the runtime's `retryable`, and absent when the report
-   * says nothing, so the display never claims either way on a guess; a refused
-   * request carries the SDK's, always decided, which is the API's own when its
-   * problem document said it and the SDK's reading of the HTTP status when not.
+   * says nothing, so the display never claims either way on a guess; a refusal
+   * classified as `bad_request` or `server_error` carries the SDK's, always
+   * decided, which is the API's own when its problem document said it and the
+   * SDK's reading of the HTTP status when not.
    */
   retry?: RetryAdvice;
   /**
