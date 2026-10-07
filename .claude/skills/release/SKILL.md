@@ -108,7 +108,7 @@ A release pull request changes `VERSION`, which runs every package's jobs, so it
 - **`Release version`** — `VERSION` is above `main`'s and equals the branch's version, and `make check-release-versions` holds: at least one unit carries `VERSION`, each with its `## [vX.Y.Z]` changelog heading, and `cli-python`'s copy-out names a release that holds it.
 - **`Root`** — `make check-versions check-workflows lint-workflows test-scripts`: actionlint over every workflow, `release.yml` among them, and the selection's tests among the scripts'.
 - **Every package's lint and tests**, the templates' standalone twins included, inside the two required aggregates `Lint (all)` and `Tests (all)`. The next-SDK twins run beside them and are reported, not required.
-- **`cla.yml` and `protect-workflows.yml`**, reported, run from `main`'s copy; `cla.yml` runs the shared `Pipelex/.github/actions/cla` and is required on `dev`, where contributions land.
+- **`protect-workflows.yml`**, reported, run from `main`'s copy. The CLA Assistant is not a workflow of this repository: the organization ruleset `cla` (github-manager's `config/organization.yaml`) runs Pipelex/.github's `cla.yml` on every pull request into `dev`, and on none into `main`.
 
 `main`'s ruleset is strict and accepts only a merge commit: a release branch cut while `main` had moved must take `main` in first, and the landing merges with a merge commit. Nothing in CI checks that `[Unreleased]` was folded, or that the bump followed the selection: a held-back manifest bumped by mistake passes every check and is published. Both are this skill's to hold.
 
