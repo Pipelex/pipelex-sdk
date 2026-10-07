@@ -4,6 +4,7 @@
 
 ### Added
 
+- **The `pipelex-sdk` command**: the package now declares a `bin`, so `npx @pipelex/sdk run --method <address | mt_id | bundle> --inputs inputs.json` runs a method on the hosted API through the SDK's durable run lifecycle and prints its main output as JSON on stdout, the run id, each uploaded file and every error going to stderr; `--inputs-template` prints the object `--inputs` takes; Ctrl-C leaves the run going and names it. `npx @pipelex/sdk script --method <address | mt_id>` checks the method and writes a shell script that runs it with this SDK's version pinned. The key comes from `PIPELEX_API_KEY` only and no `.env` file is read. The command adds no runtime dependency, and the package entry does not export it. `docs/cli.md` describes it, and `tests/fixtures/cli-cases.json` records the cases the Python SDK's twin of the command answers too.
 - **`onStarted` on `startAndWaitForResult`**: the second argument is now `StartAndWaitForResultOptions`, the wait's options plus `onStarted`, called once with the start acknowledgement as soon as the durable run exists and before the first poll, so a caller that waits through `startAndWaitForResult` holds the run's id while it waits, to show it, log it or resume the run by it after an interrupt. It is never called on the blocking path, which has no run id to give. `docs/run-results.md` describes it.
 
 ### Fixed

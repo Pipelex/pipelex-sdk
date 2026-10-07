@@ -16,6 +16,11 @@
  * paths under `node_modules/mthds/` catches the bare + deep imports while letting
  * the legitimate subpath through. The `pathNot` protocol exclusion future-proofs
  * the rule against a depcruise version that DOES resolve the subpath to a file.
+ *
+ * The `pipelex-sdk` command (`src/cli.ts`, the executable, and `src/cli/`) sits at the
+ * TOP of the graph, the other way round: nothing in the SDK imports it, so a library user
+ * never loads it, and it reaches the SDK only through the public barrel `src/index.ts`,
+ * as any other caller would, so it can use nothing a caller could not.
  */
 
 /** @type {import('dependency-cruiser').IConfiguration} */
@@ -28,6 +33,22 @@ module.exports = {
         "Import the MTHDS standard's types only via the published `mthds/protocol` subpath — never bare `mthds` (pulls the runner-side surface) or a deep import into `mthds` internals.",
       from: { path: "^src/" },
       to: { path: "node_modules/mthds/", pathNot: "node_modules/mthds/(dist/)?protocol/" },
+    },
+    {
+      name: "no-import-of-the-command",
+      severity: "error",
+      comment:
+        "The `pipelex-sdk` command sits at the top of the graph: no module of the SDK imports `src/cli.ts` or `src/cli/`.",
+      from: { path: "^src/", pathNot: "^src/cli(\\.ts$|/)" },
+      to: { path: "^src/cli(\\.ts$|/)" },
+    },
+    {
+      name: "command-uses-the-public-surface",
+      severity: "error",
+      comment:
+        "The `pipelex-sdk` command reaches the SDK only through its public barrel, `src/index.ts`, as any caller would.",
+      from: { path: "^src/cli(\\.ts$|/)" },
+      to: { path: "^src/", pathNot: "^src/(cli(\\.ts$|/)|index\\.ts$)" },
     },
   ],
   options: {

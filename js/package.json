@@ -14,8 +14,12 @@
   },
   "type": "module",
   "sideEffects": [
+    "./dist/cli.js",
     "./dist/hooks/claude-mthds-check.js"
   ],
+  "bin": {
+    "pipelex-sdk": "dist/cli.js"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
