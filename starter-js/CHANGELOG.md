@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`@pipelex/sdk` 0.33.0, and `config_invalid` in place of `config_missing` (Breaking)**: bumped from 0.30.0. The `config_missing` kind classified `ClientAuthenticationError`, which the SDK never threw and no longer exports; `config_invalid` now classifies a `PIPELEX_BASE_URL` naming more than a host, which the SDK refuses before sending any request and the starter used to report as "Something went wrong". A `2xx` whose body the SDK cannot read is shown as "Pipelex API sent an answer the app could not read", with the raw body in the technical details, where it used to be an unexplained error.
+- **A refused request always says whether a re-run can help**: the retry line of a refused run is the SDK's verdict, the API's own `retryable` when its problem document sent one and otherwise the SDK's reading of the HTTP status, so a 4xx says a re-run unchanged fails the same way and a passing 5xx offers one; a server error whose type the starter recognizes (missing provider credentials, no inference backend, a method definition the server rejected) stays final unless the API says otherwise. The technical details mark a member of the verdict the API did not send as the SDK's reading.
+- **A failed upload offers a retry only where one can help**: storage answering that it does not implement the upload (its `501`) now reads as final instead of "usually temporary", and storage timing out or throttling the upload is offered a retry, both following the SDK's verdict.
+
 ## [v0.32.1] - 2026-10-07
 
 ### Fixed

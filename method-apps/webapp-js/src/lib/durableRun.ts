@@ -93,8 +93,10 @@ export async function pollDurableRun<T>(
   runId: string,
   parse: (results: RunResults) => T,
 ): Promise<PollOutcome<T>> {
-  const client = getPipelexClient();
   try {
+    // Inside the try: building the client can refuse PIPELEX_BASE_URL, and that
+    // refusal is classified like any other.
+    const client = getPipelexClient();
     const read = await client.getRunStatus(runId);
     if (!isTerminalRunStatus(read.status)) {
       return {
