@@ -163,10 +163,10 @@ Per-item `error.code` is the fetch vocabulary above plus the download's own: `re
 - `RunStillRunningError` (with the retry hint) or `RunFailedError` (with the run's status and its stored error report as `error`) — a `run_id` naming a run that has not completed;
 - `ScopeUnavailableError` — the requested scope's artifact is `null` or missing from the body (`scope` and `runId` on the error). Reading by `run_id`, a null `main_stuff` is already `MissingMainStuffError` from `getRunResult`;
 - `ArtifactAuthenticationError` — the resolve route refused the credential (`401` / `403`), on the first resolve or on a re-resolve part-way through. It carries `verdict`, the result as it stood: the refusal stops the workers taking new items but lets the fetches already running finish, since they are on presigned links that do not carry the credential, so every file saved is real and listed and the rest are marked `aborted` with a detail naming the credential failure;
-- `ArtifactOperationError` — outside Node, an unusable `dir`, both selectors or neither, an unknown `scope`, or nonsense bounds;
+- `ArtifactOperationError` — outside Node, an unusable `dir`, both selectors or neither, an unknown `scope`, or nonsense bounds; its verdict is `config` for the first two, since the environment must change, and `input` for the rest, the caller's arguments;
 - and the transport and lifecycle errors of the reads it makes, unchanged: `ApiResponseError` for a deployment without the bulk route, `RunLifecycleUnavailableError` for a bare runner asked by `run_id`, `ApiUnreachableError`.
 
-Everything else that can go wrong with one reference is that reference's `error`.
+Everything else that can go wrong with one reference is that reference's `error`. Each thrown error carries the verdict every SDK error does, `retryable` and `errorDomain`, listed per class on [errors.md](./errors.md#each-classs-verdict); a per-reference `error` is a value with a `code`, and carries none.
 
 **Options and defaults.**
 

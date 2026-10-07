@@ -230,6 +230,8 @@ The contract distinguishes these semantic outcomes, each a typed subclass of `In
 
 A malformed data URL — no comma, bad base64, bad percent-encoding — is a plain `InputPreparationError`, raised while the asset is read and before anything is uploaded.
 
+Each of these carries the verdict every SDK error does, `retryable` and `errorDomain` ([errors.md](./errors.md#each-classs-verdict)): the family's own is `input` and not retryable, an unsupported deployment and a refused credential are `config`, and a transport failure takes the verdict of the error it wraps, so a `402` plan refusal wrapped by `uploadFile` is `config` and not retryable, or, wrapping none, the verdict its `code` gives (`timeout`, `server_error` and `storage_timeout` retryable, `conflict` the caller's, `unreachable` and `redirected` the environment's). A pipe I/O answer whose `input_form` does not describe the pipe it selected is a plain `InputPreparationError` with a `runtime` verdict, since the route broke its own contract.
+
 All preparation failures are raised **before any run is created**.
 
 ## Storage policy (inherited, Phase 1)

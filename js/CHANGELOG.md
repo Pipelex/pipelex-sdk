@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A verdict on every error: `retryable`, `errorDomain` and `errorVerdictOf`**: every error class the package exports now carries `retryable`, whether asking again can succeed, and `errorDomain`, who can fix the failure (`input`, `config` or `runtime`), both always decided, and `errorVerdictOf(err)` reads the pair from anything a `catch` holds, returning `undefined` for an error that is not the SDK's, such as a misused argument or the caller's own abort. The classes now derive from the new abstract `PipelexRequestError`, itself a `PipelineRequestError`; `ErrorDomain` and `ErrorVerdict` are exported, `InputPreparationError` and `ArtifactOperationError` take an optional `verdict` in their options for a subclass of your own, `RunFailedError` takes its verdict from the run's report, and `CodegenLockError` carries the two members too. `docs/errors.md` lists each class's verdict.
+
+### Changed
+
+- **`ApiResponseError.retryable` and `ApiResponseError.errorDomain` are always decided (Breaking)**: `retryable` is now `boolean` and `errorDomain` is `ErrorDomain` instead of `boolean | undefined` and `string | undefined`. Each is the problem document's member when the server sent a valid one, and otherwise the SDK's fallback, read from the status, the platform `code` and whether the body names what it refused; a domain outside the three reads as absent. Code that tested either for `undefined` to learn what the server sent now reads `problemDocument`.
+- **`iterateMethods` throws `PagingNotTerminatingError` (Breaking)**: a server that keeps minting fresh cursors past the page ceiling now ends the iteration with the new `PagingNotTerminatingError`, carrying `pageLimit` and named as in the Python SDK, instead of a plain `Error`.
+- **`health()` throws the typed errors (Breaking)**: the liveness probe now goes through the client's own transport, so an unreachable origin is an `ApiUnreachableError` instead of the runtime's raw `TypeError`, a non-2xx answer is an `ApiResponseError` naming `/health` instead of a plain `Error`, and the probe gives up after the 30-second management timeout.
+
+### Fixed
+
+- **A failed run's stored report is checked field by field**: the report on `getRunResult`'s failed arm, on `RunFailedError`, on `getRunStatus`, on each row of `listRuns` and `iterateRuns` and on `getRunDetail` was handed back as cast; each named field is now kept only when it has its declared type and reads as absent otherwise, `user_action` only whole, and members the SDK does not name are relayed as sent.
+- **A wrapped upload refusal carries its cause's verdict**: an `UploadTransportError` from `uploadFile` takes the verdict of the `ApiResponseError` or `ApiUnreachableError` it wraps, so a `402` plan refusal, whose transport `code` is `unexpected`, reads as `config` and not retryable rather than as a transient fault.
+
+### Removed
+
+- **`ClientAuthenticationError` (Breaking)**: the class is no longer exported. Nothing in the SDK ever threw it, so delete any `instanceof ClientAuthenticationError` arm.
+
 ## [v0.32.0] - 2026-10-07
 
 ### Changed
