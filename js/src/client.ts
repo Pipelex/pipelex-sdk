@@ -89,12 +89,12 @@ import {
   RunLifecycleUnavailableError,
   RunStillRunningError,
 } from "./errors.js";
+import { readRunErrorReport } from "./error-models.js";
 import type {
   FieldError,
   MigrationErrorBlock,
   ProblemDetails,
   ProviderErrorMetadata,
-  RunErrorReport,
   UserAction,
 } from "./error-models.js";
 import { methodSourceToContents } from "./method-source.js";
@@ -1176,8 +1176,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Self-healing: a finished-but-unrecorded run resolves to its true terminal
    * status on read. `degraded: true` means Temporal was unreachable and
    * `status` is the last-known value; `retry_after_seconds` carries the
-   * server's backoff hint when present. Throws `RunLifecycleUnavailableError`
-   * when the lifecycle routes are absent (a bare runner).
+   * server's backoff hint when present. A failed run's stored report, `error`,
+   * is checked field by field (see `RunErrorReport`). Throws
+   * `RunLifecycleUnavailableError` when the lifecycle routes are absent (a bare
+   * runner).
    */
   async getRunStatus(runId: string, options: { signal?: AbortSignal } = {}): Promise<RunRead> {
     const endpoint = `${RUNS}/${encodeURIComponent(runId)}/status`;
@@ -1190,7 +1192,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    const run = JSON.parse(res.body) as RunRead;
+    const run = withCheckedReport(JSON.parse(res.body) as RunRead);
     const retryAfter = parseRetryAfter(res.headers);
     return retryAfter !== null ? { ...run, retry_after_seconds: retryAfter } : run;
   }
@@ -1748,7 +1750,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       "GET",
       `runs?${params.toString()}`,
     );
-    return { items: page.items, nextCursor: page.next_cursor };
+    const items = Array.isArray(page.items) ? page.items.map(withCheckedReport) : page.items;
+    return { items, nextCursor: page.next_cursor };
   }
 
   /**
@@ -1808,10 +1811,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *
    * The ONLY call that returns `mthds_contents` (what the run actually
    * executed) and `inputs`. Kept off the status read, which pollers hit every
-   * few seconds.
+   * few seconds. A failed run's stored report, `error`, is checked field by
+   * field (see `RunErrorReport`).
    */
   async getRunDetail(runId: string): Promise<RunDetail> {
-    return this.requestProduct("GET", `runs/${encodeURIComponent(runId)}`);
+    return withCheckedReport(
+      await this.requestProduct<RunDetail>("GET", `runs/${encodeURIComponent(runId)}`),
+    );
   }
 
   /** Patch a run's status (admin/manual) — `PUT /v1/runs/{id}`. */
@@ -2134,20 +2140,30 @@ const REQUEST_ID_HEADER = "x-request-id";
  * `Run finished with status <STATUS>` the platform keeps for exactly this reader, so the status
  * word is recovered from it then; a `409` that yields no known status either way (the one this
  * route answers for a stored result it refuses to read) reads as `FAILED`, and its `detail`
- * still says what happened. The report is relayed whole, as the runner wrote it: an object is
- * taken as the report, anything else reads as no report.
+ * still says what happened. The report is checked field by field by `readRunErrorReport`: an
+ * object is taken as the report, each named field kept when it has its declared type, and
+ * anything that is not an object reads as no report.
  */
 function runResultFailed(runId: string, body: string): RunResultState {
   const { serverMessage, document } = parseErrorBody(body);
   const message = serverMessage ?? "Run finished without a result.";
-  const rawReport = document?.error;
   return {
     state: "failed",
     pipeline_run_id: runId,
     status: knownRunStatus(document?.run_status) ?? statusFromDetail(message) ?? "FAILED",
     message,
-    error: isPlainObject(rawReport) ? (rawReport as RunErrorReport) : null,
+    error: readRunErrorReport(document?.error),
   };
+}
+
+/**
+ * A run record with its stored report checked by `readRunErrorReport`. Only when the record
+ * carries the `error` key, so a server that does not serve it still leaves it absent; a record
+ * that is not an object is returned as it came.
+ */
+function withCheckedReport<T>(record: T): T {
+  if (!isPlainObject(record) || !Object.hasOwn(record, "error")) return record;
+  return { ...record, error: readRunErrorReport(record.error) } as T;
 }
 
 function knownRunStatus(value: unknown): RunStatus | undefined {
