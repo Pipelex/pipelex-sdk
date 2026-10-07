@@ -40,6 +40,20 @@ import {
 } from "../src/errors.js";
 import type { GetRunResultOptions, RunResults, RunResultState } from "../src/runs.js";
 
+/** The verdict an artifact operation declares for an argument it refuses: the caller's to fix. */
+const REFUSED_ARGUMENT = {
+  name: "ArtifactOperationError",
+  errorDomain: "input",
+  retryable: false,
+} as const;
+
+/** The verdict it declares when the environment cannot hold a download. */
+const REFUSED_ENVIRONMENT = {
+  name: "ArtifactOperationError",
+  errorDomain: "config",
+  retryable: false,
+} as const;
+
 const RUN_ID = "01JRUN0000000000000000TEST";
 const PICTURE_URI = "pipelex-storage://org/runs/01JRUN/outputs/illustration.png";
 const REPORT_URI = "pipelex-storage://org/runs/01JRUN/outputs/report";
@@ -431,6 +445,13 @@ describe("artifactFilename", () => {
         ArtifactOperationError,
       );
     }
+    let refusal: unknown;
+    try {
+      artifactFilename(null as never, null, "main_stuff");
+    } catch (err) {
+      refusal = err;
+    }
+    expect(refusal).toMatchObject(REFUSED_ARGUMENT);
   });
 
   it("suffixes a stem Windows reserves for a device, however it was reached", () => {
@@ -513,9 +534,12 @@ describe("resolveArtifacts", () => {
       },
     };
 
-    await expect(resolveArtifacts(client, [PICTURE_URI, REPORT_URI])).rejects.toBeInstanceOf(
-      ArtifactOperationError,
-    );
+    // An answer that breaks the route's contract is no fault of the caller's.
+    await expect(resolveArtifacts(client, [PICTURE_URI, REPORT_URI])).rejects.toMatchObject({
+      name: "ArtifactOperationError",
+      errorDomain: "runtime",
+      retryable: false,
+    });
   });
 
   it("lets a whole-request refusal propagate unchanged", async () => {
@@ -735,8 +759,8 @@ describe("fetchArtifact", () => {
   it("refuses nonsense bounds before resolving anything", async () => {
     const client = makeClient();
 
-    await expect(fetchArtifact(client, PICTURE_URI, { maxBytes: 0 })).rejects.toBeInstanceOf(
-      ArtifactOperationError,
+    await expect(fetchArtifact(client, PICTURE_URI, { maxBytes: 0 })).rejects.toMatchObject(
+      REFUSED_ARGUMENT,
     );
     await expect(fetchArtifact(client, PICTURE_URI, { timeoutMs: -1 })).rejects.toBeInstanceOf(
       ArtifactOperationError,
@@ -804,7 +828,7 @@ describe("downloadArtifacts", () => {
     try {
       await expect(
         downloadArtifacts(client, { run_id: RUN_ID, dir: "irrelevant" }),
-      ).rejects.toBeInstanceOf(ArtifactOperationError);
+      ).rejects.toMatchObject(REFUSED_ENVIRONMENT);
     } finally {
       Object.defineProperty(process, "versions", versions);
     }
@@ -814,8 +838,8 @@ describe("downloadArtifacts", () => {
   it("takes exactly one of run_id or results", async () => {
     const client = makeClient();
 
-    await expect(downloadArtifacts(client, { dir: "x" } as never)).rejects.toBeInstanceOf(
-      ArtifactOperationError,
+    await expect(downloadArtifacts(client, { dir: "x" } as never)).rejects.toMatchObject(
+      REFUSED_ARGUMENT,
     );
     await expect(
       downloadArtifacts(client, {
@@ -831,7 +855,7 @@ describe("downloadArtifacts", () => {
 
     await expect(
       downloadArtifacts(client, { run_id: RUN_ID, dir: "x", concurrency: 0 }),
-    ).rejects.toBeInstanceOf(ArtifactOperationError);
+    ).rejects.toMatchObject(REFUSED_ARGUMENT);
     await expect(
       downloadArtifacts(client, { run_id: RUN_ID, dir: "x", maxTotalBytes: 0 }),
     ).rejects.toBeInstanceOf(ArtifactOperationError);
@@ -1121,7 +1145,7 @@ describe("downloadArtifacts", () => {
 
     await expect(
       downloadArtifacts(client, { run_id: RUN_ID, dir: "x", scope: "everything" as never }),
-    ).rejects.toBeInstanceOf(ArtifactOperationError);
+    ).rejects.toMatchObject(REFUSED_ARGUMENT);
     expect(client.resultCalls).toHaveLength(0);
   });
 
@@ -1587,7 +1611,7 @@ describe("downloadArtifacts", () => {
         results: { pipeline_run_id: RUN_ID, main_stuff: { url: PICTURE_URI } },
         dir: join(file, "under-a-file"),
       }),
-    ).rejects.toBeInstanceOf(ArtifactOperationError);
+    ).rejects.toMatchObject(REFUSED_ENVIRONMENT);
   });
 
   it("lets a deployment without the bulk route surface as the transport error", async () => {

@@ -1229,6 +1229,7 @@ export async function downloadArtifacts(
     throw new ArtifactOperationError(
       "downloadArtifacts takes exactly one of `run_id` (the results are re-read) or `results` " +
         "(a RunResults in hand).",
+      ARGUMENT_REFUSED,
     );
   }
   const results = hasResults
