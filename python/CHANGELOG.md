@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`wait_for_result` stops when its task is cancelled, on Python 3.11 too**: on Python 3.11, cancelling the task awaiting `wait_for_result` or `start_and_wait` in the loop step where a poll answered was swallowed, and the wait polled on until the run ended or `timeout_seconds` ran out. It now raises `asyncio.CancelledError` on every supported Python version, so an `asyncio.timeout` around the wait, a cancelled request handler or Ctrl-C under `asyncio.run` stops it.
+
 ## [v0.31.0] - 2026-10-05
 
 ### Changed

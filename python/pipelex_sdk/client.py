@@ -872,7 +872,8 @@ class PipelexAPIClient(MthdsAPIClient):
         run's status and its stored error report, typed, as `error` — and raises
         `RunTimeoutError` if `timeout_seconds` elapses first (the run keeps executing server-side —
         resume later by `run_id`). Honors the server's `Retry-After`. Async-native: cancelling the
-        awaiting task raises `asyncio.CancelledError` out of this loop, leaving the run resumable.
+        awaiting task raises `asyncio.CancelledError` out of this loop, leaving the run resumable,
+        on every supported Python version, even when the cancellation lands in the step a poll answers.
         `artifacts` narrows every results read of the loop, exactly as on `get_run_result`.
         """
         # Refused before the first poll, so an empty selection never waits out a timeout to fail.
@@ -887,8 +888,11 @@ class PipelexAPIClient(MthdsAPIClient):
             if remaining <= 0:
                 raise RunTimeoutError(_timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds)
 
+            # `asyncio.timeout`, never `asyncio.wait_for`: on Python 3.11, `wait_for` returns a poll that
+            # finished in the same loop step as a cancellation of the awaiting task, swallowing it.
             try:
-                state = await asyncio.wait_for(self.get_run_result(run_id, artifacts=artifacts), timeout=remaining)
+                async with asyncio.timeout(remaining):
+                    state = await self.get_run_result(run_id, artifacts=artifacts)
             except TimeoutError as exc:
                 raise RunTimeoutError(_timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds) from exc
 
