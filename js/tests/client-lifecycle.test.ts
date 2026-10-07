@@ -1073,3 +1073,89 @@ describe("PipelexApiClient run-lifecycle delegation", () => {
     expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/validate");
   });
 });
+
+describe("PipelexApiClient.startAndWaitForResult — onStarted", () => {
+  it("hands over the start acknowledgement once, before the first poll, on the durable path", async () => {
+    const client = makeClient();
+    const ack = {
+      pipeline_run_id: "run-1",
+      state: "STARTED",
+      created_at: "t0",
+      method_provenance: { method_ref: "github.com/acme/methods@v1", commit_sha: "abc" },
+    };
+    const events: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      events.push(`fetch ${new URL(url).pathname}`);
+      if (url.endsWith("/v1/version")) return Promise.resolve(jsonResponse(200, HOSTED_VERSION));
+      if (url.endsWith("/v1/start")) return Promise.resolve(jsonResponse(202, ack));
+      return Promise.resolve(jsonResponse(200, { pipeline_run_id: "run-1", main_stuff: { a: 1 } }));
+    });
+    const onStarted = vi.fn((started: { pipeline_run_id: string }) => {
+      events.push(`started ${started.pipeline_run_id}`);
+    });
+
+    const result = await client.startAndWaitForResult({ pipe_code: "p" }, { onStarted });
+
+    expect(result.main_stuff).toEqual({ a: 1 });
+    expect(onStarted).toHaveBeenCalledTimes(1);
+    // The acknowledgement whole, the provenance of a `method_ref` run included.
+    expect(onStarted).toHaveBeenCalledWith(ack);
+    expect(events).toEqual([
+      "fetch /v1/version",
+      "fetch /v1/start",
+      "started run-1",
+      "fetch /v1/runs/run-1/results",
+    ]);
+  });
+
+  it("is never called on a bare runner's blocking path, which has no run id to give", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, BARE_VERSION))
+      .mockResolvedValueOnce(jsonResponse(200, executeBody("run-x")));
+    const onStarted = vi.fn();
+
+    const result = await client.startAndWaitForResult({ pipe_code: "p" }, { onStarted });
+
+    expect(result.pipeline_run_id).toBe("run-x");
+    expect(onStarted).not.toHaveBeenCalled();
+  });
+
+  it("is never called when a runner that looked hosted falls back to the blocking path", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, BASE_ONLY_VERSION))
+      .mockResolvedValueOnce(jsonResponse(404, { detail: "Not Found" }))
+      .mockResolvedValueOnce(jsonResponse(200, executeBody("run-x")));
+    const onStarted = vi.fn();
+
+    const result = await client.startAndWaitForResult({ pipe_code: "p" }, { onStarted });
+
+    expect(result.pipeline_run_id).toBe("run-x");
+    expect(onStarted).not.toHaveBeenCalled();
+  });
+
+  it("lets a throw from the callback propagate before anything is polled", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, HOSTED_VERSION))
+      .mockResolvedValueOnce(
+        jsonResponse(202, { pipeline_run_id: "run-1", state: "STARTED", created_at: "t0" }),
+      );
+    const failure = new Error("the caller's own bug");
+
+    await expect(
+      client.startAndWaitForResult(
+        { pipe_code: "p" },
+        {
+          onStarted: () => {
+            throw failure;
+          },
+        },
+      ),
+    ).rejects.toBe(failure);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+});

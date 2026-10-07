@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`onStarted` on `startAndWaitForResult`**: the second argument is now `StartAndWaitForResultOptions`, the wait's options plus `onStarted`, called once with the start acknowledgement as soon as the durable run exists and before the first poll, so a caller that waits through `startAndWaitForResult` holds the run's id while it waits, to show it, log it or resume the run by it after an interrupt. It is never called on the blocking path, which has no run id to give. `docs/run-results.md` describes it.
+
 ## [v0.33.0] - 2026-10-07
 
 ### Added

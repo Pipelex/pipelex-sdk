@@ -4,7 +4,6 @@ import type {
   ModelDeck,
   RunOptions,
   RunRequest,
-  RunResultStart,
   StartOptions,
   StartRequest,
   VersionInfo,
@@ -46,6 +45,7 @@ import {
   type RunResults,
   type RunResultState,
   type RunStatus,
+  type StartAndWaitForResultOptions,
   type WaitForResultOptions,
 } from "./runs.js";
 import type {
@@ -1486,13 +1486,19 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *   path that survives the gateway's ~30s synchronous ceiling.
    * - **Bare runner** (no run store): the blocking `POST /v1/execute`, which
    *   has no gateway cap off-platform and returns the native `pipe_output`.
+   *
+   * `pollOptions` are the wait's options, plus `onStarted`, called once with the
+   * start acknowledgement as soon as the durable run exists, so the caller holds
+   * the run's id while it waits; never on the blocking path, which has none to
+   * give (see `StartAndWaitForResultOptions`).
    */
   async startAndWaitForResult(
     options: PipelexStartOptions,
-    pollOptions?: WaitForResultOptions,
+    pollOptions?: StartAndWaitForResultOptions,
   ): Promise<RunResults> {
     // Before the run starts: a RangeError after it would carry no run id to re-poll by.
     assertWaitOptions(pollOptions);
+    const { onStarted, ...waitOptions } = pollOptions ?? {};
     if (await this.supportsRunLifecycle()) {
       // A runner can look hosted yet lack the durable routes — `implementation`
       // is an extension field, so a compliant bare runner that omits it is
@@ -1500,7 +1506,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // from `start()`, BEFORE any run is created, so falling back to the
       // blocking path cannot double-run. Cache the negative so later calls skip
       // the durable attempt.
-      let ack: RunResultStart;
+      let ack: PipelexRunResultStart;
       try {
         ack = await this.start(options);
       } catch (err) {
@@ -1508,7 +1514,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         this.lifecycleAvailable = false;
         return this.executeBlocking(options);
       }
-      return this.waitForResult(ack.pipeline_run_id, pollOptions);
+      onStarted?.(ack);
+      return this.waitForResult(ack.pipeline_run_id, waitOptions);
     }
 
     return this.executeBlocking(options);
