@@ -323,15 +323,27 @@ function classifyResponse(err: ApiResponseError, env: ClassifyEnv): PipelineErro
  * SDK's reading of the status, so a 4xx says a re-run unchanged fails the same
  * way and a passing 5xx offers one. An arm that recognized the error type
  * brings its own verdict, which knows more than the status and gives way only
- * to the API's.
+ * to the API's; where it overrides the SDK's reading, the details say so
+ * beside that reading, so they never contradict the retry line.
  */
 function withRefusalAdvice(error: PipelineError, err: ApiResponseError): PipelineError {
   const nextStep = nextStepOf(err.userAction);
   const apiSaid = typeof err.problemDocument?.retryable === "boolean";
+  const armVerdict = apiSaid ? undefined : error.retry;
+  const retry = armVerdict ?? retryAdvice(err.retryable);
+  const sdkLine = verdictLine("retryable", err.retryable, err.problemDocument?.retryable);
+  const details =
+    armVerdict && armVerdict.retryable !== err.retryable && error.details
+      ? error.details.replace(
+          sdkLine,
+          `${sdkLine}, which this app overrides: it reads ${err.errorType} as ${armVerdict.retryable ? "passing" : "final"}`,
+        )
+      : error.details;
   return {
     ...error,
     ...(nextStep ? { hint: { summary: nextStep } } : {}),
-    retry: error.retry && !apiSaid ? error.retry : retryAdvice(err.retryable),
+    retry,
+    details,
   };
 }
 

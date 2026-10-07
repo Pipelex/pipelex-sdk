@@ -762,6 +762,11 @@ describe("classifyPipelineError — a refusal's problem document", () => {
       retryable: false,
       summary: "Running it again unchanged will fail the same way.",
     });
+    // The details show the SDK's reading and say the app overrode it, so they
+    // never contradict the retry line above them.
+    expect(result.details).toContain(
+      "retryable: true (the SDK's reading, not the API's), which this app overrides: it reads CredentialsError as final",
+    );
   });
 
   it("lets the API's own verdict override a recognized error type's", () => {
