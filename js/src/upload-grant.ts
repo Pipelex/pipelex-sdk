@@ -101,7 +101,9 @@ export interface GrantedUpload {
  * A timeout, a `5xx`, a conflict and a connection lost after the file went out leave
  * it unknown whether the object was written: retrying with the same grant before it
  * expires either stores it or answers the `412` of a used grant, and then the
- * grant's `uri` already names the file. The grant is a bearer capability: nothing
+ * grant's `uri` already names the file. A `501` is the exception: storage does not
+ * implement the request it was sent, stored nothing, and answers a retry the same
+ * way, so its error is not retryable. The grant is a bearer capability: nothing
  * here logs it, and no error this throws carries its URL, storage's error body or a
  * runtime error that could hold either.
  */
@@ -213,10 +215,21 @@ export async function uploadWithGrant(
         { code },
       );
     }
-    throw new UploadTransportError(
+    const failure =
       `Upload of "${label}" failed at storage (${describeStatus(response, refusal)})` +
-        (refusal.message ? `: ${withoutFinalPeriod(refusal.message)}` : "") +
-        `. Whether the file was stored is unknown. ${sameGrantRetry(grant)}`,
+      (refusal.message ? `: ${withoutFinalPeriod(refusal.message)}` : "");
+    // Storage answers a 501 for a request it does not implement, such as a header it does not
+    // support: it stored nothing, and the same request meets the same answer, so neither the
+    // same grant nor a new one is worth a retry, and the error's verdict says so too.
+    if (status === 501) {
+      throw new UploadTransportError(
+        `${failure}. Storage does not implement the request it was sent, so it stored nothing, ` +
+          "and sending the file again will meet the same answer.",
+        { status, code: "server_error" },
+      );
+    }
+    throw new UploadTransportError(
+      `${failure}. Whether the file was stored is unknown. ${sameGrantRetry(grant)}`,
       { status, code: status >= 500 ? "server_error" : "unexpected" },
     );
   } finally {

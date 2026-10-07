@@ -263,7 +263,8 @@ export class UploadAuthenticationError extends InputPreparationError {
  *   `uploadFile`. Whether the file was stored is unknown.
  * - `unreachable` — no response reached the SDK. In a browser, a refused cross-origin
  *   request looks like this.
- * - `server_error` — a `5xx`. Whether the file was stored is unknown.
+ * - `server_error` — a `5xx`. Whether the file was stored is unknown, except after a `501`:
+ *   storage does not implement the request it was sent, and stored nothing.
  * - `storage_timeout` — storage's `400 RequestTimeout`: it stopped waiting for the
  *   file's bytes and stored nothing.
  * - `conflict` — storage's `409 ConditionalRequestConflict`: another `PUT` with the
@@ -297,12 +298,14 @@ export type UploadTransportCode =
  * `ApiResponseError` or `ApiUnreachableError` the client's `upload()` threw, and `code` is too
  * coarse to judge it by (a `402` plan limit is `unexpected`, like a malformed answer). Otherwise
  * — always the case from `uploadWithGrant`, which wraps no response — `code` decides: `timeout`,
- * `server_error`, `storage_timeout` and `conflict` are `runtime` and retryable, `conflict` because
- * storage documents its `409 ConditionalRequestConflict` as retryable and the grant is not spent
- * by it (a spent grant is the `412` of a `RejectedAssetError` with code `grant_used`);
- * `unreachable` is `config` and retryable, like `ApiUnreachableError`; `redirected` is `config`
- * and not retryable; `invalid_grant_url`, `unexpected` and no code at all are `runtime` and not
- * retryable.
+ * `storage_timeout` and `conflict` are `runtime` and retryable, `conflict` because storage
+ * documents its `409 ConditionalRequestConflict` as retryable and the grant is not spent by it (a
+ * spent grant is the `412` of a `RejectedAssetError` with code `grant_used`); `server_error` is
+ * `runtime`, and retryable when the fallback table a refused API request reads would call its
+ * `status` retryable — any `5xx` but a `501`, which storage answers for a request it does not
+ * implement — or when it carries no status; `unreachable` is `config` and retryable, like
+ * `ApiUnreachableError`; `redirected` is `config` and not retryable; `invalid_grant_url`,
+ * `unexpected` and no code at all are `runtime` and not retryable.
  */
 export class UploadTransportError extends InputPreparationError {
   public readonly status: number | undefined;
@@ -314,7 +317,8 @@ export class UploadTransportError extends InputPreparationError {
   ) {
     super(message, {
       ...options,
-      verdict: errorVerdictOf(options?.cause) ?? uploadTransportVerdict(options?.code),
+      verdict:
+        errorVerdictOf(options?.cause) ?? uploadTransportVerdict(options?.code, options?.status),
     });
     this.name = "UploadTransportError";
     this.status = options?.status;
@@ -323,13 +327,22 @@ export class UploadTransportError extends InputPreparationError {
 }
 
 /** The verdict of an upload transport failure that wraps no error carrying one. */
-function uploadTransportVerdict(code: UploadTransportCode | undefined): ErrorVerdict {
+function uploadTransportVerdict(
+  code: UploadTransportCode | undefined,
+  status: number | undefined,
+): ErrorVerdict {
   switch (code) {
     case "timeout":
-    case "server_error":
     case "storage_timeout":
     case "conflict":
       return makeVerdict("runtime", true);
+    case "server_error":
+      // A fault in storage may pass, but a 501 says storage does not implement the request, and
+      // sending it again will not change that. The status reads as an API's would.
+      return makeVerdict(
+        "runtime",
+        status === undefined || fallbackVerdict(status, undefined, true).retryable,
+      );
     case "unreachable":
       return makeVerdict("config", true);
     case "redirected":

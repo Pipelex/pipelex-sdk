@@ -176,6 +176,8 @@
         { "variant": "a time limit that ran out", "only_in": "js", "given": { "code": "timeout" }, "expected": { "error_domain": "runtime", "retryable": true } },
         { "variant": "no response reached the SDK", "only_in": "js", "given": { "code": "unreachable" }, "expected": { "error_domain": "config", "retryable": true } },
         { "variant": "a 5xx from storage", "only_in": "js", "given": { "code": "server_error", "status": 503 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "a 501 from storage", "only_in": "js", "given": { "code": "server_error", "status": 501 }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "a server error with no status", "only_in": "js", "given": { "code": "server_error", "status": null }, "expected": { "error_domain": "runtime", "retryable": true } },
         { "variant": "storage stopped waiting for the bytes", "only_in": "js", "given": { "code": "storage_timeout", "status": 400 }, "expected": { "error_domain": "runtime", "retryable": true } },
         { "variant": "another write with the same grant in flight", "only_in": "js", "given": { "code": "conflict", "status": 409 }, "expected": { "error_domain": "runtime", "retryable": true } },
         { "variant": "a refused redirect", "only_in": "js", "given": { "code": "redirected", "status": 307 }, "expected": { "error_domain": "config", "retryable": false } },
