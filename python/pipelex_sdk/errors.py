@@ -66,10 +66,18 @@ class ApiUnreachableError(PipelineRequestError):
 
     DNS failure, connection refused, TLS handshake failure, or a request timeout —
     the HTTP exchange never produced a response. Distinguish from `ApiResponseError`,
-    which represents a non-2xx response that did come back.
+    which represents a non-2xx response that did come back. Every route of
+    `PipelexAPIClient` raises it, the protocol routes it inherits from `mthds` included,
+    because they all send through its `_send` override; the httpx exception is the
+    `__cause__`.
 
-    `code` is the underlying transport-failure class when available (`ABORT_TIMEOUT`
-    for a timeout, otherwise the httpx transport exception class name).
+    `code` names the failure: `ABORT_TIMEOUT` when the request reached the API and its
+    time limit ran out while it was sent or answered (httpx's `ReadTimeout` or
+    `WriteTimeout`), otherwise the httpx transport exception's class name, `ConnectError`,
+    `ConnectTimeout` and `PoolTimeout` included, none of which sent the request.
+
+    It derives from the protocol's `PipelineRequestError` directly because the `mthds`
+    client has no unreachable error of its own; when it gains one, this class subclasses it.
     """
 
     def __init__(self, message: str, api_url: str, code: str | None = None) -> None:
@@ -320,6 +328,31 @@ class InvalidLocalSourceError(InputPreparationError):
         self.source = source
 
 
+class InvalidInputValueError(InputPreparationError):
+    """A value the caller gave at a file input cannot be turned into a file to upload: a `data:` URL
+    that does not decode (no comma, bad base64), or a value of a type no file input takes, neither a
+    path or URL string, nor `bytes` or a `Path`, nor `{url}` content. `prepare_inputs` raises it while
+    it reads the inputs, before anything is uploaded. As with `InvalidLocalSourceError`, the inputs are
+    what must change, which is how a consumer tells it apart from `MethodLoadError`, a method that does
+    not load, raised by the same preparation. The twin of `@pipelex/sdk`'s class of the same name.
+    """
+
+
+class MethodLoadError(InputPreparationError):
+    """The pipe I/O answer said the method does not load (`is_valid: false`), so its signature cannot
+    be read and no input can be prepared: the method, not the inputs, must change.
+
+    `validation_errors` holds the answer's items, possibly none, and `server_message` the answer's own
+    `message`. The error's message names the first item's message, else the answer's own. The twin of
+    `@pipelex/sdk`'s class of the same name, whose `validationErrors` and `serverMessage` these are.
+    """
+
+    def __init__(self, message: str, *, validation_errors: list[ValidationErrorItem], server_message: str | None = None) -> None:
+        super().__init__(message)
+        self.validation_errors = validation_errors
+        self.server_message = server_message
+
+
 class RejectedAssetError(InputPreparationError):
     """The server refused the asset — most commonly a `413` past the service-defined
     size cap. The SDK imposes no client-side cap; it surfaces the server's rejection.
@@ -335,20 +368,37 @@ class RejectedAssetError(InputPreparationError):
 class UnsupportedUploadCapabilityError(InputPreparationError):
     """The configured deployment does not support upload (no `/v1/upload` route, seen
     as a `404`). Upload is a hosted Pipelex-product capability even though the SDK can
-    be pointed at other base URLs.
+    be pointed at other base URLs. `filename` is the file whose upload met it, as `upload_file`
+    sent it; the route's `ApiResponseError` is its `__cause__`.
     """
+
+    def __init__(self, message: str, *, filename: str | None = None) -> None:
+        super().__init__(message)
+        self.filename = filename
 
 
 class UploadAuthenticationError(InputPreparationError):
-    """Upload was not authorized — a `401`/`403` from the upload route."""
+    """Upload was not authorized — a `401`/`403` from the upload route. `filename` is the file
+    whose upload was refused, as `upload_file` sent it.
+    """
 
-    def __init__(self, message: str, status: int) -> None:
+    def __init__(self, message: str, status: int, *, filename: str | None = None) -> None:
         super().__init__(message)
         self.status = status
+        self.filename = filename
 
 
 class UploadTransportError(InputPreparationError):
-    """A network or server fault reaching the upload route (unreachable host, `5xx`)."""
+    """A network or server fault reaching the upload route (unreachable host, `5xx`), or any other
+    status the route answered. `status` is the HTTP status when an answer produced it and `None`
+    when none came back; `filename` is the file it was sending. From `upload_file` the
+    `ApiResponseError` or `ApiUnreachableError` the client raised is its `__cause__`.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, filename: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.filename = filename
 
 
 class CodegenError(Exception):

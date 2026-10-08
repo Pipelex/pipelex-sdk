@@ -1,6 +1,6 @@
 ---
 name: contract-check
-description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the release the SDK last shipped in, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the specs that govern it in the workspace root's docs/specs/, which the skill's spec table lists (../../docs/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
+description: Detect interface-contract drift between @pipelex/sdk's client surface and the wire specs it implements (defaults to comparing against the release the SDK last shipped in, but the user can specify any tag or commit). Compares the PipelexApiClient request/response shapes against the specs that govern it, which the skill's spec table lists, in the conformance repo's specs/ beside the tests that verify them (../../conformance/specs/ from js/). Use when the user says "check the contract", "contract review", "contract check", "did we break the contract", "check interfaces", "API contract", "protocol drift", "compare to vX.Y.Z", or before shipping/releasing a version that touches the client wire surface. Also run by the repository root's /release skill when a release ships the SDK and touched its wire surface.
 ---
 
 # Contract Check
@@ -11,12 +11,12 @@ Run this skill's commands from `js/`, the SDK's directory in `Pipelex/pipelex-sd
 
 ## Prerequisites: Locate the Specs
 
-The specs live in the workspace root's `docs/specs/`, which is `../../docs/specs/` relative to `js/`: the workspace root is the parent of this repository's root, whether that root is the main checkout or a worktree, since worktrees sit flat at the workspace root. Before doing anything else:
+The specs live in the `conformance` repository, in its `specs/` directory beside the tests that verify them, which is `../../conformance/specs/` relative to `js/`: the `conformance` checkout sits at the workspace root, which is the parent of this repository's root, whether that root is the main checkout or a worktree, since worktrees sit flat at the workspace root. Before doing anything else:
 
-1. Check that the directory `../../docs/specs/` exists.
+1. Check that the directory `../../conformance/specs/` exists.
 2. Check that it contains every spec of the table below.
 
-If the directory is missing or does not contain the expected spec files, **stop immediately** and tell the user the specs directory was not found and they need access to the workspace-root `docs`/`specs`.
+If the directory is missing or does not contain the expected spec files, **stop immediately** and tell the user the specs directory was not found and they need the `conformance` repository checked out at the workspace root, beside this one.
 
 ### The spec set in scope
 
@@ -34,7 +34,7 @@ This table is the one map from the SDK's code to the specs that govern it; Step 
 | `mthds-package-references.md` | **consumes** — the `method_ref` address form the SDK passes through, and the provenance triple a run's start and execute responses carry (`MethodProvenance` in `models.ts`) |
 | `client-identification.md` | **implements** — the `User-Agent` every request carries (`user-agent.ts`), and the hook's own `pipelex-mthds-check` token (`hooks/validate-client.ts`) |
 
-The routes with no spec — the methods catalog, organizations, billing, API keys, onboarding, `/v1/upload` and `/v1/upload/grant` — have nothing to drift from: a contract-visible change there is reported as unspecified, under the unmatched additions, never as a discrepancy. **Before reporting a change as unspecified, search the specs for it**, since a route or field this table does not place may still be specified: `grep -rln "<the route or the field>" ../../docs/specs/`. `command-surface-map.md` gives the cross-repo view; consult it for context.
+The routes with no spec — the methods catalog, organizations, billing, API keys, onboarding, `/v1/upload` and `/v1/upload/grant` — have nothing to drift from: a contract-visible change there is reported as unspecified, under the unmatched additions, never as a discrepancy. **Before reporting a change as unspecified, search the specs for it**, since a route or field this table does not place may still be specified: `grep -rln "<the route or the field>" ../../conformance/specs/`. `command-surface-map.md` gives the cross-repo view; consult it for context.
 
 ## Step 1 — Identify the Baseline
 
@@ -83,9 +83,9 @@ For each contract-visible change, read the relevant spec and determine:
 2. **Does the change contradict the spec?**
 3. **Is the change absent from the spec?**
 
-The spec to read is the one the table under **The spec set in scope** maps the changed module, route or field to, under `../../docs/specs/`; a change it does not place is searched for there before it is reported as unspecified.
+The spec to read is the one the table under **The spec set in scope** maps the changed module, route or field to, under `../../conformance/specs/`; a change it does not place is searched for there before it is reported as unspecified.
 
-**When citing a spec surface, note its conformance status.** Each verified surface carries a `> Verified by:` line pointing at the `conformance/` test that exercises it (or an explicit unverified marker). Include that target so the reviewer knows whether a test already guards it.
+**When citing a spec surface, note its conformance status.** Each verified surface carries a `> Verified by:` line pointing at the test under `conformance/tests/` that exercises it (or an explicit `<!-- unverified: … -->` marker). Include that target so the reviewer knows whether a test already guards it.
 
 ## Step 5 — Report
 
@@ -99,13 +99,13 @@ Produce a **self-contained** report (readable by an agent in another repo). Star
 
 The report is printed, never saved to a file: a saved report is the ad hoc follow-up list the workspace ledger replaced. Each discrepancy or unmatched addition that somebody must act on becomes one workspace ledger item. Aligned changes stay in the printed report.
 
-- **Ask which side moves before filing.** This skill does not decide whether the code or the spec is wrong, so the owner comes from the user's answer: a code fix is owned by `pipelex-sdk/js`, a spec edit by `workspace`, since `docs/specs/` lives in the meta-repo. A finding the user leaves undecided is filed as a `decision` owned by `workspace`, its body naming both sides.
+- **Ask which side moves before filing.** This skill does not decide whether the code or the spec is wrong, so the owner comes from the user's answer: a code fix is owned by `pipelex-sdk/js`, and a spec edit by `conformance`, filed as type `spec`, since the specs live in the `conformance` repository beside the tests that verify them and a spec edit changes its test in the same pull request. A finding the user leaves undecided is filed as a `decision` owned by `workspace`, its body naming both sides.
 - **Fix in place what belongs here, except under a release.** A finding whose fix is a small, obvious change in this repo is made in this session, after asking the user; it is filed only when it is genuinely out of scope. When the repository root's `/release` runs this skill, nothing is fixed in place: the release commit stages only its own files by name, so a fix made in the release worktree would stay uncommitted or ride into `main` without a topic branch and its `/rev`. File it instead.
 - **Check for an existing item first**, since this check runs before every release and the same drift resurfaces: `ledger list --ref skill:contract-check --status open`. When an open item covers the finding, record the sighting on it (`ledger note <id> "Still open at baseline <baseline> → HEAD <short-sha>."`) and name the id in the report.
-- **File the rest** with `ledger new --owner <repo> --type bug|spec|task|decision --title "…" --gist "…" --ref skill:contract-check`, the body carrying the report's evidence for that finding (file:line, spec section, conformance status), so an agent in `docs` or `conformance` can act without this repo. The `/ledger` skill has the full command reference.
+- **File the rest** with `ledger new --owner <repo> --type bug|spec|task|decision --title "…" --gist "…" --ref skill:contract-check`, the body carrying the report's evidence for that finding (file:line, spec section, conformance status), so an agent in `conformance` can act without this repo. The `/ledger` skill has the full command reference.
 
 ## Notes
 
-- **Specs and conformance are a linked pair.** If a finding's resolution is to edit a spec, the matching `conformance/` test must change in the same commit, and `make check-spec-links` (run in the `conformance/` repo) must pass — it enforces the bidirectional `> Verified by:` ↔ `pytestmark = pytest.mark.spec(...)` links.
+- **Specs and conformance are a linked pair.** If a finding's resolution is to edit a spec, the matching test in `conformance/tests/` changes in the same `conformance` pull request, and `make check-spec-links` there must pass — it enforces the bidirectional `> Verified by:` ↔ `pytestmark = pytest.mark.spec(...)` links.
 - The most critical surface is the protocol wire shape, because AI agents, the plugin, and `pipelex-app` depend on its exact format.
 - This skill detects discrepancies — it does not assign blame. Code, spec, or both may need updating. That's a human decision.

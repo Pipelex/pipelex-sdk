@@ -12,6 +12,18 @@ One-way dependency: `pipelex-sdk → mthds`.
 pip install pipelex-sdk
 ```
 
+## Run a method from the command line
+
+The package publishes the `pipelex-sdk` command, so a method runs on the hosted API with nothing to install but [uv](https://docs.astral.sh/uv/):
+
+```bash
+export PIPELEX_API_KEY=<your key>
+uvx pipelex-sdk run --method github.com/acme/methods/receipt-review@v1.0.0 --inputs-template > inputs.json
+uvx pipelex-sdk run --method github.com/acme/methods/receipt-review@v1.0.0 --inputs inputs.json
+```
+
+`--method` takes a published address, a catalog id (`mt_…`) or a local `.mthds` file or bundle directory. The run's main output is printed as JSON on stdout, and the run id, each uploaded file and every error go to stderr; Ctrl-C leaves the run going on the server and names it. `uvx pipelex-sdk script --method <address | mt_id>` checks the method and writes a short shell script that runs it with this SDK's version pinned. The key comes from `PIPELEX_API_KEY` only, and no `.env` file is read. The command is the twin of `npx @pipelex/sdk`, held to the same recorded cases; [`docs/cli.md`](docs/cli.md) describes it.
+
 ## Configuration
 
 The **API key** resolves, in order: explicit `api_key` argument → `PIPELEX_API_KEY` → anonymous. The token is **optional** — anonymous access works against the protocol routes (e.g. a local bare runner); the product routes return `401`.
@@ -20,9 +32,9 @@ The **base URL** resolves, in order: explicit `base_url` argument → `PIPELEX_B
 
 The SDK never reads the `mthds` resolver (`MTHDS_API_KEY` / `MTHDS_BASE_URL` / `~/.mthds/config`) — those settings configure the vendor-neutral `mthds` tooling and whichever runner it targets, not this Pipelex client.
 
-`request_timeout_seconds` (constructor argument, default 20 min) sets the per-instance blocking-execute ceiling the inherited protocol routes (`execute` / `start` / `validate` / `models` / `version`) use.
+`request_timeout_seconds` (constructor argument, default 20 min) is the time limit of the routes that can take long: the blocking `execute`, `validate`, `models`, and a `start` carrying a bundle (`mthds_contents`, `files` or `bundle_b64`) or a `method_ref`, which the server resolves before it answers. `version` and any other `start` answer fast, so they take `request_timeout_seconds` capped at the 30-second poll budget, the hosted gateway's own cut-off. The SDK's own polls and product requests keep budgets of their own.
 
-`app_info` (constructor argument, an `AppInfo` from `pipelex_sdk.user_agent`) puts your application's name in front of the SDK's own tokens in the `User-Agent` that every request carries — `acme-invoicer/1.4.0 pipelex-sdk-python/0.11.0 mthds-python/0.15.0 python/3.12.4 (linux; x86_64)` — which the platform uses to attribute traffic in its analytics. The header follows the workspace spec `docs/specs/client-identification.md`; see [`docs/client-identification.md`](docs/client-identification.md).
+`app_info` (constructor argument, an `AppInfo` from `pipelex_sdk.user_agent`) puts your application's name in front of the SDK's own tokens in the `User-Agent` that every request carries — `acme-invoicer/1.4.0 pipelex-sdk-python/0.11.0 mthds-python/0.15.0 python/3.12.4 (linux; x86_64)` — which the platform uses to attribute traffic in its analytics. The header follows the spec `conformance/specs/client-identification.md`, in the `conformance` repository, where the cross-repo specs sit beside the tests that verify them; see [`docs/client-identification.md`](docs/client-identification.md).
 
 The client is **async-only** (httpx `AsyncClient`) and is an async context manager.
 
@@ -203,6 +215,19 @@ except ApiResponseError as exc:
 ```
 
 On a problem the runner rendered, branch on `error_domain` for the class — `if exc.error_domain == "input":` shows the caller what to fix, whatever the exact error. The rest of the document rides beside them: `server_message` (the `detail`), `title`, `instance`, `retryable`, `user_action` (the `mthds` `UserAction`, kept only when it has a `kind` and a non-empty `detail`), `error_category`, the platform's field-level `errors`, `validation_errors` for a bundle fault, and `request_id` for a support request, read from the body or from the `X-Request-ID` header. The answer itself stays reachable as plain data: `status`, `headers` (lower-case names, so `exc.headers.get("retry-after")` reads a `429`'s delay) and `request_url`. `code` (the platform's closed code, such as `conflict`) and `error_type` (the runner's exception class name) are each surface's own finer code — useful for display and support, not the field to branch on. `problem` is the decoded document whole, for any member the SDK does not name.
+
+### No answer at all: `ApiUnreachableError`
+
+When a request gets no answer — a refused connection, a host name that does not resolve, a TLS failure, a timeout — every method of the client raises `ApiUnreachableError`, never httpx's own exception: the protocol routes (`execute`, `start`, `validate`, `models`, `version`) as well as the run reads, `wait_for_result`, `start_and_wait`, the product routes and `health`. It carries `api_url`, the base URL that could not be reached, and `code`: `ABORT_TIMEOUT` when the client's own time limit ran out once the request had reached the API, while it was sent or answered, and otherwise the name of the httpx failure (`ConnectError`, `ReadError`, `ConnectTimeout`, `PoolTimeout`, …), which stays reachable as `__cause__`. Like `ApiResponseError`, it is a `PipelineRequestError`, so one `except PipelineRequestError` covers every failed request. A blocking `execute` cut off by a timeout after about 28 seconds raises `PipelineExecuteTimeoutError` instead, pointing at `start_and_wait`.
+
+```python
+from pipelex_sdk.errors import ApiUnreachableError
+
+try:
+    result = await client.start_and_wait(pipe_code="pitch_product", mthds_contents=[bundle])
+except ApiUnreachableError as exc:
+    print(f"Could not reach the Pipelex API at {exc.api_url} ({exc.code}); check PIPELEX_BASE_URL and your network.")
+```
 
 ## Public import paths (no barrel)
 

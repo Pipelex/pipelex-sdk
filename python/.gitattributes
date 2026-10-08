@@ -3,3 +3,7 @@
 # a checkout that rewrote its line endings (`core.autocrlf=true`) would hand the suite a different tree
 # than the one the stamp and the lock were computed over. Pin it.
 tests/unit/data/real_codegen_tree/** -text
+# The shared case files are copies `make shared-files` writes from `js/tests/fixtures/`, and the root's
+# `make check-shared-files` compares them byte for byte with their sources, which `js/.gitattributes`
+# pins the same way. A checkout that rewrote their line endings would fail that check. Pin them.
+tests/fixtures/** -text

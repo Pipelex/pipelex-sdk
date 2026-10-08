@@ -8,11 +8,11 @@
 import {
   ApiResponseError,
   ApiUnreachableError,
-  ClientAuthenticationError,
   DEFAULT_API_BASE_URL,
   InputPreparationError,
   PipelineExecuteTimeoutError,
   RejectedAssetError,
+  RequestArgumentError,
   RunFailedError,
   RunLifecycleUnavailableError,
   RunStillRunningError,
@@ -28,7 +28,7 @@ import { BadPipelineOutputError } from "@/types/pipelineError";
 
 export type PipelineErrorKind =
   | "api_unreachable"
-  | "config_missing"
+  | "config_invalid"
   | "auth_missing"
   | "auth_invalid"
   | "bad_request"
@@ -97,9 +97,12 @@ export interface PipelineError {
   apiMessage?: string;
   hint?: ErrorHint;
   /**
-   * Whether running it again can succeed, as the runtime judged it. Set only
-   * from a verdict — a failed run's report carries `retryable` — and absent
-   * when nobody said, so the display never claims either way on a guess.
+   * Whether running it again can succeed. Set only from a verdict: a failed
+   * run's report carries the runtime's `retryable`, and absent when the report
+   * says nothing, so the display never claims either way on a guess; a refusal
+   * classified as `bad_request` or `server_error` carries the SDK's, always
+   * decided, which is the API's own when its problem document said it and the
+   * SDK's reading of the HTTP status when not.
    */
   retry?: RetryAdvice;
   /**
@@ -163,7 +166,12 @@ export function classifyPipelineError(
     if (opts?.uploadGrant && err.status === 413) return classifyGrantTooLarge(err);
     return classifyResponse(err, env);
   }
-  if (err instanceof ClientAuthenticationError) return classifyClientAuth(err, env);
+  // A call the SDK refused before sending anything. Only a `config` refusal is
+  // the person's to fix; any other is this app building a call wrong, which the
+  // unknown fallback reports with the SDK's own message.
+  if (err instanceof RequestArgumentError && err.errorDomain === "config") {
+    return classifyConfigRefusal(err, env);
+  }
   // Run-lifecycle errors (both extend the protocol's PipelineRequestError, but
   // are distinct concrete classes, so order among them is irrelevant).
   if (err instanceof PipelineExecuteTimeoutError) return classifyExecuteTimeout(err);
@@ -240,6 +248,7 @@ function classifyResponse(err: ApiResponseError, env: ClassifyEnv): PipelineErro
   if (err.errorType === START_REQUIRES_ASYNC_ORCHESTRATION) {
     return classifyStartRequiresAsync(err);
   }
+  if (err.status >= 200 && err.status < 300) return classifyUnreadableAnswer(err);
 
   const detailsLines = [
     `${err.name}: HTTP ${err.status} ${err.statusText}`.trim(),
@@ -248,10 +257,10 @@ function classifyResponse(err: ApiResponseError, env: ClassifyEnv): PipelineErro
     err.apiUrl ? `API URL: ${err.apiUrl}` : null,
     err.errorType ? `error_type: ${err.errorType}` : null,
     err.serverMessage ? `server message: ${err.serverMessage}` : null,
-    // The refusal's own classification, when it came as a problem document:
-    // ahead of the raw body, whose truncation could cut a validation item off.
-    detailLine("error_domain", err.errorDomain),
-    detailLine("retryable", err.retryable),
+    // The refusal's own classification: ahead of the raw body, whose
+    // truncation could cut a validation item off.
+    verdictLine("error_domain", err.errorDomain, err.problemDocument?.error_domain),
+    verdictLine("retryable", err.retryable, err.problemDocument?.retryable),
     detailLine("user_action", err.userAction?.kind),
     ...validationLines(err.validationErrors),
     err.responseBody ? `body: ${truncate(err.responseBody, 2000)}` : null,
@@ -302,23 +311,69 @@ function classifyResponse(err: ApiResponseError, env: ClassifyEnv): PipelineErro
 }
 
 /**
- * A refusal that came as a problem document carries the runtime's own advice:
- * `user_action`, the next step, and `retryable`, whether running it again can
- * succeed — at `/v1/start` in durable mode and at `/v1/execute` in blocking
- * mode alike. The message is already the refusal's reason (`serverMessage`,
- * its `detail`), and its validation items are in the details; this puts the
- * user action's detail in place of the hint the HTTP status chose, and the
- * retry verdict beside it. An answer without them is returned as it was.
+ * A refusal that came as a problem document carries the runtime's own advice,
+ * `user_action`, the next step — at `/v1/start` in durable mode and at
+ * `/v1/execute` in blocking mode alike. The message is already the refusal's
+ * reason (`serverMessage`, its `detail`), and its validation items are in the
+ * details; this puts the user action's detail in place of the hint the HTTP
+ * status chose. The retry line is the SDK's verdict, which every refusal
+ * carries: the document's `retryable` when it said one, and otherwise the
+ * SDK's reading of the status, so a 4xx says a re-run unchanged fails the same
+ * way and a passing 5xx offers one. An arm that recognized the error type
+ * brings its own verdict, which knows more than the status and gives way only
+ * to the API's; where it overrides the SDK's reading, the details say so
+ * beside that reading, so they never contradict the retry line.
  */
 function withRefusalAdvice(error: PipelineError, err: ApiResponseError): PipelineError {
   const nextStep = nextStepOf(err.userAction);
+  const apiSaid = typeof err.problemDocument?.retryable === "boolean";
+  const armVerdict = apiSaid ? undefined : error.retry;
+  const retry = armVerdict ?? retryAdvice(err.retryable);
+  const sdkLine = verdictLine("retryable", err.retryable, err.problemDocument?.retryable);
+  const details =
+    armVerdict && armVerdict.retryable !== err.retryable && error.details
+      ? error.details.replace(
+          sdkLine,
+          `${sdkLine}, which this app overrides: it reads ${err.errorType} as ${armVerdict.retryable ? "passing" : "final"}`,
+        )
+      : error.details;
   return {
     ...error,
     ...(nextStep ? { hint: { summary: nextStep } } : {}),
-    ...(typeof err.retryable === "boolean" ? { retry: retryAdvice(err.retryable) } : {}),
+    retry,
+    details,
   };
 }
 
+/**
+ * A `2xx` the SDK could not read: a body that is not JSON, or not the object
+ * the route answers. The API took the request, so nothing about it was
+ * refused; what came back is unusable, and the SDK's message says how. Its
+ * verdict is `runtime` and not retryable: the same request meets the same
+ * answer.
+ */
+function classifyUnreadableAnswer(err: ApiResponseError): PipelineError {
+  return {
+    kind: "bad_response",
+    title: "Pipelex API sent an answer the app could not read",
+    message: `The API answered HTTP ${err.status}, but not with what the route returns, so its answer could not be read. The technical details below show what it sent.`,
+    retry: retryAdvice(err.retryable),
+    details: [
+      `${err.name}: ${err.message}`,
+      err.apiUrl ? `API URL: ${err.apiUrl}` : null,
+      err.responseBody ? `body: ${truncate(err.responseBody, 2000)}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  };
+}
+
+/**
+ * A 5xx, by the runtime's `error_type` when it is one this app recognizes. Each
+ * recognized type is a deployment's configuration or the method's definition,
+ * which a re-run does not change, so its arm says so even when the API sent no
+ * verdict and the status alone would offer a retry.
+ */
 function classifyServerError(err: ApiResponseError, details: string): PipelineError {
   const baseTitle = `Pipelex API server error (HTTP ${err.status})`;
   switch (err.errorType) {
@@ -334,6 +389,7 @@ function classifyServerError(err: ApiResponseError, details: string): PipelineEr
             "The Pipelex hosted API always has its providers configured, so this indicates the API at PIPELEX_BASE_URL isn't it (or a non-production environment is mid-configuration) — verify the URL.",
           docs: { label: "Pipelex inference setup docs", href: "https://docs.pipelex.com/" },
         },
+        retry: NOT_RETRYABLE,
         details,
       };
     case "PipeOperatorModelAvailabilityError":
@@ -348,6 +404,7 @@ function classifyServerError(err: ApiResponseError, details: string): PipelineEr
             "The Pipelex hosted API always has an inference backend, so this indicates the API at PIPELEX_BASE_URL isn't it (or a non-production environment is mid-configuration) — verify the URL.",
           docs: { label: "Pipelex inference setup docs", href: "https://docs.pipelex.com/" },
         },
+        retry: NOT_RETRYABLE,
         details,
       };
     case "PipeValidationError":
@@ -360,6 +417,7 @@ function classifyServerError(err: ApiResponseError, details: string): PipelineEr
         message:
           err.serverMessage ??
           "The Pipelex server rejected the bundle or pipe definition. The method's bundle may be out of sync with the server's version of the spec.",
+        retry: NOT_RETRYABLE,
         details,
       };
     default:
@@ -374,20 +432,63 @@ function classifyServerError(err: ApiResponseError, details: string): PipelineEr
   }
 }
 
-function classifyClientAuth(err: ClientAuthenticationError, env: ClassifyEnv): PipelineError {
-  void env;
+/**
+ * The SDK refused its own configuration before sending any request. The one
+ * such refusal is PIPELEX_BASE_URL naming more than a host: endpoints compose
+ * as `{base}/v1/{endpoint}`, so a value ending in `/v1` would double the
+ * prefix. An unset variable is no refusal, since the SDK falls back to the
+ * hosted API. The details never relay the SDK's message: it quotes the value
+ * whole, and a value is refused exactly when it carries more than a host, which
+ * may be credentials or a token, while the details reach every visitor.
+ */
+function classifyConfigRefusal(err: RequestArgumentError, env: ClassifyEnv): PipelineError {
   return {
-    kind: "config_missing",
-    title: "Pipelex API URL not configured",
+    kind: "config_invalid",
+    title: "Pipelex API URL not usable",
     message:
-      "The @pipelex/sdk SDK needs PIPELEX_BASE_URL to know where to send pipeline requests, but it isn't set.",
+      "The SDK refused PIPELEX_BASE_URL before sending any request: it must name only the API's host, with no path such as /v1, no query and no credentials.",
     hint: {
-      summary: "Copy .env.example to .env.local and fill it in:",
-      code: "cp .env.example .env.local",
-      codeLanguage: "bash",
+      summary:
+        "Set PIPELEX_BASE_URL in .env.local to the API's host alone, or remove it to use the hosted API, then restart the dev server:",
+      code: "PIPELEX_BASE_URL=https://api.pipelex.com",
+      codeLanguage: "env",
     },
-    details: `${err.name}: ${err.message}`,
+    details: [
+      `${err.name}: the SDK refused PIPELEX_BASE_URL (its message quotes the value, so it is left out)`,
+      describeRefusedBaseUrl(env.apiUrl),
+    ].join("\n"),
   };
+}
+
+/**
+ * What a refused PIPELEX_BASE_URL may show a visitor: its scheme and host, and
+ * the names of the parts beyond them, never their content, since a password, a
+ * token in the query or a key in the path is a secret all the same.
+ */
+function describeRefusedBaseUrl(value: string | undefined): string {
+  if (value === undefined) return "PIPELEX_BASE_URL: not set";
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return "PIPELEX_BASE_URL: not a URL (the value is not shown)";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "PIPELEX_BASE_URL: not an http or https URL (the value is not shown)";
+  }
+  const extras = [
+    parsed.username || parsed.password ? "credentials" : null,
+    parsed.pathname.replace(/\/+$/, "") ? "a path" : null,
+    parsed.search ? "a query" : null,
+    parsed.hash ? "a fragment" : null,
+  ].filter((part): part is string => part !== null);
+  const origin = `${parsed.protocol}//${parsed.host}`;
+  if (extras.length === 0) return `PIPELEX_BASE_URL: ${origin}`;
+  const parts =
+    extras.length === 1
+      ? extras[0]
+      : `${extras.slice(0, -1).join(", ")} and ${extras[extras.length - 1]}`;
+  return `PIPELEX_BASE_URL: ${origin}, with ${parts} (not shown)`;
 }
 
 /**
@@ -571,21 +672,25 @@ function detailLine(name: string, value: unknown): string | null {
 }
 
 /**
- * The locators an `unknown_model` validation item carries beside the declared
- * fields: the model reference exactly as the method wrote it, and the model
- * deck's close matches. The runtime sends them; the SDK's `ValidationErrorItem`
- * does not name them yet, so they are read as optional extensions.
+ * One member of a refusal's verdict as a line of technical details. The SDK
+ * always decides it, so the line is always there, and it says when the value
+ * is the SDK's reading rather than what the API sent, which a developer
+ * placing the refusal needs to tell apart.
  */
-type UnknownModelLocators = { model_reference?: unknown; suggestions?: unknown };
+function verdictLine(name: string, value: string | boolean, sent: unknown): string {
+  return sent === value
+    ? `${name}: ${value}`
+    : `${name}: ${value} (the SDK's reading, not the API's)`;
+}
 
 /**
  * A method's validation items as lines of technical details, one per item:
  * where it is (the pipe, else the concept), what is wrong, and for an unknown
- * model the reference the method wrote and the deck's suggestions.
+ * model the reference the method wrote and the model deck's close matches.
  */
 function validationLines(items: readonly ValidationErrorItem[] | null | undefined): string[] {
   if (!Array.isArray(items)) return [];
-  return items.map((item: ValidationErrorItem & UnknownModelLocators) => {
+  return items.map((item: ValidationErrorItem) => {
     const where = nonEmpty(item?.pipe_code) ?? nonEmpty(item?.concept_code);
     const model = nonEmpty(item?.model_reference);
     const suggestions = Array.isArray(item?.suggestions)
@@ -842,6 +947,18 @@ function classifyUploadTransport(err: UploadTransportError): PipelineError {
         details,
       };
     case "server_error":
+      // Storage's `501`, a request it does not implement, is the one server
+      // error the SDK calls final: it stored nothing, and the same upload
+      // meets the same answer.
+      if (!err.retryable) {
+        return {
+          kind: "upload_failed",
+          title: "Pipelex storage can't take this upload",
+          message:
+            "Pipelex storage answered that it does not support this upload, so nothing was stored, and dropping the file again meets the same answer.",
+          details,
+        };
+      }
       return {
         kind: "upload_failed",
         title: "Pipelex storage could not store the file",
@@ -851,14 +968,17 @@ function classifyUploadTransport(err: UploadTransportError): PipelineError {
         details,
       };
     default:
-      // `conflict`, `redirected`, `invalid_grant_url`, `unexpected`, or no code:
-      // a deployment fault or a path this app never takes, which dropping the
-      // file again cures none of reliably.
+      // `conflict`, `redirected`, `invalid_grant_url`, `unexpected`, or no code.
+      // Most are a deployment fault or a path this app never takes, which
+      // dropping the file again cures none of reliably; the SDK's verdict names
+      // the ones it does cure (storage timing out or throttling the upload, or
+      // two writes colliding), and only those are offered a retry.
       return {
         kind: "upload_failed",
         title: "Uploading the file failed",
         message:
           "The upload to Pipelex storage failed. The technical details below should help track it down.",
+        ...(err.retryable ? { hint: { summary: "Drop the file again in a moment." } } : {}),
         details,
       };
   }

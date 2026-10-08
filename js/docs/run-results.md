@@ -56,6 +56,26 @@ const results = await client.waitForResult(ack.pipeline_run_id);
 
 Against a bare runner the id identifies the call the runner just answered, but there is no run store behind it: the lifecycle routes are absent, so re-reading it raises `RunLifecycleUnavailableError`. Durable resumption is a hosted capability.
 
+**Holding the id while `startAndWaitForResult` waits.** `startAndWaitForResult` returns only the result, so a caller that waits through it would otherwise learn the run's id only once the run is over. Its second argument, `StartAndWaitForResultOptions`, takes the wait's options plus `onStarted`, called once with the start acknowledgement as soon as the durable run exists and before the first poll: the moment to show the id, log it, or keep it for an interrupt, since a caller that stops waiting (its `signal` aborted, a `RunTimeoutError`) leaves the run going on the server and resumes it with `waitForResult(id)`.
+
+```ts
+const controller = new AbortController();
+process.once("SIGINT", () => controller.abort());
+const results = await client.startAndWaitForResult(
+  { method_ref: "github.com/acme/methods/receipt-review@v1.0.0", inputs },
+  {
+    signal: controller.signal,
+    onStarted: (ack) => console.error(`Run started: ${ack.pipeline_run_id}`),
+  },
+);
+```
+
+It is never called on the blocking path, a bare runner's `POST /v1/execute` or the fallback to it, which has no run id to give before it answers. The acknowledgement is handed over whole, a `method_ref` run's `method_provenance` included. The callback runs synchronously and its return value is ignored; an exception it throws propagates out of `startAndWaitForResult` before anything is polled, and the run it was told about keeps going.
+
+**An abort before the run exists creates none.** The `signal` is read before the run is started as well as during the wait: a caller that aborts while the `GET /v1/version` handshake is in flight gets its abort, and neither `POST /v1/start` nor the blocking `POST /v1/execute` is sent; nor is the execute when the abort lands while a runner that looked hosted refuses the start. Once the start or the execute is sent, the abort stops only the wait, and a started run goes on, by its id.
+
+**Knowing whether a run may exist.** `onStarting`, the other callback `StartAndWaitForResultOptions` takes, is called right before each request that may create a run is sent: `POST /v1/start`, and the blocking `POST /v1/execute` of a bare runner or of the fallback to it, so it is called twice when a runner that looked hosted refuses the start. Until it is called no run exists, and once the `signal` has aborted it is not called and no such request is sent, so a caller that stops waiting before then can say that no run was started; from then until `onStarted`, a run may exist that the API has not yet named. It runs synchronously and its return value is ignored; an exception it throws propagates before the request is sent. The `pipelex-sdk` command words its interrupt message by it ([`cli.md`](cli.md)).
+
 ## `main_stuff` — the output
 
 `main_stuff` is the resolved content of the run's main output and is always present for a completed run, unless the read's `artifacts` selection left it out. On the hosted path it is the `main_stuff.json` artifact; on the blocking path the SDK resolves it out of the returned working memory through the response's `main_stuff_name`. Both deliver the same content shape, so there is no shape-guessing and no path-dependent branch to write. A completed run that cannot deliver one throws `MissingMainStuffError` rather than handing back a half-filled result.

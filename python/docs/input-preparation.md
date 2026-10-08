@@ -147,15 +147,19 @@ The "uploaded reference is named `uri`" decision applies to the **upload surface
 
 Upload is a **hosted Pipelex-product capability**, even though the SDK can be pointed at other base URLs. A deployment that does not support upload must raise a specific, actionable exception — preparation must never silently leave a local path in place and let a later run fail obscurely.
 
-The contract distinguishes at least these semantic outcomes (exact typed exception classes are settled during implementation):
+The contract distinguishes these semantic outcomes, each a typed subclass of `InputPreparationError` (`pipelex_sdk.errors`; catch the base to handle any preparation failure, a subclass to branch on who must change what):
 
-- **invalid local source** — missing or unreadable path;
-- **rejected asset** — the server refused it (e.g. a `413` past the service-defined size cap — see "Storage policy" — surfaced as a clear rejection, not a raw transport error);
-- **unsupported server capability** — the configured deployment has no upload route;
-- **authentication / authorization failure** — `401` / `403`;
-- **transport failure** — network / server fault.
+- **invalid local source** (`InvalidLocalSourceError`, carries `source`) — a missing or unreadable path, its message naming the system's error code (`ENOENT`, `EACCES`, …) as `@pipelex/sdk`'s does;
+- **invalid input value** (`InvalidInputValueError`) — a value at a file input that cannot be turned into a file to upload: a `data:` URL that does not decode (no comma, bad base64), or a value of a type no file input takes, such as a number or a dict that is neither `{url}` content nor an explicit envelope. It is raised while the inputs are read, before anything is uploaded. With `InvalidLocalSourceError`, it is how a consumer tells the inputs' own mistakes from a method that does not load;
+- **a method that does not load** (`MethodLoadError`) — the pipe I/O answer's `is_valid: false` arm. Its message names the first validation item's message, else the answer's own `message`; `validation_errors` holds every item of the answer and `server_message` the answer's own `message`, so a consumer lists every item rather than reading the first from a sentence. The method must change, not the inputs;
+- **rejected asset** (`RejectedAssetError`, carries `filename` and `status`) — the server refused it (e.g. a `413` past the service-defined size cap — see "Storage policy" — surfaced as a clear rejection, not a raw transport error);
+- **unsupported server capability** (`UnsupportedUploadCapabilityError`, carries `filename`) — the configured deployment has no upload route;
+- **authentication / authorization failure** (`UploadAuthenticationError`, carries `filename` and `status`) — `401` / `403`;
+- **transport failure** (`UploadTransportError`, carries `filename`, and `status` when an answer came back) — network / server fault.
 
-Reading the signature adds two more: the closure does not resolve, and the route refuses the pipe selection (see "Pipe selection" above). Both are `InputPreparationError`.
+Each upload failure's `filename` is the file `upload_file` was sending, so a consumer preparing several files says which one failed without parsing the message, as the `pipelex-sdk` command does; the fields are the twins of `@pipelex/sdk`'s. A task cancelled while `upload_file` reads and encodes a file raises `CancelledError` before the upload request, so nothing is uploaded once the caller has stopped.
+
+The rest of the signature's failures are the base `InputPreparationError` itself: a selector or `pipe_ref` refused before any request (see `prepare_inputs` above), a pipe selection the route refused, with the route's `ApiResponseError` as its `__cause__`, and a valid answer that does not describe the pipe it selected. The two new classes are the twins of `@pipelex/sdk`'s of the same names, which the `pipelex-sdk` command keys on to tell a usage error (exit code `2`) from a method that does not load (exit code `1`) ([`cli.md`](cli.md)).
 
 All preparation failures are raised **before any run is created**.
 

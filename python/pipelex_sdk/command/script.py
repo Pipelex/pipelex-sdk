@@ -1,0 +1,316 @@
+"""`pipelex-sdk script`: write the per-method command, a short shell script that runs one method
+through this SDK's `run`, its version pinned.
+
+The checks that need no request come first, in this order: the flags, `--pipe`'s form, a control
+character in any value the script would carry, the method's form (a local bundle is refused),
+`--name`, `--dir`, the target file when its name is already known, the key and the base URL. Then, in
+the command's one event loop (`loop.py`), one pipe I/O call checks the method and the pipe, which spends no inference, and
+a catalog id with no `--name` is named from its catalog entry. Last, the file is written, never over an
+existing one, with the permissions of an executable, and a first Ctrl-C meanwhile is held until it is whole.
+"""
+
+from __future__ import annotations
+
+import os
+import signal
+import stat
+import threading
+from contextlib import contextmanager
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from pydantic import ValidationError
+
+from pipelex_sdk.command.args import FlagKind, parse_flags
+from pipelex_sdk.command.bundle import system_reason
+from pipelex_sdk.command.environment import make_client
+from pipelex_sdk.command.help import SCRIPT_HELP
+from pipelex_sdk.command.io import EXIT_OK, CommandError, usage_error
+from pipelex_sdk.command.loop import before_request, run_until_done
+from pipelex_sdk.command.method import (
+    AddressSelector,
+    CatalogSelector,
+    PathSelector,
+    address_name,
+    address_tag,
+    check_pipe_ref,
+    classify_method,
+    has_control_character,
+    kebab_case,
+    script_name_problem,
+    shell_quote,
+)
+from pipelex_sdk.command.source import AddressSource, CatalogSource, describe_pipe
+from pipelex_sdk.version import __version__
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator, Sequence
+    from types import FrameType
+
+    from pipelex_sdk.client import PipelexAPIClient
+    from pipelex_sdk.command.io import CommandIO, Progress
+
+_SCRIPT_FLAGS: dict[str, FlagKind] = {
+    "method": FlagKind.STRING,
+    "pipe": FlagKind.STRING,
+    "name": FlagKind.STRING,
+    "dir": FlagKind.STRING,
+}
+
+#: The package a written script runs, and what its runner needs.
+SCRIPT_RUNNER = f"uvx pipelex-sdk@{__version__}"
+SCRIPT_WRITER = "pipelex-sdk"
+SCRIPT_NEEDS = "uv"
+
+_EXECUTABLE_MODE = 0o755
+
+#: What an interrupt says until the script is whole.
+_NOTHING_WRITTEN = "Interrupted. Nothing was written."
+
+
+def run_command_script(args: Sequence[str], io: CommandIO, progress: Progress) -> int:
+    """Run `pipelex-sdk script` and return its exit code."""
+    flags = parse_flags("script", args, _SCRIPT_FLAGS)
+    if flags.help:
+        io.write_stdout(SCRIPT_HELP)
+        return EXIT_OK
+    progress.interrupt_message = _NOTHING_WRITTEN
+    method = flags.strings.get("method")
+    if method is None:
+        msg = "--method is required."
+        raise usage_error(msg, ["Run 'pipelex-sdk script --help' to see its flags."])
+    pipe = flags.strings.get("pipe")
+    if pipe is not None:
+        check_pipe_ref(pipe)
+    given_name = flags.strings.get("name")
+    for flag, value in (("--method", method), ("--pipe", pipe), ("--name", given_name)):
+        if value is not None and has_control_character(value):
+            msg = f"{flag} holds a control character, which no line of a script may carry."
+            raise usage_error(msg)
+
+    source: AddressSource | CatalogSource
+    match classify_method(method):
+        case PathSelector():
+            msg = (
+                f'script takes a method address or a catalog id, and "{method}" is neither: '
+                "a script naming a local bundle breaks as soon as the script or the bundle moves."
+            )
+            raise usage_error(
+                msg,
+                [
+                    "Publish the method in a git repository and pass its address: github.com/<owner>/<repo>[/<package>]@<tag>",
+                    "Or save it to your organization's catalog and pass its id: mt_...",
+                    "To run a local bundle, use: pipelex-sdk run --method <path>",
+                ],
+            )
+        case AddressSelector(method_ref=method_ref):
+            source = AddressSource(method_ref=method_ref)
+        case CatalogSelector(method_id=method_id):
+            source = CatalogSource(method_id=method_id)
+
+    if given_name is not None:
+        problem = script_name_problem(given_name)
+        if problem is not None:
+            msg = f"--name {problem}."
+            raise usage_error(msg)
+    directory = flags.strings.get("dir")
+    shown_dir = "." if directory is None else directory.rstrip("/")
+    _check_directory(directory or ".")
+
+    name = given_name
+    if name is None and isinstance(source, AddressSource):
+        name = _default_name(address_name(source.method_ref), method)
+    if name is not None:
+        _check_free(shown_dir, name)
+
+    client = make_client(io)
+    unnamed_catalog = source if name is None and isinstance(source, CatalogSource) else None
+    entry_name = run_until_done(_check_method(client, source, pipe, unnamed_catalog))
+    if name is None:
+        # Only a catalog id is left unnamed here, since an address's script is named after it.
+        name = _default_name(kebab_case(entry_name or ""), method)
+        _check_free(shown_dir, name)
+
+    if isinstance(source, AddressSource) and address_tag(source.method_ref) is None:
+        io.write_stderr(
+            f"Warning: {source.method_ref} has no tag, so the script runs whatever its repository's default branch holds "
+            "each time it runs. Add @<tag> to pin a release.\n"
+        )
+    target = f"{shown_dir}/{name}"
+    # Ctrl-C reaches this synchronous part as `KeyboardInterrupt` at once, so nothing is written once it
+    # has landed. From here the first one is held until the file is whole and the interrupt's message
+    # says so, so that the message is true wherever it lands: nothing was written, or the file was. A
+    # second one stops the write, which removes what it wrote (`_interrupt_held`, `_write_script`).
+    with _interrupt_held():
+        _write_script(target, script_body(name, method, pipe), progress)
+    io.write_stdout(f"{target}\n")
+    io.write_stderr(f"Wrote {target}. Run it with: {target} --inputs inputs.json\n")
+    return EXIT_OK
+
+
+async def _check_method(
+    client: PipelexAPIClient,
+    source: AddressSource | CatalogSource,
+    pipe: str | None,
+    unnamed: CatalogSource | None,
+) -> str | None:
+    """Check the method and the pipe with one pipe I/O call, and read the name of the catalog entry
+    `unnamed` names, the method whose script `--name` did not name; return that name, or `None` when
+    there is none to read.
+    """
+    async with client:
+        await describe_pipe(client, source, pipe)
+        if unnamed is None:
+            return None
+        await before_request()
+        try:
+            entry = await client.get_method(unnamed.method_id)
+        except ValidationError as exc:
+            # An entry whose name is missing or no string gives no name, which asks for `--name` as an
+            # unusable name does; any other fault in the entry is the API's answer that cannot be read.
+            if any(error["loc"][:1] != ("name",) for error in exc.errors()):
+                raise
+            return None
+    return entry.name
+
+
+def script_body(name: str, method: str, pipe: str | None) -> str:
+    """The script's text: the shebang, a header saying what it runs, which SDK wrote it, what it needs
+    and how to use it, and the one line that runs it, every value single-quoted.
+    """
+    pipe_argument = "" if pipe is None else f" --pipe {shell_quote(pipe)}"
+    return "\n".join(
+        [
+            "#!/bin/sh",
+            f"# {name}: runs {method} on the Pipelex API.",
+            f"# Written by {SCRIPT_WRITER} {__version__}. Needs {SCRIPT_NEEDS}, and PIPELEX_API_KEY in the environment.",
+            f"# Usage: ./{name} --inputs inputs.json, or ./{name} --inputs-template to see what to fill in.",
+            f'exec {SCRIPT_RUNNER} run --method {shell_quote(method)}{pipe_argument} "$@"',
+            "",
+        ]
+    )
+
+
+def _default_name(candidate: str, method: str) -> str:
+    """A default name, held to the rules of a file name, or the usage error asking for `--name`."""
+    if script_name_problem(candidate) is not None:
+        msg = f'no script name can be made from "{method}"; give one with --name.'
+        raise usage_error(msg)
+    return candidate
+
+
+def _check_directory(directory: str) -> None:
+    try:
+        found = Path(os.path.abspath(directory)).stat()
+    except OSError as exc:
+        msg = f'--dir "{directory}" does not exist.'
+        raise usage_error(msg, [f"Reason: {system_reason(exc)}"]) from exc
+    if not stat.S_ISDIR(found.st_mode):
+        msg = f'--dir "{directory}" is not a directory.'
+        raise usage_error(msg)
+
+
+def _check_free(shown_dir: str, name: str) -> None:
+    """Refuse a target that exists, whatever it is, a link that leads nowhere included."""
+    target = f"{shown_dir}/{name}"
+    try:
+        os.lstat(os.path.abspath(target))
+    except OSError:
+        return
+    raise _already_there(target)
+
+
+@contextmanager
+def _interrupt_held() -> Generator[None]:
+    """Hold the first Ctrl-C while the body runs, and deliver it once the body has finished.
+
+    Python raises `KeyboardInterrupt` between two bytecodes, which can fall between a system call that
+    changed the disk and the line that records it; holding the first interrupt keeps the change and its
+    record together. The body's own failure, if it raises one, is raised instead of the held interrupt.
+    A second Ctrl-C is not held: the handler the hold replaced is put back and takes it at once, which
+    raises `KeyboardInterrupt` where the body stands, so that a write that blocks, on a stalled mount for
+    instance, can still be stopped. Nothing is held where Ctrl-C would not reach the command anyway: on a
+    thread other than the main one, which Python never hands a signal, and where SIGINT is ignored, as a
+    background job or a launcher may leave it, or handled outside Python, which no hold could put back.
+    """
+    previous = signal.getsignal(signal.SIGINT)
+    if threading.current_thread() is not threading.main_thread() or previous is None or previous == signal.SIG_IGN:
+        yield
+        return
+    held: list[FrameType | None] = []
+
+    def hold(signum: int, frame: FrameType | None) -> None:
+        if not held:
+            held.append(frame)
+            return
+        signal.signal(signal.SIGINT, previous)
+        _deliver(previous, signum, frame)
+
+    signal.signal(signal.SIGINT, hold)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    if held:
+        _deliver(previous, signal.SIGINT, held[0])
+
+
+def _deliver(handler: Callable[[int, FrameType | None], Any] | int | signal.Handlers, signum: int, frame: FrameType | None) -> None:
+    """Hand a signal to the handler a hold replaced: Python's own raises `KeyboardInterrupt`, and the
+    default action ends the process.
+    """
+    if callable(handler):
+        handler(signum, frame)
+    else:
+        signal.raise_signal(signum)
+
+
+def _write_script(target: str, body: str, progress: Progress) -> None:
+    """Create the file, executable, refusing one that exists, a dangling link included (`O_EXCL`), and once
+    it is whole, make the interrupt's message say it was written.
+
+    A write that fails or is interrupted once this call has created the file removes it, so a script is
+    either whole or absent, and the message says which. A file this call did not create is never removed.
+
+    Python raises a `KeyboardInterrupt` at the end of a call, so one could land between `os.open` creating
+    the file and the line keeping its descriptor, leaving the file behind and the descriptor open. The open
+    therefore runs inside `list.extend`, which keeps what `os.open` returns without the interpreter checking
+    for an interrupt in between: once the file exists, `created` holds its descriptor, which is also the
+    proof that the file is this call's to remove. An interrupted or failed open leaves `created` empty.
+    """
+    path = os.path.abspath(target)
+    data = body.encode("utf-8")
+    created: list[int] = []
+    try:
+        try:
+            try:
+                created.extend(map(os.open, [path], [os.O_WRONLY | os.O_CREAT | os.O_EXCL], [_EXECUTABLE_MODE]))
+                while data:
+                    data = data[os.write(created[0], data) :]
+            finally:
+                if created:
+                    os.close(created[0])
+            progress.interrupt_message = f"Interrupted. {target} was written."
+        except BaseException:
+            if created:
+                # `os.unlink` itself, not `Path.unlink`, a helper whose own calls an interrupt could land
+                # between, so that no call lies between the handler and the removal. A file someone else
+                # removed meanwhile is gone already, which must not replace the failure being raised.
+                try:
+                    os.unlink(path)  # ruff: ignore[os-unlink]
+                except FileNotFoundError:
+                    pass
+                progress.interrupt_message = _NOTHING_WRITTEN
+            raise
+    except FileExistsError as exc:
+        raise _already_there(target) from exc
+    except OSError as exc:
+        msg = f'cannot write "{target}".'
+        raise usage_error(msg, [f"Reason: {system_reason(exc)}"]) from exc
+
+
+def _already_there(target: str) -> CommandError:
+    return usage_error(
+        f'"{target}" already exists, and script never overwrites a file.',
+        ["Remove it, or choose another name with --name or another directory with --dir."],
+    )

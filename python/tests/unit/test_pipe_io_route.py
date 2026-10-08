@@ -51,12 +51,9 @@ class TestPipeIORoute:
         call = send.call_args
         assert call.args[0] == "POST"
         assert call.args[1] == f"{_BASE_URL}/v1/pipe-io"
-        # The opt-ins ride at their defaults; an absent `pipe_ref` is not sent, so the server's chain selects.
-        assert json.loads(call.kwargs["content"]) == {
-            "files": [{"content": 'domain = "smoke"', "source": "smoke.mthds"}],
-            "all_pipes": False,
-            "include_files": False,
-        }
+        # An opt-in left at its default is not sent, as `@pipelex/sdk` sends it, and an absent `pipe_ref` is
+        # not sent either, so the server's chain selects.
+        assert json.loads(call.kwargs["content"]) == {"files": [{"content": 'domain = "smoke"', "source": "smoke.mthds"}]}
 
     def test_the_pipe_selector_and_the_opt_ins_ride_the_body(self, mocker: MockerFixture) -> None:
         client = self._client()
@@ -78,7 +75,7 @@ class TestPipeIORoute:
 
         asyncio.run(client.pipe_io(PipeIORequest(method_id="mt_1")))
 
-        assert json.loads(send.call_args.kwargs["content"]) == {"method_id": "mt_1", "all_pipes": False, "include_files": False}
+        assert json.loads(send.call_args.kwargs["content"]) == {"method_id": "mt_1"}
 
     # ── The valid arm ────────────────────────────────────────────────
 

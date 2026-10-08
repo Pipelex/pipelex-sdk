@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   ApiResponseError,
   ApiUnreachableError,
+  RequestArgumentError,
   RunLifecycleUnavailableError,
   type RunResults,
 } from "@pipelex/sdk";
@@ -10,8 +11,10 @@ const start = vi.fn();
 const getRunStatus = vi.fn();
 const getRunResult = vi.fn();
 
+const buildClient = vi.fn(() => ({ start, getRunStatus, getRunResult }));
+
 vi.mock("@/lib/pipelexClient", () => ({
-  getPipelexClient: () => ({ start, getRunStatus, getRunResult }),
+  getPipelexClient: () => buildClient(),
 }));
 
 import { pollDurableRun, startDurableRun } from "./durableRun";
@@ -311,6 +314,39 @@ describe("pollDurableRun", () => {
     expect(result.transient).toBe(true); // the run is still executing server-side
   });
 
+  // The SDK's verdict on the read decides, and the error offers no re-run: the
+  // run may still be executing, so running it again would start a second one.
+  it.each([
+    [429, "Too Many Requests", true],
+    [408, "Request Timeout", true],
+    [503, "Service Unavailable", true],
+    [501, "Not Implemented", false],
+    [404, "Not Found", false],
+  ])(
+    "reads a poll tick answered %i by the SDK's verdict",
+    async (status, statusText, transient) => {
+      getRunStatus.mockRejectedValueOnce(
+        new ApiResponseError(
+          statusText,
+          "https://api.pipelex.com",
+          status,
+          statusText,
+          "",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        ),
+      );
+      const result = await pollDurableRun("run-1", parseFixture);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.transient).toBe(transient);
+      expect(result.error.retry).toBeUndefined();
+    },
+  );
+
   it("classifies a RunLifecycleUnavailableError thrown during polling as terminal", async () => {
     getRunStatus.mockRejectedValueOnce(
       new RunLifecycleUnavailableError("no run store", "https://api.unreachable.example"),
@@ -320,5 +356,18 @@ describe("pollDurableRun", () => {
     if (result.ok) return;
     expect(result.error.kind).toBe("lifecycle_unavailable");
     expect(result.transient).toBe(false); // retrying won't conjure a run store
+  });
+
+  it("classifies a base URL the SDK refuses while building the client", async () => {
+    buildClient.mockImplementationOnce(() => {
+      throw new RequestArgumentError('Invalid API base URL "https://api.pipelex.com/v1"', {
+        verdict: { errorDomain: "config", retryable: false },
+      });
+    });
+    const result = await pollDurableRun("run-1", parseFixture);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("config_invalid");
+    expect(result.transient).toBe(false);
   });
 });

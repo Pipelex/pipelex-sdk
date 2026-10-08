@@ -35,7 +35,7 @@ from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.crate_models import CrateInvalidReport, MthdsFileItem, PipeIORequest, PipeIOResponse, PipeIOValidReport
-from pipelex_sdk.errors import ApiResponseError, InputPreparationError, RejectedAssetError
+from pipelex_sdk.errors import ApiResponseError, InputPreparationError, InvalidInputValueError, MethodLoadError, RejectedAssetError
 from pipelex_sdk.prepare_inputs import prepare_inputs
 from pipelex_sdk.product_models import UploadedFile, UploadInput
 from tests.unit.test_data import PipeIOBodies
@@ -375,14 +375,15 @@ class TestPrepareInputs:
         [
             "data:image/png;base64,AQI",  # bad padding — binascii.Error
             "data:image/png;base64,AQID!!!!",  # non-alphabet junk — rejected by validate=True
+            "data:image/png;base64",  # no comma, so no payload at all
         ],
     )
-    def test_malformed_base64_data_url_raises_typed_error(self, data_url: str) -> None:
-        # A malformed base64 data URL must surface as the typed `InputPreparationError`
-        # (never a raw binascii.Error), and must never upload silently-corrupted bytes.
+    def test_malformed_data_url_raises_invalid_input_value(self, data_url: str) -> None:
+        # A malformed data URL must surface as the typed `InvalidInputValueError`, the inputs' own
+        # mistake (never a raw binascii.Error), and must never upload silently-corrupted bytes.
         client = _image_client()
 
-        with pytest.raises(InputPreparationError):
+        with pytest.raises(InvalidInputValueError, match=r"^Malformed data URL"):
             asyncio.run(prepare_inputs(client, files=_FILES, inputs={"photo": data_url}))
         assert client.upload_calls == []
 
@@ -571,7 +572,7 @@ class TestPrepareInputs:
         # `content`. A third key means it is ordinary content, not an envelope.
         client = _image_client()
 
-        with pytest.raises(InputPreparationError, match="Unsupported value at a file input"):
+        with pytest.raises(InvalidInputValueError, match="Unsupported value at a file input"):
             asyncio.run(prepare_inputs(client, files=_FILES, inputs={"photo": {"concept": "x", "content": bytes([1]), "extra": 1}}))
 
     # ── Failures, all raised before any run exists ────────────────────────
@@ -581,21 +582,34 @@ class TestPrepareInputs:
 
         # A plain object that is neither a canonical {url} content nor bytes — a realistic
         # caller typo — must surface as a typed error, not pass through unresolved.
-        with pytest.raises(InputPreparationError):
+        with pytest.raises(InvalidInputValueError, match="got dict"):
             asyncio.run(prepare_inputs(client, files=_FILES, inputs={"photo": {"mimeType": "image/png", "bytes": [1, 2, 3]}}))
+        assert client.upload_calls == []
+
+    def test_raises_invalid_input_value_for_a_number_at_a_file_position(self) -> None:
+        client = _image_client()
+
+        with pytest.raises(InvalidInputValueError, match="got int"):
+            asyncio.run(prepare_inputs(client, files=_FILES, inputs={"photo": 42}))
         assert client.upload_calls == []
 
     def test_raises_when_the_signature_does_not_resolve(self) -> None:
         invalid = CrateInvalidReport.model_validate(PipeIOBodies.INVALID)
         client = _FakePrepareClient(invalid)
 
-        with pytest.raises(InputPreparationError) as exc_info:
+        with pytest.raises(MethodLoadError) as exc_info:
             asyncio.run(prepare_inputs(client, files=_FILES, inputs={"photo": bytes([1])}))
 
         assert (
             str(exc_info.value)
             == "Cannot prepare inputs: the method signature did not resolve — Input 'doc' is declared but never read by the template."
         )
+        # Every item of the answer, and its own message, so a caller lists them rather than reading
+        # the first out of a sentence.
+        assert [item.message for item in exc_info.value.validation_errors] == ["Input 'doc' is declared but never read by the template."]
+        assert exc_info.value.validation_errors[0].source == "smoke.mthds"
+        assert exc_info.value.server_message == "1 validation error"
+        assert client.upload_calls == []
 
     def test_surfaces_rejected_asset_before_returning(self) -> None:
         error = ApiResponseError(
@@ -634,11 +648,7 @@ class TestPrepareInputs:
         assert len(prepared.uploads) == 1
         first_call = send.await_args_list[0]
         assert first_call.args[1] == f"{_BASE_URL}/v1/pipe-io"
-        assert json.loads(first_call.kwargs["content"]) == {
-            "files": [{"content": 'domain = "smoke"', "source": "smoke.mthds"}],
-            "all_pipes": False,
-            "include_files": False,
-        }
+        assert json.loads(first_call.kwargs["content"]) == {"files": [{"content": 'domain = "smoke"', "source": "smoke.mthds"}]}
         assert first_call.kwargs["request_timeout"] == 30.0
 
     def test_wires_a_method_ref_through_the_real_client(self, mocker: MockerFixture) -> None:
@@ -649,12 +659,7 @@ class TestPrepareInputs:
         asyncio.run(client.prepare_inputs(method_ref="github.com/o/r", pipe_ref="smoke.echo", inputs={"note": "hi"}))
 
         call = send.await_args_list[0]
-        assert json.loads(call.kwargs["content"]) == {
-            "method_ref": "github.com/o/r",
-            "pipe_ref": "smoke.echo",
-            "all_pipes": False,
-            "include_files": False,
-        }
+        assert json.loads(call.kwargs["content"]) == {"method_ref": "github.com/o/r", "pipe_ref": "smoke.echo"}
         # The server may clone the repository before it answers.
         assert call.kwargs["request_timeout"] == 180.0
 

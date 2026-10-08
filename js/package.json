@@ -1,6 +1,6 @@
 {
   "name": "@pipelex/sdk",
-  "version": "0.33.0",
+  "version": "0.34.0",
   "description": "TypeScript SDK for the Pipelex hosted API — execute methods, manage runs, and call the product surface.",
   "license": "MIT",
   "repository": {
@@ -14,8 +14,12 @@
   },
   "type": "module",
   "sideEffects": [
+    "./dist/cli.js",
     "./dist/hooks/claude-mthds-check.js"
   ],
+  "bin": {
+    "pipelex-sdk": "dist/cli.js"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

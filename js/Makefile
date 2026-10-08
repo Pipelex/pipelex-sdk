@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-if-missing check c test t test-e2e te clean build rebuild dev pack all depcruise agent-check agent-test use-local use-npm ul un
+.PHONY: help install install-if-missing check c test t test-e2e te test-pack clean build rebuild dev pack all depcruise agent-check agent-test use-local use-npm ul un
 
 # The workspace's mthds-js checkout, for live mthds development (see use-local / use-npm). It
 # sits beside this repository's root, the main checkout or a worktree alike, two levels up.
@@ -31,6 +31,7 @@ make all        - Clean, check, and test
 make check      - Run quality checks, excluding tests
 make test       - Run the test suite
 make test-e2e   - Run e2e tests against a live pipelex-api [PIPELEX_E2E_BASE_URL=...]
+make test-pack  - Pack the package and run its pipelex-sdk command from the tarball through npx
 make agent-check - Run the quality checks, installing first when node_modules is missing
 make agent-test - Run the test suite, silent on success, installing first when node_modules is missing
 make dev        - Watch mode: auto rebuild on changes
@@ -114,6 +115,28 @@ test-e2e:
 	@echo "$(GREEN)✓ All e2e tests passed$(NC)"
 
 te: test-e2e
+
+# The packed command (docs/cli.md): `npm pack` the package as it would be published, then run
+# its `pipelex-sdk` command from the tarball through npx, from a directory outside the package,
+# in both ways npx finds a package's command: by naming it, and as the package's only command.
+# The tarball is named relative to that directory, `./<file>.tgz`: given an absolute path, npx
+# tries to execute the tarball itself.
+# npx installs the tarball's dependencies from the registry, so CI's js job runs this target and
+# `make test` does not.
+test-pack: build
+	$(call PRINT_TITLE,"Testing the packed pipelex-sdk command")
+	@set -e; \
+	expected=$$(node -p 'require("./package.json").version'); \
+	dest=$$(mktemp -d); trap 'rm -rf "$$dest"' EXIT; \
+	npm pack --silent --ignore-scripts --pack-destination "$$dest" >/dev/null; \
+	cd "$$dest"; \
+	tarball=./$$(ls *.tgz); \
+	npx --yes --package "$$tarball" pipelex-sdk --help | grep -q "pipelex-sdk run --method" \
+		|| { echo "$(RED)✗ npx --package <tarball> pipelex-sdk --help did not print the help$(NC)"; exit 1; }; \
+	got=$$(npx --yes "$$tarball" --version); \
+	[ "$$got" = "$$expected" ] \
+		|| { echo "$(RED)✗ npx <tarball> --version printed '$$got', not $$expected$(NC)"; exit 1; }; \
+	echo "$(GREEN)✓ The packed pipelex-sdk command answers --help and --version ($$expected)$(NC)"
 
 depcruise:
 	$(call PRINT_TITLE,"Checking Architectural Boundaries")

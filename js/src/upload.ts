@@ -16,6 +16,7 @@ import {
   UnsupportedUploadCapabilityError,
 } from "./errors.js";
 import { ApiResponseError, ApiUnreachableError } from "./errors.js";
+import { throwIfAborted } from "./runs.js";
 
 /** A local asset `uploadFile` accepts. A path string is Node-only (see {@link readLocalPath}). */
 export type UploadableAsset = Blob | ArrayBuffer | Uint8Array | string;
@@ -40,6 +41,12 @@ export interface UploadRecord {
 export interface UploadFileOptions {
   filename?: string;
   contentType?: string;
+  /**
+   * Read once the asset's bytes are in hand, right before the upload request: once it has
+   * aborted, nothing is uploaded and `uploadFile` throws the abort, however long the read took.
+   * A request already sent runs to its end. It is not sent to the server.
+   */
+  signal?: AbortSignal;
 }
 
 /** The subset of the client `uploadFile` needs — the raw base64 `upload` wire call. */
@@ -183,6 +190,8 @@ export async function uploadFile(
   options: UploadFileOptions = {},
 ): Promise<UploadRecord> {
   const { bytes, filename, contentType } = await toAssetBytes(asset, options);
+  // A slow read, or a Blob's `arrayBuffer()`, may outlast the caller's patience.
+  throwIfAborted(options.signal);
   const data = bytesToBase64(bytes);
   let uploaded: { uri: string; filename: string };
   try {
@@ -209,7 +218,7 @@ function mapUploadError(error: unknown, filename: string): Error {
       return new UploadTransportError(
         `Upload of "${filename}" was answered (${error.status}) with a body the SDK could not ` +
           "read, so whether and where the file was stored is unknown.",
-        { cause: error, status: error.status, code: "unexpected" },
+        { cause: error, status: error.status, code: "unexpected", filename },
       );
     }
     switch (error.status) {
@@ -225,13 +234,13 @@ function mapUploadError(error: unknown, filename: string): Error {
         return new UploadAuthenticationError(
           `Upload of "${filename}" was not authorized (${error.status}). Check the configured Pipelex API key.`,
           error.status,
-          { cause: error },
+          { cause: error, filename },
         );
       case 404:
         return new UnsupportedUploadCapabilityError(
           "The configured Pipelex deployment does not support file upload (no /v1/upload route). " +
             "Upload is a hosted Pipelex capability.",
-          { cause: error },
+          { cause: error, filename },
         );
       default:
         return new UploadTransportError(
@@ -240,6 +249,7 @@ function mapUploadError(error: unknown, filename: string): Error {
             cause: error,
             status: error.status,
             code: error.status >= 500 ? "server_error" : "unexpected",
+            filename,
           },
         );
     }
@@ -248,7 +258,7 @@ function mapUploadError(error: unknown, filename: string): Error {
     return new UploadTransportError(
       `Upload of "${filename}" could not reach the Pipelex API (${error.code ?? "unreachable"}).`,
       // The client's own request timeout surfaces as an unreachable host with this code.
-      { cause: error, code: error.code === "ABORT_TIMEOUT" ? "timeout" : "unreachable" },
+      { cause: error, code: error.code === "ABORT_TIMEOUT" ? "timeout" : "unreachable", filename },
     );
   }
   // Only errors thrown by the `client.upload()` call reach here — the local-source
@@ -260,5 +270,6 @@ function mapUploadError(error: unknown, filename: string): Error {
   return new UploadTransportError(`Upload of "${filename}" failed unexpectedly: ${detail}.`, {
     cause: error,
     code: "unexpected",
+    filename,
   });
 }

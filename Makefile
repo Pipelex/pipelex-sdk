@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install hooks agent-check agent-test workflows check-workflows lint-workflows install-linters check-versions check-release-versions release-selection test-scripts
+.PHONY: help install hooks agent-check agent-test workflows check-workflows shared-files check-shared-files lint-workflows install-linters check-versions check-release-versions release-selection test-scripts
 
 # The root gate. Each package directory is a project of its own, with its own Makefile,
 # manifest and lockfile, installed from the registries exactly as its standalone repository
@@ -59,6 +59,15 @@ workflows: ## Render the root twins of every template's workflows into .github/w
 check-workflows: ## Check that every root twin of a template workflow is current
 	@node scripts/workflows.mjs --check $(TEMPLATES)
 
+# The case files the two SDKs share: each has a source, in the package where its behaviour is
+# changed, and copies in the others, which scripts/shared-files.mjs writes and holds byte for
+# byte (docs/ci.md). Its SETS list declares them. A copy is never edited.
+shared-files: ## Copy each shared case file's source over its copies
+	@node scripts/shared-files.mjs
+
+check-shared-files: ## Check that every copy of a shared case file holds its source's bytes
+	@node scripts/shared-files.mjs --check
+
 # actionlint reads every workflow, the root's and each template's own, so a broken expression
 # or step in a workflow no pull request runs, such as release.yml or mirrors.yml, is caught on
 # the pull request that makes it (docs/ci.md). It runs the shellcheck it finds on the PATH over
@@ -108,9 +117,9 @@ release-selection: ## Propose the units a release ships; SPRINTS=<file, or - for
 test-scripts: ## Run the tests of the root's scripts, silent on success
 	@OUTPUT=$$(node --test scripts/*.test.mjs 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
-agent-check: ## Run every package directory's agent-check, installing a directory first when it was never installed, then check the versions, the workflow twins and, when actionlint is installed, the workflows' lint
+agent-check: ## Run every package directory's agent-check, installing a directory first when it was never installed, then check the versions, the workflow twins, the shared case files and, when actionlint is installed, the workflows' lint
 	$(call each,agent-check)
-	@$(MAKE) --no-print-directory check-workflows check-versions
+	@$(MAKE) --no-print-directory check-workflows check-shared-files check-versions
 	@if command -v actionlint >/dev/null 2>&1; then $(MAKE) --no-print-directory lint-workflows; else echo "actionlint is not installed, so the workflows were not linted here; CI lints them"; fi
 
 agent-test: ## Run every package directory's agent-test, installing a directory first when it was never installed, then the root scripts' tests, all silent on success

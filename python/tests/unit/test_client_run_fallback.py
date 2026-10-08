@@ -4,17 +4,23 @@ No equivalent exists in `mthds-python` (whose `start_and_wait` raises on a bare 
 SDK's own enhancement (`supports_run_lifecycle` + `execute_blocking`), mirroring `pipelex-sdk-js`.
 """
 
+from __future__ import annotations
+
 import asyncio
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import pytest
 from mthds.protocol.pipe_io_contracts import PipeIOContract
-from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, MissingMainStuffError, RunLifecycleUnavailableError
-from pipelex_sdk.runs import TokensUsageRecord
+from pipelex_sdk.runs import PipelexRunResultStart, TokensUsageRecord, WaitForResultOptions
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+
+    from tests.unit.conftest import UnreachableClientBuilder
 
 _BASE_URL = "http://localhost:8081"
 
@@ -78,6 +84,37 @@ def _response(status_code: int, *, json: object = None, headers: dict[str, str] 
     if json is None:
         return httpx.Response(status_code, headers=headers or {}, request=request)
     return httpx.Response(status_code, json=json, headers=headers or {}, request=request)
+
+
+class _Server:
+    """A server answering each path from a queue, and recording each request's path and read timeout,
+    the limit the client gave it; an answer that is an exception class is raised as no answer at all.
+    """
+
+    def __init__(self, answers: dict[str, list[httpx.Response | type[httpx.TransportError]]]) -> None:
+        self.answers = answers
+        self.requests: list[tuple[str, float | None]] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        timeout = cast("dict[str, float | None]", request.extensions["timeout"])
+        self.requests.append((request.url.path, timeout["read"]))
+        answer = self.answers[request.url.path].pop(0)
+        if isinstance(answer, httpx.Response):
+            return answer
+        msg = f"simulated {answer.__name__}"
+        raise answer(msg, request=request)
+
+    def client(self) -> PipelexAPIClient:
+        client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
+        return client
+
+
+def _hosted_run(run_id: str) -> dict[str, list[httpx.Response | type[httpx.TransportError]]]:
+    return {
+        "/v1/start": [httpx.Response(202, json={"pipeline_run_id": run_id, "state": "STARTED", "created_at": "t0"})],
+        f"/v1/runs/{run_id}/results": [httpx.Response(200, json={"pipeline_run_id": run_id, "main_stuff": {}})],
+    }
 
 
 def _urls(send_mock: Any) -> list[str]:
@@ -150,6 +187,118 @@ class TestClientRunFallback:
 
         with pytest.raises(MissingMainStuffError):
             asyncio.run(client.start_and_wait(pipe_code="p"))
+
+    # ── `on_started`: the run's id while the wait goes on ────────
+
+    def test_on_started_hands_over_the_ack_once_before_the_first_poll(self, mocker: MockerFixture) -> None:
+        """The callback gets the start acknowledgement whole, a `method_ref` run's provenance included,
+        once, after the start and before any results read.
+        """
+        client = self._client()
+        events: list[str] = []
+        acks: list[PipelexRunResultStart] = []
+        responses = iter(
+            [
+                _response(200, json=_HOSTED_VERSION),
+                _response(
+                    202,
+                    json={
+                        "pipeline_run_id": "run-1",
+                        "state": "STARTED",
+                        "created_at": "t0",
+                        "method_provenance": {"address": "github.com/acme/methods", "tag": "v1.0.0", "commit_sha": "abc123"},
+                    },
+                ),
+                _response(202, headers={"Retry-After": "0"}),
+                _response(200, json={"pipeline_run_id": "run-1", "main_stuff": {"answer": 42}}),
+            ]
+        )
+
+        def _send(method: str, url: str, **_kwargs: object) -> httpx.Response:
+            events.append(f"{method} {url.removeprefix(_BASE_URL)}")
+            return next(responses)
+
+        def _on_started(ack: PipelexRunResultStart) -> None:
+            events.append("on_started")
+            acks.append(ack)
+
+        mocker.patch.object(client, "_send", side_effect=_send)
+
+        result = asyncio.run(
+            client.start_and_wait(
+                method_ref="github.com/acme/methods@v1.0.0",
+                wait_options=WaitForResultOptions(interval_seconds=0),
+                on_started=_on_started,
+            )
+        )
+        assert result.main_stuff == {"answer": 42}
+        assert events == [
+            "GET /v1/version",
+            "POST /v1/start",
+            "on_started",
+            "GET /v1/runs/run-1/results",
+            "GET /v1/runs/run-1/results",
+        ]
+        assert len(acks) == 1
+        assert acks[0].pipeline_run_id == "run-1"
+        assert acks[0].method_provenance is not None
+        assert acks[0].method_provenance.commit_sha == "abc123"
+
+    def test_on_started_is_never_called_on_a_bare_runner(self, mocker: MockerFixture) -> None:
+        """The blocking execute has no run id to give before it answers, so the callback is not called."""
+        client = self._client()
+        mocker.patch.object(
+            client,
+            "_send",
+            mocker.AsyncMock(side_effect=[_response(200, json=_BARE_VERSION), _response(200, json=_EXECUTE_BODY)]),
+        )
+        on_started = mocker.Mock()
+
+        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"], on_started=on_started))
+        assert result.main_stuff == {"text": "hello"}
+        on_started.assert_not_called()
+
+    def test_on_started_is_never_called_on_the_fallback_to_blocking(self, mocker: MockerFixture) -> None:
+        """A start refused for want of a run store creates no run, so the fallback has nothing to announce."""
+        client = self._client()
+        mocker.patch.object(
+            client,
+            "_send",
+            mocker.AsyncMock(
+                side_effect=[
+                    _response(200, json=_BASE_ONLY_VERSION),
+                    _response(404, json={"detail": "Not Found"}),
+                    _response(200, json=_EXECUTE_BODY),
+                ]
+            ),
+        )
+        on_started = mocker.Mock()
+
+        result = asyncio.run(client.start_and_wait(pipe_code="p", on_started=on_started))
+        assert result.pipeline_run_id == "run-x"
+        on_started.assert_not_called()
+
+    def test_an_exception_from_on_started_propagates_before_any_poll(self, mocker: MockerFixture) -> None:
+        """The callback runs synchronously: what it raises leaves `start_and_wait` at once, nothing polled."""
+        client = self._client()
+        send = mocker.patch.object(
+            client,
+            "_send",
+            mocker.AsyncMock(
+                side_effect=[
+                    _response(200, json=_HOSTED_VERSION),
+                    _response(202, json={"pipeline_run_id": "run-1", "state": "STARTED", "created_at": "t0"}),
+                ]
+            ),
+        )
+
+        def _on_started(_ack: PipelexRunResultStart) -> None:
+            msg = "the caller's own failure"
+            raise ValueError(msg)
+
+        with pytest.raises(ValueError, match="the caller's own failure"):
+            asyncio.run(client.start_and_wait(pipe_code="p", on_started=_on_started))
+        assert _urls(send) == [f"{_BASE_URL}/v1/version", f"{_BASE_URL}/v1/start"]
 
     # ── Bare runner (blocking execute fallback) ──────────────────
 
@@ -496,10 +645,173 @@ class TestClientRunFallback:
         with pytest.raises(RunLifecycleUnavailableError):
             asyncio.run(client.wait_for_result("r"))
 
-    def test_unreachable_host_maps_to_api_unreachable_on_poll(self, mocker: MockerFixture) -> None:
+    def test_unreachable_host_maps_to_api_unreachable_on_poll(self, unreachable_client: UnreachableClientBuilder) -> None:
         """A transport failure on a lifecycle GET maps to ApiUnreachableError (the richer transport layer)."""
-        client = self._client()
-        mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=httpx.ConnectError("refused")))
+        client = unreachable_client(httpx.ConnectError)
 
         with pytest.raises(ApiUnreachableError):
             asyncio.run(client.get_run_result("r"))
+
+    # ── Time limits and an unanswered handshake ──────────────────
+
+    def test_the_handshake_and_a_plain_start_take_the_poll_budget(self) -> None:
+        """Both answer fast, so neither waits the blocking ceiling: a host that accepts the connection and never
+        answers costs the poll budget, not twenty minutes, before anything is known.
+        """
+        server = _Server({"/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)], **_hosted_run("r1")})
+
+        asyncio.run(server.client().start_and_wait(pipe_code="p"))
+
+        assert server.requests == [("/v1/version", 30.0), ("/v1/start", 30.0), ("/v1/runs/r1/results", 30.0)]
+
+    @pytest.mark.parametrize(
+        "selection",
+        [
+            {"method_ref": "github.com/acme/methods/receipt-review@v1.0.0"},
+            {"pipe_code": "p", "mthds_contents": ['domain = "d"']},
+            {"pipe_code": "p", "extra": {"files": {"main.mthds": 'domain = "d"'}}},
+            {"pipe_code": "p", "extra": {"bundle_b64": "UEsDBA=="}},
+        ],
+        ids=["method_ref", "mthds_contents", "files", "bundle_b64"],
+    )
+    def test_a_start_that_fetches_or_uploads_a_method_takes_the_blocking_ceiling(self, selection: dict[str, Any]) -> None:
+        """A `method_ref` start makes the server fetch the package before it answers, and a bundle can make the body
+        multi-megabyte, so each gets the client's blocking ceiling, as `@pipelex/sdk`'s start does.
+        """
+        server = _Server({"/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)], **_hosted_run("r1")})
+        client = server.client()
+
+        asyncio.run(client.start_and_wait(**selection))
+
+        assert server.requests[1] == ("/v1/start", client.request_timeout_seconds)
+        assert client.request_timeout_seconds == 1200.0
+
+    @pytest.mark.parametrize(
+        ("request_timeout_seconds", "quick", "carrying"),
+        [(5.0, 5.0, 5.0), (60.0, 30.0, 60.0)],
+        ids=["shorter-than-the-poll-budget", "longer-than-the-poll-budget"],
+    )
+    def test_the_quick_routes_take_the_callers_limit_capped_at_the_poll_budget(
+        self, request_timeout_seconds: float, quick: float, carrying: float
+    ) -> None:
+        """A caller who set a short limit to fail fast gets it on the handshake and a plain start; a long one is capped
+        at the poll budget there, the hosted gateway's own cut-off, and applies whole to a start carrying a bundle.
+        """
+        server = _Server(
+            {
+                "/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)],
+                "/v1/start": [
+                    httpx.Response(202, json={"pipeline_run_id": "r1", "state": "STARTED", "created_at": "t0"}),
+                    httpx.Response(202, json={"pipeline_run_id": "r2", "state": "STARTED", "created_at": "t0"}),
+                ],
+            }
+        )
+        client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL, request_timeout_seconds=request_timeout_seconds)
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(server.handle))
+
+        async def scenario() -> None:
+            await client.version()
+            await client.start(pipe_code="p")
+            await client.start(pipe_code="p", mthds_contents=['domain = "d"'])
+
+        asyncio.run(scenario())
+
+        assert server.requests == [("/v1/version", quick), ("/v1/start", quick), ("/v1/start", carrying)]
+
+    def test_an_unanswered_handshake_sends_no_start_and_is_asked_again(self) -> None:
+        server = _Server(
+            {
+                "/v1/version": [httpx.ConnectTimeout, httpx.Response(200, json=_HOSTED_VERSION)],
+                **_hosted_run("r1"),
+            }
+        )
+        client = server.client()
+
+        with pytest.raises(ApiUnreachableError) as exc_info:
+            asyncio.run(client.start_and_wait(pipe_code="p"))
+        assert exc_info.value.code == "ConnectTimeout"
+        assert [path for path, _ in server.requests] == ["/v1/version"]
+        assert client._lifecycle_available is None
+
+        # Nothing was cached, so the next call asks again, and runs once the server answers.
+        asyncio.run(client.start_and_wait(pipe_code="p"))
+        assert [path for path, _ in server.requests] == ["/v1/version", "/v1/version", "/v1/start", "/v1/runs/r1/results"]
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            httpx.Response(
+                200, headers={"Content-Type": "application/json", "Content-Encoding": "gzip"}, stream=httpx.ByteStream(b"not gzip at all")
+            ),
+            httpx.Response(200, headers={"Content-Type": "text/html"}, content=b"<html>a gateway's page</html>"),
+            httpx.Response(200, headers={"Content-Type": "application/json"}, content=b'{"implementation": "pipelex-api\xff"}'),
+            httpx.Response(200, json=["not", "a", "version"]),
+        ],
+        ids=["body-that-does-not-decode", "body-that-is-not-json", "body-that-is-not-utf8", "json-that-is-no-version"],
+    )
+    def test_a_handshake_answered_with_no_usable_version_assumes_hosted(self, answer: httpx.Response) -> None:
+        """The server answered, so the start is sent: a body that arrived and cannot be decoded is an answer too."""
+        server = _Server({"/v1/version": [answer], **_hosted_run("r1")})
+        client = server.client()
+
+        asyncio.run(client.start_and_wait(pipe_code="p"))
+
+        assert [path for path, _ in server.requests] == ["/v1/version", "/v1/start", "/v1/runs/r1/results"]
+        assert client._lifecycle_available is True
+
+    # ── The moment a run may start: on_starting, and a cancellation before it ──
+
+    def test_on_starting_is_called_right_before_the_start(self) -> None:
+        server = _Server({"/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)], **_hosted_run("r1")})
+        seen_at: list[int] = []
+
+        asyncio.run(server.client().start_and_wait(pipe_code="p", on_starting=lambda: seen_at.append(len(server.requests))))
+
+        # Once, after the handshake and before the start.
+        assert seen_at == [1]
+        assert server.requests[1][0] == "/v1/start"
+
+    def test_on_starting_is_called_before_each_blocking_execute(self) -> None:
+        bare = _Server(
+            {
+                "/v1/version": [httpx.Response(200, json=_BARE_VERSION)],
+                "/v1/execute": [httpx.Response(200, json=_EXECUTE_BODY)],
+            }
+        )
+        seen_at: list[int] = []
+        asyncio.run(bare.client().start_and_wait(pipe_code="p", on_starting=lambda: seen_at.append(len(bare.requests))))
+        assert seen_at == [1]
+        assert [path for path, _ in bare.requests] == ["/v1/version", "/v1/execute"]
+
+        # A runner that looked hosted refuses the start before any run exists, then gets the blocking execute:
+        # both requests may create a run, so each is announced.
+        misdetected = _Server(
+            {
+                "/v1/version": [httpx.Response(200, json=_BASE_ONLY_VERSION)],
+                "/v1/start": [httpx.Response(404, json={"detail": "Not Found"})],
+                "/v1/execute": [httpx.Response(200, json=_EXECUTE_BODY)],
+            }
+        )
+        seen_at = []
+        asyncio.run(misdetected.client().start_and_wait(pipe_code="p", on_starting=lambda: seen_at.append(len(misdetected.requests))))
+        assert seen_at == [1, 2]
+        assert [path for path, _ in misdetected.requests] == ["/v1/version", "/v1/start", "/v1/execute"]
+
+    def test_a_cancellation_during_the_handshake_starts_no_run(self) -> None:
+        """Cancelled while the version answer is read, the task never sends the start, nor announces one."""
+        server = _Server({"/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)], **_hosted_run("r1")})
+        handle = server.handle
+
+        def cancel_while_answering(request: httpx.Request) -> httpx.Response:
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            return handle(request)
+
+        server.handle = cancel_while_answering  # type: ignore[method-assign]
+        announced: list[bool] = []
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(server.client().start_and_wait(pipe_code="p", on_starting=lambda: announced.append(True)))
+        assert [path for path, _ in server.requests] == ["/v1/version"]
+        assert announced == []

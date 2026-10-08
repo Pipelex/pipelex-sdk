@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MODEL_CATEGORIES, type ModelCategory } from "mthds/protocol";
-import { PipelexApiClient } from "../src/client.js";
+import { PipelexApiClient, isGatewayCutOff } from "../src/client.js";
 import { PipelexExecuteResult } from "../src/execute-result.js";
 import {
   ApiResponseError,
@@ -99,6 +99,59 @@ describe("PipelexApiClient constructor", () => {
     expect(() => new PipelexApiClient({ baseUrl: "https://api.pipelex.com/v1/" })).toThrow(
       /host-only/,
     );
+  });
+
+  // The rule refuses exactly the parts of a URL a secret travels in, so its refusal must not
+  // carry them: the message reaches logs, and a page that relays an error's message.
+  it.each([
+    [
+      "credentials",
+      "https://user:s3cret-pass@api.example.com",
+      '"https://api.example.com" with credentials (not shown)',
+      ["user", "s3cret-pass"],
+    ],
+    [
+      "a token in the query",
+      "https://proxy.example.com?token=abc123",
+      '"https://proxy.example.com" with a query (not shown)',
+      ["token", "abc123"],
+    ],
+    [
+      "a path, a query and a fragment",
+      "https://api.example.com:8443/k3y/v1?sig=zzz#an-anchor",
+      '"https://api.example.com:8443" with a path, a query and a fragment (not shown)',
+      ["k3y", "sig", "zzz", "an-anchor"],
+    ],
+    [
+      "credentials and a path",
+      "http://admin:hunter2@localhost:8081/v1",
+      '"http://localhost:8081" with credentials and a path (not shown)',
+      ["admin", "hunter2"],
+    ],
+    [
+      "a value with no scheme",
+      "user:hunter2@api.example.com",
+      "(not shown: it is not an http or https URL)",
+      ["user", "hunter2", "api.example.com"],
+    ],
+    [
+      "a value that is not a URL",
+      "not a url hunter2",
+      "(not shown: it is not an absolute URL)",
+      ["hunter2"],
+    ],
+  ])("refuses a base URL with %s without echoing it", (_label, baseUrl, shown, secrets) => {
+    let message = "";
+    try {
+      new PipelexApiClient({ baseUrl });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toBe(
+      `Invalid API base URL ${shown}: it must be host-only (http/https, no path, query, ` +
+        "fragment, or credentials). Endpoints compose as {base}/v1/{endpoint}.",
+    );
+    for (const secret of secrets) expect(message).not.toContain(secret);
   });
 
   it("reads PIPELEX_BASE_URL from the environment", async () => {
@@ -658,7 +711,7 @@ describe("PipelexApiClient.execute gateway 30s timeout", () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
     // start = 0ms, failure observed at 31s → over the 30s gateway ceiling.
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(31_000);
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(31_000);
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PipelineExecuteTimeoutError);
     const e = err as PipelineExecuteTimeoutError;
@@ -670,19 +723,67 @@ describe("PipelexApiClient.execute gateway 30s timeout", () => {
   it("also fires on a client-side abort timeout past the ceiling", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("timed out", "TimeoutError"));
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(30_500);
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(30_500);
     await expect(client.execute({ pipe_code: "p" })).rejects.toBeInstanceOf(
       PipelineExecuteTimeoutError,
     );
   });
 
-  it("leaves a fast 503 as an ordinary ApiResponseError (runner down, not a timeout)", async () => {
+  it("times the request on the monotonic clock, so a wall clock step makes no fast 503 a cut-off", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(2_000);
+    // The system clock is set forward by a minute while the request is out, as a time sync may do.
+    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(60_000);
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiResponseError);
     expect(err).not.toBeInstanceOf(PipelineExecuteTimeoutError);
+  });
+
+  it("leaves a fast 503 as an ordinary ApiResponseError (runner down, not a timeout)", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(2_000);
+    const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect(err).not.toBeInstanceOf(PipelineExecuteTimeoutError);
+  });
+});
+
+describe("isGatewayCutOff", () => {
+  /** The error a start fails with on this answer or this failure, as the client throws it. */
+  async function startFailure(answer: () => Promise<Response>): Promise<unknown> {
+    vi.spyOn(globalThis, "fetch").mockImplementation(answer);
+    return makeClient()
+      .start({ pipe_code: "p" })
+      .then(
+        () => expect.fail("expected the start to fail"),
+        (thrown: unknown) => thrown,
+      );
+  }
+
+  it.each([
+    ["a 503", () => Promise.resolve(textResponse(503, "", "Service Unavailable")), true],
+    ["a 504", () => Promise.resolve(textResponse(504, "", "Gateway Timeout")), true],
+    ["a 500", () => Promise.resolve(textResponse(500, "", "Internal Server Error")), false],
+    ["a 502", () => Promise.resolve(textResponse(502, "", "Bad Gateway")), false],
+    [
+      "the client's own time limit",
+      () => Promise.reject(new DOMException("timed out", "TimeoutError")),
+      true,
+    ],
+    ["a refused connection", () => Promise.reject(networkError("ECONNREFUSED")), false],
+  ])("reads %s past ~28 seconds as the cut-off: %s", async (_name, answer, cutOff) => {
+    const error = await startFailure(answer);
+
+    expect(isGatewayCutOff(error, 31_000)).toBe(cutOff);
+    expect(isGatewayCutOff(error, 28_000)).toBe(cutOff);
+    // Before the threshold, nothing is the gateway's cut-off: a fast 503 is the API refusing.
+    expect(isGatewayCutOff(error, 27_999)).toBe(false);
+  });
+
+  it("reads nothing but the SDK's own errors", () => {
+    expect(isGatewayCutOff(new Error("503"), 31_000)).toBe(false);
+    expect(isGatewayCutOff(undefined, 31_000)).toBe(false);
   });
 });
 

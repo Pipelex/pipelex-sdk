@@ -4,7 +4,6 @@ import type {
   ModelDeck,
   RunOptions,
   RunRequest,
-  RunResultStart,
   StartOptions,
   StartRequest,
   VersionInfo,
@@ -41,11 +40,13 @@ import {
   assertWaitOptions,
   pollUntilResult,
   selectionIncludesMainStuff,
+  throwIfAborted,
   type GetRunResultOptions,
   type RunRead,
   type RunResults,
   type RunResultState,
   type RunStatus,
+  type StartAndWaitForResultOptions,
   type WaitForResultOptions,
 } from "./runs.js";
 import type {
@@ -259,17 +260,25 @@ export interface PipelexApiClientOptions {
    * `{ name: "acme-invoicer", version: "1.4.0" }` →
    * `acme-invoicer/1.4.0 pipelex-sdk-js/<v> node/<v> (<os>; <arch>)`. Validated at
    * construction: a field that is not an RFC 9110 token throws a `TypeError`. See
-   * the workspace spec `docs/specs/client-identification.md`.
+   * the spec `conformance/specs/client-identification.md`, in the `conformance` repository
+   * beside the specs' tests.
    */
   appInfo?: AppInfo;
 }
+
+/** Decoders of an answer's bytes: the strict one tells a body that is not UTF-8. */
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+const LENIENT_UTF8 = new TextDecoder("utf-8");
 
 /** Low-level transport over a generic fetch, before status interpretation. */
 interface RawResponse {
   status: number;
   statusText: string;
   headers: Headers;
+  /** The body as text, a byte that is not UTF-8 read as U+FFFD, as `Response.text()` reads it. */
   body: string;
+  /** Whether the body's bytes are UTF-8, which a JSON answer must be (RFC 8259). */
+  utf8: boolean;
 }
 
 /** HTTP methods the client issues — the product routes add PUT/PATCH/DELETE. */
@@ -389,9 +398,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     // endpoint error instead of a clear base-URL one. Trailing slashes are
     // stripped first; a remaining path/query/fragment/credentials is rejected. The
     // refusal is `config`: the value typically comes from PIPELEX_BASE_URL, the environment.
+    // It never quotes the value whole: what the rule refuses is where a secret travels
+    // (a password, a token in a query), so it names those parts without their text.
     if (!isValidBaseUrl(normalizedBaseUrl)) {
       throw new RequestArgumentError(
-        `Invalid API base URL "${normalizedBaseUrl}": must be host-only ` +
+        `Invalid API base URL ${describeRefusedBaseUrl(normalizedBaseUrl)}: it must be host-only ` +
           `(http/https, no path, query, fragment, or credentials). Endpoints ` +
           `compose as {base}/v1/{endpoint}.`,
         { verdict: { errorDomain: "config", retryable: false } },
@@ -469,7 +480,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
 
     let response: Response;
-    let body: string;
+    let bytes: Uint8Array;
     try {
       response = await fetch(url, {
         method,
@@ -480,7 +491,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // The body streams after the headers; keep the timer/abort armed until it
       // has fully arrived, or a stalled body would hang past the advertised
       // timeout with no way to cancel.
-      body = await response.text();
+      bytes = new Uint8Array(await response.arrayBuffer());
     } catch (err) {
       // A caller-initiated abort (not our timeout) propagates untouched so
       // `waitForResult` callers can distinguish "I stopped waiting" from a
@@ -506,11 +517,20 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       if (userSignal) userSignal.removeEventListener("abort", onUserAbort);
     }
 
+    let body: string;
+    let utf8 = true;
+    try {
+      body = STRICT_UTF8.decode(bytes);
+    } catch {
+      utf8 = false;
+      body = LENIENT_UTF8.decode(bytes);
+    }
     return {
       status: response.status,
       statusText: response.statusText,
       headers: response.headers,
       body,
+      utf8,
     };
   }
 
@@ -655,11 +675,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /**
    * The JSON body of a 2xx answer, naming the route by its `path` from the origin as a refusal
-   * does. A body that is not JSON, an empty one included, is an answer the SDK cannot read, so it
-   * throws the `ApiResponseError` `unreadableAnswer` builds, with the parse failure as `cause`.
+   * does. A body that is not UTF-8, or not JSON, an empty one included, is an answer the SDK
+   * cannot read, so it throws the `ApiResponseError` `unreadableAnswer` builds, with the parse
+   * failure as `cause`.
    * The one place a success body is parsed.
    */
   private readAnswerAt<T>(method: HttpMethod, path: string, res: RawResponse): T {
+    if (!res.utf8) throw this.unreadableAnswer(method, path, res, "a body that is not UTF-8");
     try {
       return JSON.parse(res.body) as T;
     } catch (err) {
@@ -856,7 +878,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       ...extensions,
     };
 
-    const startedAt = Date.now();
+    // Timed on the monotonic clock, which a change of the system's time does not move.
+    const startedAt = performance.now();
     try {
       const res = await this.requestRaw("POST", this.url("execute"), {
         body: request,
@@ -875,8 +898,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // The hosted gateway terminates synchronous requests at ~30s. A run that
       // exceeds that comes back as a gateway 503/504 (or a client abort) —
       // translate it into a clear, actionable error pointing at start+poll.
-      const elapsedMs = Date.now() - startedAt;
-      if (isGatewayTimeout(err, elapsedMs)) {
+      const elapsedMs = performance.now() - startedAt;
+      if (isGatewayCutOff(err, elapsedMs)) {
         throw new PipelineExecuteTimeoutError(elapsedMs, { cause: err });
       }
       throw err;
@@ -931,9 +954,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     };
 
     const url = this.url("start");
-    // `start` returns a 202 fast, so the poll timeout normally fits — with two
-    // exceptions that get the blocking-execute ceiling instead. A method bundle
-    // can make the request *body* multi-megabyte, and the whole upload is
+    // `start` returns a 202 fast, so the poll timeout normally fits — with
+    // exceptions that get the blocking-execute ceiling instead. A method bundle,
+    // inline as `mthds_contents` or in `files`/`bundle_b64`, can make the
+    // request *body* multi-megabyte, and the whole upload is
     // charged against this budget — the same payload must not time out on the
     // durable path yet succeed on the fallback. And a `method_ref` start makes
     // the server FETCH the package before the ack (provenance rides the 202),
@@ -941,7 +965,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     // would surface as `ApiUnreachableError`, blaming the network for a healthy
     // server that is still cloning.
     const needsLongCeiling =
-      hasBundlePayload(options) || nonEmptyString(options.method_ref) !== undefined;
+      hasBundlePayload(options) ||
+      (options.mthds_contents?.length ?? 0) > 0 ||
+      nonEmptyString(options.method_ref) !== undefined;
     const res = await this.requestRaw("POST", url, {
       body: request,
       timeoutMs: needsLongCeiling ? DEFAULT_REQUEST_TIMEOUT_MS : POLL_REQUEST_TIMEOUT_MS,
@@ -1461,8 +1487,18 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Whether the configured server serves the durable run lifecycle, decided
    * via the `GET /v1/version` handshake and cached for the client's lifetime. A
    * bare `pipelex-api` runner has no run store; anything else is assumed hosted.
-   * When the handshake itself fails, assume hosted (the SDK default) and let the
-   * start call surface the real error.
+   *
+   * The rule, the one the Python SDK follows: an answer that is not a usable
+   * version means assume hosted (the SDK default), and let the start surface the
+   * real error; no answer at all propagates, uncached. An answer is anything the
+   * server sent back: a non-2xx status, a body that is not JSON, not UTF-8 or no
+   * version, and a body that arrived but could not be decoded, such as a broken
+   * gzip stream, which `requestRaw` reports as an `ApiUnreachableError` carrying
+   * the decompressor's code (see `isUndecodableBody`).
+   *
+   * @throws {ApiUnreachableError} The handshake got no answer. Nothing is cached,
+   *   so the next call asks again, and no start is sent to a host that did not
+   *   answer: sending it would wait a second time for the same silence.
    */
   private async supportsRunLifecycle(): Promise<boolean> {
     if (this.lifecycleAvailable === undefined) {
@@ -1472,7 +1508,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         this.lifecycleAvailable = !(
           typeof impl === "string" && impl === BARE_RUNNER_IMPLEMENTATION
         );
-      } catch {
+      } catch (error) {
+        // No answer at all propagates. A body that arrived and could not be decoded is an answer,
+        // and so is every other failure here: a non-2xx status, or a body that is no version.
+        if (error instanceof ApiUnreachableError && !isUndecodableBody(error)) throw error;
         this.lifecycleAvailable = true;
       }
     }
@@ -1486,31 +1525,52 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *   path that survives the gateway's ~30s synchronous ceiling.
    * - **Bare runner** (no run store): the blocking `POST /v1/execute`, which
    *   has no gateway cap off-platform and returns the native `pipe_output`.
+   *
+   * `pollOptions` are the wait's options, plus `onStarted`, called once with the
+   * start acknowledgement as soon as the durable run exists, so the caller holds
+   * the run's id while it waits; never on the blocking path, which has none to
+   * give; and `onStarting`, called right before each request that may create a
+   * run, so the caller knows until then that none exists (see
+   * `StartAndWaitForResultOptions`).
+   *
+   * `pollOptions.signal` is also read before the run is created: a caller that aborts while the
+   * version handshake is in flight gets its abort, and neither the start nor the blocking execute
+   * is sent. Once one of them is sent, the abort stops only the wait.
    */
   async startAndWaitForResult(
     options: PipelexStartOptions,
-    pollOptions?: WaitForResultOptions,
+    pollOptions?: StartAndWaitForResultOptions,
   ): Promise<RunResults> {
     // Before the run starts: a RangeError after it would carry no run id to re-poll by.
     assertWaitOptions(pollOptions);
-    if (await this.supportsRunLifecycle()) {
+    const { onStarted, onStarting, ...waitOptions } = pollOptions ?? {};
+    const hosted = await this.supportsRunLifecycle();
+    // The handshake may have outlasted the caller's patience: an abort that landed during it
+    // creates no run.
+    throwIfAborted(waitOptions.signal);
+    if (hosted) {
       // A runner can look hosted yet lack the durable routes — `implementation`
       // is an extension field, so a compliant bare runner that omits it is
       // misdetected here. Such a runner raises `RunLifecycleUnavailableError`
       // from `start()`, BEFORE any run is created, so falling back to the
       // blocking path cannot double-run. Cache the negative so later calls skip
       // the durable attempt.
-      let ack: RunResultStart;
+      let ack: PipelexRunResultStart;
       try {
+        onStarting?.();
         ack = await this.start(options);
       } catch (err) {
         if (!(err instanceof RunLifecycleUnavailableError)) throw err;
         this.lifecycleAvailable = false;
+        throwIfAborted(waitOptions.signal);
+        onStarting?.();
         return this.executeBlocking(options);
       }
-      return this.waitForResult(ack.pipeline_run_id, pollOptions);
+      onStarted?.(ack);
+      return this.waitForResult(ack.pipeline_run_id, waitOptions);
     }
 
+    onStarting?.();
     return this.executeBlocking(options);
   }
 
@@ -2071,6 +2131,38 @@ function isValidBaseUrl(value: string): boolean {
   return !parsed.search && !parsed.hash;
 }
 
+/**
+ * A refused base URL as its refusal may show it: the scheme and the host, then the names of the
+ * parts beyond them that the URL carried, never their text. Credentials, a query and a path are
+ * exactly where a secret travels in a URL, and the refusal reaches logs and, through an app that
+ * relays an error's message, a browser. A value that is not an http or https URL is not shown at
+ * all, since nothing says which of its characters are a secret: `localhost:8081`, with no scheme,
+ * parses as a URL whose scheme is `localhost:`.
+ */
+function describeRefusedBaseUrl(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return "(not shown: it is not an absolute URL)";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "(not shown: it is not an http or https URL)";
+  }
+  const parts: string[] = [];
+  if (parsed.username || parsed.password) parts.push("credentials");
+  if (parsed.pathname !== "/" && parsed.pathname !== "") parts.push("a path");
+  if (parsed.search) parts.push("a query");
+  if (parsed.hash) parts.push("a fragment");
+  const shown = `"${parsed.protocol}//${parsed.host}"`;
+  if (parts.length === 0) return shown;
+  const named =
+    parts.length === 1
+      ? parts[0]
+      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  return `${shown} with ${named} (not shown)`;
+}
+
 // The protocol's own request fields — `extra` is for extension args only.
 // `files` / `bundle_b64` are reserved too: they are named run-source options,
 // so smuggling them through `extra` (which merges last into the body) would
@@ -2274,16 +2366,51 @@ function withValidateMarkdownRender(render: string[] | undefined): string[] {
 }
 
 // The hosted gateway caps synchronous requests at 30s. A failure at/after this
-// threshold on the blocking execute is the timeout, not a transient outage —
-// the threshold guards against mislabelling a fast 503 (runner genuinely down)
-// as a timeout.
+// threshold is the gateway's cut-off, not a transient outage — the threshold
+// guards against mislabelling a fast 503 (runner genuinely down) as a timeout.
+// The one source of the threshold in this SDK: `isGatewayCutOff` reads it.
 const GATEWAY_TIMEOUT_THRESHOLD_MS = 28_000;
 
-function isGatewayTimeout(err: unknown, elapsedMs: number): boolean {
+/**
+ * Whether a request that failed `elapsedMs` after it was sent was cut off by the hosted gateway's
+ * ~30-second limit on a request it waits on, rather than refused.
+ *
+ * It is when, after at least ~28 seconds, the failure is a `503` or `504` answer, or the client's
+ * own time limit (`ApiUnreachableError` with the code `ABORT_TIMEOUT`). A fast `503` is the API
+ * saying the request was not handled, and any other unreachable host is never the gateway's
+ * cut-off, however long it took. The fetch API cannot say whether `ABORT_TIMEOUT` ran out before
+ * the connection was made, so it is read as the gateway's; with Node's own dispatcher it never
+ * does past the threshold, since undici gives up a connection that does not come after ten
+ * seconds (`UND_ERR_CONNECT_TIMEOUT`), the TLS handshake included. The Python SDK's
+ * `is_gateway_cut_off` reads the same failures, its `ABORT_TIMEOUT` being httpx's read or write
+ * timeout.
+ *
+ * The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. A caller timing
+ * a request that may create a run, such as `start` from `startAndWaitForResult`'s `onStarting`,
+ * reads it to know the server may still be handling the request the gateway gave up on.
+ */
+export function isGatewayCutOff(error: unknown, elapsedMs: number): boolean {
   if (elapsedMs < GATEWAY_TIMEOUT_THRESHOLD_MS) return false;
-  if (err instanceof ApiResponseError) return err.status === 503 || err.status === 504;
-  if (err instanceof ApiUnreachableError) return err.code === "ABORT_TIMEOUT";
+  if (error instanceof ApiResponseError) return error.status === 503 || error.status === 504;
+  if (error instanceof ApiUnreachableError) return error.code === "ABORT_TIMEOUT";
   return false;
+}
+
+/**
+ * The codes Node's fetch gives a body that arrived and could not be decoded. It decodes a
+ * `Content-Encoding` while it reads the body, after the status and the headers, and a body that
+ * does not decode fails the read with the decompressor's own code: zlib's `Z_…` for `gzip` and
+ * `deflate`, brotli's `ERR__ERROR_…` for `br`, zstd's `ZSTD_error_…` for `zstd`.
+ */
+const UNDECODABLE_BODY_CODE = /^(Z_|ERR__ERROR_|ZSTD_error_)/;
+
+/**
+ * Whether an `ApiUnreachableError` is an answer whose body could not be decoded, rather than no
+ * answer at all. The Python SDK's twin is the `ApiUnreachableError` whose cause is httpx's
+ * `DecodingError`.
+ */
+function isUndecodableBody(error: ApiUnreachableError): boolean {
+  return error.code !== undefined && UNDECODABLE_BODY_CODE.test(error.code);
 }
 
 function extractNetworkErrorCode(err: unknown): string | undefined {
