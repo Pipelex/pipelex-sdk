@@ -635,8 +635,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * read as the platform always serializes it: `items` an array, `next_cursor` a string or
    * `null`. A page breaking either is an answer the SDK cannot read, so it throws the
    * `ApiResponseError` `unreadableAnswer` builds, `runtime` and not retryable, rather than
-   * handing the iterators a page they cannot walk: `items` that is not iterable, or a missing cursor that is neither the end nor a next
-   * page, which `iterateRuns` would follow forever.
+   * handing the iterators a page they cannot walk: `items` that is not iterable, or a missing
+   * cursor that is neither the end nor a next page, which `iterateRuns` would follow forever.
    */
   private async requestPage<T>(
     endpoint: string,
