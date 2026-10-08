@@ -13,6 +13,7 @@
 ### Changed
 
 - **A saved method has a draft and published versions, and `update_method` is replaced by `write_draft` and `rename_method` (Breaking)**: the whole-method `PUT` is gone. `write_draft(method_id, MethodDraftInput(mthds=…, python=…, input_data=…, expected_updated_at=…))` replaces the draft without validating it, sending only the fields set, and with `expected_updated_at` refuses a draft that moved since with a `409` `method_update_conflict`, writing nothing; `rename_method(method_id, name)` changes the name alone. `MethodData` gains the required `draft_digest`, `latest_version` and `latest_published`, its `updated_at` is the draft's token, moved by a draft write only, and `MethodWriteInput` is the create payload alone. A bare `method_id` on a run or tooling route now runs the latest published version, and the method calls take a bare id, refusing a suffixed one with a `PipelineRequestError` before anything is sent.
+- **The script `pipelex-sdk script` writes**: its line now runs `exec uvx --quiet pipelex-sdk@X.Y.Z run …`, so the script's stderr carries the command's own lines without the download and install lines uv prints wherever its cache starts empty; uv's errors still print, and a first run on a cold machine now waits without a word while uv fetches Python and the packages. A script written before keeps its line, and takes the same quiet by adding `--quiet` after `uvx`.
 
 ## [v0.34.1] - 2026-10-08
 

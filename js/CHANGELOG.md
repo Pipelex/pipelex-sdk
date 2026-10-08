@@ -13,6 +13,7 @@
 ### Changed
 
 - **A saved method has a draft and published versions, and `updateMethod` is replaced by `writeDraft` and `renameMethod` (Breaking)**: the whole-method `PUT` is gone. `writeDraft(methodId, { mthds, python?, input_data?, expected_updated_at? })` replaces the draft without validating it, and with `expected_updated_at` refuses a draft that moved since with a `409` `method_update_conflict`, writing nothing; `renameMethod(methodId, { name })` changes the name alone. `MethodData` gains the required `draft_digest`, `latest_version` and `latest_published`, its `updated_at` is the draft's token, moved by a draft write only, and `getMethodClosure` reads the draft, which a bare id no longer runs once the method is published. The method calls take a bare id, refusing a suffixed one with a `RequestArgumentError` before anything is sent.
+- **The script `pipelex-sdk script` writes**: its line now runs `exec npx --yes --no-update-notifier --loglevel=warn @pipelex/sdk@X.Y.Z run …`, so the script's stderr carries the command's own lines without npm's update notice, which npm 10 and 11 print wherever their cache starts empty, or the `npm notice run …` lines npm 12 prints at every run; npm's warnings and errors still print. A script written before keeps its line, and takes the same quiet by adding the two flags after `--yes`.
 
 ## [v0.34.1] - 2026-10-08
 
