@@ -293,9 +293,11 @@ def _write_script(target: str, body: str, progress: Progress) -> None:
             progress.interrupt_message = f"Interrupted. {target} was written."
         except BaseException:
             if created:
-                # `os.unlink` itself, not a helper, so that no call lies between the handler and the removal.
+                # `os.unlink` itself, not `Path.unlink`, a helper whose own calls an interrupt could land
+                # between, so that no call lies between the handler and the removal. A file someone else
+                # removed meanwhile is gone already, which must not replace the failure being raised.
                 try:
-                    Path(path).unlink()
+                    os.unlink(path)  # ruff: ignore[os-unlink]
                 except FileNotFoundError:
                     pass
                 progress.interrupt_message = _NOTHING_WRITTEN
