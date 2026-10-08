@@ -64,7 +64,7 @@ _CASE_FIELDS = ["name", "summary", "argv", "env", "files", "stdin", "routes", "i
 _EXPECT_FIELDS = ["exit_code", "stdout", "stdout_includes", "stderr", "stderr_excludes", "files", "absent_files"]
 _FILE_FIELDS = ["path", "text", "base64", "symlink", "directory"]
 _FILE_KINDS = ["text", "base64", "symlink", "directory"]
-_EXCHANGE_FIELDS = ["request_body", "answer", "status", "headers", "body", "text", "unreachable", "lost"]
+_EXCHANGE_FIELDS = ["request_body", "answer", "status", "headers", "body", "text", "base64", "unreachable", "lost"]
 _PLACEHOLDER_LANGUAGE = "python"
 # How long a command interrupted during a blocked read may take to end: far more than it needs, far less
 # than a command left waiting for the read.
@@ -208,6 +208,11 @@ class _RecordedApi:
         if key == self.interrupt_while_answering and call == 1:
             # The signal lands while the command's task runs, so it is delivered at the task's next wait.
             signal.raise_signal(signal.SIGINT)
+        if "base64" in answer:
+            # Raw bytes, served as a stream so that the client decodes them as it reads them, a
+            # `Content-Encoding` included, as it would off the network.
+            raw = base64.b64decode(answer["base64"])
+            return httpx.Response(answer.get("status", 200), headers=headers, stream=httpx.ByteStream(raw))
         return httpx.Response(answer.get("status", 200), headers=headers, content=content)
 
     def unserved(self) -> list[str]:

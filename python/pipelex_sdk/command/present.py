@@ -101,7 +101,7 @@ def present_error(exc: Exception) -> PresentedError:
         )
     if isinstance(exc, PipelineRequestError):
         return PresentedError(lines=[f"Error: {exc}"], exit_code=EXIT_FAILED)
-    if isinstance(exc, (ValidationError, json.JSONDecodeError)):
+    if isinstance(exc, (ValidationError, json.JSONDecodeError, UnicodeDecodeError)):
         # An answer the SDK could not read into the shape the route promises: the API's fault, not
         # the person's, and not worth a traceback.
         first_line = str(exc).splitlines()[0]

@@ -2345,6 +2345,44 @@
       }
     },
     {
+      "name": "run/start-answer-not-utf8",
+      "summary": "A start accepted with a body that is not UTF-8 created a run the command never learned of, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          { "status": 202, "headers": { "Content-Type": "application/json" }, "base64": "eyJwaXBlbGluZV9ydW5faWQiOiAicnVuLTEiLCAic3RhdGUiOiAiU1RBUlRFRP8iLCAiY3JlYXRlZF9hdCI6ICIyMDI2LTEwLTA4VDEwOjAwOjAwWiJ9" }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API's answer could not be read", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started", "unexpected failure"]
+      }
+    },
+    {
+      "name": "run/start-answer-bad-gzip",
+      "summary": "A start accepted with a gzip body that does not decode created a run the command never learned of, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "headers": { "Content-Type": "application/json", "Content-Encoding": "gzip" },
+            "base64": "bm90IGd6aXAgYXQgYWxs"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test (", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started", "unexpected failure"]
+      }
+    },
+    {
       "name": "run/start-unreachable",
       "summary": "A start whose connection is refused sent nothing, so no run can exist and the failure says nothing of one.",
       "argv": ["run", "--method", "mt_receipts01"],

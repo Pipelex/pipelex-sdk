@@ -32,6 +32,7 @@ interface Exchange {
   text?: string;
   unreachable?: boolean;
   lost?: string;
+  base64?: string;
 }
 
 interface FileEntry {
@@ -113,6 +114,7 @@ const EXCHANGE_FIELDS = [
   "text",
   "unreachable",
   "lost",
+  "base64",
 ];
 const PLACEHOLDER_LANGUAGE = "js";
 
@@ -257,8 +259,19 @@ class RecordedApi {
       this.problems.push(`${key}, call ${call}: lost is "${answer.lost}", not timeout or closed`);
     }
     const headers = new Headers(answer.headers);
-    let body: string | null = null;
-    if (answer.body !== undefined) {
+    if (headers.get("content-encoding") === "gzip") {
+      // A fetch mock decodes nothing, so a gzip answer, which the table records only broken, fails
+      // here as undici fails it: once the headers have arrived, while the body is read.
+      const failure = new TypeError("terminated", {
+        cause: Object.assign(new Error("incorrect header check"), { code: "Z_DATA_ERROR" }),
+      });
+      const broken = new ReadableStream({ start: (controller) => controller.error(failure) });
+      return new Response(broken, { status: answer.status ?? 200, headers });
+    }
+    let body: string | Uint8Array | null = null;
+    if (answer.base64 !== undefined) {
+      body = new Uint8Array(Buffer.from(answer.base64, "base64"));
+    } else if (answer.body !== undefined) {
       body = JSON.stringify(answer.body);
       if (!headers.has("content-type")) headers.set("content-type", "application/json");
     } else if (answer.text !== undefined) {

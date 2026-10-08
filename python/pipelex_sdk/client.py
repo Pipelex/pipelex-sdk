@@ -368,9 +368,10 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiUnreachableError: No answer came back. `code` is `ABORT_TIMEOUT` when the request reached
                 the server and the time limit ran out while it was sent or answered (`ReadTimeout`,
                 `WriteTimeout`), which is what the `execute` override reads to tell the hosted gateway's
-                cut-off. Any other failure carries the httpx transport exception's class name
-                (`ConnectError`, …), a `ConnectTimeout` or a `PoolTimeout` included: neither sent the
-                request, so neither can be the gateway's cut-off however long it took.
+                cut-off. Any other failure carries the httpx exception's class name (`ConnectError`, …),
+                a `ConnectTimeout` or a `PoolTimeout` included: neither sent the request, so neither can be
+                the gateway's cut-off however long it took. A body httpx cannot decode, such as a broken
+                gzip stream, is `DecodingError`.
         """
         timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
         try:
@@ -378,7 +379,9 @@ class PipelexAPIClient(MthdsAPIClient):
         except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
             msg = f"Could not reach Pipelex API at {self.base_url} (timeout)"
             raise ApiUnreachableError(msg, api_url=self.base_url, code=_ABORT_TIMEOUT_CODE) from exc
-        except httpx.TransportError as exc:
+        except (httpx.TransportError, httpx.DecodingError) as exc:
+            # A body httpx cannot decode, a broken gzip stream for one, is lost on the way as surely as a
+            # dropped connection, and `@pipelex/sdk` reports it the same way (`Z_DATA_ERROR`).
             code = type(exc).__name__
             msg = f"Could not reach Pipelex API at {self.base_url} ({code})"
             raise ApiUnreachableError(msg, api_url=self.base_url, code=code) from exc

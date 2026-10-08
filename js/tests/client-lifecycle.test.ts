@@ -671,6 +671,44 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
     expect((err as ApiUnreachableError).retryable).toBe(true);
   });
 
+  it("throws a typed ApiResponseError on a 2xx whose body is not UTF-8, and reads a refusal's leniently", async () => {
+    const client = makeClient();
+    // `{"pipeline_run_id": "r1\xff"}`: JSON, but with a byte UTF-8 has no place for.
+    const notUtf8 = new Uint8Array([
+      ...new TextEncoder().encode('{"pipeline_run_id": "r1'),
+      0xff,
+      0x22,
+      0x7d,
+    ]);
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(notUtf8, { status: 202 }));
+
+    const err = await client.start({ pipe_code: "p" }).then(
+      () => expect.fail("expected start to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      "API POST /v1/start answered 202 with a body that is not UTF-8",
+    );
+    expect((err as ApiResponseError).status).toBe(202);
+
+    // A refusal's body is read for its reason all the same, the stray byte as U+FFFD.
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        new Uint8Array([...new TextEncoder().encode('{"detail": "bad '), 0xff, 0x22, 0x7d]),
+        { status: 422, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const refusal = await client.start({ pipe_code: "p" }).then(
+      () => expect.fail("expected start to throw"),
+      (thrown: unknown) => thrown,
+    );
+    expect(refusal).toBeInstanceOf(ApiResponseError);
+    expect((refusal as ApiResponseError).status).toBe(422);
+    expect((refusal as ApiResponseError).serverMessage).toBe("bad \ufffd");
+  });
+
   it.each([
     ["an HTML page", "<html>Gateway</html>", "a body that is not JSON"],
     ["an empty body", null, "an empty body where JSON was expected"],

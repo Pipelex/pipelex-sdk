@@ -267,11 +267,18 @@ export interface PipelexApiClientOptions {
 }
 
 /** Low-level transport over a generic fetch, before status interpretation. */
+/** Decoders of an answer's bytes: the strict one tells a body that is not UTF-8. */
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+const LENIENT_UTF8 = new TextDecoder("utf-8");
+
 interface RawResponse {
   status: number;
   statusText: string;
   headers: Headers;
+  /** The body as text, a byte that is not UTF-8 read as U+FFFD, as `Response.text()` reads it. */
   body: string;
+  /** Whether the body's bytes are UTF-8, which a JSON answer must be (RFC 8259). */
+  utf8: boolean;
 }
 
 /** HTTP methods the client issues — the product routes add PUT/PATCH/DELETE. */
@@ -473,7 +480,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
 
     let response: Response;
-    let body: string;
+    let bytes: Uint8Array;
     try {
       response = await fetch(url, {
         method,
@@ -484,7 +491,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // The body streams after the headers; keep the timer/abort armed until it
       // has fully arrived, or a stalled body would hang past the advertised
       // timeout with no way to cancel.
-      body = await response.text();
+      bytes = new Uint8Array(await response.arrayBuffer());
     } catch (err) {
       // A caller-initiated abort (not our timeout) propagates untouched so
       // `waitForResult` callers can distinguish "I stopped waiting" from a
@@ -510,11 +517,20 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       if (userSignal) userSignal.removeEventListener("abort", onUserAbort);
     }
 
+    let body: string;
+    let utf8 = true;
+    try {
+      body = STRICT_UTF8.decode(bytes);
+    } catch {
+      utf8 = false;
+      body = LENIENT_UTF8.decode(bytes);
+    }
     return {
       status: response.status,
       statusText: response.statusText,
       headers: response.headers,
       body,
+      utf8,
     };
   }
 
@@ -659,11 +675,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /**
    * The JSON body of a 2xx answer, naming the route by its `path` from the origin as a refusal
-   * does. A body that is not JSON, an empty one included, is an answer the SDK cannot read, so it
-   * throws the `ApiResponseError` `unreadableAnswer` builds, with the parse failure as `cause`.
+   * does. A body that is not UTF-8, or not JSON, an empty one included, is an answer the SDK
+   * cannot read, so it throws the `ApiResponseError` `unreadableAnswer` builds, with the parse
+   * failure as `cause`.
    * The one place a success body is parsed.
    */
   private readAnswerAt<T>(method: HttpMethod, path: string, res: RawResponse): T {
+    if (!res.utf8) throw this.unreadableAnswer(method, path, res, "a body that is not UTF-8");
     try {
       return JSON.parse(res.body) as T;
     } catch (err) {

@@ -96,7 +96,7 @@ def _may_have_started(exc: Exception) -> bool:
         return exc.code not in _NOTHING_SENT_CODES
     if isinstance(exc, ApiResponseError):
         return 200 <= exc.status < 300 or exc.status in _GATEWAY_LOST_ANSWER
-    return isinstance(exc, (ValidationError, json.JSONDecodeError))
+    return isinstance(exc, (ValidationError, json.JSONDecodeError, UnicodeDecodeError))
 
 
 def _dispatch(argv: Sequence[str], io: CommandIO, progress: Progress) -> int:
