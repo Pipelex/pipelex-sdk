@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`execute`, `start`, `validate`, `models` and `version` raise `ApiUnreachableError` when no answer comes back (Breaking)**: a refused connection, a DNS failure, a TLS failure or a timeout on the protocol routes the client inherits from `mthds` escaped as httpx's own exception, outside `PipelineRequestError`, while the run reads and the product routes already raised `ApiUnreachableError`. Every route now raises it, `start_and_wait` included, so a caller that caught `httpx.TransportError` or `httpx.TimeoutException` from these routes catches `ApiUnreachableError` and reads its `code` (`ABORT_TIMEOUT` for a timeout, the httpx failure's name otherwise). A blocking `execute` cut off by a timeout after about 28 seconds still raises `PipelineExecuteTimeoutError`, whose cause is now that `ApiUnreachableError`.
+- **`wait_for_result` stops when its task is cancelled, on Python 3.11 too**: on Python 3.11, cancelling the task awaiting `wait_for_result` or `start_and_wait` in the loop step where a poll answered was swallowed, and the wait polled on until the run ended or `timeout_seconds` ran out. It now raises `asyncio.CancelledError` on every supported Python version, so an `asyncio.timeout` around the wait, a cancelled request handler or Ctrl-C under `asyncio.run` stops it.
+
 ## [v0.31.0] - 2026-10-05
 
 ### Changed
