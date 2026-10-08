@@ -85,6 +85,8 @@ class TestParseMethodArg:
         ("arg", "parsed"),
         [
             ("mt_abc-123", MethodSelector(method_id="mt_abc-123")),
+            ("mt_abc-123@3", MethodSelector(method_id="mt_abc-123@3")),
+            ("mt_abc-123@draft", MethodSelector(method_id="mt_abc-123@draft")),
             ("github.com/Pipelex/methods/text_stats@v0.1.1", MethodSelector(method_ref="github.com/Pipelex/methods/text_stats@v0.1.1")),
             ("https://github.com/o/r/", MethodSelector(method_ref="github.com/o/r")),
             ("github.com/o/r/pkg/sub@release/1.0", MethodSelector(method_ref="github.com/o/r/pkg/sub@release/1.0")),
@@ -106,6 +108,13 @@ class TestParseMethodArg:
         [
             ("  ", "METHOD is empty"),
             ("mt_", "not a well-formed catalog id"),
+            ("mt_@3", "not a well-formed catalog id"),
+            ("mt_abc@", "names no version"),
+            ("mt_abc@0", "names no version"),
+            ("mt_abc@03", "names no version"),
+            ("mt_abc@Draft", "names no version"),
+            ("mt_abc@latest", "names no version"),
+            ("mt_abc@3@4", "names no version"),
             ("github.com/o/r@v1@v2", "more than one @tag"),
             ("github.com/o/r@-v1", "not a tag name"),
             ("github.com/o", "at least a host, an owner and a repository"),
@@ -462,6 +471,15 @@ class TestPlanMethod:
         assert plan.slug == "stored-text-stats"
         assert plan.catalog is not None and plan.catalog.name == "Stored text stats"
         assert "scoped to your key's organization" in plan.warnings[0]
+
+    async def test_reads_a_pinned_catalog_id_s_name_by_its_bare_id_and_keeps_the_version(self, package: Layout, tmp_path: Path):
+        client = RecordedClient()
+        pinned = f"{STORED_METHOD_ID}@3"
+        plan = await plan_method(MethodArgs(method=pinned), client, layout=package, root=tmp_path / "project", cwd=tmp_path)
+        assert client.method_ids == [STORED_METHOD_ID]
+        assert client.requests and all(request.method_id == pinned for request in client.requests)
+        assert plan.method_files == (("method.json", f'{{\n  "method_id": "{pinned}"\n}}\n'),)
+        assert plan.catalog is not None and plan.catalog.name == "Stored text stats"
 
     async def test_a_given_name_is_never_derived_nor_refused(self, package: Layout, tmp_path: Path):
         plan = await plan_method(

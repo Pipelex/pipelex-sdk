@@ -122,7 +122,10 @@ COMMAND_ANCHOR = "# add-method:commands"
 
 #: A catalog id, and the address form of a published method — with or without an `https://` prefix,
 #: with or without a package segment, with or without a tag. Anything else is refused naming both.
-CATALOG_ID_PATTERN = re.compile(r"^mt_[A-Za-z0-9_-]+$")
+#: A catalog id may end in a version suffix, kept in the manifest: a bare id runs the method's latest
+#: published version, `mt_…@3` its version 3 for good, and `mt_…@draft` its draft. The suffix is a
+#: positive number without a leading zero, or `draft` in lower case.
+CATALOG_ID_PATTERN = re.compile(r"^mt_[A-Za-z0-9_-]+(?:@(?:[1-9][0-9]*|draft))?$")
 ADDRESS_PATTERN = re.compile(r"^(?:https?://)?(?P<address>github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?(?:@[A-Za-z0-9._-]+)?)$")
 
 #: A slug has to be a directory name, a command name and the stem of a Python package at once.
@@ -253,7 +256,8 @@ def parse_selector(raw: str) -> MethodSelector:
         return MethodSelector(method_ref=address_match.group("address"))
     msg = (
         f"{raw!r} is neither a catalog id nor a published address.\n"
-        "    A catalog id looks like `mt_abc123` (a method saved on app.pipelex.com).\n"
+        "    A catalog id looks like `mt_abc123` (a method saved on app.pipelex.com), `mt_abc123@3` for its version 3\n"
+        "    or `mt_abc123@draft` for its draft.\n"
         "    An address looks like `github.com/owner/repo/package@v1.0.0`.\n"
         "    A bundle you have on disk is not scaffolded: put it in widget/methods/<name>/ and run `make codegen`."
     )
@@ -750,7 +754,7 @@ def build_plan(*, report: PipelexValidationReport, selector: MethodSelector, slu
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """The command line `make add-method` composes."""
     parser = argparse.ArgumentParser(prog="add-method", description="Scaffold a catalog or published method into this CLI.")
-    parser.add_argument("method", help="mt_… (a catalog id) or github.com/owner/repo[/package][@tag] (a published address)")
+    parser.add_argument("method", help="mt_…[@<version>|@draft] (a catalog id) or github.com/owner/repo[/package][@tag] (a published address)")
     parser.add_argument("--pipe", default=None, help="Which pipe to wire, bare or qualified. Defaults to the method's own default pipe.")
     parser.add_argument("--name", default=None, help="The kebab-case slug every derived name is built from.")
     parser.add_argument("--mode", default=DEFAULT_MODE, choices=MODES, help=f"Which execution mode the command lands in (default: {DEFAULT_MODE}).")

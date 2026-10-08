@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A catalog id may pin a version**: `make add-method` takes `mt_…@<version>` and `mt_…@draft` beside a bare `mt_…`, which runs the method's latest published version, and keeps the suffix in `method.json`, so the tab runs the version it was scaffolded against; the slug and the label still come from the method's catalog name, read by the bare id. A malformed suffix is refused before anything is sent. `docs/add-method.md` describes the forms.
+
 ### Changed
 
 - **`@pipelex/sdk` 0.33.0, and `config_invalid` in place of `config_missing` (Breaking)**: bumped from 0.30.0. The `config_missing` kind classified `ClientAuthenticationError`, which the SDK never threw and no longer exports; `config_invalid` now classifies a `PIPELEX_BASE_URL` naming more than a host, which the SDK refuses before sending any request and the starter used to report as "Something went wrong". A `2xx` whose body the SDK cannot read is shown as "Pipelex API sent an answer the app could not read", with the raw body in the technical details, where it used to be an unexplained error.

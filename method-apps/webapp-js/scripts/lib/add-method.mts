@@ -9,7 +9,8 @@
  *  - **A bundle** — a `.mthds` file or a directory of them. The files are
  *    copied into `methods/<name>/` (a bundle already there is scaffolded in
  *    place) and the action reads them at request time.
- *  - **A catalog id** (`mt_…`) or **a published address** (`github.com/…`) —
+ *  - **A catalog id** (`mt_…`, `mt_…@<version>` or `mt_…@draft`) or **a
+ *    published address** (`github.com/…`) —
  *    the method stays where it is and `methods/<name>/method.json` names it.
  *
  * Two halves, in this order, and the ordering is the whole safety story:
@@ -112,8 +113,15 @@ export class ReportedFailure extends Error {
 
 // ── The argument ────────────────────────────────────────────────────────────
 
-/** A catalog id, as the platform mints them. */
+/** A catalog id, as the platform mints them, before any version suffix. */
 const METHOD_ID_PATTERN = /^mt_[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * A catalog id's version suffix: a positive number without a leading zero, or
+ * `draft`, in lower case. A bare id runs the method's latest published
+ * version, `mt_…@3` its version 3 for good, and `mt_…@draft` its draft.
+ */
+const METHOD_VERSION_SUFFIX = /^([1-9][0-9]*|draft)$/;
 
 /** One segment of an address — host, owner, repo, or a package subpath segment. */
 const ADDRESS_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
@@ -123,7 +131,7 @@ const ADDRESS_TAG = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
 export const METHOD_ARG_FORMS =
   "a path to a .mthds file or to a directory of them, " +
-  'a catalog id ("mt_…"), or a published address ' +
+  'a catalog id ("mt_…", "mt_…@<version>" or "mt_…@draft"), or a published address ' +
   '("github.com/<owner>/<repo>[/<package>][@<tag>]")';
 
 /** What the one `METHOD` argument names. */
@@ -176,9 +184,21 @@ export function parseMethodArg(
   if (onDisk(trimmed)) return { kind: "bundle", path: trimmed };
 
   if (trimmed.startsWith("mt_")) {
-    if (!METHOD_ID_PATTERN.test(trimmed)) {
+    const [id, ...suffixes] = trimmed.split("@");
+    if (!METHOD_ID_PATTERN.test(id!)) {
       throw new AddMethodError(`"${trimmed}" is not a well-formed catalog id (mt_…).`);
     }
+    if (
+      suffixes.length > 1 ||
+      (suffixes.length === 1 && !METHOD_VERSION_SUFFIX.test(suffixes[0]!))
+    ) {
+      throw new AddMethodError(
+        `"${trimmed}" names no version — a catalog id ends in @<version>, a positive ` +
+          "number without a leading zero, in @draft, or in nothing.",
+      );
+    }
+    // The suffix is kept: the manifest, the codegen and every run name the
+    // version the app was scaffolded against.
     return { kind: "selector", selector: { method_id: trimmed } };
   }
 
@@ -512,6 +532,16 @@ export function respellAcronyms(text: string, prose: string): string {
   const spellings = spelledWords(prose);
   if (spellings.size === 0) return text;
   return text.replace(/[A-Za-z][A-Za-z0-9]*/g, (word) => spellings.get(word.toLowerCase()) ?? word);
+}
+
+/**
+ * A catalog id without its version suffix. The method routes, `getMethod`
+ * among them, address the method itself and take the bare id; the name and the
+ * description belong to the method, whichever version the app runs.
+ */
+export function bareMethodId(methodId: string): string {
+  const at = methodId.indexOf("@");
+  return at === -1 ? methodId : methodId.slice(0, at);
 }
 
 /**
@@ -1651,7 +1681,7 @@ export interface AddMethodArgs {
 }
 
 const USAGE =
-  "usage: npm run add-method -- <path/to/bundle | mt_… | github.com/owner/repo[/package][@tag]> " +
+  "usage: npm run add-method -- <path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/package][@tag]> " +
   "[--pipe <pipe_code>] [--name <dir-name>] [--label <label>] [--dry-run]";
 
 /**
@@ -1847,7 +1877,7 @@ export async function planAddMethod(
     if (selectorKind(selector) === "method_id") {
       let method;
       try {
-        method = await client.getMethod(selector.method_id!);
+        method = await client.getMethod(bareMethodId(selector.method_id!));
       } catch (error) {
         const explained = explainSelectorFailure(error, selector);
         if (explained !== null) throw new AddMethodError(explained);

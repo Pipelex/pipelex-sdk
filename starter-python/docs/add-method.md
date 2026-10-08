@@ -21,7 +21,7 @@ The Make variables are read **from the command line only** — `make add-method 
 
 `METHOD` is the one required argument, and it is one of two forms:
 
-- **A catalog id** — `mt_…`, a method saved under your key's organization on [app.pipelex.com](https://app.pipelex.com). Sent as `method_id`.
+- **A catalog id** — `mt_…`, a method saved under your key's organization on [app.pipelex.com](https://app.pipelex.com). Sent as `method_id`. A bare id runs the method's latest published version, `mt_…@3` its version 3 for good and `mt_…@draft` its draft; the suffix stays in `method.json`, so the command keeps running the version it was scaffolded against. Any other suffix (`@0`, `@03`, `@Draft`, two of them) is refused before anything is sent.
 - **An address** — `github.com/<owner>/<repo>[/<package>][@<tag>]`, a published MTHDS package, with or without an `https://` prefix. Sent as `method_ref`, normalized to the bare form.
 
 Anything else is refused naming both. There is deliberately **no local `.mthds` path**: that story already exists — put the bundle in `widget/methods/<name>/` and run `make codegen`.

@@ -21,7 +21,7 @@ This document is part of the template, not of the projects it creates: the gestu
 | Runs on    | The un-bootstrapped template only: `package.json` must still be named `pipelex-method-webapp-js`, and the bootstrap skill must be present                                                                                            |
 | Exit codes | `0` created (or rehearsed), `1` refused or failed — never a thrown stack                                                                                                                                                             |
 
-`METHOD` is the one required value, in any of the forms `make add-method` takes: a path to a `.mthds` file or to a directory of them, a catalog id (`mt_…`), or a published address (`github.com/<owner>/<repo>[/<package>][@<tag>]`). [`add-method.md`](add-method.md) describes each.
+`METHOD` is the one required value, in any of the forms `make add-method` takes: a path to a `.mthds` file or to a directory of them, a catalog id (`mt_…`, `mt_…@<version>` or `mt_…@draft`), or a published address (`github.com/<owner>/<repo>[/<package>][@<tag>]`). [`add-method.md`](add-method.md) describes each.
 
 Nothing asks a question. A value the gesture cannot derive is a refusal naming the flag that supplies it, so a person runs the command exactly as an agent does. Only a variable given on the `make` command line counts: a `NAME` or `TITLE` your shell happens to export is ignored. A value is passed to the script exactly as typed, quotes and `$` included, and a blank one (`TITLE=`) counts as not given.
 

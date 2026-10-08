@@ -178,7 +178,27 @@ class TestAddMethod:
         assert selector.method_id == "mt_abc123"
         assert selector.method_ref is None
 
-    @pytest.mark.parametrize("raw", ["widget/methods/text-stats", "./main.mthds", "gitlab.com/owner/repo", "mt_", ""])
+    @pytest.mark.parametrize("raw", ["mt_abc123@3", "mt_abc123@12", "mt_abc123@draft"])
+    def test_a_catalog_id_s_version_suffix_is_kept_whole(self, raw: str):
+        assert add_method.parse_selector(raw).method_id == raw
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "widget/methods/text-stats",
+            "./main.mthds",
+            "gitlab.com/owner/repo",
+            "mt_",
+            "",
+            "mt_abc123@",
+            "mt_abc123@0",
+            "mt_abc123@03",
+            "mt_abc123@Draft",
+            "mt_abc123@latest",
+            "mt_abc123@3@4",
+            "mt_@3",
+        ],
+    )
     def test_anything_else_is_refused(self, raw: str):
         with pytest.raises(add_method.Refusal):
             add_method.parse_selector(raw)

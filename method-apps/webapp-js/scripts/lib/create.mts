@@ -128,7 +128,7 @@ const BOOTSTRAP_PASSTHROUGH: readonly [ValueFlag, string][] = [
 ];
 
 export const USAGE =
-  "usage: npm run create -- <path/to/bundle | mt_… | github.com/owner/repo[/package][@tag]> " +
+  "usage: npm run create -- <path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/package][@tag]> " +
   "[--name <package>] [--title <title>] [--description <text>] [--method-name <dir-name>] " +
   "[--pipe <pipe_code>] [--label <label>] [--author-name <name>] [--author-email <email>] " +
   "[--repo-url <url>] [--license <mit|proprietary|spdx>] [--license-holder <holder>] " +

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A catalog id may pin a version in both templates**: `make create` and the web app template's `make add-method` take `mt_…@<version>` and `mt_…@draft` beside a bare `mt_…`, which runs the method's latest published version, and keep the suffix in `method.json`, so the app or the CLI runs the version it was made from; the name, the label and the description still come from the method's catalog entry, read by the bare id. A malformed suffix is refused before anything is sent.
+
 ### Changed
 
 - **The web app template runs on `@pipelex/sdk` 0.33.0, with `config_invalid` in place of `config_missing` (Breaking)**: bumped from 0.30.0. The `config_missing` kind classified `ClientAuthenticationError`, which the SDK never threw and no longer exports; `config_invalid` now classifies a `PIPELEX_BASE_URL` naming more than a host, which the SDK refuses before sending any request and the app used to report as "Something went wrong". A `2xx` whose body the SDK cannot read is shown as "Pipelex API sent an answer the app could not read", with the raw body in the technical details, where it used to be an unexplained error.
