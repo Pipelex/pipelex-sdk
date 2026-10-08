@@ -23,7 +23,7 @@ export const BASE_URL_VARIABLE = "PIPELEX_BASE_URL";
 /**
  * The poll interval in milliseconds, for tests only: the recorded case table sets it to `0`, so
  * that a run answered "still running" is polled again at once. A person has no reason to set it;
- * unset, the SDK's own interval applies. Its twin in the Python command reads the same variable.
+ * unset, the SDK's own interval applies. The Python command is to read the same variable.
  */
 export const POLL_INTERVAL_VARIABLE = "PIPELEX_SDK_POLL_INTERVAL_MS";
 

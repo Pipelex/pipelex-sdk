@@ -9,7 +9,7 @@ npx @pipelex/sdk script --method github.com/acme/methods/receipt-review@v1.0.0 -
 ./receipt-review --inputs inputs.json
 ```
 
-`npx` runs a package's only command whatever its name, so `npx @pipelex/sdk …` is enough. In a project that has the SDK installed, the command is `npx pipelex-sdk …`. The Python SDK, `pipelex-sdk` on PyPI, publishes the same command under the same name (`uvx pipelex-sdk …`), with the same flags and the same output; the two are held together by the recorded case table described at the end of this page.
+`npx` runs a package's only command whatever its name, so `npx @pipelex/sdk …` is enough. In a project that has the SDK installed, the command is `npx pipelex-sdk …`. The Python SDK, `pipelex-sdk` on PyPI, is to publish the same command under the same name (`uvx pipelex-sdk …`), with the same flags and the same output, held to this one by the recorded case table described at the end of this page.
 
 The command lives in `src/cli.ts`, the executable, and `src/cli/`. It sits at the top of the SDK's dependency graph: nothing in the SDK imports it, the package entry does not export it, and it reaches the SDK only through the public barrel, as any other caller would (`.dependency-cruiser.cjs` holds both rules). It adds no runtime dependency: its flags are read with `node:util`'s `parseArgs`.
 
@@ -56,7 +56,7 @@ The key comes from `PIPELEX_API_KEY` and nowhere else, since a flag would put it
 
 **No `.env` file is read.** A command started through `npx` from wherever the person stands would otherwise pick up a credential from whichever file it found there. To load one into the shell: `set -a; . ./.env; set +a`.
 
-**`PIPELEX_SDK_POLL_INTERVAL_MS` is for tests only.** It sets the poll interval in milliseconds, a whole number; the case table sets it to `0` so that a run answered "still running" is polled again at once, and serves its `202` answers with `Retry-After: 0`, since the SDK waits at least as long as the server's `Retry-After` and five seconds when a `202` gives none. Unset, the SDK's own interval applies. The Python command reads the same variable.
+**`PIPELEX_SDK_POLL_INTERVAL_MS` is for tests only.** It sets the poll interval in milliseconds, a whole number; the case table sets it to `0` so that a run answered "still running" is polled again at once, and serves its `202` answers with `Retry-After: 0`, since the SDK waits at least as long as the server's `Retry-After` and five seconds when a `202` gives none. Unset, the SDK's own interval applies. The Python command is to read the same variable.
 
 ## Exit codes, errors and Ctrl-C
 
@@ -94,7 +94,7 @@ A `--method` path is read by the command's own reader (`src/cli/bundle.ts`), who
 
 ## The case table
 
-The two commands share no code, so they are held together by one recorded table of cases that both run: `tests/fixtures/cli-cases.json` is its source, and `python/tests/fixtures/cli-cases.json` its copy, which `make shared-files` at the repository root writes and `make check-shared-files` holds byte for byte (`docs/ci.md` at the root). A behaviour of the command changes here, in the table and in `src/cli/`, and the Python command follows it. `tests/cli.test.ts` runs every case through `runCommand` in-process; a case that uses a field the suite does not know fails rather than being skipped, so a case added for one language reaches the other.
+The two commands share no code, so they are held together by one recorded table of cases written for both: `tests/fixtures/cli-cases.json` is its source, and `python/tests/fixtures/cli-cases.json` its copy, which `make shared-files` at the repository root writes and `make check-shared-files` holds byte for byte (`docs/ci.md` at the root). A behaviour of the command changes here, in the table and in `src/cli/`, and the Python command follows it. `tests/cli.test.ts` runs every case through `runCommand` in-process; a case that uses a field the suite does not know fails rather than being skipped, so a case added for one language reaches the other.
 
 The table holds:
 

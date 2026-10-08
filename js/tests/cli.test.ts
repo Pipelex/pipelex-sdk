@@ -4,8 +4,8 @@
  * Each case runs the command in-process, in a fresh working directory holding the case's files,
  * with the case's environment and stdin, and with `fetch` answering from the case's recorded
  * routes. So the command runs on the SDK's real client: what is checked is what it sends and what
- * it prints, never which client method it called. The Python twin runs the same table through its
- * own command, serving the same answers through its own HTTP mock (`docs/cli.md`, "The case table").
+ * it prints, never which client method it called. The Python SDK's command is to run the same
+ * table, serving the same answers through its own HTTP mock (`docs/cli.md`, "The case table").
  *
  * A case that uses a field this suite does not know fails rather than being skipped, so a case
  * added to the table for the other language reaches this one.
