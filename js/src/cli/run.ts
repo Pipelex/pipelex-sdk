@@ -162,17 +162,20 @@ function waitedOnRun(stage: Stage, error: unknown): string | undefined {
  * names a step of the connection's set-up, which no request follows. That is the name lookup or
  * the connection itself failing (the system calls `getaddrinfo` and `connect`: an unknown host, a
  * refused connection, no route to the host or the network, the system's connect time limit),
- * undici's own connect time limit, and a server certificate the TLS handshake refused. Several
- * addresses each failing so, which Node reports together as an `AggregateError`, prove it too.
+ * undici's own connect time limit, which covers the TLS handshake, and a server certificate the
+ * TLS handshake refused. Several addresses each failing so, which Node reports together as an
+ * `AggregateError`, prove it too. A host that drops packets is a connection that never comes:
+ * undici gives it up after ten seconds (`UND_ERR_CONNECT_TIMEOUT`), before the time limit of any
+ * request the command sends, as the Python command meets httpx's connect timeout first and reads
+ * it the same way.
  *
  * Anything else may have come once the request had left, the Python command reading the same
  * failures the same way. A reset (`ECONNRESET`) comes from a `read` whether the connection dropped
  * during the TLS handshake or after the request, and so does an `EHOSTUNREACH` met once connected,
  * so neither proves anything; nor does another TLS failure, which may come after the handshake;
  * nor does the SDK's own time limit (`ABORT_TIMEOUT`), which fetch cannot place before or after
- * the connection was made: a limit shorter than undici's ten-second connect limit can run out
- * before it, while the request waits for no connection at all. The Python command, whose httpx
- * does tell that phase, reads its own connect and pool timeouts as a run that may exist too.
+ * the connection was made. Every request the command sends has a limit longer than undici's
+ * connect limit, so with Node's own dispatcher it runs out only once the request has left.
  */
 function provesNothingSent(error: ApiUnreachableError): boolean {
   // The SDK keeps fetch's own failure as `cause`, and undici gives the transport's under it.

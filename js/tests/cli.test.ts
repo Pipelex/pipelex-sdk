@@ -193,10 +193,10 @@ function systemError(message: string, code: string, errno: number, syscall: stri
 
 /**
  * Each kind of `unreachable` exchange, a request that never got a connection to answer it, as
- * fetch reports it: undici's failure under fetch's `TypeError`, or the client's own time limit.
- * Each shape was read off Node's own fetch against a local server, a closed port, a listener that
- * never accepts and certificates of a local authority, but for no route to the host or the network,
- * which take the shape every failed `connect` call takes (`docs/cli.md`, "The case table").
+ * fetch reports it: undici's failure under fetch's `TypeError`. Each shape was read off Node's own
+ * fetch against a local server, a closed port, a listener that never answers the TLS handshake and
+ * certificates of a local authority, but for no route to the host or the network, which take the
+ * shape every failed `connect` call takes (`docs/cli.md`, "The case table").
  */
 const UNREACHABLE: Record<string, () => Error> = {
   refused: () => systemError("connect ECONNREFUSED 127.0.0.1:80", "ECONNREFUSED", -61, "connect"),
@@ -218,12 +218,14 @@ const UNREACHABLE: Record<string, () => Error> = {
     systemError("connect EHOSTUNREACH 127.0.0.1:80", "EHOSTUNREACH", -65, "connect"),
   "no-network": () =>
     systemError("connect ENETUNREACH 127.0.0.1:80", "ENETUNREACH", -51, "connect"),
-  // undici's own connect time limit, ten seconds by default.
+  // undici's own connect time limit, ten seconds by default, which covers the TLS handshake and
+  // runs out before the time limit of any request the command sends: what a host that drops
+  // packets gives.
   "connect-timeout": () =>
-    Object.assign(new Error("Connect Timeout Error (attempted address: api.test:80)"), {
-      name: "ConnectTimeoutError",
-      code: "UND_ERR_CONNECT_TIMEOUT",
-    }),
+    Object.assign(
+      new Error("Connect Timeout Error (attempted address: api.test:80, timeout: 10000ms)"),
+      { name: "ConnectTimeoutError", code: "UND_ERR_CONNECT_TIMEOUT" },
+    ),
   "system-connect-timeout": () =>
     systemError("connect ETIMEDOUT 127.0.0.1:80", "ETIMEDOUT", -60, "connect"),
   certificate: () =>
@@ -309,14 +311,6 @@ class RecordedApi {
     };
     // The exchange takes this long on the clock the command and the SDK read, at once.
     if (answer.elapsed_ms !== undefined) this.clock.advance(answer.elapsed_ms);
-    // The client's own time limit, run out before the connection was made: fetch reports it as it
-    // reports one run out once the request has left.
-    if (
-      answer.unreachable === "timeout-before-connecting" ||
-      answer.unreachable === "pool-timeout"
-    ) {
-      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
-    }
     if (answer.unreachable !== undefined) {
       const failure = UNREACHABLE[answer.unreachable];
       if (failure === undefined) {

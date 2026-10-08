@@ -80,12 +80,25 @@ def run_command(argv: Sequence[str], io: CommandIO) -> int:
 #: The transport failures that can only come before the request leaves, as the `ApiUnreachableError`'s
 #: `code` names httpx's: a connection whose set-up failed (`ConnectError`: an unknown host, a refused
 #: connection, no route to the host or the network, the system giving up connecting, a server certificate
-#: the TLS handshake refused), and a URL the client cannot send to (`UnsupportedProtocol`). The request's
-#: own time limit running out before the connection was made (`ConnectTimeout`) or while it waited for one
-#: (`PoolTimeout`) is not among them, though it too sent nothing: `@pipelex/sdk`'s fetch reports that limit
-#: the same whether it ran out before the connection or once the request had left, and cannot tell the two
-#: apart, so both commands read it as they must read the latter.
-_NOTHING_SENT_CODES = frozenset({"ConnectError", "UnsupportedProtocol"})
+#: the TLS handshake refused), a connection not made within httpx's connect timeout, which covers the TCP
+#: connect and the TLS handshake (`ConnectTimeout`), a request whose time limit ran out while it waited for a
+#: connection from the pool (`PoolTimeout`), and a URL the client cannot send to (`UnsupportedProtocol`). Each
+#: comes from the request's one attempt: the client's transport retries nothing, and httpx's pool moves a
+#: request to another connection only when the first proved unavailable before anything was written on it.
+#:
+#: A host that drops packets is a connection that never comes, and each command meets its transport's connect
+#: time limit first, which proves nothing was sent. Here it is httpx's connect timeout, which the one `timeout`
+#: the client passes bounds: 30 seconds for a start that carries neither a bundle nor a `method_ref`, well
+#: before the system gives up connecting, while a start given a longer limit may meet the system's first, a
+#: `ConnectError` then. In `@pipelex/sdk` it is undici's own ten seconds (`UND_ERR_CONNECT_TIMEOUT`), which run
+#: out before the time limit of any request that SDK's command sends, so the one failure its fetch cannot place
+#: before or after the connection, that SDK's own time limit (`ABORT_TIMEOUT`), comes only once the request
+#: has left.
+_NOTHING_SENT_CODES = frozenset({"ConnectError", "ConnectTimeout", "PoolTimeout", "UnsupportedProtocol"})
+
+#: The one code whose causes can show a failed TLS handshake that `@pipelex/sdk`'s command cannot tell from a
+#: failure once the request had left.
+_CONNECT_ERROR_CODE = "ConnectError"
 
 #: What, under a `ConnectError`, says the TLS handshake failed for another reason than the server
 #: certificate, or the connection dropped during it. Nothing was sent then either, yet `@pipelex/sdk`'s fetch
@@ -122,9 +135,15 @@ def _proves_nothing_sent(exc: ApiUnreachableError) -> bool:
     """Whether a transport failure proves the request never left, so that no run was created by it: it names
     a step of the connection's set-up, which no request follows, and one `@pipelex/sdk`'s command can tell
     from a failure that came once the request had left, so that both commands print the same for it.
+
+    Only a `ConnectError` is searched for a failed handshake. A `ConnectTimeout` that ran out during the
+    handshake carries the `ssl.SSLWantReadError` of the read it interrupted, and proves nothing was sent all
+    the same, as undici's connect time limit, which covers the handshake too, does in `@pipelex/sdk`.
     """
     if exc.code not in _NOTHING_SENT_CODES:
         return False
+    if exc.code != _CONNECT_ERROR_CODE:
+        return True
     return not any(isinstance(cause, _HANDSHAKE_FAILURES) and not isinstance(cause, ssl.SSLCertVerificationError) for cause in _causes(exc))
 
 
