@@ -2,13 +2,14 @@
 
 Built by inheritance on `mthds`'s protocol base (`MthdsAPIClient`): the protocol
 routes (`models` / `version` reused as-is; `execute` / `start` / `validate` overridden),
-the transport (`_send`, `_url`), and the request-body builders are reused; this client
-adds the Pipelex branding (env resolution, optional token, host-only base-URL
+the transport (`_send`, wrapped; `_url`), and the request-body builders are reused; this
+client adds the Pipelex branding (env resolution, optional token, host-only base-URL
 validation), the richer transport/error layer, the durable run lifecycle, the product
 surface, and `health`.
 
-This module holds construction, the transport extension helpers (`_request_product`,
-`_request_json`, `_send_or_unreachable`), the `_raise_api_response_error` override that
+This module holds construction, the `_send` override that every route sends through, which
+maps a request that got no answer to `ApiUnreachableError`, the transport extension helpers
+(`_request_product`, `_request_json`), the `_raise_api_response_error` override that
 every route raises through, the `execute` override (hosted gateway-timeout translation),
 the `start` override (bare-runner 404 translation), the durable run lifecycle, the
 `validate` override (markdown-render injection + `validate_files`), the Pipelex product
@@ -156,6 +157,10 @@ _REASON_BODY_LIMIT = 500
 # against mislabeling a fast 503 (runner genuinely down) as a timeout.
 _GATEWAY_TIMEOUT_THRESHOLD_SECONDS = 28.0
 
+# The `ApiUnreachableError.code` of a request this client's own timeout cut off, the JS SDK's code for
+# the same case. Every other transport failure carries the httpx exception's class name instead.
+_ABORT_TIMEOUT_CODE = "ABORT_TIMEOUT"
+
 _PIPELEX_API_KEY_ENV = "PIPELEX_API_KEY"
 _PIPELEX_BASE_URL_ENV = "PIPELEX_BASE_URL"
 
@@ -234,6 +239,8 @@ class PipelexAPIClient(MthdsAPIClient):
     Every `/v1` route — protocol, lifecycle and product — raises this SDK's `ApiResponseError`
     on a non-2xx answer, its message and members carrying the problem document's reason, the
     next step the server advises and, for a refused run, the diagnostics naming the failing pipe.
+    Every route, `health` included, raises `ApiUnreachableError` when no answer came back at all
+    (a DNS failure, a refused connection, a TLS failure, a timeout), never httpx's own exception.
 
     Construction is Pipelex-only — it never reads the `mthds` resolver (`MTHDS_API_KEY` /
     `MTHDS_BASE_URL`, `~/.mthds/config`), whose values are a credential pair for whatever
@@ -334,18 +341,28 @@ class PipelexAPIClient(MthdsAPIClient):
         self.client = httpx.AsyncClient(headers=headers)
         return self
 
-    # ── Transport extensions (layered on the inherited `_send`) ──────────
+    # ── Transport (the inherited `_send`, mapped) and its extensions ──────
 
-    async def _send_or_unreachable(self, method: str, url: str, *, content: bytes | None, request_timeout: float) -> httpx.Response:
-        """Issue one request via the inherited `_send`, mapping transport failures
-        (DNS / connect / TLS / timeout) to `ApiUnreachableError`. Non-2xx interpretation
-        stays the caller's — `_send` returns the raw response without raising on status.
+    @override
+    async def _send(self, method: str, url: str, *, content: bytes | None, request_timeout: float) -> httpx.Response:
+        """Issue one request through the base's `_send`, mapping a request that got no answer to `ApiUnreachableError`.
+
+        Overrides the protected transport seam of the `mthds` base, which every route sends through: the
+        inherited protocol routes (`execute`, `start`, `validate`, `models`, `version`) as well as this
+        client's run reads, product routes and `health`. So a DNS failure, a refused connection, a TLS
+        failure or a timeout raises the same `ApiUnreachableError` whichever route met it, never httpx's own
+        exception. Non-2xx interpretation stays the caller's: an answer is returned raw, whatever its status.
+
+        Raises:
+            ApiUnreachableError: No answer came back. `code` is `ABORT_TIMEOUT` for a timeout (what the
+                `execute` override reads to tell the hosted gateway's cut-off), and the httpx transport
+                exception's class name (`ConnectError`, …) otherwise.
         """
         try:
-            return await self._send(method, url, content=content, request_timeout=request_timeout)
+            return await super()._send(method, url, content=content, request_timeout=request_timeout)
         except httpx.TimeoutException as exc:
             msg = f"Could not reach Pipelex API at {self.base_url} (timeout)"
-            raise ApiUnreachableError(msg, api_url=self.base_url, code="ABORT_TIMEOUT") from exc
+            raise ApiUnreachableError(msg, api_url=self.base_url, code=_ABORT_TIMEOUT_CODE) from exc
         except httpx.TransportError as exc:
             code = type(exc).__name__
             msg = f"Could not reach Pipelex API at {self.base_url} ({code})"
@@ -363,7 +380,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         content = to_json(body) if body is not None else None
         effective_timeout = request_timeout if request_timeout is not None else _POLL_REQUEST_TIMEOUT_SECONDS
-        response = await self._send_or_unreachable(method, self._url(endpoint), content=content, request_timeout=effective_timeout)
+        response = await self._send(method, self._url(endpoint), content=content, request_timeout=effective_timeout)
         if not 200 <= response.status_code < 300:
             self._raise_api_response_error(method=method, endpoint=endpoint, response=response)
         if not response.content:
@@ -374,10 +391,10 @@ class PipelexAPIClient(MthdsAPIClient):
         """Issue a request to an absolute URL and parse the JSON body, raising the plainer
         `PipelineRequestError` on a non-2xx response. Used by `health` (origin-level), a
         surface that doesn't need the product `code` taxonomy.
-        Transport failures still map to `ApiUnreachableError`.
+        Transport failures still map to `ApiUnreachableError`, through `_send`.
         """
         content = to_json(body) if body is not None else None
-        response = await self._send_or_unreachable(method, url, content=content, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
+        response = await self._send(method, url, content=content, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
         if not 200 <= response.status_code < 300:
             detail = response.text or response.reason_phrase
             msg = f"API {method} {url} failed ({response.status_code}): {detail}"
@@ -523,6 +540,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 degrade) — the run continues server-side; resume by `pipeline_run_id`.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
                 `422`, its diagnostics on `validation_errors`), a failed run, auth, a server fault.
+            ApiUnreachableError: No answer came back (DNS / connect / TLS), or a client-side
+                timeout came before the ~28s the gateway translation waits for.
         """
         merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
         _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
@@ -537,7 +556,9 @@ class PipelexAPIClient(MthdsAPIClient):
                 dynamic_output_concept_ref=dynamic_output_concept_ref,
                 extra=merged_extra,
             )
-        except (ApiResponseError, httpx.TimeoutException) as exc:
+        except (ApiResponseError, ApiUnreachableError) as exc:
+            # A client-side timeout arrives as the `ApiUnreachableError` the `_send` override maps it to,
+            # with the `code` `ABORT_TIMEOUT` that `_is_gateway_timeout` reads.
             elapsed_seconds = monotonic() - started_at
             if _is_gateway_timeout(exc, elapsed_seconds):
                 raise PipelineExecuteTimeoutError(_execute_timeout_message(elapsed_seconds), elapsed_seconds=elapsed_seconds) from exc
@@ -586,6 +607,7 @@ class PipelexAPIClient(MthdsAPIClient):
             RunLifecycleUnavailableError: The configured server has no run store.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
                 `422`, its diagnostics on `validation_errors`), auth, a server fault.
+            ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
         """
         merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
         _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
@@ -688,6 +710,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 string, or `mthds_sources` was supplied beside a selector.
             ApiResponseError: No verdict could be produced — a request-shape `422`, a selector
                 that did not resolve, auth, a server fault.
+            ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
         """
         selected_method_ref = _normalized_selector(name="method_ref", value=method_ref)
         selected_method_id = _normalized_selector(name="method_id", value=method_id)
@@ -789,7 +812,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         endpoint = f"{_RUNS}/{quote(run_id, safe='')}/status"
         url = self._url(endpoint)
-        response = await self._send_or_unreachable("GET", url, content=None, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
+        response = await self._send("GET", url, content=None, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
         self._raise_if_lifecycle_unavailable(status=response.status_code, body=response.text, url=url)
         if not response.is_success:
             self._raise_api_response_error(method="GET", endpoint=endpoint, response=response)
@@ -832,7 +855,7 @@ class PipelexAPIClient(MthdsAPIClient):
         if selection is not None:
             endpoint = f"{endpoint}?{urlencode({'artifacts': ','.join(selection)}, safe=',')}"
         url = self._url(endpoint)
-        response = await self._send_or_unreachable("GET", url, content=None, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
+        response = await self._send("GET", url, content=None, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
         status_code = response.status_code
 
         if status_code in {202, 503}:
@@ -871,8 +894,10 @@ class PipelexAPIClient(MthdsAPIClient):
         Resolves on `COMPLETED`, raises `RunFailedError` on any other terminal status — carrying the
         run's status and its stored error report, typed, as `error` — and raises
         `RunTimeoutError` if `timeout_seconds` elapses first (the run keeps executing server-side —
-        resume later by `run_id`). Honors the server's `Retry-After`. Async-native: cancelling the
-        awaiting task raises `asyncio.CancelledError` out of this loop, leaving the run resumable.
+        resume later by `run_id`). Honors the server's `Retry-After`. A poll that gets no answer
+        raises `ApiUnreachableError` at once, the loop not retrying it. Async-native: cancelling the
+        awaiting task raises `asyncio.CancelledError` out of this loop, leaving the run resumable,
+        on every supported Python version, even when the cancellation lands in the step a poll answers.
         `artifacts` narrows every results read of the loop, exactly as on `get_run_result`.
         """
         # Refused before the first poll, so an empty selection never waits out a timeout to fail.
@@ -887,8 +912,11 @@ class PipelexAPIClient(MthdsAPIClient):
             if remaining <= 0:
                 raise RunTimeoutError(_timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds)
 
+            # `asyncio.timeout`, never `asyncio.wait_for`: on Python 3.11, `wait_for` returns a poll that
+            # finished in the same loop step as a cancellation of the awaiting task, swallowing it.
             try:
-                state = await asyncio.wait_for(self.get_run_result(run_id, artifacts=artifacts), timeout=remaining)
+                async with asyncio.timeout(remaining):
+                    state = await self.get_run_result(run_id, artifacts=artifacts)
             except TimeoutError as exc:
                 raise RunTimeoutError(_timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds) from exc
 
@@ -919,9 +947,10 @@ class PipelexAPIClient(MthdsAPIClient):
         if self._lifecycle_available is None:
             try:
                 info = await self.version()
-            # A non-2xx answer (`ApiResponseError`), a transport failure (the inherited route sends on
-            # the raw transport, so an `httpx.HTTPError`) or a body that is no version: assume hosted.
-            except (ApiResponseError, httpx.HTTPError, ValidationError):
+            # A non-2xx answer (`ApiResponseError`), no answer at all (`ApiUnreachableError`, which `start`
+            # then meets and raises in turn), an answer httpx could not decode (`httpx.HTTPError`) or a body
+            # that is no version: assume hosted.
+            except (ApiResponseError, ApiUnreachableError, httpx.HTTPError, ValidationError):
                 self._lifecycle_available = True
             else:
                 implementation = (info.model_extra or {}).get("implementation")
@@ -968,6 +997,8 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RunFailedError: If the run reaches a terminal status other than COMPLETED.
             RunTimeoutError: If the poll budget elapses (the run keeps executing — resume by id).
+            ApiUnreachableError: If no answer came back from the start, the blocking execute or
+                a poll (DNS / connect / TLS / timeout).
         """
         # Refused before anything starts, so an empty selection never costs a run.
         _artifact_selection(artifacts)
@@ -1659,17 +1690,19 @@ def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArt
     return tuple(artifact for artifact in RunArtifact if artifact in requested)
 
 
-def _is_gateway_timeout(exc: ApiResponseError | httpx.TimeoutException, elapsed_seconds: float) -> bool:
+def _is_gateway_timeout(exc: ApiResponseError | ApiUnreachableError, elapsed_seconds: float) -> bool:
     """Whether a failed blocking `execute` is the hosted gateway's ~30s synchronous cut-off.
 
     The elapsed threshold guards against mislabeling a fast `503` (the runner genuinely down)
-    as a timeout: a gateway `503`/`504`, or a client-side request timeout, only counts once the
-    request has run at least ~28s. Mirrors the JS `isGatewayTimeout`.
+    as a timeout: a gateway `503`/`504`, or a client-side request timeout (the
+    `ApiUnreachableError` whose `code` is `ABORT_TIMEOUT`), only counts once the request has
+    run at least ~28s. Any other unreachable host is never the gateway's cut-off. Mirrors the
+    JS `isGatewayTimeout`.
     """
     if elapsed_seconds < _GATEWAY_TIMEOUT_THRESHOLD_SECONDS:
         return False
-    if isinstance(exc, httpx.TimeoutException):
-        return True
+    if isinstance(exc, ApiUnreachableError):
+        return exc.code == _ABORT_TIMEOUT_CODE
     return exc.status in {503, 504}
 
 

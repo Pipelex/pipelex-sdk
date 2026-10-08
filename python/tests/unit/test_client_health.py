@@ -1,14 +1,21 @@
 """Tests for the origin-level `health()` probe — httpx mocked."""
 
+from __future__ import annotations
+
 import asyncio
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 from mthds.protocol.exceptions import PipelineRequestError
-from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+
+    from tests.unit.conftest import UnreachableClientBuilder
 
 _BASE_URL = "http://localhost:8081"
 
@@ -45,8 +52,7 @@ class TestClientHealth:
         # The plainer regime — not the product `ApiResponseError` with its `code` taxonomy.
         assert not isinstance(exc_info.value, ApiResponseError)
 
-    def test_health_transport_failure_maps_to_unreachable(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=httpx.ConnectError("refused")))
+    def test_health_transport_failure_maps_to_unreachable(self, unreachable_client: UnreachableClientBuilder) -> None:
+        client = unreachable_client(httpx.ConnectError)
         with pytest.raises(ApiUnreachableError):
             asyncio.run(client.health())
