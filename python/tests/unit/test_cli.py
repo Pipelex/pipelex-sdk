@@ -281,46 +281,35 @@ class _RecordedApi:
         return left
 
 
-class _WriteInterrupted:
-    """A file handle whose write takes Ctrl-C, once or more, once the first bytes are stored, as a write the
-    person interrupts.
+def _write_interrupted(interrupts: int = 1) -> Callable[[int, bytes], int]:
+    """An `os.write` whose first call stores the first bytes, then takes Ctrl-C, once or more, as a write the
+    person interrupts; the calls after it write as `os.write` does.
     """
+    real_write = os.write
+    calls: list[int] = []
 
-    def __init__(self, handle: Any, interrupts: int = 1) -> None:
-        self._handle = handle
-        self._interrupts = interrupts
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self._handle.close()
-
-    def write(self, data: bytes) -> int:
-        self._handle.write(data[:8])
-        self._handle.flush()
+    def write(descriptor: int, data: bytes) -> int:
+        if calls:
+            return real_write(descriptor, data)
+        calls.append(descriptor)
+        written = real_write(descriptor, data[:8])
         # Outside the event loop, Python's own handler would raise `KeyboardInterrupt` right here.
-        for _ in range(self._interrupts):
+        for _ in range(interrupts):
             signal.raise_signal(signal.SIGINT)
-        return cast("int", self._handle.write(data[8:])) + 8
+        return written
+
+    return write
 
 
-class _WriteFails:
-    """A file handle whose write stores the first bytes, then fails as a full disk fails it."""
+def _write_failing() -> Callable[[int, bytes], int]:
+    """An `os.write` that stores the first bytes, then fails as a full disk fails it."""
+    real_write = os.write
 
-    def __init__(self, handle: Any) -> None:
-        self._handle = handle
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self._handle.close()
-
-    def write(self, data: bytes) -> int:
-        self._handle.write(data[:20])
-        self._handle.flush()
+    def write(descriptor: int, data: bytes) -> int:
+        real_write(descriptor, data[:20])
         raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    return write
 
 
 # ── Running a case ────────────────────────────────────────────────────────────────────────────────
@@ -742,12 +731,7 @@ class TestCli:
         """Ctrl-C while the script is written waits for the file to be whole, then says it was written."""
         case = _script_written_then_interrupted()
         root = tmp_path.resolve()
-        real_fdopen = os.fdopen
-
-        def fdopen_interrupted(fd: int, mode: str) -> _WriteInterrupted:
-            return _WriteInterrupted(real_fdopen(fd, mode))
-
-        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_interrupted)
+        mocker.patch("pipelex_sdk.command.script.os.write", side_effect=_write_interrupted())
 
         outcome = _run_case(case, root, mocker, monkeypatch)
 
@@ -762,12 +746,7 @@ class TestCli:
             "expect": {"exit_code": 130, "stdout": "", "stderr": [_NOTHING_WRITTEN], "absent_files": ["resume-review-v2"]},
         }
         root = tmp_path.resolve()
-        real_fdopen = os.fdopen
-
-        def fdopen_interrupted_twice(fd: int, mode: str) -> _WriteInterrupted:
-            return _WriteInterrupted(real_fdopen(fd, mode), interrupts=2)
-
-        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_interrupted_twice)
+        mocker.patch("pipelex_sdk.command.script.os.write", side_effect=_write_interrupted(interrupts=2))
 
         outcome = _run_case(case, root, mocker, monkeypatch)
 
@@ -808,12 +787,7 @@ class TestCli:
         """Started with SIGINT ignored, as a background job may be, the command is not stopped by one meanwhile."""
         case = _case_named("script/catalog-id")
         root = tmp_path.resolve()
-        real_fdopen = os.fdopen
-
-        def fdopen_interrupted(fd: int, mode: str) -> _WriteInterrupted:
-            return _WriteInterrupted(real_fdopen(fd, mode))
-
-        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_interrupted)
+        mocker.patch("pipelex_sdk.command.script.os.write", side_effect=_write_interrupted())
         previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             outcome = _run_case(case, root, mocker, monkeypatch)
@@ -834,12 +808,7 @@ class TestCli:
             },
         }
         root = tmp_path.resolve()
-        real_fdopen = os.fdopen
-
-        def fdopen_failing(fd: int, mode: str) -> _WriteFails:
-            return _WriteFails(real_fdopen(fd, mode))
-
-        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_failing)
+        mocker.patch("pipelex_sdk.command.script.os.write", side_effect=_write_failing())
 
         outcome = _run_case(case, root, mocker, monkeypatch)
 

@@ -64,6 +64,9 @@ SCRIPT_NEEDS = "uv"
 
 _EXECUTABLE_MODE = 0o755
 
+#: What an interrupt says until the script is whole.
+_NOTHING_WRITTEN = "Interrupted. Nothing was written."
+
 
 def run_command_script(args: Sequence[str], io: CommandIO, progress: Progress) -> int:
     """Run `pipelex-sdk script` and return its exit code."""
@@ -71,7 +74,7 @@ def run_command_script(args: Sequence[str], io: CommandIO, progress: Progress) -
     if flags.help:
         io.write_stdout(SCRIPT_HELP)
         return EXIT_OK
-    progress.interrupt_message = "Interrupted. Nothing was written."
+    progress.interrupt_message = _NOTHING_WRITTEN
     method = flags.strings.get("method")
     if method is None:
         msg = "--method is required."
@@ -266,19 +269,36 @@ def _write_script(target: str, body: str, progress: Progress) -> None:
     """Create the file, executable, refusing one that exists, a dangling link included (`O_EXCL`), and once
     it is whole, make the interrupt's message say it was written.
 
-    A write that fails or is interrupted once the file exists removes it, so a script is either whole or
-    absent and the message, until then, that nothing was written stays true. The message changes inside
-    that guard, so an interrupt that lands before it has changed removes the file too.
+    A write that fails or is interrupted once this call has created the file removes it, so a script is
+    either whole or absent, and the message says which. A file this call did not create is never removed.
+
+    Python raises a `KeyboardInterrupt` at the end of a call, so one could land between `os.open` creating
+    the file and the line keeping its descriptor, leaving the file behind and the descriptor open. The open
+    therefore runs inside `list.extend`, which keeps what `os.open` returns without the interpreter checking
+    for an interrupt in between: once the file exists, `created` holds its descriptor, which is also the
+    proof that the file is this call's to remove. An interrupted or failed open leaves `created` empty.
     """
     path = os.path.abspath(target)
+    data = body.encode("utf-8")
+    created: list[int] = []
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _EXECUTABLE_MODE)
         try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(body.encode("utf-8"))
+            try:
+                created.extend(map(os.open, [path], [os.O_WRONLY | os.O_CREAT | os.O_EXCL], [_EXECUTABLE_MODE]))
+                while data:
+                    data = data[os.write(created[0], data) :]
+            finally:
+                if created:
+                    os.close(created[0])
             progress.interrupt_message = f"Interrupted. {target} was written."
         except BaseException:
-            Path(path).unlink(missing_ok=True)
+            if created:
+                # `os.unlink` itself, not a helper, so that no call lies between the handler and the removal.
+                try:
+                    Path(path).unlink()
+                except FileNotFoundError:
+                    pass
+                progress.interrupt_message = _NOTHING_WRITTEN
             raise
     except FileExistsError as exc:
         raise _already_there(target) from exc
