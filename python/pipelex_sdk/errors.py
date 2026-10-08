@@ -192,12 +192,17 @@ class MethodErrorCode(StrEnum):
 
 
 class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErrorItem]):
-    """A non-2xx response that DID come back from the API, with its problem document parsed.
+    """A response that DID come back from the API and that the SDK cannot hand back as a result: a
+    non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read — a body
+    that is not UTF-8 or not JSON, an empty one where the route answers JSON, or JSON that is not the
+    answer the route returns. The second carries the answer's status and raw text, no problem member
+    but the `X-Request-ID` header as `request_id`, the parse failure as `__cause__`, and the verdict the
+    fallback gives a 2xx: `runtime`, not retryable.
 
-    Every route of `PipelexAPIClient` raises it on a non-2xx answer: the protocol routes it inherits
-    from `mthds` (`execute`, `start`, `validate`, `models`, `version`), the run status and results
-    reads, the product routes and `health`. It is `mthds`'s own `ApiResponseError` narrowed to this SDK,
-    so a handler written against the standard's client
+    Every route of `PipelexAPIClient` raises it on a non-2xx answer and on a 2xx it cannot read: the
+    protocol routes it inherits from `mthds` (`execute`, `start`, `validate`, `models`, `version`), the
+    run status and results reads, the product routes and `health`. It is `mthds`'s own
+    `ApiResponseError` narrowed to this SDK, so a handler written against the standard's client
     (`except mthds.runners.api.exceptions.ApiResponseError`) catches it too. Every error the hosted API
     answers is an RFC 9457 `application/problem+json` document, and this error carries its members as
     typed attributes, each `None` when the document did not carry it — except the verdict, which is
@@ -214,10 +219,11 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
       `problem` keeps what the server sent.
     - **What happened, for a person.** `str(exc)` names the request and the status, gives the reason
       (the problem's `detail`, else its `title`, else the raw body, else the status text) and, when
-      the server advised one, the next step on its own line (`Next step: …`). `server_message` is the
-      `detail` alone, `title` the stable label of the error class, `user_action` the advised next
-      step (`kind` and `detail`, the `mthds` `UserAction`), and `error_category` a finer
-      classification of an inference failure.
+      the server advised one, the next step on its own line (`Next step: …`); for a 2xx it could not
+      read, it is `API <method> <path> answered <status> with <what>`, naming what could not be
+      read. `server_message` is the `detail` alone, `title` the stable label of the error class,
+      `user_action` the advised next step (`kind` and `detail`, the `mthds` `UserAction`), and
+      `error_category` a finer classification of an inference failure.
     - **The branch fields.** `error_domain`, and `type_uri` (the problem's `type`), the stable URI
       naming the error class, on every problem. Branch on these, never on the HTTP status or on the
       wording of a message; they are the fields that mean the same on both surfaces.
