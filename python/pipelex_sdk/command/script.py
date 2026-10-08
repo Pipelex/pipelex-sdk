@@ -6,13 +6,16 @@ character in any value the script would carry, the method's form (a local bundle
 `--name`, `--dir`, the target file when its name is already known, the key and the base URL. Then, in
 the command's one event loop (`loop.py`), one pipe I/O call checks the method and the pipe, which spends no inference, and
 a catalog id with no `--name` is named from its catalog entry. Last, the file is written, never over an
-existing one, with the permissions of an executable.
+existing one, with the permissions of an executable, and a Ctrl-C meanwhile is held until it is whole.
 """
 
 from __future__ import annotations
 
 import os
+import signal
 import stat
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,7 +44,8 @@ from pipelex_sdk.command.source import AddressSource, CatalogSource, describe_pi
 from pipelex_sdk.version import __version__
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Generator, Sequence
+    from types import FrameType
 
     from pipelex_sdk.client import PipelexAPIClient
     from pipelex_sdk.command.io import CommandIO, Progress
@@ -130,11 +134,12 @@ def run_command_script(args: Sequence[str], io: CommandIO, progress: Progress) -
             "each time it runs. Add @<tag> to pin a release.\n"
         )
     target = f"{shown_dir}/{name}"
-    # Ctrl-C reaches this synchronous part as `KeyboardInterrupt` at once, so nothing is written once
-    # it lands, and a write it cuts short leaves no file (`_write_script`): until the file is whole,
-    # nothing was written.
-    _write_script(target, script_body(name, method, pipe))
-    progress.interrupt_message = "Interrupted."
+    # Ctrl-C reaches this synchronous part as `KeyboardInterrupt` at once, so nothing is written once it
+    # has landed. From here it is held until the file is whole and the interrupt's message says so, so
+    # that the message is true wherever it lands: nothing was written, or the file was.
+    with _interrupt_held():
+        _write_script(target, script_body(name, method, pipe))
+        progress.interrupt_message = f"Interrupted. {target} was written."
     io.write_stdout(f"{target}\n")
     io.write_stderr(f"Wrote {target}. Run it with: {target} --inputs inputs.json\n")
     return EXIT_OK
@@ -212,11 +217,38 @@ def _check_free(shown_dir: str, name: str) -> None:
     raise _already_there(target)
 
 
+@contextmanager
+def _interrupt_held() -> Generator[None]:
+    """Hold Ctrl-C while the body runs, then raise it as `KeyboardInterrupt` once the body has finished.
+
+    The body's own failure, if it raises one, is raised instead. Python raises `KeyboardInterrupt`
+    between two bytecodes, which can fall between a system call that changed the disk and the line that
+    records it; holding the interrupt keeps the change and its record together. A script is a few hundred
+    bytes, so its write holds the interrupt no longer than it takes. Only the main thread receives Ctrl-C,
+    so on any other thread there is nothing to hold.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    landed: list[int] = []
+
+    def hold(signum: int, frame: FrameType | None) -> None:
+        del frame
+        landed.append(signum)
+
+    previous = signal.signal(signal.SIGINT, hold)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, signal.default_int_handler if previous is None else previous)
+    if landed:
+        raise KeyboardInterrupt
+
+
 def _write_script(target: str, body: str) -> None:
     """Create the file, executable, refusing one that exists, a dangling link included (`O_EXCL`).
 
-    A write that fails or is interrupted once the file exists removes it, so a script is either whole
-    or absent.
+    A write that fails once the file exists removes it, so a script is either whole or absent.
     """
     path = os.path.abspath(target)
     try:

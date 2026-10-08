@@ -36,6 +36,7 @@ import pytest
 
 from pipelex_sdk.command.io import CommandIO
 from pipelex_sdk.command.main import run_command
+from pipelex_sdk.command.script import _write_script
 from pipelex_sdk.version import __version__
 
 if TYPE_CHECKING:
@@ -278,8 +279,8 @@ class _RecordedApi:
         return left
 
 
-class _WriteCutShort:
-    """A file handle whose write stores the first bytes, then takes Ctrl-C, as a write the person interrupts."""
+class _WriteInterrupted:
+    """A file handle whose write takes Ctrl-C once the first bytes are stored, as a write the person interrupts."""
 
     def __init__(self, handle: Any) -> None:
         self._handle = handle
@@ -293,9 +294,9 @@ class _WriteCutShort:
     def write(self, data: bytes) -> int:
         self._handle.write(data[:8])
         self._handle.flush()
-        # Outside the event loop, Python's own handler raises `KeyboardInterrupt` right here.
+        # Outside the event loop, Python's own handler would raise `KeyboardInterrupt` right here.
         signal.raise_signal(signal.SIGINT)
-        return 8
+        return cast("int", self._handle.write(data[8:])) + 8
 
 
 # ── Running a case ────────────────────────────────────────────────────────────────────────────────
@@ -434,6 +435,7 @@ def _check(case: dict[str, Any], outcome: _Outcome, root: Path) -> None:
 # sent would fail it, as an unrecorded one. The scenarios of `@pipelex/sdk`'s suite, landing where a
 # Python command meets them.
 _NOTHING_WRITTEN = "Interrupted. Nothing was written.\n"
+_WRITTEN = "Interrupted. ./resume-review-v2 was written.\n"
 _BUNDLE = 'domain = "receipts"\nmain_pipe = "review_receipt"\n'
 _NO_RUN = "Interrupted. No run was started.\n"
 _EARLY_SCENARIOS: list[tuple[str, _EarlyInterrupt, dict[str, Any]]] = [
@@ -681,24 +683,47 @@ class TestCli:
         check_free.assert_called_once_with(".", "resume-review-v2")
         assert list(root.iterdir()) == [], outcome.shown
 
-    def test_an_interrupt_during_the_write_leaves_no_file(self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A write Ctrl-C cuts short removes what it wrote, so a script is whole or absent."""
+    def test_an_interrupt_during_the_write_is_held_until_the_file_is_whole(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C while the script is written waits for the file to be whole, then says it was written."""
+        written = _case_named("script/catalog-id")
         case: dict[str, Any] = {
-            **_case_named("script/catalog-id"),
-            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NOTHING_WRITTEN], "absent_files": ["resume-review-v2"]},
+            **written,
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_WRITTEN], "files": written["expect"]["files"]},
         }
         root = tmp_path.resolve()
         real_fdopen = os.fdopen
 
-        def fdopen_cut_short(fd: int, mode: str) -> _WriteCutShort:
-            return _WriteCutShort(real_fdopen(fd, mode))
+        def fdopen_interrupted(fd: int, mode: str) -> _WriteInterrupted:
+            return _WriteInterrupted(real_fdopen(fd, mode))
 
-        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_cut_short)
+        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_interrupted)
 
         outcome = _run_case(case, root, mocker, monkeypatch)
 
         _check(case, outcome, root)
-        assert list(root.iterdir()) == [], outcome.shown
+
+    def test_an_interrupt_just_after_the_write_says_the_file_was_written(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C once the file is whole, before the command says so, says it was written, never that nothing was."""
+        written = _case_named("script/catalog-id")
+        case: dict[str, Any] = {
+            **written,
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_WRITTEN], "files": written["expect"]["files"]},
+        }
+        root = tmp_path.resolve()
+
+        def write_then_interrupt(target: str, body: str) -> None:
+            _write_script(target, body)
+            signal.raise_signal(signal.SIGINT)
+
+        mocker.patch("pipelex_sdk.command.script._write_script", side_effect=write_then_interrupt)
+
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
 
     def test_an_interrupt_while_the_last_answer_is_read_writes_nothing(
         self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch

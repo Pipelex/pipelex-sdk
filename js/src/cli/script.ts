@@ -7,7 +7,7 @@
  * refused), `--name`, `--dir`, the target file when its name is already known, and the key. Then
  * one pipe I/O call checks the method and the pipe, which spends no inference; a catalog id with
  * no `--name` is named from its catalog entry; and the file is written, never over an existing
- * one, with the permissions of an executable.
+ * one, with the permissions of an executable, an interrupt meanwhile waiting until it is whole.
  */
 
 import { lstat, stat, writeFile } from "node:fs/promises";
@@ -139,11 +139,19 @@ export async function runCommandScript(args: readonly string[], io: CommandIO): 
       bare: true,
     });
   }
+  // The write is not raced with the interrupt: one that lands meanwhile waits for the file to be
+  // whole, then says it was written, so that the message is true wherever it lands.
   try {
     await writeFile(resolve(target), scriptBody(name, method, pipe), { flag: "wx", mode: 0o755 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw alreadyThere(target);
     throw usageError(`cannot write "${target}".`, [`Reason: ${systemReason(error)}`]);
+  }
+  if (io.interrupt.aborted) {
+    throw new CommandError(`Interrupted. ${target} was written.`, {
+      exitCode: EXIT_INTERRUPTED,
+      bare: true,
+    });
   }
   io.writeStdout(`${target}\n`);
   io.writeStderr(`Wrote ${target}. Run it with: ${target} --inputs inputs.json\n`);
