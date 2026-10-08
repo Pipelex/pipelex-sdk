@@ -17,7 +17,7 @@ The grammar is the hosted platform's, case-sensitive::
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Literal, cast
 
 from mthds.protocol.exceptions import PipelineRequestError
 from pydantic import BaseModel, ConfigDict
@@ -57,8 +57,14 @@ def parse_method_selector(selector: str) -> ParsedMethodSelector:
         PipelineRequestError: The value is not a selector: an id that is not `mt_` followed by
             letters, digits, `_` or `-`, or a suffix the platform refuses with a `422` — an empty
             one, `@0`, a number with a leading zero or a sign, any word but `draft`, `draft` in
-            another case, or two suffixes.
+            another case, or two suffixes. Also for a value that is not a `str` at all.
     """
+    # Checked as an `object`: the annotation is a promise to the type checker, not to a caller
+    # forwarding an optional id or a value read from JSON.
+    candidate = cast("object", selector)
+    if not isinstance(candidate, str):
+        msg = f"parse_method_selector() takes a method selector string (mt_…); got {type(candidate).__name__}."
+        raise PipelineRequestError(msg)
     method_id, separator, suffix = selector.partition("@")
     if _METHOD_ID_PATTERN.fullmatch(method_id) is None:
         msg = f'"{selector}" is not a method selector: a catalog id is mt_ followed by letters, digits, _ or -.'

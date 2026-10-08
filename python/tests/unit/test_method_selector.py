@@ -62,6 +62,20 @@ class TestMethodSelector:
         with pytest.raises(PipelineRequestError, match=r"a catalog id is mt_ followed by"):
             parse_method_selector(selector)
 
+    @pytest.mark.parametrize(
+        ("selector", "type_name"),
+        [
+            pytest.param(None, "NoneType", id="none"),
+            pytest.param(3, "int", id="int"),
+            pytest.param(b"mt_abc@3", "bytes", id="bytes"),
+        ],
+    )
+    def test_refuses_a_value_that_is_not_a_string_as_an_untyped_caller_may_pass(self, selector: object, type_name: str) -> None:
+        with pytest.raises(PipelineRequestError) as exc_info:
+            parse_method_selector(selector)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+
+        assert str(exc_info.value) == f"parse_method_selector() takes a method selector string (mt_…); got {type_name}."
+
     def test_quotes_the_refused_selector(self) -> None:
         with pytest.raises(PipelineRequestError) as exc_info:
             parse_method_selector("mt_abc@v3")
