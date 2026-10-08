@@ -81,7 +81,7 @@ Present the entries newest first with the verdicts beside them. List every behav
 
 Every change here lands through a ledger item and a worktree: the ledger's guard refuses edits in the main checkout, and `/ledger-land` refuses to land a topic branch that names no item.
 
-1. **Look before filing**: `ledger similar "move the templates onto the sdk <TARGET>" --repo pipelex-sdk`. A release that shipped a breaking SDK change files this follow-up itself, so one is often waiting.
+1. **Look before filing**: `ledger similar "move the templates onto the sdk <TARGET>" --repo pipelex-sdk`. A release files this move only when a template is known to need something the new SDK fixes or adds, so one is rarely waiting.
 2. **If there is none, file one**: `ledger new --owner pipelex-sdk --type task --complexity trivial --topic bump-sdk-<TARGET without dots> --title "Move the templates onto the SDK <TARGET>" --gist "templates onto sdk <TARGET>"`. Own it by a member (`pipelex-sdk/starter-js` and so on) when one template alone moves, and raise the complexity when Step 3 found migrations.
 3. **Make the worktree**: `wt add --for <id>` creates `_pipelex-sdk--<topic>` on `feature/<Topic>`. Its provisioning installs nothing heavy: each template installs itself the first time its checks run. Move into it and run `ledger claim <id> --renew`. A session already in that worktree only renews the claim.
 

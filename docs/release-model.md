@@ -57,7 +57,7 @@ The jobs are independent where they can be: the three packages build and publish
 
 ## A breaking SDK change reaches the templates one release later
 
-A template's lockfile must name an SDK version the registry already serves: npm refuses an unpublished version and uv cannot resolve one. So a template cannot adopt a breaking SDK change in the pull request that makes it. The SDK change merges and ships while the templates stay on the SDK they pin, and after the release one follow-up pull request moves every template onto the new SDK, through the root `/bump-sdk` skill, for the next release. The pull requests' checks of each template against the SDK built from the same commit are the early warning: they report such a break on the SDK's own pull request without blocking it.
+A template's lockfile must name an SDK version the registry already serves: npm refuses an unpublished version and uv cannot resolve one. So a template cannot adopt a breaking SDK change in the pull request that makes it. The SDK change merges and ships while the templates stay on the SDK they pin, and the next regular run of the root `/bump-sdk` skill moves every template onto the new SDK, for a later release. No ledger item is filed for that move unless a template is known to need something the new SDK fixes or adds. The pull requests' checks of each template against the SDK built from the same commit are the early warning: they report such a break on the SDK's own pull request without blocking it.
 
 ## Sprint prereleases of `@pipelex/sdk`
 
