@@ -1,8 +1,9 @@
 /**
  * Client identification: the `User-Agent` this SDK sends to the Pipelex API.
  *
- * Implements the workspace contract `docs/specs/client-identification.md`. The
- * value is a sequence of RFC 9110 product tokens, outermost first:
+ * Implements the spec `conformance/specs/client-identification.md`, in the `conformance`
+ * repository beside the specs' tests. The value is a sequence of RFC 9110 product tokens,
+ * outermost first:
  *
  *   [<appInfo>] pipelex-sdk-js/<SDK_VERSION> [<runtime>/<version> (<os>; <arch>)]
  *

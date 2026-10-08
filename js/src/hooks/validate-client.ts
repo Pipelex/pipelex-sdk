@@ -1,8 +1,8 @@
 /**
  * The API client the `.mthds` post-edit hook validates through, named for the
- * `User-Agent` contract (`docs/specs/client-identification.md`): the hook
- * identifies itself as `pipelex-mthds-check`, the registry token of the `hook`
- * surface, in front of the SDK's own `pipelex-sdk-js` token.
+ * `User-Agent` contract (`conformance/specs/client-identification.md`, in the `conformance`
+ * repository beside the specs' tests): the hook identifies itself as `pipelex-mthds-check`,
+ * the registry token of the `hook` surface, in front of the SDK's own `pipelex-sdk-js` token.
  */
 
 import { PipelexApiClient } from "../client.js";

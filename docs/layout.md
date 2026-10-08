@@ -57,7 +57,7 @@ Inside this repository those paths name nothing. The SDK a maintainer wants a te
 
 The method-app family's `make use-local` is the root's, run with `IN=method-apps`. A JavaScript template joins `JS_TEMPLATES` in the root's `Makefile`, and a Python template whose `use-local` takes `SDK_DIR` and `MTHDS_DIR` joins `PY_TEMPLATES`; `starter-python/` has no `use-local` of its own, so the switch does not reach it.
 
-The other workspace checkouts a package's maintainers reach sit at the same place: the workspace root is the parent of this repository's root, so it is two levels above a package directory, in a worktree as in the main checkout. `js/`'s `make use-local` links `../../mthds-js`, `python/`'s `bump-mthds` skill reads `../../mthds-python/CHANGELOG.md`, and `js/`'s `contract-check` skill reads the workspace's specs in `../../docs/specs/`.
+The other workspace checkouts a package's maintainers reach sit at the same place: the workspace root is the parent of this repository's root, so it is two levels above a package directory, in a worktree as in the main checkout. `js/`'s `make use-local` links `../../mthds-js`, `python/`'s `bump-mthds` skill reads `../../mthds-python/CHANGELOG.md`, and `js/`'s `contract-check` skill reads the cross-repo interface specs in `../../conformance/specs/`, the `conformance` checkout, where each spec sits beside the test that verifies it.
 
 ## The hooks
 

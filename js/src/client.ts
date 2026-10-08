@@ -260,7 +260,8 @@ export interface PipelexApiClientOptions {
    * `{ name: "acme-invoicer", version: "1.4.0" }` →
    * `acme-invoicer/1.4.0 pipelex-sdk-js/<v> node/<v> (<os>; <arch>)`. Validated at
    * construction: a field that is not an RFC 9110 token throws a `TypeError`. See
-   * the workspace spec `docs/specs/client-identification.md`.
+   * the spec `conformance/specs/client-identification.md`, in the `conformance` repository
+   * beside the specs' tests.
    */
   appInfo?: AppInfo;
 }

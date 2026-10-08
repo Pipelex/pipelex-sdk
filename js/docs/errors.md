@@ -79,7 +79,7 @@ On the platform today the fallback decides both members, since the platform does
 
 **The verdicts are a contract with the Python SDK.** `pipelex-sdk` must apply the same fallback and declare the same verdict on each class it shares with this package. `tests/fixtures/error-verdicts.json` holds every case the two must agree on, the fallback's rows, the server-sent resolution and each class's variants, and this package's test suite drives its own code through it. The Python package is to keep a byte for byte identical copy of the file and drive its own code through the same cases, with a check at the repository's root holding the two copies identical; until that copy is added, nothing holds the Python SDK to the table yet.
 
-The shapes are not this SDK's invention. The report is the runner's `ErrorReport` (in `pipelex`), stored and served by the platform exactly as the runner wrote it, and the problem members are the ones the workspace's hosted-envelope spec names. The types live in `src/error-models.ts`; `pipelex-sdk` (Python) carries the same fields under snake_case names.
+The shapes are not this SDK's invention. The report is the runner's `ErrorReport` (in `pipelex`), stored and served by the platform exactly as the runner wrote it, and the problem members are the ones the hosted-envelope spec names, `conformance/specs/pipelex-hosted-envelope.md` in the `conformance` repository, where the cross-repo specs sit beside the tests that verify them. The types live in `src/error-models.ts`; `pipelex-sdk` (Python) carries the same fields under snake_case names.
 
 ## A failed run — `RunErrorReport`
 
