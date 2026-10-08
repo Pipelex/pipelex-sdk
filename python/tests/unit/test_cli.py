@@ -44,6 +44,8 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
+    from pipelex_sdk.command.io import Progress
+
 # ── The table's shape ─────────────────────────────────────────────────────────────────────────────
 
 _TABLE_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "cli-cases.json"
@@ -280,10 +282,13 @@ class _RecordedApi:
 
 
 class _WriteInterrupted:
-    """A file handle whose write takes Ctrl-C once the first bytes are stored, as a write the person interrupts."""
+    """A file handle whose write takes Ctrl-C, once or more, once the first bytes are stored, as a write the
+    person interrupts.
+    """
 
-    def __init__(self, handle: Any) -> None:
+    def __init__(self, handle: Any, interrupts: int = 1) -> None:
         self._handle = handle
+        self._interrupts = interrupts
 
     def __enter__(self) -> Self:
         return self
@@ -295,8 +300,27 @@ class _WriteInterrupted:
         self._handle.write(data[:8])
         self._handle.flush()
         # Outside the event loop, Python's own handler would raise `KeyboardInterrupt` right here.
-        signal.raise_signal(signal.SIGINT)
+        for _ in range(self._interrupts):
+            signal.raise_signal(signal.SIGINT)
         return cast("int", self._handle.write(data[8:])) + 8
+
+
+class _WriteFails:
+    """A file handle whose write stores the first bytes, then fails as a full disk fails it."""
+
+    def __init__(self, handle: Any) -> None:
+        self._handle = handle
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._handle.close()
+
+    def write(self, data: bytes) -> int:
+        self._handle.write(data[:20])
+        self._handle.flush()
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
 
 
 # ── Running a case ────────────────────────────────────────────────────────────────────────────────
@@ -368,8 +392,13 @@ def _run_case(
     *,
     early: _EarlyInterrupt | None = None,
     interrupt_while_answering: str | None = None,
+    interrupt_while_printing: bool = False,
 ) -> _Outcome:
-    """Run the command on a case, in `root`, with every API client answering from the case's routes."""
+    """Run the command on a case, in `root`, with every API client answering from the case's routes.
+
+    With `interrupt_while_printing`, Ctrl-C lands as the command prints its first line on stdout, before
+    the line is out.
+    """
     _materialize(root, case.get("files", []))
     env = _case_env(case)
     api = _RecordedApi(case, env, interrupt_while_answering=interrupt_while_answering)
@@ -401,7 +430,14 @@ def _run_case(
     monkeypatch.chdir(root)
     stdout: list[str] = []
     stderr: list[str] = []
-    io = CommandIO(env=env, read_stdin=read_stdin, write_stdout=stdout.append, write_stderr=stderr.append)
+
+    def write_stdout(text: str) -> None:
+        if interrupt_while_printing and not stdout:
+            # Outside the event loop, Python's own handler raises `KeyboardInterrupt` right here.
+            signal.raise_signal(signal.SIGINT)
+        stdout.append(text)
+
+    io = CommandIO(env=env, read_stdin=read_stdin, write_stdout=write_stdout, write_stderr=stderr.append)
 
     exit_code = run_command(case["argv"], io)
 
@@ -435,7 +471,24 @@ def _check(case: dict[str, Any], outcome: _Outcome, root: Path) -> None:
 # sent would fail it, as an unrecorded one. The scenarios of `@pipelex/sdk`'s suite, landing where a
 # Python command meets them.
 _NOTHING_WRITTEN = "Interrupted. Nothing was written.\n"
-_WRITTEN = "Interrupted. ./resume-review-v2 was written.\n"
+
+
+def _script_written_then_interrupted() -> dict[str, Any]:
+    """`script/catalog-id`, whose file an interrupt lands on once it is written: the file is whole, the
+    command says it was written and exits 130, and nothing reaches stdout.
+    """
+    written = _case_named("script/catalog-id")
+    return {
+        **written,
+        "expect": {
+            "exit_code": 130,
+            "stdout": "",
+            "stderr": ["Interrupted. ./resume-review-v2 was written.\n"],
+            "files": written["expect"]["files"],
+        },
+    }
+
+
 _BUNDLE = 'domain = "receipts"\nmain_pipe = "review_receipt"\n'
 _NO_RUN = "Interrupted. No run was started.\n"
 _EARLY_SCENARIOS: list[tuple[str, _EarlyInterrupt, dict[str, Any]]] = [
@@ -687,11 +740,7 @@ class TestCli:
         self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Ctrl-C while the script is written waits for the file to be whole, then says it was written."""
-        written = _case_named("script/catalog-id")
-        case: dict[str, Any] = {
-            **written,
-            "expect": {"exit_code": 130, "stdout": "", "stderr": [_WRITTEN], "files": written["expect"]["files"]},
-        }
+        case = _script_written_then_interrupted()
         root = tmp_path.resolve()
         real_fdopen = os.fdopen
 
@@ -704,19 +753,36 @@ class TestCli:
 
         _check(case, outcome, root)
 
-    def test_an_interrupt_just_after_the_write_says_the_file_was_written(
+    def test_a_second_interrupt_during_the_write_stops_it_and_removes_the_file(
         self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ctrl-C once the file is whole, before the command says so, says it was written, never that nothing was."""
-        written = _case_named("script/catalog-id")
+        """A second Ctrl-C is not held, so a write that blocks can still be stopped: what it wrote is removed."""
         case: dict[str, Any] = {
-            **written,
-            "expect": {"exit_code": 130, "stdout": "", "stderr": [_WRITTEN], "files": written["expect"]["files"]},
+            **_case_named("script/catalog-id"),
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NOTHING_WRITTEN], "absent_files": ["resume-review-v2"]},
         }
         root = tmp_path.resolve()
+        real_fdopen = os.fdopen
 
-        def write_then_interrupt(target: str, body: str) -> None:
-            _write_script(target, body)
+        def fdopen_interrupted_twice(fd: int, mode: str) -> _WriteInterrupted:
+            return _WriteInterrupted(real_fdopen(fd, mode), interrupts=2)
+
+        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_interrupted_twice)
+
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
+        assert list(root.iterdir()) == [], outcome.shown
+
+    def test_an_interrupt_held_once_the_file_is_whole_says_it_was_written(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C once the file is whole, while the interrupt is still held, says it was written."""
+        case = _script_written_then_interrupted()
+        root = tmp_path.resolve()
+
+        def write_then_interrupt(target: str, body: str, progress: Progress) -> None:
+            _write_script(target, body, progress)
             signal.raise_signal(signal.SIGINT)
 
         mocker.patch("pipelex_sdk.command.script._write_script", side_effect=write_then_interrupt)
@@ -724,6 +790,61 @@ class TestCli:
         outcome = _run_case(case, root, mocker, monkeypatch)
 
         _check(case, outcome, root)
+
+    def test_an_interrupt_after_the_hold_says_the_file_was_written(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C once the hold is over, as the command prints the script's path, says the file was written."""
+        case = _script_written_then_interrupted()
+        root = tmp_path.resolve()
+
+        outcome = _run_case(case, root, mocker, monkeypatch, interrupt_while_printing=True)
+
+        _check(case, outcome, root)
+
+    def test_an_ignored_interrupt_stays_ignored_during_the_write(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Started with SIGINT ignored, as a background job may be, the command is not stopped by one meanwhile."""
+        case = _case_named("script/catalog-id")
+        root = tmp_path.resolve()
+        real_fdopen = os.fdopen
+
+        def fdopen_interrupted(fd: int, mode: str) -> _WriteInterrupted:
+            return _WriteInterrupted(real_fdopen(fd, mode))
+
+        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_interrupted)
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            outcome = _run_case(case, root, mocker, monkeypatch)
+        finally:
+            signal.signal(signal.SIGINT, previous)
+
+        _check(case, outcome, root)
+
+    def test_a_write_that_fails_once_the_file_exists_removes_it(self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A disk that fills up during the write leaves no truncated script, which would run half a command."""
+        case: dict[str, Any] = {
+            **_case_named("script/catalog-id"),
+            "expect": {
+                "exit_code": 2,
+                "stdout": "",
+                "stderr": ['Error: cannot write "./resume-review-v2".\nReason: ENOSPC\n'],
+                "absent_files": ["resume-review-v2"],
+            },
+        }
+        root = tmp_path.resolve()
+        real_fdopen = os.fdopen
+
+        def fdopen_failing(fd: int, mode: str) -> _WriteFails:
+            return _WriteFails(real_fdopen(fd, mode))
+
+        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_failing)
+
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
+        assert list(root.iterdir()) == [], outcome.shown
 
     def test_an_interrupt_while_the_last_answer_is_read_writes_nothing(
         self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
