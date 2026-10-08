@@ -195,9 +195,8 @@ const CONNECTION_SETUP_CALLS: ReadonlySet<string> = new Set(["getaddrinfo", "con
 /**
  * The codes only a step of the connection's set-up gives: the name lookup's and the connect call's
  * own (set even where Node reports several addresses together, without a system call), undici's
- * connect time limit, Node's limit on one attempt among several addresses, and every verdict of
- * the server certificate's check in the TLS handshake, as Node names them: OpenSSL's verification
- * codes and Node's own check of the host's name.
+ * connect time limit, Node's limit on one attempt among several addresses, Node's own check of the
+ * host's name, and every code Node gives a server certificate the TLS handshake refused.
  */
 const CONNECTION_SETUP_CODES: ReadonlySet<string> = new Set([
   "ECONNREFUSED",
@@ -207,6 +206,12 @@ const CONNECTION_SETUP_CODES: ReadonlySet<string> = new Set([
   "ERR_SOCKET_CONNECTION_TIMEOUT",
   "ERR_TLS_CERT_ALTNAME_INVALID",
   "ERR_TLS_CERT_ALTNAME_FORMAT",
+  // Node names the verdicts of OpenSSL's certificate check from a fixed table, the "X509 certificate
+  // error codes" of its `tls` docs, and gives every other verdict, such as an unhandled critical
+  // extension or a CA certificate that may not sign certificates, the code `UNSPECIFIED`. The
+  // error carries nothing else that marks it, so these codes are the mark: the table as Node 24
+  // compiles it, in its order, then its default. The Python command reads every
+  // `ssl.SSLCertVerificationError` the same way.
   "UNABLE_TO_GET_ISSUER_CERT",
   "UNABLE_TO_GET_CRL",
   "UNABLE_TO_DECRYPT_CERT_SIGNATURE",
@@ -222,6 +227,7 @@ const CONNECTION_SETUP_CODES: ReadonlySet<string> = new Set([
   "ERROR_IN_CERT_NOT_AFTER_FIELD",
   "ERROR_IN_CRL_LAST_UPDATE_FIELD",
   "ERROR_IN_CRL_NEXT_UPDATE_FIELD",
+  "OUT_OF_MEM",
   "DEPTH_ZERO_SELF_SIGNED_CERT",
   "SELF_SIGNED_CERT_IN_CHAIN",
   "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
@@ -234,6 +240,7 @@ const CONNECTION_SETUP_CODES: ReadonlySet<string> = new Set([
   "CERT_UNTRUSTED",
   "CERT_REJECTED",
   "HOSTNAME_MISMATCH",
+  "UNSPECIFIED",
 ]);
 
 /**

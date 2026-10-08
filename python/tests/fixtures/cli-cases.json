@@ -2618,6 +2618,21 @@
       }
     },
     {
+      "name": "run/start-certificate-refused-unnamed",
+      "summary": "A start to a host whose certificate the client refused for a reason Node names no code of its own for, such as an unhandled critical extension, sent nothing either.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "certificate-unnamed" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
       "name": "run/start-handshake-dropped",
       "summary": "A start whose connection dropped during the TLS handshake sent nothing, but Node reports it as the reset a dropped request gives, so both commands read it as one: a run may have started.",
       "argv": ["run", "--method", "mt_receipts01"],

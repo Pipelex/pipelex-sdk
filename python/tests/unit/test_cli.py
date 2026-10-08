@@ -176,6 +176,10 @@ _UNREACHABLE: dict[str, Callable[[httpx.Request], httpx.TransportError]] = {
         "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired",
         ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired"),
     ),
+    "certificate-unnamed": _connect_error(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unhandled critical extension",
+        ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unhandled critical extension"),
+    ),
     # A server that drops the connection during the TLS handshake, which httpx reads as the pipe it broke.
     "handshake-dropped": _connect_error("", BrokenPipeError(errno.EPIPE, "Broken pipe")),
 }

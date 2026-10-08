@@ -228,6 +228,9 @@ const UNREACHABLE: Record<string, () => Error> = {
     systemError("connect ETIMEDOUT 127.0.0.1:80", "ETIMEDOUT", -60, "connect"),
   certificate: () =>
     Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" }),
+  // A verdict Node's table does not name, which it reports as `UNSPECIFIED`.
+  "certificate-unnamed": () =>
+    Object.assign(new Error("unhandled critical extension"), { code: "UNSPECIFIED" }),
   // A server that drops the connection during the TLS handshake: the same reset, from the same
   // call, as one that drops it once the request has left.
   "handshake-dropped": () => systemError("read ECONNRESET", "ECONNRESET", -54, "read"),
