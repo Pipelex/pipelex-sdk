@@ -11,7 +11,9 @@ import { systemReason } from "./bundle.js";
 import { untilInterrupted, usageError } from "./io.js";
 import type { CommandIO } from "./io.js";
 
-const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+// A leading byte-order mark is dropped, as RFC 8259 lets a JSON reader do: Windows PowerShell 5.1
+// writes one with `Out-File -Encoding utf8`. A bundle's mark is kept, since it is sent as written.
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 /**
  * Read and parse the inputs. A relative path resolves against the current directory.
