@@ -831,6 +831,10 @@ export type PipeIOResponse = PipeIOValidReport | CrateInvalidReport;
  * `PipeDocGen`. The protocol defines no category for `doc_gen`, so `GET /v1/models` leaves
  * it out, but a method names a `doc_gen` model in its `model` field like any other, so the
  * check covers it.
+ *
+ * A request names one of these. A verdict reads them open, as `mthds` reads `ModelInfo.type`: a
+ * runner of a later version may add a category, so a consumer that switches on one has to
+ * say what an unknown value does.
  */
 export type ModelCheckCategory = "llm" | "extract" | "img_gen" | "search" | "judgment" | "doc_gen";
 
@@ -846,8 +850,8 @@ export type ModelReferenceResolution = "resolved" | "not_found";
 
 /** The fields every `matches` entry carries, whatever the reference's kind. */
 export interface ModelReferenceMatchBase {
-  /** The category this entry is about. */
-  category: ModelCheckCategory;
+  /** The category this entry is about; read open (see {@link ModelCheckCategory}). */
+  category: ModelCheckCategory | (string & {});
   /**
    * The model handle a run through the reference would call now in this category, or
    * `null` when it would find none: a target on a backend the runner has not enabled, a
@@ -897,8 +901,8 @@ export interface ModelReferenceVerdictBase {
   reference: string;
   /** The reference without its sigil or namespace. */
   name: string;
-  /** The `type` asked, or `null` when none was. */
-  category: ModelCheckCategory | null;
+  /** The `type` asked, or `null` when none was; read open (see {@link ModelCheckCategory}). */
+  category: ModelCheckCategory | (string & {}) | null;
   /**
    * Whether the reference resolves in a category in scope. Open on purpose, under the
    * spec's reader rule: "a client that reads a value it does not know treats the reference
@@ -910,8 +914,8 @@ export interface ModelReferenceVerdictBase {
   suggestions: string[];
   /** On `not_found`, the same name under another kind, in the categories in scope (`@best-claude` for `$best-claude`); empty when it is `resolved`. Show it first: it is the likeliest fault. */
   other_kinds: string[];
-  /** On `not_found` with a `type`, the categories outside it where the same reference resolves; empty otherwise. */
-  other_categories: ModelCheckCategory[];
+  /** On `not_found` with a `type`, the categories outside it where the same reference resolves; empty otherwise. Read open (see {@link ModelCheckCategory}). */
+  other_categories: (ModelCheckCategory | (string & {}))[];
 }
 
 /** A verdict on a preset reference (`$name` or `preset:name`). */

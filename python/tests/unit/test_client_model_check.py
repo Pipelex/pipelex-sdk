@@ -182,6 +182,32 @@ class TestClientModelCheck:
         assert verdict.resolution == "ambiguous"
         assert not isinstance(verdict.resolution, ModelReferenceResolution)
 
+    def test_an_unknown_category_keeps_its_raw_value(self, mocker: MockerFixture) -> None:
+        """A category a runner of a later version adds reads as its raw string wherever a verdict
+        names one, as `mthds` reads `ModelInfo.type`, rather than failing the verdict.
+        """
+        client = self._client()
+        body = {**ModelCheckBodies.NOT_FOUND_IN_CATEGORY, "category": "video_gen", "other_categories": ["llm", "video_gen"]}
+        self._mock_send(mocker, client, _response(200, json_body=body))
+
+        verdict = asyncio.run(client.check_model_reference("$writing-factual"))
+
+        assert verdict.category == "video_gen"
+        assert not isinstance(verdict.category, ModelCheckCategory)
+        assert verdict.other_categories == [ModelCheckCategory.LLM, "video_gen"]
+        assert verdict.other_categories[0] is ModelCheckCategory.LLM
+
+    def test_an_unknown_match_category_keeps_its_raw_value(self, mocker: MockerFixture) -> None:
+        client = self._client()
+        matches = [{**ModelCheckBodies.RESOLVED_PRESET["matches"][0], "category": "video_gen"}]
+        self._mock_send(mocker, client, _response(200, json_body={**ModelCheckBodies.RESOLVED_PRESET, "matches": matches}))
+
+        verdict = asyncio.run(client.check_model_reference("$writing-factual"))
+
+        assert isinstance(verdict, PresetReferenceVerdict)
+        assert verdict.matches[0].category == "video_gen"
+        assert not isinstance(verdict.matches[0].category, ModelCheckCategory)
+
     # ── What raises ──────────────────────────────────────────────────
 
     @pytest.mark.parametrize(

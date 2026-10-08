@@ -39,6 +39,10 @@ class ModelCheckCategory(StrEnum):
     family of `PipeDocGen`. The protocol defines no category for `doc_gen`, so `GET /v1/models`
     leaves it out, but a method names a `doc_gen` model in its `model` field like any other, so the
     check covers it.
+
+    A request names one of these. A verdict reads them open, as `mthds` reads `ModelInfo.type`: a
+    category this SDK knows reads as its member, and one a runner of a later version adds keeps its raw
+    string rather than failing the whole verdict.
     """
 
     LLM = "llm"
@@ -74,8 +78,9 @@ class ModelReferenceMatchBase(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    #: The category this entry is about.
-    category: ModelCheckCategory
+    #: The category this entry is about: a `ModelCheckCategory` member, or the raw string of one this
+    #: SDK does not know.
+    category: Annotated[ModelCheckCategory | str, Field(union_mode="left_to_right")]
     #: The model handle a run through the reference would call now in this category, or `None` when
     #: it would find none: a target on a backend the runner has not enabled, a waterfall none of whose
     #: usable steps the runner serves, an alias cycle. The reference still resolves, as a validation
@@ -129,8 +134,8 @@ class ModelReferenceVerdictBase(BaseModel):
     reference: str
     #: The reference without its sigil or namespace.
     name: str
-    #: The `type` asked, or `None` when none was.
-    category: ModelCheckCategory | None
+    #: The `type` asked, or `None` when none was; read open, like a match's `category`.
+    category: Annotated[ModelCheckCategory | str | None, Field(union_mode="left_to_right")]
     #: Whether the reference resolves in a category in scope. Open on purpose, under the spec's reader
     #: rule: "a client that reads a value it does not know treats the reference as unresolved". A value
     #: this SDK knows reads as its `ModelReferenceResolution` member, and one it does not keeps its raw
@@ -144,8 +149,8 @@ class ModelReferenceVerdictBase(BaseModel):
     #: `$best-claude`); empty when it is `resolved`. Show it first: it is the likeliest fault.
     other_kinds: list[str]
     #: On `not_found` with a `type`, the categories outside it where the same reference resolves; empty
-    #: otherwise.
-    other_categories: list[ModelCheckCategory]
+    #: otherwise; read open, like a match's `category`.
+    other_categories: list[Annotated[ModelCheckCategory | str, Field(union_mode="left_to_right")]]
 
 
 class PresetReferenceVerdict(ModelReferenceVerdictBase):

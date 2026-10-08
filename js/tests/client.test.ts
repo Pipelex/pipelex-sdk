@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "v
 import { MODEL_CATEGORIES, type ModelCategory } from "mthds/protocol";
 import { PipelexApiClient, isGatewayCutOff } from "../src/client.js";
 import { PipelexExecuteResult } from "../src/execute-result.js";
-import type { ModelReferenceVerdict, PresetMatch } from "../src/models.js";
+import type { ModelCheckCategory, ModelReferenceVerdict, PresetMatch } from "../src/models.js";
 import {
   ApiResponseError,
   ApiUnreachableError,
@@ -1795,13 +1795,15 @@ describe("PipelexApiClient.checkModelReference", () => {
     }
   });
 
-  it.each([
-    ["a preset asked in another category", NOT_FOUND_IN_CATEGORY],
-    ["a misspelt alias", NOT_FOUND_MISSPELT],
-  ])("returns a not_found verdict for %s, never a thrown error", async (_, body) => {
+  // The category asked is written out rather than read back off the verdict, whose categories
+  // are typed open while a request names a known one.
+  it.each<[string, ModelReferenceVerdict, ModelCheckCategory | undefined]>([
+    ["a preset asked in another category", NOT_FOUND_IN_CATEGORY, "img_gen"],
+    ["a misspelt alias", NOT_FOUND_MISSPELT, undefined],
+  ])("returns a not_found verdict for %s, never a thrown error", async (_, body, category) => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
-    const verdict = await client.checkModelReference(body.reference, body.category ?? undefined);
+    const verdict = await client.checkModelReference(body.reference, category);
     expect(verdict).toEqual(body);
     expect(verdict.resolution).toBe("not_found");
     expect(verdict.matches).toEqual([]);
