@@ -737,6 +737,28 @@ class TestClientRunFallback:
         asyncio.run(client.start_and_wait(pipe_code="p"))
         assert [path for path, _ in server.requests] == ["/v1/version", "/v1/version", "/v1/start", "/v1/runs/r1/results"]
 
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            httpx.Response(
+                200, headers={"Content-Type": "application/json", "Content-Encoding": "gzip"}, stream=httpx.ByteStream(b"not gzip at all")
+            ),
+            httpx.Response(200, headers={"Content-Type": "text/html"}, content=b"<html>a gateway's page</html>"),
+            httpx.Response(200, headers={"Content-Type": "application/json"}, content=b'{"implementation": "pipelex-api\xff"}'),
+            httpx.Response(200, json=["not", "a", "version"]),
+        ],
+        ids=["body-that-does-not-decode", "body-that-is-not-json", "body-that-is-not-utf8", "json-that-is-no-version"],
+    )
+    def test_a_handshake_answered_with_no_usable_version_assumes_hosted(self, answer: httpx.Response) -> None:
+        """The server answered, so the start is sent: a body that arrived and cannot be decoded is an answer too."""
+        server = _Server({"/v1/version": [answer], **_hosted_run("r1")})
+        client = server.client()
+
+        asyncio.run(client.start_and_wait(pipe_code="p"))
+
+        assert [path for path, _ in server.requests] == ["/v1/version", "/v1/start", "/v1/runs/r1/results"]
+        assert client._lifecycle_available is True
+
     # ── The moment a run may start: on_starting, and a cancellation before it ──
 
     def test_on_starting_is_called_right_before_the_start(self) -> None:

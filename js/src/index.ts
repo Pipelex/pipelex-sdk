@@ -17,7 +17,7 @@ export { SDK_VERSION } from "./version.js";
 export * from "mthds/protocol";
 
 // ── Pipelex product client ───────────────────────────────────────────
-export { PipelexApiClient, DEFAULT_API_BASE_URL } from "./client.js";
+export { PipelexApiClient, DEFAULT_API_BASE_URL, isGatewayCutOff } from "./client.js";
 // Client identification: the `User-Agent` the client sends, exported so a caller that
 // makes its own raw requests to the API sends the same value, and can check an `appInfo`
 // against the grammar and the length ceiling before constructing a client.

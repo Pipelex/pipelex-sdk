@@ -908,10 +908,17 @@
     },
     {
       "name": "inputs/stdin-empty",
-      "summary": "An empty stdin is not JSON.",
+      "summary": "An empty stdin is not JSON, and neither is a closed one, which both commands read as empty since Node opens the null device on a standard stream a process starts without.",
       "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--inputs", "-"],
       "stdin": "",
       "expect": { "exit_code": 2, "stdout": "", "stderr": ["Error: stdin is not valid JSON.\n"] }
+    },
+    {
+      "name": "inputs/stdin-unreadable",
+      "summary": "A stdin whose read fails is refused as unreadable, with the system's reason, before any request.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--inputs", "-"],
+      "stdin_error": "EIO",
+      "expect": { "exit_code": 2, "stdout": "", "stderr": ["Error: cannot read stdin.\nReason: EIO\n"] }
     },
     {
       "name": "inputs/not-utf8",
@@ -1315,7 +1322,7 @@
               "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
               "content_type": "application/pdf"
             },
-            "unreachable": true
+            "unreachable": "refused"
           }
         ]
       },
@@ -2128,7 +2135,7 @@
         ],
         "GET /v1/runs/run-1/results?artifacts=main_stuff": [
           { "answer": "results/running" },
-          { "unreachable": true }
+          { "unreachable": "refused" }
         ]
       },
       "expect": {
@@ -2269,6 +2276,52 @@
       }
     },
     {
+      "name": "run/execute-gateway-cut-off",
+      "summary": "A bare runner's blocking execute that a 503 ends past the gateway's ~30-second cut-off may have run the method, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/bare-runner" }],
+        "POST /v1/execute": [
+          {
+            "elapsed_ms": 31000,
+            "status": 503,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 503, "title": "Service Unavailable", "detail": "The gateway answered 503." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: ",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/execute-unavailable",
+      "summary": "A bare runner's blocking execute refused with a 503 before the gateway's cut-off ran nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/bare-runner" }],
+        "POST /v1/execute": [
+          {
+            "elapsed_ms": 27000,
+            "status": 503,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 503, "title": "Service Unavailable", "detail": "The gateway answered 503." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 503).\n"],
+        "stderr_excludes": ["may have started"]
+      }
+    },
+    {
       "name": "run/start-answer-unreadable",
       "summary": "A start accepted with an answer the command cannot read created a run it never learned of, so the failure says so.",
       "argv": ["run", "--method", "mt_receipts01"],
@@ -2325,12 +2378,13 @@
     },
     {
       "name": "run/start-unavailable",
-      "summary": "A 503 says the start was not handled, so no run was created and the failure says nothing of one.",
+      "summary": "A 503 that comes back before the gateway's ~30-second cut-off says the start was not handled, so no run was created and the failure says nothing of one.",
       "argv": ["run", "--method", "mt_receipts01"],
       "routes": {
         "GET /v1/version": [{ "answer": "version/hosted" }],
         "POST /v1/start": [
           {
+            "elapsed_ms": 27000,
             "status": 503,
             "headers": { "Content-Type": "application/problem+json" },
             "body": { "status": 503, "title": "Service Unavailable", "detail": "The gateway answered 503." }
@@ -2342,6 +2396,31 @@
         "stdout": "",
         "stderr": ["Error: the API refused the request (status 503).\n"],
         "stderr_excludes": ["may have started"]
+      }
+    },
+    {
+      "name": "run/start-gateway-cut-off",
+      "summary": "A 503 that comes back past the gateway's ~30-second cut-off is the gateway giving up on a start the server may still be handling, so a run may have been created and the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "elapsed_ms": 31000,
+            "status": 503,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 503, "title": "Service Unavailable", "detail": "The gateway answered 503." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API refused the request (status 503).\n",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
       }
     },
     {
@@ -2384,17 +2463,221 @@
     },
     {
       "name": "run/start-unreachable",
-      "summary": "A start whose connection is refused sent nothing, so no run can exist and the failure says nothing of one.",
+      "summary": "A start whose connection is refused sent nothing, so no run can exist and the failure says nothing of one: a failure of the connection's set-up, the name lookup, the connection itself or the certificate check, proves the request never left.",
       "argv": ["run", "--method", "mt_receipts01"],
       "routes": {
         "GET /v1/version": [{ "answer": "version/hosted" }],
-        "POST /v1/start": [{ "unreachable": true }]
+        "POST /v1/start": [{ "unreachable": "refused" }]
       },
       "expect": {
         "exit_code": 1,
         "stdout": "",
         "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
         "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-refused-every-address",
+      "summary": "A start whose connection every address of the host refuses sent nothing either.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "refused-every-address" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-unknown-host",
+      "summary": "A start to a host whose name does not resolve sent nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "unknown-host" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-no-route",
+      "summary": "A start whose connection found no route to the host sent nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "no-route" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-no-network",
+      "summary": "A start whose connection found no route to the network sent nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "no-network" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-connect-timeout",
+      "summary": "A start whose connection was not made within the transport's own connect time limit, shorter than the request's, sent nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "connect-timeout" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-system-connect-timeout",
+      "summary": "A start whose connection the system gave up making sent nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "system-connect-timeout" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-timeout-before-connecting",
+      "summary": "A start whose own time limit ran out before its connection was made sent nothing, but the JavaScript client cannot tell that from the limit running out once the request had left, so both commands read it as that: a run may have started.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "timeout-before-connecting" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-pool-timeout",
+      "summary": "A start whose own time limit ran out while it waited for a free connection sent nothing, but the JavaScript client cannot tell that from the limit running out once the request had left either, so both commands read it as that: a run may have started.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "pool-timeout" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-certificate-refused",
+      "summary": "A start to a host whose certificate the client refused sent nothing, since the request follows the TLS handshake, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "certificate" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-certificate-refused-unnamed",
+      "summary": "A start to a host whose certificate the client refused for a reason Node names no code of its own for, such as an unhandled critical extension, sent nothing either.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "certificate-unnamed" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-handshake-dropped",
+      "summary": "A start whose connection dropped during the TLS handshake sent nothing, but Node reports it as the reset a dropped request gives, so both commands read it as one: a run may have started.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "handshake-dropped" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-connection-reset",
+      "summary": "A start whose connection was reset once the request had left may have created a run, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": { "GET /v1/version": [{ "answer": "version/hosted" }], "POST /v1/start": [{ "lost": "reset" }] },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-route-lost",
+      "summary": "A start whose connection lost its route once the request had left may have created a run, though the failure names no route to the host as a refused connection would, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": { "GET /v1/version": [{ "answer": "version/hosted" }], "POST /v1/start": [{ "lost": "no-route" }] },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
       }
     },
     {
@@ -2433,6 +2716,62 @@
         "exit_code": 0,
         "stdout": "{\n  \"total\": 42.5,\n  \"currency\": \"EUR\",\n  \"approved\": true,\n  \"flags\": []\n}\n",
         "stderr_excludes": ["Run started", "Error"]
+      }
+    },
+    {
+      "name": "run/version-answer-bad-gzip",
+      "summary": "A version check answered with a body that does not decode is an answer, so the API is taken for the hosted one and the run starts.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [
+          {
+            "status": 200,
+            "headers": { "Content-Type": "application/json", "Content-Encoding": "gzip" },
+            "base64": "bm90IGd6aXAgYXQgYWxs"
+          }
+        ],
+        "POST /v1/start": [
+          {
+            "request_body": { "method_id": "mt_receipts01" },
+            "status": 202,
+            "body": { "pipeline_run_id": "run-7", "state": "STARTED", "created_at": "2026-10-08T10:00:00Z" }
+          }
+        ],
+        "GET /v1/runs/run-7/results?artifacts=main_stuff": [
+          { "status": 200, "body": { "pipeline_run_id": "run-7", "main_stuff": { "text": "All good" } } }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"text\": \"All good\"\n}\n",
+        "stderr": ["Run started: run-7\n"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/version-answer-not-json",
+      "summary": "A version check answered with a page that is not JSON, such as a gateway's, is an answer too, and the run starts.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [
+          { "status": 200, "headers": { "Content-Type": "text/html" }, "text": "<html>a gateway's page</html>" }
+        ],
+        "POST /v1/start": [
+          {
+            "request_body": { "method_id": "mt_receipts01" },
+            "status": 202,
+            "body": { "pipeline_run_id": "run-7", "state": "STARTED", "created_at": "2026-10-08T10:00:00Z" }
+          }
+        ],
+        "GET /v1/runs/run-7/results?artifacts=main_stuff": [
+          { "status": 200, "body": { "pipeline_run_id": "run-7", "main_stuff": { "text": "All good" } } }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"text\": \"All good\"\n}\n",
+        "stderr": ["Run started: run-7\n"],
+        "stderr_excludes": ["Error"]
       }
     },
     {
@@ -2528,7 +2867,7 @@
         "github.com/acme/methods/receipt-review@v1.0.0",
         "--inputs-template"
       ],
-      "routes": { "POST /v1/pipe-io": [{ "unreachable": true }] },
+      "routes": { "POST /v1/pipe-io": [{ "unreachable": "refused" }] },
       "expect": {
         "exit_code": 1,
         "stdout": "",

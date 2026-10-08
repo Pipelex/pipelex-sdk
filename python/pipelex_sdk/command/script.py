@@ -6,15 +6,18 @@ character in any value the script would carry, the method's form (a local bundle
 `--name`, `--dir`, the target file when its name is already known, the key and the base URL. Then, in
 the command's one event loop (`loop.py`), one pipe I/O call checks the method and the pipe, which spends no inference, and
 a catalog id with no `--name` is named from its catalog entry. Last, the file is written, never over an
-existing one, with the permissions of an executable.
+existing one, with the permissions of an executable, and a first Ctrl-C meanwhile is held until it is whole.
 """
 
 from __future__ import annotations
 
 import os
+import signal
 import stat
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -41,7 +44,8 @@ from pipelex_sdk.command.source import AddressSource, CatalogSource, describe_pi
 from pipelex_sdk.version import __version__
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Generator, Sequence
+    from types import FrameType
 
     from pipelex_sdk.client import PipelexAPIClient
     from pipelex_sdk.command.io import CommandIO, Progress
@@ -60,6 +64,9 @@ SCRIPT_NEEDS = "uv"
 
 _EXECUTABLE_MODE = 0o755
 
+#: What an interrupt says until the script is whole.
+_NOTHING_WRITTEN = "Interrupted. Nothing was written."
+
 
 def run_command_script(args: Sequence[str], io: CommandIO, progress: Progress) -> int:
     """Run `pipelex-sdk script` and return its exit code."""
@@ -67,7 +74,7 @@ def run_command_script(args: Sequence[str], io: CommandIO, progress: Progress) -
     if flags.help:
         io.write_stdout(SCRIPT_HELP)
         return EXIT_OK
-    progress.interrupt_message = "Interrupted. Nothing was written."
+    progress.interrupt_message = _NOTHING_WRITTEN
     method = flags.strings.get("method")
     if method is None:
         msg = "--method is required."
@@ -130,11 +137,12 @@ def run_command_script(args: Sequence[str], io: CommandIO, progress: Progress) -
             "each time it runs. Add @<tag> to pin a release.\n"
         )
     target = f"{shown_dir}/{name}"
-    # Ctrl-C reaches this synchronous part as `KeyboardInterrupt` at once, so nothing is written once
-    # it lands, and a write it cuts short leaves no file (`_write_script`): until the file is whole,
-    # nothing was written.
-    _write_script(target, script_body(name, method, pipe))
-    progress.interrupt_message = "Interrupted."
+    # Ctrl-C reaches this synchronous part as `KeyboardInterrupt` at once, so nothing is written once it
+    # has landed. From here the first one is held until the file is whole and the interrupt's message
+    # says so, so that the message is true wherever it lands: nothing was written, or the file was. A
+    # second one stops the write, which removes what it wrote (`_interrupt_held`, `_write_script`).
+    with _interrupt_held():
+        _write_script(target, script_body(name, method, pipe), progress)
     io.write_stdout(f"{target}\n")
     io.write_stderr(f"Wrote {target}. Run it with: {target} --inputs inputs.json\n")
     return EXIT_OK
@@ -212,20 +220,87 @@ def _check_free(shown_dir: str, name: str) -> None:
     raise _already_there(target)
 
 
-def _write_script(target: str, body: str) -> None:
-    """Create the file, executable, refusing one that exists, a dangling link included (`O_EXCL`).
+@contextmanager
+def _interrupt_held() -> Generator[None]:
+    """Hold the first Ctrl-C while the body runs, and deliver it once the body has finished.
 
-    A write that fails or is interrupted once the file exists removes it, so a script is either whole
-    or absent.
+    Python raises `KeyboardInterrupt` between two bytecodes, which can fall between a system call that
+    changed the disk and the line that records it; holding the first interrupt keeps the change and its
+    record together. The body's own failure, if it raises one, is raised instead of the held interrupt.
+    A second Ctrl-C is not held: the handler the hold replaced is put back and takes it at once, which
+    raises `KeyboardInterrupt` where the body stands, so that a write that blocks, on a stalled mount for
+    instance, can still be stopped. Nothing is held where Ctrl-C would not reach the command anyway: on a
+    thread other than the main one, which Python never hands a signal, and where SIGINT is ignored, as a
+    background job or a launcher may leave it, or handled outside Python, which no hold could put back.
+    """
+    previous = signal.getsignal(signal.SIGINT)
+    if threading.current_thread() is not threading.main_thread() or previous is None or previous == signal.SIG_IGN:
+        yield
+        return
+    held: list[FrameType | None] = []
+
+    def hold(signum: int, frame: FrameType | None) -> None:
+        if not held:
+            held.append(frame)
+            return
+        signal.signal(signal.SIGINT, previous)
+        _deliver(previous, signum, frame)
+
+    signal.signal(signal.SIGINT, hold)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    if held:
+        _deliver(previous, signal.SIGINT, held[0])
+
+
+def _deliver(handler: Callable[[int, FrameType | None], Any] | int | signal.Handlers, signum: int, frame: FrameType | None) -> None:
+    """Hand a signal to the handler a hold replaced: Python's own raises `KeyboardInterrupt`, and the
+    default action ends the process.
+    """
+    if callable(handler):
+        handler(signum, frame)
+    else:
+        signal.raise_signal(signum)
+
+
+def _write_script(target: str, body: str, progress: Progress) -> None:
+    """Create the file, executable, refusing one that exists, a dangling link included (`O_EXCL`), and once
+    it is whole, make the interrupt's message say it was written.
+
+    A write that fails or is interrupted once this call has created the file removes it, so a script is
+    either whole or absent, and the message says which. A file this call did not create is never removed.
+
+    Python raises a `KeyboardInterrupt` at the end of a call, so one could land between `os.open` creating
+    the file and the line keeping its descriptor, leaving the file behind and the descriptor open. The open
+    therefore runs inside `list.extend`, which keeps what `os.open` returns without the interpreter checking
+    for an interrupt in between: once the file exists, `created` holds its descriptor, which is also the
+    proof that the file is this call's to remove. An interrupted or failed open leaves `created` empty.
     """
     path = os.path.abspath(target)
+    data = body.encode("utf-8")
+    created: list[int] = []
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _EXECUTABLE_MODE)
         try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(body.encode("utf-8"))
+            try:
+                created.extend(map(os.open, [path], [os.O_WRONLY | os.O_CREAT | os.O_EXCL], [_EXECUTABLE_MODE]))
+                while data:
+                    data = data[os.write(created[0], data) :]
+            finally:
+                if created:
+                    os.close(created[0])
+            progress.interrupt_message = f"Interrupted. {target} was written."
         except BaseException:
-            Path(path).unlink(missing_ok=True)
+            if created:
+                # `os.unlink` itself, not `Path.unlink`, a helper whose own calls an interrupt could land
+                # between, so that no call lies between the handler and the removal. A file someone else
+                # removed meanwhile is gone already, which must not replace the failure being raised.
+                try:
+                    os.unlink(path)  # ruff: ignore[os-unlink]
+                except FileNotFoundError:
+                    pass
+                progress.interrupt_message = _NOTHING_WRITTEN
             raise
     except FileExistsError as exc:
         raise _already_there(target) from exc

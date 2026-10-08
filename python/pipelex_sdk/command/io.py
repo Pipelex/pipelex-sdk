@@ -14,6 +14,7 @@ the task has unwound (`loop.py`). `Progress` holds what the command says when th
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import monotonic
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -33,7 +34,8 @@ class CommandIO:
     #: The environment the command reads: `PIPELEX_API_KEY`, `PIPELEX_BASE_URL` and the test-only
     #: `PIPELEX_SDK_POLL_INTERVAL_MS`. Nothing else is read from it, and no `.env` file is read.
     env: Mapping[str, str]
-    #: All of stdin, as bytes. Read only for `--inputs -`.
+    #: All of stdin, as bytes. Read only for `--inputs -`. It raises the system's `OSError` when stdin
+    #: cannot be read; a process started with stdin closed reads it as empty, as the JavaScript command does.
     read_stdin: Callable[[], bytes]
     #: Write to stdout, which carries the result and nothing else.
     write_stdout: Callable[[str], None]
@@ -48,15 +50,27 @@ class Progress:
     started yet, a run requested but not acknowledged, a run that exists and keeps going.
     `waiting_on_run` is the id of a run that exists and whose outcome the command is waiting for: a
     failure then, other than the run's own, leaves the run going on the server, and the command says
-    so rather than let it read as a failed run. `starting` is whether a request that may create a run
-    was sent and the API has not named the run yet: a failure then that loses or garbles the answer
-    leaves it unknown whether a run was created, and the command says that too.
+    so rather than let it read as a failed run. `starting_since` is when a request that may create a run
+    was sent, while the API has not named the run yet, on the clock the SDK times its requests with
+    (`time.monotonic`), and `None` otherwise: a failure then that loses or garbles the answer, or that
+    the gateway's cut-off ends, leaves it unknown whether a run was created, and the command says that
+    too.
     """
 
     def __init__(self) -> None:
         self.interrupt_message = "Interrupted."
         self.waiting_on_run: str | None = None
-        self.starting = False
+        self.starting_since: float | None = None
+
+    def mark_starting(self) -> None:
+        """A request that may create a run is about to leave, now."""
+        self.starting_since = monotonic()
+
+    def starting_seconds(self) -> float | None:
+        """How long ago the request that may create a run left, while the API has not named the run; `None`
+        when no such request is outstanding.
+        """
+        return None if self.starting_since is None else monotonic() - self.starting_since
 
 
 #: The line under a failure that leaves it unknown whether a run was created.

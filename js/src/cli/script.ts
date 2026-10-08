@@ -7,10 +7,11 @@
  * refused), `--name`, `--dir`, the target file when its name is already known, and the key. Then
  * one pipe I/O call checks the method and the pipe, which spends no inference; a catalog id with
  * no `--name` is named from its catalog entry; and the file is written, never over an existing
- * one, with the permissions of an executable.
+ * one, with the permissions of an executable, an interrupt meanwhile waiting until it is whole.
  */
 
-import { lstat, stat, writeFile } from "node:fs/promises";
+import { lstat, open, stat, unlink } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { SDK_VERSION } from "../index.js";
@@ -139,15 +140,45 @@ export async function runCommandScript(args: readonly string[], io: CommandIO): 
       bare: true,
     });
   }
-  try {
-    await writeFile(resolve(target), scriptBody(name, method, pipe), { flag: "wx", mode: 0o755 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw alreadyThere(target);
-    throw usageError(`cannot write "${target}".`, [`Reason: ${systemReason(error)}`]);
+  // The write is not raced with the interrupt: one that lands meanwhile waits for the file to be
+  // whole, then says it was written, so that the message is true wherever it lands.
+  await writeScript(target, scriptBody(name, method, pipe));
+  if (io.interrupt.aborted) {
+    throw new CommandError(`Interrupted. ${target} was written.`, {
+      exitCode: EXIT_INTERRUPTED,
+      bare: true,
+    });
   }
   io.writeStdout(`${target}\n`);
   io.writeStderr(`Wrote ${target}. Run it with: ${target} --inputs inputs.json\n`);
   return EXIT_OK;
+}
+
+/**
+ * Create the file, executable, refusing one that exists, a dangling link included (`wx`). A write
+ * that fails once the file exists removes it, so that a script is either whole or absent: a
+ * truncated one would run half a command, and would make the next attempt say it already exists.
+ * The one exception is a second Ctrl-C, which ends the process at once (`cli.ts`): landing between
+ * the file's creation and the end of its write, it leaves that file behind, empty or partial, as
+ * `docs/cli.md` says. On a local disk that takes no time, but a write can block on a stalled mount.
+ */
+async function writeScript(target: string, body: string): Promise<void> {
+  const path = resolve(target);
+  let handle: FileHandle;
+  try {
+    handle = await open(path, "wx", 0o755);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw alreadyThere(target);
+    throw usageError(`cannot write "${target}".`, [`Reason: ${systemReason(error)}`]);
+  }
+  // The write's own failure is the one reported, a failed close the next.
+  const failures: unknown[] = [];
+  await handle.writeFile(body).catch((error: unknown) => failures.push(error));
+  await handle.close().catch((error: unknown) => failures.push(error));
+  if (failures.length > 0) {
+    await unlink(path).catch(() => undefined);
+    throw usageError(`cannot write "${target}".`, [`Reason: ${systemReason(failures[0])}`]);
+  }
 }
 
 /**

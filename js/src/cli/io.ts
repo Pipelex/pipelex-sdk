@@ -14,7 +14,11 @@ export interface CommandIO {
    * `PIPELEX_SDK_POLL_INTERVAL_MS`. Nothing else is read from it, and no `.env` file is read.
    */
   readonly env: Readonly<Record<string, string | undefined>>;
-  /** All of stdin, as bytes. Read only for `--inputs -`. */
+  /**
+   * All of stdin, as bytes. Read only for `--inputs -`. It rejects with the system's error when
+   * stdin cannot be read; a process started with stdin closed reads it as empty, since Node opens
+   * the null device on a standard stream it starts without.
+   */
   readStdin(): Promise<Uint8Array>;
   /** Write to stdout, which carries the result and nothing else. */
   writeStdout(text: string): void;

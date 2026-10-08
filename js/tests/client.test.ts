@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MODEL_CATEGORIES, type ModelCategory } from "mthds/protocol";
-import { PipelexApiClient } from "../src/client.js";
+import { PipelexApiClient, isGatewayCutOff } from "../src/client.js";
 import { PipelexExecuteResult } from "../src/execute-result.js";
 import {
   ApiResponseError,
@@ -711,7 +711,7 @@ describe("PipelexApiClient.execute gateway 30s timeout", () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
     // start = 0ms, failure observed at 31s → over the 30s gateway ceiling.
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(31_000);
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(31_000);
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PipelineExecuteTimeoutError);
     const e = err as PipelineExecuteTimeoutError;
@@ -723,19 +723,67 @@ describe("PipelexApiClient.execute gateway 30s timeout", () => {
   it("also fires on a client-side abort timeout past the ceiling", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("timed out", "TimeoutError"));
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(30_500);
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(30_500);
     await expect(client.execute({ pipe_code: "p" })).rejects.toBeInstanceOf(
       PipelineExecuteTimeoutError,
     );
   });
 
-  it("leaves a fast 503 as an ordinary ApiResponseError (runner down, not a timeout)", async () => {
+  it("times the request on the monotonic clock, so a wall clock step makes no fast 503 a cut-off", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(2_000);
+    // The system clock is set forward by a minute while the request is out, as a time sync may do.
+    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(60_000);
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiResponseError);
     expect(err).not.toBeInstanceOf(PipelineExecuteTimeoutError);
+  });
+
+  it("leaves a fast 503 as an ordinary ApiResponseError (runner down, not a timeout)", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(2_000);
+    const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect(err).not.toBeInstanceOf(PipelineExecuteTimeoutError);
+  });
+});
+
+describe("isGatewayCutOff", () => {
+  /** The error a start fails with on this answer or this failure, as the client throws it. */
+  async function startFailure(answer: () => Promise<Response>): Promise<unknown> {
+    vi.spyOn(globalThis, "fetch").mockImplementation(answer);
+    return makeClient()
+      .start({ pipe_code: "p" })
+      .then(
+        () => expect.fail("expected the start to fail"),
+        (thrown: unknown) => thrown,
+      );
+  }
+
+  it.each([
+    ["a 503", () => Promise.resolve(textResponse(503, "", "Service Unavailable")), true],
+    ["a 504", () => Promise.resolve(textResponse(504, "", "Gateway Timeout")), true],
+    ["a 500", () => Promise.resolve(textResponse(500, "", "Internal Server Error")), false],
+    ["a 502", () => Promise.resolve(textResponse(502, "", "Bad Gateway")), false],
+    [
+      "the client's own time limit",
+      () => Promise.reject(new DOMException("timed out", "TimeoutError")),
+      true,
+    ],
+    ["a refused connection", () => Promise.reject(networkError("ECONNREFUSED")), false],
+  ])("reads %s past ~28 seconds as the cut-off: %s", async (_name, answer, cutOff) => {
+    const error = await startFailure(answer);
+
+    expect(isGatewayCutOff(error, 31_000)).toBe(cutOff);
+    expect(isGatewayCutOff(error, 28_000)).toBe(cutOff);
+    // Before the threshold, nothing is the gateway's cut-off: a fast 503 is the API refusing.
+    expect(isGatewayCutOff(error, 27_999)).toBe(false);
+  });
+
+  it("reads nothing but the SDK's own errors", () => {
+    expect(isGatewayCutOff(new Error("503"), 31_000)).toBe(false);
+    expect(isGatewayCutOff(undefined, 31_000)).toBe(false);
   });
 });
 
