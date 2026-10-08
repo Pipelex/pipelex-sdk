@@ -4,6 +4,7 @@
 
 ### Added
 
+- **`InvalidInputValueError` and `MethodLoadError`**: `prepare_inputs` now tells the inputs' own mistakes from a method that does not load by class. A `data:` URL at a file input that does not decode, and a value of a type no file input takes, raise `InvalidInputValueError`, where they raised a plain `InputPreparationError`; a pipe I/O answer saying the method does not load (`is_valid: false`) raises `MethodLoadError`, carrying the answer's `validation_errors` and its own message as `server_message`, where only the first item's message reached the caller, inside the error's sentence. Both derive from `InputPreparationError` and keep their messages, so an `except` on the base is unchanged. They are the twins of `@pipelex/sdk`'s classes of the same names; `docs/input-preparation.md` lists each preparation failure.
 - **`on_started` on `start_and_wait`**: a keyword taking a callable that is called once with the start acknowledgement, a `PipelexRunResultStart`, as soon as the durable run exists and before the first poll, so a caller that waits through `start_and_wait` holds the run's id while it waits, to show it, log it or resume the run by it after cancelling the wait. It is never called on the blocking path, which has no run id to give, and an exception it raises propagates before anything is polled. It is the twin of `@pipelex/sdk`'s `onStarted`; `docs/run-results.md` describes it.
 
 ### Fixed

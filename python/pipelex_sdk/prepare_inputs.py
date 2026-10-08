@@ -44,7 +44,7 @@ from mthds.protocol.input_form import (
 from pydantic import BaseModel
 
 from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIOValidReport
-from pipelex_sdk.errors import ApiResponseError, InputPreparationError
+from pipelex_sdk.errors import ApiResponseError, InputPreparationError, InvalidInputValueError, MethodLoadError
 from pipelex_sdk.upload import UploadRecord, UploadSource, upload_file
 
 if TYPE_CHECKING:
@@ -146,7 +146,7 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
 
     A base64 payload is decoded with `validate=True` so junk characters are rejected rather
     than silently discarded (which would upload corrupted bytes), and a decode failure (bad
-    padding or non-alphabet input) surfaces as a typed `InputPreparationError` — never a raw
+    padding or non-alphabet input) surfaces as a typed `InvalidInputValueError` — never a raw
     `binascii.Error` escaping the preparation contract. A non-base64 payload decodes straight
     to bytes via `unquote_to_bytes`, so percent-encoded binary keeps its exact bytes (decoding
     it as UTF-8 text first would corrupt any byte ≥ 0x80).
@@ -154,7 +154,7 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
     comma = data_url.find(",")
     if comma < 0:
         msg = f"Malformed data URL (no comma separator): {data_url[:32]}…"
-        raise InputPreparationError(msg)
+        raise InvalidInputValueError(msg)
     header = data_url[5:comma]  # strip "data:"
     payload = data_url[comma + 1 :]
     content_type = header.split(";")[0] or "application/octet-stream"
@@ -163,7 +163,7 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
             decoded = base64.b64decode(payload, validate=True)
         except binascii.Error as exc:
             msg = f"Malformed data URL: the base64 payload is not valid ({exc})."
-            raise InputPreparationError(msg) from exc
+            raise InvalidInputValueError(msg) from exc
         return decoded, content_type
     return unquote_to_bytes(payload), content_type
 
@@ -195,7 +195,7 @@ async def _do_resolve_source(ctx: _PrepareContext, source: Any) -> str:
         "Unsupported value at a file input: expected a path (str/Path), bytes, a data URL, "
         f"an http(s)/pipelex-storage:// URL, or canonical {{url}} content; got {type(source).__name__}."
     )
-    raise InputPreparationError(msg)
+    raise InvalidInputValueError(msg)
 
 
 async def _resolve_source(ctx: _PrepareContext, source: Any) -> str:
@@ -349,7 +349,7 @@ async def _fetch_signature(client: _PrepareClient, *, request: PipeIORequest) ->
     validation settles, so a pending signature elsewhere in the method does not refuse inputs
     to a pipe whose inputs are declared — whether the method runs is the run's verdict, not
     preparation's. An `is_valid: false` arm still means the closure does not load, which IS a
-    preparation failure.
+    preparation failure: a `MethodLoadError` carrying the answer's items and its own message.
 
     A refused selection — a `422` whose `error_type` is an entry-lookup error (see
     `_PIPE_SELECTION_ERROR_TYPES`) — becomes an `InputPreparationError` carrying the server's
@@ -369,7 +369,7 @@ async def _fetch_signature(client: _PrepareClient, *, request: PipeIORequest) ->
     if isinstance(response, CrateInvalidReport):
         first = response.validation_errors[0].message if response.validation_errors else response.message
         msg = f"Cannot prepare inputs: the method signature did not resolve — {first}"
-        raise InputPreparationError(msg)
+        raise MethodLoadError(msg, validation_errors=list(response.validation_errors), server_message=response.message)
     return response
 
 
@@ -412,8 +412,11 @@ async def prepare_inputs(
             (`alias->domain.pipe_code`); the closure did not resolve; the route refused the pipe
             selection with the runner's entry-lookup `error_type` (pipelex-api >= 0.33.1) — an
             unknown `pipe_ref`, or no `pipe_ref` and a method declaring no single entry pipe —
-            carrying the server's `detail`, with the `ApiResponseError` as its `__cause__`; or a
-            value at a file position is unusable. HTTP(S) URLs and existing
+            carrying the server's `detail`, with the `ApiResponseError` as its `__cause__`. Two of
+            its subclasses name who must change: `MethodLoadError` when the closure does not load
+            (the method), `InvalidInputValueError` when a value at a file position is unusable, a
+            `data:` URL that does not decode or a value of a type no file input takes (the inputs),
+            beside `InvalidLocalSourceError` for a local path that cannot be read. HTTP(S) URLs and existing
             `pipelex-storage://` URIs pass through unchanged, and every failure is raised
             BEFORE any run is created.
         ApiResponseError: Any other no-verdict condition from `/v1/pipe-io` — an unknown or
