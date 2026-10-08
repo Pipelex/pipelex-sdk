@@ -110,3 +110,15 @@ export function untilInterrupted<T>(start: () => Promise<T>, signal: AbortSignal
 export function writeLines(io: CommandIO, lines: readonly string[]): void {
   io.writeStderr(lines.map((line) => `${line}\n`).join(""));
 }
+
+/**
+ * Let a reader of one of the process's output streams stop early: `| head` closes the pipe, and
+ * the next write fails with `EPIPE`, which, unhandled, would end the process mid-run, a run it
+ * started included. There is nothing left to tell that reader, so the error is dropped; any other
+ * error on the stream is thrown as it would have been.
+ */
+export function ignoreClosedPipe(stream: NodeJS.EventEmitter): void {
+  stream.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EPIPE") throw error;
+  });
+}

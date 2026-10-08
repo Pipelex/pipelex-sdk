@@ -11,17 +11,16 @@
 import process from "node:process";
 import type { Writable } from "node:stream";
 
-import { EXIT_INTERRUPTED } from "./cli/io.js";
+import { EXIT_INTERRUPTED, ignoreClosedPipe } from "./cli/io.js";
 import { runCommand } from "./cli/main.js";
 
 const interrupt = new AbortController();
 // Once: a second Ctrl-C finds no handler and ends the process the default way.
 process.once("SIGINT", () => interrupt.abort());
 
-// A reader that stops early (`| head`) closes the pipe; there is nothing left to tell it.
-process.stdout.on("error", (error: NodeJS.ErrnoException) => {
-  if (error.code !== "EPIPE") throw error;
-});
+// A reader that stops early (`| head`, `2>&1 | head -1`) closes the pipe on either stream.
+ignoreClosedPipe(process.stdout);
+ignoreClosedPipe(process.stderr);
 
 void runCommand(process.argv.slice(2), {
   env: process.env,

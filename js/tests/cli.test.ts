@@ -11,11 +11,13 @@
  * added to the table for the other language reaches this one.
  */
 
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ignoreClosedPipe } from "../src/cli/io.js";
 import { runCommand } from "../src/cli/main.js";
 import { SDK_VERSION } from "../src/version.js";
 
@@ -512,6 +514,21 @@ describe("the command's packaging", () => {
     expect(Object.keys(manifest.exports)).not.toContain("./cli");
     const entry = fs.readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
     expect(entry.startsWith("#!/usr/bin/env node\n")).toBe(true);
+  });
+
+  it("drops a closed pipe on both output streams, so a reader that stops early ends nothing", () => {
+    const entry = fs.readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
+    expect(entry).toContain("ignoreClosedPipe(process.stdout);");
+    expect(entry).toContain("ignoreClosedPipe(process.stderr);");
+  });
+
+  it.each(["stdout", "stderr"])("ignores EPIPE on %s and throws any other error", (_stream) => {
+    const stream = new EventEmitter();
+    ignoreClosedPipe(stream);
+    const failure = (code: string): Error => Object.assign(new Error(`write ${code}`), { code });
+
+    expect(() => stream.emit("error", failure("EPIPE"))).not.toThrow();
+    expect(() => stream.emit("error", failure("EIO"))).toThrow("write EIO");
   });
 
   it("is not exported from the package entry", async () => {
