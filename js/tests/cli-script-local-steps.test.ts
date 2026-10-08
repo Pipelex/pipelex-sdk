@@ -1,21 +1,23 @@
 /**
- * Ctrl-C during `script`'s local steps, which no request races: its last check that the target is
- * free, the one made once the catalog entry has named the script, after which the command must
- * write nothing, say so, and exit 130; and the write itself, after which the file is whole and the
- * command must say it was written, and exit 130. `lstat` and `writeFile` are replaced here by ones
- * that let the interrupt land while they run. It lives in its own file so that the replacement
- * touches no other suite.
+ * `script`'s local steps, which no request races. Ctrl-C during its last check that the target is
+ * free, the one made once the catalog entry has named the script: the command must write nothing,
+ * say so, and exit 130. Ctrl-C during the write: the file is whole, and the command must say it was
+ * written, and exit 130. A write that fails once the file exists: the command must remove it, so
+ * that a script is whole or absent, and exit 2. `lstat` and `open` are replaced here by ones that
+ * let the interrupt land, or the write fail, while they run. It lives in its own file so that the
+ * replacement touches no other suite.
  */
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { FileHandle } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /** Called by the replaced `lstat` with each path it is asked about. */
 let onLstat: (target: string) => void = () => undefined;
-/** Called by the replaced `writeFile` with each path it writes, once the write has started. */
-let onWriteFile: (target: string) => void = () => undefined;
+/** Called by the replaced `open` with each path it opened and its handle, which it may alter. */
+let onOpen: (target: string, handle: FileHandle) => void = () => undefined;
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
@@ -25,10 +27,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       onLstat(String(args[0]));
       return original.lstat(...args);
     },
-    writeFile: (...args: Parameters<typeof original.writeFile>) => {
-      const written = original.writeFile(...args);
-      onWriteFile(String(args[0]));
-      return written;
+    open: async (...args: Parameters<typeof original.open>) => {
+      const handle = await original.open(...args);
+      onOpen(String(args[0]), handle);
+      return handle;
     },
   };
 });
@@ -64,7 +66,7 @@ function jsonResponse(status: number, body: unknown): Response {
 
 afterEach(() => {
   onLstat = () => undefined;
-  onWriteFile = () => undefined;
+  onOpen = () => undefined;
   vi.restoreAllMocks();
 });
 
@@ -137,7 +139,14 @@ describe("an interrupt during script's last check before it writes", () => {
 describe("an interrupt while script writes its file", () => {
   it("leaves the file whole, says it was written, and exits 130", async () => {
     const interrupt = new AbortController();
-    onWriteFile = () => interrupt.abort();
+    onOpen = (_target, handle) => {
+      const write = handle.writeFile.bind(handle);
+      handle.writeFile = (...args: Parameters<FileHandle["writeFile"]>) => {
+        const written = write(...args);
+        interrupt.abort();
+        return written;
+      };
+    };
 
     const outcome = await runScript(interrupt);
 
@@ -149,5 +158,30 @@ describe("an interrupt while script writes its file", () => {
     expect(outcome.files["receipt-review"]).toMatch(
       /^#!\/bin\/sh\n[\s\S]*\nexec npx --yes @pipelex\/sdk@/,
     );
+  }, 2_000);
+});
+
+describe("a write that fails once script's file exists", () => {
+  it("removes the file, says why, and exits 2", async () => {
+    onOpen = (_target, handle) => {
+      const write = handle.writeFile.bind(handle);
+      handle.writeFile = async (data: Parameters<FileHandle["writeFile"]>[0]) => {
+        // The first bytes reach the disk, then the disk is full.
+        await write(String(data).slice(0, 20));
+        throw Object.assign(new Error("ENOSPC: no space left on device, write"), {
+          code: "ENOSPC",
+          syscall: "write",
+        });
+      };
+    };
+
+    const outcome = await runScript(new AbortController());
+
+    expect(outcome).toEqual({
+      code: 2,
+      stdout: "",
+      stderr: 'Error: cannot write "./receipt-review".\nReason: ENOSPC\n',
+      files: {},
+    });
   }, 2_000);
 });
