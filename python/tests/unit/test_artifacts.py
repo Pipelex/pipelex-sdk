@@ -38,6 +38,7 @@ from pipelex_sdk.artifacts import (
     resolve_artifacts,
 )
 from pipelex_sdk.error_models import RunErrorReport
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
@@ -70,6 +71,8 @@ _URI_BARE = "pipelex-storage://org_1/runs/01J/outputs/report"
 _STORE = "https://store.example.com"
 _PDF_BYTES = b"%PDF-1.4 tiny"
 _PNG_BYTES = b"\x89PNG tiny"
+#: The verdict of an argument the artifact operations refuse.
+_ARGUMENT_REFUSED = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
 
 # ── Fakes and builders ───────────────────────────────────────────────
@@ -411,13 +414,15 @@ class TestArtifacts:
         ],
     )
     def test_refuses_a_location_whose_first_path_is_not_in_the_walks_notation(self, location: ArtifactLocation) -> None:
-        with pytest.raises(ArtifactOperationError):
+        with pytest.raises(ArtifactOperationError) as caught:
             artifact_filename(location, None, ArtifactScope.MAIN_STUFF)
+        assert error_verdict_of(caught.value) == _ARGUMENT_REFUSED
 
     @pytest.mark.parametrize("scope", ["other", 0])
     def test_refuses_an_unknown_scope(self, scope: object) -> None:
-        with pytest.raises(ArtifactOperationError, match='"scope" must be'):
+        with pytest.raises(ArtifactOperationError, match='"scope" must be') as caught:
             artifact_filename(_at("$.url"), None, cast("ArtifactScope", scope))
+        assert error_verdict_of(caught.value) == _ARGUMENT_REFUSED
 
     def test_names_every_location_the_walk_writes_through_the_round_trip_of_its_notation(self) -> None:
         walked = {
@@ -462,8 +467,10 @@ class TestArtifacts:
 
     def test_refuses_a_malformed_answer_rather_than_misattributing_verdicts(self) -> None:
         client = _FakeClient(resolve=lambda _: _answer(_resolved(_URI_PNG)))
-        with pytest.raises(ArtifactOperationError, match="1 item"):
+        with pytest.raises(ArtifactOperationError, match="1 item") as caught:
             asyncio.run(resolve_artifacts(client, [_URI_PNG, _URI_PDF]))
+        # The API broke its own contract: the family's verdict.
+        assert error_verdict_of(caught.value) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
 
     def test_lets_a_whole_request_refusal_propagate_unchanged(self) -> None:
         def _refuse(_: list[str]) -> BulkResolvedStorageUrls:
@@ -619,8 +626,9 @@ class TestArtifacts:
             async with fetch_artifact(client, _URI_PDF, FetchArtifactOptions.model_validate({name: value})):
                 pass
 
-        with pytest.raises(ArtifactOperationError, match=name):
+        with pytest.raises(ArtifactOperationError, match=name) as caught:
             asyncio.run(_read())
+        assert error_verdict_of(caught.value) == _ARGUMENT_REFUSED
         assert client.resolve_calls == []
 
     def test_drops_a_content_encoding_httpx_already_decoded_with_its_length(self, mocker: MockerFixture) -> None:
@@ -656,8 +664,9 @@ class TestArtifacts:
         client = _FakeClient()
         results = _results({"picture": _content(_URI_PNG)})
 
-        with pytest.raises(ArtifactOperationError, match="exactly one"):
+        with pytest.raises(ArtifactOperationError, match="exactly one") as caught:
             asyncio.run(download_artifacts(client, dir_path=tmp_path))
+        assert error_verdict_of(caught.value) == _ARGUMENT_REFUSED
         with pytest.raises(ArtifactOperationError, match="exactly one"):
             asyncio.run(download_artifacts(client, dir_path=tmp_path, run_id=_RUN_ID, results=results))
         # An empty run id names nothing, so it is neither selector.
@@ -667,7 +676,7 @@ class TestArtifacts:
     @pytest.mark.parametrize(("name", "value"), [("concurrency", 0), ("max_total_bytes", 0), ("max_bytes", -1), ("timeout_seconds", 0)])
     def test_validates_the_download_bounds(self, tmp_path: Path, name: str, value: float) -> None:
         client = _FakeClient()
-        with pytest.raises(ArtifactOperationError, match=name):
+        with pytest.raises(ArtifactOperationError, match=name) as caught:
             asyncio.run(
                 download_artifacts(
                     client,
@@ -676,6 +685,7 @@ class TestArtifacts:
                     options=DownloadArtifactsOptions.model_validate({name: value}),
                 )
             )
+        assert error_verdict_of(caught.value) == _ARGUMENT_REFUSED
 
     def test_raises_run_still_running_with_the_retry_hint(self, tmp_path: Path) -> None:
         client = _FakeClient(run_result=RunResultRunning(pipeline_run_id=_RUN_ID, retry_after_seconds=7))
@@ -704,6 +714,17 @@ class TestArtifacts:
                 )
             )
         assert caught.value.field_name == "working_memory"
+        # The results were handed over without the field: the caller reads them again asking for it.
+        assert error_verdict_of(caught.value) == ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
+
+    def test_a_field_missing_from_results_read_by_run_id_is_the_api_s_fault(self, tmp_path: Path) -> None:
+        """Read here asking for the scope's artifact, an answer without its key broke the API's own contract."""
+        client = _FakeClient(run_result=RunResultCompleted(pipeline_run_id=_RUN_ID, result=_results({"picture": _content(_URI_PNG)})))
+        options = DownloadArtifactsOptions(scope=ArtifactScope.WORKING_MEMORY)
+        with pytest.raises(FieldNotIncludedError) as caught:
+            asyncio.run(download_artifacts(client, dir_path=tmp_path, run_id=_RUN_ID, options=options))
+        assert caught.value.field_name == "working_memory"
+        assert error_verdict_of(caught.value) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
 
     def test_raises_scope_unavailable_when_the_key_was_relayed_as_null(self, tmp_path: Path) -> None:
         client = _FakeClient()
@@ -1108,8 +1129,10 @@ class TestArtifacts:
         blocked = tmp_path / "a-file"
         blocked.write_bytes(b"not a directory")
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
-        with pytest.raises(ArtifactOperationError, match="cannot be created or used"):
+        with pytest.raises(ArtifactOperationError, match="cannot be created or used") as caught:
             asyncio.run(download_artifacts(client, dir_path=blocked, results=_results({"doc": _content(_URI_PDF)})))
+        # The environment refuses the download, not the arguments.
+        assert error_verdict_of(caught.value) == ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False)
 
     def test_lets_a_deployment_without_the_bulk_route_surface_as_the_transport_error(self, tmp_path: Path) -> None:
         def _refuse(_: list[str]) -> BulkResolvedStorageUrls:

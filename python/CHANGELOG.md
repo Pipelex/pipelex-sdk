@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A verdict on every error**: every class `pipelex_sdk.errors` defines now carries `retryable`, whether asking again can succeed, and `error_domain`, who can fix the failure (`input`, `config` or `runtime`), both always decided and the same, class for class, as `@pipelex/sdk`'s. The new `pipelex_sdk.error_verdicts` module holds `ErrorDomain`, the `ErrorVerdict` pair, `error_verdict_of`, which reads the pair off anything an `except` holds and returns `None` for an error that carries none, and `fallback_verdict`, the table a refused request falls back to. See `docs/errors.md`.
+- **`PipelexRequestError` and `RequestArgumentError`**: every error raised over a request derives from the new `PipelexRequestError`, itself a `PipelineRequestError`, and an argument the client refuses before sending anything raises `RequestArgumentError`, `input` and not retryable, or `config` for a base URL that is not host-only. `InputPreparationError`, `ArtifactOperationError` and `FieldNotIncludedError` take an optional `verdict`, so a subclass of your own can declare another.
+- **Codes on upload failures**: `RejectedAssetError` and `UploadTransportError` carry a `code` from the closed vocabularies `RejectedAssetCode` and `UploadTransportCode`, shared with `@pipelex/sdk`; `upload_file` sets `too_large` on a `413`, and `timeout`, `unreachable`, `server_error` or `unexpected` on a transport failure, whose verdict is the one of the client error it wraps, so a `402` plan limit is `config` and not retryable.
+- **`ABORT_TIMEOUT_CODE`**: the `ApiUnreachableError.code` of the client's own request timeout is public, as `pipelex_sdk.errors.ABORT_TIMEOUT_CODE`.
+
+### Changed
+
+- **`ApiResponseError` decides its verdict (Breaking)**: `retryable` and `error_domain` are no longer `None` when the server sent no valid member: each is the server's member when it is valid, and otherwise read from the status, the platform `code` and whether the body names what it refused, a sent `input` or `config` domain without `retryable` being not retryable. What the server sent stays on `problem`.
+- **Refused arguments raise `RequestArgumentError` (Breaking)**: the refusals `execute`, `start`, `validate`, `validate_files`, the run reads and the constructor made with a bare `PipelineRequestError`, and the two the inherited protocol client makes (nothing to run, a protocol arg in `extra`), now raise `RequestArgumentError`, still a `PipelineRequestError`; the standard client's error is kept as `__cause__`.
+- **`health` raises `ApiResponseError` (Breaking)**: a non-2xx `health` answer raises `ApiResponseError` naming `/health`, with its problem members and verdict, where it raised a bare `PipelineRequestError`, as `@pipelex/sdk`'s `health` does.
+- **`RunStillRunningError` is this SDK's own (Breaking)**: `execute`'s `202` degrade and `download_artifacts` raise `pipelex_sdk.errors.RunStillRunningError`, which subclasses `mthds`'s class of the same name and carries a verdict, where `pipelex_sdk.errors` re-exported `mthds`'s.
+
 ## [v0.34.1] - 2026-10-08
 
 ### Added

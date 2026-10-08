@@ -1,4 +1,4 @@
-"""Tests for the transport extension layer — `_request_product` / `_request_json`, httpx mocked."""
+"""Tests for the transport extension layer — `_request_product`, httpx mocked."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 import httpx
 import pytest
-from mthds.protocol.exceptions import PipelineRequestError
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
@@ -101,23 +100,3 @@ class TestClientTransport:
             asyncio.run(client._request_product("GET", "me"))
         assert exc_info.value.code == "DecodingError"
         assert isinstance(exc_info.value.__cause__, httpx.DecodingError)
-
-    # ── _request_json (plainer regime) ───────────────────────────────
-
-    def test_request_json_parses_2xx(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json={"status": "ok"})))
-        result = asyncio.run(client._request_json("GET", f"{client.origin_url}/health"))
-        assert result == {"status": "ok"}
-
-    def test_request_json_non_2xx_raises_pipeline_request_error_not_api_response_error(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(500, content=b"boom")))
-        with pytest.raises(PipelineRequestError) as exc_info:
-            asyncio.run(client._request_json("GET", f"{client.origin_url}/health"))
-        assert not isinstance(exc_info.value, ApiResponseError)
-
-    def test_request_json_transport_failure_maps_to_unreachable(self, unreachable_client: UnreachableClientBuilder) -> None:
-        client = unreachable_client(httpx.ReadError)
-        with pytest.raises(ApiUnreachableError):
-            asyncio.run(client._request_json("GET", f"{client.origin_url}/health"))

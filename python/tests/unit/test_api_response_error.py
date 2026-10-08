@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from pipelex_sdk.client import PipelexAPIClient
+from pipelex_sdk.error_verdicts import ErrorDomain
 from pipelex_sdk.errors import ApiResponseError
 
 if TYPE_CHECKING:
@@ -75,8 +76,10 @@ class TestApiResponseError:
             ("body.label", "string_too_long", "String should have at most 64 characters"),
         ]
         assert err.problem == _PLATFORM_422
-        assert err.error_domain is None
-        assert err.retryable is None
+        # The platform sends no verdict of its own, so the fallback reads the status: a 422 is the caller's.
+        assert "error_domain" not in _PLATFORM_422
+        assert err.error_domain == ErrorDomain.INPUT
+        assert err.retryable is False
         assert err.user_action is None
 
     def test_runner_problem_exposes_the_classification_members(self, mocker: MockerFixture) -> None:
@@ -127,10 +130,11 @@ class TestApiResponseError:
         err = self._raise_from(mocker, _response(409, json_body=body))
 
         assert err.server_message == "x"
-        assert err.retryable is None
         assert err.user_action is None
         assert err.errors is None
-        assert err.error_domain is None
+        # A verdict member of the wrong shape reads as absent, so the fallback decides it: a 409 is the caller's.
+        assert err.retryable is False
+        assert err.error_domain == ErrorDomain.INPUT
         assert err.type_uri is None
         assert err.request_id is None
         assert err.problem == body

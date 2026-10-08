@@ -8,9 +8,9 @@ validation), the richer transport/error layer, the durable run lifecycle, the pr
 surface, and `health`.
 
 This module holds construction, the `_send` override that every route sends through, which
-maps a request that got no answer to `ApiUnreachableError`, the transport extension helpers
-(`_request_product`, `_request_json`), the `_raise_api_response_error` override that
-every route raises through, the `execute` override (hosted gateway-timeout translation),
+maps a request that got no answer to `ApiUnreachableError`, the product-route helper
+(`_request_product`), the `_raise_api_response_error` override that every `/v1` route raises
+through, the `execute` override (hosted gateway-timeout translation),
 the `start` override (bare-runner 404 translation), the durable run lifecycle, the
 `validate` override (markdown-render injection + `validate_files`), the Pipelex product
 surface (methods, organizations, billing, API keys, onboarding, storage, run records),
@@ -30,6 +30,7 @@ from urllib.parse import quote, urlencode, urlparse, urlsplit
 import httpx
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.runners.api.client import MthdsAPIClient
+from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
 from mthds.runners.api.problem import ProblemDocument
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic_core import to_json
@@ -59,14 +60,19 @@ from pipelex_sdk.crate_models import (
     ResolveResponseAdapter,
 )
 from pipelex_sdk.error_models import FieldError
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
 from pipelex_sdk.errors import (
+    ABORT_TIMEOUT_CODE,
     ApiResponseError,
     ApiUnreachableError,
     MissingMainStuffError,
     PagingNotTerminatingError,
+    PipelexRequestError,
     PipelineExecuteTimeoutError,
+    RequestArgumentError,
     RunFailedError,
     RunLifecycleUnavailableError,
+    RunStillRunningError,
     RunTimeoutError,
 )
 from pipelex_sdk.execute_result import PipelexExecuteResult, results_from_execute
@@ -160,11 +166,6 @@ _REASON_BODY_LIMIT = 500
 # 503 (runner genuinely down) as a timeout. The one source of the threshold in this SDK:
 # `is_gateway_cut_off` reads it.
 _GATEWAY_TIMEOUT_THRESHOLD_SECONDS = 28.0
-
-# The `ApiUnreachableError.code` of a request that reached the server and that this client's own timeout
-# cut off while it was sent or answered, the JS SDK's code for the same case. Every other transport
-# failure carries the httpx exception's class name instead, a connect or pool timeout included.
-_ABORT_TIMEOUT_CODE = "ABORT_TIMEOUT"
 
 # The time limit of the one request an inherited route sends, when this client's override of that route
 # gives it another than the base's blocking-execute ceiling (`version`, `start`). The base builds and
@@ -313,14 +314,15 @@ class PipelexAPIClient(MthdsAPIClient):
         # clear base-URL one. Trailing slashes are stripped first; any remaining
         # path/query/fragment/credentials is rejected. The refusal never quotes the value whole:
         # what the rule refuses is where a secret travels (a password, a token in a query), so it
-        # names those parts without their text, word for word as `@pipelex/sdk` does.
+        # names those parts without their text, word for word as `@pipelex/sdk` does. Its verdict is
+        # `config`: the value typically comes from PIPELEX_BASE_URL, the environment.
         if not _is_valid_base_url(normalized_base_url):
             msg = (
                 f"Invalid API base URL {_describe_refused_base_url(normalized_base_url)}: it must be host-only "
                 "(http/https, no path, query, fragment, or credentials). "
                 "Endpoints compose as {base}/v1/{endpoint}."
             )
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg, verdict=ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False))
         self.base_url: str = normalized_base_url
         #: Origin root derived from the base URL — `/health` lives here, not under `/v1`.
         self.origin_url: str = _origin_of(normalized_base_url)
@@ -385,7 +387,7 @@ class PipelexAPIClient(MthdsAPIClient):
             return await super()._send(method, url, content=content, request_timeout=request_timeout if timeout is None else timeout)
         except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
             msg = f"Could not reach Pipelex API at {self.base_url} (timeout)"
-            raise ApiUnreachableError(msg, api_url=self.base_url, code=_ABORT_TIMEOUT_CODE) from exc
+            raise ApiUnreachableError(msg, api_url=self.base_url, code=ABORT_TIMEOUT_CODE) from exc
         except (httpx.TransportError, httpx.DecodingError) as exc:
             # A body httpx cannot decode, a broken gzip stream for one, is lost on the way as surely as a
             # dropped connection, and `@pipelex/sdk` reports it the same way (`Z_DATA_ERROR`).
@@ -412,31 +414,14 @@ class PipelexAPIClient(MthdsAPIClient):
             return None
         return response.json()
 
-    async def _request_json(self, method: str, url: str, *, body: object | None = None) -> Any:
-        """Issue a request to an absolute URL and parse the JSON body, raising the plainer
-        `PipelineRequestError` on a non-2xx response. Used by `health` (origin-level), a
-        surface that doesn't need the product `code` taxonomy.
-        Transport failures still map to `ApiUnreachableError`, through `_send`.
-        """
-        content = to_json(body) if body is not None else None
-        response = await self._send(method, url, content=content, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
-        if not 200 <= response.status_code < 300:
-            detail = response.text or response.reason_phrase
-            msg = f"API {method} {url} failed ({response.status_code}): {detail}"
-            raise PipelineRequestError(msg)
-        return response.json()
-
     @override
     def _raise_api_response_error(self, *, method: str, endpoint: str, response: httpx.Response) -> NoReturn:
-        """Raise this SDK's `ApiResponseError` for a non-2xx answer — the one place an answer becomes an error.
+        """Raise this SDK's `ApiResponseError` for a non-2xx answer to a `/v1` route.
 
         Overrides the protected seam of the `mthds` base, so every inherited protocol route
         (`execute`, `start`, `validate`, `models`, `version`) raises this SDK's subclass, as do the
-        run status and results reads and the product routes, which call it directly. The members
-        both clients share are read through the base's own parse (`ProblemDocument`), so they read
-        the same from either client; this adds the Pipelex members the standard's client leaves
-        out — the platform's `code`, the runner's `error_category` and the platform's field-level
-        `errors[]` — and narrows `validation_errors` to `ValidationErrorItem`.
+        run status and results reads and the product routes, which call it directly. The error is
+        built by `_api_response_error`, which `health` shares.
 
         Args:
             method: The HTTP method of the request, for the message (`POST`).
@@ -447,17 +432,37 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             ApiResponseError: Always.
         """
+        raise self._api_response_error(method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response)
+
+    def _api_response_error(self, *, method: str, path: str, request_url: str, response: httpx.Response) -> ApiResponseError:
+        """Build this SDK's `ApiResponseError` for a non-2xx answer — the one place an answer becomes an error.
+
+        The members both clients share are read through the base's own parse (`ProblemDocument`), so
+        they read the same from either client; this adds the Pipelex members the standard's client
+        leaves out — the platform's `code`, the runner's `error_category` and the platform's field-level
+        `errors[]` — and narrows `validation_errors` to `ValidationErrorItem`. The error decides its
+        verdict from what the server sent and the fallback table.
+
+        Args:
+            method: The HTTP method of the request, for the message (`POST`).
+            path: The path the message names (`/v1/start`, or `/health` at the origin).
+            request_url: The URL the request was sent to.
+            response: The API's non-2xx answer.
+
+        Returns:
+            The error, for the caller to raise.
+        """
         document = ProblemDocument.make_from_response(response)
         members = document.members or {}
-        msg = f"API {method} /{_API_PREFIX}/{endpoint} failed ({response.status_code}): {_failure_reason(document, response)}"
-        raise ApiResponseError(
+        msg = f"API {method} {path} failed ({response.status_code}): {_failure_reason(document, response)}"
+        return ApiResponseError(
             msg,
             api_url=self.base_url,
             status=response.status_code,
             status_text=response.reason_phrase,
             response_body=response.text,
             headers=dict(response.headers),
-            request_url=self._url(endpoint),
+            request_url=request_url,
             error_type=document.error_type,
             server_message=document.server_message,
             validation_errors=_narrowed_validation_errors(document.validation_errors),
@@ -520,10 +525,11 @@ class PipelexAPIClient(MthdsAPIClient):
         consistent with the hosted gateway's ~30s synchronous ceiling — a gateway `503`/`504`,
         or a client-side request timeout, after at least ~28s have elapsed — is translated into
         a clear `PipelineExecuteTimeoutError` pointing at the durable start+poll path, matching
-        the JS SDK. The protocol's optional 202 async-degrade still raises
-        `RunStillRunningError` (from the inherited `execute`), and every other non-2xx raises
-        `ApiResponseError`, whose message and members carry the server's reason, the next step
-        it advises and, for a method it refuses to run, the diagnostics naming the failing pipe.
+        the JS SDK. The protocol's optional 202 async-degrade raises this SDK's
+        `RunStillRunningError`, a subclass of the one the inherited `execute` raises, and every other
+        non-2xx raises `ApiResponseError`, whose message and members carry the server's reason, the
+        next step it advises and, for a method it refuses to run, the diagnostics naming the failing
+        pipe.
 
         Args:
             pipe_code: The code identifying the pipe to execute. Beside a `method_ref` it
@@ -536,7 +542,7 @@ class PipelexAPIClient(MthdsAPIClient):
             extra: Server-specific extension args this client does not know about, merged into
                 the request body as top-level properties. Protocol args and this client's own
                 named args (`method_ref`, `method_id`) must be passed as named parameters, not
-                through `extra` (raises `PipelineRequestError`).
+                through `extra` (raises `RequestArgumentError`).
             method_ref: A published method's address —
                 `github.com/<owner>/<repo>[/<selector>][@<tag>]` (e.g.
                 `github.com/Pipelex/methods/documents@v0.1.0`) — a layer-2 Pipelex-API
@@ -558,9 +564,9 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             PipelineExecuteTimeoutError: The blocking request hit the hosted gateway's ~30s
                 synchronous ceiling — use `start_and_wait` (or `start` + `wait_for_result`).
-            PipelineRequestError: `extra` carries a protocol arg or a reserved named arg, a
-                selector is present and is not a string, or `method_ref` is combined with
-                inline `mthds_contents` or with `method_id`.
+            RequestArgumentError: Nothing to run was named, `extra` carries a protocol arg or a
+                reserved named arg, a selector is present and is not a string, or `method_ref` is
+                combined with inline `mthds_contents` or with `method_id`.
             RunStillRunningError: The server answered 202 (the protocol's optional async
                 degrade) — the run continues server-side; resume by `pipeline_run_id`.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
@@ -588,6 +594,11 @@ class PipelexAPIClient(MthdsAPIClient):
             if is_gateway_cut_off(exc, elapsed_seconds):
                 raise PipelineExecuteTimeoutError(_execute_timeout_message(elapsed_seconds), elapsed_seconds=elapsed_seconds) from exc
             raise
+        except PipelineRequestError as exc:
+            refined = _with_verdict(exc)
+            if refined is exc:
+                raise
+            raise refined from exc
         # Re-validate the base result into the enriched subclass (adds the `.main_stuff` accessor;
         # the `main_stuff_name` extension + working memory ride `model_extra`/`pipe_output`).
         return PipelexExecuteResult.model_validate(result.model_dump())
@@ -626,9 +637,9 @@ class PipelexAPIClient(MthdsAPIClient):
             `None` otherwise.
 
         Raises:
-            PipelineRequestError: `extra` carries a protocol arg or a reserved named arg, a
-                selector is present and is not a string, or `method_ref` is combined with
-                inline `mthds_contents` or with `method_id`.
+            RequestArgumentError: Nothing to run was named, `extra` carries a protocol arg or a
+                reserved named arg, a selector is present and is not a string, or `method_ref` is
+                combined with inline `mthds_contents` or with `method_id`.
             RunLifecycleUnavailableError: The configured server has no run store.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
                 `422`, its diagnostics on `validation_errors`), auth, a server fault.
@@ -652,6 +663,11 @@ class PipelexAPIClient(MthdsAPIClient):
             # status, the body and the URL, which is all the missing-route test reads.
             self._raise_if_lifecycle_unavailable(status=exc.status, body=exc.response_body, url=exc.request_url or self._url("start"))
             raise
+        except PipelineRequestError as exc:
+            refined = _with_verdict(exc)
+            if refined is exc:
+                raise
+            raise refined from exc
         finally:
             _REQUEST_TIMEOUT_OVERRIDE.reset(token)
         # Re-validate the base ack into the Pipelex-branded subtype (types `method_provenance`;
@@ -734,7 +750,7 @@ class PipelexAPIClient(MthdsAPIClient):
             read as enums; import the per-kind types from `mthds.protocol.input_form`.
 
         Raises:
-            PipelineRequestError: Zero or several selectors were supplied, a selector is not a
+            RequestArgumentError: Zero or several selectors were supplied, a selector is not a
                 string, or `mthds_sources` was supplied beside a selector.
             ApiResponseError: No verdict could be produced — a request-shape `422`, a selector
                 that did not resolve, auth, a server fault.
@@ -745,13 +761,13 @@ class PipelexAPIClient(MthdsAPIClient):
         selector_count = sum(1 for present in (bool(mthds_contents), selected_method_ref is not None, selected_method_id is not None) if present)
         if selector_count != 1:
             msg = "validate() takes exactly one method selector: inline mthds_contents, method_ref, or method_id."
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg)
         if mthds_sources is not None and not mthds_contents:
             msg = (
                 "mthds_sources labels inline mthds_contents; a method_ref / method_id validation gets "
                 "its source labels from the package's (or the stored method's) real file names."
             )
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg)
 
         if mthds_contents:
             extra: dict[str, Any] = {"render": _with_validate_markdown_render(render)}
@@ -801,11 +817,11 @@ class PipelexAPIClient(MthdsAPIClient):
                 `validate` for the semantics.
 
         Raises:
-            PipelineRequestError: If `files` is empty.
+            RequestArgumentError: If `files` is empty.
         """
         if not files:
             msg = "At least one MTHDS file must be provided to validate_files()."
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg)
 
         mthds_contents = [mthds_file.content for mthds_file in files]
         has_any_uri = any(mthds_file.uri is not None for mthds_file in files)
@@ -871,7 +887,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 applies only when `main_stuff` was asked for.
 
         Raises:
-            PipelineRequestError: If `artifacts` is an empty selection, which names nothing to read.
+            RequestArgumentError: If `artifacts` is an empty selection, which names nothing to read.
             MissingMainStuffError: If a completed run asked for its main stuff delivers none.
             RunLifecycleUnavailableError: If the lifecycle routes are absent (a bare runner).
             ApiUnreachableError: If the host cannot be reached (DNS / connect / TLS / timeout).
@@ -1664,19 +1680,44 @@ class PipelexAPIClient(MthdsAPIClient):
     #
     # The origin-level liveness probe. `/health` is served at the origin, NOT under the
     # `/v1` prefix, and is out-of-protocol — the MTHDS Protocol defines no health route.
-    # It rides `_request_json`, the plainer regime: a non-2xx raises `PipelineRequestError`,
-    # not the product `ApiResponseError`, since liveness needs no `code` taxonomy.
+    # It rides the same transport and the same error as every route, as `@pipelex/sdk`'s does.
 
     async def health(self) -> dict[str, Any]:
-        """Origin-level liveness probe — `GET {origin}/health` (NOT under the `/v1` prefix)."""
-        result = await self._request_json("GET", f"{self.origin_url}/health")
-        return cast("dict[str, Any]", result)
+        """Origin-level liveness probe — `GET {origin}/health` (NOT under the `/v1` prefix).
+
+        Raises:
+            ApiResponseError: The origin answered non-2xx; the message names `/health`, and the verdict
+                is the fallback's reading of the status, since the probe answers no problem document.
+            ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
+        """
+        url = f"{self.origin_url}/health"
+        response = await self._send("GET", url, content=None, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
+        if not response.is_success:
+            raise self._api_response_error(method="GET", path="/health", request_url=url, response=response)
+        return cast("dict[str, Any]", response.json())
 
 
 # ── Module helpers ──────────────────────────────────────────────────────
 
 
 _KNOWN_RUN_STATUS_NAMES: frozenset[str] = frozenset(RunStatus.__members__)
+
+
+def _with_verdict(exc: PipelineRequestError) -> PipelineRequestError:
+    """The error the inherited `execute` or `start` raised, as this SDK's class carrying a verdict.
+
+    The base client raises two errors of the standard's own classes, which carry none: a bare
+    `PipelineRequestError` refusing the arguments before any request (nothing to run was named, or
+    `extra` carries a protocol arg), answered here with a `RequestArgumentError` of the same message, and
+    `mthds`'s `RunStillRunningError` on the protocol's 202 degrade, answered with this SDK's subclass of it,
+    the same members carried over. An error that already carries a verdict, such as the
+    `ApiUnreachableError` the `_send` override raises, is returned as it is.
+    """
+    if isinstance(exc, PipelexRequestError):
+        return exc
+    if isinstance(exc, _MthdsRunStillRunningError):
+        return RunStillRunningError(str(exc), run_id=exc.run_id, retry_after_seconds=exc.retry_after_seconds, location=exc.location)
+    return RequestArgumentError(str(exc))
 
 
 def _normalized_selector(*, name: str, value: object) -> str | None:
@@ -1694,13 +1735,13 @@ def _normalized_selector(*, name: str, value: object) -> str | None:
     it is not sent and does not satisfy the base client's "something to run" precondition.
 
     Raises:
-        PipelineRequestError: If the value is present and is not a string.
+        RequestArgumentError: If the value is present and is not a string.
     """
     if value is None:
         return None
     if not isinstance(value, str):
         msg = f"{name} must be a string, received {type(value).__name__}."
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
     return value or None
 
 
@@ -1728,14 +1769,14 @@ def _merge_run_extensions(extra: dict[str, Any] | None, *, method_ref: object, m
         The merged extension mapping to hand to the base client, or None if there is nothing.
 
     Raises:
-        PipelineRequestError: If `extra` carries a named arg this client reserves, or if a
+        RequestArgumentError: If `extra` carries a named arg this client reserves, or if a
             selector is present and is not a string.
     """
     extensions: dict[str, Any] = dict(extra or {})
     reserved_overlap = extensions.keys() & _RESERVED_RUN_ARGS
     if reserved_overlap:
         msg = f"extra carries reserved request args {sorted(reserved_overlap)} — pass them as named parameters instead."
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
     selected_method_ref = _normalized_selector(name="method_ref", value=method_ref)
     if selected_method_ref is not None:
         extensions["method_ref"] = selected_method_ref
@@ -1765,13 +1806,13 @@ def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, m
         return
     if mthds_contents:
         msg = "method_ref and inline mthds_contents are mutually exclusive; send one or the other."
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
     if "method_id" in merged_extra:
         msg = (
             "method_ref and method_id are mutually exclusive: an address run carries its own provenance "
             "and takes no run-history linkage id. Send exactly one method selector."
         )
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
 
 
 def _quick_request_timeout_seconds(request_timeout_seconds: float) -> float:
@@ -1851,7 +1892,7 @@ def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArt
     requested = set(artifacts)
     if not requested:
         msg = "An artifact selection must name at least one RunArtifact; pass artifacts=None to read them all."
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
     return tuple(artifact for artifact in RunArtifact if artifact in requested)
 
 
@@ -1873,7 +1914,7 @@ def is_gateway_cut_off(exc: BaseException, elapsed_seconds: float) -> bool:
     if elapsed_seconds < _GATEWAY_TIMEOUT_THRESHOLD_SECONDS:
         return False
     if isinstance(exc, ApiUnreachableError):
-        return exc.code == _ABORT_TIMEOUT_CODE
+        return exc.code == ABORT_TIMEOUT_CODE
     if isinstance(exc, ApiResponseError):
         return exc.status in {503, 504}
     return False

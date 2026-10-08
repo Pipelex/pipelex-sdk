@@ -11,10 +11,10 @@
  *
  * It is also the platform's reference: the verdicts the platform will send on its own refusals
  * are decided against this table, so a refusal keeps its verdict when the platform starts
- * sending one. The Python twin, `pipelex-sdk`, must apply the same table. The case file
- * `tests/fixtures/error-verdicts.json` holds every row, and this package's suite drives the table
- * through it; the Python suite is to drive its own code through an identical copy, once that copy
- * is added.
+ * sending one. The Python twin, `pipelex-sdk`, applies the same table as its `fallback_verdict`.
+ * The case file `tests/fixtures/error-verdicts.json` holds every row, and this package's suite
+ * drives the table through it; the Python suite drives its own code through the copy that
+ * `make shared-files` writes at the repository's root, byte for byte identical.
  */
 
 import type { ErrorVerdict } from "./errors.js";
