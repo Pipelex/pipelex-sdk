@@ -5,6 +5,12 @@ wording is the SDK's own, wherever the fields carry what a person needs: the API
 step it advises and the request id support asks for. That keeps this command and its JavaScript
 twin saying the same thing for the same answer, which is what the recorded case table
 holds them to.
+
+Where no field carries the reason, the command prints the SDK's message as it: a file that could
+not be uploaded, whose message says what the upload route's status means for an upload, and a 2xx
+answer the SDK could not read, which carries no problem document, so that its message alone names
+what could not be read (`API POST /v1/start answered 202 with a body that is not JSON`). Both SDKs
+word those messages alike, and the case table holds the ones both meet.
 """
 
 from __future__ import annotations
@@ -125,18 +131,26 @@ def _present_upload_failure(
 
 
 def _present_refusal(exc: ApiResponseError) -> PresentedError:
-    """An answer the API gave instead of a result: its status, its reason and its advice."""
+    """An answer the API gave instead of a result: its status, its reason and its advice.
+
+    A 2xx status is an answer the SDK could not read, the one `ApiResponseError` it raises with a
+    success status: its reason is the SDK's message, which names the route and what could not be
+    read, since the answer is no problem document. A refusal's reason is the problem's `detail`,
+    else its `title`, and a problem that gives neither is said to give no reason.
+    """
+    lines: list[str]
+    reason: str
     if 200 <= exc.status < 300:
         lines = [f"Error: the API's answer could not be read (status {exc.status})."]
+        reason = str(exc)
     else:
         lines = [f"Error: the API refused the request (status {exc.status})."]
-    reason: str
-    if exc.server_message is not None:
-        reason = exc.server_message
-    elif exc.title is not None:
-        reason = exc.title
-    else:
-        reason = "the answer gives no reason"
+        if exc.server_message is not None:
+            reason = exc.server_message
+        elif exc.title is not None:
+            reason = exc.title
+        else:
+            reason = "the answer gives no reason"
     lines.append(f"Reason: {reason}")
     lines.extend(validation_line(source=item.source, message=item.message) for item in exc.validation_errors or [])
     if exc.user_action is not None and exc.user_action.detail:
