@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import pytest
 from mthds.protocol.exceptions import PipelineRequestError
@@ -39,9 +39,28 @@ from tests.unit.conftest import BASE_URL
 from tests.unit.test_data import MethodVersionBodies
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
     from pytest_mock import MockType
 
     from tests.unit.conftest import ResponseBuilder, SendPatcher
+
+
+#: A call of one method route on a client, as a coroutine `asyncio.run` drives.
+MethodRouteCall: TypeAlias = "Callable[[PipelexAPIClient], Coroutine[Any, Any, object]]"
+
+_SUFFIXED_ID = "mt_receipts01@3"
+
+#: One call of each method route, addressed by a suffixed id that every one of them refuses before sending.
+_SUFFIXED_ID_ROUTES: list[tuple[str, MethodRouteCall]] = [
+    ("get_method", lambda client: client.get_method(_SUFFIXED_ID)),
+    ("write_draft", lambda client: client.write_draft(_SUFFIXED_ID, MethodDraftInput(mthds="src"))),
+    ("rename_method", lambda client: client.rename_method(_SUFFIXED_ID, "Receipts")),
+    ("publish_method", lambda client: client.publish_method(_SUFFIXED_ID, expected_draft_updated_at="t")),
+    ("list_method_versions", lambda client: client.list_method_versions(_SUFFIXED_ID)),
+    ("get_method_version", lambda client: client.get_method_version(_SUFFIXED_ID, 3)),
+    ("delete_method", lambda client: client.delete_method(_SUFFIXED_ID)),
+]
 
 
 def _sent_method(send: MockType) -> str:
@@ -380,6 +399,24 @@ class TestClientMethodVersions:
 
         assert exc_info.value.status == 404
         assert exc_info.value.code == MethodErrorCode.METHOD_VERSION_NOT_FOUND
+
+    # ----- the method routes take a bare id ----------------------------------------------------
+
+    @pytest.mark.parametrize("route", [pytest.param(route, id=name) for name, route in _SUFFIXED_ID_ROUTES])
+    def test_a_method_route_refuses_a_suffixed_id_before_any_request(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, route: MethodRouteCall
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body={}))
+
+        with pytest.raises(PipelineRequestError) as exc_info:
+            asyncio.run(route(api_client))
+
+        assert str(exc_info.value) == (
+            '"mt_receipts01@3" carries a version suffix, and the method routes take a bare catalog id: they address the method '
+            "itself, never one of its versions. Strip the suffix with parse_method_selector, and read a published version "
+            "with get_method_version."
+        )
+        send.assert_not_called()
 
     # ----- the error codes ---------------------------------------------------------------------
 

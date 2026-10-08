@@ -436,6 +436,41 @@ describe("getMethodVersion", () => {
   });
 });
 
+describe("the method routes take a bare id", () => {
+  const SELECTOR = "mt_receipts01@3";
+  const calls: [string, (client: PipelexApiClient) => Promise<unknown>][] = [
+    ["getMethod", (client) => client.getMethod(SELECTOR)],
+    ["getMethodClosure", (client) => client.getMethodClosure(SELECTOR)],
+    ["writeDraft", (client) => client.writeDraft(SELECTOR, { mthds: "src" })],
+    ["renameMethod", (client) => client.renameMethod(SELECTOR, { name: "Receipts" })],
+    [
+      "publishMethod",
+      (client) => client.publishMethod(SELECTOR, { expected_draft_updated_at: "t" }),
+    ],
+    ["listMethodVersions", (client) => client.listMethodVersions(SELECTOR)],
+    ["getMethodVersion", (client) => client.getMethodVersion(SELECTOR, 3)],
+    ["deleteMethod", (client) => client.deleteMethod(SELECTOR)],
+  ];
+
+  it.each(calls)(
+    "%s refuses a suffixed id before sending anything, saying how to read what it names",
+    async (_name, call) => {
+      const spy = vi.spyOn(globalThis, "fetch");
+
+      const err = await call(makeClient()).catch((thrown: unknown) => thrown);
+
+      expect(err).toBeInstanceOf(RequestArgumentError);
+      expect((err as RequestArgumentError).message).toBe(
+        '"mt_receipts01@3" carries a version suffix, and the method routes take a bare catalog ' +
+          "id: they address the method itself, never one of its versions. Strip the suffix " +
+          "with parseMethodSelector, and read a published version with getMethodVersion.",
+      );
+      expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+      expect(spy).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe("the removed whole-method write", () => {
   it("is gone from the client: the draft write and the rename replace it", () => {
     const client = makeClient();

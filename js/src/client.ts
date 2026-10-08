@@ -382,6 +382,25 @@ function withWirePython<T extends { python?: MethodFile[] }>(input: T): WithWire
   return python === undefined ? rest : { ...rest, python: serializeMethodFiles(python) };
 }
 
+/**
+ * The path of a method route, `methods/{id}`, for a bare catalog id. The method routes address
+ * the method itself, never one of its versions, and the platform does not parse a suffix there:
+ * `mt_x@3` would be looked up as an id of its own and answer `404 not_found`, which reads as a
+ * method that does not exist. So a suffixed id is refused before anything is sent, saying how to
+ * read what it names. Stripping it instead would answer the draft for a caller that named a
+ * version.
+ */
+function methodPath(methodId: string): string {
+  if (typeof methodId === "string" && methodId.includes("@")) {
+    throw new RequestArgumentError(
+      `"${methodId}" carries a version suffix, and the method routes take a bare catalog id: ` +
+        "they address the method itself, never one of its versions. Strip the suffix with " +
+        "parseMethodSelector, and read a published version with getMethodVersion.",
+    );
+  }
+  return `methods/${encodeURIComponent(methodId)}`;
+}
+
 export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
@@ -1703,10 +1722,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *
    * Takes a bare catalog id: the method routes address the method itself, never a version of
    * it. A caller holding `mt_…@3` strips the suffix with `parseMethodSelector` and reads that
-   * version with `getMethodVersion`.
+   * version with `getMethodVersion`. Every method route throws `RequestArgumentError` for a
+   * suffixed id, before any request, rather than read back the `404` the platform would answer.
    */
   async getMethod(methodId: string): Promise<MethodData> {
-    return this.requestMethodData("GET", `methods/${encodeURIComponent(methodId)}`);
+    return this.requestMethodData("GET", methodPath(methodId));
   }
 
   /**
@@ -1763,16 +1783,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * moved since is refused with a `409` whose `code` is `method_update_conflict`, and nothing is
    * written. Without it, last writer wins.
    *
-   * Takes a bare catalog id. Throws `ApiResponseError`: `404` `not_found` for an unknown or
-   * foreign-org method, `409` `method_being_deleted` while its erasure runs, `413`
-   * `payload_too_large` for a draft over the store's item limit, `403` for a read-only key.
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`
+   * for an unknown or foreign-org method, `409` `method_being_deleted` while its erasure runs,
+   * `413` `payload_too_large` for a draft over the store's item limit, `403` for a read-only
+   * key.
    */
   async writeDraft(methodId: string, input: MethodDraftInput): Promise<MethodData> {
-    return this.requestMethodData(
-      "PUT",
-      `methods/${encodeURIComponent(methodId)}/draft`,
-      withWirePython(input),
-    );
+    return this.requestMethodData("PUT", `${methodPath(methodId)}/draft`, withWirePython(input));
   }
 
   /**
@@ -1781,12 +1798,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * draft, so the `updated_at` a caller holds stays valid for its next `writeDraft` or
    * `publishMethod`.
    *
-   * Takes a bare catalog id. Throws `ApiResponseError`: `404` `not_found`, `409`
-   * `method_being_deleted`, `403` for a read-only key, `422` for an empty name, and `413`
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`,
+   * `409` `method_being_deleted`, `403` for a read-only key, `422` for an empty name, and `413`
    * `payload_too_large` for a name so long it would leave the method too large to publish.
    */
   async renameMethod(methodId: string, input: MethodRenameInput): Promise<MethodData> {
-    return this.requestMethodData("PATCH", `methods/${encodeURIComponent(methodId)}`, {
+    return this.requestMethodData("PATCH", methodPath(methodId), {
       name: input.name,
     });
   }
@@ -1805,12 +1822,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * pending signatures), a `message` and the runner's `validation` verdict. Every arm carries the
    * `method`. A publish moves no token.
    *
-   * Takes a bare catalog id. Throws `RequestArgumentError` when `expected_draft_updated_at` is not
-   * a string, before any request. Throws `ApiResponseError` when no verdict was produced: `409`
-   * `method_update_conflict` for a draft that moved since the token, `409`
-   * `method_being_deleted`, `404` `not_found`, `422` for a draft with no `.mthds` file or whose
-   * file names a run could not assemble (one name used by a `.mthds` and a Python file), `413`
-   * `payload_too_large` for a draft too large to publish, and `403` for a read-only key.
+   * Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` when
+   * `expected_draft_updated_at` is not a string, before any request. Throws `ApiResponseError`
+   * when no verdict was produced: `409` `method_update_conflict` for a draft that moved since
+   * the token, `409` `method_being_deleted`, `404` `not_found`, `422` for a draft with no
+   * `.mthds` file or whose file names a run could not assemble (one name used by a `.mthds` and
+   * a Python file), `413` `payload_too_large` for a draft too large to publish, and `403` for a
+   * read-only key.
    *
    * Only a draft that differs from the latest version reaches the runner, and a runner that
    * cannot be reached, answers unusably or does not finish within the platform's deadline is a
@@ -1830,7 +1848,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
           "updated_at) the caller last saw, so a publish never takes a draft it has not seen.",
       );
     }
-    const endpoint = `methods/${encodeURIComponent(methodId)}/publish`;
+    const endpoint = `${methodPath(methodId)}/publish`;
     const res = await this.requestProductAnswer("POST", endpoint, {
       expected_draft_updated_at: token,
     });
@@ -1870,10 +1888,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * may be short while `nextCursor` is set, because the platform reads versions whole. A method
    * never published answers an empty page.
    *
-   * Takes a bare catalog id. Throws `ApiResponseError`: `404` `not_found` for an unknown method,
-   * `409` `method_being_deleted`, `400` for a cursor from another method. A page whose `items`
-   * is not an array or whose `next_cursor` is neither a string nor `null` is an answer the SDK
-   * cannot read, thrown as an `ApiResponseError` too.
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`
+   * for an unknown method, `409` `method_being_deleted`, `400` for a cursor from another method.
+   * A page whose `items` is not an array or whose `next_cursor` is neither a string nor `null`
+   * is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async listMethodVersions(
     methodId: string,
@@ -1885,7 +1903,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.cursor !== undefined) params.set("cursor", query.cursor);
     const suffix = params.toString();
-    const endpoint = `methods/${encodeURIComponent(methodId)}/versions`;
+    const endpoint = `${methodPath(methodId)}/versions`;
     return this.requestPage<MethodVersionSummary>(suffix ? `${endpoint}?${suffix}` : endpoint);
   }
 
@@ -1894,10 +1912,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `GET /v1/methods/{id}/versions/{n}`. Its `python` is parsed into `MethodFile[]` as a
    * method's is.
    *
-   * Takes a bare catalog id and the version number. Throws `RequestArgumentError` for a
-   * `version` that is not a positive integer, before any request. Throws `ApiResponseError`:
-   * `404` `method_version_not_found` for a version the method never published, `404`
-   * `not_found` for an unknown method, `409` `method_being_deleted`.
+   * Takes a bare catalog id, as `getMethod` does, and the version number. Throws
+   * `RequestArgumentError` for a `version` that is not a positive integer, before any request.
+   * Throws `ApiResponseError`: `404` `method_version_not_found` for a version the method never
+   * published, `404` `not_found` for an unknown method, `409` `method_being_deleted`.
    */
   async getMethodVersion(methodId: string, version: number): Promise<MethodVersion> {
     if (!Number.isSafeInteger(version) || version < 1) {
@@ -1905,7 +1923,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         `getMethodVersion() takes a version number, a positive integer; got ${String(version)}.`,
       );
     }
-    const endpoint = `methods/${encodeURIComponent(methodId)}/versions/${version}`;
+    const endpoint = `${methodPath(methodId)}/versions/${version}`;
     const res = await this.requestProductAnswer("GET", endpoint, undefined);
     const wire = this.readObjectAnswer<MethodVersionWire>("GET", endpoint, res);
     return this.readStoredSources<MethodVersion>("GET", endpoint, res, wire, "a published version");
@@ -1926,10 +1944,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * A double-clicked delete is safe: the claim is a conditional write, so the
    * second call is an `ApiResponseError` (`409 method_being_deleted`) rather than a
    * second cascade over the same runs. An unknown or foreign-org id is a `404`. The
-   * erasure deletes the method's published versions with the rest.
+   * erasure deletes the method's published versions with the rest. Takes a bare catalog id,
+   * as `getMethod` does: the whole method is erased, never one of its versions.
    */
   async deleteMethod(methodId: string): Promise<MethodDeletionAccepted> {
-    return this.requestProduct("DELETE", `methods/${encodeURIComponent(methodId)}`);
+    return this.requestProduct("DELETE", methodPath(methodId));
   }
 
   /** The caller's org memberships + active-org feature flags — `GET /v1/organizations/memberships`. */

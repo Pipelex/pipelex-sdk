@@ -1245,9 +1245,10 @@ class PipelexAPIClient(MthdsAPIClient):
         Takes a bare catalog id: the method routes address the method itself, never a version of
         it. A caller holding `mt_…@3` strips the suffix with
         `pipelex_sdk.method_selector.parse_method_selector` and reads that version with
-        `get_method_version`.
+        `get_method_version`. Every method route raises `PipelineRequestError` for a suffixed id,
+        before any request, rather than read back the `404` the platform would answer.
         """
-        return MethodData.model_validate(await self._request_product("GET", f"methods/{quote(method_id, safe='')}"))
+        return MethodData.model_validate(await self._request_product("GET", _method_path(method_id)))
 
     async def create_method(self, write_input: MethodWriteInput) -> MethodData:
         """Create a method — `POST /v1/methods`.
@@ -1283,7 +1284,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 limit; `403` for a read-only key.
         """
         body = draft.model_dump(mode="json", exclude_unset=True)
-        return MethodData.model_validate(await self._request_product("PUT", f"methods/{quote(method_id, safe='')}/draft", body=body))
+        return MethodData.model_validate(await self._request_product("PUT", f"{_method_path(method_id)}/draft", body=body))
 
     async def rename_method(self, method_id: str, name: str) -> MethodData:
         """Rename a method — `PATCH /v1/methods/{id}`.
@@ -1292,12 +1293,16 @@ class PipelexAPIClient(MthdsAPIClient):
         token and never commits the draft, so the `updated_at` a caller holds stays valid for its
         next `write_draft` or `publish_method`.
 
+        Args:
+            method_id: The method's bare catalog id.
+            name: The new name.
+
         Raises:
             ApiResponseError: `404` `not_found`; `409` `method_being_deleted`; `403` for a read-only
                 key; `422` for an empty name; `413` `payload_too_large` for a name so long it would
                 leave the method too large to publish.
         """
-        return MethodData.model_validate(await self._request_product("PATCH", f"methods/{quote(method_id, safe='')}", body={"name": name}))
+        return MethodData.model_validate(await self._request_product("PATCH", _method_path(method_id), body={"name": name}))
 
     async def publish_method(self, method_id: str, *, expected_draft_updated_at: str) -> MethodPublishResult:
         """Publish a method's draft as its next version — `POST /v1/methods/{id}/publish`.
@@ -1344,7 +1349,7 @@ class PipelexAPIClient(MthdsAPIClient):
             )
             raise PipelineRequestError(msg)
         body = {"expected_draft_updated_at": token}
-        answer = await self._request_product("POST", f"methods/{quote(method_id, safe='')}/publish", body=body)
+        answer = await self._request_product("POST", f"{_method_path(method_id)}/publish", body=body)
         return MethodPublishResultAdapter.validate_python(answer)
 
     async def list_method_versions(self, method_id: str, *, limit: int | None = None, cursor: str | None = None) -> MethodVersionPage:
@@ -1365,7 +1370,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 `400` for a cursor from another method.
         """
         query = _product_query({"limit": limit, "cursor": cursor})
-        return MethodVersionPage.model_validate(await self._request_product("GET", f"methods/{quote(method_id, safe='')}/versions{query}"))
+        return MethodVersionPage.model_validate(await self._request_product("GET", f"{_method_path(method_id)}/versions{query}"))
 
     async def get_method_version(self, method_id: str, version: int) -> MethodVersion:
         """Read one published version of a method, with its sources — `GET /v1/methods/{id}/versions/{n}`.
@@ -1388,7 +1393,7 @@ class PipelexAPIClient(MthdsAPIClient):
         if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 1:
             msg = f"get_method_version() takes a version number, a positive integer; got {version!r}."
             raise PipelineRequestError(msg)
-        return MethodVersion.model_validate(await self._request_product("GET", f"methods/{quote(method_id, safe='')}/versions/{version}"))
+        return MethodVersion.model_validate(await self._request_product("GET", f"{_method_path(method_id)}/versions/{version}"))
 
     async def delete_method(self, method_id: str) -> MethodDeletionAccepted:
         """Erase a method and everything it produced — `DELETE /v1/methods/{id}`.
@@ -1407,13 +1412,14 @@ class PipelexAPIClient(MthdsAPIClient):
         versions with the rest.
 
         Args:
-            method_id: The method to erase.
+            method_id: The method's bare catalog id: the whole method is erased, never one of its
+                versions.
 
         Returns:
             The platform's acceptance — `method_id`, the `deletion_state` the cascade started
             in, and the `deletion_job_id` a caller can log or correlate.
         """
-        return MethodDeletionAccepted.model_validate(await self._request_product("DELETE", f"methods/{quote(method_id, safe='')}"))
+        return MethodDeletionAccepted.model_validate(await self._request_product("DELETE", _method_path(method_id)))
 
     async def list_memberships(self) -> MembershipsResponse:
         """The caller's org memberships + active-org feature flags — `GET /v1/organizations/memberships`."""
@@ -1941,6 +1947,28 @@ def _product_query(params: dict[str, str | int | None]) -> str:
     if not kept:
         return ""
     return "?" + urlencode(kept)
+
+
+def _method_path(method_id: str) -> str:
+    """The path of a method route, `methods/{id}`, for a bare catalog id.
+
+    The method routes address the method itself, never one of its versions, and the platform does
+    not parse a suffix there: `mt_x@3` would be looked up as an id of its own and answer
+    `404 not_found`, which reads as a method that does not exist. So a suffixed id is refused
+    before anything is sent, saying how to read what it names. Stripping it instead would answer
+    the draft for a caller that named a version.
+
+    Raises:
+        PipelineRequestError: `method_id` carries a version suffix.
+    """
+    if "@" in method_id:
+        msg = (
+            f'"{method_id}" carries a version suffix, and the method routes take a bare catalog id: they address the method '
+            "itself, never one of its versions. Strip the suffix with parse_method_selector, and read a published version "
+            "with get_method_version."
+        )
+        raise PipelineRequestError(msg)
+    return f"methods/{quote(method_id, safe='')}"
 
 
 def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArtifact, ...] | None:
