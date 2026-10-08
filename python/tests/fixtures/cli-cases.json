@@ -497,6 +497,19 @@
       }
     },
     {
+      "name": "method/catalog-id-version-malformed",
+      "summary": "A catalog id's version suffix is a positive number without a leading zero or draft; any other is refused before any request, naming the forms that are.",
+      "argv": ["run", "--method", "mt_receipts01@03", "--inputs-template"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"mt_receipts01@03\" names no version: a catalog id ends in @<version>, a positive number without a leading zero, in @draft, or in nothing.\n",
+          "mt_receipts01@draft"
+        ]
+      }
+    },
+    {
       "name": "method/catalog-like-path",
       "summary": "A file whose name starts with mt_ is reached as ./mt_..., a path.",
       "argv": ["run", "--method", "./mt_receipts.mthds", "--inputs-template"],
@@ -1698,6 +1711,37 @@
       }
     },
     {
+      "name": "run/catalog-id-pinned",
+      "summary": "A catalog id with a version suffix runs as that method_id, whole: the API resolves the version.",
+      "argv": ["run", "--method", "mt_receipts01@3"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "request_body": { "method_id": "mt_receipts01@3" },
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-8",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z",
+              "method_version": 3
+            }
+          }
+        ],
+        "GET /v1/runs/run-8/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": { "pipeline_run_id": "run-8", "main_stuff": { "text": "All good" } }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"text\": \"All good\"\n}\n",
+        "stderr": ["Run started: run-8\n"]
+      }
+    },
+    {
       "name": "run/list-bare",
       "summary": "A list output that arrives bare is printed bare.",
       "argv": ["run", "--method", "mt_receipts01"],
@@ -2703,6 +2747,54 @@
           {
             "path": "resume-review-v2",
             "text": "#!/bin/sh\n# resume-review-v2: runs mt_receipts01 on the Pipelex API.\n# Written by {{WRITER}} {{SDK_VERSION}}. Needs {{NEEDS}}, and PIPELEX_API_KEY in the environment.\n# Usage: ./resume-review-v2 --inputs inputs.json, or ./resume-review-v2 --inputs-template to see what to fill in.\nexec {{RUNNER}} run --method 'mt_receipts01' \"$@\"\n",
+            "executable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "script/catalog-id-pinned",
+      "summary": "A pinned catalog id's script keeps the version suffix, and is named after the method's catalog entry, read by its bare id.",
+      "argv": ["script", "--method", "mt_receipts01@3"],
+      "routes": {
+        "POST /v1/pipe-io": [
+          { "request_body": { "method_id": "mt_receipts01@3" }, "answer": "pipe-io/receipt-review" }
+        ],
+        "GET /v1/methods/mt_receipts01": [
+          {
+            "status": 200,
+            "body": {
+              "method_id": "mt_receipts01",
+              "org_id": "org_1",
+              "created_by_user_id": "user_1",
+              "name": "Résumé Review (v2)",
+              "mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+              "python": "",
+              "created_at": "2026-10-01T09:00:00Z",
+              "updated_at": "2026-10-01T09:00:00Z",
+              "draft_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+              "latest_version": 3,
+              "latest_published": {
+                "version": 3,
+                "source_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+                "crate_fingerprint": null,
+                "runner_version": "0.80.0",
+                "description": null,
+                "published_at": "2026-10-02T09:00:00Z",
+                "published_by": "user_1"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "./resume-review-v2\n",
+        "stderr": ["Wrote ./resume-review-v2."],
+        "files": [
+          {
+            "path": "resume-review-v2",
+            "text": "#!/bin/sh\n# resume-review-v2: runs mt_receipts01@3 on the Pipelex API.\n# Written by {{WRITER}} {{SDK_VERSION}}. Needs {{NEEDS}}, and PIPELEX_API_KEY in the environment.\n# Usage: ./resume-review-v2 --inputs inputs.json, or ./resume-review-v2 --inputs-template to see what to fill in.\nexec {{RUNNER}} run --method 'mt_receipts01@3' \"$@\"\n",
             "executable": true
           }
         ]

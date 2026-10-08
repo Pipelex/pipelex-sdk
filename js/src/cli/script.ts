@@ -13,7 +13,7 @@
 import { lstat, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { SDK_VERSION } from "../index.js";
+import { parseMethodSelector, SDK_VERSION } from "../index.js";
 import type { PipelexApiClient } from "../index.js";
 import { parseFlags } from "./args.js";
 import { systemReason } from "./bundle.js";
@@ -175,15 +175,18 @@ function defaultName(candidate: string, method: string): string {
 }
 
 /**
- * A catalog method's name, kebab-cased, read from its catalog entry. An entry whose name is
- * missing or not a string gives an empty one, which asks for `--name` as an unusable name does.
+ * A catalog method's name, kebab-cased, read from its catalog entry. The name belongs to the
+ * method, not to a version, and the method route takes the bare id, so a version suffix is
+ * stripped for the read and kept in the script. An entry whose name is missing or not a
+ * string gives an empty one, which asks for `--name` as an unusable name does.
  */
 async function catalogName(
   client: PipelexApiClient,
   methodId: string,
   io: CommandIO,
 ): Promise<string> {
-  const entry = await untilInterrupted(() => client.getMethod(methodId), io.interrupt);
+  const bareId = parseMethodSelector(methodId).method_id;
+  const entry = await untilInterrupted(() => client.getMethod(bareId), io.interrupt);
   const name: unknown = entry.name;
   return typeof name === "string" ? kebabCase(name) : "";
 }

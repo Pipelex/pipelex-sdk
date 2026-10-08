@@ -70,7 +70,7 @@ const results = await client.startAndWaitForResult(
 );
 ```
 
-It is never called on the blocking path, a bare runner's `POST /v1/execute` or the fallback to it, which has no run id to give before it answers. The acknowledgement is handed over whole, a `method_ref` run's `method_provenance` included. The callback runs synchronously and its return value is ignored; an exception it throws propagates out of `startAndWaitForResult` before anything is polled, and the run it was told about keeps going.
+It is never called on the blocking path, a bare runner's `POST /v1/execute` or the fallback to it, which has no run id to give before it answers. The acknowledgement is handed over whole, a `method_ref` run's `method_provenance` and a `method_id` run's `method_version` (the version the run runs, a number or `"draft"`) included. The callback runs synchronously and its return value is ignored; an exception it throws propagates out of `startAndWaitForResult` before anything is polled, and the run it was told about keeps going.
 
 **An abort before the run exists creates none.** The `signal` is read before the run is started as well as during the wait: a caller that aborts while the `GET /v1/version` handshake is in flight gets its abort, and neither `POST /v1/start` nor the blocking `POST /v1/execute` is sent; nor is the execute when the abort lands while a runner that looked hosted refuses the start. Once the start or the execute is sent, the abort stops only the wait, and a started run goes on, by its id.
 

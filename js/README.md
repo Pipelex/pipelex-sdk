@@ -27,7 +27,7 @@ npx @pipelex/sdk run --method github.com/acme/methods/receipt-review@v1.0.0 --in
 npx @pipelex/sdk run --method github.com/acme/methods/receipt-review@v1.0.0 --inputs inputs.json
 ```
 
-`--method` takes a published address, a catalog id (`mt_…`) or a local `.mthds` file or bundle directory. The run's main output is printed on stdout as JSON, and the run id, each uploaded file and every error on stderr. `script` writes a method its own command, a shell script pinned to this SDK's version:
+`--method` takes a published address, a catalog id (`mt_…`, which runs the method's latest published version, `mt_…@<n>` for a fixed version or `mt_…@draft` for its draft) or a local `.mthds` file or bundle directory. The run's main output is printed on stdout as JSON, and the run id, each uploaded file and every error on stderr. `script` writes a method its own command, a shell script pinned to this SDK's version:
 
 ```bash
 npx @pipelex/sdk script --method github.com/acme/methods/receipt-review@v1.0.0
@@ -65,6 +65,11 @@ const ack = await client.start({
   inputs: { document: { url: "https://example.com/report.pdf" } },
 });
 console.log(ack.method_provenance); // { address, tag, commit_sha }
+
+// Or run a saved method by its catalog id. A bare id runs its latest published version,
+// `mt_…@3` version 3 and `mt_…@draft` its draft; the ack says which version runs.
+const saved = await client.start({ method_id: "mt_abc123@3", inputs: {} });
+console.log(saved.method_version); // 3
 ```
 
 ### Product routes
@@ -72,7 +77,7 @@ console.log(ack.method_provenance); // { address, tag, commit_sha }
 The hosted management surface (catalog, account, billing) hangs off the same client. Every route maps a non-2xx `problem+json` to a typed `ApiResponseError` (see [Errors](#errors) for how to branch on it):
 
 ```ts
-import { PipelexApiClient, ApiResponseError } from "@pipelex/sdk";
+import { PipelexApiClient, ApiResponseError, parseMethodSelector } from "@pipelex/sdk";
 
 const client = new PipelexApiClient({ apiKey: process.env.PIPELEX_API_KEY });
 
@@ -82,6 +87,21 @@ for await (const method of client.iterateMethods()) {
   // follows the cursor for callers that genuinely want the whole catalog
 }
 const created = await client.createMethod({ name: "Greeter", mthds: "domain = 'demo'" });
+
+// A saved method has a draft, written freely and never validated, and immutable published
+// versions. `updated_at` is the draft's token: echo it so no write or publish takes a draft
+// you have not seen.
+const draft = await client.writeDraft(created.method_id, {
+  mthds: "domain = 'demo'\n",
+  expected_updated_at: created.updated_at,
+});
+const published = await client.publishMethod(created.method_id, {
+  expected_draft_updated_at: draft.updated_at,
+});
+if (published.outcome === "refused") console.error(published.message, published.validation);
+else console.log(`version ${published.version.version}`); // "published" or "unchanged"
+const versions = await client.listMethodVersions(created.method_id); // newest first
+const { method_id, version } = parseMethodSelector("mt_abc123@3"); // the method routes take a bare id
 
 try {
   const { portal_url } = await client.getBillingPortal();

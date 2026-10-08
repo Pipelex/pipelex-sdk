@@ -36,6 +36,9 @@ export type {
 
 // Canonical parser: a stored method's polymorphic `MethodData.mthds` source → bundle contents.
 export { methodSourceToContents } from "./method-source.js";
+// A method selector (`mt_…`, `mt_…@<n>`, `mt_…@draft`) → its bare id and the version it names.
+export { parseMethodSelector } from "./method-selector.js";
+export type { ParsedMethodSelector } from "./method-selector.js";
 
 // The blocking `execute()` result — a `DictRunResultExecute` with a resolved `.main_stuff` — and
 // the lift from it onto `RunResults`, for a caller who drives `execute()` itself.
@@ -159,11 +162,24 @@ export type {
 export type {
   UserProfile,
   ListMethodsQuery,
+  ListMethodVersionsQuery,
   MethodData,
   MethodDeletionAccepted,
   MethodDeletionState,
+  MethodDraftInput,
   MethodPage,
+  MethodPublished,
+  MethodPublishInput,
+  MethodPublishOutcome,
+  MethodPublishRefusalReason,
+  MethodPublishRefused,
+  MethodPublishResult,
+  MethodPublishUnchanged,
+  MethodRenameInput,
   MethodSummary,
+  MethodVersion,
+  MethodVersionPage,
+  MethodVersionSummary,
   MethodWriteInput,
   Membership,
   MembershipsResponse,
@@ -253,6 +269,7 @@ export type {
   ApiResponseErrorOptions,
   ErrorDomain,
   ErrorVerdict,
+  MethodErrorCode,
   RejectedAssetCode,
   UploadTransportCode,
 } from "./errors.js";

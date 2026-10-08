@@ -83,10 +83,17 @@ export interface MethodProvenance {
 /**
  * The `POST /v1/start` 202 ack as the Pipelex API returns it — the protocol's
  * `RunResultStart` plus the server's `method_provenance` extension, populated
- * for `method_ref` runs and absent or `null` otherwise.
+ * for `method_ref` runs and absent or `null` otherwise, and the hosted
+ * `method_version`, populated for `method_id` runs.
  */
 export interface PipelexRunResultStart extends RunResultStart {
   method_provenance?: MethodProvenance | null;
+  /**
+   * Which version of the stored method a `method_id` run runs: the latest published version's
+   * number for a bare id, the pinned number for `mt_…@<n>`, `"draft"` for `mt_…@draft`. Absent
+   * or `null` for any other run, and on a server that does not resolve version selectors.
+   */
+  method_version?: number | "draft" | null;
 }
 
 /**
