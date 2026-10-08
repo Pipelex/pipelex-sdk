@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The web app template runs on `@pipelex/sdk` 0.33.0, with `config_invalid` in place of `config_missing` (Breaking)**: bumped from 0.30.0. The `config_missing` kind classified `ClientAuthenticationError`, which the SDK never threw and no longer exports; `config_invalid` now classifies a `PIPELEX_BASE_URL` naming more than a host, which the SDK refuses before sending any request and the app used to report as "Something went wrong". A `2xx` whose body the SDK cannot read is shown as "Pipelex API sent an answer the app could not read", with the raw body in the technical details, where it used to be an unexplained error.
+- **The web app template's rejected request or server error always says whether a re-run can help**: its retry line is the SDK's verdict, the API's own `retryable` when its problem document sent one and otherwise the SDK's reading of the HTTP status, so a 4xx says a re-run unchanged fails the same way and a passing 5xx offers one; a server error whose type the app recognizes (missing provider credentials, no inference backend, a method definition the server rejected) stays final unless the API says otherwise. The technical details mark a member of the verdict the API did not send as the SDK's reading, and name the recognized error type whose own verdict overrides it.
+- **The web app template's failed upload offers a retry where one can help**: storage answering that it does not implement the upload (its `501`) now reads as final instead of "usually temporary", while storage timing out or throttling the upload, and two writes colliding, are offered a retry, all following the SDK's verdict.
+
+### Fixed
+
+- **The web app template's durable poll rides out a rate limit**: a status read the API refuses with a `429` or a `408` is read again, as a gateway `5xx` already was, where it used to abandon a run that was still executing; a read that cannot pass, such as a `501`, gives up at once. When the poll does give up, the error no longer invites a re-run, since the run may still be executing and running it again would start a second one.
+
+### Security
+
+- **The web app template no longer shows a refused `PIPELEX_BASE_URL` to its visitors**: the SDK's refusal of a value naming more than a host quotes that value whole, and the app showed it in the technical details of the error every visitor sees, credentials and query included. The details now show only its scheme and host, and name the parts beyond them without their content.
+
 ## [v0.32.1] - 2026-10-07
 
 ### Fixed

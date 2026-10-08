@@ -1,5 +1,5 @@
 import { getPipelexClient } from "@/lib/pipelexClient";
-import { classifyPipelineError, type PipelineError, type PipelineErrorKind } from "@/lib/errors";
+import { classifyPipelineError, type PipelineError } from "@/lib/errors";
 import { readClassifyEnv } from "@/lib/serverEnv";
 import { buildUsageReport, type UsageReport } from "@/lib/usageReport";
 // `PipelexStartOptions` rather than the pure protocol `StartOptions`: it adds
@@ -27,16 +27,19 @@ export type PollOutcome<T> =
   | { ok: false; error: PipelineError; transient: boolean };
 
 /**
- * A poll tick that failed to *get a verdict* — a gateway 5xx or a network blip
- * (`server_error` / `api_unreachable`) — is transient: the run is still
- * executing server-side, so the client should keep polling rather than abandon
- * it. Everything else is terminal: a classified application failure
- * (`run_failed`, `lifecycle_unavailable`), a narrower's deterministic
- * bad-output, or an auth/request error that retrying can't fix. Mirrors the
- * SDK's own poller, which retries 503 and never fails on a transient hiccup.
+ * A poll tick that failed to *get a verdict* is transient when reading the
+ * status again can pass: the run is still executing server-side, so the client
+ * should keep polling rather than abandon it. A refused read says which it is
+ * through the SDK's verdict, always decided: a gateway 5xx, a rate limit (429)
+ * or a timeout (408) can pass, while a 501 or any other 4xx cannot. A failure
+ * that carries no verdict is judged by its kind: a network blip
+ * (`api_unreachable`) is transient, and a classified application failure
+ * (`lifecycle_unavailable`), a narrower's deterministic bad-output or a
+ * configuration the SDK refused is terminal.
  */
-function isTransientPollError(kind: PipelineErrorKind): boolean {
-  return kind === "server_error" || kind === "api_unreachable";
+function isTransientPollError(error: PipelineError): boolean {
+  if (error.retry) return error.retry.retryable;
+  return error.kind === "server_error" || error.kind === "api_unreachable";
 }
 
 /**
@@ -86,15 +89,20 @@ export async function startDurableRun(
  * A thrown SDK error — including a narrower throwing `BadPipelineOutputError` /
  * `BadImageOutputError`, or `RunLifecycleUnavailableError` — is classified, and
  * the failure carries a `transient` flag (see `isTransientPollError`) so the
- * client poll loop can keep polling through a momentary 5xx/network blip
- * instead of abandoning a run that is still completing server-side.
+ * client poll loop can keep polling through a momentary 5xx, rate limit or
+ * network blip instead of abandoning a run that is still completing
+ * server-side. Its retry line is dropped: the verdict judged the read, not the
+ * run, and offering a re-run of a run that may still be executing would start
+ * a second one.
  */
 export async function pollDurableRun<T>(
   runId: string,
   parse: (results: RunResults) => T,
 ): Promise<PollOutcome<T>> {
-  const client = getPipelexClient();
   try {
+    // Inside the try: building the client can refuse PIPELEX_BASE_URL, and that
+    // refusal is classified like any other.
+    const client = getPipelexClient();
     const read = await client.getRunStatus(runId);
     if (!isTerminalRunStatus(read.status)) {
       return {
@@ -145,6 +153,8 @@ export async function pollDurableRun<T>(
     };
   } catch (err) {
     const error = classifyPipelineError(err, readClassifyEnv());
-    return { ok: false, error, transient: isTransientPollError(error.kind) };
+    const transient = isTransientPollError(error);
+    delete error.retry;
+    return { ok: false, error, transient };
   }
 }
