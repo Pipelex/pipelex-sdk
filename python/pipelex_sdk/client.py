@@ -626,9 +626,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
         _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
-        token = _REQUEST_TIMEOUT_OVERRIDE.set(
-            _start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, mthds_contents)
-        )
+        token = _REQUEST_TIMEOUT_OVERRIDE.set(_start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, mthds_contents))
         try:
             result = await super().start(
                 pipe_code=pipe_code,
@@ -1717,9 +1715,7 @@ def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, m
         raise PipelineRequestError(msg)
 
 
-def _start_request_timeout_seconds(
-    blocking_seconds: float, merged_extra: dict[str, Any] | None, mthds_contents: list[str] | None
-) -> float:
+def _start_request_timeout_seconds(blocking_seconds: float, merged_extra: dict[str, Any] | None, mthds_contents: list[str] | None) -> float:
     """The time limit of `POST /v1/start`, by `@pipelex/sdk`'s rule.
 
     The start answers its `202` fast, so the poll budget normally fits, with exceptions that get the

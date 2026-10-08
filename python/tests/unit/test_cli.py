@@ -694,4 +694,3 @@ class TestCli:
         outcome = _run_case(case, root, mocker, monkeypatch)
 
         _check(case, outcome, root)
-
