@@ -250,6 +250,46 @@
       }
     },
     {
+      "name": "run/flags/help-where-a-value-would-be",
+      "summary": "--help where --method's value would be asks for the help: it is never taken as a value.",
+      "argv": ["run", "--method", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/flags/short-help-where-a-value-would-be",
+      "summary": "-h where --method's value would be asks for the help too.",
+      "argv": ["run", "--method", "-h"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/flags/help-before-other-flags",
+      "summary": "--help right after a string flag asks for the help whatever follows.",
+      "argv": ["run", "--inputs", "--help", "--method", "x"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "script/flags/help-where-a-value-would-be",
+      "summary": "script reads --help and -h the same way: -h where --name's value would be asks for the help.",
+      "argv": ["script", "--name", "-h", "--method", "mt_receipts01"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk script --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
       "name": "run/flags/empty-value",
       "summary": "An empty value is no value.",
       "argv": ["run", "--method="],
