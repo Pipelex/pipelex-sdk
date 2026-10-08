@@ -158,6 +158,9 @@ export async function runCommandScript(args: readonly string[], io: CommandIO): 
  * Create the file, executable, refusing one that exists, a dangling link included (`wx`). A write
  * that fails once the file exists removes it, so that a script is either whole or absent: a
  * truncated one would run half a command, and would make the next attempt say it already exists.
+ * The one exception is a second Ctrl-C, which ends the process at once (`cli.ts`): landing between
+ * the file's creation and the end of its write, it leaves that file behind, empty or partial, as
+ * `docs/cli.md` says. On a local disk that takes no time, but a write can block on a stalled mount.
  */
 async function writeScript(target: string, body: string): Promise<void> {
   const path = resolve(target);
