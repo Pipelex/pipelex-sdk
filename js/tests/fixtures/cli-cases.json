@@ -445,6 +445,56 @@
       }
     },
     {
+      "name": "method/catalog-id-malformed",
+      "summary": "An mt_ value holding a character no catalog id holds is refused before any request, even when a file of that name exists, and the refusal says to write ./ to name the file.",
+      "argv": ["run", "--method", "mt_receipts.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "mt_receipts.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"mt_receipts.mthds\" is not a catalog id: a catalog id holds only letters, digits, _ and -.\n",
+          "./mt_receipts.mthds"
+        ]
+      }
+    },
+    {
+      "name": "method/catalog-like-path",
+      "summary": "A file whose name starts with mt_ is reached as ./mt_..., a path.",
+      "argv": ["run", "--method", "./mt_receipts.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "mt_receipts.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                {
+                  "content": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+                  "source": "mt_receipts.mthds"
+                }
+              ]
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
       "name": "bundle/one-file",
       "summary": "A .mthds file is a one-file bundle, sent under its own file name.",
       "argv": ["run", "--method", "methods/receipt-review.mthds", "--inputs-template"],
@@ -2165,6 +2215,20 @@
           "Error: script takes a method address or a catalog id, and \"receipt-review.mthds\" is neither: a script naming a local bundle breaks as soon as the script or the bundle moves.\n",
           "github.com/<owner>/<repo>"
         ]
+      }
+    },
+    {
+      "name": "script/catalog-id-malformed",
+      "summary": "script refuses an mt_ value no catalog id has the shape of, before any request.",
+      "argv": ["script", "--method", "mt_receipts/v2"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"mt_receipts/v2\" is not a catalog id: a catalog id holds only letters, digits, _ and -.\n",
+          "./mt_receipts/v2"
+        ],
+        "absent_files": ["v2", "mt_receipts"]
       }
     },
     {
