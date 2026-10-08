@@ -31,28 +31,32 @@ const CATALOG_ID_SHAPE = /^mt_[A-Za-z0-9_-]+$/;
  *
  * @throws {CommandError} A usage error for an `mt_…` value whose id holds a character no catalog
  *   id holds (a letter, a digit, `_` or `-`), such as `mt_review.mthds`, which is a path written
- *   without its `./`; and for a version suffix that is neither a positive number without a
- *   leading zero nor `draft`.
+ *   without its `./`; and for a version suffix the selector grammar refuses, with the grammar's
+ *   own reason — a suffix that is neither a positive number without a leading zero nor `draft`,
+ *   or a number too large to address exactly. Both name the `./` form too, since an `mt_…`
+ *   value such as `mt_review@v2.mthds` may be a path written without it.
  */
 export function classifyMethod(value: string): MethodSelector {
   if (value.startsWith(CATALOG_ID_PREFIX)) {
     const at = value.indexOf("@");
     const bareId = at < 0 ? value : value.slice(0, at);
+    const pathHint = `To name a local file or directory whose name starts with mt_, write it as ./${value}.`;
     if (!CATALOG_ID_SHAPE.test(bareId)) {
       throw usageError(
         `--method "${value}" is not a catalog id: a catalog id holds only letters, digits, _ and -.`,
-        [`To name a local file or directory whose name starts with mt_, write it as ./${value}.`],
+        [pathHint],
       );
     }
-    // The id is well formed, so the selector grammar can refuse the suffix alone.
+    // The id is well formed, so the selector grammar refuses the suffix alone, and its message
+    // says which way: a suffix of no known form, or a number too large to address exactly.
     try {
       parseMethodSelector(value);
     } catch (error) {
       if (!(error instanceof RequestArgumentError)) throw error;
-      throw usageError(
-        `--method "${value}" names no version: a catalog id ends in @<version>, a positive number without a leading zero, in @draft, or in nothing.`,
-        [`Pass ${bareId} for its latest published version, or ${bareId}@draft for its draft.`],
-      );
+      throw usageError(`--method ${error.message}`, [
+        `Pass ${bareId} for its latest published version, or ${bareId}@draft for its draft.`,
+        pathHint,
+      ]);
     }
     return { kind: "catalog", methodId: value };
   }

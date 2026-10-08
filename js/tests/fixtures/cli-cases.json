@@ -504,8 +504,39 @@
         "exit_code": 2,
         "stdout": "",
         "stderr": [
-          "Error: --method \"mt_receipts01@03\" names no version: a catalog id ends in @<version>, a positive number without a leading zero, in @draft, or in nothing.\n",
+          "Error: --method \"mt_receipts01@03\" names no version: the suffix of a catalog id is @<version>, a positive number without a leading zero, or @draft.\n",
           "mt_receipts01@draft"
+        ]
+      }
+    },
+    {
+      "name": "method/catalog-id-version-too-large",
+      "summary": "A version number too large to address exactly is refused before any request, for that reason rather than as a suffix of no known form.",
+      "argv": ["run", "--method", "mt_receipts01@99999999999999999999", "--inputs-template"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"mt_receipts01@99999999999999999999\" names a version number too large to address exactly.\n"
+        ]
+      }
+    },
+    {
+      "name": "method/catalog-like-path-with-at",
+      "summary": "An mt_ value whose suffix is no version, such as a file name holding an @, is refused before any request, even when a file of that name exists, and the refusal says to write ./ to name the file.",
+      "argv": ["run", "--method", "mt_receipts@v2.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "mt_receipts@v2.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"mt_receipts@v2.mthds\" names no version",
+          "./mt_receipts@v2.mthds"
         ]
       }
     },
