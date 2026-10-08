@@ -1282,7 +1282,7 @@ class PipelexAPIClient(MthdsAPIClient):
         Takes a bare catalog id: the method routes address the method itself, never a version of
         it. A caller holding `mt_…@3` strips the suffix with
         `pipelex_sdk.method_selector.parse_method_selector` and reads that version with
-        `get_method_version`. Every method route raises `PipelineRequestError` for a suffixed id,
+        `get_method_version`. Every method route raises `RequestArgumentError` for a suffixed id,
         before any request, rather than read back the `404` the platform would answer.
         """
         return MethodData.model_validate(await self._request_product("GET", _method_path(method_id)))
@@ -1378,7 +1378,7 @@ class PipelexAPIClient(MthdsAPIClient):
             Every arm carries the `method`.
 
         Raises:
-            PipelineRequestError: `expected_draft_updated_at` is not a `str` — `None` included; nothing
+            RequestArgumentError: `expected_draft_updated_at` is not a `str` — `None` included; nothing
                 is sent.
             ApiResponseError: When no verdict was produced: `409` `method_update_conflict` for a draft
                 that moved since the token; `409` `method_being_deleted`; `404` `not_found`; `422`
@@ -1394,7 +1394,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 "publish_method() needs expected_draft_updated_at: the draft token (the method's updated_at) the caller "
                 f"last saw, so a publish never takes a draft it has not seen; got {type(token).__name__}."
             )
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg)
         body = {"expected_draft_updated_at": token}
         answer = await self._request_product("POST", f"{_method_path(method_id)}/publish", body=body)
         return MethodPublishResultAdapter.validate_python(answer)
@@ -1431,7 +1431,7 @@ class PipelexAPIClient(MthdsAPIClient):
             version: The version number, a positive integer.
 
         Raises:
-            PipelineRequestError: `version` is not a positive integer — a `bool`, a `float` such as
+            RequestArgumentError: `version` is not a positive integer — a `bool`, a `float` such as
                 `2.0`, a numeric string and anything else that is not an `int` included; nothing is sent.
             ApiResponseError: `404` `method_version_not_found` for a version the method never
                 published; `404` `not_found` for an unknown method; `409` `method_being_deleted`.
@@ -1441,7 +1441,7 @@ class PipelexAPIClient(MthdsAPIClient):
         candidate = cast("object", version)
         if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 1:
             msg = f"get_method_version() takes a version number, a positive integer; got {version!r}."
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg)
         return MethodVersion.model_validate(await self._request_product("GET", f"{_method_path(method_id)}/versions/{version}"))
 
     async def delete_method(self, method_id: str) -> MethodDeletionAccepted:
@@ -2017,7 +2017,7 @@ def _assert_linkage_method_id_is_bare(*, mthds_contents: list[str] | None, merge
     suffixed id beside them.
 
     Raises:
-        PipelineRequestError: A `method_id` carrying a version suffix rides beside inline
+        RequestArgumentError: A `method_id` carrying a version suffix rides beside inline
             `mthds_contents`.
     """
     if not mthds_contents or merged_extra is None:
@@ -2030,7 +2030,7 @@ def _assert_linkage_method_id_is_bare(*, mthds_contents: list[str] | None, merge
         "inline source is what runs, so a version suffix would claim a version that did not. Send the bare id "
         "(parse_method_selector(...).method_id), or drop the inline source to run the version the selector names."
     )
-    raise PipelineRequestError(msg)
+    raise RequestArgumentError(msg)
 
 
 def _quick_request_timeout_seconds(request_timeout_seconds: float) -> float:
@@ -2107,7 +2107,7 @@ def _method_path(method_id: str) -> str:
     the draft for a caller that named a version.
 
     Raises:
-        PipelineRequestError: `method_id` carries a version suffix.
+        RequestArgumentError: `method_id` carries a version suffix.
     """
     if "@" in method_id:
         msg = (
@@ -2115,7 +2115,7 @@ def _method_path(method_id: str) -> str:
             "itself, never one of its versions. Strip the suffix with parse_method_selector, and read a published version "
             "with get_method_version."
         )
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
     return f"methods/{quote(method_id, safe='')}"
 
 

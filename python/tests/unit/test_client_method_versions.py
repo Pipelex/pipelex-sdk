@@ -13,11 +13,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import pytest
-from mthds.protocol.exceptions import PipelineRequestError
 from pydantic import ValidationError
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.errors import ApiResponseError, MethodErrorCode
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
+from pipelex_sdk.errors import ApiResponseError, MethodErrorCode, RequestArgumentError
 from pipelex_sdk.product_models import (
     MethodData,
     MethodDraftInput,
@@ -50,6 +50,9 @@ if TYPE_CHECKING:
 MethodRouteCall: TypeAlias = "Callable[[PipelexAPIClient], Coroutine[Any, Any, object]]"
 
 _SUFFIXED_ID = "mt_receipts01@3"
+
+#: The verdict of an argument refused before anything is sent: the caller changes it, and asking again unchanged cannot pass.
+_INPUT_VERDICT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
 #: One call of each method route, addressed by a suffixed id that every one of them refuses before sending.
 _SUFFIXED_ID_ROUTES: list[tuple[str, MethodRouteCall]] = [
@@ -324,9 +327,10 @@ class TestClientMethodVersions:
     ) -> None:
         send = patch_send(api_client, wire_response(200, json_body={"outcome": "unchanged"}))
 
-        with pytest.raises(PipelineRequestError, match=rf"needs expected_draft_updated_at: .*; got {type_name}\.$"):
+        with pytest.raises(RequestArgumentError, match=rf"needs expected_draft_updated_at: .*; got {type_name}\.$") as exc_info:
             asyncio.run(api_client.publish_method("mt_receipts01", expected_draft_updated_at=cast("str", token)))
 
+        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
         send.assert_not_called()
 
     def test_publish_method_takes_its_token_by_keyword_only(self, api_client: PipelexAPIClient) -> None:
@@ -384,9 +388,10 @@ class TestClientMethodVersions:
     ) -> None:
         send = patch_send(api_client, wire_response(200, json_body=MethodVersionBodies.VERSION))
 
-        with pytest.raises(PipelineRequestError, match="positive integer"):
+        with pytest.raises(RequestArgumentError, match="positive integer") as exc_info:
             asyncio.run(api_client.get_method_version("mt_receipts01", cast("int", version)))
 
+        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
         send.assert_not_called()
 
     def test_get_method_version_raises_the_version_not_found(
@@ -408,7 +413,7 @@ class TestClientMethodVersions:
     ) -> None:
         send = patch_send(api_client, wire_response(200, json_body={}))
 
-        with pytest.raises(PipelineRequestError) as exc_info:
+        with pytest.raises(RequestArgumentError) as exc_info:
             asyncio.run(route(api_client))
 
         assert str(exc_info.value) == (
@@ -416,6 +421,7 @@ class TestClientMethodVersions:
             "itself, never one of its versions. Strip the suffix with parse_method_selector, and read a published version "
             "with get_method_version."
         )
+        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
         send.assert_not_called()
 
     # ----- the run routes' linkage form takes a bare id ----------------------------------------
@@ -429,7 +435,7 @@ class TestClientMethodVersions:
         send = patch_send(api_client, wire_response(202, json_body={}))
         run = api_client.start if route == "start" else api_client.execute
 
-        with pytest.raises(PipelineRequestError) as exc_info:
+        with pytest.raises(RequestArgumentError) as exc_info:
             asyncio.run(run(mthds_contents=['domain = "receipts"'], method_id=selector))
 
         assert str(exc_info.value) == (
@@ -437,6 +443,7 @@ class TestClientMethodVersions:
             "inline source is what runs, so a version suffix would claim a version that did not. Send the bare id "
             "(parse_method_selector(...).method_id), or drop the inline source to run the version the selector names."
         )
+        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
         send.assert_not_called()
 
     def test_a_suffixed_id_beside_empty_inline_contents_is_sent(
