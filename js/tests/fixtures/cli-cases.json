@@ -2765,7 +2765,18 @@
               "mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
               "python": "",
               "created_at": "2026-10-01T09:00:00Z",
-              "updated_at": "2026-10-01T09:00:00Z"
+              "updated_at": "2026-10-01T09:00:00Z",
+              "draft_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+              "latest_version": 3,
+              "latest_published": {
+                "version": 3,
+                "source_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+                "crate_fingerprint": null,
+                "runner_version": "0.80.0",
+                "description": null,
+                "published_at": "2026-10-02T09:00:00Z",
+                "published_by": "user_1"
+              }
             }
           }
         ]
@@ -3052,7 +3063,18 @@
               "mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
               "python": "",
               "created_at": "2026-10-01T09:00:00Z",
-              "updated_at": "2026-10-01T09:00:00Z"
+              "updated_at": "2026-10-01T09:00:00Z",
+              "draft_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+              "latest_version": 3,
+              "latest_published": {
+                "version": 3,
+                "source_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+                "crate_fingerprint": null,
+                "runner_version": "0.80.0",
+                "description": null,
+                "published_at": "2026-10-02T09:00:00Z",
+                "published_by": "user_1"
+              }
             }
           }
         ]
@@ -3084,7 +3106,18 @@
               "mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
               "python": "",
               "created_at": "2026-10-01T09:00:00Z",
-              "updated_at": "2026-10-01T09:00:00Z"
+              "updated_at": "2026-10-01T09:00:00Z",
+              "draft_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+              "latest_version": 3,
+              "latest_published": {
+                "version": 3,
+                "source_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+                "crate_fingerprint": null,
+                "runner_version": "0.80.0",
+                "description": null,
+                "published_at": "2026-10-02T09:00:00Z",
+                "published_by": "user_1"
+              }
             }
           }
         ]
@@ -3117,7 +3150,18 @@
               "mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
               "python": "",
               "created_at": "2026-10-01T09:00:00Z",
-              "updated_at": "2026-10-01T09:00:00Z"
+              "updated_at": "2026-10-01T09:00:00Z",
+              "draft_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+              "latest_version": 3,
+              "latest_published": {
+                "version": 3,
+                "source_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+                "crate_fingerprint": null,
+                "runner_version": "0.80.0",
+                "description": null,
+                "published_at": "2026-10-02T09:00:00Z",
+                "published_by": "user_1"
+              }
             }
           }
         ]
