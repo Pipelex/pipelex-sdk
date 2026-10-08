@@ -201,6 +201,26 @@ describe("uploadFile", () => {
   });
 
   it.each([
+    ["a 401", apiError(401), UploadAuthenticationError],
+    ["a 404", apiError(404), UnsupportedUploadCapabilityError],
+    ["a 500", apiError(500), UploadTransportError],
+    ["a 2xx the client could not read", apiError(200), UploadTransportError],
+    [
+      "an unreachable host",
+      new ApiUnreachableError("down", "https://api.pipelex.com", "ECONNREFUSED"),
+      UploadTransportError,
+    ],
+    ["a failure that is not HTTP", new SyntaxError("Unexpected token"), UploadTransportError],
+  ])("names the file it was sending on the error for %s", async (_case, failure, errorClass) => {
+    const error = await uploadFile(throwingClient(failure), new Uint8Array([1]), {
+      filename: "scan.pdf",
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(errorClass);
+    expect((error as { filename?: string }).filename).toBe("scan.pdf");
+  });
+
+  it.each([
     ["a 503", apiError(503), "server_error"],
     ["a 500", apiError(500), "server_error"],
     ["a 429", apiError(429), "unexpected"],
