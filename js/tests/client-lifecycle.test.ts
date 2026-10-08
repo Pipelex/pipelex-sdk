@@ -1185,3 +1185,61 @@ describe("PipelexApiClient.startAndWaitForResult — onStarted", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("PipelexApiClient.startAndWaitForResult — an abort before the run exists", () => {
+  /** A fetch whose answer to `path` is held until the test releases it. */
+  function holdAnswer(path: string, answers: Record<string, Response | (() => Response)>) {
+    let release: (response: Response) => void = () => undefined;
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const pathname = new URL(String(input)).pathname;
+      if (pathname === path) return held;
+      const answer = answers[pathname];
+      if (answer === undefined) throw new Error(`unexpected request to ${pathname}`);
+      return Promise.resolve(typeof answer === "function" ? answer() : answer);
+    });
+    return { spy, release };
+  }
+
+  function sentPaths(spy: { mock: { calls: unknown[][] } }): string[] {
+    return spy.mock.calls.map(([input]) => new URL(String(input)).pathname);
+  }
+
+  it.each([
+    ["a hosted API, so no start is sent", HOSTED_VERSION],
+    ["a bare runner, so no blocking execute is sent", BARE_VERSION],
+  ])(
+    "throws the caller's abort that landed during the version handshake, on %s",
+    async (_, version) => {
+      const client = makeClient();
+      const { spy, release } = holdAnswer("/v1/version", {});
+      const controller = new AbortController();
+
+      const run = client.startAndWaitForResult({ pipe_code: "p" }, { signal: controller.signal });
+      await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+      controller.abort();
+      release(jsonResponse(200, version));
+
+      await expect(run).rejects.toBe(controller.signal.reason);
+      expect(sentPaths(spy)).toEqual(["/v1/version"]);
+    },
+  );
+
+  it("sends no blocking execute when the abort lands while a runner that looked hosted refuses the start", async () => {
+    const client = makeClient();
+    const { spy, release } = holdAnswer("/v1/start", {
+      "/v1/version": () => jsonResponse(200, BASE_ONLY_VERSION),
+    });
+    const controller = new AbortController();
+
+    const run = client.startAndWaitForResult({ pipe_code: "p" }, { signal: controller.signal });
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+    controller.abort();
+    release(jsonResponse(404, { detail: "Not Found" }));
+
+    await expect(run).rejects.toBe(controller.signal.reason);
+    expect(sentPaths(spy)).toEqual(["/v1/version", "/v1/start"]);
+  });
+});

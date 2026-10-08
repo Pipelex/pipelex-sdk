@@ -496,7 +496,8 @@ export async function pollUntilResult(
   }
 }
 
-function throwIfAborted(signal?: AbortSignal): void {
+/** Throw the caller's abort, as the wait does, when `signal` has aborted. */
+export function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortError(signal);
 }
 

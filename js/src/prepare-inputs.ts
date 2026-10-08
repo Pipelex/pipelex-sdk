@@ -38,6 +38,7 @@ import type {
   PipeInputFormDescriptor,
 } from "mthds/protocol";
 import { isValidationItem } from "./error-models.js";
+import { throwIfAborted } from "./runs.js";
 import {
   ApiResponseError,
   InputPreparationError,
@@ -80,6 +81,12 @@ export interface PrepareInputsBase {
   pipe_ref?: string;
   /** The caller's inputs (variable name → value), compact or explicit-envelope per input. */
   inputs: Record<string, unknown>;
+  /**
+   * Stops the preparation between its steps: once it has aborted, neither the pipe I/O request
+   * nor any upload starts, and `prepareInputs` throws the abort. A request already sent runs to
+   * its end. It is not sent to the server.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -117,6 +124,7 @@ export interface PrepareCapableClient extends UploadCapableClient {
 /** Mutable state threaded through one preparation walk. */
 interface PrepareContext {
   client: UploadCapableClient;
+  signal: AbortSignal | undefined;
   uploads: UploadRecord[];
   /** Dedup by source identity: same source (string value / bytes reference) uploads once. */
   dedup: Map<unknown, Promise<string>>;
@@ -217,16 +225,19 @@ async function doResolveSource(ctx: PrepareContext, source: unknown): Promise<st
     if (HTTP_URL_RE.test(source)) return source; // reachable URL — pass through
     if (source.startsWith("data:")) {
       const { bytes, contentType } = decodeDataUrl(source);
+      throwIfAborted(ctx.signal);
       const record = await uploadFile(ctx.client, bytes, { contentType });
       ctx.uploads.push(record);
       return record.uri;
     }
     // Anything else is a local filesystem path — Node only (uploadFile enforces it).
+    throwIfAborted(ctx.signal);
     const record = await uploadFile(ctx.client, source);
     ctx.uploads.push(record);
     return record.uri;
   }
   if (source instanceof Blob || source instanceof ArrayBuffer || source instanceof Uint8Array) {
+    throwIfAborted(ctx.signal);
     const record = await uploadFile(ctx.client, source);
     ctx.uploads.push(record);
     return record.uri;
@@ -488,14 +499,16 @@ export async function prepareInputs(
 ): Promise<PreparedInputs> {
   const selector = resolveSelector(request);
   const pipeRef = normalizePipeRef(request.pipe_ref);
+  throwIfAborted(request.signal);
   const report = await fetchSignature(client, selector, pipeRef);
+  throwIfAborted(request.signal);
   const descriptor = selectedDescriptor(report);
 
   const declared = new Map<string, InputFormTopLevelField>(
     descriptor.fields.map((field) => [field.name, field]),
   );
 
-  const ctx: PrepareContext = { client, uploads: [], dedup: new Map() };
+  const ctx: PrepareContext = { client, signal: request.signal, uploads: [], dedup: new Map() };
   const rewritten: Record<string, unknown> = { ...request.inputs };
   for (const [name, callerValue] of Object.entries(request.inputs)) {
     const field = declared.get(name);
