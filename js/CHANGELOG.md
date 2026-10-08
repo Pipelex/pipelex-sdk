@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`MethodData.deletion_state`**: a method read types the optional `deletion_state` the platform lists among the method's fields, `pending`, `in_progress` or `failed` once its erasure has started, as `MethodSummary` and the Python twin already type it.
+
+### Changed
+
+- **A suffixed `method_id` beside an inline source is refused locally**: `execute`, `start` and `startAndWaitForResult` throw a `RequestArgumentError` before the run request is sent for a `method_id` carrying a version suffix (`mt_…@3`, `mt_…@draft`) beside a non-empty `mthds_contents`, `files` or `bundle_b64`, where the id is run-history linkage and the platform answers a `422`. Send the bare id, or drop the inline source to run the version the selector names.
+
+### Fixed
+
+- **The method and error docs match the platform's contract**: `ListMethodVersionsQuery.limit` says a `limit` outside 1 to 100 is a `422` rather than capped; `writeDraft` and `createMethod` say their `413` comes for a method that would leave no room for a publish, below the store's item limit; the run and tooling `method_id` docs describe version selectors and the `409` `method_not_published` of a bare id never published; and the error docs say a client of the platform may branch on `code`, which reads the same answer as `type` there, while a refusal the platform relays from the runner carries no `code`.
+
 ## [v0.35.0] - 2026-10-08
 
 ### Added

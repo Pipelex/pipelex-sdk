@@ -167,7 +167,7 @@ Every non-2xx answer from a `/v1` route is a problem document, and the SDK throw
 | `title` | `title` | The stable human label of the error class. |
 | `serverMessage` | `detail` (or `message`) | The per-occurrence message. |
 | `instance` | `instance` | The occurrence: a request URN (`urn:pipelex:request:<id>`) or a request path. |
-| `code` | `code` | The platform's native code, a closed set (`conflict`, `not_found`, `validation_failed`, `pipelex_api_key_limit_reached`, …), one-to-one with `type`; `MethodErrorCode` names the method ones (see [The method codes](#the-method-codes)). |
+| `code` | `code` | The platform's native code, a closed set (`conflict`, `not_found`, `validation_failed`, `pipelex_api_key_limit_reached`, …), one-to-one with `type`; `MethodErrorCode` names the method ones (see [The method codes](#the-method-codes)). **A branch field for a client of the platform**, absent on a refusal it relays from the runner. |
 | `errorType` | `error_type` | The runner's native code, its open exception class name. |
 | `errorCategory`, `model`, `provider`, `providerMetadata` | `error_category`, `model`, `provider`, `provider_metadata` | An inference failure's class and origin, as on the run report. |
 | `migration` | `migration` | A pending configuration migration that explains the failure. |
@@ -176,7 +176,7 @@ Every non-2xx answer from a `/v1` route is a problem document, and the SDK throw
 | `problemDocument` | the whole body | The decoded document, every member named or not; `undefined` when the body was not a JSON object. The record of what the server sent, verdict members included. |
 | `status`, `statusText`, `responseBody` | the transport | The HTTP status, its text and the raw body. |
 
-**Branch on `errorDomain` and `type`, never on the HTTP status or the message.** That is the rule the hosted-envelope spec sets for every surface: `errorDomain` tells the caller's own mistake from a fault it cannot fix, and `type` names the error class with a URI that stays the same on every occurrence. `code` and `errorType` are each surface's finer native code, and stay available for logs and support. On the platform today `error_domain` is not emitted yet, so the fallback reads `errorDomain` from the status, and `type` is `https://pipelex.com/errors/<code>`, so branching on `type` there is branching on the code:
+**Branch on `errorDomain` and `type`, never on the HTTP status or the message.** That is the rule the hosted-envelope spec sets across surfaces: `errorDomain` tells the caller's own mistake from a fault it cannot fix, and `type` names the error class with a URI that stays the same on every occurrence, and both mean the same on the runner and the platform. `code` and `errorType` are each surface's finer native code, and a client of one surface may branch on that surface's code too. On the platform `type` is `https://pipelex.com/errors/<code>`, derived from `code` one to one, so branching on either reads the same answer; the platform may add codes, so a code the caller does not know gets its generic handling. A refusal the platform relays from the runner, such as a run route's refusal to run an invalid method, carries the runner's `type` and `errorType` and no `code`, so a caller branching on `code` reads its absence as a refusal the runner authored and branches on `type` or `errorType` there. On the platform today `error_domain` is not emitted yet, so the fallback reads `errorDomain` from the status:
 
 ```ts
 import { ApiResponseError } from "@pipelex/sdk";
@@ -208,7 +208,7 @@ A refusal about a saved method or one of its versions carries one of the platfor
 | `method_not_published` | `409` | A bare `method_id`, which names the latest published version, on a run or tooling route, for a method never published. The detail names `mt_…@draft` and publishing. | Publish the method, or address its draft as `mt_…@draft`. |
 | `method_version_not_found` | `404` | `mt_…@<n>`, or `getMethodVersion`, names a version the method never published. An unknown method is `not_found` instead, so the two are told apart by the code. | Pick a version `listMethodVersions` lists. |
 
-A malformed version suffix (`@0`, `@03`, `@Draft`, two suffixes) is a `422` `validation_failed` whose `errors` name the field `method_id`; `parseMethodSelector` refuses the same selectors locally with a `RequestArgumentError`, before anything is sent.
+A malformed version suffix (`@0`, `@03`, `@Draft`, two suffixes) is a `422` `validation_failed` whose `errors` name the field `method_id`; `parseMethodSelector` refuses the same selectors locally with a `RequestArgumentError`, before anything is sent. So is any suffix on the run routes' linkage form, a `method_id` beside an inline source, which `execute` and `start` refuse locally the same way.
 
 ## A validation item — `ValidationErrorItem`
 

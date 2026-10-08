@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **A suffixed `method_id` beside inline `mthds_contents` is refused locally**: `execute`, `start` and `start_and_wait` raise a `PipelineRequestError` before the run request is sent for a `method_id` carrying a version suffix (`mt_…@3`, `mt_…@draft`) beside `mthds_contents`, where the id is run-history linkage and the platform answers a `422`. Send the bare id, or drop the inline source to run the version the selector names.
+
+### Fixed
+
+- **The method and error docs match the platform's contract**: `list_method_versions` says a `limit` outside 1 to 100 is a `422` rather than capped; `write_draft` and `create_method` say their `413` comes for a method that would leave no room for a publish, below the store's item limit; `validate`'s `method_id` says the platform injects the `.mthds` files of the version the selector names; and `ApiResponseError`, the README and `docs/architecture.md` say a client of the platform may branch on `code`, which reads the same answer as `type_uri` there, while a problem the platform relays from the runner carries no `code`.
+
 ## [v0.35.0] - 2026-10-08
 
 ### Added
