@@ -266,11 +266,11 @@ export interface PipelexApiClientOptions {
   appInfo?: AppInfo;
 }
 
-/** Low-level transport over a generic fetch, before status interpretation. */
 /** Decoders of an answer's bytes: the strict one tells a body that is not UTF-8. */
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 const LENIENT_UTF8 = new TextDecoder("utf-8");
 
+/** Low-level transport over a generic fetch, before status interpretation. */
 interface RawResponse {
   status: number;
   statusText: string;
