@@ -134,11 +134,15 @@ class ApiResponseError(MthdsApiResponseError[ValidationErrorItem]):
       `config` (a configuration change is needed), `runtime` (a failure during execution) — carried
       by the problems the runner renders and `None` on the platform's own, which name their class by
       `type_uri` alone. `retryable` says whether a blind retry can succeed, `None` meaning unknown.
-      Branch on these, never on the HTTP status or on the wording of a message.
+      Branch on these, never on the HTTP status or on the wording of a message; `type_uri` and
+      `error_domain` are the fields that mean the same on both surfaces.
     - **The native codes.** `code` is the platform's own closed code (`conflict`, `not_found`,
       `pipelex_api_key_limit_reached`, …; `MethodErrorCode` names the ones about a stored method and
       its versions) and `error_type` the runner's open exception class name. Each is finer than
-      `error_domain` and specific to the surface that emits it.
+      `error_domain` and specific to the surface that emits it, and a client of that surface may
+      branch on it: on the platform's own problems `type_uri` is derived from `code` one to one
+      (`https://pipelex.com/errors/<code>`), so the two read the same answer. A problem the platform
+      relays from the runner carries the runner's `type_uri` and `error_type` and no `code`.
     - **For support.** `request_id` correlates the response with the server's logs; it is read from
       the body, or from the `X-Request-ID` response header when the body has none. `instance` names
       the occurrence.

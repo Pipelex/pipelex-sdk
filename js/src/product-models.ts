@@ -138,6 +138,13 @@ export interface MethodData {
   latest_version: number | null;
   /** The latest published version's summary; `null` when the method was never published. */
   latest_published: MethodVersionSummary | null;
+  /**
+   * Where the method is in the erasure cascade; absent or `null` on a normal method. Every
+   * method route refuses a method whose erasure has started with a `409`
+   * `method_being_deleted`, so a method read seldom carries it; `MethodSummary` carries the
+   * same field on the list, where a method mid-erasure stays listed.
+   */
+  deletion_state?: MethodDeletionState | null;
 }
 
 /** Where a method is in the erasure cascade; absent on a normal method. */
@@ -323,7 +330,10 @@ export type MethodPublishResult = MethodPublished | MethodPublishUnchanged | Met
 
 /** Query for one page of a method's versions. */
 export interface ListMethodVersionsQuery {
-  /** Page size. The API defaults to 20 and caps at 100. */
+  /**
+   * Page size, from 1 to 100; the API defaults to 20 and refuses a `limit` outside that range
+   * with a `422`.
+   */
   limit?: number;
   /** Opaque `nextCursor` from the previous page. */
   cursor?: string;

@@ -845,11 +845,15 @@ export interface ApiResponseErrorOptions {
  *   while `runtime` takes the fallback's. Nothing on the error says which a value came from:
  *   `problemDocument` keeps what the server sent.
  * - **The branch fields.** `errorDomain`, and `type`, the stable URI naming the error class.
- *   Branch on these, never on the HTTP status or on the wording of a message.
+ *   Branch on these, never on the HTTP status or on the wording of a message; they are the
+ *   fields that mean the same on both surfaces.
  * - **The native codes.** `code` is the platform's own closed code (`conflict`, `not_found`,
- *   `pipelex_api_key_limit_reached`, …) and `errorType` the runner's open exception class
- *   name. Each is finer than `errorDomain` and specific to the surface that emits it; the
- *   platform's `type` is one-to-one with its `code` (`https://pipelex.com/errors/<code>`).
+ *   `pipelex_api_key_limit_reached`, …; `MethodErrorCode` names the method ones) and
+ *   `errorType` the runner's open exception class name. Each is finer than `errorDomain` and
+ *   specific to the surface that emits it, and a client of that surface may branch on it: the
+ *   platform's `type` is derived from its `code` one to one
+ *   (`https://pipelex.com/errors/<code>`), so the two read the same answer. A problem the
+ *   platform relays from the runner carries the runner's `type` and `errorType` and no `code`.
  * - **For a person.** `title` is the stable label of the error class, `serverMessage` the
  *   per-occurrence `detail`, `userAction` the advised next step, and `errorCategory`, `model`,
  *   `provider` and `providerMetadata` describe an inference failure.

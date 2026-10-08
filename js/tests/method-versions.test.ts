@@ -9,7 +9,9 @@ import { ApiResponseError, errorVerdictOf, RequestArgumentError } from "../src/e
 import type { MethodErrorCode } from "../src/errors.js";
 import type {
   MethodData,
+  MethodDeletionState,
   MethodPublishResult,
+  MethodSummary,
   MethodVersionSummary,
   PipelineRun,
   RunHistoryItem,
@@ -471,11 +473,107 @@ describe("the method routes take a bare id", () => {
   );
 });
 
+describe("the run routes' linkage form takes a bare id", () => {
+  const INLINE_SOURCES: [string, Record<string, unknown>][] = [
+    ["mthds_contents", { mthds_contents: ['domain = "receipts"'] }],
+    ["files", { files: { "main.mthds": 'domain = "receipts"' } }],
+    ["bundle_b64", { bundle_b64: "UEsDBA==" }],
+  ];
+  const ROUTES: [string, (client: PipelexApiClient, options: object) => Promise<unknown>][] = [
+    ["start", (client, options) => client.start(options)],
+    ["execute", (client, options) => client.execute(options)],
+  ];
+  const cases = ROUTES.flatMap(([route, call]) =>
+    INLINE_SOURCES.flatMap(([source, inline]) =>
+      ["mt_receipts01@3", "mt_receipts01@draft"].map(
+        (selector) => [route, source, selector, call, inline] as const,
+      ),
+    ),
+  );
+
+  it.each(cases)(
+    "%s refuses %s beside %s before sending anything",
+    async (_route, _source, selector, call, inline) => {
+      const spy = vi.spyOn(globalThis, "fetch");
+
+      const err = await call(makeClient(), { ...inline, method_id: selector }).catch(
+        (thrown: unknown) => thrown,
+      );
+
+      expect(err).toBeInstanceOf(RequestArgumentError);
+      expect((err as RequestArgumentError).message).toBe(
+        `method_id "${selector}" beside an inline source is run-history linkage and must be a ` +
+          "bare catalog id: the inline source is what runs, so a version suffix would claim a " +
+          "version that did not. Send the bare id (parseMethodSelector(...).method_id), or drop " +
+          "the inline source to run the version the selector names.",
+      );
+      expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+      expect(spy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["mthds_contents", { mthds_contents: [] }],
+    ["files", { files: {} }],
+    ["bundle_b64", { bundle_b64: "" }],
+  ])(
+    "sends a suffixed id beside an empty %s, which carries no source to link",
+    async (_source, empty) => {
+      const client = makeClient();
+      const spy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(
+          jsonResponse(202, { pipeline_run_id: "run-9", state: "STARTED", created_at: "t0" }),
+        );
+
+      await client.start({ ...empty, method_id: "mt_receipts01@draft" });
+
+      const body = onlyRequest(spy).body as Record<string, unknown>;
+      expect(body.method_id).toBe("mt_receipts01@draft");
+      expect(body.files).toBeUndefined();
+      expect(body.bundle_b64).toBeUndefined();
+    },
+  );
+
+  it("sends a bare id beside an inline source, the linkage the history is filed under", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse(202, { pipeline_run_id: "run-9", state: "STARTED", created_at: "t0" }),
+      );
+
+    await client.start({ method_id: "mt_receipts01", bundle_b64: "UEsDBA==" });
+
+    expect(onlyRequest(spy).body).toEqual({ method_id: "mt_receipts01", bundle_b64: "UEsDBA==" });
+  });
+});
+
 describe("the removed whole-method write", () => {
   it("is gone from the client: the draft write and the rename replace it", () => {
     const client = makeClient();
     expect("updateMethod" in client).toBe(false);
     expectTypeOf<PipelexApiClient>().not.toHaveProperty("updateMethod");
+  });
+});
+
+describe("the method resource", () => {
+  it("types deletion_state on MethodData, optional, as MethodSummary types it", () => {
+    expectTypeOf<MethodData["deletion_state"]>().toEqualTypeOf<
+      MethodDeletionState | null | undefined
+    >();
+    expectTypeOf<MethodData["deletion_state"]>().toEqualTypeOf<MethodSummary["deletion_state"]>();
+  });
+
+  it("hands back the deletion_state a method read carries", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...WIRE_METHOD, deletion_state: "pending" }),
+    );
+
+    const method = await client.getMethod("mt_receipts01");
+
+    expect(method.deletion_state).toBe("pending");
   });
 });
 
