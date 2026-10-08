@@ -43,7 +43,7 @@ Run it twice, each time in a fresh copy where `make install` has run:
 
 The gesture runs `make all` itself, so a red check fails the run. Then check that each copy is what the gesture promised:
 
-- `pyproject.toml`, the package directory under `src/` and the command are named after the method, and `grep -rn pipelex_method_cli_python --exclude-dir=.venv .` finds nothing;
+- `pyproject.toml`, the package directory under `src/` and the command are named after the method, and `grep -rn pipelex_method_cli_python --exclude-dir=.venv --exclude-dir=.git --exclude-dir=__pycache__ .` finds nothing, the two directories it skips being the copy's own commit of the template and the bytecode the gesture's deleted scripts left behind;
 - the bootstrap skill, `scripts/create.py`, `scripts/create_plan.py` and `docs/create.md` are gone, and the `bump-sdk` skill is still there;
 - `.env` is readable by you alone and holds exactly one `PIPELEX_BASE_URL` line, the one the run used;
 - `.venv/bin/<name> --help` lists the method's inputs, one option each;
