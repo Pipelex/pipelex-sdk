@@ -1,0 +1,2665 @@
+{
+  "about": [
+    "The pipelex-sdk command's contract: each case is a command line, the files and stdin it finds, the answers the API gives, and what the command must print and exit with.",
+    "Both SDKs run every case through their own command and their real client, serving the recorded answers through an HTTP mock. js/docs/cli.md, 'The case table', describes every field.",
+    "The source is js/tests/fixtures/cli-cases.json. Its copy, python/tests/fixtures/cli-cases.json, is written by `make shared-files` at the repository root, and is never edited."
+  ],
+  "base_url": "http://api.test",
+  "env": {
+    "PIPELEX_API_KEY": "pk_case_key",
+    "PIPELEX_BASE_URL": "http://api.test",
+    "PIPELEX_SDK_POLL_INTERVAL_MS": "0"
+  },
+  "placeholders": {
+    "WRITER": { "js": "@pipelex/sdk", "python": "pipelex-sdk" },
+    "NEEDS": { "js": "Node 22.12 or later", "python": "uv" },
+    "RUNNER": {
+      "js": "npx --yes @pipelex/sdk@{{SDK_VERSION}}",
+      "python": "uvx pipelex-sdk@{{SDK_VERSION}}"
+    },
+    "SDK_VERSION": {
+      "js": "the SDK's SDK_VERSION",
+      "python": "the installed pipelex-sdk distribution's version"
+    }
+  },
+  "answers": {
+    "version/hosted": {
+      "status": 200,
+      "body": {
+        "protocol_version": "0.6.0",
+        "implementation": "pipelex-hosted",
+        "implementation_version": "0.10.1"
+      }
+    },
+    "version/bare-runner": {
+      "status": 200,
+      "body": {
+        "protocol_version": "0.6.0",
+        "implementation": "pipelex-api",
+        "implementation_version": "0.40.0",
+        "runtime_version": "0.80.0"
+      }
+    },
+    "version/base-fields-only": {
+      "status": 200,
+      "body": { "protocol_version": "0.6.0", "runner_version": "9.9.9" }
+    },
+    "results/running": { "status": 202, "headers": { "Retry-After": "0" } },
+    "pipe-io/receipt-review": {
+      "status": 200,
+      "body": {
+        "is_valid": true,
+        "pipe_ref": "receipts.review_receipt",
+        "pipe_io_contracts": {
+          "receipts.review_receipt": {
+            "inputs": {
+              "receipt": {
+                "concept_ref": "native.Document",
+                "json_schema": {
+                  "type": "object",
+                  "properties": { "url": { "type": "string" } },
+                  "required": ["url"]
+                },
+                "presence": "plain",
+                "multiplicity": "single",
+                "item_count": null
+              },
+              "note": {
+                "concept_ref": "native.Text",
+                "json_schema": { "type": "string" },
+                "presence": "plain",
+                "multiplicity": "single",
+                "item_count": null
+              }
+            },
+            "output": {
+              "concept_ref": "receipts.ReceiptReview",
+              "multiplicity": "single",
+              "item_count": null,
+              "optional": false,
+              "json_schema": { "type": "object" }
+            }
+          }
+        },
+        "input_form": {
+          "receipts.review_receipt": {
+            "fields": [
+              {
+                "name": "receipt",
+                "kind": "document",
+                "concept_ref": "native.Document",
+                "required": true,
+                "presence": "plain",
+                "gating": true
+              },
+              {
+                "name": "note",
+                "kind": "prose",
+                "concept_ref": "native.Text",
+                "required": true,
+                "presence": "plain",
+                "gating": true
+              }
+            ]
+          }
+        },
+        "output_form": {
+          "receipts.review_receipt": {
+            "field": {
+              "name": "output",
+              "kind": "object",
+              "concept_ref": "receipts.ReceiptReview",
+              "required": true,
+              "fields": [
+                { "name": "total", "kind": "number", "required": true, "integer": false },
+                { "name": "approved", "kind": "boolean", "required": true }
+              ]
+            }
+          }
+        },
+        "default_pipe_ref": "receipts.review_receipt",
+        "pending_signatures": [],
+        "is_runnable": true
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "command/none",
+      "summary": "No command is a usage error naming the two.",
+      "argv": [],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: name a command: run or script.\n"]
+      }
+    },
+    {
+      "name": "command/unknown",
+      "summary": "An unknown command is a usage error.",
+      "argv": ["build"],
+      "expect": { "exit_code": 2, "stdout": "", "stderr": ["Error: unknown command \"build\".\n"] }
+    },
+    {
+      "name": "command/unknown-option",
+      "summary": "An unknown option before any command is a usage error.",
+      "argv": ["--verbose"],
+      "expect": { "exit_code": 2, "stdout": "", "stderr": ["Error: unknown option --verbose.\n"] }
+    },
+    {
+      "name": "command/version",
+      "summary": "--version prints the SDK's version alone.",
+      "argv": ["--version"],
+      "expect": { "exit_code": 0, "stdout": "{{SDK_VERSION}}\n", "stderr_excludes": ["Error"] }
+    },
+    {
+      "name": "command/help",
+      "summary": "--help prints the command's help on stdout.",
+      "argv": ["--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": [
+          "Usage:",
+          "pipelex-sdk run --method",
+          "pipelex-sdk script --method",
+          "PIPELEX_API_KEY"
+        ],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/help",
+      "summary": "run --help prints run's help.",
+      "argv": ["run", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method", "--inputs-template"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/help-wins",
+      "summary": "-h anywhere among run's flags prints the help, whatever else the line holds.",
+      "argv": ["run", "--bogus", "-h"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "script/help",
+      "summary": "script --help prints script's help.",
+      "argv": ["script", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk script --method", "--name", "--dir"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/flags/method-missing",
+      "summary": "--method is required.",
+      "argv": ["run"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method is required.\n",
+          "Run 'pipelex-sdk run --help' to see its flags.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/flags/unknown-option",
+      "summary": "An option run does not take is refused.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--verbose"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: unknown option --verbose.\n",
+          "Run 'pipelex-sdk run --help' to see its flags.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/flags/value-missing",
+      "summary": "A string flag at the end of the line has no value.",
+      "argv": ["run", "--method"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method needs a value.\n",
+          "Run 'pipelex-sdk run --help' to see its flags.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/flags/value-starting-with-dash",
+      "summary": "A next argument starting with - is not taken as a value.",
+      "argv": ["run", "--method", "--inputs", "inputs.json"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method needs a value.\n",
+          "Run 'pipelex-sdk run --help' to see its flags.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/flags/help-where-a-value-would-be",
+      "summary": "--help where --method's value would be asks for the help: it is never taken as a value.",
+      "argv": ["run", "--method", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/flags/short-help-where-a-value-would-be",
+      "summary": "-h where --method's value would be asks for the help too.",
+      "argv": ["run", "--method", "-h"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/flags/help-before-other-flags",
+      "summary": "--help right after a string flag asks for the help whatever follows.",
+      "argv": ["run", "--inputs", "--help", "--method", "x"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "script/flags/help-where-a-value-would-be",
+      "summary": "script reads --help and -h the same way: -h where --name's value would be asks for the help.",
+      "argv": ["script", "--name", "-h", "--method", "mt_receipts01"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk script --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/flags/empty-value",
+      "summary": "An empty value is no value.",
+      "argv": ["run", "--method="],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method needs a value.\n",
+          "Run 'pipelex-sdk run --help' to see its flags.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/flags/repeated",
+      "summary": "A flag given twice is refused rather than the last winning.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--method",
+        "mt_other"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method was given more than once.\n",
+          "Run 'pipelex-sdk run --help' to see its flags.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/flags/positional",
+      "summary": "run takes no positional argument.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "extra"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: unexpected argument \"extra\".\n",
+          "Run 'pipelex-sdk run --help' to see its flags.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/flags/boolean-with-value",
+      "summary": "A boolean flag takes no value.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs-template=yes"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --inputs-template takes no value.\n",
+          "Run 'pipelex-sdk run --help' to see its flags.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/flags/unknown-short-option",
+      "summary": "An unknown short option is refused.",
+      "argv": ["run", "-x", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: unknown option -x.\n",
+          "Run 'pipelex-sdk run --help' to see its flags.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/flags/template-and-inputs",
+      "summary": "--inputs-template runs nothing, so it takes no --inputs.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs-template",
+        "--inputs",
+        "inputs.json"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --inputs-template prints the inputs a run takes, so it takes no --inputs.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/pipe/bare-code",
+      "summary": "--pipe takes the qualified ref; a bare code is refused before any request.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "review_receipt"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --pipe takes a pipe's qualified ref, domain.pipe_code, and \"review_receipt\" has no domain.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/pipe/dependency-ref",
+      "summary": "--pipe names one of the method's own pipes, never a dependency's.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "lib->receipts.review_receipt"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --pipe \"lib->receipts.review_receipt\" names a dependency package's pipe; name one of the method's own pipes as domain.pipe_code.\n"
+        ]
+      }
+    },
+    {
+      "name": "method/path-missing",
+      "summary": "A value that is neither mt_... nor github.com/... is a path, which must exist.",
+      "argv": ["run", "--method", "receipt-review"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"receipt-review\" is not a catalog id (mt_...), not an address (github.com/...), and no file or directory of that name exists.\n"
+        ]
+      }
+    },
+    {
+      "name": "method/address-with-scheme",
+      "summary": "An address is written without its scheme; with one it reads as a path.",
+      "argv": ["run", "--method", "https://github.com/acme/methods"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"https://github.com/acme/methods\" is not a catalog id (mt_...), not an address (github.com/...), and no file or directory of that name exists.\n"
+        ]
+      }
+    },
+    {
+      "name": "method/catalog-id-malformed",
+      "summary": "An mt_ value holding a character no catalog id holds is refused before any request, even when a file of that name exists, and the refusal says to write ./ to name the file.",
+      "argv": ["run", "--method", "mt_receipts.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "mt_receipts.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"mt_receipts.mthds\" is not a catalog id: a catalog id holds only letters, digits, _ and -.\n",
+          "./mt_receipts.mthds"
+        ]
+      }
+    },
+    {
+      "name": "method/catalog-like-path",
+      "summary": "A file whose name starts with mt_ is reached as ./mt_..., a path.",
+      "argv": ["run", "--method", "./mt_receipts.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "mt_receipts.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                {
+                  "content": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+                  "source": "mt_receipts.mthds"
+                }
+              ]
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "bundle/one-file",
+      "summary": "A .mthds file is a one-file bundle, sent under its own file name.",
+      "argv": ["run", "--method", "methods/receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "methods/receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                {
+                  "content": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+                  "source": "receipt-review.mthds"
+                }
+              ]
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "bundle/directory",
+      "summary": "A directory is every .mthds file under it, named by its path in the directory and ordered by code point; hidden entries and other files are skipped.",
+      "argv": ["run", "--method", "bundle/", "--inputs-template"],
+      "files": [
+        { "path": "bundle/main.mthds", "text": "# main\n" },
+        { "path": "bundle/Zeta.mthds", "text": "# Zeta\n" },
+        { "path": "bundle/steps2.mthds", "text": "# steps2\n" },
+        { "path": "bundle/steps/score.mthds", "text": "# score\n" },
+        { "path": "bundle/steps/deep/extra.mthds", "text": "# extra\n" },
+        { "path": "bundle/README.md", "text": "# not a bundle file\n" },
+        { "path": "bundle/helper.py", "text": "print('not sent')\n" },
+        { "path": "bundle/inputs.json", "text": "{}\n" },
+        { "path": "bundle/.draft.mthds", "text": "# hidden file\n" },
+        { "path": "bundle/.venv/lib/site.mthds", "text": "# inside a hidden directory\n" },
+        { "path": "bundle/steps/.cache/old.mthds", "text": "# inside a nested hidden directory\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                { "content": "# Zeta\n", "source": "Zeta.mthds" },
+                { "content": "# main\n", "source": "main.mthds" },
+                { "content": "# extra\n", "source": "steps/deep/extra.mthds" },
+                { "content": "# score\n", "source": "steps/score.mthds" },
+                { "content": "# steps2\n", "source": "steps2.mthds" }
+              ]
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "bundle/symbolic-links",
+      "summary": "A link named .mthds that leads to a file is read through under its own name; a link to a directory is not descended into; a link not named .mthds is ignored.",
+      "argv": ["run", "--method", "bundle", "--inputs-template"],
+      "files": [
+        { "path": "bundle/main.mthds", "text": "# main\n" },
+        { "path": "shared/common.mthds", "text": "# common\n" },
+        { "path": "shared/inner/more.mthds", "text": "# more\n" },
+        { "path": "bundle/linked.mthds", "symlink": "../shared/common.mthds" },
+        { "path": "bundle/notes.txt", "symlink": "../shared/common.mthds" },
+        { "path": "bundle/library", "symlink": "../shared" },
+        { "path": "bundle/library.mthds", "symlink": "../shared" },
+        { "path": "bundle/loop", "symlink": "." }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                { "content": "# common\n", "source": "linked.mthds" },
+                { "content": "# main\n", "source": "main.mthds" }
+              ]
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "bundle/method-path-is-a-link",
+      "summary": "The --method path itself may be a link, and is followed; names stay relative to the path given.",
+      "argv": ["run", "--method", "current", "--inputs-template"],
+      "files": [
+        { "path": "releases/v2/main.mthds", "text": "# v2\n" },
+        { "path": "releases/v2/steps/score.mthds", "text": "# v2 score\n" },
+        { "path": "current", "symlink": "releases/v2" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                { "content": "# v2\n", "source": "main.mthds" },
+                { "content": "# v2 score\n", "source": "steps/score.mthds" }
+              ]
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "bundle/byte-order-mark",
+      "summary": "A byte-order mark is kept as the file's first character, as it is on disk.",
+      "argv": ["run", "--method", "bom.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "bom.mthds",
+          "base64": "77u/ZG9tYWluID0gInJlY2VpcHRzIgptYWluX3BpcGUgPSAicmV2aWV3X3JlY2VpcHQiCg=="
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                {
+                  "content": "﻿domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+                  "source": "bom.mthds"
+                }
+              ]
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "bundle/code-point-order",
+      "summary": "Names are ordered code point by code point, so a character beyond U+FFFF sorts after U+FF5E, where UTF-16 order would put it before.",
+      "argv": ["run", "--method", "bundle", "--inputs-template"],
+      "files": [
+        { "path": "bundle/🧾.mthds", "text": "# receipt emoji\n" },
+        { "path": "bundle/～.mthds", "text": "# fullwidth tilde\n" },
+        { "path": "bundle/z.mthds", "text": "# z\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                { "content": "# z\n", "source": "z.mthds" },
+                { "content": "# fullwidth tilde\n", "source": "～.mthds" },
+                { "content": "# receipt emoji\n", "source": "🧾.mthds" }
+              ]
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "bundle/run-sends-contents-in-order",
+      "summary": "A run sends a bundle as mthds_contents, in the bundle's order.",
+      "argv": ["run", "--method", "bundle"],
+      "files": [
+        { "path": "bundle/a.mthds", "text": "# a\n" },
+        { "path": "bundle/B.mthds", "text": "# B\n" },
+        { "path": "bundle/sub/c.mthds", "text": "# c\n" }
+      ],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "request_body": { "mthds_contents": ["# B\n", "# a\n", "# c\n"] },
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": { "pipeline_run_id": "run-1", "main_stuff": { "text": "done" } }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"text\": \"done\"\n}\n",
+        "stderr": ["Run started: run-1\n"]
+      }
+    },
+    {
+      "name": "bundle/broken-link",
+      "summary": "A link named .mthds that leads nowhere is refused.",
+      "argv": ["run", "--method", "bundle", "--inputs-template"],
+      "files": [
+        {
+          "path": "bundle/main.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        },
+        { "path": "bundle/gone.mthds", "symlink": "missing.mthds" }
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: \"bundle/gone.mthds\" is a symbolic link that leads to no file.\n"]
+      }
+    },
+    {
+      "name": "bundle/empty-directory",
+      "summary": "A directory with nothing in it names no bundle.",
+      "argv": ["run", "--method", "empty", "--inputs-template"],
+      "files": [{ "path": "empty", "directory": true }],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: --method \"empty\" is a directory with no .mthds file under it.\n"]
+      }
+    },
+    {
+      "name": "bundle/directory-without-mthds",
+      "summary": "A directory whose only .mthds file is hidden names no bundle either.",
+      "argv": ["run", "--method", "bundle/", "--inputs-template"],
+      "files": [
+        { "path": "bundle/README.md", "text": "# readme\n" },
+        {
+          "path": "bundle/.hidden.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: --method \"bundle/\" is a directory with no .mthds file under it.\n"]
+      }
+    },
+    {
+      "name": "bundle/not-a-mthds-file",
+      "summary": "A file not named .mthds is refused.",
+      "argv": ["run", "--method", "notes.txt", "--inputs-template"],
+      "files": [
+        { "path": "notes.txt", "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n" }
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: --method \"notes.txt\" is not a .mthds file.\n"]
+      }
+    },
+    {
+      "name": "bundle/not-utf8",
+      "summary": "A bundle file that is not UTF-8 text is refused.",
+      "argv": ["run", "--method", "bundle", "--inputs-template"],
+      "files": [{ "path": "bundle/bad.mthds", "base64": "IyD/Cg==" }],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: \"bundle/bad.mthds\" is not UTF-8 text.\n"]
+      }
+    },
+    {
+      "name": "inputs/file-missing",
+      "summary": "An inputs file that cannot be read is a usage error.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "missing.json"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: cannot read the inputs file \"missing.json\".\n"]
+      }
+    },
+    {
+      "name": "inputs/not-json",
+      "summary": "An inputs file that is not JSON is a usage error.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [{ "path": "inputs.json", "text": "{receipt: oops\n" }],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: the inputs file \"inputs.json\" is not valid JSON.\n"]
+      }
+    },
+    {
+      "name": "inputs/array",
+      "summary": "The inputs are one JSON object, never an array.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [{ "path": "inputs.json", "text": "[{\"receipt\": \"r.pdf\"}]\n" }],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: the inputs file \"inputs.json\" must hold a JSON object, one entry per input, and holds an array.\n"
+        ]
+      }
+    },
+    {
+      "name": "inputs/null",
+      "summary": "null is not an object of inputs.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [{ "path": "inputs.json", "text": "null\n" }],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: the inputs file \"inputs.json\" must hold a JSON object, one entry per input, and holds null.\n"
+        ]
+      }
+    },
+    {
+      "name": "inputs/stdin-string",
+      "summary": "--inputs - reads stdin, held to the same rule.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--inputs", "-"],
+      "stdin": "\"just a sentence\"\n",
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: stdin must hold a JSON object, one entry per input, and holds a string.\n"
+        ]
+      }
+    },
+    {
+      "name": "inputs/stdin-empty",
+      "summary": "An empty stdin is not JSON.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--inputs", "-"],
+      "stdin": "",
+      "expect": { "exit_code": 2, "stdout": "", "stderr": ["Error: stdin is not valid JSON.\n"] }
+    },
+    {
+      "name": "inputs/not-utf8",
+      "summary": "An inputs file that is not UTF-8 text is refused.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [{ "path": "inputs.json", "base64": "e/99" }],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: the inputs file \"inputs.json\" is not UTF-8 text.\n"]
+      }
+    },
+    {
+      "name": "inputs/from-stdin",
+      "summary": "Inputs read from stdin are prepared, and a URL at a file input passes through with no upload.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--inputs", "-"],
+      "stdin": "{\"receipt\": \"https://files.example.test/receipt.pdf\", \"note\": \"Team lunch\"}\n",
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "inputs": {
+                "receipt": { "url": "https://files.example.test/receipt.pdf" },
+                "note": "Team lunch"
+              }
+            },
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "main_stuff": { "total": 42.5, "currency": "EUR", "approved": true, "flags": [] }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"total\": 42.5,\n  \"currency\": \"EUR\",\n  \"approved\": true,\n  \"flags\": []\n}\n",
+        "stderr": ["Run started: run-1\n"],
+        "stderr_excludes": ["Uploaded"]
+      }
+    },
+    {
+      "name": "inputs/byte-order-mark",
+      "summary": "A byte-order mark at the start of the inputs file is dropped, as RFC 8259 lets a JSON reader do, and the inputs are read as written after it.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "bom.json"
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "inputs": {
+                "receipt": { "url": "https://files.example.test/receipt.pdf" },
+                "note": "Team lunch"
+              }
+            },
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "main_stuff": { "total": 42.5, "currency": "EUR", "approved": true, "flags": [] }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"total\": 42.5,\n  \"currency\": \"EUR\",\n  \"approved\": true,\n  \"flags\": []\n}\n",
+        "stderr": ["Run started: run-1\n"],
+        "stderr_excludes": ["Uploaded", "Error"]
+      },
+      "files": [
+        {
+          "path": "bom.json",
+          "base64": "77u/eyJyZWNlaXB0IjogImh0dHBzOi8vZmlsZXMuZXhhbXBsZS50ZXN0L3JlY2VpcHQucGRmIiwgIm5vdGUiOiAiVGVhbSBsdW5jaCJ9Cg=="
+        }
+      ]
+    },
+    {
+      "name": "inputs/upload",
+      "summary": "A local path at a file input is uploaded before the run, reported on stderr, and sent as its storage reference.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"scans/receipt.pdf\", \"note\": \"Team lunch\"}\n"
+        },
+        { "path": "scans/receipt.pdf", "text": "%PDF-1.4 a receipt\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "POST /v1/upload": [
+          {
+            "request_body": {
+              "filename": "receipt.pdf",
+              "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
+              "content_type": "application/pdf"
+            },
+            "status": 200,
+            "body": { "uri": "pipelex-storage://uploads/u1/receipt.pdf", "filename": "receipt.pdf" }
+          }
+        ],
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_code": "receipts.review_receipt",
+              "inputs": {
+                "receipt": { "url": "pipelex-storage://uploads/u1/receipt.pdf" },
+                "note": "Team lunch"
+              }
+            },
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          { "answer": "results/running" },
+          {
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "main_stuff": { "total": 42.5, "currency": "EUR", "approved": true, "flags": [] }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"total\": 42.5,\n  \"currency\": \"EUR\",\n  \"approved\": true,\n  \"flags\": []\n}\n",
+        "stderr": [
+          "Uploaded receipt.pdf as pipelex-storage://uploads/u1/receipt.pdf\n",
+          "Run started: run-1\n"
+        ]
+      }
+    },
+    {
+      "name": "inputs/upload-too-large",
+      "summary": "A file the upload route refuses as too large is named, with the status, the SDK's sentence and the request id, and no run starts.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"scans/receipt.pdf\", \"note\": \"Team lunch\"}\n"
+        },
+        { "path": "scans/receipt.pdf", "text": "%PDF-1.4 a receipt\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "POST /v1/upload": [
+          {
+            "request_body": {
+              "filename": "receipt.pdf",
+              "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
+              "content_type": "application/pdf"
+            },
+            "status": 413,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": {
+              "status": 413,
+              "title": "Payload Too Large",
+              "detail": "The file exceeds the 50 MiB upload limit",
+              "request_id": "req_413"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the upload of \"receipt.pdf\" failed (status 413).\n",
+          "Reason: The server rejected \"receipt.pdf\": The file exceeds the 50 MiB upload limit.\n",
+          "Request id: req_413\n"
+        ],
+        "stderr_excludes": ["Run started", "Reason: Payload Too Large"]
+      }
+    },
+    {
+      "name": "inputs/upload-unsupported",
+      "summary": "A deployment with no upload route is said so, in the SDK's words, for the file named, with the status, and no run starts.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"scans/receipt.pdf\", \"note\": \"Team lunch\"}\n"
+        },
+        { "path": "scans/receipt.pdf", "text": "%PDF-1.4 a receipt\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "POST /v1/upload": [
+          {
+            "request_body": {
+              "filename": "receipt.pdf",
+              "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
+              "content_type": "application/pdf"
+            },
+            "status": 404,
+            "body": { "detail": "Not Found" }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the upload of \"receipt.pdf\" failed (status 404).\n",
+          "Reason: The configured Pipelex deployment does not support file upload"
+        ],
+        "stderr_excludes": ["Run started", "Reason: Not Found"]
+      }
+    },
+    {
+      "name": "inputs/upload-server-error",
+      "summary": "A server fault on the upload names the file and the status, and no run starts.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"scans/receipt.pdf\", \"note\": \"Team lunch\"}\n"
+        },
+        { "path": "scans/receipt.pdf", "text": "%PDF-1.4 a receipt\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "POST /v1/upload": [
+          {
+            "request_body": {
+              "filename": "receipt.pdf",
+              "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
+              "content_type": "application/pdf"
+            },
+            "status": 500,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": {
+              "status": 500,
+              "title": "Internal Server Error",
+              "detail": "Storage is unavailable"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the upload of \"receipt.pdf\" failed (status 500).\n",
+          "Reason: Upload of \"receipt.pdf\" failed (500): Storage is unavailable.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "inputs/upload-unreachable",
+      "summary": "An upload that gets no answer names the file without a status, and no run starts.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"scans/receipt.pdf\", \"note\": \"Team lunch\"}\n"
+        },
+        { "path": "scans/receipt.pdf", "text": "%PDF-1.4 a receipt\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "POST /v1/upload": [
+          {
+            "request_body": {
+              "filename": "receipt.pdf",
+              "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
+              "content_type": "application/pdf"
+            },
+            "unreachable": true
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the upload of \"receipt.pdf\" failed.\n",
+          "Reason: Upload of \"receipt.pdf\" could not reach the Pipelex API"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "inputs/upload-file-missing",
+      "summary": "A local path at a file input that cannot be read is a usage error, and no run starts.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"missing.pdf\", \"note\": \"Team lunch\"}\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: Local file cannot be read: \"missing.pdf\""]
+      }
+    },
+    {
+      "name": "inputs/data-url-malformed",
+      "summary": "A data: URL at a file input that cannot be decoded is a usage error, and nothing is uploaded or run.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"data:application/pdf;base64\", \"note\": \"Team lunch\"}\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: the inputs hold a value at a file input that cannot be read as a file.\n",
+          "A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "inputs/value-not-a-file",
+      "summary": "A number at a file input is a usage error, and nothing is uploaded or run.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [{ "path": "inputs.json", "text": "{\"receipt\": 42, \"note\": \"Team lunch\"}\n" }],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: the inputs hold a value at a file input that cannot be read as a file.\n",
+          "A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "inputs/method-does-not-load",
+      "summary": "A method that does not load, met while the inputs are prepared, is reported as --inputs-template reports it, every validation error on its line, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs", "inputs.json"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        },
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"https://example.com/r.pdf\", \"note\": \"Team lunch\"}\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                {
+                  "content": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+                  "source": "receipt-review.mthds"
+                }
+              ]
+            },
+            "status": 200,
+            "body": {
+              "is_valid": false,
+              "validation_errors": [
+                {
+                  "category": "blueprint_validation",
+                  "message": "Unknown concept 'Receipt'.",
+                  "source": "receipt-review.mthds"
+                },
+                {
+                  "category": "blueprint_validation",
+                  "message": "Unknown pipe 'receipts.extract_total'.",
+                  "source": "receipt-review.mthds"
+                }
+              ],
+              "message": "MTHDS library could not be resolved"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the method does not load.\n",
+          "  - receipt-review.mthds: Unknown concept 'Receipt'.\n",
+          "  - receipt-review.mthds: Unknown pipe 'receipts.extract_total'.\n"
+        ],
+        "stderr_excludes": ["Cannot prepare inputs", "Run started"]
+      }
+    },
+    {
+      "name": "inputs/empty-object",
+      "summary": "An empty object has nothing to prepare, so no pipe I/O request is made, and the run gets it as it is.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [{ "path": "inputs.json", "text": "{}\n" }],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "inputs": {}
+            },
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": { "pipeline_run_id": "run-1", "main_stuff": { "text": "nothing to review" } }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"text\": \"nothing to review\"\n}\n",
+        "stderr": ["Run started: run-1\n"]
+      }
+    },
+    {
+      "name": "environment/key-missing",
+      "summary": "No key is a usage error naming the variable and where to get a key.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "env": { "PIPELEX_API_KEY": null },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: PIPELEX_API_KEY is not set.\n", "https://app.pipelex.com"]
+      }
+    },
+    {
+      "name": "environment/key-empty",
+      "summary": "An empty key is no key.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "env": { "PIPELEX_API_KEY": "" },
+      "expect": { "exit_code": 2, "stdout": "", "stderr": ["Error: PIPELEX_API_KEY is not set.\n"] }
+    },
+    {
+      "name": "environment/base-url-credentials-not-echoed",
+      "summary": "A base URL carrying credentials is refused without printing them.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "env": { "PIPELEX_BASE_URL": "https://ci-user:s3cret-pass@api.test" },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: PIPELEX_BASE_URL is refused.\n", "credentials"],
+        "stderr_excludes": ["s3cret-pass", "ci-user", "pk_case_key"]
+      }
+    },
+    {
+      "name": "environment/base-url-query-not-echoed",
+      "summary": "A base URL carrying a token in its query is refused without printing it.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "env": { "PIPELEX_BASE_URL": "https://api.test/?token=abc123" },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: PIPELEX_BASE_URL is refused.\n"],
+        "stderr_excludes": ["abc123", "token="]
+      }
+    },
+    {
+      "name": "environment/poll-interval-invalid",
+      "summary": "The test-only poll interval must be a whole number of milliseconds.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "env": { "PIPELEX_SDK_POLL_INTERVAL_MS": "fast" },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: PIPELEX_SDK_POLL_INTERVAL_MS must be a whole number of milliseconds.\n"]
+      }
+    },
+    {
+      "name": "run/address",
+      "summary": "An address runs through start and poll; the run id goes to stderr and the main output to stdout as indented JSON.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"https://files.example.test/r.pdf\", \"note\": \"Team lunch\"}\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_code": "receipts.review_receipt",
+              "inputs": {
+                "receipt": { "url": "https://files.example.test/r.pdf" },
+                "note": "Team lunch"
+              }
+            },
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          { "answer": "results/running" },
+          { "answer": "results/running" },
+          {
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "main_stuff": { "total": 42.5, "currency": "EUR", "approved": true, "flags": [] }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"total\": 42.5,\n  \"currency\": \"EUR\",\n  \"approved\": true,\n  \"flags\": []\n}\n",
+        "stderr": ["Run started: run-1\n"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/catalog-id",
+      "summary": "A catalog id runs as method_id; with no inputs, nothing is prepared and none are sent.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "request_body": { "method_id": "mt_receipts01" },
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-7",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-7/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": { "pipeline_run_id": "run-7", "main_stuff": { "text": "All good" } }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"text\": \"All good\"\n}\n",
+        "stderr": ["Run started: run-7\n"]
+      }
+    },
+    {
+      "name": "run/list-bare",
+      "summary": "A list output that arrives bare is printed bare.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "main_stuff": [
+                { "total": 12, "approved": true },
+                { "total": 30, "approved": false }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "[\n  {\n    \"total\": 12,\n    \"approved\": true\n  },\n  {\n    \"total\": 30,\n    \"approved\": false\n  }\n]\n",
+        "stderr": ["Run started: run-1\n"]
+      }
+    },
+    {
+      "name": "run/list-items",
+      "summary": "A list output that arrives wrapped as {items} is printed wrapped, unrepaired.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "main_stuff": {
+                "items": [
+                  { "total": 12, "approved": true },
+                  { "total": 30, "approved": false }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"items\": [\n    {\n      \"total\": 12,\n      \"approved\": true\n    },\n    {\n      \"total\": 30,\n      \"approved\": false\n    }\n  ]\n}\n",
+        "stderr": ["Run started: run-1\n"]
+      }
+    },
+    {
+      "name": "run/absent-output",
+      "summary": "An output the method left absent prints null, and stderr says why.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "main_stuff": {
+                "absent": true,
+                "variable_name": "summary",
+                "kind": "skipped",
+                "reason": "the receipt was empty",
+                "producing_pipe": "receipts.summarize",
+                "upstream": null
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "null\n",
+        "stderr": [
+          "Run started: run-1\n",
+          "The method left its output \"summary\" absent (the receipt was empty), so the result is null.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/absent-field-is-data",
+      "summary": "An output that merely carries an absent key is data, printed as it is.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "main_stuff": { "absent": true, "label": "a field of the method's own" }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"absent\": true,\n  \"label\": \"a field of the method's own\"\n}\n",
+        "stderr": ["Run started: run-1\n"],
+        "stderr_excludes": ["absent ("]
+      }
+    },
+    {
+      "name": "run/unicode-output",
+      "summary": "Non-ASCII characters are printed as they are, and only JSON's own escapes are used.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "main_stuff": {
+                "text": "Café ☕ and a receipt 🧾\nsecond line with a \"quote\" and a \\ backslash"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"text\": \"Café ☕ and a receipt 🧾\\nsecond line with a \\\"quote\\\" and a \\\\ backslash\"\n}\n",
+        "stderr": ["Run started: run-1\n"]
+      }
+    },
+    {
+      "name": "run/failed",
+      "summary": "A failed run prints its status, the report's reason and its advice, and exits 1.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          { "answer": "results/running" },
+          {
+            "status": 409,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": {
+              "status": 409,
+              "title": "Conflict",
+              "detail": "Run finished with status FAILED: The model refused the receipt.",
+              "run_status": "FAILED",
+              "error": {
+                "error_type": "LLMRefusalError",
+                "message": "The model refused the receipt.",
+                "error_domain": "input",
+                "retryable": false,
+                "user_action": {
+                  "kind": "fix_input",
+                  "detail": "Send a clearer scan of the receipt."
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Run started: run-1\n",
+          "Error: run run-1 ended with status FAILED.\n",
+          "Reason: The model refused the receipt.\n",
+          "Next step: Send a clearer scan of the receipt.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/cancelled-without-report",
+      "summary": "A run that ended with no report gives the API's own sentence as its reason.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 409,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": {
+              "status": 409,
+              "title": "Conflict",
+              "detail": "Run finished with status CANCELLED; no result available",
+              "run_status": "CANCELLED",
+              "error": null
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: run run-1 ended with status CANCELLED.\n",
+          "Reason: Run finished with status CANCELLED; no result available\n"
+        ],
+        "stderr_excludes": ["Next step"]
+      }
+    },
+    {
+      "name": "run/refused",
+      "summary": "A refused run prints the API's status, reason, validation errors, advice and request id, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "request_body": {
+              "mthds_contents": ["domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"]
+            },
+            "status": 422,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": {
+              "status": 422,
+              "title": "Unprocessable Entity",
+              "detail": "The method failed validation.",
+              "error_type": "ValidationError",
+              "error_domain": "input",
+              "request_id": "req_123",
+              "user_action": { "kind": "fix_input", "detail": "Fix the bundle and run it again." },
+              "validation_errors": [
+                { "category": "blueprint_validation", "message": "Unknown concept 'Receipt'." }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API refused the request (status 422).\n",
+          "Reason: The method failed validation.\n",
+          "  - Unknown concept 'Receipt'.\n",
+          "Next step: Fix the bundle and run it again.\n",
+          "Request id: req_123\n"
+        ],
+        "stderr_excludes": ["Run started", "receipt-review.mthds:"]
+      }
+    },
+    {
+      "name": "run/unauthorized",
+      "summary": "A refused key is reported as the API's refusal, and the key is never printed.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 401,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 401, "title": "Unauthorized", "detail": "Invalid API key." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API refused the request (status 401).\n",
+          "Reason: Invalid API key.\n"
+        ],
+        "stderr_excludes": ["pk_case_key"]
+      }
+    },
+    {
+      "name": "run/pipe-not-found",
+      "summary": "An unknown pipe is caught by the input preparation, before any run.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.nope",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [{ "path": "inputs.json", "text": "{\"note\": \"Team lunch\"}\n" }],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.nope"
+            },
+            "status": 422,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": {
+              "status": 422,
+              "title": "Unprocessable Entity",
+              "detail": "No pipe 'receipts.nope' in the method; its pipes are: receipts.review_receipt.",
+              "error_type": "EntryPipeNotFoundError",
+              "error_domain": "input"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API refused the request (status 422).\n",
+          "Reason: No pipe 'receipts.nope' in the method; its pipes are: receipts.review_receipt.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/missing-main-stuff",
+      "summary": "A completed run with no main output is the API breaking its contract, and exits 1.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          { "status": 200, "body": { "pipeline_run_id": "run-1", "main_stuff": null } }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Run started: run-1\n", "returned no main stuff"]
+      }
+    },
+    {
+      "name": "run/bare-runner",
+      "summary": "On a bare runner the run is one blocking execute, and no run id is printed.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/bare-runner" }],
+        "POST /v1/execute": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-b",
+              "created_at": "2026-10-08T10:00:00Z",
+              "state": "COMPLETED",
+              "main_stuff_name": "review",
+              "pipe_output": {
+                "working_memory": {
+                  "root": {
+                    "review": {
+                      "concept": "receipts.ReceiptReview",
+                      "content": { "total": 42.5, "currency": "EUR", "approved": true, "flags": [] }
+                    }
+                  },
+                  "aliases": { "main_stuff": "review" }
+                },
+                "pipeline_run_id": "run-b"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"total\": 42.5,\n  \"currency\": \"EUR\",\n  \"approved\": true,\n  \"flags\": []\n}\n",
+        "stderr_excludes": ["Run started", "Error"]
+      }
+    },
+    {
+      "name": "run/fallback-to-blocking",
+      "summary": "A runner that looks hosted but has no run store falls back to the blocking execute, and no run id is printed.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/base-fields-only" }],
+        "POST /v1/start": [{ "status": 404, "body": { "detail": "Not Found" } }],
+        "POST /v1/execute": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-b",
+              "created_at": "2026-10-08T10:00:00Z",
+              "state": "COMPLETED",
+              "main_stuff_name": "review",
+              "pipe_output": {
+                "working_memory": {
+                  "root": {
+                    "review": {
+                      "concept": "receipts.ReceiptReview",
+                      "content": { "total": 42.5, "currency": "EUR", "approved": true, "flags": [] }
+                    }
+                  },
+                  "aliases": { "main_stuff": "review" }
+                },
+                "pipeline_run_id": "run-b"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"total\": 42.5,\n  \"currency\": \"EUR\",\n  \"approved\": true,\n  \"flags\": []\n}\n",
+        "stderr_excludes": ["Run started", "Error"]
+      }
+    },
+    {
+      "name": "template/address",
+      "summary": "--inputs-template prints the template rendered from the pipe I/O answer, and runs nothing.",
+      "argv": [
+        "run",
+        "--method=github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs-template"
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Run started", "Error"]
+      }
+    },
+    {
+      "name": "template/catalog-id-and-pipe",
+      "summary": "A catalog id and a pipe reach the pipe I/O route as method_id and pipe_ref.",
+      "argv": [
+        "run",
+        "--method",
+        "mt_receipts01",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs-template"
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_id": "mt_receipts01", "pipe_ref": "receipts.review_receipt" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "template/method-does-not-load",
+      "summary": "A method that does not load is reported with its validation errors, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": false,
+              "validation_errors": [
+                {
+                  "category": "blueprint_validation",
+                  "message": "Unknown concept 'Receipt'.",
+                  "source": "receipt-review.mthds"
+                }
+              ],
+              "message": "MTHDS library could not be resolved"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the method does not load.\n",
+          "  - receipt-review.mthds: Unknown concept 'Receipt'.\n"
+        ]
+      }
+    },
+    {
+      "name": "template/unreachable",
+      "summary": "An API that cannot be reached is reported as such, and exits 1.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs-template"
+      ],
+      "routes": { "POST /v1/pipe-io": [{ "unreachable": true }] },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test"]
+      }
+    },
+    {
+      "name": "interrupt/while-waiting",
+      "summary": "An interrupt while the run is polled leaves it going on the server, names it, and exits 130.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [{ "answer": "results/running" }]
+      },
+      "interrupt": { "route": "GET /v1/runs/run-1/results?artifacts=main_stuff", "call": 2 },
+      "expect": {
+        "exit_code": 130,
+        "stdout": "",
+        "stderr": ["Run started: run-1\n", "Interrupted. Run run-1 keeps going on the server.\n"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "interrupt/while-starting",
+      "summary": "An interrupt before the API answers with a run id says a run may or may not have started.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": { "GET /v1/version": [{ "answer": "version/hosted" }] },
+      "interrupt": { "route": "POST /v1/start", "call": 1 },
+      "expect": {
+        "exit_code": 130,
+        "stdout": "",
+        "stderr": [
+          "Interrupted before the API answered with a run id. A run may or may not have started on the server.\n"
+        ],
+        "stderr_excludes": ["Run started", "Error"]
+      }
+    },
+    {
+      "name": "interrupt/while-preparing",
+      "summary": "An interrupt while the inputs are prepared starts no run.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [{ "path": "inputs.json", "text": "{\"note\": \"Team lunch\"}\n" }],
+      "interrupt": { "route": "POST /v1/pipe-io", "call": 1 },
+      "expect": {
+        "exit_code": 130,
+        "stdout": "",
+        "stderr": ["Interrupted. No run was started.\n"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "interrupt/template",
+      "summary": "An interrupt while the template is fetched prints nothing else.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs-template"
+      ],
+      "interrupt": { "route": "POST /v1/pipe-io", "call": 1 },
+      "expect": {
+        "exit_code": 130,
+        "stdout": "",
+        "stderr": ["Interrupted.\n"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "interrupt/script",
+      "summary": "An interrupt while the method is checked writes nothing.",
+      "argv": ["script", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "interrupt": { "route": "POST /v1/pipe-io", "call": 1 },
+      "expect": {
+        "exit_code": 130,
+        "stdout": "",
+        "stderr": ["Interrupted. Nothing was written.\n"],
+        "absent_files": ["receipt-review"]
+      }
+    },
+    {
+      "name": "script/address-and-pipe",
+      "summary": "script checks the method with one pipe I/O call, then writes an executable script named after the address, pinned to this SDK.",
+      "argv": [
+        "script",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt"
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "./receipt-review\n",
+        "stderr": ["Wrote ./receipt-review. Run it with: ./receipt-review --inputs inputs.json\n"],
+        "stderr_excludes": ["Warning", "Error"],
+        "files": [
+          {
+            "path": "receipt-review",
+            "text": "#!/bin/sh\n# receipt-review: runs github.com/acme/methods/receipt-review@v1.0.0 on the Pipelex API.\n# Written by {{WRITER}} {{SDK_VERSION}}. Needs {{NEEDS}}, and PIPELEX_API_KEY in the environment.\n# Usage: ./receipt-review --inputs inputs.json, or ./receipt-review --inputs-template to see what to fill in.\nexec {{RUNNER}} run --method 'github.com/acme/methods/receipt-review@v1.0.0' --pipe 'receipts.review_receipt' \"$@\"\n",
+            "executable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "script/catalog-id",
+      "summary": "A catalog id's script is named after its catalog entry, kebab-cased.",
+      "argv": ["script", "--method", "mt_receipts01"],
+      "routes": {
+        "POST /v1/pipe-io": [
+          { "request_body": { "method_id": "mt_receipts01" }, "answer": "pipe-io/receipt-review" }
+        ],
+        "GET /v1/methods/mt_receipts01": [
+          {
+            "status": 200,
+            "body": {
+              "method_id": "mt_receipts01",
+              "org_id": "org_1",
+              "created_by_user_id": "user_1",
+              "name": "Résumé Review (v2)",
+              "mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+              "python": "",
+              "created_at": "2026-10-01T09:00:00Z",
+              "updated_at": "2026-10-01T09:00:00Z"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "./resume-review-v2\n",
+        "stderr": ["Wrote ./resume-review-v2."],
+        "files": [
+          {
+            "path": "resume-review-v2",
+            "text": "#!/bin/sh\n# resume-review-v2: runs mt_receipts01 on the Pipelex API.\n# Written by {{WRITER}} {{SDK_VERSION}}. Needs {{NEEDS}}, and PIPELEX_API_KEY in the environment.\n# Usage: ./resume-review-v2 --inputs inputs.json, or ./resume-review-v2 --inputs-template to see what to fill in.\nexec {{RUNNER}} run --method 'mt_receipts01' \"$@\"\n",
+            "executable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "script/name-and-dir",
+      "summary": "--name and --dir choose the file; the path printed is --dir as given, then the name.",
+      "argv": [
+        "script",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--name",
+        "review",
+        "--dir",
+        "bin/"
+      ],
+      "files": [{ "path": "bin", "directory": true }],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "bin/review\n",
+        "stderr": ["Wrote bin/review. Run it with: bin/review --inputs inputs.json\n"],
+        "files": [
+          {
+            "path": "bin/review",
+            "text": "#!/bin/sh\n# review: runs github.com/acme/methods/receipt-review@v1.0.0 on the Pipelex API.\n# Written by {{WRITER}} {{SDK_VERSION}}. Needs {{NEEDS}}, and PIPELEX_API_KEY in the environment.\n# Usage: ./review --inputs inputs.json, or ./review --inputs-template to see what to fill in.\nexec {{RUNNER}} run --method 'github.com/acme/methods/receipt-review@v1.0.0' \"$@\"\n",
+            "executable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "script/quoting",
+      "summary": "Every value is single-quoted, an inner quote spelled '\\''.",
+      "argv": ["script", "--method", "github.com/acme/o'brien-methods/review@v1"],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/o'brien-methods/review@v1" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "./review\n",
+        "files": [
+          {
+            "path": "review",
+            "text": "#!/bin/sh\n# review: runs github.com/acme/o'brien-methods/review@v1 on the Pipelex API.\n# Written by {{WRITER}} {{SDK_VERSION}}. Needs {{NEEDS}}, and PIPELEX_API_KEY in the environment.\n# Usage: ./review --inputs inputs.json, or ./review --inputs-template to see what to fill in.\nexec {{RUNNER}} run --method 'github.com/acme/o'\\''brien-methods/review@v1' \"$@\"\n",
+            "executable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "script/untagged-address",
+      "summary": "An address without a tag is accepted, with a warning that the script follows the default branch.",
+      "argv": ["script", "--method", "github.com/acme/methods/receipt-review"],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "./receipt-review\n",
+        "stderr": [
+          "Warning: github.com/acme/methods/receipt-review has no tag",
+          "Wrote ./receipt-review."
+        ],
+        "files": [
+          {
+            "path": "receipt-review",
+            "text": "#!/bin/sh\n# receipt-review: runs github.com/acme/methods/receipt-review on the Pipelex API.\n# Written by {{WRITER}} {{SDK_VERSION}}. Needs {{NEEDS}}, and PIPELEX_API_KEY in the environment.\n# Usage: ./receipt-review --inputs inputs.json, or ./receipt-review --inputs-template to see what to fill in.\nexec {{RUNNER}} run --method 'github.com/acme/methods/receipt-review' \"$@\"\n",
+            "executable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "script/local-bundle-refused",
+      "summary": "A script never names a local bundle; the refusal names the two ways to get an address or an id.",
+      "argv": ["script", "--method", "receipt-review.mthds"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: script takes a method address or a catalog id, and \"receipt-review.mthds\" is neither: a script naming a local bundle breaks as soon as the script or the bundle moves.\n",
+          "github.com/<owner>/<repo>"
+        ]
+      }
+    },
+    {
+      "name": "script/catalog-id-malformed",
+      "summary": "script refuses an mt_ value no catalog id has the shape of, before any request.",
+      "argv": ["script", "--method", "mt_receipts/v2"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"mt_receipts/v2\" is not a catalog id: a catalog id holds only letters, digits, _ and -.\n",
+          "./mt_receipts/v2"
+        ],
+        "absent_files": ["v2", "mt_receipts"]
+      }
+    },
+    {
+      "name": "script/never-overwrites",
+      "summary": "An existing file is never overwritten, and nothing is asked of the API.",
+      "argv": ["script", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "files": [{ "path": "receipt-review", "text": "#!/bin/sh\necho mine\n" }],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: \"./receipt-review\" already exists, and script never overwrites a file.\n"
+        ],
+        "files": [{ "path": "receipt-review", "text": "#!/bin/sh\necho mine\n" }]
+      }
+    },
+    {
+      "name": "script/name-with-slash",
+      "summary": "--name is a file name; --dir says where it goes.",
+      "argv": [
+        "script",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--name",
+        "bin/review"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: --name \"bin/review\" holds a /, and --dir is where the script goes.\n"]
+      }
+    },
+    {
+      "name": "script/name-with-backslash",
+      "summary": "--name may not hold a \\ on any platform, since Windows reads it as a / and ..\\outside would leave --dir.",
+      "argv": [
+        "script",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--name",
+        "..\\outside"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --name \"..\\outside\" holds a \\, which Windows reads as a /, and --dir is where the script goes.\n"
+        ],
+        "absent_files": ["..\\outside"]
+      }
+    },
+    {
+      "name": "script/control-character",
+      "summary": "No value a script carries may hold a control character.",
+      "argv": [
+        "script",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--name",
+        "review\nrm -rf ~"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --name holds a control character, which no line of a script may carry.\n"
+        ]
+      }
+    },
+    {
+      "name": "script/dir-missing",
+      "summary": "--dir must be an existing directory.",
+      "argv": [
+        "script",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--dir",
+        "nowhere"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": ["Error: --dir \"nowhere\" does not exist.\n"]
+      }
+    },
+    {
+      "name": "script/catalog-name-unusable",
+      "summary": "A catalog name with no letter or digit makes no file name, and --name is asked for.",
+      "argv": ["script", "--method", "mt_receipts01"],
+      "routes": {
+        "POST /v1/pipe-io": [
+          { "request_body": { "method_id": "mt_receipts01" }, "answer": "pipe-io/receipt-review" }
+        ],
+        "GET /v1/methods/mt_receipts01": [
+          {
+            "status": 200,
+            "body": {
+              "method_id": "mt_receipts01",
+              "org_id": "org_1",
+              "created_by_user_id": "user_1",
+              "name": "!!!",
+              "mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+              "python": "",
+              "created_at": "2026-10-01T09:00:00Z",
+              "updated_at": "2026-10-01T09:00:00Z"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: no script name can be made from \"mt_receipts01\"; give one with --name.\n"
+        ]
+      }
+    },
+    {
+      "name": "script/pipe-not-found",
+      "summary": "A typo in the pipe is caught when the script is written, and nothing is written.",
+      "argv": [
+        "script",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.reveiw_receipt"
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.reveiw_receipt"
+            },
+            "status": 422,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": {
+              "status": 422,
+              "title": "Unprocessable Entity",
+              "detail": "No pipe 'receipts.reveiw_receipt' in the method; its pipes are: receipts.review_receipt.",
+              "error_type": "EntryPipeNotFoundError",
+              "error_domain": "input"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API refused the request (status 422).\n",
+          "Reason: No pipe 'receipts.reveiw_receipt' in the method; its pipes are: receipts.review_receipt.\n"
+        ],
+        "absent_files": ["receipt-review"]
+      }
+    },
+    {
+      "name": "script/key-missing",
+      "summary": "script needs the key too, to check the method.",
+      "argv": ["script", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "env": { "PIPELEX_API_KEY": null },
+      "expect": { "exit_code": 2, "stdout": "", "stderr": ["Error: PIPELEX_API_KEY is not set.\n"] }
+    }
+  ]
+}

@@ -4,7 +4,6 @@ import type {
   ModelDeck,
   RunOptions,
   RunRequest,
-  RunResultStart,
   StartOptions,
   StartRequest,
   VersionInfo,
@@ -41,11 +40,13 @@ import {
   assertWaitOptions,
   pollUntilResult,
   selectionIncludesMainStuff,
+  throwIfAborted,
   type GetRunResultOptions,
   type RunRead,
   type RunResults,
   type RunResultState,
   type RunStatus,
+  type StartAndWaitForResultOptions,
   type WaitForResultOptions,
 } from "./runs.js";
 import type {
@@ -390,9 +391,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     // endpoint error instead of a clear base-URL one. Trailing slashes are
     // stripped first; a remaining path/query/fragment/credentials is rejected. The
     // refusal is `config`: the value typically comes from PIPELEX_BASE_URL, the environment.
+    // It never quotes the value whole: what the rule refuses is where a secret travels
+    // (a password, a token in a query), so it names those parts without their text.
     if (!isValidBaseUrl(normalizedBaseUrl)) {
       throw new RequestArgumentError(
-        `Invalid API base URL "${normalizedBaseUrl}": must be host-only ` +
+        `Invalid API base URL ${describeRefusedBaseUrl(normalizedBaseUrl)}: it must be host-only ` +
           `(http/https, no path, query, fragment, or credentials). Endpoints ` +
           `compose as {base}/v1/{endpoint}.`,
         { verdict: { errorDomain: "config", retryable: false } },
@@ -1487,29 +1490,45 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *   path that survives the gateway's ~30s synchronous ceiling.
    * - **Bare runner** (no run store): the blocking `POST /v1/execute`, which
    *   has no gateway cap off-platform and returns the native `pipe_output`.
+   *
+   * `pollOptions` are the wait's options, plus `onStarted`, called once with the
+   * start acknowledgement as soon as the durable run exists, so the caller holds
+   * the run's id while it waits; never on the blocking path, which has none to
+   * give (see `StartAndWaitForResultOptions`).
+   *
+   * `pollOptions.signal` is also read before the run is created: a caller that aborts while the
+   * version handshake is in flight gets its abort, and neither the start nor the blocking execute
+   * is sent. Once one of them is sent, the abort stops only the wait.
    */
   async startAndWaitForResult(
     options: PipelexStartOptions,
-    pollOptions?: WaitForResultOptions,
+    pollOptions?: StartAndWaitForResultOptions,
   ): Promise<RunResults> {
     // Before the run starts: a RangeError after it would carry no run id to re-poll by.
     assertWaitOptions(pollOptions);
-    if (await this.supportsRunLifecycle()) {
+    const { onStarted, ...waitOptions } = pollOptions ?? {};
+    const hosted = await this.supportsRunLifecycle();
+    // The handshake may have outlasted the caller's patience: an abort that landed during it
+    // creates no run.
+    throwIfAborted(waitOptions.signal);
+    if (hosted) {
       // A runner can look hosted yet lack the durable routes — `implementation`
       // is an extension field, so a compliant bare runner that omits it is
       // misdetected here. Such a runner raises `RunLifecycleUnavailableError`
       // from `start()`, BEFORE any run is created, so falling back to the
       // blocking path cannot double-run. Cache the negative so later calls skip
       // the durable attempt.
-      let ack: RunResultStart;
+      let ack: PipelexRunResultStart;
       try {
         ack = await this.start(options);
       } catch (err) {
         if (!(err instanceof RunLifecycleUnavailableError)) throw err;
         this.lifecycleAvailable = false;
+        throwIfAborted(waitOptions.signal);
         return this.executeBlocking(options);
       }
-      return this.waitForResult(ack.pipeline_run_id, pollOptions);
+      onStarted?.(ack);
+      return this.waitForResult(ack.pipeline_run_id, waitOptions);
     }
 
     return this.executeBlocking(options);
@@ -2070,6 +2089,38 @@ function isValidBaseUrl(value: string): boolean {
   if (parsed.pathname !== "/" && parsed.pathname !== "") return false;
   if (parsed.username || parsed.password) return false;
   return !parsed.search && !parsed.hash;
+}
+
+/**
+ * A refused base URL as its refusal may show it: the scheme and the host, then the names of the
+ * parts beyond them that the URL carried, never their text. Credentials, a query and a path are
+ * exactly where a secret travels in a URL, and the refusal reaches logs and, through an app that
+ * relays an error's message, a browser. A value that is not an http or https URL is not shown at
+ * all, since nothing says which of its characters are a secret: `localhost:8081`, with no scheme,
+ * parses as a URL whose scheme is `localhost:`.
+ */
+function describeRefusedBaseUrl(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return "(not shown: it is not an absolute URL)";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "(not shown: it is not an http or https URL)";
+  }
+  const parts: string[] = [];
+  if (parsed.username || parsed.password) parts.push("credentials");
+  if (parsed.pathname !== "/" && parsed.pathname !== "") parts.push("a path");
+  if (parsed.search) parts.push("a query");
+  if (parsed.hash) parts.push("a fragment");
+  const shown = `"${parsed.protocol}//${parsed.host}"`;
+  if (parts.length === 0) return shown;
+  const named =
+    parts.length === 1
+      ? parts[0]
+      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  return `${shown} with ${named} (not shown)`;
 }
 
 // The protocol's own request fields — `extra` is for extension args only.

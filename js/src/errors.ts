@@ -184,6 +184,44 @@ export class InvalidLocalSourceError extends InputPreparationError {
 }
 
 /**
+ * A value the caller gave at a file input cannot be turned into a file to upload: a `data:` URL
+ * that does not decode (no comma, bad base64, bad percent-encoding), or a value of a type no file
+ * input takes, neither a path or URL string, nor bytes, nor `{url}` content. `prepareInputs`
+ * raises it while it reads the inputs, before anything is uploaded. As with
+ * `InvalidLocalSourceError`, the inputs are what must change, which is how a consumer tells it
+ * apart from `MethodLoadError`, a method that does not load, raised by the same preparation.
+ */
+export class InvalidInputValueError extends InputPreparationError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "InvalidInputValueError";
+  }
+}
+
+/**
+ * The pipe I/O answer said the method does not load (`is_valid: false`), so its signature cannot
+ * be read and no input can be prepared: the method, not the inputs, must change.
+ * `validationErrors` holds the answer's items, each kept when it carries a string `category` and
+ * `message`, possibly none; `serverMessage` is the answer's own `message` when it is a string. The
+ * error's message names the first item's message, else the answer's own.
+ */
+export class MethodLoadError extends InputPreparationError {
+  public readonly validationErrors: ValidationErrorItem[];
+  public readonly serverMessage: string | undefined;
+
+  constructor(
+    message: string,
+    details: { validationErrors: ValidationErrorItem[]; serverMessage?: string | undefined },
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "MethodLoadError";
+    this.validationErrors = details.validationErrors;
+    this.serverMessage = details.serverMessage;
+  }
+}
+
+/**
  * Why an asset was refused, in a closed vocabulary a caller branches on rather than
  * on the message: `too_large` — past the service-defined size cap (`uploadFile`'s
  * `413`); `grant_used` — the upload grant already wrote its object (`412`);
@@ -235,26 +273,33 @@ export class RejectedAssetError extends InputPreparationError {
  * The configured deployment does not support upload (no `/v1/upload` route, seen
  * as a `404`). Upload is a hosted Pipelex-product capability even though the SDK
  * can be pointed at other base URLs. Its verdict is `config`, not retryable: the base URL
- * must point at a deployment that serves upload.
+ * must point at a deployment that serves upload. `filename` is the file whose upload met it, as
+ * `uploadFile` sent it.
  */
 export class UnsupportedUploadCapabilityError extends InputPreparationError {
-  constructor(message: string, options?: { cause?: unknown }) {
+  public readonly filename: string | undefined;
+
+  constructor(message: string, options?: { cause?: unknown; filename?: string }) {
     super(message, { ...options, verdict: makeVerdict("config", false) });
     this.name = "UnsupportedUploadCapabilityError";
+    this.filename = options?.filename;
   }
 }
 
 /**
  * Upload was not authorized — a `401`/`403` from the upload route. Its verdict is `config`, not
- * retryable: the credential must change.
+ * retryable: the credential must change. `filename` is the file whose upload was refused, as
+ * `uploadFile` sent it.
  */
 export class UploadAuthenticationError extends InputPreparationError {
   public readonly status: number;
+  public readonly filename: string | undefined;
 
-  constructor(message: string, status: number, options?: { cause?: unknown }) {
+  constructor(message: string, status: number, options?: { cause?: unknown; filename?: string }) {
     super(message, { ...options, verdict: makeVerdict("config", false) });
     this.name = "UploadAuthenticationError";
     this.status = status;
+    this.filename = options?.filename;
   }
 }
 
@@ -299,8 +344,8 @@ export type UploadTransportCode =
  * every one it raises, so it is undefined only on one a caller constructs without
  * it. `status` is the HTTP status when a response produced it, and undefined when
  * none did. From `uploadFile` the wrapped `ApiResponseError` is also reachable via
- * `cause`; `uploadWithGrant` wraps no response, because storage's error body can
- * echo the grant's credential.
+ * `cause`, and `filename` is the file it was sending; `uploadWithGrant` wraps no response,
+ * because storage's error body can echo the grant's credential, and leaves `filename` undefined.
  *
  * Its verdict is the wrapped error's when `cause` carries one: `uploadFile` wraps the
  * `ApiResponseError` or `ApiUnreachableError` the client's `upload()` threw, and `code` is too
@@ -320,10 +365,11 @@ export type UploadTransportCode =
 export class UploadTransportError extends InputPreparationError {
   public readonly status: number | undefined;
   public readonly code: UploadTransportCode | undefined;
+  public readonly filename: string | undefined;
 
   constructor(
     message: string,
-    options?: { cause?: unknown; status?: number; code?: UploadTransportCode },
+    options?: { cause?: unknown; status?: number; code?: UploadTransportCode; filename?: string },
   ) {
     super(message, {
       ...options,
@@ -333,6 +379,7 @@ export class UploadTransportError extends InputPreparationError {
     this.name = "UploadTransportError";
     this.status = options?.status;
     this.code = options?.code;
+    this.filename = options?.filename;
   }
 }
 

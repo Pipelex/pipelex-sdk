@@ -3,7 +3,7 @@ import type { InputForm, OutputForm, PipeIOContracts } from "mthds/protocol";
 import { RunFailedError, RunTimeoutError } from "./errors.js";
 import { MAX_TIMER_DELAY_MS } from "./timers.js";
 import type { RunErrorReport } from "./error-models.js";
-import type { DictPipeOutput, DictWorkingMemory } from "./models.js";
+import type { DictPipeOutput, DictWorkingMemory, PipelexRunResultStart } from "./models.js";
 
 /**
  * Run-lifecycle types + polling for the hosted polling surface (`/v1/runs/*`).
@@ -393,6 +393,23 @@ export interface WaitForResultOptions {
   artifacts?: readonly RunResultArtifact[];
 }
 
+/**
+ * `startAndWaitForResult`'s second argument: the wait's own options, plus the moment the run
+ * comes to exist.
+ */
+export interface StartAndWaitForResultOptions extends WaitForResultOptions {
+  /**
+   * Called once with the start acknowledgement, as soon as the durable run exists and before the
+   * first poll, so that the caller holds the run's id while it waits: to show it, to log it, or to
+   * resume the run by it after an interrupt. It is never called on the blocking path, a bare
+   * runner's `POST /v1/execute`, which has no run id to give before it answers. The callback runs
+   * synchronously and its return value is ignored; an exception it throws propagates out of
+   * `startAndWaitForResult` before anything is polled, and the run it was told about keeps going
+   * on the server.
+   */
+  onStarted?: (ack: PipelexRunResultStart) => void;
+}
+
 // ── Poll loop ───────────────────────────────────────────────────────
 
 export const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -479,7 +496,8 @@ export async function pollUntilResult(
   }
 }
 
-function throwIfAborted(signal?: AbortSignal): void {
+/** Throw the caller's abort, as the wait does, when `signal` has aborted. */
+export function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortError(signal);
 }
 

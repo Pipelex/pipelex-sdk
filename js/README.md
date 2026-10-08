@@ -18,6 +18,24 @@ It also exports `summarizeUsage`, which folds a completed run's usage records in
 npm install @pipelex/sdk
 ```
 
+## Run a method from the command line
+
+The package publishes one command, `pipelex-sdk`, so a method runs with nothing installed but Node 22.12 or later and a key in `PIPELEX_API_KEY`:
+
+```bash
+npx @pipelex/sdk run --method github.com/acme/methods/receipt-review@v1.0.0 --inputs-template > inputs.json
+npx @pipelex/sdk run --method github.com/acme/methods/receipt-review@v1.0.0 --inputs inputs.json
+```
+
+`--method` takes a published address, a catalog id (`mt_…`) or a local `.mthds` file or bundle directory. The run's main output is printed on stdout as JSON, and the run id, each uploaded file and every error on stderr. `script` writes a method its own command, a shell script pinned to this SDK's version:
+
+```bash
+npx @pipelex/sdk script --method github.com/acme/methods/receipt-review@v1.0.0
+./receipt-review --inputs inputs.json
+```
+
+See [`docs/cli.md`](./docs/cli.md) for every flag, the output, the exit codes and Ctrl-C.
+
 ## Usage
 
 ```ts
@@ -147,6 +165,7 @@ These pages ship inside the published package, so a reader who has only installe
 | Page | What it covers |
 | --- | --- |
 | [`docs/architecture.md`](./docs/architecture.md) | The whole client surface: the request pipeline, every route, the typed errors |
+| [`docs/cli.md`](./docs/cli.md) | The `pipelex-sdk` command: `run` and `script`, the environment it reads, what it prints, its exit codes, how it reads a bundle, and the case table it shares with the Python SDK |
 | [`docs/run-results.md`](./docs/run-results.md) | Every field of `RunResults` — the run id as a durable handle, `main_stuff`, `working_memory`, `graph_spec`, the usage pair, produced files |
 | [`docs/run-usage.md`](./docs/run-usage.md) | What a run consumed, record by record, and `summarizeUsage` which folds them into one reading |
 | [`docs/artifact-download.md`](./docs/artifact-download.md) | Turning the `pipelex-storage://` references a run produced back into bytes: `locateArtifacts`, `collectArtifacts`, `resolveArtifacts`, `fetchArtifact`, `downloadArtifacts`, and how a saved file is named after the field it fills |

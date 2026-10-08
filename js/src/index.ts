@@ -205,6 +205,7 @@ export type {
   RunRead,
   RunResults,
   RunResultState,
+  StartAndWaitForResultOptions,
   TokensUsageRecord,
   WaitForResultOptions,
 } from "./runs.js";
@@ -237,6 +238,8 @@ export {
   InputPreparationError,
   EmptyMethodSourceError,
   InvalidLocalSourceError,
+  InvalidInputValueError,
+  MethodLoadError,
   RejectedAssetError,
   UnsupportedUploadCapabilityError,
   UploadAuthenticationError,

@@ -76,8 +76,8 @@ jobs:
           make install-linters LINTERS_DIR="$RUNNER_TEMP/workflow-linters"
           echo "$RUNNER_TEMP/workflow-linters" >> "$GITHUB_PATH"
 
-      - name: Check every manifest against VERSION, the workflow twins, every workflow's lint, and the root's scripts
-        run: make check-versions check-workflows lint-workflows test-scripts
+      - name: Check every manifest against VERSION, the workflow twins, the shared case files, every workflow's lint, and the root's scripts
+        run: make check-versions check-workflows check-shared-files lint-workflows test-scripts
 
   branch-flow:
     name: Branch flow
@@ -178,6 +178,9 @@ jobs:
 
       - name: Run quality checks and tests
         run: make all
+
+      - name: Run the pipelex-sdk command from the packed tarball through npx
+        run: make test-pack
 
   python-lint:
     name: python lint (${{ matrix.python-version }})

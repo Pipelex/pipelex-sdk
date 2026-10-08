@@ -101,6 +101,59 @@ describe("PipelexApiClient constructor", () => {
     );
   });
 
+  // The rule refuses exactly the parts of a URL a secret travels in, so its refusal must not
+  // carry them: the message reaches logs, and a page that relays an error's message.
+  it.each([
+    [
+      "credentials",
+      "https://user:s3cret-pass@api.example.com",
+      '"https://api.example.com" with credentials (not shown)',
+      ["user", "s3cret-pass"],
+    ],
+    [
+      "a token in the query",
+      "https://proxy.example.com?token=abc123",
+      '"https://proxy.example.com" with a query (not shown)',
+      ["token", "abc123"],
+    ],
+    [
+      "a path, a query and a fragment",
+      "https://api.example.com:8443/k3y/v1?sig=zzz#an-anchor",
+      '"https://api.example.com:8443" with a path, a query and a fragment (not shown)',
+      ["k3y", "sig", "zzz", "an-anchor"],
+    ],
+    [
+      "credentials and a path",
+      "http://admin:hunter2@localhost:8081/v1",
+      '"http://localhost:8081" with credentials and a path (not shown)',
+      ["admin", "hunter2"],
+    ],
+    [
+      "a value with no scheme",
+      "user:hunter2@api.example.com",
+      "(not shown: it is not an http or https URL)",
+      ["user", "hunter2", "api.example.com"],
+    ],
+    [
+      "a value that is not a URL",
+      "not a url hunter2",
+      "(not shown: it is not an absolute URL)",
+      ["hunter2"],
+    ],
+  ])("refuses a base URL with %s without echoing it", (_label, baseUrl, shown, secrets) => {
+    let message = "";
+    try {
+      new PipelexApiClient({ baseUrl });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toBe(
+      `Invalid API base URL ${shown}: it must be host-only (http/https, no path, query, ` +
+        "fragment, or credentials). Endpoints compose as {base}/v1/{endpoint}.",
+    );
+    for (const secret of secrets) expect(message).not.toContain(secret);
+  });
+
   it("reads PIPELEX_BASE_URL from the environment", async () => {
     const originalUrl = process.env.PIPELEX_BASE_URL;
     process.env.PIPELEX_BASE_URL = "http://env-host:9999";
