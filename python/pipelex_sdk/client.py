@@ -208,9 +208,25 @@ _HEALTH_ANSWER_ADAPTER: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any]
 _PLAN_LIST_ADAPTER: TypeAdapter[list[PlanView]] = TypeAdapter(list[PlanView])
 _INVOICE_LIST_ADAPTER: TypeAdapter[list[InvoiceView]] = TypeAdapter(list[InvoiceView])
 
+# The pydantic error types with which a reader refuses, at the root of the body, JSON that is not an object
+# where its route answers one: a model's `model_type`, the liveness probe's free-form object's `dict_type`, and
+# a discriminated union's `model_attributes_type` (`validate`, `pipe_io`, `publish_method` and the like). A
+# list route's root refusal, `list_type`, is not among them, since an object is no more its answer than `null`.
+_NOT_AN_OBJECT_ERROR_TYPES = frozenset({"model_type", "dict_type", "model_attributes_type"})
+
 
 def _no_answer(_answer: object) -> None:
     """Take the JSON body of a route that answers no content, which nothing reads: decoding it is the check."""
+
+
+def _refuses_a_non_object(failure: ValidationError) -> bool:
+    """Whether a reader refused the body at its root for not being an object, where its route answers one.
+
+    Such a refusal is an error located at the root, `loc == ()`, of one of `_NOT_AN_OBJECT_ERROR_TYPES`.
+    An object of the wrong shape is refused below the root, or at it with another type (a discriminated
+    union's `union_tag_not_found`), so it is not one.
+    """
+    return any(error["loc"] == () and error["type"] in _NOT_AN_OBJECT_ERROR_TYPES for error in failure.errors(include_url=False))
 
 
 _PIPELEX_API_KEY_ENV = "PIPELEX_API_KEY"
@@ -561,12 +577,14 @@ class PipelexAPIClient(MthdsAPIClient):
         """The `ApiResponseError` of a 2xx answer the SDK cannot read, `@pipelex/sdk`'s `unreadableAnswer`.
 
         Its message is `API <method> <path> answered <status> with <what>`, `what` naming the failure: a
-        body that is not UTF-8, a body that is not JSON, an empty body where JSON was expected, or a body
-        that is not the answer the route returns. It carries the answer's status, its raw text as
-        `response_body`, its headers, and the `X-Request-ID` header as `request_id`, but no problem
-        member, since a success body is no problem document; its verdict is the fallback's for a status
-        no refusal carries, `runtime` and not retryable, since no change to the call fixes the answer.
-        The caller raises it `from` the failure, which becomes its `__cause__`.
+        body that is not UTF-8, a body that is not JSON, an empty body where JSON was expected, a body
+        that is not an object where the route answers one (`null`, a number, a string, a list), worded
+        as `@pipelex/sdk` words it, or a body that is not the answer the route returns: an object of the
+        wrong shape, or anything but a list where the route answers a list. It carries the answer's
+        status, its raw text as `response_body`, its headers, and the `X-Request-ID` header as
+        `request_id`, but no problem member, since a success body is no problem document; its verdict is
+        the fallback's for a status no refusal carries, `runtime` and not retryable, since no change to
+        the call fixes the answer. The caller raises it `from` the failure, which becomes its `__cause__`.
         """
         what: str
         match failure:
@@ -575,7 +593,7 @@ class PipelexAPIClient(MthdsAPIClient):
             case json.JSONDecodeError():
                 what = "a body that is not JSON" if response.content else "an empty body where JSON was expected"
             case ValidationError():
-                what = "a body that is not the answer the route returns"
+                what = "a body that is not an object" if _refuses_a_non_object(failure) else "a body that is not the answer the route returns"
         request_id = response.headers.get(_REQUEST_ID_HEADER)
         return ApiResponseError(
             f"API {method} {path} answered {response.status_code} with {what}",

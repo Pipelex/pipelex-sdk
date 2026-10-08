@@ -1,7 +1,7 @@
 """Tests for the answers the client cannot read: a 2xx whose body is not JSON, not UTF-8, empty where JSON was
-expected, or JSON that is not what the route returns. Each is raised as the `ApiResponseError` whose verdict
-the fallback reads from the 2xx, `runtime` and not retryable, the parse failure as its `__cause__`, as
-`@pipelex/sdk` throws it.
+expected, JSON that is not an object where the route answers one, or JSON that is not what the route returns.
+Each is raised as the `ApiResponseError` whose verdict the fallback reads from the 2xx, `runtime` and not
+retryable, the parse failure as its `__cause__`, as `@pipelex/sdk` throws it.
 
 Every request goes through an `httpx.MockTransport`, below `_send`, so the protocol routes the client
 inherits from `mthds`, which parse their answer themselves, meet it as they would on the wire.
@@ -74,6 +74,30 @@ _ROUTES: list[tuple[str, _Call, str]] = [
     ("get_run_detail", lambda client: client.get_run_detail("run-1"), "GET /v1/runs/run-1"),
 ]
 _ROUTE_PARAMS = [pytest.param(call, route, id=name) for name, call, route in _ROUTES]
+
+# The routes that answer a list rather than an object. JSON that is not a list, an object included, is not their
+# answer, and the message says so rather than calling it JSON that is not an object.
+_LIST_ROUTE_NAMES = frozenset({"list_plans", "list_invoices"})
+_OBJECT_ROUTE_PARAMS = [pytest.param(call, route, id=name) for name, call, route in _ROUTES if name not in _LIST_ROUTE_NAMES]
+_LIST_ROUTE_PARAMS = [pytest.param(call, route, id=name) for name, call, route in _ROUTES if name in _LIST_ROUTE_NAMES]
+
+# A route of each way a reader refuses JSON that is not an object at the root of the body: a model (an inherited
+# protocol route), a discriminated union and the liveness probe's free-form object.
+_ROOT_REFUSAL_ROUTES: list[tuple[str, _Call, str]] = [
+    ("start", lambda client: client.start(pipe_code="p", mthds_contents=["x"]), "POST /v1/start"),
+    ("validate-inline", lambda client: client.validate(["x"]), "POST /v1/validate"),
+    ("health", lambda client: client.health(), "GET /health"),
+]
+
+# Routes answering an object that refuse one of the wrong shape: an inherited protocol route, a discriminated union,
+# a run read, a page and a product object.
+_WRONG_SHAPE_ROUTES: list[tuple[str, _Call, str]] = [
+    ("start", lambda client: client.start(pipe_code="p", mthds_contents=["x"]), "POST /v1/start"),
+    ("validate-inline", lambda client: client.validate(["x"]), "POST /v1/validate"),
+    ("get_run_status", lambda client: client.get_run_status("run-1"), "GET /v1/runs/run-1/status"),
+    ("list_methods", lambda client: client.list_methods(), "GET /v1/methods"),
+    ("get_me", lambda client: client.get_me(), "GET /v1/me"),
+]
 
 # Routes whose answer is JSON, answered with no body at all.
 _EMPTY_BODY_ROUTES: list[tuple[str, _Call, str]] = [
@@ -149,17 +173,57 @@ class TestClientUnreadableAnswer:
         # A 2xx is no refusal the fallback names: runtime, and nothing says a retry helps.
         assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
 
-    @pytest.mark.parametrize(("call", "route"), _ROUTE_PARAMS)
-    def test_a_2xx_whose_json_is_not_the_answer_of_the_route(self, call: _Call, route: str) -> None:
+    @pytest.mark.parametrize(("call", "route"), _OBJECT_ROUTE_PARAMS)
+    def test_a_2xx_whose_json_is_not_an_object(self, call: _Call, route: str) -> None:
+        """Worded as `@pipelex/sdk` words it, so the two commands print the same reason for it."""
         client = _client_answering(lambda _: httpx.Response(200, content=b"null", headers={"X-Request-ID": _REQUEST_ID}))
+
+        unreadable = _raised(call, client)
+
+        assert str(unreadable) == f"API {route} answered 200 with a body that is not an object"
+        assert unreadable.status == 200
+        assert unreadable.response_body == "null"
+        assert unreadable.request_id == _REQUEST_ID
+        assert unreadable.problem is None
+        assert isinstance(unreadable.__cause__, ValidationError)
+        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(b"[]", id="list"),
+            pytest.param(b"3", id="number"),
+            pytest.param(b'"accepted"', id="string"),
+            pytest.param(b"true", id="boolean"),
+        ],
+    )
+    @pytest.mark.parametrize(("call", "route"), [pytest.param(call, route, id=name) for name, call, route in _ROOT_REFUSAL_ROUTES])
+    def test_each_kind_of_json_that_is_not_an_object(self, call: _Call, route: str, body: bytes) -> None:
+        unreadable = _raised(call, _client_answering(lambda _: httpx.Response(200, content=body)))
+
+        assert str(unreadable) == f"API {route} answered 200 with a body that is not an object"
+        assert isinstance(unreadable.__cause__, ValidationError)
+        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+
+    @pytest.mark.parametrize(("call", "route"), [pytest.param(call, route, id=name) for name, call, route in _WRONG_SHAPE_ROUTES])
+    def test_a_2xx_whose_object_is_not_the_answer_of_the_route(self, call: _Call, route: str) -> None:
+        client = _client_answering(lambda _: httpx.Response(200, json={"unexpected": True}, headers={"X-Request-ID": _REQUEST_ID}))
 
         unreadable = _raised(call, client)
 
         assert str(unreadable) == f"API {route} answered 200 with a body that is not the answer the route returns"
         assert unreadable.status == 200
-        assert unreadable.response_body == "null"
         assert unreadable.request_id == _REQUEST_ID
-        assert unreadable.problem is None
+        assert isinstance(unreadable.__cause__, ValidationError)
+        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+
+    @pytest.mark.parametrize("body", [pytest.param(b"null", id="null"), pytest.param(b"{}", id="object")])
+    @pytest.mark.parametrize(("call", "route"), _LIST_ROUTE_PARAMS)
+    def test_a_list_route_answered_json_that_is_not_a_list(self, call: _Call, route: str, body: bytes) -> None:
+        """An object is no more a list route's answer than `null` is, so neither is worded as JSON that is not an object."""
+        unreadable = _raised(call, _client_answering(lambda _: httpx.Response(200, content=body)))
+
+        assert str(unreadable) == f"API {route} answered 200 with a body that is not the answer the route returns"
         assert isinstance(unreadable.__cause__, ValidationError)
         assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
 
@@ -204,7 +268,7 @@ class TestClientUnreadableAnswer:
 
         unreadable = _raised(lambda client: client.get_run_result("run-1"), client)
 
-        assert str(unreadable) == "API GET /v1/runs/run-1/results answered 200 with a body that is not the answer the route returns"
+        assert str(unreadable) == "API GET /v1/runs/run-1/results answered 200 with a body that is not an object"
 
     def test_the_blocking_path_reports_an_execute_answer_it_cannot_lift(self) -> None:
         """`start_and_wait` on a bare runner lifts `execute`'s answer onto `RunResults`, whose strict parse
