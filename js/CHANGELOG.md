@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The script `pipelex-sdk script` writes**: its line now runs `exec npx --yes --no-update-notifier --loglevel=warn @pipelex/sdk@X.Y.Z run …`, so the script's stderr carries the command's own lines without npm's update notice, which npm 10 and 11 print wherever their cache starts empty, or the `npm notice run …` lines npm 12 prints at every run; npm's warnings and errors still print. A script written before keeps its line, and takes the same quiet by adding the two flags after `--yes`.
+
 ## [v0.34.1] - 2026-10-08
 
 ### Added

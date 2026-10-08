@@ -49,8 +49,12 @@ const SCRIPT_FLAGS = {
   dir: { type: "string" },
 } as const;
 
-/** The package a written script runs, and what its runner needs. */
-export const SCRIPT_RUNNER = `npx --yes @pipelex/sdk@${SDK_VERSION}`;
+/**
+ * The package a written script runs, and what its runner needs. The runner's flags keep npm's
+ * update notice and npm 12's run notices off the script's stderr, which carries the command's
+ * own lines, while npm's warnings and errors still print.
+ */
+export const SCRIPT_RUNNER = `npx --yes --no-update-notifier --loglevel=warn @pipelex/sdk@${SDK_VERSION}`;
 export const SCRIPT_WRITER = "@pipelex/sdk";
 export const SCRIPT_NEEDS = "Node 22.12 or later";
 

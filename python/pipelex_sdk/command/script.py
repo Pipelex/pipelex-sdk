@@ -57,8 +57,10 @@ _SCRIPT_FLAGS: dict[str, FlagKind] = {
     "dir": FlagKind.STRING,
 }
 
-#: The package a written script runs, and what its runner needs.
-SCRIPT_RUNNER = f"uvx pipelex-sdk@{__version__}"
+#: The package a written script runs, and what its runner needs. ``--quiet`` keeps uv's download
+#: and install lines off the script's stderr, which carries the command's own lines, while uv's
+#: errors still print.
+SCRIPT_RUNNER = f"uvx --quiet pipelex-sdk@{__version__}"
 SCRIPT_WRITER = "pipelex-sdk"
 SCRIPT_NEEDS = "uv"
 
