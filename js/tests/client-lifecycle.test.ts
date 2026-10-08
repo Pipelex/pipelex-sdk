@@ -191,7 +191,8 @@ describe("PipelexApiClient.startAndWaitForResult (hosted — durable start+poll 
         jsonResponse(202, { pipeline_run_id: "r1", state: "STARTED", created_at: "t0" }),
       )
       .mockResolvedValueOnce(jsonResponse(200, { pipeline_run_id: "r1", main_stuff: {} }));
-    const paths = (): string[] => fetchSpy.mock.calls.map((call) => new URL(String(call[0])).pathname);
+    const paths = (): string[] =>
+      fetchSpy.mock.calls.map((call) => new URL(String(call[0])).pathname);
 
     // A start sent to a host that did not answer would wait a second time for the same silence.
     const err = await client.startAndWaitForResult({ pipe_code: "p" }).then(
@@ -1226,6 +1227,57 @@ describe("PipelexApiClient.startAndWaitForResult — an abort before the run exi
       expect(sentPaths(spy)).toEqual(["/v1/version"]);
     },
   );
+
+  it("announces each request that may create a run right before it is sent, and none after an abort", async () => {
+    const hosted = makeClient();
+    const hostedSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, HOSTED_VERSION))
+      .mockResolvedValueOnce(
+        jsonResponse(202, { pipeline_run_id: "r1", state: "STARTED", created_at: "t0" }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { pipeline_run_id: "r1", main_stuff: {} }));
+    const seenAt: number[] = [];
+    await hosted.startAndWaitForResult(
+      { pipe_code: "p" },
+      { onStarting: () => seenAt.push(hostedSpy.mock.calls.length) },
+    );
+    // Once, after the handshake and before the start.
+    expect(seenAt).toEqual([1]);
+    expect(sentPaths(hostedSpy)).toEqual(["/v1/version", "/v1/start", "/v1/runs/r1/results"]);
+    vi.restoreAllMocks();
+
+    // A runner that looked hosted refuses the start, then gets the blocking execute: both may
+    // create a run, so each is announced.
+    const misdetected = makeClient();
+    const fallbackSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, BASE_ONLY_VERSION))
+      .mockResolvedValueOnce(jsonResponse(404, { detail: "Not Found" }))
+      .mockResolvedValueOnce(jsonResponse(200, executeBody("b1")));
+    const fallbackSeenAt: number[] = [];
+    await misdetected.startAndWaitForResult(
+      { pipe_code: "p" },
+      { onStarting: () => fallbackSeenAt.push(fallbackSpy.mock.calls.length) },
+    );
+    expect(fallbackSeenAt).toEqual([1, 2]);
+    vi.restoreAllMocks();
+
+    // An abort during the handshake sends nothing that may create a run, and announces nothing.
+    const aborted = makeClient();
+    const { spy, release } = holdAnswer("/v1/version", {});
+    const controller = new AbortController();
+    const announced: boolean[] = [];
+    const run = aborted.startAndWaitForResult(
+      { pipe_code: "p" },
+      { signal: controller.signal, onStarting: () => announced.push(true) },
+    );
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    controller.abort();
+    release(jsonResponse(200, HOSTED_VERSION));
+    await expect(run).rejects.toBe(controller.signal.reason);
+    expect(announced).toEqual([]);
+  });
 
   it("sends no blocking execute when the abort lands while a runner that looked hosted refuses the start", async () => {
     const client = makeClient();

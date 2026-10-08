@@ -703,3 +703,60 @@ class TestClientRunFallback:
         # Nothing was cached, so the next call asks again, and runs once the server answers.
         asyncio.run(client.start_and_wait(pipe_code="p"))
         assert [path for path, _ in server.requests] == ["/v1/version", "/v1/version", "/v1/start", "/v1/runs/r1/results"]
+
+    # ── The moment a run may start: on_starting, and a cancellation before it ──
+
+    def test_on_starting_is_called_right_before_the_start(self) -> None:
+        server = _Server({"/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)], **_hosted_run("r1")})
+        seen_at: list[int] = []
+
+        asyncio.run(server.client().start_and_wait(pipe_code="p", on_starting=lambda: seen_at.append(len(server.requests))))
+
+        # Once, after the handshake and before the start.
+        assert seen_at == [1]
+        assert server.requests[1][0] == "/v1/start"
+
+    def test_on_starting_is_called_before_each_blocking_execute(self) -> None:
+        bare = _Server(
+            {
+                "/v1/version": [httpx.Response(200, json=_BARE_VERSION)],
+                "/v1/execute": [httpx.Response(200, json=_EXECUTE_BODY)],
+            }
+        )
+        seen_at: list[int] = []
+        asyncio.run(bare.client().start_and_wait(pipe_code="p", on_starting=lambda: seen_at.append(len(bare.requests))))
+        assert seen_at == [1]
+        assert [path for path, _ in bare.requests] == ["/v1/version", "/v1/execute"]
+
+        # A runner that looked hosted refuses the start before any run exists, then gets the blocking execute:
+        # both requests may create a run, so each is announced.
+        misdetected = _Server(
+            {
+                "/v1/version": [httpx.Response(200, json=_BASE_ONLY_VERSION)],
+                "/v1/start": [httpx.Response(404, json={"detail": "Not Found"})],
+                "/v1/execute": [httpx.Response(200, json=_EXECUTE_BODY)],
+            }
+        )
+        seen_at = []
+        asyncio.run(misdetected.client().start_and_wait(pipe_code="p", on_starting=lambda: seen_at.append(len(misdetected.requests))))
+        assert seen_at == [1, 2]
+        assert [path for path, _ in misdetected.requests] == ["/v1/version", "/v1/start", "/v1/execute"]
+
+    def test_a_cancellation_during_the_handshake_starts_no_run(self) -> None:
+        """Cancelled while the version answer is read, the task never sends the start, nor announces one."""
+        server = _Server({"/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)], **_hosted_run("r1")})
+        handle = server.handle
+
+        def cancel_while_answering(request: httpx.Request) -> httpx.Response:
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            return handle(request)
+
+        server.handle = cancel_while_answering  # type: ignore[method-assign]
+        announced: list[bool] = []
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(server.client().start_and_wait(pipe_code="p", on_starting=lambda: announced.append(True)))
+        assert [path for path, _ in server.requests] == ["/v1/version"]
+        assert announced == []

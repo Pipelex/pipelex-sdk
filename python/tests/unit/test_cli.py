@@ -498,8 +498,8 @@ class TestCli:
             "name": "between/version",
             "argv": ["run", "--method", "mt_receipts01"],
             "routes": {"GET /v1/version": [{"answer": "version/hosted"}]},
-            # The start is under way once the handshake is asked, so the command cannot say no run started.
-            "expect": {"exit_code": 130, "stdout": "", "stderr": ["Interrupted before the API answered with a run id."]},
+            # No request that may create a run was about to leave, so none was started, and the command says so.
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NO_RUN], "stderr_excludes": ["may or may not"]},
         }
         root = tmp_path.resolve()
 

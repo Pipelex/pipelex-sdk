@@ -1499,7 +1499,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `pollOptions` are the wait's options, plus `onStarted`, called once with the
    * start acknowledgement as soon as the durable run exists, so the caller holds
    * the run's id while it waits; never on the blocking path, which has none to
-   * give (see `StartAndWaitForResultOptions`).
+   * give; and `onStarting`, called right before each request that may create a
+   * run, so the caller knows until then that none exists (see
+   * `StartAndWaitForResultOptions`).
    *
    * `pollOptions.signal` is also read before the run is created: a caller that aborts while the
    * version handshake is in flight gets its abort, and neither the start nor the blocking execute
@@ -1511,7 +1513,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   ): Promise<RunResults> {
     // Before the run starts: a RangeError after it would carry no run id to re-poll by.
     assertWaitOptions(pollOptions);
-    const { onStarted, ...waitOptions } = pollOptions ?? {};
+    const { onStarted, onStarting, ...waitOptions } = pollOptions ?? {};
     const hosted = await this.supportsRunLifecycle();
     // The handshake may have outlasted the caller's patience: an abort that landed during it
     // creates no run.
@@ -1525,17 +1527,20 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // the durable attempt.
       let ack: PipelexRunResultStart;
       try {
+        onStarting?.();
         ack = await this.start(options);
       } catch (err) {
         if (!(err instanceof RunLifecycleUnavailableError)) throw err;
         this.lifecycleAvailable = false;
         throwIfAborted(waitOptions.signal);
+        onStarting?.();
         return this.executeBlocking(options);
       }
       onStarted?.(ack);
       return this.waitForResult(ack.pipeline_run_id, waitOptions);
     }
 
+    onStarting?.();
     return this.executeBlocking(options);
   }
 

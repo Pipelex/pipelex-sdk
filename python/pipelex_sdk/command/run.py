@@ -107,6 +107,11 @@ async def _run(
 ) -> int:
     """Prepare the inputs, run the method until it ends, and print its main output."""
 
+    def on_starting() -> None:
+        # Only once a request that may create a run is about to leave: an interrupt before it,
+        # during the version handshake included, starts nothing, and the command says so.
+        progress.interrupt_message = _STARTING
+
     def on_started(ack: PipelexRunResultStart) -> None:
         progress.interrupt_message = f"Interrupted. Run {ack.pipeline_run_id} keeps going on the server."
         progress.waiting_on_run = ack.pipeline_run_id
@@ -122,9 +127,6 @@ async def _run(
     async with client:
         prepared = await _prepare(client, source, pipe, inputs, io)
         await before_request()
-        # Only once the start is under way: an interrupt that landed before it starts nothing, and
-        # the command says no run was started.
-        progress.interrupt_message = _STARTING
         results = await client.start_and_wait(
             pipe_code=pipe,
             mthds_contents=selector.mthds_contents,
@@ -134,6 +136,7 @@ async def _run(
             method_id=selector.method_id,
             artifacts=[RunArtifact.MAIN_STUFF],
             on_started=on_started,
+            on_starting=on_starting,
         )
     progress.waiting_on_run = None
     print_result(results.main_stuff, io)

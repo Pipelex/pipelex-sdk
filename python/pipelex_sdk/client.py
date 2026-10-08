@@ -1016,6 +1016,7 @@ class PipelexAPIClient(MthdsAPIClient):
         method_id: str | None = None,
         artifacts: Sequence[RunArtifact] | None = None,
         on_started: Callable[[PipelexRunResultStart], None] | None = None,
+        on_starting: Callable[[], None] | None = None,
     ) -> RunResults:
         """Start a run and wait for its result — the whole lifecycle in one call, self-healing
         across hosted and bare runners.
@@ -1048,6 +1049,14 @@ class PipelexAPIClient(MthdsAPIClient):
         return value is ignored; an exception it raises propagates out of this method before
         anything is polled, and the run it was told about keeps going.
 
+        `on_starting` is called right before each request that may create a run is sent: the
+        `POST /v1/start`, and the blocking `POST /v1/execute` of a bare runner or of the fallback to
+        it. Until it is called no run exists, and none will once the task is cancelled, since a
+        cancellation that landed during the version handshake stops this method before the start;
+        so a caller that stops waiting before then can say no run was started. From then on, a run
+        may exist before the API says so. It runs synchronously and its return value is ignored; an
+        exception it raises propagates before the request is sent.
+
         Raises:
             RunFailedError: If the run reaches a terminal status other than COMPLETED.
             RunTimeoutError: If the poll budget elapses (the run keeps executing — resume by id).
@@ -1061,6 +1070,8 @@ class PipelexAPIClient(MthdsAPIClient):
             # the start is sent, rather than at the start's own first wait.
             await asyncio.sleep(0)
             try:
+                if on_starting is not None:
+                    on_starting()
                 started = await self.start(
                     pipe_code=pipe_code,
                     mthds_contents=mthds_contents,
@@ -1075,6 +1086,8 @@ class PipelexAPIClient(MthdsAPIClient):
             except RunLifecycleUnavailableError:
                 self._lifecycle_available = False
                 await asyncio.sleep(0)
+                if on_starting is not None:
+                    on_starting()
                 return await self._execute_blocking(
                     pipe_code=pipe_code,
                     mthds_contents=mthds_contents,
@@ -1090,6 +1103,9 @@ class PipelexAPIClient(MthdsAPIClient):
                 on_started(started)
             return await self.wait_for_result(started.pipeline_run_id, options=wait_options, artifacts=artifacts)
 
+        await asyncio.sleep(0)
+        if on_starting is not None:
+            on_starting()
         return await self._execute_blocking(
             pipe_code=pipe_code,
             mthds_contents=mthds_contents,

@@ -83,9 +83,6 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
 
     const prepared = await prepare(client, source, pipe, inputs, io);
     const results: RunResults = await untilInterrupted(() => {
-      // Only once the start is under way: an interrupt that landed before it starts nothing, and
-      // the command says no run was started.
-      stage = { kind: "starting" };
       return client.startAndWaitForResult(
         {
           ...runSelector(source),
@@ -99,6 +96,11 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
           ...(intervalMs === undefined ? {} : { intervalMs }),
           signal: io.interrupt,
           artifacts: ["main_stuff"],
+          onStarting: () => {
+            // Only once a request that may create a run is about to leave: an interrupt before
+            // it, during the version handshake included, starts nothing, and the command says so.
+            stage = { kind: "starting" };
+          },
           onStarted: (ack) => {
             if (io.interrupt.aborted) return;
             stage = { kind: "started", runId: ack.pipeline_run_id };

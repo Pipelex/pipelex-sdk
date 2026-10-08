@@ -2365,6 +2365,18 @@
       }
     },
     {
+      "name": "interrupt/while-checking-version",
+      "summary": "An interrupt during the version check, before any request that may create a run, says no run was started, and none is.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "interrupt": { "route": "GET /v1/version", "call": 1 },
+      "expect": {
+        "exit_code": 130,
+        "stdout": "",
+        "stderr": ["Interrupted. No run was started.\n"],
+        "stderr_excludes": ["may or may not"]
+      }
+    },
+    {
       "name": "interrupt/while-preparing",
       "summary": "An interrupt while the inputs are prepared starts no run.",
       "argv": [
