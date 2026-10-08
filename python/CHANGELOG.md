@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The script `pipelex-sdk script` writes**: its line now runs `exec uvx --quiet pipelex-sdk@X.Y.Z run …`, so the script's stderr carries the command's own lines without the download and install lines uv prints wherever its cache starts empty; uv's errors still print, and a first run on a cold machine now waits without a word while uv fetches Python and the packages. A script written before keeps its line, and takes the same quiet by adding `--quiet` after `uvx`.
+
 ## [v0.34.1] - 2026-10-08
 
 ### Added

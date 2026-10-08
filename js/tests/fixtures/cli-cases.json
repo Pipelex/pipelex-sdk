@@ -14,8 +14,8 @@
     "WRITER": { "js": "@pipelex/sdk", "python": "pipelex-sdk" },
     "NEEDS": { "js": "Node 22.12 or later", "python": "uv" },
     "RUNNER": {
-      "js": "npx --yes @pipelex/sdk@{{SDK_VERSION}}",
-      "python": "uvx pipelex-sdk@{{SDK_VERSION}}"
+      "js": "npx --yes --no-update-notifier --loglevel=warn @pipelex/sdk@{{SDK_VERSION}}",
+      "python": "uvx --quiet pipelex-sdk@{{SDK_VERSION}}"
     },
     "SDK_VERSION": {
       "js": "the SDK's SDK_VERSION",
