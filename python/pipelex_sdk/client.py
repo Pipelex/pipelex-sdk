@@ -1326,13 +1326,24 @@ class PipelexAPIClient(MthdsAPIClient):
             Every arm carries the `method`.
 
         Raises:
+            PipelineRequestError: `expected_draft_updated_at` is not a `str` — `None` included; nothing
+                is sent.
             ApiResponseError: When no verdict was produced: `409` `method_update_conflict` for a draft
                 that moved since the token; `409` `method_being_deleted`; `404` `not_found`; `422`
                 for a draft with no `.mthds` file or whose file names a run could not assemble (one
                 name used by a `.mthds` and a Python file); `413` `payload_too_large` for a draft too
                 large to publish; `403` for a read-only key; `502` or `503` from the runner, as above.
         """
-        body = {"expected_draft_updated_at": expected_draft_updated_at}
+        # Checked as an `object`, as `get_method_version` checks its version: a caller forwarding an
+        # optional `updated_at` would otherwise send a null token and read the platform's `422`.
+        token = cast("object", expected_draft_updated_at)
+        if not isinstance(token, str):
+            msg = (
+                "publish_method() needs expected_draft_updated_at: the draft token (the method's updated_at) the caller "
+                f"last saw, so a publish never takes a draft it has not seen; got {type(token).__name__}."
+            )
+            raise PipelineRequestError(msg)
+        body = {"expected_draft_updated_at": token}
         answer = await self._request_product("POST", f"methods/{quote(method_id, safe='')}/publish", body=body)
         return MethodPublishResultAdapter.validate_python(answer)
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -290,6 +291,24 @@ class TestClientMethodVersions:
             asyncio.run(api_client.publish_method("mt_receipts01", expected_draft_updated_at="old"))
 
         assert exc_info.value.code == MethodErrorCode.METHOD_UPDATE_CONFLICT
+
+    @pytest.mark.parametrize(
+        ("token", "type_name"),
+        [
+            pytest.param(None, "NoneType", id="none"),
+            pytest.param(5, "int", id="int"),
+            pytest.param(datetime(2026, 10, 1, 9, tzinfo=UTC), "datetime", id="datetime"),
+        ],
+    )
+    def test_publish_method_refuses_a_token_that_is_not_a_string_before_any_request(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, token: object, type_name: str
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body={"outcome": "unchanged"}))
+
+        with pytest.raises(PipelineRequestError, match=rf"needs expected_draft_updated_at: .*; got {type_name}\.$"):
+            asyncio.run(api_client.publish_method("mt_receipts01", expected_draft_updated_at=cast("str", token)))
+
+        send.assert_not_called()
 
     def test_publish_method_takes_its_token_by_keyword_only(self, api_client: PipelexAPIClient) -> None:
         with pytest.raises(TypeError):
