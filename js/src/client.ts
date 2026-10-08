@@ -1,5 +1,6 @@
 import type {
   MTHDSProtocol,
+  MethodFile,
   ModelCategory,
   ModelDeck,
   RunOptions,
@@ -59,10 +60,18 @@ import type {
   Membership,
   MembershipsResponse,
   ListMethodsQuery,
+  ListMethodVersionsQuery,
   MethodData,
   MethodDeletionAccepted,
+  MethodDraftInput,
   MethodPage,
+  MethodPublishInput,
+  MethodPublishResult,
+  MethodRenameInput,
   MethodSummary,
+  MethodVersion,
+  MethodVersionPage,
+  MethodVersionSummary,
   MethodWriteInput,
   OnboardingSubmission,
   PipelexApiKeyCreated,
@@ -192,20 +201,28 @@ export interface PipelexApiRunExtensions {
  */
 export interface PipelexHostedRunExtensions {
   /**
-   * A stored method's catalog id (`mt_…`) — a **pass-through to the hosted
-   * API**, resolved server-side against the org's catalog. Nothing is expanded
-   * client-side, and it is meaningless off-platform: an open-source runner has
-   * no catalog, so it answers a `422` naming the key.
+   * A stored method's catalog id (`mt_…`), optionally naming a version — a
+   * **pass-through to the hosted API**, resolved server-side against the org's
+   * catalog. Nothing is expanded client-side, and it is meaningless off-platform:
+   * an open-source runner has no catalog, so it answers a `422` naming the key.
    *
    * Its meaning depends on what else the request carries:
    *
-   * - **Alone** — the platform resolves the stored method's source (assembling
-   *   its bundle when the method carries Python) and runs that.
+   * - **Alone** — the platform resolves the version the id names and runs its
+   *   files, with the method's Python files beside them. A bare `mt_…` runs the
+   *   latest published version, a `409` `method_not_published` for a method never
+   *   published; `mt_…@<n>` runs version `n`, a `404` `method_version_not_found`
+   *   for a version never published; `mt_…@draft` runs the draft. The suffix
+   *   rides the string untouched, any other suffix is a `422`, and the answer's
+   *   `method_version` says which version runs.
    * - **Alongside an inline source** (`mthds_contents` / `files` / `bundle_b64`)
    *   — the inline source is what RUNS (precedence), and the id is recorded as
    *   **run-history linkage** on the Run row. That linkage is what writes the
    *   index key `GET /v1/runs?method_id=` queries, so a run started without it
-   *   is absent from its method's history permanently.
+   *   is absent from its method's history permanently. The id must be bare
+   *   there: the inline source is what runs, so a suffix would claim a version
+   *   that did not, and a suffixed id is rejected client-side (a `422` on the
+   *   hosted API).
    * - **Alongside `method_ref`** — rejected client-side (and a 422 on the
    *   hosted API): an address run carries its own provenance, so it takes no
    *   linkage id.
@@ -332,30 +349,33 @@ const BARE_RUNNER_IMPLEMENTATION = "pipelex-api";
  */
 
 // ── Methods catalog: typed `python` ⇄ wire string ────────────────────────
-// The catalog stores a method's `python` as the serialized `[{ name, content }]`
-// string; the public `MethodData`/`MethodWriteInput` type it as `MethodFile[]`.
-// These wire shapes + converters are the one place the SDK (de)serializes it, via
-// `mthds/protocol`'s canonical `parseMethodFiles`/`serializeMethodFiles`.
+// The catalog stores the `python` of a method's draft, and of each published version, as
+// the serialized `[{ name, content }]` string; the public `MethodData`, `MethodVersion`,
+// `MethodWriteInput` and `MethodDraftInput` type it as `MethodFile[]`. These wire shapes +
+// converters are the one place the SDK (de)serializes it, via `mthds/protocol`'s canonical
+// `parseMethodFiles`/`serializeMethodFiles`.
 
-/** `MethodData` as it travels on the wire — `python` is the serialized catalog string. */
-type MethodDataWire = Omit<MethodData, "python"> & { python?: string };
-/** `MethodWriteInput` as it travels on the wire — `python` is the serialized catalog string. */
-type MethodWriteWire = Omit<MethodWriteInput, "python"> & { python?: string };
+/** A model carrying stored sources, as it travels on the wire: `python` is the catalog string. */
+type WithWirePython<T extends { python?: MethodFile[] }> = Omit<T, "python"> & { python?: string };
+/** `MethodData` as it travels on the wire. */
+type MethodDataWire = WithWirePython<MethodData>;
+/** `MethodVersion` as it travels on the wire. */
+type MethodVersionWire = WithWirePython<MethodVersion>;
 
 /**
- * Parse a wire method into the public shape (`python` → `MethodFile[]`). A stored `python` that
+ * Parse a wire model's `python` into the public shape (`MethodFile[]`). A stored `python` that
  * is not the serialized `[{ name, content }]` list is server data the SDK cannot read, not a
  * caller's argument, so `mthds`'s refusal is handed to `unreadable`, which builds the error to
  * throw from the answer that carried it.
  */
-function methodDataFromWire(
-  wire: MethodDataWire,
+function withParsedPython<T extends { python?: MethodFile[] }>(
+  wire: WithWirePython<T>,
   unreadable: (cause: unknown) => Error,
-): MethodData {
+): T {
   const { python, ...rest } = wire;
-  if (python == null) return rest;
+  if (python == null) return rest as T;
   try {
-    return { ...rest, python: parseMethodFiles(python) };
+    return { ...rest, python: parseMethodFiles(python) } as T;
   } catch (err) {
     throw unreadable(err);
   }
@@ -367,9 +387,28 @@ function methodDataFromWire(
  * → `""`, the clear sentinel; non-empty → the JSON array). It is never sent as an
  * array on the wire.
  */
-function methodWriteToWire(input: MethodWriteInput): MethodWriteWire {
+function withWirePython<T extends { python?: MethodFile[] }>(input: T): WithWirePython<T> {
   const { python, ...rest } = input;
   return python === undefined ? rest : { ...rest, python: serializeMethodFiles(python) };
+}
+
+/**
+ * The path of a method route, `methods/{id}`, for a bare catalog id. The method routes address
+ * the method itself, never one of its versions, and the platform does not parse a suffix there:
+ * `mt_x@3` would be looked up as an id of its own and answer `404 not_found`, which reads as a
+ * method that does not exist. So a suffixed id is refused before anything is sent, saying how to
+ * read what it names. Stripping it instead would answer the draft for a caller that named a
+ * version.
+ */
+function methodPath(methodId: string): string {
+  if (typeof methodId === "string" && methodId.includes("@")) {
+    throw new RequestArgumentError(
+      `"${methodId}" carries a version suffix, and the method routes take a bare catalog id: ` +
+        "they address the method itself, never one of its versions. Strip the suffix with " +
+        "parseMethodSelector, and read a published version with getMethodVersion.",
+    );
+  }
+  return `methods/${encodeURIComponent(methodId)}`;
 }
 
 export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
@@ -573,11 +612,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /**
    * A methods-catalog route answering one stored method (`getMethod`, `createMethod`,
-   * `updateMethod`), parsed into the public shape. A stored `mthds` that is neither a string nor
-   * absent (`null` stays "no source", which `getMethodClosure` reports), and a stored `python`
-   * the SDK cannot parse, are an answer it cannot read, so each throws an `ApiResponseError` built
-   * from that answer, the latter with `mthds`'s refusal as `cause`: `runtime`, not retryable,
-   * since no change to the call fixes it.
+   * `writeDraft`, `renameMethod`), parsed into the public shape by `readStoredSources`.
    */
   private async requestMethodData(
     method: HttpMethod,
@@ -586,33 +621,51 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   ): Promise<MethodData> {
     const res = await this.requestProductAnswer(method, endpoint, body);
     const wire = this.readObjectAnswer<MethodDataWire>(method, endpoint, res);
-    const source: unknown = wire.mthds;
+    return this.readStoredSources<MethodData>(method, endpoint, res, wire, "a stored method");
+  }
+
+  /**
+   * The stored sources of a method or of a published version, read from the answer `res`
+   * carried, into the public shape. A stored `mthds` that is neither a string nor absent (`null`
+   * stays "no source", which `getMethodClosure` reports), and a stored `python` the SDK cannot
+   * parse, are an answer it cannot read, so each throws an `ApiResponseError` built from that
+   * answer, the latter with `mthds`'s refusal as `cause`: `runtime`, not retryable, since no
+   * change to the call fixes it. `subject` names what carried them in the message.
+   */
+  private readStoredSources<T extends { python?: MethodFile[] }>(
+    method: HttpMethod,
+    endpoint: string,
+    res: RawResponse,
+    wire: WithWirePython<T>,
+    subject: string,
+  ): T {
+    const source: unknown = (wire as { mthds?: unknown }).mthds;
     if (source != null && typeof source !== "string") {
       throw this.unreadableAnswer(
         method,
         `/${API_PREFIX}/${endpoint}`,
         res,
-        "a stored method whose `mthds` field is not a string",
+        `${subject} whose \`mthds\` field is not a string`,
       );
     }
-    return methodDataFromWire(wire, (cause) =>
+    return withParsedPython<T>(wire, (cause) =>
       this.unreadableAnswer(
         method,
         `/${API_PREFIX}/${endpoint}`,
         res,
-        "a stored method whose `python` field could not be read",
+        `${subject} whose \`python\` field could not be read`,
         cause,
       ),
     );
   }
 
   /**
-   * One page of a cursor-paged product route (`listMethods`, `listRuns`), read as the platform
-   * always serializes it: `items` an array, `next_cursor` a string or `null`. A page breaking
-   * either is an answer the SDK cannot read, so it throws the `ApiResponseError` `unreadableAnswer`
-   * builds, `runtime` and not retryable, rather than handing the iterators a page they cannot
-   * walk: `items` that is not iterable, or a missing cursor that is neither the end nor a next
-   * page, which `iterateRuns` would follow forever.
+   * One page of a cursor-paged product route (`listMethods`, `listMethodVersions`, `listRuns`),
+   * read as the platform always serializes it: `items` an array, `next_cursor` a string or
+   * `null`. A page breaking either is an answer the SDK cannot read, so it throws the
+   * `ApiResponseError` `unreadableAnswer` builds, `runtime` and not retryable, rather than
+   * handing the iterators a page they cannot walk: `items` that is not iterable, or a missing
+   * cursor that is neither the end nor a next page, which `iterateRuns` would follow forever.
    */
   private async requestPage<T>(
     endpoint: string,
@@ -865,6 +918,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     assertRunSourcesExclusive(options);
     assertMethodRefPairsWithNothing(options);
+    assertLinkageMethodIdIsBare(options);
 
     const request: RunRequest & Record<string, unknown> = {
       pipe_code: options.pipe_code,
@@ -939,6 +993,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     assertRunSourcesExclusive(options);
     assertMethodRefPairsWithNothing(options);
+    assertLinkageMethodIdIsBare(options);
 
     // `?? undefined` so JSON.stringify drops absent fields from the wire body.
     const request: StartRequest & Record<string, unknown> = {
@@ -1005,13 +1060,17 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *   `method_ref` run, the package's real file names feeding the diagnostics'
    *   source labels;
    * - **`{ method_id }`** — a stored method's catalog id, hosted-only: the
-   *   platform resolves it and injects the stored source before the runner sees
-   *   the request (a bare runner rejects the request as carrying no source it
-   *   understands).
+   *   platform resolves the version it names and injects that version's `.mthds`
+   *   files before the runner sees the request (a bare runner rejects the request
+   *   as carrying no source it understands). A bare `mt_…` validates the latest
+   *   published version, `mt_…@<n>` version `n` and `mt_…@draft` the draft.
    *
    * A selector-resolution failure (fetch failure, no package at the address, an
-   * unknown or foreign-org id) is a non-2xx `ApiResponseError` — never an
-   * `is_valid: false` verdict, which is reserved for actual MTHDS content.
+   * unknown or foreign-org id, a bare id of a method never published, `409`
+   * `method_not_published`, a version never published, `404`
+   * `method_version_not_found`, or a malformed suffix, `422`) is a non-2xx
+   * `ApiResponseError` — never an `is_valid: false` verdict, which is reserved
+   * for actual MTHDS content.
    *
    * `mthdsSources` (optional, parallel to inline contents) names each submitted
    * content — a Pipelex-API extension threaded onto `blueprint.source`, so
@@ -1717,17 +1776,32 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
   }
 
-  /** Fetch one method by id — `GET /v1/methods/{id}`. */
+  /**
+   * Read one method — `GET /v1/methods/{id}`: its identity, its draft (`mthds`, `python`,
+   * `input_data`) with the draft's token (`updated_at`) and digest (`draft_digest`), and its
+   * latest published version's summary (`latest_version`, `latest_published`), whatever the
+   * publish state. A method never published reads with both `null`, never as an error.
+   *
+   * Takes a bare catalog id: the method routes address the method itself, never a version of
+   * it. A caller holding `mt_…@3` strips the suffix with `parseMethodSelector` and reads that
+   * version with `getMethodVersion`. Every method route throws `RequestArgumentError` for a
+   * suffixed id, before any request, rather than read back the `404` the platform would answer.
+   */
   async getMethod(methodId: string): Promise<MethodData> {
-    return this.requestMethodData("GET", `methods/${encodeURIComponent(methodId)}`);
+    return this.requestMethodData("GET", methodPath(methodId));
   }
 
   /**
-   * Resolve a stored method's id into its runnable MTHDS closure — a client-side
-   * semantic layer over `getMethod` (the platform has no route that returns a
-   * parsed closure). Fetches the method, parses its polymorphic `mthds` source
-   * with `methodSourceToContents`, and labels each resulting file with the
-   * `method_id` as its `source` provenance.
+   * Resolve a stored method's id into the runnable MTHDS closure of its DRAFT — a
+   * client-side semantic layer over `getMethod` (the platform has no route that
+   * returns a parsed closure). Fetches the method, parses its draft's polymorphic
+   * `mthds` source with `methodSourceToContents`, and labels each resulting file
+   * with the `method_id` as its `source` provenance.
+   *
+   * **This is the draft, not what a bare id runs.** A run, a validation or a pipe I/O
+   * read by a bare `method_id` resolves to the latest PUBLISHED version, which the
+   * draft may be ahead of. For the closure of a version, read it with
+   * `getMethodVersion` and parse its `mthds` with `methodSourceToContents`.
    *
    * This is the LOCAL expansion utility — for callers that want the files in
    * hand (to edit, to diff, or to send to a bare runner, which has no catalog to
@@ -1736,11 +1810,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `prepareInputs`, which composes a `pipeIo` of its own) take the id as a
    * pass-through instead; nothing in this client expands an id behind your back.
    *
-   * Requires an API key: the methods catalog is org-scoped to the key's org, so
-   * an unknown OR foreign-org id is a `getMethod` `404` (`ApiResponseError`
-   * `not_found`), which propagates unchanged. A real, in-org method whose source
-   * parses to nothing throws `EmptyMethodSourceError` (distinct from the 404) —
-   * the row exists but has no runnable source yet.
+   * Takes a bare catalog id, as `getMethod` does. Requires an API key: the methods
+   * catalog is org-scoped to the key's org, so an unknown OR foreign-org id is a
+   * `getMethod` `404` (`ApiResponseError` `not_found`), which propagates unchanged. A
+   * real, in-org method whose draft parses to nothing throws `EmptyMethodSourceError`
+   * (distinct from the 404) — the row exists but has no runnable source yet.
    */
   async getMethodClosure(methodId: string): Promise<MthdsFileItem[]> {
     const method = await this.getMethod(methodId);
@@ -1751,18 +1825,179 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     return contents.map((content) => ({ content, source: methodId }));
   }
 
-  /** Create a method — `POST /v1/methods`. */
+  /**
+   * Create a method — `POST /v1/methods`. The new method holds the input as its draft and has
+   * no published version, so its bare id answers `409 method_not_published` on the run and
+   * tooling routes until its first `publishMethod`; its draft runs as `mt_…@draft` at once.
+   *
+   * Throws `ApiResponseError`: `413` `payload_too_large` for a method that would leave no room
+   * for a publish, measured as a draft write is, and `422` `validation_failed` for Python files
+   * no run could import or for text holding a lone surrogate.
+   */
   async createMethod(input: MethodWriteInput): Promise<MethodData> {
-    return this.requestMethodData("POST", "methods", methodWriteToWire(input));
+    return this.requestMethodData("POST", "methods", withWirePython(input));
   }
 
-  /** Replace a method (rename = changed `name`) — `PUT /v1/methods/{id}`. */
-  async updateMethod(methodId: string, input: MethodWriteInput): Promise<MethodData> {
-    return this.requestMethodData(
-      "PUT",
-      `methods/${encodeURIComponent(methodId)}`,
-      methodWriteToWire(input),
+  /**
+   * Replace a method's draft — `PUT /v1/methods/{id}/draft` — and return the method with the
+   * draft's new token (`updated_at`) and digest (`draft_digest`).
+   *
+   * The draft is never validated on write, and writing it changes nothing for the callers of
+   * the method's bare id, who run the latest published version until the next `publishMethod`.
+   * `python` and `input_data` are three-way (see `MethodDraftInput`). With
+   * `expected_updated_at`, the write is a compare-and-swap on the draft token: a draft that
+   * moved since is refused with a `409` whose `code` is `method_update_conflict`, and nothing is
+   * written. Without it, last writer wins.
+   *
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`
+   * for an unknown or foreign-org method, `409` `method_being_deleted` while its erasure runs,
+   * `413` `payload_too_large` for a draft that would grow the method past the room a publish
+   * needs, which keeps a draft that saves publishable, `422` `validation_failed` for Python
+   * files no run could import or for text holding a lone surrogate, `403` for a read-only key,
+   * and a `503` that wrote nothing, safe to retry, when the method kept changing under the
+   * write.
+   */
+  async writeDraft(methodId: string, input: MethodDraftInput): Promise<MethodData> {
+    return this.requestMethodData("PUT", `${methodPath(methodId)}/draft`, withWirePython(input));
+  }
+
+  /**
+   * Rename a method — `PATCH /v1/methods/{id}` — and return it. The name belongs to the method,
+   * not to a version: a rename changes nothing else, moves no token, and never commits the
+   * draft, so the `updated_at` a caller holds stays valid for its next `writeDraft` or
+   * `publishMethod`.
+   *
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`,
+   * `409` `method_being_deleted`, `403` for a read-only key, `422` for an empty name or one
+   * holding a lone surrogate, `413` `payload_too_large` for a name so long it would leave the
+   * method too large to publish, and a `503` that wrote nothing, safe to retry, when draft
+   * writes kept landing under the rename.
+   */
+  async renameMethod(methodId: string, input: MethodRenameInput): Promise<MethodData> {
+    return this.requestMethodData("PATCH", methodPath(methodId), {
+      name: input.name,
+    });
+  }
+
+  /**
+   * Publish a method's draft as its next version — `POST /v1/methods/{id}/publish`.
+   *
+   * `expected_draft_updated_at` is the draft token the caller last saw, and it is required: a
+   * publish never takes a draft its caller has not seen. The platform checks the token, answers
+   * `unchanged` without asking the runner when the draft's digest equals the latest version's,
+   * and otherwise validates the draft and, when it validates and runs, writes version N+1.
+   *
+   * The answer is a `MethodPublishResult` discriminated on `outcome` — branch on it:
+   * `published` with the new `version`; `unchanged` with the existing latest `version`;
+   * `refused` with a `reason` (`invalid`, or `not_runnable` for a draft that validates with
+   * pending signatures), a `message` and the runner's `validation` verdict. Every arm carries the
+   * `method`. A publish moves no token.
+   *
+   * Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` when
+   * `expected_draft_updated_at` is not a string, before any request. Throws `ApiResponseError`
+   * when no verdict was produced: `409` `method_update_conflict` for a draft that moved since
+   * the token, `409` `method_being_deleted`, `404` `not_found`, `422` for a draft with no
+   * `.mthds` file or whose file names a run could not assemble (one name used by a `.mthds` and
+   * a Python file), `413` `payload_too_large` for a draft too large to publish, and `403` for a
+   * read-only key.
+   *
+   * Only a draft that differs from the latest version reaches the runner, and a runner that
+   * cannot be reached, answers unusably or does not finish within the platform's deadline is a
+   * `502` or a `503` with nothing written, so a retry is safe; a runner that refuses the request
+   * itself is relayed under its own status. A retry of a publish that landed while its answer was
+   * lost, as on a client timeout, answers `unchanged` with the version it wrote.
+   *
+   * An answer whose `outcome` is not one of the outcomes above, or that carries no `method`
+   * object, is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   */
+  async publishMethod(methodId: string, input: MethodPublishInput): Promise<MethodPublishResult> {
+    const token: unknown = (input as Partial<MethodPublishInput> | undefined)
+      ?.expected_draft_updated_at;
+    if (typeof token !== "string") {
+      throw new RequestArgumentError(
+        "publishMethod() needs expected_draft_updated_at: the draft token (the method's " +
+          "updated_at) the caller last saw, so a publish never takes a draft it has not seen.",
+      );
+    }
+    const endpoint = `${methodPath(methodId)}/publish`;
+    const res = await this.requestProductAnswer("POST", endpoint, {
+      expected_draft_updated_at: token,
+    });
+    const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
+    const { outcome, method: stored } = answer;
+    if (outcome !== "published" && outcome !== "unchanged" && outcome !== "refused") {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a publish result whose `outcome` is not `published`, `unchanged` or `refused`",
+      );
+    }
+    if (!isPlainObject(stored)) {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a publish result whose `method` is not an object",
+      );
+    }
+    const method = this.readStoredSources<MethodData>(
+      "POST",
+      endpoint,
+      res,
+      stored as MethodDataWire,
+      "a stored method",
     );
+    return { ...answer, outcome, method } as MethodPublishResult;
+  }
+
+  /**
+   * One page of a method's published versions, newest first, without their sources —
+   * `GET /v1/methods/{id}/versions`.
+   *
+   * Pass the page's `nextCursor` back as `cursor` to continue; `null` is the last page. A page
+   * may be short while `nextCursor` is set, because the platform reads versions whole. A method
+   * never published answers an empty page.
+   *
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`
+   * for an unknown method, `409` `method_being_deleted`, `400` `malformed_request` for a cursor
+   * the listing did not issue for this method, `422` for a `limit` outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a string nor `null`
+   * is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   */
+  async listMethodVersions(
+    methodId: string,
+    query: ListMethodVersionsQuery = {},
+  ): Promise<MethodVersionPage> {
+    const params = new URLSearchParams();
+    // `!== undefined`, not truthiness — mirroring `listMethods`: an explicit empty cursor is bad
+    // input the API should refuse, not an omission.
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.cursor !== undefined) params.set("cursor", query.cursor);
+    const suffix = params.toString();
+    const endpoint = `${methodPath(methodId)}/versions`;
+    return this.requestPage<MethodVersionSummary>(suffix ? `${endpoint}?${suffix}` : endpoint);
+  }
+
+  /**
+   * One published version of a method, with its sources —
+   * `GET /v1/methods/{id}/versions/{n}`. Its `python` is parsed into `MethodFile[]` as a
+   * method's is.
+   *
+   * Takes a bare catalog id, as `getMethod` does, and the version number. Throws
+   * `RequestArgumentError` for a `version` that is not a positive integer, before any request.
+   * Throws `ApiResponseError`: `404` `method_version_not_found` for a version the method never
+   * published, `404` `not_found` for an unknown method, `409` `method_being_deleted`.
+   */
+  async getMethodVersion(methodId: string, version: number): Promise<MethodVersion> {
+    if (!Number.isSafeInteger(version) || version < 1) {
+      throw new RequestArgumentError(
+        `getMethodVersion() takes a version number, a positive integer; got ${String(version)}.`,
+      );
+    }
+    const endpoint = `${methodPath(methodId)}/versions/${version}`;
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
+    const wire = this.readObjectAnswer<MethodVersionWire>("GET", endpoint, res);
+    return this.readStoredSources<MethodVersion>("GET", endpoint, res, wire, "a published version");
   }
 
   /**
@@ -1778,11 +2013,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * it with a `409`.
    *
    * A double-clicked delete is safe: the claim is a conditional write, so the
-   * second call is an `ApiResponseError` (`409 conflict`) rather than a second
-   * cascade over the same runs. An unknown or foreign-org id is a `404`.
+   * second call is an `ApiResponseError` (`409 method_being_deleted`) rather than a
+   * second cascade over the same runs. An unknown or foreign-org id is a `404`. The
+   * erasure deletes the method's published versions with the rest. Takes a bare catalog id,
+   * as `getMethod` does: the whole method is erased, never one of its versions.
    */
   async deleteMethod(methodId: string): Promise<MethodDeletionAccepted> {
-    return this.requestProduct("DELETE", `methods/${encodeURIComponent(methodId)}`);
+    return this.requestProduct("DELETE", methodPath(methodId));
   }
 
   /** The caller's org memberships + active-org feature flags — `GET /v1/organizations/memberships`. */
@@ -2031,6 +2268,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `createdFrom` / `createdTo` are applied server-side as index key
    * conditions, so a bounded page genuinely reads less. They are INSTANTS,
    * not days — see `ListRunsQuery`.
+   *
+   * Takes a bare catalog id: the history files the runs of every version and
+   * of the draft together under it, so `mt_…@3` names no history of its own
+   * and the platform refuses it with a `400`. Strip a suffix with
+   * `parseMethodSelector`, and read which version a run ran from its
+   * `method_version`.
    */
   async listRuns(methodId: string, query: ListRunsQuery = {}): Promise<RunPage> {
     const params = new URLSearchParams({ method_id: methodId });
@@ -2068,6 +2311,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * cliff: it yields until the server says there is no more, the caller decides
    * when to stop, and only one page is ever in memory. If you truly want an
    * array, `Array.fromAsync` makes that your explicit choice.
+   *
+   * Takes a bare catalog id, as `listRuns` does.
    */
   async *iterateRuns(
     methodId: string,
@@ -2354,7 +2599,8 @@ function assertRunSourcesExclusive(options: RunRequest): void {
  *
  * The one documented run-route exception is deliberately NOT here: inline
  * source + `method_id` stays legal (the inline source runs; the id demotes to
- * run-history linkage). `pipe_code` beside a `method_ref` is legal too — it
+ * run-history linkage), its one condition, a bare id, held by
+ * `assertLinkageMethodIdIsBare` below. `pipe_code` beside a `method_ref` is legal too — it
  * overrides the manifest's `main_pipe`. The wording of the first two errors
  * mirrors the server's validator; presence semantics match it as well
  * (`mthds_contents` counts when non-empty, a bundle encoding counts when the
@@ -2380,6 +2626,38 @@ function assertMethodRefPairsWithNothing(
         "and takes no run-history linkage id. Send exactly one method selector.",
     );
   }
+}
+
+/**
+ * Enforce the run routes' linkage clause, mirroring the platform's own `422` so a
+ * suffixed linkage id fails before anything hits the wire. Beside an inline source
+ * (`mthds_contents`, `files` or `bundle_b64`) the `method_id` is run-history linkage
+ * and must be a bare catalog id: the inline source is what runs, so a version suffix
+ * (`mt_…@3`, `mt_…@draft`) would claim a version that did not. A `method_id` alone
+ * keeps its suffix, which names the version to run.
+ *
+ * An inline source counts only when it reaches the wire, as the platform counts it:
+ * `mthds_contents` when non-empty and a bundle encoding when `hasBundlePayload` says
+ * it carries one, since `nonEmptyFiles` and `nonEmptyString` drop an empty `files: {}`
+ * or `bundle_b64: ""` from the body, and a suffixed id beside one then runs the version
+ * it names. That differs on purpose from `assertMethodRefPairsWithNothing`, which
+ * mirrors the platform's presence-based pairing validator. Only the suffix is checked,
+ * by its `@`, since the catalog id's alphabet has none: the id itself stays a
+ * pass-through the platform resolves.
+ */
+function assertLinkageMethodIdIsBare(options: PipelexHostedRunExtensions & RunRequest): void {
+  const methodId = nonEmptyString(options.method_id);
+  if (methodId === undefined || !methodId.includes("@")) return;
+  const hasInlineSource =
+    (options.mthds_contents != null && options.mthds_contents.length > 0) ||
+    hasBundlePayload(options);
+  if (!hasInlineSource) return;
+  throw new RequestArgumentError(
+    `method_id "${methodId}" beside an inline source is run-history linkage and must be a bare ` +
+      "catalog id: the inline source is what runs, so a version suffix would claim a version " +
+      "that did not. Send the bare id (parseMethodSelector(...).method_id), or drop the inline " +
+      "source to run the version the selector names.",
+  );
 }
 
 /**

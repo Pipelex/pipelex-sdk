@@ -27,7 +27,7 @@ npx @pipelex/sdk run --method github.com/acme/methods/receipt-review@v1.0.0 --in
 npx @pipelex/sdk run --method github.com/acme/methods/receipt-review@v1.0.0 --inputs inputs.json
 ```
 
-`--method` takes a published address, a catalog id (`mt_…`) or a local `.mthds` file or bundle directory. The run's main output is printed on stdout as JSON, and the run id, each uploaded file and every error on stderr. `script` writes a method its own command, a shell script pinned to this SDK's version:
+`--method` takes a published address, a catalog id (`mt_…`, which runs the method's latest published version, `mt_…@<n>` for a fixed version or `mt_…@draft` for its draft) or a local `.mthds` file or bundle directory. The run's main output is printed on stdout as JSON, and the run id, each uploaded file and every error on stderr. `script` writes a method its own command, a shell script pinned to this SDK's version:
 
 ```bash
 npx @pipelex/sdk script --method github.com/acme/methods/receipt-review@v1.0.0
@@ -65,6 +65,11 @@ const ack = await client.start({
   inputs: { document: { url: "https://example.com/report.pdf" } },
 });
 console.log(ack.method_provenance); // { address, tag, commit_sha }
+
+// Or run a saved method by its catalog id. A bare id runs its latest published version,
+// `mt_…@3` version 3 and `mt_…@draft` its draft; the ack says which version runs.
+const saved = await client.start({ method_id: "mt_abc123@3", inputs: {} });
+console.log(saved.method_version); // 3
 ```
 
 ### Checking a model reference
@@ -91,7 +96,7 @@ A reference the runner cannot read at all (blank, a sigil alone, too long) or an
 The hosted management surface (catalog, account, billing) hangs off the same client. Every route maps a non-2xx `problem+json` to a typed `ApiResponseError` (see [Errors](#errors) for how to branch on it):
 
 ```ts
-import { PipelexApiClient, ApiResponseError } from "@pipelex/sdk";
+import { PipelexApiClient, ApiResponseError, parseMethodSelector } from "@pipelex/sdk";
 
 const client = new PipelexApiClient({ apiKey: process.env.PIPELEX_API_KEY });
 
@@ -101,6 +106,21 @@ for await (const method of client.iterateMethods()) {
   // follows the cursor for callers that genuinely want the whole catalog
 }
 const created = await client.createMethod({ name: "Greeter", mthds: "domain = 'demo'" });
+
+// A saved method has a draft, written freely and never validated, and immutable published
+// versions. `updated_at` is the draft's token: echo it so no write or publish takes a draft
+// you have not seen.
+const draft = await client.writeDraft(created.method_id, {
+  mthds: "domain = 'demo'\n",
+  expected_updated_at: created.updated_at,
+});
+const published = await client.publishMethod(created.method_id, {
+  expected_draft_updated_at: draft.updated_at,
+});
+if (published.outcome === "refused") console.error(published.message, published.validation);
+else console.log(`version ${published.version.version}`); // "published" or "unchanged"
+const versions = await client.listMethodVersions(created.method_id); // newest first
+const { method_id, version } = parseMethodSelector("mt_abc123@3"); // the method routes take a bare id
 
 try {
   const { portal_url } = await client.getBillingPortal();
@@ -130,7 +150,7 @@ try {
 }
 ```
 
-A refused request throws an `ApiResponseError` carrying every member of the server's RFC 9457 problem document. **Branch on `errorDomain` and `type`**, as the hosted-envelope spec says, never on the HTTP status or the message: `errorDomain` is the verdict's domain and `type` is the stable URI of the error class, the same on every occurrence. The verdict is the server's when it sent a valid one, and otherwise the SDK's fallback, read from the status, except that an `input` or `config` domain the server sent without `retryable` is not retryable; `problemDocument` keeps what the server sent. `userAction` gives the next step, and `requestId` — from the body, or the `X-Request-ID` header — is the id to hand to support. `code` (the platform's native code, one-to-one with `type`) and `errorType` (the runner's exception class name) stay available as each surface's finer code, and `errors` carries the platform's field-level failures.
+A refused request throws an `ApiResponseError` carrying every member of the server's RFC 9457 problem document. **Branch on `errorDomain` and `type`**, as the hosted-envelope spec says, never on the HTTP status or the message: `errorDomain` is the verdict's domain and `type` is the stable URI of the error class, the same on every occurrence. The verdict is the server's when it sent a valid one, and otherwise the SDK's fallback, read from the status, except that an `input` or `config` domain the server sent without `retryable` is not retryable; `problemDocument` keeps what the server sent. `userAction` gives the next step, and `requestId` — from the body, or the `X-Request-ID` header — is the id to hand to support. `code` (the platform's native code, one-to-one with `type`) and `errorType` (the runner's exception class name) are each surface's finer code, and a client of that surface may branch on it too: on the platform's own refusals `code` and `type` read the same answer, `MethodErrorCode` naming the codes a method caller branches on, while a refusal the platform relays from the runner carries the runner's `type` and `errorType` and no `code`. `errors` carries the platform's field-level failures.
 
 On the hosted API, a run that ends without completing throws a `RunFailedError` from `waitForResult`, `startAndWaitForResult` and `downloadArtifacts`, and comes back as the `failed` arm of `getRunResult`. (Against a bare `pipelex-api` runner, `startAndWaitForResult` runs the method with the blocking `execute`, so a failed run there throws the runner's `ApiResponseError`, whose problem members carry the same classification.) Its `status` is the run's terminal status and its `error` is the run's stored error report, checked field by field and typed as `RunErrorReport`: the reason in `message`, `error_domain`, `type_uri` and `retryable` to branch on, `user_action` as the next step, and the inference details. It is `null` when the run ended without a report, and the error's own verdict comes from it: the report's domain, and retryable only when the report says so. The report is the runner's VERBOSE one, provider text included, so what a person sees is your presentation:
 

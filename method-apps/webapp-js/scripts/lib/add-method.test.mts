@@ -108,6 +108,10 @@ describe("parseMethodArg", () => {
       "mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df",
       { method_id: "mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df" },
     ],
+    // A version suffix is kept whole: the app runs the version it names.
+    ["mt_x@3", { method_id: "mt_x@3" }],
+    ["mt_x@12", { method_id: "mt_x@12" }],
+    ["mt_x@draft", { method_id: "mt_x@draft" }],
     [TEXT_STATS_REF, { method_ref: TEXT_STATS_REF }],
     ["github.com/Pipelex/methods", { method_ref: "github.com/Pipelex/methods" }],
     // The https:// prefix and a trailing slash are normalized away, so the
@@ -139,11 +143,27 @@ describe("parseMethodArg", () => {
     ["", "empty"],
     ["mt_", "malformed id"],
     ["mt_bad id", "id with a space"],
+    ["mt_review.mthds", "a dot, which no catalog id holds"],
+    ["mt_x@", "an empty version"],
+    ["mt_x@0", "version zero"],
+    ["mt_x@03", "a leading zero"],
+    ["mt_x@Draft", "draft in another case"],
+    ["mt_x@latest", "a word other than draft"],
+    ["mt_x@3@4", "two versions"],
+    ["mt_@3", "a version on an empty id"],
     ["github.com/Pipelex", "address with no repository"],
     ["github.com/o/r@v1@v2", "two tags"],
     ["github.com/o/r@", "an empty tag"],
   ])("refuses %s (%s)", (arg) => {
     expect(() => parseMethodArg(arg)).toThrow(AddMethodError);
+  });
+
+  it("refuses a malformed catalog id with the SDK's own reason", () => {
+    expect(() => parseMethodArg("mt_x@03")).toThrow(
+      '"mt_x@03" names no version: the suffix of a catalog id is @<version>, a positive ' +
+        "number without a leading zero, or @draft.",
+    );
+    expect(() => parseMethodArg("mt_bad id")).toThrow(/is not a method selector/);
   });
 
   // A name that exists is a path, whatever the selector grammar would make of it.
@@ -1195,6 +1215,23 @@ describe("runAddMethod", () => {
       "utf-8",
     );
     expect(JSON.parse(manifest)).toEqual({ method_id: "mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df" });
+  });
+
+  it("reads a pinned method's name by its bare id and keeps the version in the manifest", async () => {
+    const client = fakeClient();
+    expect(await runAddMethod(["mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df@3"], deps(client))).toBe(0);
+
+    expect(client.getMethod).toHaveBeenCalledWith("mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df");
+    expect(client.codegen).toHaveBeenCalledWith(
+      expect.objectContaining({ method_id: "mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df@3" }),
+    );
+    const manifest = await readFile(
+      path.join(root, "methods/pipelex-mcp-e2e-fixture/method.json"),
+      "utf-8",
+    );
+    expect(JSON.parse(manifest)).toEqual({
+      method_id: "mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df@3",
+    });
   });
 
   it("--dry-run stops at the end of the read-only half, writing nothing", async () => {

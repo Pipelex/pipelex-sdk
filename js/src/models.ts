@@ -84,29 +84,42 @@ export interface MethodProvenance {
 /**
  * The `POST /v1/start` 202 ack as the Pipelex API returns it — the protocol's
  * `RunResultStart` plus the server's `method_provenance` extension, populated
- * for `method_ref` runs and absent or `null` otherwise.
+ * for `method_ref` runs and absent or `null` otherwise, and the hosted
+ * `method_version`, populated for `method_id` runs.
  */
 export interface PipelexRunResultStart extends RunResultStart {
   method_provenance?: MethodProvenance | null;
+  /**
+   * Which version of the stored method a `method_id` run runs: the latest published version's
+   * number for a bare id, the pinned number for `mt_…@<n>`, `"draft"` for `mt_…@draft`. Absent
+   * or `null` for any other run, and on a server that does not resolve version selectors.
+   */
+  method_version?: number | "draft" | null;
 }
 
 /**
  * The hosted tooling routes' own selector — the layer-3 extension the platform
  * adds on `POST /v1/validate`, `/v1/resolve`, `/v1/codegen`, and `/v1/pipe-io`: a stored
- * method's catalog id (`mt_…`), resolved server-side against the org's catalog
- * and injected as inline source before the runner sees the request. A **pass-
- * through to the hosted API**: nothing is expanded client-side, and it is
- * meaningless off-platform (a bare runner rejects the request as carrying no
- * source it understands).
+ * method's catalog id (`mt_…`), optionally naming a version, resolved server-side against
+ * the org's catalog, the `.mthds` files of the version it names injected as inline source
+ * before the runner sees the request. A bare `mt_…` names the latest published version,
+ * `mt_…@<n>` version `n` and `mt_…@draft` the draft. A **pass-through to the hosted API**:
+ * nothing is expanded client-side, and it is meaningless off-platform (a bare runner
+ * rejects the request as carrying no source it understands).
  *
  * The tooling routes are stateless, so there is no linkage exception: exactly
  * one of inline source / `method_ref` / `method_id` per request — any second
  * selector is a request-shape `422`. An unknown or foreign-org id is a `404`
- * (indistinguishable by design); a stored method with no MTHDS source is a
- * `422`.
+ * (indistinguishable by design); a bare id of a method never published is a `409`
+ * `method_not_published`; a version never published is a `404`
+ * `method_version_not_found`; a malformed suffix, or a stored method with no MTHDS
+ * source, is a `422`.
  */
 export interface PipelexHostedToolingExtensions {
-  /** A stored method's catalog id (`mt_…`) — hosted-only, resolved server-side. */
+  /**
+   * A stored method's catalog id (`mt_…`, `mt_…@<n>` or `mt_…@draft`) — hosted-only,
+   * resolved server-side.
+   */
   method_id?: string;
 }
 

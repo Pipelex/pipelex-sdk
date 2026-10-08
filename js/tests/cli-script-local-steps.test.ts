@@ -156,7 +156,7 @@ describe("an interrupt while script writes its file", () => {
     expect(outcome.stderr).toBe("Interrupted. ./receipt-review was written.\n");
     expect(Object.keys(outcome.files)).toEqual(["receipt-review"]);
     expect(outcome.files["receipt-review"]).toMatch(
-      /^#!\/bin\/sh\n[\s\S]*\nexec npx --yes @pipelex\/sdk@/,
+      /^#!\/bin\/sh\n[\s\S]*\nexec npx --yes --no-update-notifier --loglevel=warn @pipelex\/sdk@/,
     );
   }, 2_000);
 });

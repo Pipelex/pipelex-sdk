@@ -38,7 +38,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-import httpx
 from dotenv import find_dotenv, load_dotenv
 from mthds.protocol.exceptions import PipelineRequestError
 from pipelex_sdk.codegen_check import DriftCategory, run_codegen_check
@@ -105,8 +104,8 @@ async def request_codegen(client: CodegenClient, source: CodegenSource) -> Codeg
     """
     try:
         response = await client.codegen(source.codegen_request())
-    except (PipelineRequestError, httpx.HTTPError, ValueError) as exc:
-        # A refusal or an unreachable API, a transport error the SDK leaves unmapped, or a body that is not the answer.
+    except (PipelineRequestError, ValueError) as exc:
+        # A refusal or an unreachable API, both the SDK's request errors, or a body that is not the answer.
         raise GenerateFailure(explain(exc, client.base_url, "POST /v1/codegen", source)) from exc
     if not isinstance(response, CodegenValidReport):
         raise GenerateFailure("\n".join(invalid_lines(response)))
@@ -181,8 +180,8 @@ async def fetch_pipe_io(client: CodegenClient, source: CodegenSource, *, include
     """
     try:
         response = await client.pipe_io(source.pipe_io_request(include_files=include_files))
-    except (PipelineRequestError, httpx.HTTPError, ValueError) as exc:
-        # A refusal or an unreachable API, a transport error the SDK leaves unmapped, or a body that is not the answer.
+    except (PipelineRequestError, ValueError) as exc:
+        # A refusal or an unreachable API, both the SDK's request errors, or a body that is not the answer.
         raise GenerateFailure(explain(exc, client.base_url, "POST /v1/pipe-io", source if about_the_method(exc) else None)) from exc
     if not isinstance(response, PipeIOValidReport):
         raise GenerateFailure("\n".join(invalid_lines(response)))

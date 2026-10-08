@@ -9,7 +9,10 @@ import unicodedata
 from dataclasses import dataclass
 from typing import TypeAlias
 
+from mthds.protocol.exceptions import PipelineRequestError
+
 from pipelex_sdk.command.io import usage_error
+from pipelex_sdk.method_selector import parse_method_selector
 
 #: The prefix of a published method's address.
 ADDRESS_PREFIX = "github.com/"
@@ -17,8 +20,14 @@ ADDRESS_PREFIX = "github.com/"
 CATALOG_ID_PREFIX = "mt_"
 
 _NOT_A_NAME_CHARACTER = re.compile(r"[^a-z0-9]+")
-#: The characters a catalog id is made of, which the API's run route accepts and no other.
-_CATALOG_ID_SHAPE = re.compile(r"[A-Za-z0-9_-]+")
+#: A catalog id without its version suffix: `mt_` and the characters the API's run route accepts.
+_CATALOG_ID_SHAPE = re.compile(r"mt_[A-Za-z0-9_-]+")
+#: The largest version number the JavaScript twin reads exactly, `Number.MAX_SAFE_INTEGER`. Python
+#: reads any, but both commands answer the same `--method` with the same line, so this one refuses
+#: what that one cannot address, and by the length of its digits first, so that a suffix too long
+#: for `int()` gets the same refusal rather than another.
+_LARGEST_EXACT_VERSION = 2**53 - 1
+_VERSION_DIGITS = re.compile(r"[1-9][0-9]*")
 
 
 @dataclass(frozen=True)
@@ -46,19 +55,46 @@ def classify_method(value: str) -> MethodSelector:
     to be named `mt_…` is reached as `./mt_…`, so that what a value names never depends on what the
     current directory holds.
 
+    A catalog id may carry a version suffix, `mt_…@<n>` for a fixed published version or
+    `mt_…@draft` for the draft; it is kept whole, since the API resolves it.
+
     Raises:
-        CommandError: A usage error for an `mt_…` value holding a character no catalog id holds (a
-            letter, a digit, `_` or `-`), such as `mt_review.mthds`, which is a path written without
-            its `./`.
+        CommandError: A usage error for an `mt_…` value whose id holds a character no catalog id
+            holds (a letter, a digit, `_` or `-`), such as `mt_review.mthds`, which is a path written
+            without its `./`; and for a version suffix the selector grammar refuses, with the
+            grammar's own reason — a suffix that is neither a positive number without a leading zero
+            nor `draft`, or a number too large to address exactly. Both name the `./` form too, since
+            an `mt_…` value such as `mt_review@v2.mthds` may be a path written without it.
     """
     if value.startswith(CATALOG_ID_PREFIX):
-        if _CATALOG_ID_SHAPE.fullmatch(value) is None:
+        bare_id, _, suffix = value.partition("@")
+        path_hint = f"To name a local file or directory whose name starts with mt_, write it as ./{value}."
+        if _CATALOG_ID_SHAPE.fullmatch(bare_id) is None:
             msg = f'--method "{value}" is not a catalog id: a catalog id holds only letters, digits, _ and -.'
-            raise usage_error(msg, [f"To name a local file or directory whose name starts with mt_, write it as ./{value}."])
+            raise usage_error(msg, [path_hint])
+        # The id is well formed, so the selector grammar refuses the suffix alone, and the message
+        # says which way: a suffix of no known form, or a number too large to address exactly.
+        problem = _version_problem(value, suffix)
+        if problem is not None:
+            msg = f"--method {problem}"
+            raise usage_error(msg, [f"Pass {bare_id} for its latest published version, or {bare_id}@draft for its draft.", path_hint])
         return CatalogSelector(method_id=value)
     if value.startswith(ADDRESS_PREFIX):
         return AddressSelector(method_ref=value)
     return PathSelector(path=value)
+
+
+def _version_problem(value: str, suffix: str) -> str | None:
+    """Why a well-formed catalog id's version suffix names no version, in the selector grammar's own
+    words, or `None` when it names one or there is none.
+    """
+    if _VERSION_DIGITS.fullmatch(suffix) is not None and (len(suffix) > len(str(_LARGEST_EXACT_VERSION)) or int(suffix) > _LARGEST_EXACT_VERSION):
+        return f'"{value}" names a version number too large to address exactly.'
+    try:
+        parse_method_selector(value)
+    except PipelineRequestError as exc:
+        return str(exc)
+    return None
 
 
 def check_pipe_ref(value: str) -> None:

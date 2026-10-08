@@ -1,5 +1,34 @@
 # Changelog
 
+## [v0.35.1] - 2026-10-08
+
+### Added
+
+- **`MethodData.deletion_state`**: a method read types the optional `deletion_state` the platform lists among the method's fields, `pending`, `in_progress` or `failed` once its erasure has started, as `MethodSummary` and the Python twin already type it.
+
+### Changed
+
+- **A suffixed `method_id` beside an inline source is refused locally**: `execute`, `start` and `startAndWaitForResult` throw a `RequestArgumentError` before the run request is sent for a `method_id` carrying a version suffix (`mt_…@3`, `mt_…@draft`) beside a non-empty `mthds_contents`, `files` or `bundle_b64`, where the id is run-history linkage and the platform answers a `422`. Send the bare id, or drop the inline source to run the version the selector names.
+
+### Fixed
+
+- **The method and error docs match the platform's contract**: `ListMethodVersionsQuery.limit` says a `limit` outside 1 to 100 is a `422` rather than capped; `writeDraft` and `createMethod` say their `413` comes for a method that would leave no room for a publish, below the store's item limit; the run and tooling `method_id` docs describe version selectors and the `409` `method_not_published` of a bare id never published; and the error docs say a client of the platform may branch on `code`, which reads the same answer as `type` there, while a refusal the platform relays from the runner carries no `code`.
+
+## [v0.35.0] - 2026-10-08
+
+### Added
+
+- **The `pipelex-sdk` command reads a catalog id's version suffix**: `run --method` and `script --method` take `mt_…@<n>` and `mt_…@draft` beside a bare `mt_…` and send the suffix whole, and a suffix that is neither a positive number without a leading zero nor `draft` is a usage error made before any request, as `parseMethodSelector` reads it. `script` reads the method's name by its bare id and keeps the suffix in the script it writes. `docs/cli.md` describes it.
+- **Publishing a saved method: `publishMethod`, `listMethodVersions` and `getMethodVersion`**: `publishMethod(methodId, { expected_draft_updated_at })` publishes the draft the caller last saw as the method's next immutable version and answers a `MethodPublishResult` discriminated on `outcome`: `published` with the new version, `unchanged` when the draft's digest equals the latest version's, or `refused` with a `reason`, a `message` and the runner's validation verdict. `listMethodVersions` pages a method's versions newest first and `getMethodVersion` reads one with its sources. `docs/architecture.md` describes the model.
+- **`parseMethodSelector`**: splits a method selector, `mt_…`, `mt_…@<n>` or `mt_…@draft`, into its bare id and the version it names (a number, `"draft"` or `null` for the latest published version), and refuses a malformed suffix with a `RequestArgumentError` before anything is sent, for a caller that reads by its bare id the method a pinned id names.
+- **Which version a run ran**: every run record (`RunPublic`, `RunRead`, `PipelineRun`, `RunDetail`, `RunHistoryItem`) carries an optional `method_version`, a number, `"draft"` or `null` for an inline source, and `source_digest`, the digest of what ran; the start acknowledgement and the blocking execute result carry `method_version` for a `method_id` run. A platform that does not record them yet leaves them absent. `listRuns` and `iterateRuns` take the bare id, under which the history lists the runs of every version and of the draft together.
+- **`MethodErrorCode`**: names the platform codes a method caller branches on in `ApiResponseError.code`: `method_update_conflict`, `method_being_deleted`, and the new `method_not_published`, a bare id of a method never published, and `method_version_not_found`, a version the method never published.
+
+### Changed
+
+- **A saved method has a draft and published versions, and `updateMethod` is replaced by `writeDraft` and `renameMethod` (Breaking)**: the whole-method `PUT` is gone. `writeDraft(methodId, { mthds, python?, input_data?, expected_updated_at? })` replaces the draft without validating it, and with `expected_updated_at` refuses a draft that moved since with a `409` `method_update_conflict`, writing nothing; `renameMethod(methodId, { name })` changes the name alone. `MethodData` gains the required `draft_digest`, `latest_version` and `latest_published`, its `updated_at` is the draft's token, moved by a draft write only, and `getMethodClosure` reads the draft, which a bare id no longer runs once the method is published. The method calls take a bare id, refusing a suffixed one with a `RequestArgumentError` before anything is sent.
+- **The script `pipelex-sdk script` writes**: its line now runs `exec npx --yes --no-update-notifier --loglevel=warn @pipelex/sdk@X.Y.Z run …`, so the script's stderr carries the command's own lines without npm's update notice, which npm 10 and 11 print wherever their cache starts empty, or the `npm notice run …` lines npm 12 prints at every run; npm's warnings and errors still print. A script written before keeps its line, and takes the same quiet by adding the two flags after `--yes`.
+
 ## [v0.34.1] - 2026-10-08
 
 ### Added

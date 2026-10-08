@@ -103,9 +103,9 @@ MAKE_VARIABLES = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES")
 UV_LOCK_GATES = ("UV_LOCKED", "UV_FROZEN")
 
 USAGE = (
-    "usage: make create METHOD=<path/to/bundle | mt_… | github.com/owner/repo[/pkg][@tag]> [NAME=<package>] [TITLE=<title>] "
-    "[DESCRIPTION=<text>] [PIPE=<pipe_code>] [AUTHOR_NAME=…] [AUTHOR_EMAIL=…] [REPO_URL=…] [LICENSE=mit|proprietary|<spdx>] "
-    "[LICENSE_HOLDER=…] [LICENSE_YEAR=…] [DRY_RUN=1]"
+    "usage: make create METHOD=<path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/pkg][@tag]> [NAME=<package>] "
+    "[TITLE=<title>] [DESCRIPTION=<text>] [PIPE=<pipe_code>] [AUTHOR_NAME=…] [AUTHOR_EMAIL=…] [REPO_URL=…] "
+    "[LICENSE=mit|proprietary|<spdx>] [LICENSE_HOLDER=…] [LICENSE_YEAR=…] [DRY_RUN=1]"
 )
 
 
@@ -174,7 +174,10 @@ def parse_create_args(argv: Sequence[str]) -> CreateArgs:
         raise CreateError(msg)
     method: object = parsed.method
     if not isinstance(method, str) or not method.strip():
-        msg = f"no method given: pass a .mthds file or a directory of them, a catalog id (mt_…), or a published address.\n  {USAGE}"
+        msg = (
+            "no method given: pass a .mthds file or a directory of them, a catalog id (mt_…, mt_…@<version> or mt_…@draft), "
+            f"or a published address.\n  {USAGE}"
+        )
         raise CreateError(msg)
     values: dict[str, Any] = {}
     for field, _ in (*OWN_VALUES, *BOOTSTRAP_PASSTHROUGH):
@@ -214,8 +217,9 @@ def derive_identity(plan: MethodPlan, args: CreateArgs) -> Identity:
     - **title**: a catalog method's name, which a person chose; otherwise the name title-cased, with
       every word the method's own prose spells its own way respelled, so that `cv-screening` becomes
       `CV Screening` where the method writes "CVs".
-    - **description**: the catalog's description, else the domain's own, else the chosen pipe's,
-      else a sentence naming the method.
+    - **description**: the domain's own, read from the files the CLI runs (for a catalog id, the
+      version its selector names, never the draft's description the catalog entry carries), else the
+      chosen pipe's, else a sentence naming the method.
 
     Raises:
         CreateError: No name was given and none was derived.
@@ -232,7 +236,6 @@ def derive_identity(plan: MethodPlan, args: CreateArgs) -> Identity:
     )
     description = (
         one_line(args.description)
-        or one_line(catalog.description if catalog is not None else None)
         or one_line(plan.prose.description)
         or one_line(plan.prose.pipe_descriptions.get(plan.pipe.ref))
         or f"Runs the {title} method through the Pipelex API."

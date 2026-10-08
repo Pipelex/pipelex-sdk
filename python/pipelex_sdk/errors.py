@@ -162,6 +162,32 @@ class ApiUnreachableError(PipelexRequestError):
         self.code = code
 
 
+class MethodErrorCode(StrEnum):
+    """The platform codes a refusal about a stored method or one of its versions carries in `ApiResponseError.code`.
+
+    `code` stays a `str`, since the platform adds codes; this enum names the ones a method caller
+    branches on, and being a `StrEnum` each member equals its string (`match exc.code:` with
+    `case MethodErrorCode.METHOD_NOT_PUBLISHED:`). Each is `input` and not retryable by the fallback
+    verdict.
+    """
+
+    METHOD_UPDATE_CONFLICT = "method_update_conflict"
+    """`409`: the draft moved since the token a `write_draft` or a `publish_method` sent, so nothing
+    was written or published. Read the method again and decide whether to keep its draft or
+    overwrite it with the fresh token."""
+
+    METHOD_BEING_DELETED = "method_being_deleted"
+    """`409`: the method's erasure has started, on every route that addresses it."""
+
+    METHOD_NOT_PUBLISHED = "method_not_published"
+    """`409`: a bare `method_id` names the latest published version and the method was never
+    published. Publish it, or address its draft as `mt_…@draft`."""
+
+    METHOD_VERSION_NOT_FOUND = "method_version_not_found"
+    """`404`: `mt_…@<n>`, or `get_method_version`, names a version the method never published. An
+    unknown method is `not_found` instead."""
+
+
 class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErrorItem]):
     """A non-2xx response that DID come back from the API, with its problem document parsed.
 
@@ -191,10 +217,14 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
       classification of an inference failure.
     - **The branch fields.** `error_domain`, and `type_uri` (the problem's `type`), the stable URI
       naming the error class, on every problem. Branch on these, never on the HTTP status or on the
-      wording of a message.
+      wording of a message; they are the fields that mean the same on both surfaces.
     - **The native codes.** `code` is the platform's own closed code (`conflict`, `not_found`,
-      `pipelex_api_key_limit_reached`, …) and `error_type` the runner's open exception class name.
-      Each is finer than `error_domain` and specific to the surface that emits it.
+      `pipelex_api_key_limit_reached`, …; `MethodErrorCode` names the ones about a stored method and
+      its versions) and `error_type` the runner's open exception class name. Each is finer than
+      `error_domain` and specific to the surface that emits it, and a client of that surface may
+      branch on it: on the platform's own problems `type_uri` is derived from `code` one to one
+      (`https://pipelex.com/errors/<code>`), so the two read the same answer. A problem the platform
+      relays from the runner carries the runner's `type_uri` and `error_type` and no `code`.
     - **For support.** `request_id` correlates the response with the server's logs; it is read from
       the body, or from the `X-Request-ID` response header when the body has none. `instance` names
       the occurrence.

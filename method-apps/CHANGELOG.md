@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Both templates run on the SDK 0.35.1**: `@pipelex/sdk` in the web app and `pipelex-sdk` in the CLI, with `mthds` 0.19.0 unchanged, and the web app's `make add-method` and the CLI's `make create` now check a catalog id with the SDK's own parser instead of a copy of the grammar, so a malformed id or suffix is refused in the SDK's words. The CLI presents a request that gets no answer from `execute` or `start` as an unreachable API naming the base URL, where a failed connection crashed with httpx's traceback, and moves `httpx` from its dependencies to its dev group, since nothing it ships imports it any more; the web app's durable run of an inline bundle now waits as long for its start to be answered as a blocking run does. The SDK's reshaped method routes reach neither template, and `npm ls mthds` still lists two copies in the web app, the form kernel's and the SDK's, as before this move.
+
+## [v0.35.0] - 2026-10-08
+
+### Added
+
+- **A catalog id may pin a version in both templates**: `make create` and the web app template's `make add-method` take `mt_…@<version>` and `mt_…@draft` beside a bare `mt_…`, which runs the method's latest published version, and keep the suffix in `method.json`, so the app or the CLI runs the version it was made from. The name and the label still come from the method's catalog entry, read by the bare id, but the description now comes from the files the app or the CLI runs, the version its selector names, where it came from the catalog entry, which carries the draft's description and would have described a pinned version in words its draft had since replaced. A malformed suffix is refused before anything is sent. The usage lines, `make help`, the CLI's empty state, the initializer's own usage and the READMEs name the suffixed forms.
+
+### Fixed
+
+- **A catalog id holding a dot is refused before anything is sent, in both templates**: `make create` and the web app template's `make add-method` took `mt_review.mthds`, a path that is not on disk, for a catalog id, probed the API with it and reported that the API could not resolve it. No catalog id holds a dot, and the templates now read one as the platform and the SDK's selector grammar do, so it is refused locally as not a well-formed catalog id.
+
 ## [v0.34.0] - 2026-10-08
 
 ### Changed

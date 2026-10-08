@@ -52,6 +52,7 @@ class RecordedClient:
         self.base_url = "https://api.example.com"
         self.calls: list[str] = []
         self.requests: list[CodegenRequest | PipeIORequest] = []
+        self.method_ids: list[str] = []
 
     async def __aenter__(self) -> "RecordedClient":
         return self
@@ -77,6 +78,7 @@ class RecordedClient:
 
     async def get_method(self, method_id: str) -> MethodData:
         self.calls.append("get_method")
+        self.method_ids.append(method_id)
         return MethodData.model_validate(stored_method(method_id))
 
 
@@ -91,6 +93,9 @@ def stored_method(method_id: str, *, name: str = "Stored text stats", descriptio
         "created_by_user_id": "user_00000000",
         "created_at": "2026-10-06T00:00:00Z",
         "updated_at": "2026-10-06T00:00:00Z",
+        "draft_digest": "0" * 64,
+        "latest_version": None,
+        "latest_published": None,
     }
 
 

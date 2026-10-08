@@ -18,7 +18,7 @@ make -C my-app serve                                   # the URL, once the page 
 
 `make serve` starts the dev server in the background, prints its URL once the page answers, and `make stop` stops it; `make dev` runs the same server in this terminal instead, on http://127.0.0.1:4300. The initializer's [README](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/initializers/js#readme) lists its options, one per `make create` variable below.
 
-`--method`, which the initializer hands to `make create` as `METHOD`, is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, from [app.pipelex.com](https://app.pipelex.com)), or a published package address (`github.com/Pipelex/methods/text_stats@v0.1.1`).
+`--method`, which the initializer hands to `make create` as `METHOD`, is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, from [app.pipelex.com](https://app.pipelex.com), or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published package address (`github.com/Pipelex/methods/text_stats@v0.1.1`).
 
 `make create` scaffolds the method, names the project after it (the package name, the title and the description all come from the method, and `--name`, `--title` and `--description` override them, which are `NAME=`, `TITLE=` and `DESCRIPTION=` to `make create` itself), writes `.env.local` from your shell, and runs `make all`. It commits nothing, so `git diff` against the initializer's pristine commit shows everything it did. `--dry-run` (`DRY_RUN=1`) prints the plan first. [`docs/create.md`](docs/create.md) is the reference.
 

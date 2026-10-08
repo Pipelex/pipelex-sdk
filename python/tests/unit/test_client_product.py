@@ -16,6 +16,7 @@ from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError
 from pipelex_sdk.product_models import (
     MethodDeletionState,
+    MethodDraftInput,
     MethodFile,
     MethodWriteInput,
     OnboardingCurrentTool,
@@ -43,6 +44,7 @@ _METHOD_BODY: dict[str, object] = {
     "python": "",
     "created_at": "t",
     "updated_at": "t",
+    "draft_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
 }
 
 
@@ -157,16 +159,16 @@ class TestClientProduct:
 
         assert asyncio.run(client.get_method("m1")).python == []
 
-    def test_write_input_sends_python_three_ways(self, mocker: MockerFixture) -> None:
-        """`None` omits the key (preserve), `[]` sends the clear sentinel, a list sends the JSON text."""
+    def test_draft_input_sends_python_three_ways(self, mocker: MockerFixture) -> None:
+        """Unset omits the key (preserve), `[]` sends the clear sentinel, a list sends the JSON text."""
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body=_METHOD_BODY))
 
-        asyncio.run(client.update_method("m1", MethodWriteInput(name="M", mthds="src")))
+        asyncio.run(client.write_draft("m1", MethodDraftInput(mthds="src")))
         assert "python" not in _sent_body(send)
 
         send = self._mock_send(mocker, client, _response(200, json_body=_METHOD_BODY))
-        asyncio.run(client.update_method("m1", MethodWriteInput(name="M", mthds="src", python=[])))
+        asyncio.run(client.write_draft("m1", MethodDraftInput(mthds="src", python=[])))
         assert _sent_body(send)["python"] == ""
 
         send = self._mock_send(mocker, client, _response(200, json_body=_METHOD_BODY))
@@ -194,18 +196,14 @@ class TestClientProduct:
         assert sent.url == f"{_BASE_URL}/v1/methods"
         assert sent.body == {"name": "M", "mthds": "src", "input_data": {"a": 1}}
 
-    def test_update_method_puts_and_drops_absent_input_data(self, mocker: MockerFixture) -> None:
+    def test_create_method_drops_absent_input_data(self, mocker: MockerFixture) -> None:
         client = self._client()
-        body = {**_METHOD_BODY, "name": "Renamed"}
-        send = self._mock_send(mocker, client, _response(200, json_body=body))
+        send = self._mock_send(mocker, client, _response(200, json_body=_METHOD_BODY))
 
-        asyncio.run(client.update_method("m1", MethodWriteInput(name="Renamed", mthds="src")))
+        asyncio.run(client.create_method(MethodWriteInput(name="M", mthds="src")))
 
-        sent = self._sent(send)
-        assert sent.method == "PUT"
-        assert sent.url == f"{_BASE_URL}/v1/methods/m1"
         # input_data is None → dropped from the wire (matches the JS undefined-drop).
-        assert sent.body == {"name": "Renamed", "mthds": "src"}
+        assert self._sent(send).body == {"name": "M", "mthds": "src"}
 
     def test_delete_method_returns_the_202_acceptance(self, mocker: MockerFixture) -> None:
         """The erasure is asynchronous: the caller gets the CLAIM, never a "it's gone" signal.
@@ -477,7 +475,16 @@ class TestClientProduct:
 
         pipeline_run = result.items[0]
         assert isinstance(pipeline_run, RunHistoryItem)
-        assert set(RunHistoryItem.model_fields) == {"pipeline_run_id", "status", "created_at", "finished_at", "pipe_code", "error"}
+        assert set(RunHistoryItem.model_fields) == {
+            "pipeline_run_id",
+            "status",
+            "created_at",
+            "finished_at",
+            "pipe_code",
+            "error",
+            "method_version",
+            "source_digest",
+        }
         assert pipeline_run.pipeline_run_id == "r1"
         assert pipeline_run.status == RunStatus.FAILED
         assert pipeline_run.created_at == "2026-10-01T10:00:00Z"

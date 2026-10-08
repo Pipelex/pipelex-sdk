@@ -10,7 +10,7 @@ make -C my-app serve
 
 The first command writes the [`webapp-js`](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/webapp-js) template of the [method-app family](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps), the `method-apps/` directory of `Pipelex/pipelex-sdk`, into `my-app/`, commits it as it came, and runs the copy's own `make create`, which scaffolds the method, names the project after it and runs `make all`. The second starts the dev server in the background, proves that the page answers, and prints its URL; `make stop` stops it. `make dev` runs the same server in the foreground instead.
 
-`--method` takes a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`), or a published package address (`github.com/Pipelex/methods/text_stats@v0.1.1`). A path is read from where you typed the command.
+`--method` takes a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published package address (`github.com/Pipelex/methods/text_stats@v0.1.1`). A path is read from where you typed the command.
 
 ## What it needs
 

@@ -11,7 +11,6 @@ route then answers for itself. The ported module is `webapp-js`'s `scripts/lib/a
 
 from typing import Any, Protocol, cast
 
-import httpx
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import VersionInfo
 from pipelex_sdk.errors import ApiResponseError
@@ -39,9 +38,9 @@ async def selector_support_refusal(client: VersionClient, base_url: str, source:
         return None
     try:
         info = await client.version()
-    except (PipelineRequestError, httpx.HTTPError, ValueError):
-        # The handshake is advice: a server that cannot answer it, on a raw transport whose errors the SDK
-        # leaves unmapped or with a body that is not a version, is judged by the crate route instead.
+    except (PipelineRequestError, ValueError):
+        # The handshake is advice: a server that cannot answer it, with a refusal, with no answer at all or
+        # with a body that is not a version, is judged by the crate route instead.
         return None
     advertised: object = (info.model_extra or {}).get("extensions")
     if not isinstance(advertised, list) or not all(isinstance(item, str) for item in cast("list[Any]", advertised)):

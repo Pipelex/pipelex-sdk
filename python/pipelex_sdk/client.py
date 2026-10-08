@@ -89,7 +89,10 @@ from pipelex_sdk.product_models import (
     MethodData,
     MethodDeletionAccepted,
     MethodPage,
+    MethodPublishResultAdapter,
     MethodSummary,
+    MethodVersion,
+    MethodVersionPage,
     PipelexApiKeyCreated,
     PipelexApiKeyList,
     PlanView,
@@ -130,6 +133,8 @@ if TYPE_CHECKING:
     from mthds.protocol.working_memory import WorkingMemoryAbstract
 
     from pipelex_sdk.product_models import (
+        MethodDraftInput,
+        MethodPublishResult,
         MethodWriteInput,
         OnboardingSubmission,
         UpdateRunInput,
@@ -556,17 +561,25 @@ class PipelexAPIClient(MthdsAPIClient):
                 platform resolves against the org's catalog; nothing is expanded client-side,
                 and it is meaningless off-platform (an open-source runner answers a `422`
                 naming the key). Alone, the platform resolves and runs the stored method's
-                source. Alongside `mthds_contents`, the inline source is what RUNS (precedence)
-                and the id is recorded as run-history linkage on the Run row — the index key
-                `GET /v1/runs?method_id=` queries, so a run started without it is absent from
-                its method's history permanently. An empty string is treated as absent.
+                source: a bare `mt_…` runs its latest published version (a `409`
+                `method_not_published` for a method never published), `mt_…@<n>` the fixed
+                version `n` (a `404` `method_version_not_found` for one never published) and
+                `mt_…@draft` its draft, the suffix riding the string untouched; the answer's
+                `method_version` says which ran. Alongside `mthds_contents`, the inline source is
+                what RUNS (precedence) and the id is recorded as run-history linkage on the Run
+                row — the index key `GET /v1/runs?method_id=` queries, so a run started without it
+                is absent from its method's history permanently. The id must be bare there: the
+                inline source is what runs, so a suffix would claim a version that did not, and a
+                suffixed id is refused client-side, mirroring the platform's `422`. An empty
+                string is treated as absent.
 
         Raises:
             PipelineExecuteTimeoutError: The blocking request hit the hosted gateway's ~30s
                 synchronous ceiling — use `start_and_wait` (or `start` + `wait_for_result`).
             RequestArgumentError: Nothing to run was named, `extra` carries a protocol arg or a
-                reserved named arg, a selector is present and is not a string, or `method_ref` is
-                combined with inline `mthds_contents` or with `method_id`.
+                reserved named arg, a selector is present and is not a string, `method_ref` is
+                combined with inline `mthds_contents` or with `method_id`, or a suffixed
+                `method_id` is combined with inline `mthds_contents`.
             RunStillRunningError: The server answered 202 (the protocol's optional async
                 degrade) — the run continues server-side; resume by `pipeline_run_id`.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
@@ -576,6 +589,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
         _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
+        _assert_linkage_method_id_is_bare(mthds_contents=mthds_contents, merged_extra=merged_extra)
         started_at = monotonic()
         try:
             result = await super().execute(
@@ -638,8 +652,9 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Raises:
             RequestArgumentError: Nothing to run was named, `extra` carries a protocol arg or a
-                reserved named arg, a selector is present and is not a string, or `method_ref` is
-                combined with inline `mthds_contents` or with `method_id`.
+                reserved named arg, a selector is present and is not a string, `method_ref` is
+                combined with inline `mthds_contents` or with `method_id`, or a suffixed
+                `method_id` is combined with inline `mthds_contents`.
             RunLifecycleUnavailableError: The configured server has no run store.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
                 `422`, its diagnostics on `validation_errors`), auth, a server fault.
@@ -647,6 +662,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
         _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
+        _assert_linkage_method_id_is_bare(mthds_contents=mthds_contents, merged_extra=merged_extra)
         token = _REQUEST_TIMEOUT_OVERRIDE.set(_start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, mthds_contents))
         try:
             result = await super().start(
@@ -706,8 +722,10 @@ class PipelexAPIClient(MthdsAPIClient):
           (pipelex-api >= 0.21.0) through the same fetch path as a `method_ref` run, the
           package's real file names feeding the diagnostics' source labels;
         - **`method_id`** — a stored method's catalog id, hosted-only: the platform resolves
-          it and injects the stored source before the runner sees the request (a bare runner
-          rejects the request as carrying no source it understands).
+          the version it names and injects that version's `.mthds` files before the runner sees
+          the request (a bare runner rejects the request as carrying no source it understands).
+          A bare id validates the latest published version, `mt_…@<n>` a fixed one and
+          `mt_…@draft` the draft.
 
         This override differs from the inherited protocol `validate` in these Pipelex-API ways:
         it always injects `render: ["markdown"]` (so both valid and invalid verdicts carry
@@ -736,9 +754,12 @@ class PipelexAPIClient(MthdsAPIClient):
             method_ref: A published method's address —
                 `github.com/<owner>/<repo>[/<selector>][@<tag>]` — runner-resolved. An empty
                 string is treated as absent.
-            method_id: A stored method's hosted catalog id (`mt_…`), platform-resolved. An
-                unknown or foreign-org id is a `404` (indistinguishable by design); a stored
-                method with no MTHDS source is a `422`. An empty string is treated as absent.
+            method_id: A stored method's hosted catalog id (`mt_…`, `mt_…@<n>` or `mt_…@draft`),
+                platform-resolved. An unknown or foreign-org id is a `404` (indistinguishable by
+                design); a bare id of a method never published is a `409` `method_not_published`;
+                a version never published is a `404` `method_version_not_found`; a malformed suffix
+                or a stored method with no MTHDS source is a `422`. An empty string is treated as
+                absent.
 
         Returns:
             The 200-diagnostic union: `PipelexValidationReport` (`is_valid: true`) or
@@ -1251,18 +1272,177 @@ class PipelexAPIClient(MthdsAPIClient):
             cursor = page.next_cursor
 
     async def get_method(self, method_id: str) -> MethodData:
-        """Fetch one method by id — `GET /v1/methods/{id}`."""
-        return MethodData.model_validate(await self._request_product("GET", f"methods/{quote(method_id, safe='')}"))
+        """Read one method — `GET /v1/methods/{id}`.
+
+        Its identity, its draft (`mthds`, `python`, `input_data`) with the draft's token
+        (`updated_at`) and digest (`draft_digest`), and its latest published version's summary
+        (`latest_version`, `latest_published`), whatever the publish state: a method never
+        published reads with both `None`, never as an error.
+
+        Takes a bare catalog id: the method routes address the method itself, never a version of
+        it. A caller holding `mt_…@3` strips the suffix with
+        `pipelex_sdk.method_selector.parse_method_selector` and reads that version with
+        `get_method_version`. Every method route raises `PipelineRequestError` for a suffixed id,
+        before any request, rather than read back the `404` the platform would answer.
+        """
+        return MethodData.model_validate(await self._request_product("GET", _method_path(method_id)))
 
     async def create_method(self, write_input: MethodWriteInput) -> MethodData:
-        """Create a method — `POST /v1/methods`."""
+        """Create a method — `POST /v1/methods`.
+
+        The new method holds the input as its draft and has no published version, so its bare id
+        answers `409 method_not_published` on the run and tooling routes until its first
+        `publish_method`; its draft runs as `mt_…@draft` at once.
+
+        Raises:
+            ApiResponseError: `413` `payload_too_large` for a method that would leave no room for a
+                publish, measured as a draft write is; `422` `validation_failed` for Python files no
+                run could import or for text holding a lone surrogate.
+        """
         body = write_input.model_dump(mode="json", exclude_none=True)
         return MethodData.model_validate(await self._request_product("POST", "methods", body=body))
 
-    async def update_method(self, method_id: str, write_input: MethodWriteInput) -> MethodData:
-        """Replace a method (a rename is a changed `name`) — `PUT /v1/methods/{id}`."""
-        body = write_input.model_dump(mode="json", exclude_none=True)
-        return MethodData.model_validate(await self._request_product("PUT", f"methods/{quote(method_id, safe='')}", body=body))
+    async def write_draft(self, method_id: str, draft: MethodDraftInput) -> MethodData:
+        """Replace a method's draft — `PUT /v1/methods/{id}/draft`.
+
+        The draft is never validated on write, and writing it changes nothing for the callers of the
+        method's bare id, who run the latest published version until the next `publish_method`.
+        The body is the fields `draft` SET, so a field left unset keeps the stored value, and an
+        explicit `input_data=None` clears the form inputs (see `MethodDraftInput`). With
+        `expected_updated_at`, the write is a compare-and-swap on the draft token: a draft that
+        moved since is refused, and nothing is written. Without it, last writer wins.
+
+        Args:
+            method_id: The method's bare catalog id.
+            draft: The draft to write.
+
+        Returns:
+            The method, with the draft's new token (`updated_at`) and digest (`draft_digest`).
+
+        Raises:
+            ApiResponseError: `409` `method_update_conflict` for a draft that moved since the token;
+                `404` `not_found` for an unknown or foreign-org method; `409` `method_being_deleted`
+                while its erasure runs; `413` `payload_too_large` for a draft that would grow the
+                method past the room a publish needs, which keeps a draft that saves publishable;
+                `422` `validation_failed` for Python files no run could import or for text holding a
+                lone surrogate; `403` for a read-only key; a `503` that wrote nothing, safe to retry,
+                when the method kept changing under the write.
+        """
+        body = draft.model_dump(mode="json", exclude_unset=True)
+        return MethodData.model_validate(await self._request_product("PUT", f"{_method_path(method_id)}/draft", body=body))
+
+    async def rename_method(self, method_id: str, name: str) -> MethodData:
+        """Rename a method — `PATCH /v1/methods/{id}`.
+
+        The name belongs to the method, not to a version: a rename changes nothing else, moves no
+        token and never commits the draft, so the `updated_at` a caller holds stays valid for its
+        next `write_draft` or `publish_method`.
+
+        Args:
+            method_id: The method's bare catalog id.
+            name: The new name.
+
+        Raises:
+            ApiResponseError: `404` `not_found`; `409` `method_being_deleted`; `403` for a read-only
+                key; `422` for an empty name or one holding a lone surrogate; `413`
+                `payload_too_large` for a name so long it would leave the method too large to
+                publish; a `503` that wrote nothing, safe to retry, when draft writes kept landing
+                under the rename.
+        """
+        return MethodData.model_validate(await self._request_product("PATCH", _method_path(method_id), body={"name": name}))
+
+    async def publish_method(self, method_id: str, *, expected_draft_updated_at: str) -> MethodPublishResult:
+        """Publish a method's draft as its next version — `POST /v1/methods/{id}/publish`.
+
+        `expected_draft_updated_at` is the draft token the caller last saw (`MethodData.updated_at`),
+        and it is required: a publish never takes a draft its caller has not seen. The platform
+        checks the token, answers `unchanged` without asking the runner when the draft's digest
+        equals the latest version's, and otherwise validates the draft and, when it validates and
+        runs, writes version N+1. A publish moves no token.
+
+        Only a draft that differs from the latest version reaches the runner, and a runner that cannot
+        be reached, answers unusably or does not finish within the platform's deadline is a `502` or a
+        `503` with nothing written, so a retry is safe; a runner that refuses the request itself is
+        relayed under its own status. A retry of a publish that landed while its answer was lost, as
+        on a client timeout, answers `unchanged` with the version it wrote.
+
+        Args:
+            method_id: The method's bare catalog id.
+            expected_draft_updated_at: The draft token the caller last saw, echoed verbatim.
+
+        Returns:
+            A `MethodPublishResult` discriminated on `outcome` — branch on it: `MethodPublished` with
+            the new `version`; `MethodPublishUnchanged` with the existing latest `version`;
+            `MethodPublishRefused` with a `reason` (`invalid`, or `not_runnable` for a draft that
+            validates with pending signatures), a `message` and the runner's `validation` verdict.
+            Every arm carries the `method`.
+
+        Raises:
+            PipelineRequestError: `expected_draft_updated_at` is not a `str` — `None` included; nothing
+                is sent.
+            ApiResponseError: When no verdict was produced: `409` `method_update_conflict` for a draft
+                that moved since the token; `409` `method_being_deleted`; `404` `not_found`; `422`
+                for a draft with no `.mthds` file or whose file names a run could not assemble (one
+                name used by a `.mthds` and a Python file); `413` `payload_too_large` for a draft too
+                large to publish; `403` for a read-only key; `502` or `503` from the runner, as above.
+        """
+        # Checked as an `object`, as `get_method_version` checks its version: a caller forwarding an
+        # optional `updated_at` would otherwise send a null token and read the platform's `422`.
+        token = cast("object", expected_draft_updated_at)
+        if not isinstance(token, str):
+            msg = (
+                "publish_method() needs expected_draft_updated_at: the draft token (the method's updated_at) the caller "
+                f"last saw, so a publish never takes a draft it has not seen; got {type(token).__name__}."
+            )
+            raise PipelineRequestError(msg)
+        body = {"expected_draft_updated_at": token}
+        answer = await self._request_product("POST", f"{_method_path(method_id)}/publish", body=body)
+        return MethodPublishResultAdapter.validate_python(answer)
+
+    async def list_method_versions(self, method_id: str, *, limit: int | None = None, cursor: str | None = None) -> MethodVersionPage:
+        """List one page of a method's published versions, newest first — `GET /v1/methods/{id}/versions`.
+
+        Args:
+            method_id: The method's bare catalog id.
+            limit: Page size, from 1 to 100; the API defaults to 20 and refuses a `limit` outside
+                that range with a `422`.
+            cursor: The `next_cursor` of the previous page, passed back opaquely.
+
+        Returns:
+            A `MethodVersionPage` of `MethodVersionSummary` rows, without their sources. `next_cursor`
+            is `None` on the last page; a page may be short while it is set, because the platform
+            reads versions whole. A method never published answers an empty page.
+
+        Raises:
+            ApiResponseError: `404` `not_found` for an unknown method; `409` `method_being_deleted`;
+                `400` `malformed_request` for a cursor the listing did not issue for this method;
+                `422` for a `limit` outside 1 to 100.
+        """
+        query = _product_query({"limit": limit, "cursor": cursor})
+        return MethodVersionPage.model_validate(await self._request_product("GET", f"{_method_path(method_id)}/versions{query}"))
+
+    async def get_method_version(self, method_id: str, version: int) -> MethodVersion:
+        """Read one published version of a method, with its sources — `GET /v1/methods/{id}/versions/{n}`.
+
+        Its `python` is converted into `MethodFile` entries as a method's is.
+
+        Args:
+            method_id: The method's bare catalog id.
+            version: The version number, a positive integer.
+
+        Raises:
+            PipelineRequestError: `version` is not a positive integer — a `bool`, a `float` such as
+                `2.0`, a numeric string and anything else that is not an `int` included; nothing is sent.
+            ApiResponseError: `404` `method_version_not_found` for a version the method never
+                published; `404` `not_found` for an unknown method; `409` `method_being_deleted`.
+        """
+        # Checked as an `object`: the annotation is a promise to the type checker, not to a caller
+        # forwarding a float or a CLI argument, and only an `int` puts a version number in the path.
+        candidate = cast("object", version)
+        if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 1:
+            msg = f"get_method_version() takes a version number, a positive integer; got {version!r}."
+            raise PipelineRequestError(msg)
+        return MethodVersion.model_validate(await self._request_product("GET", f"{_method_path(method_id)}/versions/{version}"))
 
     async def delete_method(self, method_id: str) -> MethodDeletionAccepted:
         """Erase a method and everything it produced — `DELETE /v1/methods/{id}`.
@@ -1276,17 +1456,19 @@ class PipelexAPIClient(MthdsAPIClient):
         `get_method` refuses it with a `409`.
 
         A double-clicked delete is safe: the claim is a conditional write, so the second call is
-        an `ApiResponseError` (`409 conflict`) rather than a second cascade over the same runs.
-        An unknown or foreign-org id is a `404`.
+        an `ApiResponseError` (`409 method_being_deleted`) rather than a second cascade over the same
+        runs. An unknown or foreign-org id is a `404`. The erasure deletes the method's published
+        versions with the rest.
 
         Args:
-            method_id: The method to erase.
+            method_id: The method's bare catalog id: the whole method is erased, never one of its
+                versions.
 
         Returns:
             The platform's acceptance — `method_id`, the `deletion_state` the cascade started
             in, and the `deletion_job_id` a caller can log or correlate.
         """
-        return MethodDeletionAccepted.model_validate(await self._request_product("DELETE", f"methods/{quote(method_id, safe='')}"))
+        return MethodDeletionAccepted.model_validate(await self._request_product("DELETE", _method_path(method_id)))
 
     async def list_memberships(self) -> MembershipsResponse:
         """The caller's org memberships + active-org feature flags — `GET /v1/organizations/memberships`."""
@@ -1597,7 +1779,10 @@ class PipelexAPIClient(MthdsAPIClient):
         """List one page of a method's runs — `GET /v1/runs?method_id={methodId}`.
 
         Args:
-            method_id: The method whose runs to list.
+            method_id: The bare catalog id of the method whose runs to list. The history files the runs
+                of every version and of the draft together under it, so `mt_…@3` names no history of
+                its own and the platform refuses it with a `400`; strip a suffix with
+                `parse_method_selector`, and read which version a run ran from its `method_version`.
             created_from: Inclusive lower bound on creation, an **instant**: ISO-8601 with a
                 UTC offset. These are index key conditions rather than filters, so a bare date
                 or a naive timestamp is a platform `400` surfaced as `ApiResponseError`.
@@ -1639,6 +1824,8 @@ class PipelexAPIClient(MthdsAPIClient):
         adjacent-cursor one, and would loop forever re-yielding the same runs. The ceiling is
         the cheap guard against the whole family — tracking every cursor seen would cost
         unbounded memory for the same protection.
+
+        Takes a bare catalog id, as `list_runs` does.
 
         Raises:
             PagingNotTerminatingError: If the server never stops handing out cursors.
@@ -1797,7 +1984,8 @@ def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, m
     was already dropped).
 
     The one documented run-route exception is deliberately NOT here: inline source +
-    `method_id` stays legal (the inline source runs; the id demotes to run-history linkage).
+    `method_id` stays legal (the inline source runs; the id demotes to run-history linkage), its
+    one condition, a bare id, held by `_assert_linkage_method_id_is_bare` below.
     `pipe_code` beside a `method_ref` is legal too — it overrides the manifest's `main_pipe`.
     This SDK names no bundle encodings (`files` / `bundle_b64`), so their arm of the server's
     exclusivity has no client-side twin here; the server still enforces it.
@@ -1813,6 +2001,36 @@ def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, m
             "and takes no run-history linkage id. Send exactly one method selector."
         )
         raise RequestArgumentError(msg)
+
+
+def _assert_linkage_method_id_is_bare(*, mthds_contents: list[str] | None, merged_extra: dict[str, Any] | None) -> None:
+    """Enforce the run routes' linkage clause, mirroring the platform's own `422` so a suffixed
+    linkage id fails before anything hits the wire.
+
+    Beside inline `mthds_contents` the `method_id` is run-history linkage and must be a bare catalog
+    id: the inline source is what runs, so a version suffix (`mt_…@3`, `mt_…@draft`) would claim a
+    version that did not. A `method_id` alone keeps its suffix, which names the version to run.
+    Reads the MERGED extensions, so an empty id was already dropped, and checks the suffix alone, by
+    its `@`, since the catalog id's alphabet has none: the id itself stays a pass-through the
+    platform resolves. As in `_assert_method_ref_pairs_with_nothing`, the bundle encodings this SDK
+    does not name (`files` / `bundle_b64`) have no client-side twin; the platform still refuses a
+    suffixed id beside them.
+
+    Raises:
+        PipelineRequestError: A `method_id` carrying a version suffix rides beside inline
+            `mthds_contents`.
+    """
+    if not mthds_contents or merged_extra is None:
+        return
+    method_id = merged_extra.get("method_id")
+    if not isinstance(method_id, str) or "@" not in method_id:
+        return
+    msg = (
+        f'method_id "{method_id}" beside an inline source is run-history linkage and must be a bare catalog id: the '
+        "inline source is what runs, so a version suffix would claim a version that did not. Send the bare id "
+        "(parse_method_selector(...).method_id), or drop the inline source to run the version the selector names."
+    )
+    raise PipelineRequestError(msg)
 
 
 def _quick_request_timeout_seconds(request_timeout_seconds: float) -> float:
@@ -1877,6 +2095,28 @@ def _product_query(params: dict[str, str | int | None]) -> str:
     if not kept:
         return ""
     return "?" + urlencode(kept)
+
+
+def _method_path(method_id: str) -> str:
+    """The path of a method route, `methods/{id}`, for a bare catalog id.
+
+    The method routes address the method itself, never one of its versions, and the platform does
+    not parse a suffix there: `mt_x@3` would be looked up as an id of its own and answer
+    `404 not_found`, which reads as a method that does not exist. So a suffixed id is refused
+    before anything is sent, saying how to read what it names. Stripping it instead would answer
+    the draft for a caller that named a version.
+
+    Raises:
+        PipelineRequestError: `method_id` carries a version suffix.
+    """
+    if "@" in method_id:
+        msg = (
+            f'"{method_id}" carries a version suffix, and the method routes take a bare catalog id: they address the method '
+            "itself, never one of its versions. Strip the suffix with parse_method_selector, and read a published version "
+            "with get_method_version."
+        )
+        raise PipelineRequestError(msg)
+    return f"methods/{quote(method_id, safe='')}"
 
 
 def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArtifact, ...] | None:

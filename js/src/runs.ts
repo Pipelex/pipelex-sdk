@@ -85,6 +85,19 @@ export interface RunPublic {
    * which is where `getRunResult`'s failed arm and `RunFailedError` take it from.
    */
   error?: RunErrorReport | null;
+  /**
+   * Which version of its stored method the run ran: the version number for a run addressed by
+   * a bare `method_id` (the latest published version) or by `mt_…@<n>`, `"draft"` for one
+   * addressed by `mt_…@draft`, and `null` for a run of an inline source. A hosted extension,
+   * absent on a server that does not record it.
+   */
+  method_version?: number | "draft" | null;
+  /**
+   * The digest of the files the run ran, in the canonical form of `MethodData.draft_digest`;
+   * `null` when the platform never held the files, as on a `method_ref` run. A hosted
+   * extension, absent on a server that does not record it.
+   */
+  source_digest?: string | null;
   /** Server-specific response fields (defined by the server you call). */
   [extension: string]: unknown;
 }

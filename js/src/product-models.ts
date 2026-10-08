@@ -13,6 +13,7 @@
 import type { MethodFile } from "mthds/protocol";
 
 import type { RunErrorReport } from "./error-models.js";
+import type { PipelexValidationResult } from "./models.js";
 import type { RunStatus } from "./runs.js";
 
 // ── User profile (`/v1/me`) ─────────────────────────────────────────────
@@ -26,34 +27,124 @@ export interface UserProfile {
 }
 
 // ── Methods catalog (`/v1/methods`) ──────────────────────────────────────
+//
+// A saved method has a draft and published versions. The method's content fields
+// (`mthds`, `python`, `input_data`) are its DRAFT: written freely by `writeDraft`, never
+// validated on write. A VERSION is an immutable copy of the draft, numbered from 1 and
+// never reused, written only by `publishMethod` and only when the draft validates and
+// runs. A bare `method_id` runs the latest published version, `mt_…@<n>` a fixed
+// version and `mt_…@draft` the draft; the method routes themselves take a bare id
+// (`parseMethodSelector` strips a suffix).
 
+/**
+ * One published version without its sources — what `listMethodVersions` lists, what a
+ * method read carries as `latest_published`, and what a publish answers as `version`.
+ */
+export interface MethodVersionSummary {
+  /** The version number, from 1, never reused and never renumbered. */
+  version: number;
+  /**
+   * SHA-256 of the canonical form of the version's two file sets (`.mthds` and Python), as 64
+   * lowercase hex characters — the same function as the method's `draft_digest`, so equal
+   * digests mean the same sources would run.
+   */
+  source_digest: string;
+  /**
+   * The runner's `crate.fingerprint` for the bundle (`POST /v1/resolve`), which covers its
+   * meaning rather than its bytes and is what generated client code is checked against.
+   * `null` when the runner validated the bundle but could not resolve it in memory, as for a
+   * bundle that depends on another method by address.
+   */
+  crate_fingerprint: string | null;
+  /** The version of the runner that validated the bundle and computed the fingerprint. */
+  runner_version: string | null;
+  /** The bundle's top-level `description` at publish time. */
+  description: string | null;
+  /** ISO-8601 UTC instant of the publish. */
+  published_at: string;
+  /**
+   * The publisher's canonical user id, or `system:publish-initial` for a version the one-time
+   * migration wrote for a method saved before versions existed.
+   */
+  published_by: string;
+}
+
+/**
+ * One published version with its sources — `getMethodVersion`. It carries no `name`, which
+ * belongs to the method and changes without a publish, and no `input_data`, which is the
+ * editor's form state and not part of what a caller runs.
+ */
+export interface MethodVersion extends MethodVersionSummary {
+  method_id: string;
+  /** The version's `.mthds` source, in the same stored form as `MethodData.mthds`. */
+  mthds: string;
+  /**
+   * The version's custom-PipeFunc Python, as `MethodFile[]`, parsed from the wire string
+   * exactly as `MethodData.python` is. Empty array when the version has no custom Python.
+   */
+  python?: MethodFile[];
+}
+
+/**
+ * A saved method — `getMethod`, `createMethod`, `writeDraft`, `renameMethod`, and the
+ * `method` of every publish outcome. Its content fields ARE the draft; the latest
+ * published version is summarized in `latest_published`.
+ *
+ * The publish state a client shows is derived, never stored: never published
+ * (`latest_version` is `null`), published with the draft unchanged (`draft_digest ===
+ * latest_published.source_digest`), or published with the draft ahead (they differ).
+ */
 export interface MethodData {
   method_id: string;
   org_id: string;
   created_by_user_id: string;
   name: string;
-  /** The `.mthds` bundle source. */
+  /** The draft's `.mthds` bundle source. */
   mthds: string;
   /**
-   * Custom-PipeFunc Python sources, as `MethodFile[]` (`{ name, content }`). On
+   * The draft's custom-PipeFunc Python sources, as `MethodFile[]` (`{ name, content }`). On
    * the wire this is the serialized `[{ name, content }]` catalog string (empty
    * `""` when the method has no custom Python); the client (de)serializes it via
    * `mthds/protocol`'s `parseMethodFiles`/`serializeMethodFiles`, so callers work
    * with the typed array. Empty array when the method has no custom Python.
-   * Returned on both get and list.
    */
   python?: MethodFile[];
+  /** The editor's form inputs, saved with the draft and outside both digests. */
   input_data?: Record<string, unknown> | null;
   /** Legacy persisted output spec; optional. */
   pipe_output?: Record<string, unknown> | null;
   /**
-   * Derived from the bundle's top-level `description`. Read-side only: the
-   * server recomputes it from the bundle on every save, so it never appears on
+   * Derived from the draft's top-level `description`. Read-side only: the
+   * server recomputes it from the draft on every draft write, so it never appears on
    * the write contract.
    */
   description?: string | null;
   created_at: string;
+  /**
+   * **The draft's token.** It moves on every draft write and on nothing else: creation sets
+   * it, and neither a rename nor a publish moves it. Echo it verbatim — the platform compares
+   * the strings — as `expected_updated_at` on the next `writeDraft`, or as
+   * `expected_draft_updated_at` on `publishMethod`, so neither ever overwrites or publishes a
+   * draft the caller has not seen.
+   */
   updated_at: string;
+  /**
+   * The draft's digest: SHA-256 of the canonical form of its two file sets, 64 lowercase hex
+   * characters. `input_data` is outside it, so saving only the form inputs moves the token and
+   * leaves the digest as it was.
+   */
+  draft_digest: string;
+  /** The number of the latest published version; `null` when the method was never published. */
+  latest_version: number | null;
+  /** The latest published version's summary; `null` when the method was never published. */
+  latest_published: MethodVersionSummary | null;
+  /**
+   * Where the method is in the erasure cascade; absent or `null` on a normal method. Every
+   * method route refuses a method whose erasure has started with a `409`
+   * `method_being_deleted`, so a method read seldom carries it; `MethodSummary` carries the
+   * same field on the list, where a method mid-erasure stays listed.
+   */
+  deletion_state?: MethodDeletionState | null;
 }
 
 /** Where a method is in the erasure cascade; absent on a normal method. */
@@ -127,19 +218,137 @@ export interface MethodPage {
   nextCursor: string | null;
 }
 
-/** The create/update payload — a rename is a `PUT` with a changed `name`. */
+/**
+ * The create payload — `createMethod`. A new method holds this as its draft and has no
+ * version yet. Its draft is then written with `writeDraft` and its name changed with
+ * `renameMethod`.
+ */
 export interface MethodWriteInput {
   name: string;
   mthds: string;
   /**
-   * Custom-PipeFunc Python as `MethodFile[]`. Three-way on a `PUT`: **omit**
-   * (`undefined`) preserves the stored Python (the client sends nothing, the
-   * server treats absent as "not sent"); an **empty array** `[]` clears it (the
-   * client serializes to `""`); a **non-empty array** replaces it. It is a
-   * replace, not a merge — send the full set on a save that intends to change it.
+   * Custom-PipeFunc Python as `MethodFile[]`, serialized to the catalog string on the wire;
+   * omitted or an empty array, the method has none.
    */
   python?: MethodFile[];
   input_data?: Record<string, unknown> | null;
+}
+
+/**
+ * The draft write — `writeDraft`, `PUT /v1/methods/{id}/draft`. It never validates: a draft
+ * may be invalid, and an autosave of work in progress often is.
+ */
+export interface MethodDraftInput {
+  /** The draft's `.mthds` files, in the stored serialized form. Required. */
+  mthds: string;
+  /**
+   * Custom-PipeFunc Python as `MethodFile[]`. Three-way: **omit** (`undefined`) keeps the
+   * stored Python (the client sends nothing); an **empty array** `[]` clears it (the client
+   * serializes it to `""`); a **non-empty array** replaces it. It is a replace, not a merge —
+   * send the full set on a write that intends to change it.
+   */
+  python?: MethodFile[];
+  /**
+   * The editor's form inputs. Three-way too: **omit** keeps the stored inputs, an explicit
+   * `null` clears them, and any other value replaces them.
+   */
+  input_data?: Record<string, unknown> | null;
+  /**
+   * The draft token the caller last saw — the `updated_at` of the method it last read or
+   * wrote, echoed verbatim. With it the write is a compare-and-swap: a draft that moved since
+   * is refused with a `409` whose `code` is `method_update_conflict`, and nothing is written.
+   * Omitted, the write is last-writer-wins.
+   */
+  expected_updated_at?: string;
+}
+
+/** The rename — `renameMethod`, `PATCH /v1/methods/{id}`. It moves no token. */
+export interface MethodRenameInput {
+  /** The method's new name, non-empty. */
+  name: string;
+}
+
+/** The publish — `publishMethod`, `POST /v1/methods/{id}/publish`. */
+export interface MethodPublishInput {
+  /**
+   * The draft token the caller last saw (`MethodData.updated_at`), echoed verbatim. Required: a
+   * publish never takes a draft its caller has not seen, so a draft that moved since is
+   * refused with a `409` whose `code` is `method_update_conflict`, and nothing is published.
+   */
+  expected_draft_updated_at: string;
+}
+
+/** What a publish did with the draft — the discriminant of `MethodPublishResult`. */
+export type MethodPublishOutcome = "published" | "unchanged" | "refused";
+
+/**
+ * Why a draft was not published: `invalid`, it does not validate; `not_runnable`, it validates
+ * with pending signatures, so it is valid but does not run yet.
+ */
+export type MethodPublishRefusalReason = "invalid" | "not_runnable";
+
+/** A publish that wrote a new version. */
+export interface MethodPublished {
+  outcome: "published";
+  /** The new version's summary. */
+  version: MethodVersionSummary;
+  method: MethodData;
+}
+
+/**
+ * A publish with nothing to publish: the draft's digest equals the latest version's, so no
+ * runner was asked. Also the answer to the loser of two concurrent publishes of the same draft.
+ */
+export interface MethodPublishUnchanged {
+  outcome: "unchanged";
+  /** The existing latest version's summary. */
+  version: MethodVersionSummary;
+  method: MethodData;
+}
+
+/** A publish the draft's content refused: nothing was published. */
+export interface MethodPublishRefused {
+  outcome: "refused";
+  reason: MethodPublishRefusalReason;
+  /** Says why; for `not_runnable`, that the draft "is valid but does not run yet". */
+  message: string;
+  /**
+   * The runner's `POST /v1/validate` answer for the draft, verbatim: an invalid arm whose
+   * `validation_errors` say what to fix, or, for `not_runnable`, the valid arm.
+   */
+  validation: PipelexValidationResult;
+  method: MethodData;
+}
+
+/**
+ * The answer of `publishMethod`, a `200` discriminated on `outcome` because each arm is a
+ * verdict about the draft's content. Branch on `outcome`, never on the status: a stale token,
+ * a method being deleted, a draft with no `.mthds` file or an unreachable runner are thrown as
+ * `ApiResponseError` instead, since they produce no verdict about the content.
+ */
+export type MethodPublishResult = MethodPublished | MethodPublishUnchanged | MethodPublishRefused;
+
+/** Query for one page of a method's versions. */
+export interface ListMethodVersionsQuery {
+  /**
+   * Page size, from 1 to 100; the API defaults to 20 and refuses a `limit` outside that range
+   * with a `422`.
+   */
+  limit?: number;
+  /** Opaque `nextCursor` from the previous page. */
+  cursor?: string;
+}
+
+/**
+ * One page of a method's published versions, newest first, without their sources.
+ *
+ * `nextCursor` is opaque — pass it straight back to `listMethodVersions` to continue; `null`
+ * means this was the last page. Versions are read whole on the server, so a page may be short
+ * while `nextCursor` is set. A method never published answers an empty page.
+ */
+export interface MethodVersionPage {
+  items: MethodVersionSummary[];
+  nextCursor: string | null;
 }
 
 // ── Organizations (`/v1/organizations`) ──────────────────────────────────
@@ -349,6 +558,20 @@ export interface PipelineRun {
    *  whose completion callback carried one. This is how a consumer tells the user
    *  WHY a run failed rather than showing a generic message. */
   error?: RunErrorReport | null;
+  /**
+   * Which version of its method the run ran: the version number for a run addressed by a
+   * bare id (the latest published version) or by `mt_…@<n>`, `"draft"` for one addressed by
+   * `mt_…@draft`, and `null` for a run of an inline source. Absent on a run recorded by a
+   * platform that did not record it yet.
+   */
+  method_version?: number | "draft" | null;
+  /**
+   * The digest of the files the run ran, in the canonical form of `MethodData.draft_digest`, so
+   * an inline run identical to a version records that version's `source_digest`. `null` when
+   * the platform never held the files, as on a `method_ref` run; absent on a run recorded by a
+   * platform that did not record it yet.
+   */
+  source_digest?: string | null;
 }
 
 /**
@@ -372,6 +595,14 @@ export interface RunHistoryItem {
   /** The runner's stored error report — present only on a failed run that recorded one,
    *  so opening it from history shows why without another read. */
   error?: RunErrorReport | null;
+  /**
+   * Which version of the method the run ran — a number, `"draft"`, or `null` for an inline
+   * source (see `PipelineRun.method_version`). The history lists the runs of every version
+   * and of the draft together, so this is how a row says which one it was.
+   */
+  method_version?: number | "draft" | null;
+  /** The digest of the files the run ran (see `PipelineRun.source_digest`). */
+  source_digest?: string | null;
 }
 
 /**

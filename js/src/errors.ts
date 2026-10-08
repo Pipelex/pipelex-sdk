@@ -111,8 +111,10 @@ export function errorVerdictOf(err: unknown): ErrorVerdict | undefined {
 /**
  * The SDK refused a call's arguments before sending any request: no run source given to
  * `execute()` or `start()`, run sources or method selectors that exclude each other, a selector
- * rule of `validate()`, an empty `validateFiles()`, a reserved key in `extra`, or a base URL that
- * is not host-only. Nothing reached the API, so the message says what to change.
+ * rule of `validate()`, an empty `validateFiles()`, a reserved key in `extra`, a `publishMethod()`
+ * without its draft token, a `getMethodVersion()` version that is not a positive integer, a
+ * selector `parseMethodSelector()` refuses, a method route given a suffixed id, or a base URL
+ * that is not host-only. Nothing reached the API, so the message says what to change.
  *
  * Its verdict is `input`, not retryable — the caller must change the arguments — unless
  * `options.verdict` declares another: the client declares `config` for a base URL that is not
@@ -784,6 +786,29 @@ export class PagingNotTerminatingError extends PipelexRequestError {
 }
 
 /**
+ * The platform codes a refusal about a stored method or one of its versions carries in
+ * `ApiResponseError.code`, beside the generic `not_found`, `conflict` and `validation_failed`:
+ *
+ * - `method_update_conflict` (`409`): the draft moved since the token a `writeDraft` or a
+ *   `publishMethod` sent, so nothing was written or published. Read the method again and
+ *   decide whether to keep its draft or overwrite it with the fresh token.
+ * - `method_being_deleted` (`409`): the method's erasure has started, on every route that
+ *   addresses it.
+ * - `method_not_published` (`409`): a bare `method_id` names the latest published version and
+ *   the method was never published. Publish it, or address its draft as `mt_…@draft`.
+ * - `method_version_not_found` (`404`): `mt_…@<n>`, or `getMethodVersion`, names a version
+ *   the method never published. An unknown method is `not_found` instead.
+ *
+ * `code` stays a `string`, since the platform adds codes; this type names the ones a method
+ * caller branches on. Each is `input` and not retryable by the fallback verdict.
+ */
+export type MethodErrorCode =
+  | "method_update_conflict"
+  | "method_being_deleted"
+  | "method_not_published"
+  | "method_version_not_found";
+
+/**
  * The last constructor argument of `ApiResponseError`: the error's `cause`, the problem
  * document's typed members, and the decoded document whole. The same shape as `mthds`'s
  * `ApiResponseErrorOptions`, plus `problemDocument`.
@@ -820,11 +845,15 @@ export interface ApiResponseErrorOptions {
  *   while `runtime` takes the fallback's. Nothing on the error says which a value came from:
  *   `problemDocument` keeps what the server sent.
  * - **The branch fields.** `errorDomain`, and `type`, the stable URI naming the error class.
- *   Branch on these, never on the HTTP status or on the wording of a message.
+ *   Branch on these, never on the HTTP status or on the wording of a message; they are the
+ *   fields that mean the same on both surfaces.
  * - **The native codes.** `code` is the platform's own closed code (`conflict`, `not_found`,
- *   `pipelex_api_key_limit_reached`, …) and `errorType` the runner's open exception class
- *   name. Each is finer than `errorDomain` and specific to the surface that emits it; the
- *   platform's `type` is one-to-one with its `code` (`https://pipelex.com/errors/<code>`).
+ *   `pipelex_api_key_limit_reached`, …; `MethodErrorCode` names the method ones) and
+ *   `errorType` the runner's open exception class name. Each is finer than `errorDomain` and
+ *   specific to the surface that emits it, and a client of that surface may branch on it: the
+ *   platform's `type` is derived from its `code` one to one
+ *   (`https://pipelex.com/errors/<code>`), so the two read the same answer. A problem the
+ *   platform relays from the runner carries the runner's `type` and `errorType` and no `code`.
  * - **For a person.** `title` is the stable label of the error class, `serverMessage` the
  *   per-occurrence `detail`, `userAction` the advised next step, and `errorCategory`, `model`,
  *   `provider` and `providerMetadata` describe an inference failure.
@@ -851,9 +880,10 @@ export class ApiResponseError extends PipelexRequestError {
   public readonly serverMessage: string | undefined;
   /**
    * The platform's native code — a closed set (`conflict`, `not_found`, `run_not_found`,
-   * `pipelex_api_key_limit_reached`, …), one-to-one with `type`. Finer than `errorDomain` and
-   * specific to the platform: a runner's problem carries `errorType` instead. `undefined` for a
-   * body that carries no `code`.
+   * `pipelex_api_key_limit_reached`, …), one-to-one with `type`; `MethodErrorCode` names the
+   * ones about a stored method and its versions. Finer than `errorDomain` and specific to the
+   * platform: a runner's problem carries `errorType` instead. `undefined` for a body that
+   * carries no `code`.
    */
   public readonly code: string | undefined;
   /**

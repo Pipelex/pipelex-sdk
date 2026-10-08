@@ -9,7 +9,8 @@
  *  - **A bundle** — a `.mthds` file or a directory of them. The files are
  *    copied into `methods/<name>/` (a bundle already there is scaffolded in
  *    place) and the action reads them at request time.
- *  - **A catalog id** (`mt_…`) or **a published address** (`github.com/…`) —
+ *  - **A catalog id** (`mt_…`, `mt_…@<version>` or `mt_…@draft`) or **a
+ *    published address** (`github.com/…`) —
  *    the method stays where it is and `methods/<name>/method.json` names it.
  *
  * Two halves, in this order, and the ordering is the whole safety story:
@@ -49,7 +50,9 @@ import process from "node:process";
 import nextEnv from "@next/env";
 import {
   DEFAULT_API_BASE_URL,
+  parseMethodSelector,
   PipelexApiClient,
+  RequestArgumentError,
   type GeneratedArtifact,
   type InputForm,
   type InputFormItem,
@@ -112,9 +115,6 @@ export class ReportedFailure extends Error {
 
 // ── The argument ────────────────────────────────────────────────────────────
 
-/** A catalog id, as the platform mints them. */
-const METHOD_ID_PATTERN = /^mt_[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
 /** One segment of an address — host, owner, repo, or a package subpath segment. */
 const ADDRESS_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
@@ -123,7 +123,7 @@ const ADDRESS_TAG = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
 export const METHOD_ARG_FORMS =
   "a path to a .mthds file or to a directory of them, " +
-  'a catalog id ("mt_…"), or a published address ' +
+  'a catalog id ("mt_…", "mt_…@<version>" or "mt_…@draft"), or a published address ' +
   '("github.com/<owner>/<repo>[/<package>][@<tag>]")';
 
 /** What the one `METHOD` argument names. */
@@ -176,9 +176,18 @@ export function parseMethodArg(
   if (onDisk(trimmed)) return { kind: "bundle", path: trimmed };
 
   if (trimmed.startsWith("mt_")) {
-    if (!METHOD_ID_PATTERN.test(trimmed)) {
-      throw new AddMethodError(`"${trimmed}" is not a well-formed catalog id (mt_…).`);
+    // The SDK's parser holds the platform's grammar: `mt_` and the characters
+    // the run routes accept, then nothing, `@<version>` (a positive number
+    // without a leading zero) or `@draft`. No catalog id holds a dot, so
+    // `mt_review.mthds` is refused here unless it exists on disk as a path.
+    try {
+      parseMethodSelector(trimmed);
+    } catch (error) {
+      if (error instanceof RequestArgumentError) throw new AddMethodError(error.message);
+      throw error;
     }
+    // The suffix is kept: the manifest, the codegen and every run name the
+    // version the app was scaffolded against.
     return { kind: "selector", selector: { method_id: trimmed } };
   }
 
@@ -1652,7 +1661,7 @@ export interface AddMethodArgs {
 }
 
 const USAGE =
-  "usage: npm run add-method -- <path/to/bundle | mt_… | github.com/owner/repo[/package][@tag]> " +
+  "usage: npm run add-method -- <path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/package][@tag]> " +
   "[--pipe <pipe_code>] [--name <dir-name>] [--label <label>] [--dry-run]";
 
 /**
@@ -1739,10 +1748,15 @@ export interface EmittedFile {
   content: string;
 }
 
-/** What the catalog says about a stored method. */
+/**
+ * What the catalog says about a stored method that names the app: its name,
+ * which a person chose and which belongs to the method, whichever version the
+ * app runs. The catalog's description is not read: the method's row carries its
+ * draft's, while the app runs the version its selector names, so the app is
+ * described by the prose of the files the API resolved for that selector.
+ */
 export interface CatalogEntry {
   name: string;
-  description: string | null;
 }
 
 /**
@@ -1848,13 +1862,15 @@ export async function planAddMethod(
     if (selectorKind(selector) === "method_id") {
       let method;
       try {
-        method = await client.getMethod(selector.method_id!);
+        // The method routes take the bare id: the name belongs to the method,
+        // whichever version the app runs.
+        method = await client.getMethod(parseMethodSelector(selector.method_id!).method_id);
       } catch (error) {
         const explained = explainSelectorFailure(error, selector);
         if (explained !== null) throw new AddMethodError(explained);
         throw error;
       }
-      catalog = { name: method.name, description: method.description ?? null };
+      catalog = { name: method.name };
       warnings.push(
         "a method_id is scoped to your key's organization, so `npm run codegen` on this " +
           "slice needs a key of that same org. A published address (method_ref) is the " +
