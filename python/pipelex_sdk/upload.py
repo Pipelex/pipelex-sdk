@@ -92,7 +92,7 @@ def _map_upload_error(error: ApiResponseError | ApiUnreachableError, filename: s
     """Translate a raw `upload()` transport error into the matching preparation error."""
     if isinstance(error, ApiUnreachableError):
         msg = f'Upload of "{filename}" could not reach the Pipelex API ({error.code or "unreachable"}).'
-        return UploadTransportError(msg)
+        return UploadTransportError(msg, filename=filename)
     match error.status:
         case 413:
             detail = error.server_message or "asset exceeds the service size limit"
@@ -101,14 +101,16 @@ def _map_upload_error(error: ApiResponseError | ApiUnreachableError, filename: s
             return UploadAuthenticationError(
                 f'Upload of "{filename}" was not authorized ({error.status}). Check the configured Pipelex API key.',
                 status=error.status,
+                filename=filename,
             )
         case 404:
             return UnsupportedUploadCapabilityError(
-                "The configured Pipelex deployment does not support file upload (no /v1/upload route). Upload is a hosted Pipelex capability."
+                "The configured Pipelex deployment does not support file upload (no /v1/upload route). Upload is a hosted Pipelex capability.",
+                filename=filename,
             )
         case _:
             detail = error.server_message or error.status_text
-            return UploadTransportError(f'Upload of "{filename}" failed ({error.status}): {detail}.')
+            return UploadTransportError(f'Upload of "{filename}" failed ({error.status}): {detail}.', status=error.status, filename=filename)
 
 
 async def upload_file(

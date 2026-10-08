@@ -366,20 +366,37 @@ class RejectedAssetError(InputPreparationError):
 class UnsupportedUploadCapabilityError(InputPreparationError):
     """The configured deployment does not support upload (no `/v1/upload` route, seen
     as a `404`). Upload is a hosted Pipelex-product capability even though the SDK can
-    be pointed at other base URLs.
+    be pointed at other base URLs. `filename` is the file whose upload met it, as `upload_file`
+    sent it; the route's `ApiResponseError` is its `__cause__`.
     """
+
+    def __init__(self, message: str, *, filename: str | None = None) -> None:
+        super().__init__(message)
+        self.filename = filename
 
 
 class UploadAuthenticationError(InputPreparationError):
-    """Upload was not authorized — a `401`/`403` from the upload route."""
+    """Upload was not authorized — a `401`/`403` from the upload route. `filename` is the file
+    whose upload was refused, as `upload_file` sent it.
+    """
 
-    def __init__(self, message: str, status: int) -> None:
+    def __init__(self, message: str, status: int, *, filename: str | None = None) -> None:
         super().__init__(message)
         self.status = status
+        self.filename = filename
 
 
 class UploadTransportError(InputPreparationError):
-    """A network or server fault reaching the upload route (unreachable host, `5xx`)."""
+    """A network or server fault reaching the upload route (unreachable host, `5xx`), or any other
+    status the route answered. `status` is the HTTP status when an answer produced it and `None`
+    when none came back; `filename` is the file it was sending. From `upload_file` the
+    `ApiResponseError` or `ApiUnreachableError` the client raised is its `__cause__`.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, filename: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.filename = filename
 
 
 class CodegenError(Exception):

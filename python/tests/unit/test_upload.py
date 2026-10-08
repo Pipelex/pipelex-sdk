@@ -108,26 +108,42 @@ class TestUploadFile:
 
     @pytest.mark.parametrize("status", [401, 403])
     def test_401_403_map_to_upload_authentication(self, status: int) -> None:
-        client = _FakeUploadClient(error=_api_error(status))
-        with pytest.raises(UploadAuthenticationError):
-            asyncio.run(upload_file(client, bytes([1])))
+        error = _api_error(status)
+        client = _FakeUploadClient(error=error)
+        with pytest.raises(UploadAuthenticationError) as exc_info:
+            asyncio.run(upload_file(client, bytes([1]), filename="scan.pdf"))
+        assert exc_info.value.status == status
+        assert exc_info.value.filename == "scan.pdf"
+        assert exc_info.value.__cause__ is error
 
     def test_404_maps_to_unsupported_capability(self) -> None:
-        client = _FakeUploadClient(error=_api_error(404))
-        with pytest.raises(UnsupportedUploadCapabilityError):
-            asyncio.run(upload_file(client, bytes([1])))
-
-    @pytest.mark.parametrize(
-        "error",
-        [
-            _api_error(500),
-            ApiUnreachableError("down", api_url=_BASE_URL, code="ECONNREFUSED"),
-        ],
-    )
-    def test_non_semantic_failures_map_to_transport(self, error: Exception) -> None:
+        error = _api_error(404)
         client = _FakeUploadClient(error=error)
-        with pytest.raises(UploadTransportError):
-            asyncio.run(upload_file(client, bytes([1])))
+        with pytest.raises(UnsupportedUploadCapabilityError) as exc_info:
+            asyncio.run(upload_file(client, bytes([1]), filename="scan.pdf"))
+        assert exc_info.value.filename == "scan.pdf"
+        # The class carries no status of its own: the route's 404 is its cause's.
+        assert exc_info.value.__cause__ is error
+
+    def test_a_server_fault_maps_to_transport_with_its_status(self) -> None:
+        error = _api_error(500, "Storage is unavailable")
+        client = _FakeUploadClient(error=error)
+        with pytest.raises(UploadTransportError) as exc_info:
+            asyncio.run(upload_file(client, bytes([1]), filename="scan.pdf"))
+        assert str(exc_info.value) == 'Upload of "scan.pdf" failed (500): Storage is unavailable.'
+        assert exc_info.value.status == 500
+        assert exc_info.value.filename == "scan.pdf"
+        assert exc_info.value.__cause__ is error
+
+    def test_an_unreachable_api_maps_to_transport_without_a_status(self) -> None:
+        error = ApiUnreachableError("down", api_url=_BASE_URL, code="ECONNREFUSED")
+        client = _FakeUploadClient(error=error)
+        with pytest.raises(UploadTransportError) as exc_info:
+            asyncio.run(upload_file(client, bytes([1]), filename="scan.pdf"))
+        assert str(exc_info.value) == 'Upload of "scan.pdf" could not reach the Pipelex API (ECONNREFUSED).'
+        assert exc_info.value.status is None
+        assert exc_info.value.filename == "scan.pdf"
+        assert exc_info.value.__cause__ is error
 
     def test_reads_the_local_file_off_the_event_loop(self, mocker: MockerFixture, tmp_path: Path) -> None:
         # The (possibly large) file read is offloaded via asyncio.to_thread so it never blocks
