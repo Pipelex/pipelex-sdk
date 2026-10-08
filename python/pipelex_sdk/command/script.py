@@ -41,6 +41,7 @@ from pipelex_sdk.command.method import (
     shell_quote,
 )
 from pipelex_sdk.command.source import AddressSource, CatalogSource, describe_pipe
+from pipelex_sdk.method_selector import parse_method_selector
 from pipelex_sdk.version import __version__
 
 if TYPE_CHECKING:
@@ -57,8 +58,10 @@ _SCRIPT_FLAGS: dict[str, FlagKind] = {
     "dir": FlagKind.STRING,
 }
 
-#: The package a written script runs, and what its runner needs.
-SCRIPT_RUNNER = f"uvx pipelex-sdk@{__version__}"
+#: The package a written script runs, and what its runner needs. ``--quiet`` keeps uv's download
+#: and install lines off the script's stderr, which carries the command's own lines, while uv's
+#: errors still print.
+SCRIPT_RUNNER = f"uvx --quiet pipelex-sdk@{__version__}"
 SCRIPT_WRITER = "pipelex-sdk"
 SCRIPT_NEEDS = "uv"
 
@@ -164,7 +167,9 @@ async def _check_method(
             return None
         await before_request()
         try:
-            entry = await client.get_method(unnamed.method_id)
+            # The name belongs to the method, not to a version, and the method route takes the bare
+            # id, so a version suffix is stripped for the read and kept in the script.
+            entry = await client.get_method(parse_method_selector(unnamed.method_id).method_id)
         except ValidationError as exc:
             # An entry whose name is missing or no string gives no name, which asks for `--name` as an
             # unusable name does; any other fault in the entry is the API's answer that cannot be read.

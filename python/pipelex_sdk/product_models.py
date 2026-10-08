@@ -13,19 +13,28 @@ models name exactly what the routes accept.
 
 These are Pipelex-branded (the hosted product surface), so they live in this SDK,
 not in `mthds`. `RunHistoryItem.status` and `PipelineRun.status` reuse the run-lifecycle `RunStatus`.
+
+A saved method has a draft and published versions. The method's content fields (`mthds`,
+`python`, `input_data`) are its DRAFT, written freely by `write_draft` and never validated on
+write. A VERSION is an immutable copy of the draft, numbered from 1 and never reused, written
+only by `publish_method` and only when the draft validates and runs. A bare `method_id` runs
+the latest published version, `mt_…@<n>` a fixed version and `mt_…@draft` the draft; the
+method routes themselves take a bare id (`pipelex_sdk.method_selector.parse_method_selector`
+strips a suffix).
 """
 
 from __future__ import annotations
 
 import json
 from enum import StrEnum
-from typing import Any, cast
+from typing import Annotated, Any, Literal, TypeAlias, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_serializer, field_validator
 
 from pipelex_sdk._pydantic_utils import empty_list_factory_of
 from pipelex_sdk.error_models import LenientRunErrorReport
 from pipelex_sdk.runs import RunStatus
+from pipelex_sdk.validation_models import PipelexValidationResult
 
 # ── User profile (`/v1/me`) ─────────────────────────────────────────────
 
@@ -242,28 +251,120 @@ def method_source_to_contents(mthds: str | None) -> list[str]:
     return [mthds]
 
 
+def _python_files_from_wire(value: object) -> object:
+    """Convert the catalog wire string of a `python` field into `MethodFile` entries.
+
+    A `str` or `None` is the wire form and goes through `parse_method_files`; anything else (a
+    list, from programmatic construction) passes through to normal validation.
+    """
+    if value is None or isinstance(value, str):
+        return parse_method_files(value)
+    return value
+
+
+class MethodVersionSummary(BaseModel):
+    """One published version without its sources.
+
+    What `list_method_versions` lists, what a method read carries as `latest_published`, and
+    what a publish answers as `version`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    version: int
+    """The version number, from 1, never reused and never renumbered."""
+
+    source_digest: str
+    """SHA-256 of the canonical form of the version's two file sets (`.mthds` and Python), as 64
+    lowercase hex characters — the same function as the method's `draft_digest`, so equal digests
+    mean the same sources would run."""
+
+    crate_fingerprint: str | None = None
+    """The runner's `crate.fingerprint` for the bundle (`POST /v1/resolve`), which covers its
+    meaning rather than its bytes. `None` when the runner validated the bundle but could not
+    resolve it in memory, as for a bundle that depends on another method by address."""
+
+    runner_version: str | None = None
+    """The version of the runner that validated the bundle and computed the fingerprint."""
+
+    description: str | None = None
+    """The bundle's top-level `description` at publish time."""
+
+    published_at: str
+    """ISO-8601 UTC instant of the publish."""
+
+    published_by: str
+    """The publisher's canonical user id, or `system:publish-initial` for a version the one-time
+    migration wrote for a method saved before versions existed."""
+
+
+class MethodVersion(MethodVersionSummary):
+    """One published version with its sources — `get_method_version`.
+
+    It carries no `name`, which belongs to the method and changes without a publish, and no
+    `input_data`, which is the editor's form state and not part of what a caller runs.
+    """
+
+    method_id: str
+    mthds: str
+    """The version's `.mthds` source, in the same stored form as `MethodData.mthds`; read it with
+    `method_source_to_contents`."""
+
+    python: list[MethodFile] = Field(default_factory=empty_list_factory_of(MethodFile))
+    """The version's custom PipeFunc source files, converted from the wire string exactly as
+    `MethodData.python` is."""
+
+    @field_validator("python", mode="before")
+    @classmethod
+    def _parse_python_files(cls, value: object) -> object:
+        """Convert the catalog wire string into `MethodFile` entries."""
+        return _python_files_from_wire(value)
+
+
+class MethodVersionPage(BaseModel):
+    """One page of a method's published versions, newest first, without their sources — `{items, next_cursor}`.
+
+    Same opaque-cursor contract as `MethodPage`: pass `next_cursor` straight back, and a `None`
+    means the last page. Versions are read whole on the server, so a page may be short while
+    `next_cursor` is set. A method never published answers an empty page.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    items: list[MethodVersionSummary]
+    next_cursor: str | None = None
+
+
 class MethodData(BaseModel):
-    """One saved method record."""
+    """One saved method — `get_method`, `create_method`, `write_draft`, `rename_method`, and the
+    `method` of every publish outcome.
+
+    Its content fields ARE the draft; the latest published version is summarized in
+    `latest_published`. The publish state a client shows is derived, never stored: never
+    published (`latest_version` is `None`), published with the draft unchanged (`draft_digest ==
+    latest_published.source_digest`), or published with the draft ahead (they differ).
+    """
 
     model_config = ConfigDict(extra="allow")
 
     method_id: str
     name: str
-    #: The `.mthds` bundle source, polymorphic at rest and left exactly as the platform stored it:
-    #: the catalog `[{name, content}]` array the webapp editor writes, or a bare bundle as plain
-    #: text. Read it with `method_source_to_contents`, which resolves either shape to the
-    #: `mthds_contents` a run or a validate takes exactly as the platform's own resolver reads
-    #: the same row; unlike `python`, it is not converted here.
+    #: The draft's `.mthds` bundle source, polymorphic at rest and left exactly as the platform
+    #: stored it: the catalog `[{name, content}]` array the webapp editor writes, or a bare bundle
+    #: as plain text. Read it with `method_source_to_contents`, which resolves either shape to the
+    #: `mthds_contents` a run or a validate takes exactly as the platform's own resolver reads the
+    #: same row; unlike `python`, it is not converted here.
     mthds: str
     org_id: str
     created_by_user_id: str
     description: str | None = None
     deletion_state: MethodDeletionState | None = None
+    #: The editor's form inputs, saved with the draft and outside both digests.
     input_data: dict[str, Any] | None = None
     #: Legacy persisted output spec; optional.
     pipe_output: dict[str, Any] | None = None
     python: list[MethodFile] = Field(default_factory=empty_list_factory_of(MethodFile))
-    """The method's custom PipeFunc source files.
+    """The draft's custom PipeFunc source files.
 
     On the wire this is one string — the JSON text of a `[{name, content}]` array, or `""`
     for a method with no custom Python. The validator below converts at the boundary so
@@ -271,32 +372,42 @@ class MethodData(BaseModel):
 
     created_at: str
     updated_at: str
+    """**The draft's token.** It moves on every draft write and on nothing else: creation sets it,
+    and neither a rename nor a publish moves it. Echo it verbatim — the platform compares the
+    strings — as `expected_updated_at` on the next `write_draft`, or as `expected_draft_updated_at`
+    on `publish_method`, so neither ever overwrites or publishes a draft the caller has not seen."""
+
+    draft_digest: str
+    """The draft's digest: SHA-256 of the canonical form of its two file sets, 64 lowercase hex
+    characters. `input_data` is outside it, so saving only the form inputs moves the token and
+    leaves the digest as it was."""
+
+    latest_version: int | None = None
+    """The number of the latest published version; `None` when the method was never published."""
+
+    latest_published: MethodVersionSummary | None = None
+    """The latest published version's summary; `None` when the method was never published."""
 
     @field_validator("python", mode="before")
     @classmethod
     def _parse_python_files(cls, value: object) -> object:
-        """Convert the catalog wire string into `MethodFile` entries.
-
-        A `str` or `None` is the wire form and goes through `parse_method_files`; anything
-        else (a list, from programmatic construction) passes through to normal validation.
-        """
-        if value is None or isinstance(value, str):
-            return parse_method_files(value)
-        return value
+        """Convert the catalog wire string into `MethodFile` entries."""
+        return _python_files_from_wire(value)
 
 
 class MethodWriteInput(BaseModel):
-    """The create/update payload — a rename is a `PUT` with a changed `name`."""
+    """The create payload — `create_method`.
+
+    A new method holds this as its draft and has no version yet. Its draft is then written with
+    `write_draft` (`MethodDraftInput`) and its name changed with `rename_method`.
+    """
 
     name: str
     mthds: str
     input_data: dict[str, Any] | None = None
     python: list[MethodFile] | None = None
-    """The custom PipeFunc source files to write, with a deliberate three-way contract.
-
-    The write body is dumped with `exclude_none=True`, so `None` (the default) leaves the key
-    out entirely and a `PUT` **preserves** the stored Python. An empty list serializes to `""`,
-    the platform's clear sentinel, which **erases** it. A non-empty list **replaces** it."""
+    """The custom PipeFunc source files, serialized to the catalog wire string; `None` or an
+    empty list, the method has none."""
 
     @field_serializer("python")
     def _serialize_python_files(self, value: list[MethodFile] | None) -> str | None:
@@ -304,6 +415,112 @@ class MethodWriteInput(BaseModel):
         if value is None:
             return None
         return serialize_method_files(value)
+
+
+class MethodDraftInput(BaseModel):
+    """The draft write — `write_draft`, `PUT /v1/methods/{id}/draft`.
+
+    It never validates: a draft may be invalid, and an autosave of work in progress often is. The
+    body is the fields the caller SET (`model_dump(exclude_unset=True)`), which is what gives each
+    optional field its three-way meaning: a field left unset is not sent.
+    """
+
+    mthds: str
+    """The draft's `.mthds` files, in the stored serialized form. Required."""
+
+    python: list[MethodFile] | None = None
+    """The custom PipeFunc source files. Left unset (or `None`), the stored Python is **kept**; an
+    empty list serializes to `""`, the platform's clear sentinel, which **erases** it; a non-empty
+    list **replaces** it. A replace, not a merge."""
+
+    input_data: dict[str, Any] | None = None
+    """The editor's form inputs. Left unset, the stored inputs are **kept**; set to `None`, they
+    are **cleared**; any other value **replaces** them."""
+
+    expected_updated_at: str | None = None
+    """The draft token the caller last saw — the `updated_at` of the method it last read or wrote,
+    echoed verbatim. With it the write is a compare-and-swap: a draft that moved since is refused
+    with a `409` whose `code` is `method_update_conflict`, and nothing is written. Unset or `None`,
+    the write is last-writer-wins."""
+
+    @field_serializer("python")
+    def _serialize_python_files(self, value: list[MethodFile] | None) -> str | None:
+        """Render the file list as the catalog wire string; `None` stays `None`, which the platform reads as "keep"."""
+        if value is None:
+            return None
+        return serialize_method_files(value)
+
+
+class MethodPublishOutcome(StrEnum):
+    """What a publish did with the draft — the discriminant of `MethodPublishResult`."""
+
+    PUBLISHED = "published"
+    UNCHANGED = "unchanged"
+    REFUSED = "refused"
+
+
+class MethodPublishRefusalReason(StrEnum):
+    """Why a draft was not published."""
+
+    INVALID = "invalid"
+    """The draft does not validate."""
+
+    NOT_RUNNABLE = "not_runnable"
+    """The draft validates with pending signatures: valid, but it does not run yet."""
+
+
+class MethodPublished(BaseModel):
+    """A publish that wrote a new version; `version` is its summary."""
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodPublishOutcome.PUBLISHED]
+    version: MethodVersionSummary
+    method: MethodData
+
+
+class MethodPublishUnchanged(BaseModel):
+    """A publish with nothing to publish: the draft's digest equals the latest version's, so no runner was asked.
+
+    `version` is that existing latest version. Also the answer to the loser of two concurrent
+    publishes of the same draft.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodPublishOutcome.UNCHANGED]
+    version: MethodVersionSummary
+    method: MethodData
+
+
+class MethodPublishRefused(BaseModel):
+    """A publish the draft's content refused: nothing was published.
+
+    `message` says why — for `not_runnable`, that the draft "is valid but does not run yet" — and
+    `validation` is the runner's `POST /v1/validate` answer for the draft, verbatim: an invalid
+    arm whose `validation_errors` say what to fix, or, for `not_runnable`, the valid arm.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodPublishOutcome.REFUSED]
+    reason: MethodPublishRefusalReason
+    message: str
+    validation: PipelexValidationResult
+    method: MethodData
+
+
+MethodPublishResult: TypeAlias = Annotated[
+    MethodPublished | MethodPublishUnchanged | MethodPublishRefused,
+    Field(discriminator="outcome"),
+]
+"""The answer of `publish_method`, a `200` discriminated on `outcome`, because each arm is a verdict
+about the draft's content. Branch on `outcome` (`match result:` over its classes), never on
+the status: a stale token, a method being deleted, a draft with no `.mthds` file or an unreachable
+runner raise `ApiResponseError` instead, since they produce no verdict about the content."""
+
+MethodPublishResultAdapter: TypeAdapter[MethodPublishResult] = TypeAdapter(MethodPublishResult)  # pylint: disable=invalid-name
+"""The single parse path for a publish answer — built once at import (TypeAdapter construction is expensive)."""
 
 
 class MethodSummary(BaseModel):
@@ -618,6 +835,14 @@ class RunHistoryItem(BaseModel):
     """The run's stored report, kept on the row so opening a failed run from history shows why
     without another read. `None` on every run that did not fail."""
 
+    method_version: int | Literal["draft"] | None = None
+    """Which version of the method the run ran — a number, `"draft"`, or `None` for an inline
+    source (see `PipelineRun.method_version`). The history lists the runs of every version and of
+    the draft together, so this is how a row says which one it was."""
+
+    source_digest: str | None = None
+    """The digest of the files the run ran (see `PipelineRun.source_digest`)."""
+
 
 class PipelineRun(BaseModel):
     """A whole run record — the base of `RunDetail`, the shape `GET /v1/runs/{id}` serves."""
@@ -641,6 +866,16 @@ class PipelineRun(BaseModel):
     error: LenientRunErrorReport = None
     created_at: str
     finished_at: str | None = None
+    method_version: int | Literal["draft"] | None = None
+    """Which version of its method the run ran: the version number for a run addressed by a bare
+    id (the latest published version) or by `mt_…@<n>`, `"draft"` for one addressed by
+    `mt_…@draft`, and `None` for a run of an inline source — or a run a platform recorded before
+    it recorded versions."""
+
+    source_digest: str | None = None
+    """The digest of the files the run ran, in the canonical form of `MethodData.draft_digest`, so
+    an inline run identical to a version records that version's `source_digest`. `None` when the
+    platform never held the files, as on a `method_ref` run, or did not record it yet."""
 
 
 class RunDetail(PipelineRun):

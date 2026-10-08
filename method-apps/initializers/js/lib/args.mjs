@@ -1,7 +1,7 @@
 /**
  * The command line:
  *
- *   create-method-app <dir> --method <bundle | mt_… | address> [create options]
+ *   create-method-app <dir> --method <bundle | mt_…[@<version>|@draft] | address> [create options]
  *                     [--template <name>] [--no-create] [--no-git] [--quiet]
  *
  * Each create option is a flag named after its make variable, taking its value
@@ -13,7 +13,7 @@
 import { Verdict } from "./verdict.mjs";
 
 export const USAGE =
-  "usage: npm create @pipelex/method-app@latest <dir> -- --method <path/to/bundle | mt_… | github.com/owner/repo[/package][@tag]> " +
+  "usage: npm create @pipelex/method-app@latest <dir> -- --method <path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/package][@tag]> " +
   "[--name <package>] [--title <title>] [--description <text>] [--pipe <pipe_code>] " +
   "[--author-name <name>] [--author-email <email>] [--repo-url <url>] [--license <mit|proprietary|spdx>] " +
   "[--license-holder <holder>] [--license-year <year>] [--dry-run] [--method-name <dir-name>] [--label <label>] " +

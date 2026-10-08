@@ -56,6 +56,12 @@ export class PipelexExecuteResult implements DictRunResultExecute {
    * the own property first and make the loop skip the wire value.
    */
   declare readonly method_provenance?: MethodProvenance | null;
+  /**
+   * Which version of the stored method a `method_id` run ran — a number, or `"draft"` for
+   * `mt_…@draft`; absent or `null` for any other run. Preserved by the same extension-copy loop,
+   * and `declare`d for the same reason as `method_provenance`.
+   */
+  declare readonly method_version?: number | "draft" | null;
   /** Server-specific response fields (preserved verbatim — the wire model is extension-open). */
   [extension: string]: unknown;
 

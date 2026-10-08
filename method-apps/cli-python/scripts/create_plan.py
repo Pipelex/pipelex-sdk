@@ -4,7 +4,7 @@ The gesture takes one `METHOD`, in any of its forms, and every form ends in the 
 the package (`lib/binding.py`): `method/`, `generated/` and `binding.py`.
 
 - **A bundle**, a `.mthds` file or a directory of them, is read here and copied into `method/`.
-- **A catalog id** (`mt_…`) or **a published address** (`github.com/…`) stays where it is, and
+- **A catalog id** (`mt_…`, `mt_…@<version>` or `mt_…@draft`) or **a published address** (`github.com/…`) stays where it is, and
   `method/method.json` names it.
 
 `plan_method` is the read-only half. It parses the argument, reads the bundle or checks that the
@@ -86,8 +86,17 @@ class CreateClient(CodegenClient, Protocol):
 
 # ── The argument ────────────────────────────────────────────────────────────
 
-#: A catalog id, as the platform mints them.
-METHOD_ID_PATTERN = re.compile(r"mt_[A-Za-z0-9][A-Za-z0-9._-]*")
+#: A catalog id before any version suffix: `mt_` and the characters the platform's run routes accept, the
+#: grammar of the SDK's `parse_method_selector`. No catalog id holds a dot, so `mt_review.mthds` is a path.
+METHOD_ID_PATTERN = re.compile(r"mt_[A-Za-z0-9_-]+")
+
+#: A catalog id's version suffix: a positive number without a leading zero, or `draft` in lower case.
+#: A bare id runs the method's latest published version, `mt_…@3` its version 3 for good, and
+#: `mt_…@draft` its draft.
+METHOD_VERSION_SUFFIX = re.compile(r"[1-9][0-9]*|draft")
+
+#: What a catalog id may end in, as the refusal of a malformed suffix names it.
+METHOD_VERSION_FORMS = "@<version>, a positive number without a leading zero, in @draft, or in nothing"
 
 #: One segment of an address: the host, the owner, the repository, or a package's subpath segment.
 ADDRESS_SEGMENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
@@ -97,7 +106,7 @@ ADDRESS_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
 
 #: The forms `METHOD` takes, as every refusal about it names them.
 METHOD_ARG_FORMS = (
-    'a path to a .mthds file or to a directory of them, a catalog id ("mt_…"), '
+    'a path to a .mthds file or to a directory of them, a catalog id ("mt_…", "mt_…@<version>" or "mt_…@draft"), '
     'or a published address ("github.com/<owner>/<repo>[/<package>][@<tag>]")'
 )
 
@@ -143,9 +152,14 @@ def parse_method_arg(arg: str, on_disk: Callable[[str], bool]) -> BundlePath | M
     if on_disk(trimmed):
         return BundlePath(trimmed)
     if trimmed.startswith("mt_"):
-        if METHOD_ID_PATTERN.fullmatch(trimmed) is None:
+        method_id, *suffixes = trimmed.split("@")
+        if METHOD_ID_PATTERN.fullmatch(method_id) is None:
             msg = f'"{trimmed}" is not a well-formed catalog id (mt_…).'
             raise PlanError(msg)
+        if len(suffixes) > 1 or (suffixes and METHOD_VERSION_SUFFIX.fullmatch(suffixes[0]) is None):
+            msg = f'"{trimmed}" names no version: a catalog id ends in {METHOD_VERSION_FORMS}.'
+            raise PlanError(msg)
+        # The suffix is kept: the manifest, the codegen and every run name the version the CLI was made from.
         return MethodSelector(method_id=trimmed)
     has_scheme = re.match(r"https?://", trimmed) is not None
     if not has_scheme and looks_like_path(trimmed):
@@ -708,10 +722,14 @@ class MethodArgs:
 
 @dataclass(frozen=True)
 class CatalogEntry:
-    """What the catalog says about a stored method."""
+    """What the catalog says about a stored method that names the project: its name, which a person chose.
+
+    The name belongs to the method, whichever version the CLI runs. The catalog's description does not: the
+    method's row carries its draft's, so the project is described by the files the platform resolved for the
+    selector instead (`MethodPlan.prose`), which are the version the CLI runs.
+    """
 
     name: str
-    description: str | None
 
 
 @dataclass(frozen=True)
@@ -868,17 +886,26 @@ async def plan_method(args: MethodArgs, client: CreateClient, *, layout: Layout,
     )
 
 
+def bare_method_id(method_id: str) -> str:
+    """A catalog id without its version suffix.
+
+    The method routes, `get_method` among them, address the method itself and take the bare id; the
+    name belongs to the method, whichever version the CLI runs.
+    """
+    return method_id.split("@", 1)[0]
+
+
 async def _catalog_entry(client: CreateClient, source: CodegenSource, method_id: str) -> CatalogEntry:
-    """A stored method's name and description: a person chose both, so they name the project unless overridden.
+    """A stored method's name: a person chose it, so it names the project unless overridden.
 
     Raises:
         PlanError: The catalog does not answer for the method.
     """
     try:
-        method = await client.get_method(method_id)
+        method = await client.get_method(bare_method_id(method_id))
     except (PipelineRequestError, httpx.HTTPError, ValueError) as exc:
         raise PlanError(explain(exc, client.base_url, "GET /v1/methods/{id}", source)) from exc
-    return CatalogEntry(name=method.name, description=method.description)
+    return CatalogEntry(name=method.name)
 
 
 def _options_for(report: PipeIOValidReport, pipe: ChosenPipe) -> tuple[InputOption, ...]:

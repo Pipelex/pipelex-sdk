@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.35.0] - 2026-10-08
+
+### Added
+
+- **A catalog id may pin a version**: `make add-method` takes `mt_…@<version>` and `mt_…@draft` beside a bare `mt_…`, which runs the method's latest published version, and keeps the suffix in `method.json`, so the tab runs the version it was scaffolded against; the slug and the label still come from the method's catalog name, read by the bare id. A malformed suffix is refused before anything is sent. `docs/add-method.md` describes the forms, and the Makefile's usage line and `make help` name them.
+
+### Fixed
+
+- **A catalog id holding a dot is refused before anything is sent**: `make add-method` took `mt_review.mthds`, a path that is not on disk, for a catalog id, probed the API with it and reported that the API could not resolve it. No catalog id holds a dot, and the starter now reads one as the platform and the SDK's selector grammar do, so it is refused locally as not a well-formed catalog id.
+
 ## [v0.34.0] - 2026-10-08
 
 ### Changed

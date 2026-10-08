@@ -14,7 +14,7 @@ import { lstat, open, stat, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { SDK_VERSION } from "../index.js";
+import { parseMethodSelector, SDK_VERSION } from "../index.js";
 import type { PipelexApiClient } from "../index.js";
 import { parseFlags } from "./args.js";
 import { systemReason } from "./bundle.js";
@@ -49,8 +49,12 @@ const SCRIPT_FLAGS = {
   dir: { type: "string" },
 } as const;
 
-/** The package a written script runs, and what its runner needs. */
-export const SCRIPT_RUNNER = `npx --yes @pipelex/sdk@${SDK_VERSION}`;
+/**
+ * The package a written script runs, and what its runner needs. The runner's flags keep npm's
+ * update notice and npm 12's run notices off the script's stderr, which carries the command's
+ * own lines, while npm's warnings and errors still print.
+ */
+export const SCRIPT_RUNNER = `npx --yes --no-update-notifier --loglevel=warn @pipelex/sdk@${SDK_VERSION}`;
 export const SCRIPT_WRITER = "@pipelex/sdk";
 export const SCRIPT_NEEDS = "Node 22.12 or later";
 
@@ -206,15 +210,18 @@ function defaultName(candidate: string, method: string): string {
 }
 
 /**
- * A catalog method's name, kebab-cased, read from its catalog entry. An entry whose name is
- * missing or not a string gives an empty one, which asks for `--name` as an unusable name does.
+ * A catalog method's name, kebab-cased, read from its catalog entry. The name belongs to the
+ * method, not to a version, and the method route takes the bare id, so a version suffix is
+ * stripped for the read and kept in the script. An entry whose name is missing or not a
+ * string gives an empty one, which asks for `--name` as an unusable name does.
  */
 async function catalogName(
   client: PipelexApiClient,
   methodId: string,
   io: CommandIO,
 ): Promise<string> {
-  const entry = await untilInterrupted(() => client.getMethod(methodId), io.interrupt);
+  const bareId = parseMethodSelector(methodId).method_id;
+  const entry = await untilInterrupted(() => client.getMethod(bareId), io.interrupt);
   const name: unknown = entry.name;
   return typeof name === "string" ? kebabCase(name) : "";
 }

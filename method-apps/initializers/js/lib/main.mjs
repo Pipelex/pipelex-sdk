@@ -287,7 +287,7 @@ async function create(argv, d, say, state) {
   if (!args.noCreate && args.values[table.required] === undefined) {
     throw Verdict.refused(
       "no-method",
-      "pass --method with a .mthds file or a directory of them, a catalog id (mt_…) or a package address (github.com/owner/repo[/package][@tag]), or --no-create to write the template alone",
+      "pass --method with a .mthds file or a directory of them, a catalog id (mt_…, mt_…@<version> or mt_…@draft) or a package address (github.com/owner/repo[/package][@tag]), or --no-create to write the template alone",
     );
   }
   if (!args.noCreate && !d.env.PIPELEX_API_KEY?.trim()) {

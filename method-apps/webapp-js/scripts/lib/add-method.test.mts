@@ -25,6 +25,7 @@ import { ApiResponseError, runCodegenCheck, type PipelexApiClient } from "@pipel
 import {
   AddMethodError,
   addressSegments,
+  bareMethodId,
   allowedMimesFor,
   bindOutput,
   camelCase,
@@ -108,6 +109,10 @@ describe("parseMethodArg", () => {
       "mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df",
       { method_id: "mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df" },
     ],
+    // A version suffix is kept whole: the app runs the version it names.
+    ["mt_x@3", { method_id: "mt_x@3" }],
+    ["mt_x@12", { method_id: "mt_x@12" }],
+    ["mt_x@draft", { method_id: "mt_x@draft" }],
     [TEXT_STATS_REF, { method_ref: TEXT_STATS_REF }],
     ["github.com/Pipelex/methods", { method_ref: "github.com/Pipelex/methods" }],
     // The https:// prefix and a trailing slash are normalized away, so the
@@ -139,6 +144,14 @@ describe("parseMethodArg", () => {
     ["", "empty"],
     ["mt_", "malformed id"],
     ["mt_bad id", "id with a space"],
+    ["mt_review.mthds", "a dot, which no catalog id holds"],
+    ["mt_x@", "an empty version"],
+    ["mt_x@0", "version zero"],
+    ["mt_x@03", "a leading zero"],
+    ["mt_x@Draft", "draft in another case"],
+    ["mt_x@latest", "a word other than draft"],
+    ["mt_x@3@4", "two versions"],
+    ["mt_@3", "a version on an empty id"],
     ["github.com/Pipelex", "address with no repository"],
     ["github.com/o/r@v1@v2", "two tags"],
     ["github.com/o/r@", "an empty tag"],
@@ -393,6 +406,12 @@ describe("the name derivations", () => {
   it("takes a stored method's slug from its catalog name — a person chose it", () => {
     expect(slugSource({ method_id: "mt_x" }, "CV screening")).toBe("CV screening");
     expect(() => slugSource({ method_id: "mt_x" }, "")).toThrow(/--name/);
+  });
+
+  it("reads a pinned catalog id's name by its bare id, which the method routes take", () => {
+    expect(bareMethodId("mt_x@3")).toBe("mt_x");
+    expect(bareMethodId("mt_x@draft")).toBe("mt_x");
+    expect(bareMethodId("mt_x")).toBe("mt_x");
   });
 
   it("puts every emitted file where the app's conventions place it", () => {
@@ -1195,6 +1214,23 @@ describe("runAddMethod", () => {
       "utf-8",
     );
     expect(JSON.parse(manifest)).toEqual({ method_id: "mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df" });
+  });
+
+  it("reads a pinned method's name by its bare id and keeps the version in the manifest", async () => {
+    const client = fakeClient();
+    expect(await runAddMethod(["mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df@3"], deps(client))).toBe(0);
+
+    expect(client.getMethod).toHaveBeenCalledWith("mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df");
+    expect(client.codegen).toHaveBeenCalledWith(
+      expect.objectContaining({ method_id: "mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df@3" }),
+    );
+    const manifest = await readFile(
+      path.join(root, "methods/pipelex-mcp-e2e-fixture/method.json"),
+      "utf-8",
+    );
+    expect(JSON.parse(manifest)).toEqual({
+      method_id: "mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df@3",
+    });
   });
 
   it("--dry-run stops at the end of the read-only half, writing nothing", async () => {

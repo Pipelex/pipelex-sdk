@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.35.0] - 2026-10-08
+
+### Added
+
+- **A catalog id may pin a version in both templates**: `make create` and the web app template's `make add-method` take `mt_…@<version>` and `mt_…@draft` beside a bare `mt_…`, which runs the method's latest published version, and keep the suffix in `method.json`, so the app or the CLI runs the version it was made from. The name and the label still come from the method's catalog entry, read by the bare id, but the description now comes from the files the app or the CLI runs, the version its selector names, where it came from the catalog entry, which carries the draft's description and would have described a pinned version in words its draft had since replaced. A malformed suffix is refused before anything is sent. The usage lines, `make help`, the CLI's empty state, the initializer's own usage and the READMEs name the suffixed forms.
+
+### Fixed
+
+- **A catalog id holding a dot is refused before anything is sent, in both templates**: `make create` and the web app template's `make add-method` took `mt_review.mthds`, a path that is not on disk, for a catalog id, probed the API with it and reported that the API could not resolve it. No catalog id holds a dot, and the templates now read one as the platform and the SDK's selector grammar do, so it is refused locally as not a well-formed catalog id.
+
 ## [v0.34.0] - 2026-10-08
 
 ### Changed
