@@ -9,11 +9,12 @@ never loads the command (`tests/unit/test_cli_packaging.py` holds it).
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import signal
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pipelex_sdk.command.io import EXIT_INTERRUPTED, CommandIO
 from pipelex_sdk.command.main import run_command
@@ -53,13 +54,25 @@ class _Stream:
 
 
 def _read_stdin() -> bytes:
-    # A process started with its stdin closed has no `sys.stdin`. It reads as empty, as it does in the
-    # JavaScript command, whose Node opens the null device on a standard stream it starts without, so
-    # `--inputs -` then says stdin is not valid JSON in both.
+    """All of stdin, raising the system's `OSError` when it cannot be read, as `CommandIO.read_stdin` does.
+
+    A process started with its stdin closed has no `sys.stdin`. It reads as empty, as it does in the
+    JavaScript command, whose Node opens the null device on a standard stream it starts without, so
+    `--inputs -` then says stdin is not valid JSON in both. A `sys.stdin` this process closed or detached
+    before the command ran has no descriptor left to read from, which is the system's `EBADF`: the command
+    then says it cannot read stdin, as the JavaScript command does for a stream Node can no longer read.
+    """
     stdin: TextIO | None = sys.stdin
     if stdin is None:
         return b""
-    return stdin.buffer.read()
+    # `None` once the stream was detached, which the stream's declared type does not say.
+    buffer = cast("BinaryIO | None", stdin.buffer)
+    try:
+        if buffer is not None:
+            return buffer.read()
+    except ValueError as exc:  # the stream was closed
+        raise OSError(errno.EBADF, os.strerror(errno.EBADF)) from exc
+    raise OSError(errno.EBADF, os.strerror(errno.EBADF))
 
 
 def main() -> None:

@@ -78,6 +78,24 @@ class TestCliExecutable:
         assert child.stderr.decode().startswith("Error: stdin is not valid JSON.\nReason: ")
         assert child.stdout == b""
 
+    @pytest.mark.parametrize("gesture", ["close", "detach"])
+    def test_a_stdin_this_process_closed_cannot_be_read(self, gesture: str) -> None:
+        # A program that closes or detaches `sys.stdin` before the command runs leaves it nothing to read:
+        # `--inputs -` is then the usage error of an unreadable stdin, not an unexpected failure.
+        child = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            [sys.executable, "-c", f"import sys; sys.stdin.{gesture}(); {_RUN_MAIN}", "run", "--method", "mt_receipts01", "--inputs", "-"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            env=_ENV,
+            cwd=_PACKAGE_ROOT,
+            timeout=_BUDGET_SECONDS,
+            check=False,
+        )
+
+        assert child.returncode == 2, child.stderr.decode()
+        assert child.stderr.decode() == "Error: cannot read stdin.\nReason: EBADF\n"
+        assert child.stdout == b""
+
     @pytest.mark.skipif(os.name != "posix", reason="named pipes and SIGINT are POSIX")
     def test_ctrl_c_during_a_blocked_read_says_so_and_ends_by_the_signal(self, tmp_path: Path) -> None:
         inputs = tmp_path / "inputs.json"
