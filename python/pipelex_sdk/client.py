@@ -14,7 +14,7 @@ every route raises through, the `execute` override (hosted gateway-timeout trans
 the `start` override (bare-runner 404 translation), the durable run lifecycle, the
 `validate` override (markdown-render injection + `validate_files`), the Pipelex product
 surface (methods, organizations, billing, API keys, onboarding, storage, run records),
-and the origin-level `health` probe.
+the model reference check, and the origin-level `health` probe.
 """
 
 from __future__ import annotations
@@ -70,6 +70,7 @@ from pipelex_sdk.errors import (
     RunTimeoutError,
 )
 from pipelex_sdk.execute_result import PipelexExecuteResult, results_from_execute
+from pipelex_sdk.model_reference_models import ModelCheckCategory, ModelReferenceVerdict, ModelReferenceVerdictAdapter
 from pipelex_sdk.prepare_inputs import PreparedInputs
 from pipelex_sdk.prepare_inputs import prepare_inputs as _prepare_inputs_impl
 from pipelex_sdk.product_models import (
@@ -1479,6 +1480,44 @@ class PipelexAPIClient(MthdsAPIClient):
         body = request.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
         raw = await self._request_product("POST", "pipe-io", body=body, request_timeout=_crate_request_timeout_seconds(request.method_ref))
         return PipeIOResponseAdapter.validate_python(raw)
+
+    # ── Model reference check (Pipelex API — `/v1/models/check`) ────────────
+    #
+    # Served by any `pipelex-api` runner from pipelex 0.78.0 and on the hosted API. Static and
+    # inference-free, so it rides `_request_product` and its management-call budget, as
+    # `@pipelex/sdk`'s `checkModelReference` rides the poll budget.
+
+    async def check_model_reference(self, reference: str, *, category: ModelCheckCategory | None = None) -> ModelReferenceVerdict:
+        """Check one model reference — `GET /v1/models/check?reference=<ref>[&type=<category>]`.
+
+        Answers whether `reference` resolves on the runner, as what kind and to which model, from the
+        parser and the deck lookups a validation runs. `reference` is written as a method's `model`
+        field writes it — `$preset`, `@alias`, `~waterfall`, a bare handle, or a spelled-out namespace
+        (`handle:gpt-4o`) — and is sent percent-encoded. `category` checks in that category alone;
+        without it, the check covers every one.
+
+        Returns a 200 verdict whatever the resolution: a reference that resolves nowhere is a verdict
+        whose `resolution` is `NOT_FOUND`, carrying the names it may have meant, never a raised error.
+        The verdict is one arm per reference kind, discriminated on the wire's `kind`
+        (`PresetReferenceVerdict`, `AliasReferenceVerdict`, `WaterfallReferenceVerdict`,
+        `HandleReferenceVerdict`), so narrowing the verdict narrows its `matches`.
+
+        Args:
+            reference: The model reference to check, as given; the runner trims it.
+            category: The category to check in, or `None` for every category the check covers.
+
+        Raises:
+            ApiResponseError: When the runner cannot produce a verdict, a `422` whose `error_type`
+                says why: `InvalidModelReference` (a blank reference, a sigil or a namespace alone,
+                or one past the runner's length limit), `InvalidModelCategory` (an unknown `type`) or
+                `ValidationError`. None of that is checked here, so the runner's rule is the only one.
+            ApiUnreachableError: No answer came back.
+        """
+        query: dict[str, str] = {"reference": reference}
+        if category is not None:
+            query["type"] = category
+        raw = await self._request_product("GET", f"models/check?{urlencode(query)}")
+        return ModelReferenceVerdictAdapter.validate_python(raw)
 
     async def upload_file(
         self,

@@ -181,3 +181,118 @@ class PipeIOBodies:
         "retryable": False,
         "instance": "/v1/pipe-io",
     }
+
+
+class ModelCheckBodies:
+    """Bodies of `GET /v1/models/check`, shaped as pipelex 0.78.0's own `ModelReferenceVerdict` writes them.
+
+    Every verdict field is present, and a match carries exactly the fields of the verdict's kind; each
+    verdict validates against the runner's closed models. The refusals are what `pipelex-api` 0.78.0's
+    problem builder renders for the check, with the `detail` of the reference refusal shortened.
+    """
+
+    RESOLVED_PRESET: ClassVar[dict[str, Any]] = {
+        "reference": "$writing-factual",
+        "kind": "preset",
+        "name": "writing-factual",
+        "category": "llm",
+        "resolution": "resolved",
+        "matches": [
+            {
+                "category": "llm",
+                "resolves_to": "claude-4.8-opus",
+                "target": "@default-premium",
+                "description": "Factual writing with high accuracy",
+            }
+        ],
+        "suggestions": [],
+        "other_kinds": [],
+        "other_categories": [],
+    }
+    RESOLVED_ALIAS: ClassVar[dict[str, Any]] = {
+        "reference": "@best-claude",
+        "kind": "alias",
+        "name": "best-claude",
+        "category": None,
+        "resolution": "resolved",
+        "matches": [{"category": "llm", "resolves_to": "claude-4.8-opus", "target": "claude-4.8-opus"}],
+        "suggestions": [],
+        "other_kinds": [],
+        "other_categories": [],
+    }
+    RESOLVED_WATERFALL: ClassVar[dict[str, Any]] = {
+        "reference": "~robust-llm",
+        "kind": "waterfall",
+        "name": "robust-llm",
+        "category": "llm",
+        "resolution": "resolved",
+        "matches": [{"category": "llm", "resolves_to": "claude-4.8-opus", "fallbacks": ["claude-4.8-opus", "gpt-5.5"]}],
+        "suggestions": [],
+        "other_kinds": [],
+        "other_categories": [],
+    }
+    RESOLVED_HANDLE: ClassVar[dict[str, Any]] = {
+        "reference": "claude-4.8-opus",
+        "kind": "handle",
+        "name": "claude-4.8-opus",
+        "category": None,
+        "resolution": "resolved",
+        "matches": [{"category": "llm", "resolves_to": "claude-4.8-opus", "via": ["@best-claude", "~robust-llm"]}],
+        "suggestions": [],
+        "other_kinds": [],
+        "other_categories": [],
+    }
+    #: A preset of the deck asked in a category it is not defined in.
+    NOT_FOUND_IN_CATEGORY: ClassVar[dict[str, Any]] = {
+        "reference": "$writing-factual",
+        "kind": "preset",
+        "name": "writing-factual",
+        "category": "img_gen",
+        "resolution": "not_found",
+        "matches": [],
+        "suggestions": [],
+        "other_kinds": [],
+        "other_categories": ["llm"],
+    }
+    #: A misspelt alias, asked in every category.
+    NOT_FOUND_MISSPELT: ClassVar[dict[str, Any]] = {
+        "reference": "@best-cluade",
+        "kind": "alias",
+        "name": "best-cluade",
+        "category": None,
+        "resolution": "not_found",
+        "matches": [],
+        "suggestions": ["@best-claude"],
+        "other_kinds": [],
+        "other_categories": [],
+    }
+    INVALID_REFERENCE_REFUSAL: ClassVar[dict[str, Any]] = {
+        "type": "https://docs.pipelex.com/latest/errors/invalid-model-reference/",
+        "title": "Invalid model reference",
+        "status": 422,
+        "detail": "Waterfall reference '~' has no name after '~' prefix",
+        "instance": "/v1/models/check",
+        "error_type": "InvalidModelReference",
+        "error_domain": "input",
+        "retryable": False,
+    }
+    INVALID_CATEGORY_REFUSAL: ClassVar[dict[str, Any]] = {
+        "type": "https://docs.pipelex.com/latest/errors/invalid-model-category/",
+        "title": "Invalid model category",
+        "status": 422,
+        "detail": "Invalid model category. Valid values: doc_gen, extract, img_gen, judgment, llm, search",
+        "instance": "/v1/models/check",
+        "error_type": "InvalidModelCategory",
+        "error_domain": "input",
+        "retryable": False,
+    }
+    REPEATED_PARAMETER_REFUSAL: ClassVar[dict[str, Any]] = {
+        "type": "https://docs.pipelex.com/latest/errors/validation-error/",
+        "title": "Validation error",
+        "status": 422,
+        "detail": "The `reference` query parameter accepts a single value",
+        "instance": "/v1/models/check",
+        "error_type": "ValidationError",
+        "error_domain": "input",
+        "retryable": False,
+    }

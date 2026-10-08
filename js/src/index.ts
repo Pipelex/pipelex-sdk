@@ -84,7 +84,7 @@ export type {
   ResolvedArtifact,
 } from "./artifacts.js";
 
-// ── Wire models (Dict concretes, validate surface, tools + crate routes) ──
+// ── Wire models (Dict concretes, validate surface, tools + crate routes, model check) ──
 export type {
   DiagnosticKind,
   DiagnosticRange,
@@ -135,6 +135,21 @@ export type {
   PipeIORequest,
   PipeIOValidReport,
   PipeIOResponse,
+  ModelCheckCategory,
+  ModelReferenceKind,
+  ModelReferenceResolution,
+  ModelReferenceMatchBase,
+  PresetMatch,
+  AliasMatch,
+  WaterfallMatch,
+  HandleMatch,
+  ModelReferenceMatch,
+  ModelReferenceVerdictBase,
+  PresetReferenceVerdict,
+  AliasReferenceVerdict,
+  WaterfallReferenceVerdict,
+  HandleReferenceVerdict,
+  ModelReferenceVerdict,
 } from "./models.js";
 
 // ── Offline codegen drift check (pure — no filesystem, no network, no key) ──
