@@ -34,7 +34,8 @@ class CommandIO:
     #: The environment the command reads: `PIPELEX_API_KEY`, `PIPELEX_BASE_URL` and the test-only
     #: `PIPELEX_SDK_POLL_INTERVAL_MS`. Nothing else is read from it, and no `.env` file is read.
     env: Mapping[str, str]
-    #: All of stdin, as bytes. Read only for `--inputs -`.
+    #: All of stdin, as bytes. Read only for `--inputs -`. It raises the system's `OSError` when stdin
+    #: cannot be read; a process started with stdin closed reads it as empty, as the JavaScript command does.
     read_stdin: Callable[[], bytes]
     #: Write to stdout, which carries the result and nothing else.
     write_stdout: Callable[[str], None]

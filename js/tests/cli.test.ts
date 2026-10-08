@@ -57,6 +57,7 @@ interface Case {
   env?: Record<string, string | null>;
   files?: FileEntry[];
   stdin?: string;
+  stdin_error?: string;
   routes?: Record<string, Exchange[]>;
   interrupt?: { route: string; call: number };
   expect: {
@@ -92,6 +93,7 @@ const CASE_FIELDS = [
   "env",
   "files",
   "stdin",
+  "stdin_error",
   "routes",
   "interrupt",
   "expect",
@@ -464,6 +466,10 @@ async function runCase(
       env,
       readStdin: () => {
         if (early === "stdin") interrupt.abort();
+        if (testCase.stdin_error !== undefined) {
+          const code = testCase.stdin_error;
+          return Promise.reject(systemError(`${code}: failed to read`, code, -1, "read"));
+        }
         return Promise.resolve(new TextEncoder().encode(testCase.stdin ?? ""));
       },
       writeStdout: (text) => {

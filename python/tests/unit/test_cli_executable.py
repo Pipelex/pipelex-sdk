@@ -61,6 +61,23 @@ class TestCliExecutable:
         assert child.returncode == 2
         assert out == b""
 
+    @pytest.mark.skipif(os.name != "posix", reason="a shell closes the stdin here")
+    def test_a_closed_stdin_reads_as_empty(self) -> None:
+        # Started with no stdin at all, as `<&-` leaves it, the interpreter has no `sys.stdin`: `--inputs -`
+        # reads it as empty, as Node does, rather than failing on the missing stream.
+        child = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            ["/bin/sh", "-c", 'exec "$0" -c "$1" run --method mt_receipts01 --inputs - <&-', sys.executable, _RUN_MAIN],
+            capture_output=True,
+            env=_ENV,
+            cwd=_PACKAGE_ROOT,
+            timeout=_BUDGET_SECONDS,
+            check=False,
+        )
+
+        assert child.returncode == 2, child.stderr.decode()
+        assert child.stderr.decode().startswith("Error: stdin is not valid JSON.\nReason: ")
+        assert child.stdout == b""
+
     @pytest.mark.skipif(os.name != "posix", reason="named pipes and SIGINT are POSIX")
     def test_ctrl_c_during_a_blocked_read_says_so_and_ends_by_the_signal(self, tmp_path: Path) -> None:
         inputs = tmp_path / "inputs.json"

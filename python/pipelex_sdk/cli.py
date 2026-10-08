@@ -19,7 +19,7 @@ from pipelex_sdk.command.io import EXIT_INTERRUPTED, CommandIO
 from pipelex_sdk.command.main import run_command
 
 if TYPE_CHECKING:
-    from typing import BinaryIO
+    from typing import BinaryIO, TextIO
 
 # A lone surrogate, which a string can hold and no UTF-8 stream can carry: written as U+FFFD, as Node
 # writes one, so both commands put the same bytes on a stream.
@@ -53,7 +53,13 @@ class _Stream:
 
 
 def _read_stdin() -> bytes:
-    return sys.stdin.buffer.read()
+    # A process started with its stdin closed has no `sys.stdin`. It reads as empty, as it does in the
+    # JavaScript command, whose Node opens the null device on a standard stream it starts without, so
+    # `--inputs -` then says stdin is not valid JSON in both.
+    stdin: TextIO | None = sys.stdin
+    if stdin is None:
+        return b""
+    return stdin.buffer.read()
 
 
 def main() -> None:

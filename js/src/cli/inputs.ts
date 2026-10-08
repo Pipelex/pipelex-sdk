@@ -18,24 +18,21 @@ const UTF8 = new TextDecoder("utf-8", { fatal: true });
 /**
  * Read and parse the inputs. A relative path resolves against the current directory.
  *
- * @throws {CommandError} A usage error for an unreadable file, text that is not UTF-8 or not
- *   JSON, and JSON that is not an object.
+ * @throws {CommandError} A usage error for an unreadable file or stdin, text that is not UTF-8 or
+ *   not JSON, and JSON that is not an object.
  */
 export async function readInputs(source: string, io: CommandIO): Promise<Record<string, unknown>> {
   const label = source === "-" ? "stdin" : `the inputs file "${source}"`;
-  let bytes: Uint8Array;
-  if (source === "-") {
-    bytes = await untilInterrupted(() => io.readStdin(), io.interrupt);
-  } else {
-    // Raced like stdin: a named pipe, or a file on a stalled mount, can keep the read waiting.
-    bytes = await untilInterrupted(async () => {
-      try {
-        return await readFile(resolve(source));
-      } catch (error) {
-        throw usageError(`cannot read ${label}.`, [`Reason: ${systemReason(error)}`]);
-      }
-    }, io.interrupt);
-  }
+  const read = source === "-" ? () => io.readStdin() : () => readFile(resolve(source));
+  // Raced with the interrupt: stdin, a named pipe or a file on a stalled mount can keep the read
+  // waiting.
+  const bytes = await untilInterrupted(async () => {
+    try {
+      return await read();
+    } catch (error) {
+      throw usageError(`cannot read ${label}.`, [`Reason: ${systemReason(error)}`]);
+    }
+  }, io.interrupt);
   let text: string;
   try {
     text = UTF8.decode(bytes);

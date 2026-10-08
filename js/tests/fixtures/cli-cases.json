@@ -908,10 +908,17 @@
     },
     {
       "name": "inputs/stdin-empty",
-      "summary": "An empty stdin is not JSON.",
+      "summary": "An empty stdin is not JSON, and neither is a closed one, which both commands read as empty since Node opens the null device on a standard stream a process starts without.",
       "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--inputs", "-"],
       "stdin": "",
       "expect": { "exit_code": 2, "stdout": "", "stderr": ["Error: stdin is not valid JSON.\n"] }
+    },
+    {
+      "name": "inputs/stdin-unreadable",
+      "summary": "A stdin whose read fails is refused as unreadable, with the system's reason, before any request.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--inputs", "-"],
+      "stdin_error": "EIO",
+      "expect": { "exit_code": 2, "stdout": "", "stderr": ["Error: cannot read stdin.\nReason: EIO\n"] }
     },
     {
       "name": "inputs/not-utf8",

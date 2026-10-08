@@ -61,7 +61,7 @@ _BASE_ORIGIN = f"{_BASE_URL.scheme}://{_BASE_URL.netloc.decode('ascii')}"
 
 # Every field this suite knows how to run. Anything else in the table is a case it cannot run.
 _TABLE_FIELDS = ["about", "base_url", "env", "placeholders", "answers", "cases"]
-_CASE_FIELDS = ["name", "summary", "argv", "env", "files", "stdin", "routes", "interrupt", "expect"]
+_CASE_FIELDS = ["name", "summary", "argv", "env", "files", "stdin", "stdin_error", "routes", "interrupt", "expect"]
 _EXPECT_FIELDS = ["exit_code", "stdout", "stdout_includes", "stderr", "stderr_excludes", "files", "absent_files"]
 _FILE_FIELDS = ["path", "text", "base64", "symlink", "directory"]
 _FILE_KINDS = ["text", "base64", "symlink", "directory"]
@@ -383,6 +383,9 @@ def _run_case(
         if early == _EarlyInterrupt.STDIN:
             # Outside the event loop, Python's own handler raises `KeyboardInterrupt` right here.
             signal.raise_signal(signal.SIGINT)
+        if "stdin_error" in case:
+            code = cast("str", case["stdin_error"])
+            raise OSError(getattr(errno, code), os.strerror(getattr(errno, code)))
         return cast("str", case.get("stdin", "")).encode("utf-8")
 
     def case_clock() -> float:
