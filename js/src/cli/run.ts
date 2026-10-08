@@ -148,6 +148,8 @@ async function prepare(
         ...crateSelector(source),
         ...(pipe === undefined ? {} : { pipe_ref: pipe }),
         inputs,
+        // Once interrupted, no upload starts after the pipe I/O answer arrives.
+        signal: io.interrupt,
       }),
     io.interrupt,
   );
