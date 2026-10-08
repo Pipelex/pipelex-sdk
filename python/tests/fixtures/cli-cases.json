@@ -2014,7 +2014,7 @@
           "Next step: Fix the bundle and run it again.\n",
           "Request id: req_123\n"
         ],
-        "stderr_excludes": ["Run started", "receipt-review.mthds:"]
+        "stderr_excludes": ["Run started", "receipt-review.mthds:", "may have started"]
       }
     },
     {
@@ -2038,7 +2038,7 @@
           "Error: the API refused the request (status 401).\n",
           "Reason: Invalid API key.\n"
         ],
-        "stderr_excludes": ["pk_case_key"]
+        "stderr_excludes": ["pk_case_key", "may have started"]
       }
     },
     {
@@ -2216,6 +2216,86 @@
         "exit_code": 0,
         "stdout": "{\n  \"total\": 42.5,\n  \"currency\": \"EUR\",\n  \"approved\": true,\n  \"flags\": []\n}\n",
         "stderr_excludes": ["Run started", "Error"]
+      }
+    },
+    {
+      "name": "run/start-answer-lost",
+      "summary": "A start whose answer never comes back may have created a run, so the failure says so, and exits 1.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "request_body": { "method_id": "mt_receipts01" }, "lost": "timeout" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (ABORT_TIMEOUT).\n",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-connection-lost",
+      "summary": "A start whose connection closes before the answer may have created a run too.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "lost": "closed" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test (", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/execute-answer-lost",
+      "summary": "A bare runner's blocking execute whose answer never comes back may have run the method, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/bare-runner" }],
+        "POST /v1/execute": [{ "request_body": { "method_id": "mt_receipts01" }, "lost": "timeout" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (ABORT_TIMEOUT).\n",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/start-answer-unreadable",
+      "summary": "A start accepted with an answer the command cannot read created a run it never learned of, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "status": 202, "headers": { "Content-Type": "application/json" }, "text": "accepted" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API's answer could not be read", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-unreachable",
+      "summary": "A start whose connection is refused sent nothing, so no run can exist and the failure says nothing of one.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": true }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
       }
     },
     {

@@ -111,9 +111,11 @@ async def _run(
         # Only once a request that may create a run is about to leave: an interrupt before it,
         # during the version handshake included, starts nothing, and the command says so.
         progress.interrupt_message = _STARTING
+        progress.starting = True
 
     def on_started(ack: PipelexRunResultStart) -> None:
         progress.interrupt_message = f"Interrupted. Run {ack.pipeline_run_id} keeps going on the server."
+        progress.starting = False
         progress.waiting_on_run = ack.pipeline_run_id
         io.write_stderr(f"Run started: {ack.pipeline_run_id}\n")
 
@@ -138,6 +140,7 @@ async def _run(
             on_started=on_started,
             on_starting=on_starting,
         )
+    progress.starting = False
     progress.waiting_on_run = None
     print_result(results.main_stuff, io)
     return EXIT_OK

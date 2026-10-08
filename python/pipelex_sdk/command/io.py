@@ -48,12 +48,19 @@ class Progress:
     started yet, a run requested but not acknowledged, a run that exists and keeps going.
     `waiting_on_run` is the id of a run that exists and whose outcome the command is waiting for: a
     failure then, other than the run's own, leaves the run going on the server, and the command says
-    so rather than let it read as a failed run.
+    so rather than let it read as a failed run. `starting` is whether a request that may create a run
+    was sent and the API has not named the run yet: a failure then that loses or garbles the answer
+    leaves it unknown whether a run was created, and the command says that too.
     """
 
     def __init__(self) -> None:
         self.interrupt_message = "Interrupted."
         self.waiting_on_run: str | None = None
+        self.starting = False
+
+
+#: The line under a failure that leaves it unknown whether a run was created.
+RUN_MAY_HAVE_STARTED_LINE = "A run may have started on the server without the command learning of it, so check before starting it again."
 
 
 def run_still_going_line(run_id: str) -> str:

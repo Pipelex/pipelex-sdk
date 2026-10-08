@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import errno
+import itertools
 import json
 import os
 import signal
@@ -63,7 +64,7 @@ _CASE_FIELDS = ["name", "summary", "argv", "env", "files", "stdin", "routes", "i
 _EXPECT_FIELDS = ["exit_code", "stdout", "stdout_includes", "stderr", "stderr_excludes", "files", "absent_files"]
 _FILE_FIELDS = ["path", "text", "base64", "symlink", "directory"]
 _FILE_KINDS = ["text", "base64", "symlink", "directory"]
-_EXCHANGE_FIELDS = ["request_body", "answer", "status", "headers", "body", "text", "unreachable"]
+_EXCHANGE_FIELDS = ["request_body", "answer", "status", "headers", "body", "text", "unreachable", "lost"]
 _PLACEHOLDER_LANGUAGE = "python"
 # How long a command interrupted during a blocked read may take to end: far more than it needs, far less
 # than a command left waiting for the read.
@@ -183,6 +184,19 @@ class _RecordedApi:
         if answer.get("unreachable") is True:
             msg = "connect ECONNREFUSED"
             raise httpx.ConnectError(msg, request=request)
+        # The request went out and its answer never came back: the time limit ran out, or the
+        # connection closed, each as httpx reports it.
+        match answer.get("lost"):
+            case None:
+                pass
+            case "timeout":
+                msg = "timed out"
+                raise httpx.ReadTimeout(msg, request=request)
+            case "closed":
+                msg = "Server disconnected without sending a response."
+                raise httpx.RemoteProtocolError(msg, request=request)
+            case other:
+                self.problems.append(f'{key}, call {call}: lost is "{other}", not timeout or closed')
         headers: dict[str, str] = dict(answer.get("headers", {}))
         content = b""
         if "body" in answer:
@@ -349,6 +363,7 @@ def _check(case: dict[str, Any], outcome: _Outcome, root: Path) -> None:
 # sent would fail it, as an unrecorded one. The scenarios of `@pipelex/sdk`'s suite, landing where a
 # Python command meets them.
 _NOTHING_WRITTEN = "Interrupted. Nothing was written.\n"
+_RUN_MAY_HAVE_STARTED = "A run may have started on the server without the command learning of it, so check before starting it again.\n"
 _BUNDLE = 'domain = "receipts"\nmain_pipe = "review_receipt"\n'
 _NO_RUN = "Interrupted. No run was started.\n"
 _EARLY_SCENARIOS: list[tuple[str, _EarlyInterrupt, dict[str, Any]]] = [
@@ -657,4 +672,26 @@ class TestCli:
 
         _check(case, outcome, root)
         assert list(root.iterdir()) == [], outcome.shown
+
+    def test_a_blocking_execute_the_gateway_cut_off_may_have_started_a_run(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gateway's cut-off is told from a runner that is down by the time it took, so every reading of the
+        clock here is half a minute after the one before.
+        """
+        case: dict[str, Any] = {
+            "name": "gateway/execute-cut-off",
+            "argv": ["run", "--method", "mt_receipts01"],
+            "routes": {
+                "GET /v1/version": [{"answer": "version/bare-runner"}],
+                "POST /v1/execute": [{"status": 504, "body": {"detail": "Gateway Timeout"}}],
+            },
+            "expect": {"exit_code": 1, "stdout": "", "stderr": [_RUN_MAY_HAVE_STARTED]},
+        }
+        root = tmp_path.resolve()
+        mocker.patch("pipelex_sdk.client.monotonic", side_effect=itertools.count(0.0, 31.0))
+
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
 

@@ -9,7 +9,14 @@
  * long that takes.
  */
 
-import { MissingMainStuffError, RunFailedError, renderInputsTemplate } from "../index.js";
+import {
+  ApiResponseError,
+  ApiUnreachableError,
+  MissingMainStuffError,
+  PipelineExecuteTimeoutError,
+  RunFailedError,
+  renderInputsTemplate,
+} from "../index.js";
 import type { PipelexApiClient, RunResults } from "../index.js";
 import { parseFlags } from "./args.js";
 import { readBundle } from "./bundle.js";
@@ -114,11 +121,17 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
   } catch (error) {
     if (!(error instanceof Interrupted)) {
       const runId = waitedOnRun(stage, error);
-      if (runId === undefined) throw error;
-      // A failure that says nothing of the run, which goes on: a wrapper must not read it as a
+      const warning =
+        runId !== undefined
+          ? runStillGoingLine(runId)
+          : mayHaveStarted(stage, error)
+            ? RUN_MAY_HAVE_STARTED_LINE
+            : undefined;
+      if (warning === undefined) throw error;
+      // A failure that says nothing of a run that exists, or may: a wrapper must not read it as a
       // failed run and pay for another.
       const presented = presentError(error);
-      writeLines(io, [...presented.lines, runStillGoingLine(runId)]);
+      writeLines(io, [...presented.lines, warning]);
       return presented.exitCode;
     }
     throw new CommandError(interruptMessage(stage, templateOnly), {
@@ -138,6 +151,35 @@ function waitedOnRun(stage: Stage, error: unknown): string | undefined {
   if (error instanceof RunFailedError || error instanceof MissingMainStuffError) return undefined;
   return stage.runId;
 }
+
+/**
+ * The transport failures that prove the request never left, no connection having been made, so
+ * that no run was created by it.
+ */
+const NOTHING_SENT_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/**
+ * Whether a failure met once a request that may create a run was sent, and before the API named
+ * the run, leaves it unknown whether one was created: its answer was lost to a time limit, a
+ * connection that closed once the request had left or a gateway that cut a blocking execute off,
+ * or it came back unreadable. A refusal from the API, and a failure that proves nothing was sent,
+ * say no run was created.
+ */
+function mayHaveStarted(stage: Stage, error: unknown): boolean {
+  if (stage.kind !== "starting") return false;
+  if (error instanceof PipelineExecuteTimeoutError) return true;
+  if (error instanceof ApiUnreachableError) return !NOTHING_SENT_CODES.has(error.code ?? "");
+  return error instanceof ApiResponseError && error.status >= 200 && error.status < 300;
+}
+
+/** The line under a failure that leaves it unknown whether a run was created. */
+export const RUN_MAY_HAVE_STARTED_LINE =
+  "A run may have started on the server without the command learning of it, so check before starting it again.";
 
 /** The line under a failure met while waiting on a run that exists. */
 export function runStillGoingLine(runId: string): string {

@@ -10,14 +10,31 @@ public modules, as any other caller would.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 from pipelex_sdk.command.help import MAIN_HELP
-from pipelex_sdk.command.io import EXIT_INTERRUPTED, EXIT_OK, Progress, run_still_going_line, usage_error, write_lines
+from pipelex_sdk.command.io import (
+    EXIT_INTERRUPTED,
+    EXIT_OK,
+    RUN_MAY_HAVE_STARTED_LINE,
+    Progress,
+    run_still_going_line,
+    usage_error,
+    write_lines,
+)
 from pipelex_sdk.command.present import present_error
 from pipelex_sdk.command.run import run_command_run
 from pipelex_sdk.command.script import run_command_script
-from pipelex_sdk.errors import MissingMainStuffError, RunFailedError
+from pipelex_sdk.errors import (
+    ApiResponseError,
+    ApiUnreachableError,
+    MissingMainStuffError,
+    PipelineExecuteTimeoutError,
+    RunFailedError,
+)
 from pipelex_sdk.version import __version__
 
 if TYPE_CHECKING:
@@ -51,8 +68,30 @@ def run_command(argv: Sequence[str], io: CommandIO) -> int:
         # another.
         if progress.waiting_on_run is not None and not isinstance(exc, (RunFailedError, MissingMainStuffError)):
             lines = [*lines, run_still_going_line(progress.waiting_on_run)]
+        elif progress.starting and _may_have_started(exc):
+            lines = [*lines, RUN_MAY_HAVE_STARTED_LINE]
         write_lines(io, lines)
         return presented.exit_code
+
+
+#: The transport failures that prove the request never left, no connection having been made, so that
+#: no run was created by it.
+_NOTHING_SENT_CODES = frozenset({"ConnectError", "ConnectTimeout", "PoolTimeout", "UnsupportedProtocol"})
+
+
+def _may_have_started(exc: Exception) -> bool:
+    """Whether a failure met once a request that may create a run was sent, and before the API named the
+    run, leaves it unknown whether one was created: its answer was lost to a time limit, a connection that
+    closed once the request had left or a gateway that cut a blocking execute off, or it came back
+    unreadable. A refusal from the API, and a failure that proves nothing was sent, say no run was created.
+    """
+    if isinstance(exc, PipelineExecuteTimeoutError):
+        return True
+    if isinstance(exc, ApiUnreachableError):
+        return exc.code not in _NOTHING_SENT_CODES
+    if isinstance(exc, ApiResponseError):
+        return 200 <= exc.status < 300
+    return isinstance(exc, (ValidationError, json.JSONDecodeError))
 
 
 def _dispatch(argv: Sequence[str], io: CommandIO, progress: Progress) -> int:

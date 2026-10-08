@@ -31,6 +31,7 @@ interface Exchange {
   body?: unknown;
   text?: string;
   unreachable?: boolean;
+  lost?: string;
 }
 
 interface FileEntry {
@@ -111,6 +112,7 @@ const EXCHANGE_FIELDS = [
   "body",
   "text",
   "unreachable",
+  "lost",
 ];
 const PLACEHOLDER_LANGUAGE = "js";
 
@@ -242,6 +244,17 @@ class RecordedApi {
       throw new TypeError("fetch failed", {
         cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
       });
+    }
+    // The request went out and its answer never came back: the time limit ran out, as the
+    // client's own timer reports it, or the connection closed, as undici reports it.
+    if (answer.lost === "timeout") throw new DOMException("Request timed out.", "TimeoutError");
+    if (answer.lost === "closed") {
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+      });
+    }
+    if (answer.lost !== undefined) {
+      this.problems.push(`${key}, call ${call}: lost is "${answer.lost}", not timeout or closed`);
     }
     const headers = new Headers(answer.headers);
     let body: string | null = null;
@@ -501,6 +514,35 @@ describe("an interrupt that lands before any request", () => {
     }
   });
 });
+
+describe("a run the API may have created before the command learned of it", () => {
+  it("says so when the gateway cuts a blocking execute off", async () => {
+    // The gateway's cut-off is told from a runner that is down by the time it took: every reading
+    // of the clock here is half a minute after the one before.
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => (now += 31_000));
+    const testCase: Case = {
+      name: "gateway/execute-cut-off",
+      summary: "A blocking execute the gateway cut off may have run the method.",
+      argv: ["run", "--method", "mt_receipts01"],
+      routes: {
+        "GET /v1/version": [{ answer: "version/bare-runner" }],
+        "POST /v1/execute": [{ status: 504, body: { detail: "Gateway Timeout" } }],
+      },
+      expect: { exit_code: 1, stdout: "", stderr: [RUN_MAY_HAVE_STARTED] },
+    };
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pipelex-sdk-cli-")));
+    try {
+      const { outcome, api } = await runCase(testCase, root);
+      check(testCase, outcome, api);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+const RUN_MAY_HAVE_STARTED =
+  "A run may have started on the server without the command learning of it, so check before starting it again.\n";
 
 describe("the command's packaging", () => {
   it("is the package's one bin, an executable Node script", () => {
