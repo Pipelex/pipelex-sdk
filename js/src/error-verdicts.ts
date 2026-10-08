@@ -1,17 +1,19 @@
 /**
  * The verdict an `ApiResponseError` falls back to when the server sent no usable member.
  *
- * A problem document may carry `retryable` and `error_domain`, and when it does the error takes
- * them (see `ApiResponseError`). When it does not — the platform does not classify its own
- * refusals yet, a gateway answers an HTML page, a bare runner answers Starlette's
- * `{"detail": "Not Found"}` — each missing member is read off this table instead, so a consumer
- * never has to choose its own default. The one exception is a `retryable` missing beside a sent
- * `input` or `config` domain, which is not retryable whatever the status. The table reads only the
- * HTTP status, the platform's native `code`, and whether the body names what it refused.
+ * A problem document may carry `retryable` and `error_domain`, and the error reads the members
+ * the server sent first (see `ApiResponseError`): the runner sends them on the problems it renders,
+ * and the platform on those it renders itself once its deployment classifies them. Where one is
+ * missing — a platform route that does not classify its refusals, as its Lambda-backed routes do
+ * not yet, a gateway's HTML page, a bare runner's Starlette `{"detail": "Not Found"}` — that member
+ * is read off this table instead, so a consumer never has to choose its own default. The one
+ * exception is a `retryable` missing beside a sent `input` or `config` domain, which is not
+ * retryable whatever the status. The table reads only the HTTP status, the platform's native
+ * `code`, and whether the body names what it refused.
  *
- * It is also the platform's reference: the verdicts the platform will send on its own refusals
- * are decided against this table, so a refusal keeps its verdict when the platform starts
- * sending one. The Python twin, `pipelex-sdk`, applies the same table as its `fallback_verdict`.
+ * It is also the platform's reference: the verdicts the platform sends on its own refusals are
+ * decided against this table, so a refusal keeps its verdict whether the platform sent it or the
+ * table supplied it. The Python twin, `pipelex-sdk`, applies the same table as its `fallback_verdict`.
  * The case file `tests/fixtures/error-verdicts.json` holds every row, and this package's suite
  * drives the table through it; the Python suite drives its own code through the copy that
  * `make shared-files` writes at the repository's root, byte for byte identical.

@@ -86,7 +86,7 @@ The fallback, `fallback_verdict` in `pipelex_sdk.error_verdicts`, reads the HTTP
 | `500`, `502`, `503`, `504`, and any `5xx` not listed here | `runtime` | yes | A fault in the service, which may pass. |
 | Anything else | `runtime` | no | A status no refusal carries, such as the `2xx` of an answer the SDK could not read; nothing says a retry helps. |
 
-On the platform today the fallback decides both members, since the platform does not send them on its own refusals yet; a runner's problem usually carries its own. **Nothing on the error says which of the two a value came from**: `problem` keeps the document whole, so a reader that must tell a server-sent verdict from a derived one reads it there. An `ApiResponseError` built by hand gets the verdict the client would give it, the arguments `error_domain` and `retryable` being what the server sent.
+The members the server sent are read first, and the fallback answers only for one it did not send: a runner's problem usually carries its own, the platform sends them on the problems it renders itself once its deployment classifies them, and a route that sends neither, as the platform's Lambda-backed routes do not yet, gets the fallback for both. **Nothing on the error says which of the two a value came from**: `problem` keeps the document whole, so a reader that must tell a server-sent verdict from a derived one reads it there. An `ApiResponseError` built by hand gets the verdict the client would give it, the arguments `error_domain` and `retryable` being what the server sent.
 
 ## The case file both SDKs run
 

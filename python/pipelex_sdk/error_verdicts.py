@@ -4,11 +4,14 @@ Every error `pipelex-sdk` raises says two things a program needs before anything
 again can plausibly succeed (`retryable`), and who can fix the failure (`error_domain`). Both are always
 decided. This module holds that vocabulary — `ErrorDomain` and `ErrorVerdict` — the structural reader
 `error_verdict_of`, and `fallback_verdict`, the table an `ApiResponseError` reads a member from when the
-server sent no usable one.
+server sent no usable one. The members the server sent are read first: the runner sends them on the
+problems it renders, and the platform on those it renders itself once its deployment classifies them.
+A route that sends neither, as the platform's Lambda-backed routes do not yet, a gateway's HTML page or
+a bare runner's `{"detail": "Not Found"}` gets the table's.
 
 The table is a contract with `@pipelex/sdk`, whose `fallbackVerdict` applies the same rows, and with the
-platform, whose own verdicts are decided against it so that a refusal keeps its verdict when the platform
-starts sending one. The case file `tests/fixtures/error-verdicts.json`, a byte for byte copy of the
+platform, whose own verdicts are decided against it, so that a refusal keeps its verdict whether the
+platform sent it or the table supplied it. The case file `tests/fixtures/error-verdicts.json`, a byte for byte copy of the
 JavaScript package's, holds every row, and this package's suite drives its own code through it.
 """
 
