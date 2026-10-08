@@ -109,6 +109,7 @@ class TestParseMethodArg:
             ("  ", "METHOD is empty"),
             ("mt_", "not a well-formed catalog id"),
             ("mt_@3", "not a well-formed catalog id"),
+            ("mt_review.mthds", "not a well-formed catalog id"),
             ("mt_abc@", "names no version"),
             ("mt_abc@0", "names no version"),
             ("mt_abc@03", "names no version"),

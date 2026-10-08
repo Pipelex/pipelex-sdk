@@ -113,8 +113,12 @@ export class ReportedFailure extends Error {
 
 // ── The argument ────────────────────────────────────────────────────────────
 
-/** A catalog id, as the platform mints them, before any version suffix. */
-const METHOD_ID_PATTERN = /^mt_[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/**
+ * A catalog id before any version suffix: `mt_` and the characters the
+ * platform's run routes accept, the grammar of the SDK's `parseMethodSelector`.
+ * No catalog id holds a dot, so `mt_review.mthds` is a path.
+ */
+const METHOD_ID_PATTERN = /^mt_[A-Za-z0-9_-]+$/;
 
 /**
  * A catalog id's version suffix: a positive number without a leading zero, or

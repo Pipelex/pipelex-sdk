@@ -134,6 +134,7 @@ describe("parseMethodArg", () => {
     ["", "empty"],
     ["mt_", "malformed id"],
     ["mt_bad id", "id with a space"],
+    ["mt_review.mthds", "a dot, which no catalog id holds"],
     ["mt_x@", "an empty version"],
     ["mt_x@0", "version zero"],
     ["mt_x@03", "a leading zero"],

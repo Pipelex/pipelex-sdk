@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- **A catalog id holding a dot is refused before anything is sent, in both templates**: `make create` and the web app template's `make add-method` took `mt_review.mthds`, a path that is not on disk, for a catalog id, probed the API with it and reported that the API could not resolve it. No catalog id holds a dot, and the templates now read one as the platform and the SDK's selector grammar do, so it is refused locally as not a well-formed catalog id.
 - **The web app template's durable poll rides out a rate limit**: a status read the API refuses with a `429` or a `408` is read again, as a gateway `5xx` already was, where it used to abandon a run that was still executing; a read that cannot pass, such as a `501`, gives up at once. When the poll does give up, the error no longer invites a re-run, since the run may still be executing and running it again would start a second one.
 
 ### Security

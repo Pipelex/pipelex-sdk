@@ -86,8 +86,9 @@ class CreateClient(CodegenClient, Protocol):
 
 # ── The argument ────────────────────────────────────────────────────────────
 
-#: A catalog id, as the platform mints them, before any version suffix.
-METHOD_ID_PATTERN = re.compile(r"mt_[A-Za-z0-9][A-Za-z0-9._-]*")
+#: A catalog id before any version suffix: `mt_` and the characters the platform's run routes accept, the
+#: grammar of the SDK's `parse_method_selector`. No catalog id holds a dot, so `mt_review.mthds` is a path.
+METHOD_ID_PATTERN = re.compile(r"mt_[A-Za-z0-9_-]+")
 
 #: A catalog id's version suffix: a positive number without a leading zero, or `draft` in lower case.
 #: A bare id runs the method's latest published version, `mt_…@3` its version 3 for good, and
