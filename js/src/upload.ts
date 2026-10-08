@@ -209,7 +209,7 @@ function mapUploadError(error: unknown, filename: string): Error {
       return new UploadTransportError(
         `Upload of "${filename}" was answered (${error.status}) with a body the SDK could not ` +
           "read, so whether and where the file was stored is unknown.",
-        { cause: error, status: error.status, code: "unexpected" },
+        { cause: error, status: error.status, code: "unexpected", filename },
       );
     }
     switch (error.status) {
@@ -225,13 +225,13 @@ function mapUploadError(error: unknown, filename: string): Error {
         return new UploadAuthenticationError(
           `Upload of "${filename}" was not authorized (${error.status}). Check the configured Pipelex API key.`,
           error.status,
-          { cause: error },
+          { cause: error, filename },
         );
       case 404:
         return new UnsupportedUploadCapabilityError(
           "The configured Pipelex deployment does not support file upload (no /v1/upload route). " +
             "Upload is a hosted Pipelex capability.",
-          { cause: error },
+          { cause: error, filename },
         );
       default:
         return new UploadTransportError(
@@ -240,6 +240,7 @@ function mapUploadError(error: unknown, filename: string): Error {
             cause: error,
             status: error.status,
             code: error.status >= 500 ? "server_error" : "unexpected",
+            filename,
           },
         );
     }
@@ -248,7 +249,7 @@ function mapUploadError(error: unknown, filename: string): Error {
     return new UploadTransportError(
       `Upload of "${filename}" could not reach the Pipelex API (${error.code ?? "unreachable"}).`,
       // The client's own request timeout surfaces as an unreachable host with this code.
-      { cause: error, code: error.code === "ABORT_TIMEOUT" ? "timeout" : "unreachable" },
+      { cause: error, code: error.code === "ABORT_TIMEOUT" ? "timeout" : "unreachable", filename },
     );
   }
   // Only errors thrown by the `client.upload()` call reach here — the local-source
@@ -260,5 +261,6 @@ function mapUploadError(error: unknown, filename: string): Error {
   return new UploadTransportError(`Upload of "${filename}" failed unexpectedly: ${detail}.`, {
     cause: error,
     code: "unexpected",
+    filename,
   });
 }

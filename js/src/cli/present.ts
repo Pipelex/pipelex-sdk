@@ -16,7 +16,11 @@ import {
   InvalidLocalSourceError,
   MethodLoadError,
   PipelineRequestError,
+  RejectedAssetError,
   RunFailedError,
+  UnsupportedUploadCapabilityError,
+  UploadAuthenticationError,
+  UploadTransportError,
 } from "../index.js";
 import type { ValidationErrorItem } from "../index.js";
 import { CommandError, EXIT_FAILED, EXIT_USAGE } from "./io.js";
@@ -75,6 +79,14 @@ export function presentError(error: unknown): PresentedError {
       exitCode: EXIT_FAILED,
     };
   }
+  if (
+    error instanceof RejectedAssetError ||
+    error instanceof UploadAuthenticationError ||
+    error instanceof UnsupportedUploadCapabilityError ||
+    error instanceof UploadTransportError
+  ) {
+    return presentUploadFailure(error);
+  }
   if (error instanceof InputPreparationError && error.cause instanceof ApiResponseError) {
     return presentRefusal(error.cause);
   }
@@ -94,6 +106,31 @@ export function presentError(error: unknown): PresentedError {
   }
   const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   return { lines: [`Error: unexpected failure, ${detail}`], exitCode: EXIT_FAILED };
+}
+
+/**
+ * A file the inputs name that could not be uploaded: which file, the status the upload route
+ * answered when it answered, and the SDK's own sentence, which says what the status means for an
+ * upload (a file past the size limit, a deployment without upload), followed by the advice and the
+ * request id of the API's answer when it carries them.
+ */
+function presentUploadFailure(
+  error:
+    | RejectedAssetError
+    | UploadAuthenticationError
+    | UnsupportedUploadCapabilityError
+    | UploadTransportError,
+): PresentedError {
+  const cause = error.cause instanceof ApiResponseError ? error.cause : undefined;
+  const status =
+    "status" in error && typeof error.status === "number" ? error.status : cause?.status;
+  const what =
+    error.filename === undefined ? "an upload failed" : `the upload of "${error.filename}" failed`;
+  const lines = [`Error: ${what}${status === undefined ? "" : ` (status ${status})`}.`];
+  lines.push(`Reason: ${error.message}`);
+  if (cause?.userAction?.detail) lines.push(`Next step: ${cause.userAction.detail}`);
+  if (cause?.requestId) lines.push(`Request id: ${cause.requestId}`);
+  return { lines, exitCode: EXIT_FAILED };
 }
 
 /** An answer the API gave instead of a result: its status, its reason and its advice. */

@@ -22,6 +22,11 @@ if TYPE_CHECKING:
 
     from tests.unit.conftest import UnreachableClientBuilder
 
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+
+    from tests.unit.conftest import UnreachableClientBuilder
+
 _BASE_URL = "http://localhost:8081"
 
 _HOSTED_VERSION = {"protocol_version": "0.6.0", "implementation": "pipelex-hosted", "runner_version": "0.9.0"}

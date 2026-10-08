@@ -273,26 +273,33 @@ export class RejectedAssetError extends InputPreparationError {
  * The configured deployment does not support upload (no `/v1/upload` route, seen
  * as a `404`). Upload is a hosted Pipelex-product capability even though the SDK
  * can be pointed at other base URLs. Its verdict is `config`, not retryable: the base URL
- * must point at a deployment that serves upload.
+ * must point at a deployment that serves upload. `filename` is the file whose upload met it, as
+ * `uploadFile` sent it.
  */
 export class UnsupportedUploadCapabilityError extends InputPreparationError {
-  constructor(message: string, options?: { cause?: unknown }) {
+  public readonly filename: string | undefined;
+
+  constructor(message: string, options?: { cause?: unknown; filename?: string }) {
     super(message, { ...options, verdict: makeVerdict("config", false) });
     this.name = "UnsupportedUploadCapabilityError";
+    this.filename = options?.filename;
   }
 }
 
 /**
  * Upload was not authorized — a `401`/`403` from the upload route. Its verdict is `config`, not
- * retryable: the credential must change.
+ * retryable: the credential must change. `filename` is the file whose upload was refused, as
+ * `uploadFile` sent it.
  */
 export class UploadAuthenticationError extends InputPreparationError {
   public readonly status: number;
+  public readonly filename: string | undefined;
 
-  constructor(message: string, status: number, options?: { cause?: unknown }) {
+  constructor(message: string, status: number, options?: { cause?: unknown; filename?: string }) {
     super(message, { ...options, verdict: makeVerdict("config", false) });
     this.name = "UploadAuthenticationError";
     this.status = status;
+    this.filename = options?.filename;
   }
 }
 
@@ -337,8 +344,8 @@ export type UploadTransportCode =
  * every one it raises, so it is undefined only on one a caller constructs without
  * it. `status` is the HTTP status when a response produced it, and undefined when
  * none did. From `uploadFile` the wrapped `ApiResponseError` is also reachable via
- * `cause`; `uploadWithGrant` wraps no response, because storage's error body can
- * echo the grant's credential.
+ * `cause`, and `filename` is the file it was sending; `uploadWithGrant` wraps no response,
+ * because storage's error body can echo the grant's credential, and leaves `filename` undefined.
  *
  * Its verdict is the wrapped error's when `cause` carries one: `uploadFile` wraps the
  * `ApiResponseError` or `ApiUnreachableError` the client's `upload()` threw, and `code` is too
@@ -358,10 +365,11 @@ export type UploadTransportCode =
 export class UploadTransportError extends InputPreparationError {
   public readonly status: number | undefined;
   public readonly code: UploadTransportCode | undefined;
+  public readonly filename: string | undefined;
 
   constructor(
     message: string,
-    options?: { cause?: unknown; status?: number; code?: UploadTransportCode },
+    options?: { cause?: unknown; status?: number; code?: UploadTransportCode; filename?: string },
   ) {
     super(message, {
       ...options,
@@ -371,6 +379,7 @@ export class UploadTransportError extends InputPreparationError {
     this.name = "UploadTransportError";
     this.status = options?.status;
     this.code = options?.code;
+    this.filename = options?.filename;
   }
 }
 

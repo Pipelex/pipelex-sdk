@@ -11,7 +11,9 @@ import { systemReason } from "./bundle.js";
 import { untilInterrupted, usageError } from "./io.js";
 import type { CommandIO } from "./io.js";
 
-const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+// A leading byte-order mark is dropped, as RFC 8259 lets a JSON reader do: Windows PowerShell 5.1
+// writes one with `Out-File -Encoding utf8`. A bundle's mark is kept, since it is sent as written.
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 /**
  * Read and parse the inputs. A relative path resolves against the current directory.
@@ -23,13 +25,16 @@ export async function readInputs(source: string, io: CommandIO): Promise<Record<
   const label = source === "-" ? "stdin" : `the inputs file "${source}"`;
   let bytes: Uint8Array;
   if (source === "-") {
-    bytes = await untilInterrupted(io.readStdin(), io.interrupt);
+    bytes = await untilInterrupted(() => io.readStdin(), io.interrupt);
   } else {
-    try {
-      bytes = await readFile(resolve(source));
-    } catch (error) {
-      throw usageError(`cannot read ${label}.`, [`Reason: ${systemReason(error)}`]);
-    }
+    // Raced like stdin: a named pipe, or a file on a stalled mount, can keep the read waiting.
+    bytes = await untilInterrupted(async () => {
+      try {
+        return await readFile(resolve(source));
+      } catch (error) {
+        throw usageError(`cannot read ${label}.`, [`Reason: ${systemReason(error)}`]);
+      }
+    }, io.interrupt);
   }
   let text: string;
   try {

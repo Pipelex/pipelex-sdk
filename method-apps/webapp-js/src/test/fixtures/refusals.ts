@@ -12,8 +12,8 @@
 
 import { ApiResponseError, type ValidationErrorItem } from "@pipelex/sdk";
 
-/** An unknown model, with the locators the runtime adds beside the declared fields. */
-export const UNKNOWN_MODEL_ITEM = {
+/** An unknown model, with the reference the method wrote and the model deck's close matches. */
+export const UNKNOWN_MODEL_ITEM: ValidationErrorItem = {
   category: "pipe_validation",
   error_type: "unknown_model",
   message: "Model handle 'gpt-5.1' was not found in the model deck. Did you mean: gpt-5?",
@@ -24,7 +24,7 @@ export const UNKNOWN_MODEL_ITEM = {
   model_reference: "gpt-5.1",
   model_type: "llm",
   suggestions: ["gpt-5"],
-} as ValidationErrorItem;
+};
 
 export const REFUSAL_BODY = {
   type: "https://pipelex.com/errors/validate-bundle",

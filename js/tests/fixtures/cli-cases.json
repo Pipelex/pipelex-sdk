@@ -945,6 +945,64 @@
       }
     },
     {
+      "name": "inputs/byte-order-mark",
+      "summary": "A byte-order mark at the start of the inputs file is dropped, as RFC 8259 lets a JSON reader do, and the inputs are read as written after it.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "bom.json"
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "inputs": {
+                "receipt": { "url": "https://files.example.test/receipt.pdf" },
+                "note": "Team lunch"
+              }
+            },
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "main_stuff": { "total": 42.5, "currency": "EUR", "approved": true, "flags": [] }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"total\": 42.5,\n  \"currency\": \"EUR\",\n  \"approved\": true,\n  \"flags\": []\n}\n",
+        "stderr": ["Run started: run-1\n"],
+        "stderr_excludes": ["Uploaded", "Error"]
+      },
+      "files": [
+        {
+          "path": "bom.json",
+          "base64": "77u/eyJyZWNlaXB0IjogImh0dHBzOi8vZmlsZXMuZXhhbXBsZS50ZXN0L3JlY2VpcHQucGRmIiwgIm5vdGUiOiAiVGVhbSBsdW5jaCJ9Cg=="
+        }
+      ]
+    },
+    {
       "name": "inputs/upload",
       "summary": "A local path at a file input is uploaded before the run, reported on stderr, and sent as its storage reference.",
       "argv": [
@@ -1021,6 +1079,221 @@
           "Uploaded receipt.pdf as pipelex-storage://uploads/u1/receipt.pdf\n",
           "Run started: run-1\n"
         ]
+      }
+    },
+    {
+      "name": "inputs/upload-too-large",
+      "summary": "A file the upload route refuses as too large is named, with the status, the SDK's sentence and the request id, and no run starts.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"scans/receipt.pdf\", \"note\": \"Team lunch\"}\n"
+        },
+        { "path": "scans/receipt.pdf", "text": "%PDF-1.4 a receipt\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "POST /v1/upload": [
+          {
+            "request_body": {
+              "filename": "receipt.pdf",
+              "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
+              "content_type": "application/pdf"
+            },
+            "status": 413,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": {
+              "status": 413,
+              "title": "Payload Too Large",
+              "detail": "The file exceeds the 50 MiB upload limit",
+              "request_id": "req_413"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the upload of \"receipt.pdf\" failed (status 413).\n",
+          "Reason: The server rejected \"receipt.pdf\": The file exceeds the 50 MiB upload limit.\n",
+          "Request id: req_413\n"
+        ],
+        "stderr_excludes": ["Run started", "Reason: Payload Too Large"]
+      }
+    },
+    {
+      "name": "inputs/upload-unsupported",
+      "summary": "A deployment with no upload route is said so, in the SDK's words, for the file named, with the status, and no run starts.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"scans/receipt.pdf\", \"note\": \"Team lunch\"}\n"
+        },
+        { "path": "scans/receipt.pdf", "text": "%PDF-1.4 a receipt\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "POST /v1/upload": [
+          {
+            "request_body": {
+              "filename": "receipt.pdf",
+              "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
+              "content_type": "application/pdf"
+            },
+            "status": 404,
+            "body": { "detail": "Not Found" }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the upload of \"receipt.pdf\" failed (status 404).\n",
+          "Reason: The configured Pipelex deployment does not support file upload"
+        ],
+        "stderr_excludes": ["Run started", "Reason: Not Found"]
+      }
+    },
+    {
+      "name": "inputs/upload-server-error",
+      "summary": "A server fault on the upload names the file and the status, and no run starts.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"scans/receipt.pdf\", \"note\": \"Team lunch\"}\n"
+        },
+        { "path": "scans/receipt.pdf", "text": "%PDF-1.4 a receipt\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "POST /v1/upload": [
+          {
+            "request_body": {
+              "filename": "receipt.pdf",
+              "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
+              "content_type": "application/pdf"
+            },
+            "status": 500,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": {
+              "status": 500,
+              "title": "Internal Server Error",
+              "detail": "Storage is unavailable"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the upload of \"receipt.pdf\" failed (status 500).\n",
+          "Reason: Upload of \"receipt.pdf\" failed (500): Storage is unavailable.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "inputs/upload-unreachable",
+      "summary": "An upload that gets no answer names the file without a status, and no run starts.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--pipe",
+        "receipts.review_receipt",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"scans/receipt.pdf\", \"note\": \"Team lunch\"}\n"
+        },
+        { "path": "scans/receipt.pdf", "text": "%PDF-1.4 a receipt\n" }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0",
+              "pipe_ref": "receipts.review_receipt"
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ],
+        "POST /v1/upload": [
+          {
+            "request_body": {
+              "filename": "receipt.pdf",
+              "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
+              "content_type": "application/pdf"
+            },
+            "unreachable": true
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the upload of \"receipt.pdf\" failed.\n",
+          "Reason: Upload of \"receipt.pdf\" could not reach the Pipelex API"
+        ],
+        "stderr_excludes": ["Run started"]
       }
     },
     {
@@ -2255,6 +2528,25 @@
         "exit_code": 2,
         "stdout": "",
         "stderr": ["Error: --name \"bin/review\" holds a /, and --dir is where the script goes.\n"]
+      }
+    },
+    {
+      "name": "script/name-with-backslash",
+      "summary": "--name may not hold a \\ on any platform, since Windows reads it as a / and ..\\outside would leave --dir.",
+      "argv": [
+        "script",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--name",
+        "..\\outside"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --name \"..\\outside\" holds a \\, which Windows reads as a /, and --dir is where the script goes.\n"
+        ],
+        "absent_files": ["..\\outside"]
       }
     },
     {

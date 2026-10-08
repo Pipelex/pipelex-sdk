@@ -110,6 +110,11 @@ export function scriptNameProblem(name: string): string | undefined {
   if (name === "") return "is empty";
   if (name === "." || name === "..") return `"${name}" names a directory`;
   if (name.includes("/")) return `"${name}" holds a /, and --dir is where the script goes`;
+  // On every platform, so both SDKs refuse the same names: Windows reads a \ as a /, and
+  // `..\outside` would leave --dir there.
+  if (name.includes("\\")) {
+    return `"${name}" holds a \\, which Windows reads as a /, and --dir is where the script goes`;
+  }
   if (hasControlCharacter(name)) return "holds a control character";
   return undefined;
 }

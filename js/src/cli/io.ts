@@ -67,14 +67,22 @@ export class Interrupted extends Error {
 }
 
 /**
- * Wait for `promise`, unless the person interrupts first, which rejects with {@link Interrupted}.
+ * Start a step and wait for it, unless the person interrupts first, which rejects with
+ * {@link Interrupted}.
+ *
+ * The step is given as a function, so that an interrupt that has already landed starts nothing:
+ * a request is never sent once the person has asked to stop, and what the command then says ("No
+ * run was started") stays true. An interrupt that lands while the step starts is caught as soon
+ * as it returns.
  *
  * Several of the SDK's requests take no abort signal (the input preparation, the start request,
  * the blocking execute), so the command stops waiting for them rather than cancelling them; the
  * executable exits right after it has said so. The promise left behind is given a handler, so its
  * later failure is never reported as unhandled.
  */
-export function untilInterrupted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+export function untilInterrupted<T>(start: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Interrupted());
+  const promise = start();
   if (signal.aborted) {
     promise.catch(() => undefined);
     return Promise.reject(new Interrupted());
@@ -101,4 +109,16 @@ export function untilInterrupted<T>(promise: Promise<T>, signal: AbortSignal): P
 /** Write each line to stderr, each ended by a newline. */
 export function writeLines(io: CommandIO, lines: readonly string[]): void {
   io.writeStderr(lines.map((line) => `${line}\n`).join(""));
+}
+
+/**
+ * Let a reader of one of the process's output streams stop early: `| head` closes the pipe, and
+ * the next write fails with `EPIPE`, which, unhandled, would end the process mid-run, a run it
+ * started included. There is nothing left to tell that reader, so the error is dropped; any other
+ * error on the stream is thrown as it would have been.
+ */
+export function ignoreClosedPipe(stream: NodeJS.EventEmitter): void {
+  stream.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EPIPE") throw error;
+  });
 }

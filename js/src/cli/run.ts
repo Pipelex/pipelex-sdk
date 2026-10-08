@@ -80,9 +80,11 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
     }
 
     const prepared = await prepare(client, source, pipe, inputs, io);
-    stage = { kind: "starting" };
-    const results: RunResults = await untilInterrupted(
-      client.startAndWaitForResult(
+    const results: RunResults = await untilInterrupted(() => {
+      // Only once the start is under way: an interrupt that landed before it starts nothing, and
+      // the command says no run was started.
+      stage = { kind: "starting" };
+      return client.startAndWaitForResult(
         {
           ...runSelector(source),
           ...(pipe === undefined ? {} : { pipe_code: pipe }),
@@ -101,9 +103,8 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
             io.writeStderr(`Run started: ${ack.pipeline_run_id}\n`);
           },
         },
-      ),
-      io.interrupt,
-    );
+      );
+    }, io.interrupt);
     printResult(results.main_stuff, io);
     return EXIT_OK;
   } catch (error) {
@@ -142,11 +143,12 @@ async function prepare(
 ): Promise<Record<string, unknown> | undefined> {
   if (inputs === undefined || Object.keys(inputs).length === 0) return inputs;
   const prepared = await untilInterrupted(
-    client.prepareInputs({
-      ...crateSelector(source),
-      ...(pipe === undefined ? {} : { pipe_ref: pipe }),
-      inputs,
-    }),
+    () =>
+      client.prepareInputs({
+        ...crateSelector(source),
+        ...(pipe === undefined ? {} : { pipe_ref: pipe }),
+        inputs,
+      }),
     io.interrupt,
   );
   for (const upload of prepared.uploads) {
