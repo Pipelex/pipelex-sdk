@@ -2636,18 +2636,21 @@ function assertMethodRefPairsWithNothing(
  * (`mt_…@3`, `mt_…@draft`) would claim a version that did not. A `method_id` alone
  * keeps its suffix, which names the version to run.
  *
- * Presence semantics match `assertMethodRefPairsWithNothing`: `mthds_contents`
- * counts when non-empty, a bundle encoding when the key is present, the id when
- * non-empty. Only the suffix is checked, by its `@`, since the catalog id's alphabet
- * has none: the id itself stays a pass-through the platform resolves.
+ * An inline source counts only when it reaches the wire, as the platform counts it:
+ * `mthds_contents` when non-empty and a bundle encoding when `hasBundlePayload` says
+ * it carries one, since `nonEmptyFiles` and `nonEmptyString` drop an empty `files: {}`
+ * or `bundle_b64: ""` from the body, and a suffixed id beside one then runs the version
+ * it names. That differs on purpose from `assertMethodRefPairsWithNothing`, which
+ * mirrors the platform's presence-based pairing validator. Only the suffix is checked,
+ * by its `@`, since the catalog id's alphabet has none: the id itself stays a
+ * pass-through the platform resolves.
  */
 function assertLinkageMethodIdIsBare(options: PipelexHostedRunExtensions & RunRequest): void {
   const methodId = nonEmptyString(options.method_id);
   if (methodId === undefined || !methodId.includes("@")) return;
   const hasInlineSource =
     (options.mthds_contents != null && options.mthds_contents.length > 0) ||
-    options.files != null ||
-    options.bundle_b64 != null;
+    hasBundlePayload(options);
   if (!hasInlineSource) return;
   throw new RequestArgumentError(
     `method_id "${methodId}" beside an inline source is run-history linkage and must be a bare ` +

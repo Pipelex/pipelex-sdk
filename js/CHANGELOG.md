@@ -8,7 +8,7 @@
 
 ### Changed
 
-- **A suffixed `method_id` beside an inline source is refused locally**: `execute`, `start` and `startAndWaitForResult` throw a `RequestArgumentError` before the run request is sent for a `method_id` carrying a version suffix (`mt_…@3`, `mt_…@draft`) beside `mthds_contents`, `files` or `bundle_b64`, where the id is run-history linkage and the platform answers a `422`. Send the bare id, or drop the inline source to run the version the selector names.
+- **A suffixed `method_id` beside an inline source is refused locally**: `execute`, `start` and `startAndWaitForResult` throw a `RequestArgumentError` before the run request is sent for a `method_id` carrying a version suffix (`mt_…@3`, `mt_…@draft`) beside a non-empty `mthds_contents`, `files` or `bundle_b64`, where the id is run-history linkage and the platform answers a `422`. Send the bare id, or drop the inline source to run the version the selector names.
 
 ### Fixed
 

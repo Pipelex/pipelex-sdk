@@ -512,18 +512,28 @@ describe("the run routes' linkage form takes a bare id", () => {
     },
   );
 
-  it("sends a suffixed id beside empty mthds_contents, which carry no source to link", async () => {
-    const client = makeClient();
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        jsonResponse(202, { pipeline_run_id: "run-9", state: "STARTED", created_at: "t0" }),
-      );
+  it.each([
+    ["mthds_contents", { mthds_contents: [] }],
+    ["files", { files: {} }],
+    ["bundle_b64", { bundle_b64: "" }],
+  ])(
+    "sends a suffixed id beside an empty %s, which carries no source to link",
+    async (_source, empty) => {
+      const client = makeClient();
+      const spy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(
+          jsonResponse(202, { pipeline_run_id: "run-9", state: "STARTED", created_at: "t0" }),
+        );
 
-    await client.start({ method_id: "mt_receipts01@draft", mthds_contents: [] });
+      await client.start({ ...empty, method_id: "mt_receipts01@draft" });
 
-    expect((onlyRequest(spy).body as { method_id?: string }).method_id).toBe("mt_receipts01@draft");
-  });
+      const body = onlyRequest(spy).body as Record<string, unknown>;
+      expect(body.method_id).toBe("mt_receipts01@draft");
+      expect(body.files).toBeUndefined();
+      expect(body.bundle_b64).toBeUndefined();
+    },
+  );
 
   it("sends a bare id beside an inline source, the linkage the history is filed under", async () => {
     const client = makeClient();
