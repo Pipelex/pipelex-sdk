@@ -2436,6 +2436,62 @@
       }
     },
     {
+      "name": "run/version-answer-bad-gzip",
+      "summary": "A version check answered with a body that does not decode is an answer, so the API is taken for the hosted one and the run starts.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [
+          {
+            "status": 200,
+            "headers": { "Content-Type": "application/json", "Content-Encoding": "gzip" },
+            "base64": "bm90IGd6aXAgYXQgYWxs"
+          }
+        ],
+        "POST /v1/start": [
+          {
+            "request_body": { "method_id": "mt_receipts01" },
+            "status": 202,
+            "body": { "pipeline_run_id": "run-7", "state": "STARTED", "created_at": "2026-10-08T10:00:00Z" }
+          }
+        ],
+        "GET /v1/runs/run-7/results?artifacts=main_stuff": [
+          { "status": 200, "body": { "pipeline_run_id": "run-7", "main_stuff": { "text": "All good" } } }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"text\": \"All good\"\n}\n",
+        "stderr": ["Run started: run-7\n"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/version-answer-not-json",
+      "summary": "A version check answered with a page that is not JSON, such as a gateway's, is an answer too, and the run starts.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [
+          { "status": 200, "headers": { "Content-Type": "text/html" }, "text": "<html>a gateway's page</html>" }
+        ],
+        "POST /v1/start": [
+          {
+            "request_body": { "method_id": "mt_receipts01" },
+            "status": 202,
+            "body": { "pipeline_run_id": "run-7", "state": "STARTED", "created_at": "2026-10-08T10:00:00Z" }
+          }
+        ],
+        "GET /v1/runs/run-7/results?artifacts=main_stuff": [
+          { "status": 200, "body": { "pipeline_run_id": "run-7", "main_stuff": { "text": "All good" } } }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"text\": \"All good\"\n}\n",
+        "stderr": ["Run started: run-7\n"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
       "name": "template/address",
       "summary": "--inputs-template prints the template rendered from the pipe I/O answer, and runs nothing.",
       "argv": [

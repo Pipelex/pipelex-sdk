@@ -1486,8 +1486,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Whether the configured server serves the durable run lifecycle, decided
    * via the `GET /v1/version` handshake and cached for the client's lifetime. A
    * bare `pipelex-api` runner has no run store; anything else is assumed hosted.
-   * When the handshake gets an answer it cannot read as a version, assume hosted
-   * (the SDK default) and let the start call surface the real error.
+   *
+   * The rule, the one the Python SDK follows: an answer that is not a usable
+   * version means assume hosted (the SDK default), and let the start surface the
+   * real error; no answer at all propagates, uncached. An answer is anything the
+   * server sent back: a non-2xx status, a body that is not JSON, not UTF-8 or no
+   * version, and a body that arrived but could not be decoded, such as a broken
+   * gzip stream, which `requestRaw` reports as an `ApiUnreachableError` carrying
+   * the decompressor's code (see `isUndecodableBody`).
    *
    * @throws {ApiUnreachableError} The handshake got no answer. Nothing is cached,
    *   so the next call asks again, and no start is sent to a host that did not
@@ -1502,7 +1508,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
           typeof impl === "string" && impl === BARE_RUNNER_IMPLEMENTATION
         );
       } catch (error) {
-        if (error instanceof ApiUnreachableError) throw error;
+        // No answer at all propagates. A body that arrived and could not be decoded is an answer,
+        // and so is every other failure here: a non-2xx status, or a body that is no version.
+        if (error instanceof ApiUnreachableError && !isUndecodableBody(error)) throw error;
         this.lifecycleAvailable = true;
       }
     }
@@ -2367,6 +2375,23 @@ function isGatewayTimeout(err: unknown, elapsedMs: number): boolean {
   if (err instanceof ApiResponseError) return err.status === 503 || err.status === 504;
   if (err instanceof ApiUnreachableError) return err.code === "ABORT_TIMEOUT";
   return false;
+}
+
+/**
+ * The codes Node's fetch gives a body that arrived and could not be decoded. It decodes a
+ * `Content-Encoding` while it reads the body, after the status and the headers, and a body that
+ * does not decode fails the read with the decompressor's own code: zlib's `Z_…` for `gzip` and
+ * `deflate`, brotli's `ERR__ERROR_…` for `br`, zstd's `ZSTD_error_…` for `zstd`.
+ */
+const UNDECODABLE_BODY_CODE = /^(Z_|ERR__ERROR_|ZSTD_error_)/;
+
+/**
+ * Whether an `ApiUnreachableError` is an answer whose body could not be decoded, rather than no
+ * answer at all. The Python SDK's twin is the `ApiUnreachableError` whose cause is httpx's
+ * `DecodingError`.
+ */
+function isUndecodableBody(error: ApiUnreachableError): boolean {
+  return error.code !== undefined && UNDECODABLE_BODY_CODE.test(error.code);
 }
 
 function extractNetworkErrorCode(err: unknown): string | undefined {

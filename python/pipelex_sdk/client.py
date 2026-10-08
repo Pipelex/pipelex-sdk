@@ -20,6 +20,7 @@ and the origin-level `health` probe.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from contextvars import ContextVar
 from time import monotonic
@@ -987,9 +988,14 @@ class PipelexAPIClient(MthdsAPIClient):
     async def _supports_run_lifecycle(self) -> bool:
         """Whether the configured server serves the durable run lifecycle, decided via the
         `GET /v1/version` handshake and cached for the client's lifetime. A bare `pipelex-api`
-        runner has no run store; anything else is assumed hosted. When the handshake gets an answer
-        it cannot read as a version, assume hosted (the SDK default) and let the start call surface
-        the real error.
+        runner has no run store; anything else is assumed hosted.
+
+        The rule, the one `@pipelex/sdk` follows: an answer that is not a usable version means assume
+        hosted (the SDK default), and let the start surface the real error; no answer at all propagates,
+        uncached. An answer is anything the server sent back: a non-2xx status, a body that is not JSON,
+        not UTF-8 or no version, and a body that arrived but could not be decoded, such as a broken gzip
+        stream, which the `_send` override reports as the `ApiUnreachableError` whose cause is httpx's
+        `DecodingError`.
 
         Raises:
             ApiUnreachableError: The handshake got no answer. Nothing is cached, so the next call asks
@@ -999,10 +1005,15 @@ class PipelexAPIClient(MthdsAPIClient):
         if self._lifecycle_available is None:
             try:
                 info = await self.version()
-            # A non-2xx answer (`ApiResponseError`), an answer httpx could not decode (`httpx.HTTPError`)
-            # or a body that is no version: the server answered, so assume hosted. No answer at all
-            # (`ApiUnreachableError`) propagates, uncached.
-            except (ApiResponseError, httpx.HTTPError, ValidationError):
+            # The server answered with something that is no version: a non-2xx status, a body that is not
+            # JSON or not UTF-8, or JSON that does not validate as one. Assume hosted.
+            except (ApiResponseError, ValidationError, json.JSONDecodeError, UnicodeDecodeError):
+                self._lifecycle_available = True
+            except ApiUnreachableError as exc:
+                # A body that arrived and could not be decoded is an answer too, so assume hosted. Any
+                # other unreachable host got no answer at all: it propagates, uncached.
+                if not isinstance(exc.__cause__, httpx.DecodingError):
+                    raise
                 self._lifecycle_available = True
             else:
                 implementation = (info.model_extra or {}).get("implementation")
