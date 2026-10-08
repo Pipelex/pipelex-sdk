@@ -197,7 +197,7 @@ The members `mthds`'s own `ApiResponseError` carries (`type`, `title`, `instance
 
 ### The method codes
 
-A refusal about a saved method or one of its versions carries one of four platform codes, which the exported type `MethodErrorCode` names. `code` itself stays a `string`, since the platform adds codes; every one of these is `input` and not retryable by the fallback, since asking again unchanged meets the same answer.
+A refusal about a saved method or one of its versions carries one of the platform codes the exported type `MethodErrorCode` names. `code` itself stays a `string`, since the platform adds codes; every one of these is `input` and not retryable by the fallback, since asking again unchanged meets the same answer.
 
 | `code` | Status | When | What the caller does |
 |---|---|---|---|

@@ -1809,7 +1809,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `method_update_conflict` for a draft that moved since the token, `409`
    * `method_being_deleted`, `404` `not_found`, `422` for a draft with no `.mthds` file, `413`,
    * `403` for a read-only key, and `502` or `503` when the runner cannot be reached for a draft
-   * that differs from the latest version. An answer whose `outcome` is none of the three, or
+   * that differs from the latest version. An answer whose `outcome` is not one of the outcomes above, or
    * that carries no `method` object, is an answer the SDK cannot read, thrown as an
    * `ApiResponseError` too.
    */

@@ -515,7 +515,7 @@ MethodPublishResult: TypeAlias = Annotated[
     Field(discriminator="outcome"),
 ]
 """The answer of `publish_method`, a `200` discriminated on `outcome`, because each arm is a verdict
-about the draft's content. Branch on `outcome` (`match result:` over the three classes), never on
+about the draft's content. Branch on `outcome` (`match result:` over its classes), never on
 the status: a stale token, a method being deleted, a draft with no `.mthds` file or an unreachable
 runner raise `ApiResponseError` instead, since they produce no verdict about the content."""
 
