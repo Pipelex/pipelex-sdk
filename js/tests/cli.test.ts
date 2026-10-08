@@ -268,9 +268,9 @@ class RecordedApi {
       const broken = new ReadableStream({ start: (controller) => controller.error(failure) });
       return new Response(broken, { status: answer.status ?? 200, headers });
     }
-    let body: string | Uint8Array | null = null;
+    let body: string | Uint8Array<ArrayBuffer> | null = null;
     if (answer.base64 !== undefined) {
-      body = new Uint8Array(Buffer.from(answer.base64, "base64"));
+      body = Uint8Array.from(Buffer.from(answer.base64, "base64"));
     } else if (answer.body !== undefined) {
       body = JSON.stringify(answer.body);
       if (!headers.has("content-type")) headers.set("content-type", "application/json");
