@@ -1160,9 +1160,14 @@ describe("PipelexApiClient answers it cannot read", () => {
       "POST /v1/methods",
     ],
     [
-      "updateMethod",
-      (client: PipelexApiClient) => client.updateMethod("m1", { name: "M", mthds: "src" }),
-      "PUT /v1/methods/m1",
+      "writeDraft",
+      (client: PipelexApiClient) => client.writeDraft("m1", { mthds: "src" }),
+      "PUT /v1/methods/m1/draft",
+    ],
+    [
+      "renameMethod",
+      (client: PipelexApiClient) => client.renameMethod("m1", { name: "M" }),
+      "PATCH /v1/methods/m1",
     ],
   ])(
     "%s throws a typed ApiResponseError when the stored python it answers is unreadable",

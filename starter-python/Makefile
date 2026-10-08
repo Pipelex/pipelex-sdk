@@ -232,7 +232,7 @@ codegen-check: env
 ADD_METHOD_ARG = $(if $(filter command line,$(origin $(1))),$($(1)))
 add-method: env
 	@if [ -z "$(call ADD_METHOD_ARG,METHOD)" ]; then \
-		echo "usage: make add-method METHOD=<mt_… | github.com/owner/repo[/package][@tag]> [PIPE=<pipe_code>] [NAME=<dir-name>] [MODE=blocking|attended|detached] [DRY_RUN=1]"; \
+		echo "usage: make add-method METHOD=<mt_…[@<version>|@draft] | github.com/owner/repo[/package][@tag]> [PIPE=<pipe_code>] [NAME=<dir-name>] [MODE=blocking|attended|detached] [DRY_RUN=1]"; \
 		exit 2; \
 	fi
 	@$(VENV_PYTHON) -m scripts.add_method "$(call ADD_METHOD_ARG,METHOD)" \

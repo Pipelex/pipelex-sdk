@@ -149,7 +149,9 @@ There is no single-pipe fallback: a method that declares one pipe and no `main_p
 client.getMethodClosure(methodId) → MthdsFileItem[]
 ```
 
-`getMethodClosure` is the public **local expansion utility** — a client-side semantic layer over `getMethod` (the platform has no route that returns a parsed closure). It fetches the method, parses its polymorphic `mthds` source with [`methodSourceToContents`](#methodsourcetocontents--the-canonical-source-parser), and labels each resulting file with the `method_id` as its `source` provenance.
+`getMethodClosure` is the public **local expansion utility** — a client-side semantic layer over `getMethod` (the platform has no route that returns a parsed closure). It fetches the method, parses its **draft's** polymorphic `mthds` source with [`methodSourceToContents`](#methodsourcetocontents--the-canonical-source-parser), and labels each resulting file with the `method_id` as its `source` provenance.
+
+**It reads the draft, which is not what a bare id runs.** `GET /v1/methods/{id}` answers the method with its draft, whatever the publish state, while a run or a tooling call by a bare `method_id` resolves to the latest *published* version, which the draft may be ahead of. For the closure of a version, read it with `getMethodVersion(methodId, n)` and parse its `mthds` with `methodSourceToContents`. Like `getMethod`, it takes a bare id: a caller holding `mt_…@3` strips the suffix with `parseMethodSelector` first.
 
 Reach for it whenever you want the files **in hand** — to edit, to diff, or to send to a bare runner, which has no catalog to resolve an id against:
 
@@ -157,7 +159,7 @@ Reach for it whenever you want the files **in hand** — to edit, to diff, or to
 runner.resolve({ files: await hosted.getMethodClosure("mt_…") })
 ```
 
-Every method-taking operation — `execute` / `start`, `validate` / `resolve` / `codegen` / `pipeIo`, and `prepareInputs` — takes a `method_id` **natively** on the hosted API, as a server pass-through: the platform resolves it and injects the stored source before the runner sees the request (see [architecture.md → hosted run extensions](./architecture.md#hosted-run-extensions-method_id)). That is the uniform rule — *an id option is always a server pass-through, and any client-side expansion is the caller's own explicit call*.
+Every method-taking operation — `execute` / `start`, `validate` / `resolve` / `codegen` / `pipeIo`, and `prepareInputs` — takes a `method_id` **natively** on the hosted API, as a server pass-through, its version suffix included (`mt_…`, `mt_…@<n>`, `mt_…@draft`): the platform resolves it and injects the source of the version it names before the runner sees the request (see [architecture.md → hosted run extensions](./architecture.md#hosted-run-extensions-method_id)). That is the uniform rule — *an id option is always a server pass-through, and any client-side expansion is the caller's own explicit call*.
 
 - **Requires an API key.** The methods catalog is org-scoped to the key's org, so resolution only works with an authenticated Pipelex-product key.
 - **Unknown or foreign-org id → the `getMethod` `404`** (`ApiResponseError`, `code: "not_found"`), propagated unchanged. An id from another org is indistinguishable from a nonexistent one — both 404.

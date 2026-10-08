@@ -27,7 +27,7 @@ mkdir my-cli \
 
 Each step runs only when the one before it succeeded, so a failed download or extraction stops the copy before anything is committed: remove `my-cli` and `my-cli.tar.gz`, and run it again.
 
-Then turn it into the command for your method, with your API key in the shell, where `METHOD` is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`), or a published method's address:
+Then turn it into the command for your method, with your API key in the shell, where `METHOD` is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published method's address:
 
 ```bash
 export PIPELEX_API_KEY=…

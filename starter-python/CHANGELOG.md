@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A catalog id may pin a version**: `make add-method` takes `mt_…@<version>` and `mt_…@draft` beside a bare `mt_…`, which runs the method's latest published version, and keeps the suffix in `method.json`, so the command runs the version it was scaffolded against. A malformed suffix is refused. `docs/add-method.md` describes the forms, and the Makefile's usage line names them.
+
 ## [v0.34.0] - 2026-10-08
 
 ### Changed

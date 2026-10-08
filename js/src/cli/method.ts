@@ -3,6 +3,7 @@
  * `--pipe`, and the names and quoting `script` derives from them.
  */
 
+import { parseMethodSelector, RequestArgumentError } from "../index.js";
 import { usageError } from "./io.js";
 
 /** The prefix of a published method's address. */
@@ -16,8 +17,8 @@ export type MethodSelector =
   | { readonly kind: "catalog"; readonly methodId: string }
   | { readonly kind: "path"; readonly path: string };
 
-/** The characters a catalog id is made of, which the API's run route accepts and no other. */
-const CATALOG_ID_SHAPE = /^[A-Za-z0-9_-]+$/;
+/** A catalog id without its version suffix: `mt_` and the characters the API's run route accepts. */
+const CATALOG_ID_SHAPE = /^mt_[A-Za-z0-9_-]+$/;
 
 /**
  * Tell a `--method` value's form by its shape: `mt_…` is a catalog id, `github.com/…` an address,
@@ -25,17 +26,37 @@ const CATALOG_ID_SHAPE = /^[A-Za-z0-9_-]+$/;
  * happens to be named `mt_…` is reached as `./mt_…`, so that what a value names never depends on
  * what the current directory holds.
  *
- * @throws {CommandError} A usage error for an `mt_…` value holding a character no catalog id
- *   holds (a letter, a digit, `_` or `-`), such as `mt_review.mthds`, which is a path written
- *   without its `./`.
+ * A catalog id may carry a version suffix, `mt_…@<n>` for a fixed published version or
+ * `mt_…@draft` for the draft; it is kept whole, since the API resolves it.
+ *
+ * @throws {CommandError} A usage error for an `mt_…` value whose id holds a character no catalog
+ *   id holds (a letter, a digit, `_` or `-`), such as `mt_review.mthds`, which is a path written
+ *   without its `./`; and for a version suffix the selector grammar refuses, with the grammar's
+ *   own reason — a suffix that is neither a positive number without a leading zero nor `draft`,
+ *   or a number too large to address exactly. Both name the `./` form too, since an `mt_…`
+ *   value such as `mt_review@v2.mthds` may be a path written without it.
  */
 export function classifyMethod(value: string): MethodSelector {
   if (value.startsWith(CATALOG_ID_PREFIX)) {
-    if (!CATALOG_ID_SHAPE.test(value)) {
+    const at = value.indexOf("@");
+    const bareId = at < 0 ? value : value.slice(0, at);
+    const pathHint = `To name a local file or directory whose name starts with mt_, write it as ./${value}.`;
+    if (!CATALOG_ID_SHAPE.test(bareId)) {
       throw usageError(
         `--method "${value}" is not a catalog id: a catalog id holds only letters, digits, _ and -.`,
-        [`To name a local file or directory whose name starts with mt_, write it as ./${value}.`],
+        [pathHint],
       );
+    }
+    // The id is well formed, so the selector grammar refuses the suffix alone, and its message
+    // says which way: a suffix of no known form, or a number too large to address exactly.
+    try {
+      parseMethodSelector(value);
+    } catch (error) {
+      if (!(error instanceof RequestArgumentError)) throw error;
+      throw usageError(`--method ${error.message}`, [
+        `Pass ${bareId} for its latest published version, or ${bareId}@draft for its draft.`,
+        pathHint,
+      ]);
     }
     return { kind: "catalog", methodId: value };
   }

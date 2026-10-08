@@ -104,7 +104,7 @@ describe("parseCreateArgs", () => {
 /** Just the fields `deriveIdentity` reads. */
 function planOf(overrides: {
   slug?: string;
-  catalog?: { name: string; description: string | null } | null;
+  catalog?: { name: string } | null;
   description?: string | null;
   pipeDescriptions?: Record<string, string>;
 }): AddMethodPlan {
@@ -153,16 +153,16 @@ describe("deriveIdentity", () => {
     });
   });
 
-  it("titles a stored method with its catalog name and describes it with the catalog's", () => {
+  it("titles a stored method with its catalog name and describes it with the files it runs", () => {
     const plan = planOf({
       slug: "cv-screening",
-      catalog: { name: "CV screening", description: "Screen CVs." },
+      catalog: { name: "CV screening" },
       description: "The bundle's own words.",
     });
     expect(deriveIdentity(plan, NONE)).toEqual({
       name: "cv-screening",
       title: "CV screening",
-      description: "Screen CVs.",
+      description: "The bundle's own words.",
     });
   });
 
@@ -178,9 +178,9 @@ describe("deriveIdentity", () => {
     );
   });
 
-  it("reads a blank catalog name or description as not given", () => {
+  it("reads a blank catalog name as not given", () => {
     const plan = planOf({
-      catalog: { name: "  ", description: "" },
+      catalog: { name: "  " },
       description: "Read receipts.",
     });
     expect(deriveIdentity(plan, NONE)).toEqual({
@@ -191,7 +191,7 @@ describe("deriveIdentity", () => {
     expect(
       deriveIdentity(
         planOf({
-          catalog: { name: "", description: " " },
+          catalog: { name: "" },
           pipeDescriptions: { "receipt_review.review_receipts": "Summarize each." },
         }),
         NONE,
@@ -502,21 +502,19 @@ describe("runCreate", () => {
     expect(output.join("\n")).toContain("create: done");
   });
 
-  it("names a stored method's app after its catalog entry", async () => {
+  it("names a stored method's app after its catalog entry, and describes it with the files it runs", async () => {
     const d = deps();
-    expect(await runCreate([STORED_ID], d)).toBe(0);
+    // The catalog entry's description is the draft's; the app runs version 3, whose own words
+    // arrive with the files the API resolved for the selector.
+    expect(await runCreate([`${STORED_ID}@3`], d)).toBe(0);
 
     const bootstrap = d.calls[1]!.args;
     expect(bootstrap).toEqual(
-      expect.arrayContaining([
-        "--name",
-        "word-statistics",
-        "--title",
-        "Word statistics",
-        "--description",
-        "Counts words.",
-      ]),
+      expect.arrayContaining(["--name", "word-statistics", "--title", "Word statistics"]),
     );
+    const description = bootstrap[bootstrap.indexOf("--description") + 1];
+    expect(description).toMatch(/^Deterministic text statistics/);
+    expect(bootstrap).not.toContain("Counts words.");
   });
 
   it("--dry-run checks the values and writes nothing", async () => {

@@ -157,8 +157,8 @@ codegen-verify: ## Ask the engine whether the committed crates are still current
 # and online, so it stays out of `make all`. Wants the same base URL as
 # `codegen`, which is also the one that resolves a package address. A relative
 # bundle path is read from the directory make runs in.
-add-method: ## Scaffold a method into a new tab from METHOD=<path/to/bundle | mt_… | github.com/owner/repo[/pkg][@tag]> (needs PIPELEX_API_KEY)
-	$(call require,METHOD,usage: make add-method METHOD=<path/to/bundle | mt_… | github.com/owner/repo[/pkg][@tag]> [PIPE=<pipe_code>] [NAME=<dir-name>] [LABEL=<tab label>] [DRY_RUN=1])
+add-method: ## Scaffold a method into a new tab from METHOD=<path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/pkg][@tag]> (needs PIPELEX_API_KEY)
+	$(call require,METHOD,usage: make add-method METHOD=<path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/pkg][@tag]> [PIPE=<pipe_code>] [NAME=<dir-name>] [LABEL=<tab label>] [DRY_RUN=1])
 	npm run add-method -- $(call shq,$(value METHOD)) $(call opt,PIPE,--pipe) $(call opt,NAME,--name) $(call opt,LABEL,--label) $(call flag,DRY_RUN,--dry-run)
 
 test: ## Run tests (single pass)

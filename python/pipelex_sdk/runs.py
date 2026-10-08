@@ -162,11 +162,17 @@ class MethodProvenance(BaseModel):
 class PipelexRunResultStart(RunResultStart):
     """The `POST /v1/start` 202 ack as the Pipelex API returns it — the protocol's
     `RunResultStart` plus the server's `method_provenance` extension, populated for
-    `method_ref` runs and absent (`None`) otherwise. The base is extension-open, so
+    `method_ref` runs and absent (`None`) otherwise, and the hosted platform's
+    `method_version`, populated for `method_id` runs. The base is extension-open, so
     any other implementation field still rides `model_extra`.
     """
 
     method_provenance: MethodProvenance | None = None
+
+    method_version: int | Literal["draft"] | None = None
+    """Which version of the stored method a `method_id` run runs: the latest published version's
+    number for a bare id, the pinned number for `mt_…@<n>`, `"draft"` for `mt_…@draft`. `None`
+    for any other run, and on a server that does not resolve version selectors."""
 
 
 class RunPublic(BaseModel):
@@ -191,6 +197,14 @@ class RunPublic(BaseModel):
     #: no stored report (cancelled, terminated, timed out, or finalized by the platform itself). Read
     #: leniently, so a report written by another runner version never fails the read carrying it.
     error: LenientRunErrorReport = None
+    #: Which version of its stored method the run ran: the version number for a run addressed by a
+    #: bare `method_id` (the latest published version) or by `mt_…@<n>`, `"draft"` for one
+    #: addressed by `mt_…@draft`, and `None` for a run of an inline source. A hosted extension,
+    #: `None` on a server that does not record it.
+    method_version: int | Literal["draft"] | None = None
+    #: The digest of the files the run ran, in the canonical form of `MethodData.draft_digest`;
+    #: `None` when the platform never held the files, as on a `method_ref` run, or does not record it.
+    source_digest: str | None = None
 
 
 class RunRead(RunPublic):

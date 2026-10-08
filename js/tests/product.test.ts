@@ -238,20 +238,6 @@ describe("methods catalog", () => {
     expect(req.body).toEqual({ name: "M", mthds: "src", input_data: { a: 1 } });
   });
 
-  it("PUTs /v1/methods/{id} (update/rename)", async () => {
-    const client = makeClient();
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { method_id: "m1" }));
-
-    await client.updateMethod("m1", { name: "Renamed", mthds: "src" });
-
-    const req = lastRequest(spy);
-    expect(req.method).toBe("PUT");
-    expect(req.url).toBe("http://localhost:8081/v1/methods/m1");
-    expect(req.body).toEqual({ name: "Renamed", mthds: "src" });
-  });
-
   it("DELETEs /v1/methods/{id} and returns the 202 acceptance, not void", async () => {
     const client = makeClient();
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -340,7 +326,7 @@ describe("methods catalog", () => {
     expect(method.python).toEqual([{ name: "helper.py", content: "x" }]);
   });
 
-  it("PUT `python` is three-way: omit preserves, [] clears (''), array sets", async () => {
+  it("the draft write's `python` is three-way: omit preserves, [] clears (''), array sets", async () => {
     const client = makeClient();
     // A fresh Response per call — the client reads the body, single-read across calls.
     const spy = vi
@@ -348,18 +334,17 @@ describe("methods catalog", () => {
       .mockImplementation(() => Promise.resolve(jsonResponse(200, { method_id: "m1" })));
 
     // omit → the wire body carries no `python` key (server preserves stored).
-    await client.updateMethod("m1", { name: "M", mthds: "src" });
+    await client.writeDraft("m1", { mthds: "src" });
     expect("python" in (lastRequest(spy).body as object)).toBe(false);
 
     // [] → cleared as the "" sentinel.
     spy.mockClear();
-    await client.updateMethod("m1", { name: "M", mthds: "src", python: [] });
+    await client.writeDraft("m1", { mthds: "src", python: [] });
     expect((lastRequest(spy).body as { python?: string }).python).toBe("");
 
     // non-empty → serialized array.
     spy.mockClear();
-    await client.updateMethod("m1", {
-      name: "M",
+    await client.writeDraft("m1", {
       mthds: "src",
       python: [{ name: "a.py", content: "y" }],
     });
@@ -750,6 +735,8 @@ describe("runs list / update", () => {
       finished_at?: string | null;
       pipe_code?: string | null;
       error?: RunErrorReport | null;
+      method_version?: number | "draft" | null;
+      source_digest?: string | null;
     }>();
     expectTypeOf<RunPage["items"]>().toEqualTypeOf<RunHistoryItem[]>();
     // The record the detail read returns keeps the fields the list no longer sends.

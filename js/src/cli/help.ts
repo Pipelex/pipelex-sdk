@@ -13,7 +13,8 @@ Commands:
   script   Write a shell script that runs one method with this SDK's version pinned.
 
 A method is a published address, github.com/<owner>/<repo>[/<package>][@<tag>], a catalog
-id, mt_..., or, for run only, a .mthds file or a bundle directory.
+id, mt_..., or, for run only, a .mthds file or a bundle directory. A bare catalog id runs the
+method's latest published version, mt_...@<version> a fixed version, and mt_...@draft its draft.
 
 The API key is read from PIPELEX_API_KEY, and the API's address from PIPELEX_BASE_URL
 (https://api.pipelex.com when unset). No .env file is read.
@@ -29,7 +30,8 @@ stderr. Ctrl-C stops waiting; the run keeps going on the server.
 
 Options:
   --method <method>          A published address (github.com/<owner>/<repo>[/<package>][@<tag>]),
-                             a catalog id (mt_...), or a path to a .mthds file or a bundle directory.
+                             a catalog id (mt_..., mt_...@<version> or mt_...@draft), or a path
+                             to a .mthds file or a bundle directory.
   --pipe <domain.pipe_code>  The pipe to run, by its qualified ref. Default: the method's main pipe.
   --inputs <file>            The inputs, a JSON object with one entry per input; - reads stdin.
                              A local path or a data: URL at a file input is uploaded first.
@@ -47,7 +49,8 @@ this SDK, its version pinned. The script passes its own arguments on to run:
 
 Options:
   --method <method>          A published address (github.com/<owner>/<repo>[/<package>][@<tag>])
-                             or a catalog id (mt_...). A local bundle is refused.
+                             or a catalog id (mt_..., mt_...@<version> or mt_...@draft). A local
+                             bundle is refused.
   --pipe <domain.pipe_code>  The pipe the script runs. Default: the method's main pipe.
   --name <name>              The script's file name. Default: the address's last segment, or the
                              catalog method's name in kebab-case.

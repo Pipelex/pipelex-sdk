@@ -33,7 +33,7 @@ Treat that attribution as best-effort, not a guarantee — which is why `Validat
 
 An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is resolved by the server through the same fetch path as a `method_ref` run: the repository fetched at the tag, the package located by manifest identity, the package's real relative paths feeding the per-file `source` labels. Any non-address reference stays reserved and answers `501`.
 
-`method_id` is the hosted platform's selector, and it is a **pass-through**: nothing is expanded client-side — the platform resolves the id against the org's catalog and injects the stored source before the runner sees the request. It is meaningless against a bare runner (no catalog), and on `api.pipelex.com` its availability follows the platform deploy that adds the tooling-route transform. An unknown or foreign-org id is a `404` (indistinguishable by design); a stored method with no MTHDS source is a `422`.
+`method_id` is the hosted platform's selector, and it is a **pass-through**: nothing is expanded client-side — the platform resolves the id against the org's catalog and injects the stored source before the runner sees the request. A bare `mt_…` names the method's latest published version, `mt_…@<n>` the fixed version `n` and `mt_…@draft` its draft, and the suffix rides the string untouched. It is meaningless against a bare runner (no catalog), and on `api.pipelex.com` its availability follows the platform deploy that adds the tooling-route transform. An unknown or foreign-org id is a `404` (indistinguishable by design); a bare id of a method never published is a `409` `method_not_published`, whose detail names `mt_…@draft`; a version the method never published is a `404` `method_version_not_found`; a malformed suffix is a `422`; a stored method with no MTHDS source is a `422`.
 
 Supplying **no** selector or **more than one** is a request-shape `422` — the tooling routes are stateless, so there is no linkage exception; a second selector could only be ignored, which is the worst contract of the three. The SDK does not model the XOR in the type system — the union would force the overwhelmingly common `{ files }` call site to pick a branch for no gain, and the server's answer is a typed `ApiResponseError` either way.
 
@@ -134,9 +134,11 @@ Only a **no-verdict** condition, as the typed `ApiResponseError` — branch on i
 
 | Status        | Cause                                                                                                     |
 | ------------- | --------------------------------------------------------------------------------------------------------- |
-| `422`         | Request shape: no closure selector or more than one, an over-limit file, an unknown `kind`/`target`, a `pipe_ref` on `kind: "types"`, a fetched package with no `.mthds` file, a stored method with no MTHDS source. |
+| `422`         | Request shape: no closure selector or more than one, an over-limit file, an unknown `kind`/`target`, a `pipe_ref` on `kind: "types"`, a fetched package with no `.mthds` file, a stored method with no MTHDS source, a `method_id` whose version suffix is malformed. |
 | `422`         | On `pipeIo`, a pipe selection the route refuses: `errorType` `EntryPipeNotFoundError` for a `pipe_ref` that names no pipe or a method with no entry pipe, `EntryPipeAmbiguousError` for a code that matches pipes in several domains or several `main_pipe` declarations. The `serverMessage` names the candidates where there are some. |
 | `404`         | Unknown or foreign-org `method_id` (indistinguishable by design); no package at a `method_ref` address.     |
+| `404`         | `code` `method_version_not_found`: a `mt_…@<n>` naming a version the method never published.               |
+| `409`         | `code` `method_not_published`: a bare `method_id` of a method never published; `mt_…@draft` reaches its draft. |
 | `501`         | Registry-form `method_ref` — reserved, not implemented (the address form resolves).                         |
 | `401` / `403` | Auth, or on a hosted origin a route the gateway does not list yet (`403 {"message":"Forbidden"}`).          |
 | `502`         | On a hosted origin, a cold `method_ref` clone that outran the gateway's 30-second cap; a retry clears it.   |
