@@ -81,6 +81,30 @@ result = await client.wait_for_result(ack.pipeline_run_id)
 # The tooling routes take the same selectors under a strict XOR (exactly one, no pairing):
 report = await client.validate(method_ref="github.com/Pipelex/methods/documents@v0.1.0")
 report = await client.validate(method_id="mt_123")
+
+# A saved method's bare id runs its latest published version, `mt_…@3` version 3 and
+# `mt_…@draft` its draft; the ack says which version runs.
+ack = await client.start(method_id="mt_123@3", inputs={...})
+print(ack.method_version)  # 3
+```
+
+### Draft, publish and pin a saved method
+
+A saved method has a draft, written freely and never validated, and immutable published versions numbered from 1. `updated_at` is the draft's token: echo it so no write or publish takes a draft you have not seen. The method routes take a bare id, and `parse_method_selector` strips a suffix:
+
+```python
+from pipelex_sdk.method_selector import parse_method_selector
+from pipelex_sdk.product_models import MethodDraftInput, MethodPublishRefused
+
+method = await client.get_method("mt_123")
+draft = await client.write_draft("mt_123", MethodDraftInput(mthds="domain = 'demo'\n", expected_updated_at=method.updated_at))
+result = await client.publish_method("mt_123", expected_draft_updated_at=draft.updated_at)
+if isinstance(result, MethodPublishRefused):
+    print(result.message, result.validation)
+else:
+    print(f"version {result.version.version}")  # published, or unchanged
+versions = await client.list_method_versions("mt_123")  # newest first
+parsed = parse_method_selector("mt_123@3")  # ParsedMethodSelector(method_id="mt_123", version=3)
 ```
 
 ### Read a method's inputs and outputs
@@ -236,11 +260,12 @@ There is no barrel import — package `__init__.py` files stay empty. Import eac
 - **Client & construction** — `from pipelex_sdk.client import PipelexAPIClient, DEFAULT_API_BASE_URL, MthdsFile`
 - **Run lifecycle types** — `from pipelex_sdk.runs import RunStatus, RunPublic, RunRead, RunResults, RunResultState, WaitForResultOptions, PollInfo`
 - **Error reports** — `from pipelex_sdk.error_models import RunErrorReport, UserAction, ProviderErrorMetadata, MigrationErrorBlock, FieldError`
-- **Product wire models** — `from pipelex_sdk.product_models import UserProfile, MethodData, MethodWriteInput, Membership, MembershipsResponse, SubscriptionResponse, PlanView, InvoiceView, OnboardingSubmission, UploadInput, UploadedFile, RunHistoryItem, RunDetail, ...`, with the catalog-source readers beside them: `method_source_to_contents` turns a fetched `MethodData.mthds` into the `mthds_contents` a run or a validate takes, and `MethodFile` / `parse_method_files` / `serialize_method_files` are the codec for a method's custom PipeFunc `python`.
+- **Product wire models** — `from pipelex_sdk.product_models import UserProfile, MethodData, MethodWriteInput, MethodDraftInput, MethodVersion, MethodVersionSummary, MethodPublished, MethodPublishUnchanged, MethodPublishRefused, Membership, MembershipsResponse, SubscriptionResponse, PlanView, InvoiceView, OnboardingSubmission, UploadInput, UploadedFile, RunHistoryItem, RunDetail, ...`, with the catalog-source readers beside them: `method_source_to_contents` turns a fetched `MethodData.mthds` into the `mthds_contents` a run or a validate takes, and `MethodFile` / `parse_method_files` / `serialize_method_files` are the codec for a method's custom PipeFunc `python`.
+- **Method selectors** — `from pipelex_sdk.method_selector import parse_method_selector, ParsedMethodSelector`
 - **Validation verdict types** — `from pipelex_sdk.validation_models import PipelexValidationResult, PipelexValidationReport, PipelexInvalidReport, ValidationErrorItem, SuggestedFix, VALIDATION_VIEW_INPUT_FORM, ...`
 - **Crate routes** — `from pipelex_sdk.crate_models import ResolveRequest, CodegenRequest, PipeIORequest, PipeIOValidReport, CrateInvalidReport, MthdsFileItem, ...`, the requests and the two 200 arms of `resolve`, `codegen` and `pipe_io`
 - **Codegen tree** — `from pipelex_sdk.codegen_writer import write_codegen_tree, CodegenTreeWriteReport` to write one, `from pipelex_sdk.codegen_check import run_codegen_check, CodegenCheckReport, CodegenDrift, DriftCategory` to verify one, with the format primitives in `pipelex_sdk.codegen_lock` (`CodegenLock`, `parse_lock`, `load_lock`, `validate_artifact_path`, ...) and `pipelex_sdk.codegen_stamp` (`STAMPABLE_SUFFIXES`, `is_stampable_artifact_path`, `compute_content_hash`, `parse_stamped`, ...)
-- **Typed errors** — `from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, PipelineExecuteTimeoutError, PagingNotTerminatingError, RunFailedError, RunTimeoutError, RunLifecycleUnavailableError, RunStillRunningError, CodegenError, CodegenLockError, ...`
+- **Typed errors** — `from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, PipelineExecuteTimeoutError, PagingNotTerminatingError, RunFailedError, RunTimeoutError, RunLifecycleUnavailableError, RunStillRunningError, CodegenError, CodegenLockError, MethodErrorCode, ...`
 - **Version** — `from pipelex_sdk.version import __version__`
 - **Client identification** — `from pipelex_sdk.user_agent import AppInfo, build_user_agent, is_token`
 - **Protocol surface** (the MTHDS standard's wire types) comes from the `mthds` dependency — e.g. `from mthds.protocol.exceptions import PipelineRequestError`, `from mthds.protocol.models import ValidationResult` (the neutral verdict union that `PipelexValidationResult` narrows).

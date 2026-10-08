@@ -9,7 +9,7 @@ the same reason and in the same direction: it takes a `PipelexExecuteResult` and
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from mthds.runners.api.models import DictRunResultExecute
 
@@ -39,6 +39,10 @@ class PipelexExecuteResult(DictRunResultExecute):
     #: `None` for inline-source and `method_id` runs, mirroring `PipelexRunResultStart` on
     #: the durable path.
     method_provenance: MethodProvenance | None = None
+
+    #: Which version of the stored method a `method_id` run ran — a number, or `"draft"` for
+    #: `mt_…@draft`; `None` for any other run, mirroring `PipelexRunResultStart` on the durable path.
+    method_version: int | Literal["draft"] | None = None
 
     @property
     def main_stuff(self) -> Any:

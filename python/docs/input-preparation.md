@@ -60,9 +60,9 @@ Exactly one per call. **Empty is absent** — `files=[]`, `method_ref=""`, `meth
 | --- | --- | --- |
 | `files` | the inline MTHDS closure (`MthdsFileItem` entries: `content` plus an optional `source` label) | nobody — inline |
 | `method_ref` | a published method's address, `github.com/<owner>/<repo>[/<selector>][@<tag>]` | the runner, server-side (pipelex-api >= 0.21.0 fetches the repository at the tag) |
-| `method_id` | a stored method's catalog id (`mt_…`) | the hosted platform, which injects the stored source before the runner sees the request |
+| `method_id` | a stored method's catalog id: `mt_…` for its latest published version, `mt_…@<n>` for a fixed version, `mt_…@draft` for its draft | the hosted platform, which injects the stored source before the runner sees the request |
 
-Nothing is expanded client-side: `method_id` here is a **pass-through**, the same rule every other id-taking operation in this SDK follows.
+Nothing is expanded client-side: `method_id` here is a **pass-through**, its version suffix included, the same rule every other id-taking operation in this SDK follows.
 
 #### Where the signature comes from
 
