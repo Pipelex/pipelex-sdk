@@ -82,9 +82,9 @@ export interface PrepareInputsBase {
   /** The caller's inputs (variable name → value), compact or explicit-envelope per input. */
   inputs: Record<string, unknown>;
   /**
-   * Stops the preparation between its steps: once it has aborted, neither the pipe I/O request
-   * nor any upload starts, and `prepareInputs` throws the abort. A request already sent runs to
-   * its end. It is not sent to the server.
+   * Stops the preparation between its steps, a file's read and its upload included: once it has
+   * aborted, neither the pipe I/O request nor any upload starts, and `prepareInputs` throws the
+   * abort. A request already sent runs to its end. It is not sent to the server.
    */
   signal?: AbortSignal;
 }
@@ -226,19 +226,19 @@ async function doResolveSource(ctx: PrepareContext, source: unknown): Promise<st
     if (source.startsWith("data:")) {
       const { bytes, contentType } = decodeDataUrl(source);
       throwIfAborted(ctx.signal);
-      const record = await uploadFile(ctx.client, bytes, { contentType });
+      const record = await uploadFile(ctx.client, bytes, { contentType, signal: ctx.signal });
       ctx.uploads.push(record);
       return record.uri;
     }
     // Anything else is a local filesystem path — Node only (uploadFile enforces it).
     throwIfAborted(ctx.signal);
-    const record = await uploadFile(ctx.client, source);
+    const record = await uploadFile(ctx.client, source, { signal: ctx.signal });
     ctx.uploads.push(record);
     return record.uri;
   }
   if (source instanceof Blob || source instanceof ArrayBuffer || source instanceof Uint8Array) {
     throwIfAborted(ctx.signal);
-    const record = await uploadFile(ctx.client, source);
+    const record = await uploadFile(ctx.client, source, { signal: ctx.signal });
     ctx.uploads.push(record);
     return record.uri;
   }

@@ -78,11 +78,29 @@ class TestClientTransport:
         assert err.api_url == _BASE_URL
         assert err.code == "ConnectError"
 
-    def test_request_product_timeout_maps_to_unreachable_abort(self, unreachable_client: UnreachableClientBuilder) -> None:
-        client = unreachable_client(httpx.ConnectTimeout)
+    def test_request_product_read_timeout_maps_to_unreachable_abort(self, unreachable_client: UnreachableClientBuilder) -> None:
+        client = unreachable_client(httpx.ReadTimeout)
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client._request_product("GET", "me"))
         assert exc_info.value.code == "ABORT_TIMEOUT"
+
+    def test_request_product_connect_timeout_carries_its_class_name(self, unreachable_client: UnreachableClientBuilder) -> None:
+        # A connection that never opened sent nothing: it is not the client's own time limit on a request.
+        client = unreachable_client(httpx.ConnectTimeout)
+        with pytest.raises(ApiUnreachableError) as exc_info:
+            asyncio.run(client._request_product("GET", "me"))
+        assert exc_info.value.code == "ConnectTimeout"
+
+    def test_a_body_that_does_not_decode_maps_to_unreachable(self) -> None:
+        """A gzip answer whose bytes are not gzip is lost on the way, as `@pipelex/sdk` reports it (`Z_DATA_ERROR`)."""
+        client = PipelexAPIClient(api_key="t", base_url=_BASE_URL)
+        client.client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, headers={"content-encoding": "gzip"}, stream=httpx.ByteStream(b"not gzip")))
+        )
+        with pytest.raises(ApiUnreachableError) as exc_info:
+            asyncio.run(client._request_product("GET", "me"))
+        assert exc_info.value.code == "DecodingError"
+        assert isinstance(exc_info.value.__cause__, httpx.DecodingError)
 
     # ── _request_json (plainer regime) ───────────────────────────────
 

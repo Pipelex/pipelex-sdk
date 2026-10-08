@@ -408,6 +408,15 @@ export interface StartAndWaitForResultOptions extends WaitForResultOptions {
    * on the server.
    */
   onStarted?: (ack: PipelexRunResultStart) => void;
+  /**
+   * Called right before each request that may create a run is sent: the `POST /v1/start`, and the
+   * blocking `POST /v1/execute` of a bare runner or of the fallback to it. Until it is called, no
+   * run exists and none will, so a caller that stops waiting before then can say no run was
+   * started; from then on, a run may exist before the API says so. Once `signal` has aborted it is
+   * never called, since no such request is sent. It runs synchronously and its return value is
+   * ignored; an exception it throws propagates before the request is sent.
+   */
+  onStarting?: () => void;
 }
 
 // ── Poll loop ───────────────────────────────────────────────────────

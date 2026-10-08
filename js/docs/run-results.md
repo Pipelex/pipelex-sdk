@@ -70,9 +70,11 @@ const results = await client.startAndWaitForResult(
 );
 ```
 
+It is never called on the blocking path, a bare runner's `POST /v1/execute` or the fallback to it, which has no run id to give before it answers. The acknowledgement is handed over whole, a `method_ref` run's `method_provenance` included. The callback runs synchronously and its return value is ignored; an exception it throws propagates out of `startAndWaitForResult` before anything is polled, and the run it was told about keeps going.
+
 **An abort before the run exists creates none.** The `signal` is read before the run is started as well as during the wait: a caller that aborts while the `GET /v1/version` handshake is in flight gets its abort, and neither `POST /v1/start` nor the blocking `POST /v1/execute` is sent; nor is the execute when the abort lands while a runner that looked hosted refuses the start. Once the start or the execute is sent, the abort stops only the wait, and a started run goes on, by its id.
 
-It is never called on the blocking path, a bare runner's `POST /v1/execute` or the fallback to it, which has no run id to give before it answers. The acknowledgement is handed over whole, a `method_ref` run's `method_provenance` included. The callback runs synchronously and its return value is ignored; an exception it throws propagates out of `startAndWaitForResult` before anything is polled, and the run it was told about keeps going.
+**Knowing whether a run may exist.** `onStarting`, the other callback `StartAndWaitForResultOptions` takes, is called right before each request that may create a run is sent: `POST /v1/start`, and the blocking `POST /v1/execute` of a bare runner or of the fallback to it, so it is called twice when a runner that looked hosted refuses the start. Until it is called no run exists, and once the `signal` has aborted it is not called and no such request is sent, so a caller that stops waiting before then can say that no run was started; from then until `onStarted`, a run may exist that the API has not yet named. It runs synchronously and its return value is ignored; an exception it throws propagates before the request is sent. The `pipelex-sdk` command words its interrupt message by it ([`cli.md`](cli.md)).
 
 ## `main_stuff` — the output
 

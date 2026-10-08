@@ -181,6 +181,33 @@ describe("PipelexApiClient.startAndWaitForResult (hosted — durable start+poll 
     expect(versionCalls).toHaveLength(1);
   });
 
+  it("raises an unanswered handshake at once, sends no start, and asks again next time", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } }))
+      .mockResolvedValueOnce(jsonResponse(200, HOSTED_VERSION))
+      .mockResolvedValueOnce(
+        jsonResponse(202, { pipeline_run_id: "r1", state: "STARTED", created_at: "t0" }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { pipeline_run_id: "r1", main_stuff: {} }));
+    const paths = (): string[] =>
+      fetchSpy.mock.calls.map((call) => new URL(String(call[0])).pathname);
+
+    // A start sent to a host that did not answer would wait a second time for the same silence.
+    const err = await client.startAndWaitForResult({ pipe_code: "p" }).then(
+      () => expect.fail("expected the handshake's failure"),
+      (thrown: unknown) => thrown,
+    );
+    expect(err).toBeInstanceOf(ApiUnreachableError);
+    expect((err as ApiUnreachableError).code).toBe("ECONNREFUSED");
+    expect(paths()).toEqual(["/v1/version"]);
+
+    // Nothing was cached, so the next call asks again, and runs once the server answers.
+    await client.startAndWaitForResult({ pipe_code: "p" });
+    expect(paths()).toEqual(["/v1/version", "/v1/version", "/v1/start", "/v1/runs/r1/results"]);
+  });
+
   it("parses the usage pair on the hosted results payload, records verbatim", async () => {
     const client = makeClient();
     const tokensUsages = [
@@ -642,6 +669,44 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
     expect((err as ApiUnreachableError).code).toBe("ECONNREFUSED");
     expect((err as ApiUnreachableError).errorDomain).toBe("config");
     expect((err as ApiUnreachableError).retryable).toBe(true);
+  });
+
+  it("throws a typed ApiResponseError on a 2xx whose body is not UTF-8, and reads a refusal's leniently", async () => {
+    const client = makeClient();
+    // `{"pipeline_run_id": "r1\xff"}`: JSON, but with a byte UTF-8 has no place for.
+    const notUtf8 = new Uint8Array([
+      ...new TextEncoder().encode('{"pipeline_run_id": "r1'),
+      0xff,
+      0x22,
+      0x7d,
+    ]);
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(notUtf8, { status: 202 }));
+
+    const err = await client.start({ pipe_code: "p" }).then(
+      () => expect.fail("expected start to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      "API POST /v1/start answered 202 with a body that is not UTF-8",
+    );
+    expect((err as ApiResponseError).status).toBe(202);
+
+    // A refusal's body is read for its reason all the same, the stray byte as U+FFFD.
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        new Uint8Array([...new TextEncoder().encode('{"detail": "bad '), 0xff, 0x22, 0x7d]),
+        { status: 422, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const refusal = await client.start({ pipe_code: "p" }).then(
+      () => expect.fail("expected start to throw"),
+      (thrown: unknown) => thrown,
+    );
+    expect(refusal).toBeInstanceOf(ApiResponseError);
+    expect((refusal as ApiResponseError).status).toBe(422);
+    expect((refusal as ApiResponseError).serverMessage).toBe("bad \ufffd");
   });
 
   it.each([
@@ -1201,6 +1266,57 @@ describe("PipelexApiClient.startAndWaitForResult — an abort before the run exi
     },
   );
 
+  it("announces each request that may create a run right before it is sent, and none after an abort", async () => {
+    const hosted = makeClient();
+    const hostedSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, HOSTED_VERSION))
+      .mockResolvedValueOnce(
+        jsonResponse(202, { pipeline_run_id: "r1", state: "STARTED", created_at: "t0" }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { pipeline_run_id: "r1", main_stuff: {} }));
+    const seenAt: number[] = [];
+    await hosted.startAndWaitForResult(
+      { pipe_code: "p" },
+      { onStarting: () => seenAt.push(hostedSpy.mock.calls.length) },
+    );
+    // Once, after the handshake and before the start.
+    expect(seenAt).toEqual([1]);
+    expect(sentPaths(hostedSpy)).toEqual(["/v1/version", "/v1/start", "/v1/runs/r1/results"]);
+    vi.restoreAllMocks();
+
+    // A runner that looked hosted refuses the start, then gets the blocking execute: both may
+    // create a run, so each is announced.
+    const misdetected = makeClient();
+    const fallbackSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, BASE_ONLY_VERSION))
+      .mockResolvedValueOnce(jsonResponse(404, { detail: "Not Found" }))
+      .mockResolvedValueOnce(jsonResponse(200, executeBody("b1")));
+    const fallbackSeenAt: number[] = [];
+    await misdetected.startAndWaitForResult(
+      { pipe_code: "p" },
+      { onStarting: () => fallbackSeenAt.push(fallbackSpy.mock.calls.length) },
+    );
+    expect(fallbackSeenAt).toEqual([1, 2]);
+    vi.restoreAllMocks();
+
+    // An abort during the handshake sends nothing that may create a run, and announces nothing.
+    const aborted = makeClient();
+    const { spy, release } = holdAnswer("/v1/version", {});
+    const controller = new AbortController();
+    const announced: boolean[] = [];
+    const run = aborted.startAndWaitForResult(
+      { pipe_code: "p" },
+      { signal: controller.signal, onStarting: () => announced.push(true) },
+    );
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    controller.abort();
+    release(jsonResponse(200, HOSTED_VERSION));
+    await expect(run).rejects.toBe(controller.signal.reason);
+    expect(announced).toEqual([]);
+  });
+
   it("sends no blocking execute when the abort lands while a runner that looked hosted refuses the start", async () => {
     const client = makeClient();
     const { spy, release } = holdAnswer("/v1/start", {
@@ -1215,5 +1331,40 @@ describe("PipelexApiClient.startAndWaitForResult — an abort before the run exi
 
     await expect(run).rejects.toBe(controller.signal.reason);
     expect(sentPaths(spy)).toEqual(["/v1/version", "/v1/start"]);
+  });
+});
+
+describe("PipelexApiClient.start — the time limit of the request", () => {
+  const BLOCKING_CEILING_MS = 1_200_000;
+  const POLL_BUDGET_MS = 30_000;
+
+  /** The delay of the timer `start` arms for its request. */
+  async function startTimeLimit(
+    options: Parameters<PipelexApiClient["start"]>[0],
+  ): Promise<number> {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse(202, { pipeline_run_id: "r1", state: "STARTED", created_at: "t0" }),
+    );
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    await client.start(options);
+    const delays = timer.mock.calls.map(([, delay]) => delay);
+    expect(delays).toHaveLength(1);
+    return Number(delays[0]);
+  }
+
+  it.each([
+    ["an inline bundle as mthds_contents", { mthds_contents: ['domain = "d"\n'] }],
+    ["a bundle in files", { files: { "main.mthds": 'domain = "d"\n' } }],
+    ["a zipped bundle", { bundle_b64: "UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==" }],
+    ["a method_ref the server fetches", { method_ref: "github.com/acme/methods/x@v1.0.0" }],
+  ])("gives the blocking ceiling to a start carrying %s", async (_, options) => {
+    expect(await startTimeLimit(options)).toBe(BLOCKING_CEILING_MS);
+  });
+
+  it("gives the poll budget to a start that carries no bundle", async () => {
+    expect(await startTimeLimit({ pipe_code: "p" })).toBe(POLL_BUDGET_MS);
+    vi.restoreAllMocks();
+    expect(await startTimeLimit({ pipe_code: "p", mthds_contents: [] })).toBe(POLL_BUDGET_MS);
   });
 });

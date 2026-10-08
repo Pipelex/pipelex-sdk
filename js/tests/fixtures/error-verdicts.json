@@ -147,14 +147,12 @@
     },
     {
       "class": "InvalidInputValueError",
-      "only_in": "js",
       "variants": [
         { "variant": "a malformed data URL at a file input", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
       ]
     },
     {
       "class": "MethodLoadError",
-      "only_in": "js",
       "variants": [
         { "variant": "a method that does not load", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
       ]

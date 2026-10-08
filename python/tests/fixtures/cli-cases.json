@@ -168,6 +168,29 @@
       }
     },
     {
+      "name": "command/help-with-arguments",
+      "summary": "--help prints the command's help whatever follows it, as a subcommand's --help does.",
+      "argv": ["--help", "run", "--bogus"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["Usage:", "pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "command/version-with-arguments",
+      "summary": "--version followed by anything is refused rather than printed over a command line it does not answer.",
+      "argv": ["--version", "run", "--method", "mt_receipts01"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: unexpected argument \"run\" after --version.\n",
+          "Run 'pipelex-sdk --version' alone to print the version.\n"
+        ]
+      }
+    },
+    {
       "name": "run/help",
       "summary": "run --help prints run's help.",
       "argv": ["run", "--help"],
@@ -273,6 +296,16 @@
       "name": "run/flags/help-before-other-flags",
       "summary": "--help right after a string flag asks for the help whatever follows.",
       "argv": ["run", "--inputs", "--help", "--method", "x"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/flags/help-after-a-dash-dash-value",
+      "summary": "A -- taken as a flag's value ends no options, so a --help after it still asks for the help.",
+      "argv": ["run", "--pipe", "--", "--method", "--help"],
       "expect": {
         "exit_code": 0,
         "stdout_includes": ["pipelex-sdk run --method"],
@@ -1528,6 +1561,36 @@
       }
     },
     {
+      "name": "environment/base-url-params",
+      "summary": "A base URL carrying ;params after its host has a path, which is refused without printing it, rather than sent in every request line.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "env": { "PIPELEX_BASE_URL": "https://api.test/;token=s3cret" },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: PIPELEX_BASE_URL is refused.\n",
+          "Reason: Invalid API base URL \"https://api.test\" with a path (not shown)"
+        ],
+        "stderr_excludes": ["s3cret", "token="]
+      }
+    },
+    {
+      "name": "environment/base-url-empty",
+      "summary": "An empty PIPELEX_BASE_URL, such as an unfilled CI secret, is refused rather than read as unset: the key must not reach the hosted API by default.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "env": { "PIPELEX_BASE_URL": "" },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: PIPELEX_BASE_URL is refused.\n",
+          "Reason: Invalid API base URL (not shown: it is not an absolute URL)"
+        ],
+        "stderr_excludes": ["pk_case_key"]
+      }
+    },
+    {
       "name": "environment/poll-interval-invalid",
       "summary": "The test-only poll interval must be a whole number of milliseconds.",
       "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
@@ -1863,7 +1926,8 @@
           "Error: run run-1 ended with status FAILED.\n",
           "Reason: The model refused the receipt.\n",
           "Next step: Send a clearer scan of the receipt.\n"
-        ]
+        ],
+        "stderr_excludes": ["may still be going"]
       }
     },
     {
@@ -1950,7 +2014,7 @@
           "Next step: Fix the bundle and run it again.\n",
           "Request id: req_123\n"
         ],
-        "stderr_excludes": ["Run started", "receipt-review.mthds:"]
+        "stderr_excludes": ["Run started", "receipt-review.mthds:", "may have started"]
       }
     },
     {
@@ -1974,7 +2038,7 @@
           "Error: the API refused the request (status 401).\n",
           "Reason: Invalid API key.\n"
         ],
-        "stderr_excludes": ["pk_case_key"]
+        "stderr_excludes": ["pk_case_key", "may have started"]
       }
     },
     {
@@ -2042,7 +2106,79 @@
       "expect": {
         "exit_code": 1,
         "stdout": "",
-        "stderr": ["Run started: run-1\n", "returned no main stuff"]
+        "stderr": ["Run started: run-1\n", "returned no main stuff"],
+        "stderr_excludes": ["may still be going"]
+      }
+    },
+    {
+      "name": "run/poll-unreachable",
+      "summary": "A poll that gets no answer once the run exists names the run and says it may still be going, so that no second run is started, and exits 1.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          { "answer": "results/running" },
+          { "unreachable": true }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Run started: run-1\n",
+          "Error: could not reach the Pipelex API at http://api.test",
+          "Run run-1 may still be going on the server, so do not start it again.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/poll-server-error",
+      "summary": "A poll the API answers with a server error once the run exists is reported, then the run is named as maybe still going, and the command exits 1.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 502,
+            "headers": { "content-type": "application/problem+json" },
+            "body": {
+              "type": "about:blank",
+              "title": "Bad Gateway",
+              "status": 502,
+              "detail": "The gateway got no answer from the run store."
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Run started: run-1\n",
+          "Error: the API refused the request (status 502).\n",
+          "Reason: The gateway got no answer from the run store.\n",
+          "Run run-1 may still be going on the server, so do not start it again.\n"
+        ]
       }
     },
     {
@@ -2080,6 +2216,185 @@
         "exit_code": 0,
         "stdout": "{\n  \"total\": 42.5,\n  \"currency\": \"EUR\",\n  \"approved\": true,\n  \"flags\": []\n}\n",
         "stderr_excludes": ["Run started", "Error"]
+      }
+    },
+    {
+      "name": "run/start-answer-lost",
+      "summary": "A start whose answer never comes back may have created a run, so the failure says so, and exits 1.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "request_body": { "method_id": "mt_receipts01" }, "lost": "timeout" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (ABORT_TIMEOUT).\n",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-connection-lost",
+      "summary": "A start whose connection closes before the answer may have created a run too.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "lost": "closed" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test (", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/execute-answer-lost",
+      "summary": "A bare runner's blocking execute whose answer never comes back may have run the method, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/bare-runner" }],
+        "POST /v1/execute": [{ "request_body": { "method_id": "mt_receipts01" }, "lost": "timeout" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (ABORT_TIMEOUT).\n",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/start-answer-unreadable",
+      "summary": "A start accepted with an answer the command cannot read created a run it never learned of, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "status": 202, "headers": { "Content-Type": "application/json" }, "text": "accepted" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API's answer could not be read", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-gateway-timeout",
+      "summary": "A gateway that timed out waiting for the start's answer may have let a run be created, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 504,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 504, "title": "Gateway Timeout", "detail": "The gateway answered 504." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 504).\n", "A run may have started on the server without the command learning of it, so check before starting it again.\n"]
+      }
+    },
+    {
+      "name": "run/start-bad-gateway",
+      "summary": "A gateway that got no valid answer to the start may have let a run be created, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 502,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 502, "title": "Bad Gateway", "detail": "The gateway answered 502." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 502).\n", "A run may have started on the server without the command learning of it, so check before starting it again.\n"]
+      }
+    },
+    {
+      "name": "run/start-unavailable",
+      "summary": "A 503 says the start was not handled, so no run was created and the failure says nothing of one.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 503,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 503, "title": "Service Unavailable", "detail": "The gateway answered 503." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 503).\n"],
+        "stderr_excludes": ["may have started"]
+      }
+    },
+    {
+      "name": "run/start-answer-not-utf8",
+      "summary": "A start accepted with a body that is not UTF-8 created a run the command never learned of, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          { "status": 202, "headers": { "Content-Type": "application/json" }, "base64": "eyJwaXBlbGluZV9ydW5faWQiOiAicnVuLTEiLCAic3RhdGUiOiAiU1RBUlRFRP8iLCAiY3JlYXRlZF9hdCI6ICIyMDI2LTEwLTA4VDEwOjAwOjAwWiJ9" }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API's answer could not be read", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started", "unexpected failure"]
+      }
+    },
+    {
+      "name": "run/start-answer-bad-gzip",
+      "summary": "A start accepted with a gzip body that does not decode created a run the command never learned of, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "headers": { "Content-Type": "application/json", "Content-Encoding": "gzip" },
+            "base64": "bm90IGd6aXAgYXQgYWxs"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test (", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started", "unexpected failure"]
+      }
+    },
+    {
+      "name": "run/start-unreachable",
+      "summary": "A start whose connection is refused sent nothing, so no run can exist and the failure says nothing of one.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": true }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
       }
     },
     {
@@ -2259,6 +2574,18 @@
           "Interrupted before the API answered with a run id. A run may or may not have started on the server.\n"
         ],
         "stderr_excludes": ["Run started", "Error"]
+      }
+    },
+    {
+      "name": "interrupt/while-checking-version",
+      "summary": "An interrupt during the version check, before any request that may create a run, says no run was started, and none is.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "interrupt": { "route": "GET /v1/version", "call": 1 },
+      "expect": {
+        "exit_code": 130,
+        "stdout": "",
+        "stderr": ["Interrupted. No run was started.\n"],
+        "stderr_excludes": ["may or may not"]
       }
     },
     {
@@ -2613,6 +2940,72 @@
         "stderr": [
           "Error: no script name can be made from \"mt_receipts01\"; give one with --name.\n"
         ]
+      }
+    },
+    {
+      "name": "script/catalog-name-not-a-string",
+      "summary": "A catalog entry whose name is not a string makes no file name, and --name is asked for.",
+      "argv": ["script", "--method", "mt_receipts01"],
+      "routes": {
+        "POST /v1/pipe-io": [
+          { "request_body": { "method_id": "mt_receipts01" }, "answer": "pipe-io/receipt-review" }
+        ],
+        "GET /v1/methods/mt_receipts01": [
+          {
+            "status": 200,
+            "body": {
+              "method_id": "mt_receipts01",
+              "org_id": "org_1",
+              "created_by_user_id": "user_1",
+              "name": 42,
+              "mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+              "python": "",
+              "created_at": "2026-10-01T09:00:00Z",
+              "updated_at": "2026-10-01T09:00:00Z"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: no script name can be made from \"mt_receipts01\"; give one with --name.\n"
+        ],
+        "stderr_excludes": ["unexpected failure"],
+        "absent_files": ["42"]
+      }
+    },
+    {
+      "name": "script/catalog-name-missing",
+      "summary": "A catalog entry with no name makes no file name, and --name is asked for.",
+      "argv": ["script", "--method", "mt_receipts01"],
+      "routes": {
+        "POST /v1/pipe-io": [
+          { "request_body": { "method_id": "mt_receipts01" }, "answer": "pipe-io/receipt-review" }
+        ],
+        "GET /v1/methods/mt_receipts01": [
+          {
+            "status": 200,
+            "body": {
+              "method_id": "mt_receipts01",
+              "org_id": "org_1",
+              "created_by_user_id": "user_1",
+              "mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+              "python": "",
+              "created_at": "2026-10-01T09:00:00Z",
+              "updated_at": "2026-10-01T09:00:00Z"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: no script name can be made from \"mt_receipts01\"; give one with --name.\n"
+        ],
+        "stderr_excludes": ["unexpected failure"]
       }
     },
     {

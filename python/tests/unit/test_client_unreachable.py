@@ -77,8 +77,12 @@ class TestClientUnreachable:
             (httpx.ConnectError, "ConnectError"),
             (httpx.ReadError, "ReadError"),
             (httpx.RemoteProtocolError, "RemoteProtocolError"),
-            (httpx.ConnectTimeout, "ABORT_TIMEOUT"),
-            (httpx.PoolTimeout, "ABORT_TIMEOUT"),
+            # A request that reached the server and ran out of time while it was sent or answered.
+            (httpx.ReadTimeout, "ABORT_TIMEOUT"),
+            (httpx.WriteTimeout, "ABORT_TIMEOUT"),
+            # No request was sent: never the client's own limit on one, so never the gateway's cut-off.
+            (httpx.ConnectTimeout, "ConnectTimeout"),
+            (httpx.PoolTimeout, "PoolTimeout"),
         ],
     )
     def test_every_transport_failure_carries_its_code(
@@ -91,13 +95,15 @@ class TestClientUnreachable:
         assert exc_info.value.code == code
         assert isinstance(exc_info.value.__cause__, failure)
 
-    def test_start_and_wait_raises_the_start_failure_after_an_unreachable_handshake(self, unreachable_client: UnreachableClientBuilder) -> None:
-        """The `/v1/version` handshake failing is read as hosted, and the start then raises the same unreachable error."""
+    def test_start_and_wait_raises_an_unreachable_handshake_and_sends_no_start(self, unreachable_client: UnreachableClientBuilder) -> None:
+        """No answer to the `/v1/version` handshake raises at once, uncached: a start sent to a host that did not
+        answer would wait a second time for the same silence.
+        """
         client = unreachable_client(httpx.ConnectError)
 
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client.start_and_wait(pipe_code="p"))
         cause = exc_info.value.__cause__
         assert isinstance(cause, httpx.ConnectError)
-        assert cause.request.url.path == "/v1/start"
-        assert client._lifecycle_available is True
+        assert cause.request.url.path == "/v1/version"
+        assert client._lifecycle_available is None

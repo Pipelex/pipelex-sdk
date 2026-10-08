@@ -4,8 +4,8 @@
  * Each case runs the command in-process, in a fresh working directory holding the case's files,
  * with the case's environment and stdin, and with `fetch` answering from the case's recorded
  * routes. So the command runs on the SDK's real client: what is checked is what it sends and what
- * it prints, never which client method it called. The Python SDK's command is to run the same
- * table, serving the same answers through its own HTTP mock (`docs/cli.md`, "The case table").
+ * it prints, never which client method it called. The Python SDK's command runs the same table,
+ * serving the same answers through its own HTTP mock (`docs/cli.md`, "The case table").
  *
  * A case that uses a field this suite does not know fails rather than being skipped, so a case
  * added to the table for the other language reaches this one.
@@ -31,6 +31,8 @@ interface Exchange {
   body?: unknown;
   text?: string;
   unreachable?: boolean;
+  lost?: string;
+  base64?: string;
 }
 
 interface FileEntry {
@@ -111,6 +113,8 @@ const EXCHANGE_FIELDS = [
   "body",
   "text",
   "unreachable",
+  "lost",
+  "base64",
 ];
 const PLACEHOLDER_LANGUAGE = "js";
 
@@ -243,9 +247,31 @@ class RecordedApi {
         cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
       });
     }
+    // The request went out and its answer never came back: the time limit ran out, as the
+    // client's own timer reports it, or the connection closed, as undici reports it.
+    if (answer.lost === "timeout") throw new DOMException("Request timed out.", "TimeoutError");
+    if (answer.lost === "closed") {
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+      });
+    }
+    if (answer.lost !== undefined) {
+      this.problems.push(`${key}, call ${call}: lost is "${answer.lost}", not timeout or closed`);
+    }
     const headers = new Headers(answer.headers);
-    let body: string | null = null;
-    if (answer.body !== undefined) {
+    if (headers.get("content-encoding") === "gzip") {
+      // A fetch mock decodes nothing, so a gzip answer, which the table records only broken, fails
+      // here as undici fails it: once the headers have arrived, while the body is read.
+      const failure = new TypeError("terminated", {
+        cause: Object.assign(new Error("incorrect header check"), { code: "Z_DATA_ERROR" }),
+      });
+      const broken = new ReadableStream({ start: (controller) => controller.error(failure) });
+      return new Response(broken, { status: answer.status ?? 200, headers });
+    }
+    let body: string | Uint8Array<ArrayBuffer> | null = null;
+    if (answer.base64 !== undefined) {
+      body = Uint8Array.from(Buffer.from(answer.base64, "base64"));
+    } else if (answer.body !== undefined) {
       body = JSON.stringify(answer.body);
       if (!headers.has("content-type")) headers.set("content-type", "application/json");
     } else if (answer.text !== undefined) {
@@ -501,6 +527,35 @@ describe("an interrupt that lands before any request", () => {
     }
   });
 });
+
+describe("a run the API may have created before the command learned of it", () => {
+  it("says so when the gateway cuts a blocking execute off", async () => {
+    // The gateway's cut-off is told from a runner that is down by the time it took: every reading
+    // of the clock here is half a minute after the one before.
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => (now += 31_000));
+    const testCase: Case = {
+      name: "gateway/execute-cut-off",
+      summary: "A blocking execute the gateway cut off may have run the method.",
+      argv: ["run", "--method", "mt_receipts01"],
+      routes: {
+        "GET /v1/version": [{ answer: "version/bare-runner" }],
+        "POST /v1/execute": [{ status: 504, body: { detail: "Gateway Timeout" } }],
+      },
+      expect: { exit_code: 1, stdout: "", stderr: [RUN_MAY_HAVE_STARTED] },
+    };
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pipelex-sdk-cli-")));
+    try {
+      const { outcome, api } = await runCase(testCase, root);
+      check(testCase, outcome, api);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+const RUN_MAY_HAVE_STARTED =
+  "A run may have started on the server without the command learning of it, so check before starting it again.\n";
 
 describe("the command's packaging", () => {
   it("is the package's one bin, an executable Node script", () => {

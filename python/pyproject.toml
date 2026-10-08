@@ -20,9 +20,14 @@ classifiers = [
 dependencies = [
   "mthds==0.19.0",
   "pydantic>=2.10.6,<3.0.0",
-  "typing-extensions>=4.0.0",
+  "typing-extensions>=4.4.0",
   "httpx>=0.23.0,<1.0.0",
 ]
+
+# The `pipelex-sdk` command, which `uvx pipelex-sdk run …` runs (`docs/cli.md`). Nothing in the SDK
+# imports `pipelex_sdk.cli` or `pipelex_sdk.command`, so the library never loads it.
+[project.scripts]
+pipelex-sdk = "pipelex_sdk.cli:main"
 
 [project.optional-dependencies]
 dev = [

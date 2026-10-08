@@ -105,7 +105,7 @@ Takes the **method** as exactly one of three selectors, the optional target **pi
 
 The prepared `inputs` are passed to the existing run lifecycle unchanged.
 
-**Stopping it.** An optional `signal` stops the preparation between its steps: once it has aborted, neither the pipe I/O request nor any upload starts, and `prepareInputs` throws the abort, as the run wait does. A request already sent runs to its end, so an upload under way finishes, but the file after it is not sent. The signal is not sent to the server.
+**Stopping it.** An optional `signal` stops the preparation between its steps: once it has aborted, neither the pipe I/O request nor any upload starts, and `prepareInputs` throws the abort, as the run wait does. It is read again once each file's bytes are in hand, right before its upload request, so a file whose read outlasted the caller's patience is not sent; `uploadFile` takes the same `signal` in its options for that check. A request already sent runs to its end, so an upload under way finishes, but the file after it is not sent. The signal is not sent to the server.
 
 #### The three selectors
 

@@ -8,7 +8,9 @@
  * - `--help` or `-h` anywhere before `--` asks for the subcommand's help, whatever else is there,
  *   even where a flag's value would be expected: an argument that is exactly one of the two is
  *   never taken as a value, so `run --method --help` prints the help. A parser that would take it
- *   as the value, as `parseArgs` and `argparse` both do, is preceded by a scan for it.
+ *   as the value, as `parseArgs` and `argparse` both do, is followed by a scan for it. The `--`
+ *   that bounds the scan is the one the parser reads as the end of the options, not a `--` a
+ *   string flag took as its value.
  * - An option the subcommand does not take is refused, and so is any positional argument.
  * - A flag given twice is refused, rather than the last one winning: a script written by
  *   `script` passes its own arguments through, and a second `--method` must not quietly run
@@ -57,12 +59,6 @@ export function parseFlags(
     help: { type: "boolean", short: "h" },
   };
   for (const [name, spec] of Object.entries(specs)) options[name] = { type: spec.type };
-  const terminator = args.indexOf("--");
-  const beforeTerminator = terminator < 0 ? args : args.slice(0, terminator);
-  if (beforeTerminator.some((arg) => HELP_ARGUMENTS.includes(arg))) {
-    return { help: true, strings: new Map(), booleans: new Set() };
-  }
-
   const { tokens } = parseArgs({
     args: [...args],
     options,
@@ -70,6 +66,14 @@ export function parseFlags(
     allowPositionals: true,
     tokens: true,
   });
+
+  // The `--` that ends the options is the one the parser reads as such: a `--` a string flag took
+  // as its value ends nothing, so `run --pipe -- --method --help` asks for the help.
+  const terminator = tokens.find((token) => token.kind === "option-terminator");
+  const beforeTerminator = terminator === undefined ? args : args.slice(0, terminator.index);
+  if (beforeTerminator.some((arg) => HELP_ARGUMENTS.includes(arg))) {
+    return { help: true, strings: new Map(), booleans: new Set() };
+  }
 
   // `-h` inside a group of short options, such as `-xh`, asks for the help too.
   if (

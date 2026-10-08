@@ -77,6 +77,26 @@ results = await client.wait_for_result(ack.pipeline_run_id)
 
 Against a bare runner the id identifies the call the runner just answered, but there is no run store behind it: the lifecycle routes are absent, so re-reading it raises `RunLifecycleUnavailableError`. Durable resumption is a hosted capability.
 
+**Holding the id while `start_and_wait` waits.** `start_and_wait` returns only the result, so a caller that waits through it would otherwise learn the run's id only once the run is over. Its `on_started` keyword takes a callable that is called once with the start acknowledgement, a `PipelexRunResultStart`, as soon as the durable run exists and before the first poll: the moment to show the id, log it, or keep it for an interrupt, since a caller that stops waiting (its task cancelled, a `RunTimeoutError`) leaves the run going on the server and resumes it with `wait_for_result(run_id)`.
+
+```python
+def show_run(ack: PipelexRunResultStart) -> None:
+    print(f"Run started: {ack.pipeline_run_id}", file=sys.stderr)
+
+
+results = await client.start_and_wait(
+    method_ref="github.com/acme/methods/receipt-review@v1.0.0",
+    inputs=inputs,
+    on_started=show_run,
+)
+```
+
+It is never called on the blocking path, a bare runner's `POST /v1/execute` or the fallback to it, which has no run id to give before it answers. The acknowledgement is handed over whole, a `method_ref` run's `method_provenance` included. The callable runs synchronously and its return value is ignored; an exception it raises propagates out of `start_and_wait` before anything is polled, and the run it was told about keeps going. It is the Python twin of `@pipelex/sdk`'s `onStarted`, and the `pipelex-sdk` command prints its `Run started:` line through it ([`cli.md`](cli.md)).
+
+**A cancellation before the run exists creates none.** A task cancelled while the `GET /v1/version` handshake is in flight, or while its answer is read, raises `asyncio.CancelledError` before `POST /v1/start` or the blocking `POST /v1/execute` is sent; nor is the execute sent when the cancellation lands while a runner that looked hosted refuses the start. Once the start or the execute is sent, the cancellation stops only the wait, and a started run goes on, by its id.
+
+**Knowing whether a run may exist.** `on_starting` takes a callable with no argument, called right before each request that may create a run is sent: `POST /v1/start`, and the blocking `POST /v1/execute` of a bare runner or of the fallback to it, so it is called twice when a runner that looked hosted refuses the start. Until it is called no run exists, and once the task is cancelled it is not called and no such request is sent, so a caller that stops waiting before then can say that no run was started; from then until `on_started`, a run may exist that the API has not yet named. It runs synchronously and its return value is ignored; an exception it raises propagates before the request is sent. It is the twin of `@pipelex/sdk`'s `onStarting`, and the `pipelex-sdk` command words its interrupt message by it ([`cli.md`](cli.md)).
+
 ## `main_stuff` — the output
 
 `main_stuff` is the resolved content of the run's main output and is always present for a completed run read in full, or read with a selection that names it (a selection that leaves it out reads it as `None`, [above](#reading-only-some-artifacts)). On the hosted path it is the `main_stuff.json` artifact; on the blocking path the SDK resolves it out of the returned working memory through the response's `main_stuff_name`. Both deliver the same content shape, so there is no shape-guessing and no path-dependent branch to write. A completed run that cannot deliver one raises `MissingMainStuffError` rather than handing back a half-filled result.

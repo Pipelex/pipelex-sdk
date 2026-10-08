@@ -987,6 +987,29 @@ describe("prepareInputs and the caller's signal", () => {
     expect(client.uploadCalls).toHaveLength(1);
   });
 
+  it("uploads nothing once the signal aborted while a file's bytes were read", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+    const controller = new AbortController();
+    // A Blob whose read outlasts the caller's patience: the abort lands while its bytes are read.
+    const slow = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const read = slow.arrayBuffer.bind(slow);
+    slow.arrayBuffer = async () => {
+      const bytes = await read();
+      controller.abort();
+      return bytes;
+    };
+
+    const failure = await prepareInputs(client, {
+      files: FILES,
+      inputs: { photo: slow },
+      signal: controller.signal,
+    }).catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(DOMException);
+    expect(failure).toBe(controller.signal.reason);
+    expect(client.uploadCalls).toHaveLength(0);
+  });
+
   it("sends nothing when the signal had aborted before the call", async () => {
     const client = makeClient([topLevel("photo", image())]);
     const controller = new AbortController();

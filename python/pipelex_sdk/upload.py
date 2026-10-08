@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import mimetypes
 from pathlib import Path
 from typing import Protocol
@@ -63,11 +64,16 @@ def _guess_content_type(filename: str) -> str:
 
 
 def _read_path(path: Path) -> bytes:
-    """Read a filesystem path into bytes, mapping read failures to `InvalidLocalSourceError`."""
+    """Read a filesystem path into bytes, mapping read failures to `InvalidLocalSourceError`.
+
+    The message names the system's error code (`ENOENT`, `EACCES`, …), the one `@pipelex/sdk`'s
+    `uploadFile` names, so the refusal reads the same from either SDK.
+    """
     try:
         return path.read_bytes()
     except OSError as exc:
-        msg = f'Local file cannot be read: "{path}" ({type(exc).__name__}).'
+        code = errno.errorcode.get(exc.errno, "read error") if exc.errno is not None else "read error"
+        msg = f'Local file cannot be read: "{path}" ({code}).'
         raise InvalidLocalSourceError(msg, source=str(path)) from exc
 
 
@@ -86,7 +92,7 @@ def _map_upload_error(error: ApiResponseError | ApiUnreachableError, filename: s
     """Translate a raw `upload()` transport error into the matching preparation error."""
     if isinstance(error, ApiUnreachableError):
         msg = f'Upload of "{filename}" could not reach the Pipelex API ({error.code or "unreachable"}).'
-        return UploadTransportError(msg)
+        return UploadTransportError(msg, filename=filename)
     match error.status:
         case 413:
             detail = error.server_message or "asset exceeds the service size limit"
@@ -95,14 +101,16 @@ def _map_upload_error(error: ApiResponseError | ApiUnreachableError, filename: s
             return UploadAuthenticationError(
                 f'Upload of "{filename}" was not authorized ({error.status}). Check the configured Pipelex API key.',
                 status=error.status,
+                filename=filename,
             )
         case 404:
             return UnsupportedUploadCapabilityError(
-                "The configured Pipelex deployment does not support file upload (no /v1/upload route). Upload is a hosted Pipelex capability."
+                "The configured Pipelex deployment does not support file upload (no /v1/upload route). Upload is a hosted Pipelex capability.",
+                filename=filename,
             )
         case _:
             detail = error.server_message or error.status_text
-            return UploadTransportError(f'Upload of "{filename}" failed ({error.status}): {detail}.')
+            return UploadTransportError(f'Upload of "{filename}" failed ({error.status}): {detail}.', status=error.status, filename=filename)
 
 
 async def upload_file(
@@ -125,6 +133,10 @@ async def upload_file(
     # not free the loop (and this matches the JS SDK, which also reads off-loop but encodes inline).
     data, resolved_name, resolved_type = await asyncio.to_thread(_to_asset_bytes, source, filename, content_type)
     encoded = base64.b64encode(data).decode("ascii")
+    # A cancellation that landed once the bytes were read, while they were encoded, stops here, before
+    # the upload request, rather than at the request's own first wait: nothing is uploaded once the
+    # caller has stopped.
+    await asyncio.sleep(0)
     try:
         uploaded = await client.upload(UploadInput(filename=resolved_name, data=encoded, content_type=resolved_type))
     except (ApiResponseError, ApiUnreachableError) as exc:

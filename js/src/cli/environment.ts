@@ -2,10 +2,11 @@
  * What the command reads from its environment, and the client it builds from it.
  *
  * The key comes from `PIPELEX_API_KEY` and nowhere else: a flag would put it in the shell's history
- * and the process list. The API's address comes from `PIPELEX_BASE_URL`, the hosted API by
- * default. An empty variable counts as unset. No `.env` file is read: a command started through
- * `npx` from wherever the person stands would otherwise pick a credential from whichever file it
- * found there.
+ * and the process list. The API's address comes from `PIPELEX_BASE_URL`, the hosted API when it
+ * is not set. An empty variable counts as unset, except `PIPELEX_BASE_URL`: an empty one, such as
+ * an unfilled CI secret, reaches the SDK, which refuses it, rather than send the key to the hosted
+ * API by default. No `.env` file is read: a command started through `npx` from wherever the person
+ * stands would otherwise pick a credential from whichever file it found there.
  */
 
 import {
@@ -23,7 +24,7 @@ export const BASE_URL_VARIABLE = "PIPELEX_BASE_URL";
 /**
  * The poll interval in milliseconds, for tests only: the recorded case table sets it to `0`, so
  * that a run answered "still running" is polled again at once. A person has no reason to set it;
- * unset, the SDK's own interval applies. The Python command is to read the same variable.
+ * unset, the SDK's own interval applies. The Python command reads the same variable.
  */
 export const POLL_INTERVAL_VARIABLE = "PIPELEX_SDK_POLL_INTERVAL_MS";
 
@@ -67,7 +68,9 @@ export function makeClient(io: CommandIO): PipelexApiClient {
   try {
     return new PipelexApiClient({
       apiKey,
-      baseUrl: variable(io, BASE_URL_VARIABLE) ?? DEFAULT_API_BASE_URL,
+      // Absent, not empty, means the hosted API: the SDK refuses an empty base URL on purpose, so
+      // an unfilled CI secret never sends the key to the hosted API by default.
+      baseUrl: io.env[BASE_URL_VARIABLE] ?? DEFAULT_API_BASE_URL,
       appInfo: { name: CLIENT_APP_NAME, version: SDK_VERSION },
     });
   } catch (error) {

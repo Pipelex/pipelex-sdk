@@ -9,7 +9,14 @@
  * long that takes.
  */
 
-import { renderInputsTemplate } from "../index.js";
+import {
+  ApiResponseError,
+  ApiUnreachableError,
+  MissingMainStuffError,
+  PipelineExecuteTimeoutError,
+  RunFailedError,
+  renderInputsTemplate,
+} from "../index.js";
 import type { PipelexApiClient, RunResults } from "../index.js";
 import { parseFlags } from "./args.js";
 import { readBundle } from "./bundle.js";
@@ -23,10 +30,11 @@ import {
   Interrupted,
   untilInterrupted,
   usageError,
+  writeLines,
 } from "./io.js";
 import type { CommandIO } from "./io.js";
 import { checkPipeRef, classifyMethod } from "./method.js";
-import { printResult } from "./present.js";
+import { presentError, printResult } from "./present.js";
 import { crateSelector, describePipe, runSelector } from "./source.js";
 import type { MethodSource } from "./source.js";
 
@@ -82,9 +90,6 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
 
     const prepared = await prepare(client, source, pipe, inputs, io);
     const results: RunResults = await untilInterrupted(() => {
-      // Only once the start is under way: an interrupt that landed before it starts nothing, and
-      // the command says no run was started.
-      stage = { kind: "starting" };
       return client.startAndWaitForResult(
         {
           ...runSelector(source),
@@ -98,6 +103,11 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
           ...(intervalMs === undefined ? {} : { intervalMs }),
           signal: io.interrupt,
           artifacts: ["main_stuff"],
+          onStarting: () => {
+            // Only once a request that may create a run is about to leave: an interrupt before
+            // it, during the version handshake included, starts nothing, and the command says so.
+            stage = { kind: "starting" };
+          },
           onStarted: (ack) => {
             if (io.interrupt.aborted) return;
             stage = { kind: "started", runId: ack.pipeline_run_id };
@@ -109,12 +119,76 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
     printResult(results.main_stuff, io);
     return EXIT_OK;
   } catch (error) {
-    if (!(error instanceof Interrupted)) throw error;
+    if (!(error instanceof Interrupted)) {
+      const runId = waitedOnRun(stage, error);
+      const warning =
+        runId !== undefined
+          ? runStillGoingLine(runId)
+          : mayHaveStarted(stage, error)
+            ? RUN_MAY_HAVE_STARTED_LINE
+            : undefined;
+      if (warning === undefined) throw error;
+      // A failure that says nothing of a run that exists, or may: a wrapper must not read it as a
+      // failed run and pay for another.
+      const presented = presentError(error);
+      writeLines(io, [...presented.lines, warning]);
+      return presented.exitCode;
+    }
     throw new CommandError(interruptMessage(stage, templateOnly), {
       exitCode: EXIT_INTERRUPTED,
       bare: true,
     });
   }
+}
+
+/**
+ * The run a failure leaves going on the server: the run that exists when the failure is not its
+ * own outcome, a failed run or a completed one without its output, but an unreachable API or a
+ * refused poll.
+ */
+function waitedOnRun(stage: Stage, error: unknown): string | undefined {
+  if (stage.kind !== "started") return undefined;
+  if (error instanceof RunFailedError || error instanceof MissingMainStuffError) return undefined;
+  return stage.runId;
+}
+
+/**
+ * The transport failures that prove the request never left, no connection having been made, so
+ * that no run was created by it.
+ */
+const NOTHING_SENT_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/**
+ * Whether a failure met once a request that may create a run was sent, and before the API named
+ * the run, leaves it unknown whether one was created: its answer was lost to a time limit, a
+ * connection that closed once the request had left or a gateway that cut a blocking execute off,
+ * or it came back unreadable, or a gateway answered that it lost or never got the server's answer
+ * (`502`, `504`, RFC 9110). Any other answer from the API, a `503` saying the request was not
+ * handled included, and a failure that proves nothing was sent, say no run was created.
+ */
+function mayHaveStarted(stage: Stage, error: unknown): boolean {
+  if (stage.kind !== "starting") return false;
+  if (error instanceof PipelineExecuteTimeoutError) return true;
+  if (error instanceof ApiUnreachableError) return !NOTHING_SENT_CODES.has(error.code ?? "");
+  if (!(error instanceof ApiResponseError)) return false;
+  return (error.status >= 200 && error.status < 300) || GATEWAY_LOST_ANSWER.has(error.status);
+}
+
+/** The gateway statuses that say the server's answer was lost or never came (RFC 9110). */
+const GATEWAY_LOST_ANSWER: ReadonlySet<number> = new Set([502, 504]);
+
+/** The line under a failure that leaves it unknown whether a run was created. */
+export const RUN_MAY_HAVE_STARTED_LINE =
+  "A run may have started on the server without the command learning of it, so check before starting it again.";
+
+/** The line under a failure met while waiting on a run that exists. */
+export function runStillGoingLine(runId: string): string {
+  return `Run ${runId} may still be going on the server, so do not start it again.`;
 }
 
 /** The method `--method` names, a path being read from disk. */

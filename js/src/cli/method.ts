@@ -1,5 +1,5 @@
 /**
- * How the command names a method and a pipe: the three forms of `--method`, the qualified form of
+ * How the command names a method and a pipe: the forms of `--method`, the qualified form of
  * `--pipe`, and the names and quoting `script` derives from them.
  */
 

@@ -34,9 +34,16 @@ export async function runCommand(argv: readonly string[], io: CommandIO): Promis
         ]);
       case "--help":
       case "-h":
+        // The help wins whatever follows it, as it does in a subcommand.
         io.writeStdout(MAIN_HELP);
         return EXIT_OK;
       case "--version":
+        // Unlike the help, the version is not printed over a command line it does not answer.
+        if (rest.length > 0) {
+          throw usageError(`unexpected argument "${rest[0]}" after --version.`, [
+            "Run 'pipelex-sdk --version' alone to print the version.",
+          ]);
+        }
         io.writeStdout(`${SDK_VERSION}\n`);
         return EXIT_OK;
       case "run":

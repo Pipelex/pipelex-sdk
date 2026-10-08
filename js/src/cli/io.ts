@@ -1,5 +1,5 @@
 /**
- * What the `pipelex-sdk` command reads from and writes to, and the two ways it stops early.
+ * What the `pipelex-sdk` command reads from and writes to, and the ways it stops early.
  *
  * The command never touches `process` directly, apart from the current directory that relative
  * paths resolve against: `src/cli.ts`, the executable, hands it the real streams, environment and
