@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextvars import ContextVar
 from time import monotonic
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 from urllib.parse import quote, urlencode, urlparse, urlsplit
@@ -114,7 +115,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
     from pathlib import Path
 
-    from mthds.protocol.models import ValidationDiagnostic
+    from mthds.protocol.models import ValidationDiagnostic, VersionInfo
     from mthds.protocol.pipe_output import VariableMultiplicity
     from mthds.protocol.pipeline_inputs import PipelineInputs
     from mthds.protocol.stuff import StuffType
@@ -157,9 +158,16 @@ _REASON_BODY_LIMIT = 500
 # against mislabeling a fast 503 (runner genuinely down) as a timeout.
 _GATEWAY_TIMEOUT_THRESHOLD_SECONDS = 28.0
 
-# The `ApiUnreachableError.code` of a request this client's own timeout cut off, the JS SDK's code for
-# the same case. Every other transport failure carries the httpx exception's class name instead.
+# The `ApiUnreachableError.code` of a request that reached the server and that this client's own timeout
+# cut off while it was sent or answered, the JS SDK's code for the same case. Every other transport
+# failure carries the httpx exception's class name instead, a connect or pool timeout included.
 _ABORT_TIMEOUT_CODE = "ABORT_TIMEOUT"
+
+# The time limit of the one request an inherited route sends, when this client's override of that route
+# gives it another than the base's blocking-execute ceiling (`version`, `start`). The base builds and
+# sends the request itself, through `_send`, which reads this; a context variable keeps the choice to
+# the task that made it, so two calls in flight on one client never see each other's.
+_REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEOUT_OVERRIDE", default=None)
 
 _PIPELEX_API_KEY_ENV = "PIPELEX_API_KEY"
 _PIPELEX_BASE_URL_ENV = "PIPELEX_BASE_URL"
@@ -356,13 +364,17 @@ class PipelexAPIClient(MthdsAPIClient):
         exception. Non-2xx interpretation stays the caller's: an answer is returned raw, whatever its status.
 
         Raises:
-            ApiUnreachableError: No answer came back. `code` is `ABORT_TIMEOUT` for a timeout (what the
-                `execute` override reads to tell the hosted gateway's cut-off), and the httpx transport
-                exception's class name (`ConnectError`, …) otherwise.
+            ApiUnreachableError: No answer came back. `code` is `ABORT_TIMEOUT` when the request reached
+                the server and the time limit ran out while it was sent or answered (`ReadTimeout`,
+                `WriteTimeout`), which is what the `execute` override reads to tell the hosted gateway's
+                cut-off. Any other failure carries the httpx transport exception's class name
+                (`ConnectError`, …), a `ConnectTimeout` or a `PoolTimeout` included: neither sent the
+                request, so neither can be the gateway's cut-off however long it took.
         """
+        timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
         try:
-            return await super()._send(method, url, content=content, request_timeout=request_timeout)
-        except httpx.TimeoutException as exc:
+            return await super()._send(method, url, content=content, request_timeout=request_timeout if timeout is None else timeout)
+        except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
             msg = f"Could not reach Pipelex API at {self.base_url} (timeout)"
             raise ApiUnreachableError(msg, api_url=self.base_url, code=_ABORT_TIMEOUT_CODE) from exc
         except httpx.TransportError as exc:
@@ -613,6 +625,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
         _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
+        token = _REQUEST_TIMEOUT_OVERRIDE.set(_start_request_timeout_seconds(self.request_timeout_seconds, merged_extra))
         try:
             result = await super().start(
                 pipe_code=pipe_code,
@@ -628,6 +641,8 @@ class PipelexAPIClient(MthdsAPIClient):
             # status, the body and the URL, which is all the missing-route test reads.
             self._raise_if_lifecycle_unavailable(status=exc.status, body=exc.response_body, url=exc.request_url or self._url("start"))
             raise
+        finally:
+            _REQUEST_TIMEOUT_OVERRIDE.reset(token)
         # Re-validate the base ack into the Pipelex-branded subtype (types `method_provenance`;
         # any other implementation extra keeps riding `model_extra`).
         return PipelexRunResultStart.model_validate(result.model_dump())
@@ -940,19 +955,45 @@ class PipelexAPIClient(MthdsAPIClient):
             wait_seconds = min(max(opts.interval_seconds, retry_seconds), opts.timeout_seconds - elapsed)
             await asyncio.sleep(wait_seconds)
 
+    @override
+    async def version(self) -> VersionInfo:
+        """Protocol + runner versions — `GET /v1/version` (public), the handshake for feature detection.
+
+        Identical to the inherited route, except for its time limit: the answer is small and the
+        hosted gateway caps responses at ~30s, so it gets the poll budget rather than the
+        blocking-execute ceiling, as `@pipelex/sdk`'s `version` does. `start_and_wait` asks it
+        first, and a host that accepts the connection and never answers must not hold the run for
+        twenty minutes before the start is even sent.
+
+        Raises:
+            ApiResponseError: If the server answers non-2xx.
+            ApiUnreachableError: No answer came back.
+        """
+        token = _REQUEST_TIMEOUT_OVERRIDE.set(_POLL_REQUEST_TIMEOUT_SECONDS)
+        try:
+            return await super().version()
+        finally:
+            _REQUEST_TIMEOUT_OVERRIDE.reset(token)
+
     async def _supports_run_lifecycle(self) -> bool:
         """Whether the configured server serves the durable run lifecycle, decided via the
         `GET /v1/version` handshake and cached for the client's lifetime. A bare `pipelex-api`
-        runner has no run store; anything else is assumed hosted. When the handshake itself fails,
-        assume hosted (the SDK default) and let the start call surface the real error.
+        runner has no run store; anything else is assumed hosted. When the handshake gets an answer
+        it cannot read as a version, assume hosted (the SDK default) and let the start call surface
+        the real error.
+
+        Raises:
+            ApiUnreachableError: The handshake got no answer. Nothing is cached, so the next call asks
+                again, and no start is sent to a host that did not answer: sending it would wait a
+                second time for the same silence.
         """
         if self._lifecycle_available is None:
             try:
                 info = await self.version()
-            # A non-2xx answer (`ApiResponseError`), no answer at all (`ApiUnreachableError`, which `start`
-            # then meets and raises in turn), an answer httpx could not decode (`httpx.HTTPError`) or a body
-            # that is no version: assume hosted.
-            except (ApiResponseError, ApiUnreachableError, httpx.HTTPError, ValidationError):
+            # A non-2xx answer (`ApiResponseError`), an answer httpx could not decode (`httpx.HTTPError`)
+            # or a body that is no version: the server answered, so assume hosted. No answer at all
+            # (`ApiUnreachableError`) propagates, uncached.
+            except (ApiResponseError, httpx.HTTPError, ValidationError):
                 self._lifecycle_available = True
             else:
                 implementation = (info.model_extra or {}).get("implementation")
@@ -1015,6 +1056,9 @@ class PipelexAPIClient(MthdsAPIClient):
         # Refused before anything starts, so an empty selection never costs a run.
         _artifact_selection(artifacts)
         if await self._supports_run_lifecycle():
+            # A cancellation that landed while the handshake's answer was read stops here, before
+            # the start is sent, rather than at the start's own first wait.
+            await asyncio.sleep(0)
             try:
                 started = await self.start(
                     pipe_code=pipe_code,
@@ -1029,6 +1073,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 )
             except RunLifecycleUnavailableError:
                 self._lifecycle_available = False
+                await asyncio.sleep(0)
                 return await self._execute_blocking(
                     pipe_code=pipe_code,
                     mthds_contents=mthds_contents,
@@ -1392,7 +1437,9 @@ class PipelexAPIClient(MthdsAPIClient):
         resolution failures are those of `resolve`; an artifact the server cannot derive is a
         `500`.
         """
-        body = request.model_dump(mode="json", exclude_none=True)
+        # `all_pipes` and `include_files` default to False on the server too, so a flag left at its
+        # default is not sent, as `@pipelex/sdk` sends it: the two SDKs put the same body on the wire.
+        body = request.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
         raw = await self._request_product("POST", "pipe-io", body=body, request_timeout=_crate_request_timeout_seconds(request.method_ref))
         return PipeIOResponseAdapter.validate_python(raw)
 
@@ -1651,6 +1698,22 @@ def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, m
         raise PipelineRequestError(msg)
 
 
+def _start_request_timeout_seconds(blocking_seconds: float, merged_extra: dict[str, Any] | None) -> float:
+    """The time limit of `POST /v1/start`, by `@pipelex/sdk`'s rule.
+
+    The start answers its `202` fast, so the poll budget normally fits, with two exceptions that get
+    the blocking-execute ceiling instead. A method bundle riding the `files` or `bundle_b64` extension
+    can make the request body multi-megabyte, and the whole upload is charged against the limit: the
+    same payload must not time out on the durable path yet succeed on the blocking fallback. And a
+    `method_ref` start makes the server fetch the package before the acknowledgement, which can run
+    well past 30s on a cold cache; cutting it off would blame the network for a server still fetching.
+    """
+    extension = merged_extra or {}
+    carries_bundle = bool(extension.get("files")) or bool(extension.get("bundle_b64"))
+    fetches_package = bool(extension.get("method_ref"))
+    return blocking_seconds if carries_bundle or fetches_package else _POLL_REQUEST_TIMEOUT_SECONDS
+
+
 def _crate_request_timeout_seconds(method_ref: str | None) -> float:
     """The request budget for a call carrying a crate closure (`/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`):
     the management default, unless the closure is a `method_ref` the server may have to fetch
@@ -1790,8 +1853,11 @@ def _is_valid_base_url(value: str) -> bool:
     Endpoints compose as `{base}/v1/{endpoint}`, so a path-prefixed base would double
     the prefix.
     """
+    # `urlsplit`, never `urlparse`: `urlparse` moves `;params` out of the path, so
+    # `https://api.example.com/;token=…` would pass as host-only and send its token in every request
+    # line. Split, the `;…` stays in the path, which the rule refuses, as WHATWG's parser reads it.
     try:
-        parsed = urlparse(value)
+        parsed = urlsplit(value)
     except ValueError:
         return False
     if parsed.scheme not in {"http", "https"}:

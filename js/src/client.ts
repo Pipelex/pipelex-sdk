@@ -1463,8 +1463,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Whether the configured server serves the durable run lifecycle, decided
    * via the `GET /v1/version` handshake and cached for the client's lifetime. A
    * bare `pipelex-api` runner has no run store; anything else is assumed hosted.
-   * When the handshake itself fails, assume hosted (the SDK default) and let the
-   * start call surface the real error.
+   * When the handshake gets an answer it cannot read as a version, assume hosted
+   * (the SDK default) and let the start call surface the real error.
+   *
+   * @throws {ApiUnreachableError} The handshake got no answer. Nothing is cached,
+   *   so the next call asks again, and no start is sent to a host that did not
+   *   answer: sending it would wait a second time for the same silence.
    */
   private async supportsRunLifecycle(): Promise<boolean> {
     if (this.lifecycleAvailable === undefined) {
@@ -1474,7 +1478,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         this.lifecycleAvailable = !(
           typeof impl === "string" && impl === BARE_RUNNER_IMPLEMENTATION
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof ApiUnreachableError) throw error;
         this.lifecycleAvailable = true;
       }
     }

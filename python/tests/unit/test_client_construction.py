@@ -92,6 +92,9 @@ class TestClientConstruction:
             ),
             ("http://admin:hunter2@localhost:8081/v1", '"http://localhost:8081" with credentials and a path (not shown)', ["admin", "hunter2"]),
             ("https://API.Example.com:443/v1", '"https://api.example.com" with a path (not shown)', []),
+            # `;params` belong to the path, as WHATWG's parser reads them: accepted, the token would ride
+            # every request line.
+            ("https://api.example.com/;token=s3cret", '"https://api.example.com" with a path (not shown)', ["token", "s3cret"]),
             ("http://[::1]:8081/v1", '"http://[::1]:8081" with a path (not shown)', []),
             ("user:hunter2@api.example.com", "(not shown: it is not an http or https URL)", ["user", "hunter2", "api.example.com"]),
             ("not a url hunter2", "(not shown: it is not an absolute URL)", ["hunter2"]),

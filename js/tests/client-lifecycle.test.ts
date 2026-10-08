@@ -181,6 +181,32 @@ describe("PipelexApiClient.startAndWaitForResult (hosted — durable start+poll 
     expect(versionCalls).toHaveLength(1);
   });
 
+  it("raises an unanswered handshake at once, sends no start, and asks again next time", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } }))
+      .mockResolvedValueOnce(jsonResponse(200, HOSTED_VERSION))
+      .mockResolvedValueOnce(
+        jsonResponse(202, { pipeline_run_id: "r1", state: "STARTED", created_at: "t0" }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { pipeline_run_id: "r1", main_stuff: {} }));
+    const paths = (): string[] => fetchSpy.mock.calls.map((call) => new URL(String(call[0])).pathname);
+
+    // A start sent to a host that did not answer would wait a second time for the same silence.
+    const err = await client.startAndWaitForResult({ pipe_code: "p" }).then(
+      () => expect.fail("expected the handshake's failure"),
+      (thrown: unknown) => thrown,
+    );
+    expect(err).toBeInstanceOf(ApiUnreachableError);
+    expect((err as ApiUnreachableError).code).toBe("ECONNREFUSED");
+    expect(paths()).toEqual(["/v1/version"]);
+
+    // Nothing was cached, so the next call asks again, and runs once the server answers.
+    await client.startAndWaitForResult({ pipe_code: "p" });
+    expect(paths()).toEqual(["/v1/version", "/v1/version", "/v1/start", "/v1/runs/r1/results"]);
+  });
+
   it("parses the usage pair on the hosted results payload, records verbatim", async () => {
     const client = makeClient();
     const tokensUsages = [

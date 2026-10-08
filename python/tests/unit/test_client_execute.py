@@ -113,6 +113,19 @@ class TestClientExecute:
             asyncio.run(client.execute(pipe_code="p"))
         assert exc_info.value.code == "ConnectError"
 
+    @pytest.mark.parametrize("failure", [httpx.ConnectTimeout, httpx.PoolTimeout])
+    def test_a_connection_that_timed_out_past_ceiling_stays_unreachable(
+        self, mocker: MockerFixture, unreachable_client: UnreachableClientBuilder, failure: type[httpx.TimeoutException]
+    ) -> None:
+        client = unreachable_client(failure)
+        # A connect or a pool wait that ran out after 30s sent no request: no gateway saw it, so it is no
+        # gateway cut-off, however long it took.
+        mocker.patch("pipelex_sdk.client.monotonic", side_effect=[0.0, 30.5])
+
+        with pytest.raises(ApiUnreachableError) as exc_info:
+            asyncio.run(client.execute(pipe_code="p"))
+        assert exc_info.value.code == failure.__name__
+
     def test_fast_503_stays_an_api_response_error(self, mocker: MockerFixture) -> None:
         client = self._client()
         mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(503)))

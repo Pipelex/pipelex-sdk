@@ -271,18 +271,12 @@ class RecordedApi {
   }
 }
 
-/**
- * A request body as JSON, without the top-level keys sent as `null` or `false`, which mean
- * "absent": the Python SDK's request models send their unset flags as `false` where this one
- * leaves them out, and the API reads both the same way.
- */
+/** A request body as JSON, without the top-level keys sent as `null`, which mean "absent". */
 function sentBody(body: RequestInit["body"]): unknown {
   if (typeof body !== "string") return body ?? null;
   const parsed: unknown = JSON.parse(body);
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return parsed;
-  return Object.fromEntries(
-    Object.entries(parsed).filter(([, value]) => value !== null && value !== false),
-  );
+  return Object.fromEntries(Object.entries(parsed).filter(([, value]) => value !== null));
 }
 
 // ── Running a case ───────────────────────────────────────────────────────────────────────────

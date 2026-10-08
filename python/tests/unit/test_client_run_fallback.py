@@ -22,11 +22,6 @@ if TYPE_CHECKING:
 
     from tests.unit.conftest import UnreachableClientBuilder
 
-if TYPE_CHECKING:
-    from pytest_mock import MockerFixture
-
-    from tests.unit.conftest import UnreachableClientBuilder
-
 _BASE_URL = "http://localhost:8081"
 
 _HOSTED_VERSION = {"protocol_version": "0.6.0", "implementation": "pipelex-hosted", "runner_version": "0.9.0"}
@@ -89,6 +84,37 @@ def _response(status_code: int, *, json: object = None, headers: dict[str, str] 
     if json is None:
         return httpx.Response(status_code, headers=headers or {}, request=request)
     return httpx.Response(status_code, json=json, headers=headers or {}, request=request)
+
+
+class _Server:
+    """A server answering each path from a queue, and recording each request's path and read timeout,
+    the limit the client gave it; an answer that is an exception class is raised as no answer at all.
+    """
+
+    def __init__(self, answers: dict[str, list[httpx.Response | type[httpx.TransportError]]]) -> None:
+        self.answers = answers
+        self.requests: list[tuple[str, float | None]] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        timeout = cast("dict[str, float | None]", request.extensions["timeout"])
+        self.requests.append((request.url.path, timeout["read"]))
+        answer = self.answers[request.url.path].pop(0)
+        if isinstance(answer, httpx.Response):
+            return answer
+        msg = f"simulated {answer.__name__}"
+        raise answer(msg, request=request)
+
+    def client(self) -> PipelexAPIClient:
+        client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
+        return client
+
+
+def _hosted_run(run_id: str) -> dict[str, list[httpx.Response | type[httpx.TransportError]]]:
+    return {
+        "/v1/start": [httpx.Response(202, json={"pipeline_run_id": run_id, "state": "STARTED", "created_at": "t0"})],
+        f"/v1/runs/{run_id}/results": [httpx.Response(200, json={"pipeline_run_id": run_id, "main_stuff": {}})],
+    }
 
 
 def _urls(send_mock: Any) -> list[str]:
@@ -625,3 +651,55 @@ class TestClientRunFallback:
 
         with pytest.raises(ApiUnreachableError):
             asyncio.run(client.get_run_result("r"))
+
+    # ── Time limits and an unanswered handshake ──────────────────
+
+    def test_the_handshake_and_a_plain_start_take_the_poll_budget(self) -> None:
+        """Both answer fast, so neither waits the blocking ceiling: a host that accepts the connection and never
+        answers costs the poll budget, not twenty minutes, before anything is known.
+        """
+        server = _Server({"/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)], **_hosted_run("r1")})
+
+        asyncio.run(server.client().start_and_wait(pipe_code="p", mthds_contents=["x"]))
+
+        assert server.requests == [("/v1/version", 30.0), ("/v1/start", 30.0), ("/v1/runs/r1/results", 30.0)]
+
+    @pytest.mark.parametrize(
+        "selection",
+        [
+            {"method_ref": "github.com/acme/methods/receipt-review@v1.0.0"},
+            {"pipe_code": "p", "extra": {"files": {"main.mthds": 'domain = "d"'}}},
+            {"pipe_code": "p", "extra": {"bundle_b64": "UEsDBA=="}},
+        ],
+        ids=["method_ref", "files", "bundle_b64"],
+    )
+    def test_a_start_that_fetches_or_uploads_a_method_takes_the_blocking_ceiling(self, selection: dict[str, Any]) -> None:
+        """A `method_ref` start makes the server fetch the package before it answers, and a bundle can make the body
+        multi-megabyte, so each gets the client's blocking ceiling, as `@pipelex/sdk`'s start does.
+        """
+        server = _Server({"/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)], **_hosted_run("r1")})
+        client = server.client()
+
+        asyncio.run(client.start_and_wait(**selection))
+
+        assert server.requests[1] == ("/v1/start", client.request_timeout_seconds)
+        assert client.request_timeout_seconds == 1200.0
+
+    def test_an_unanswered_handshake_sends_no_start_and_is_asked_again(self) -> None:
+        server = _Server(
+            {
+                "/v1/version": [httpx.ConnectTimeout, httpx.Response(200, json=_HOSTED_VERSION)],
+                **_hosted_run("r1"),
+            }
+        )
+        client = server.client()
+
+        with pytest.raises(ApiUnreachableError) as exc_info:
+            asyncio.run(client.start_and_wait(pipe_code="p"))
+        assert exc_info.value.code == "ConnectTimeout"
+        assert [path for path, _ in server.requests] == ["/v1/version"]
+        assert client._lifecycle_available is None
+
+        # Nothing was cached, so the next call asks again, and runs once the server answers.
+        asyncio.run(client.start_and_wait(pipe_code="p"))
+        assert [path for path, _ in server.requests] == ["/v1/version", "/v1/version", "/v1/start", "/v1/runs/r1/results"]

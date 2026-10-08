@@ -648,11 +648,7 @@ class TestPrepareInputs:
         assert len(prepared.uploads) == 1
         first_call = send.await_args_list[0]
         assert first_call.args[1] == f"{_BASE_URL}/v1/pipe-io"
-        assert json.loads(first_call.kwargs["content"]) == {
-            "files": [{"content": 'domain = "smoke"', "source": "smoke.mthds"}],
-            "all_pipes": False,
-            "include_files": False,
-        }
+        assert json.loads(first_call.kwargs["content"]) == {"files": [{"content": 'domain = "smoke"', "source": "smoke.mthds"}]}
         assert first_call.kwargs["request_timeout"] == 30.0
 
     def test_wires_a_method_ref_through_the_real_client(self, mocker: MockerFixture) -> None:
@@ -663,12 +659,7 @@ class TestPrepareInputs:
         asyncio.run(client.prepare_inputs(method_ref="github.com/o/r", pipe_ref="smoke.echo", inputs={"note": "hi"}))
 
         call = send.await_args_list[0]
-        assert json.loads(call.kwargs["content"]) == {
-            "method_ref": "github.com/o/r",
-            "pipe_ref": "smoke.echo",
-            "all_pipes": False,
-            "include_files": False,
-        }
+        assert json.loads(call.kwargs["content"]) == {"method_ref": "github.com/o/r", "pipe_ref": "smoke.echo"}
         # The server may clone the repository before it answers.
         assert call.kwargs["request_timeout"] == 180.0
 

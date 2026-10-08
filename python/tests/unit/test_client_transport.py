@@ -78,11 +78,18 @@ class TestClientTransport:
         assert err.api_url == _BASE_URL
         assert err.code == "ConnectError"
 
-    def test_request_product_timeout_maps_to_unreachable_abort(self, unreachable_client: UnreachableClientBuilder) -> None:
-        client = unreachable_client(httpx.ConnectTimeout)
+    def test_request_product_read_timeout_maps_to_unreachable_abort(self, unreachable_client: UnreachableClientBuilder) -> None:
+        client = unreachable_client(httpx.ReadTimeout)
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client._request_product("GET", "me"))
         assert exc_info.value.code == "ABORT_TIMEOUT"
+
+    def test_request_product_connect_timeout_carries_its_class_name(self, unreachable_client: UnreachableClientBuilder) -> None:
+        # A connection that never opened sent nothing: it is not the client's own time limit on a request.
+        client = unreachable_client(httpx.ConnectTimeout)
+        with pytest.raises(ApiUnreachableError) as exc_info:
+            asyncio.run(client._request_product("GET", "me"))
+        assert exc_info.value.code == "ConnectTimeout"
 
     # ── _request_json (plainer regime) ───────────────────────────────
 
