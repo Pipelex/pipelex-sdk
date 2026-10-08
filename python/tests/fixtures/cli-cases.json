@@ -2258,6 +2258,25 @@
       }
     },
     {
+      "name": "script/name-with-backslash",
+      "summary": "--name may not hold a \\ on any platform, since Windows reads it as a / and ..\\outside would leave --dir.",
+      "argv": [
+        "script",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--name",
+        "..\\outside"
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --name \"..\\outside\" holds a \\, which Windows reads as a /, and --dir is where the script goes.\n"
+        ],
+        "absent_files": ["..\\outside"]
+      }
+    },
+    {
       "name": "script/control-character",
       "summary": "No value a script carries may hold a control character.",
       "argv": [
