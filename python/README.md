@@ -12,6 +12,18 @@ One-way dependency: `pipelex-sdk → mthds`.
 pip install pipelex-sdk
 ```
 
+## Run a method from the command line
+
+The package publishes the `pipelex-sdk` command, so a method runs on the hosted API with nothing to install but [uv](https://docs.astral.sh/uv/):
+
+```bash
+export PIPELEX_API_KEY=<your key>
+uvx pipelex-sdk run --method github.com/acme/methods/receipt-review@v1.0.0 --inputs-template > inputs.json
+uvx pipelex-sdk run --method github.com/acme/methods/receipt-review@v1.0.0 --inputs inputs.json
+```
+
+`--method` takes a published address, a catalog id (`mt_…`) or a local `.mthds` file or bundle directory. The run's main output is printed as JSON on stdout, and the run id, each uploaded file and every error go to stderr; Ctrl-C leaves the run going on the server and names it. `uvx pipelex-sdk script --method <address | mt_id>` checks the method and writes a short shell script that runs it with this SDK's version pinned. The key comes from `PIPELEX_API_KEY` only, and no `.env` file is read. The command is the twin of `npx @pipelex/sdk`, held to the same recorded cases; [`docs/cli.md`](docs/cli.md) describes it.
+
 ## Configuration
 
 The **API key** resolves, in order: explicit `api_key` argument → `PIPELEX_API_KEY` → anonymous. The token is **optional** — anonymous access works against the protocol routes (e.g. a local bare runner); the product routes return `401`.

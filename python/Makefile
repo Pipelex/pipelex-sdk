@@ -46,6 +46,7 @@ make lock                     - Refresh uv.lock without updating anything
 make install                  - Create local virtualenv & install all dependencies
 make update                   - Upgrade dependencies via uv
 make build                    - Build the wheels
+make test-package             - Build the wheel and run its pipelex-sdk command through uvx, from outside the package
 
 make test                     - Run unit tests
 make e2e-test                 - Run the live e2e legs (needs PIPELEX_E2E_BASE_URL + PIPELEX_API_KEY)
@@ -84,7 +85,7 @@ make li                       - Shorthand -> lock install
 endef
 export HELP
 
-.PHONY: all help env env-verbose check-uv check-uv-verbose lock install install-if-missing update build test e2e-test test-with-prints t tp gha-tests agent-test format lint pyright mypy pylint merge-check-ruff-format merge-check-ruff-lint merge-check-pyright merge-check-mypy merge-check-pylint check-unused-imports fix-unused-imports check-TODOs cleanderived cleanenv cleanall c cc li agent-check
+.PHONY: all help env env-verbose check-uv check-uv-verbose lock install install-if-missing update build test-package test e2e-test test-with-prints t tp gha-tests agent-test format lint pyright mypy pylint merge-check-ruff-format merge-check-ruff-lint merge-check-pyright merge-check-mypy merge-check-pylint check-unused-imports fix-unused-imports check-TODOs cleanderived cleanenv cleanall c cc li agent-check
 
 all help:
 	@echo "$$HELP"
@@ -161,6 +162,26 @@ update: env
 build: env
 	$(call PRINT_TITLE,"Building the wheels")
 	@uv build
+
+# The wheel a release would publish, run as a person runs it: `uvx` installs it in an environment of
+# its own, from a directory outside this package, so neither this checkout nor its virtual
+# environment can stand in for what the wheel holds. The help must name `run`, and `--version` must
+# print the version in pyproject.toml, which the command reads from the installed package's metadata.
+test-package: check-uv
+	$(call PRINT_TITLE,"Testing the built pipelex-sdk command")
+	@set -e; \
+	expected=$$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/'); \
+	dest=$$(mktemp -d); trap 'rm -rf "$$dest"' EXIT; \
+	uv build --quiet --wheel --out-dir "$$dest"; \
+	wheel=$$(ls "$$dest"/*.whl); \
+	cd "$$dest"; \
+	help=$$(uvx --quiet --isolated --from "$$wheel" pipelex-sdk --help); \
+	case "$$help" in *"pipelex-sdk run --method"*) ;; \
+		*) echo "✗ uvx --from <wheel> pipelex-sdk --help did not print the help"; exit 1 ;; esac; \
+	got=$$(uvx --quiet --isolated --from "$$wheel" pipelex-sdk --version); \
+	[ "$$got" = "$$expected" ] \
+		|| { echo "✗ uvx --from <wheel> pipelex-sdk --version printed '$$got', not $$expected"; exit 1; }; \
+	echo "✓ The built pipelex-sdk command answers --help and --version ($$expected)"
 
 ##########################################################################################
 ### CLEANING

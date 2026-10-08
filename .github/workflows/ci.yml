@@ -276,6 +276,9 @@ jobs:
           fi
           echo "python/uv.lock is up to date."
 
+      - name: Run the pipelex-sdk command from the built wheel through uvx
+        run: make test-package
+
   starter-js-lint:
     needs: changes
     if: needs.changes.outputs.starter-js == 'true'
