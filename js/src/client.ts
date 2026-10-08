@@ -935,9 +935,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     };
 
     const url = this.url("start");
-    // `start` returns a 202 fast, so the poll timeout normally fits — with two
-    // exceptions that get the blocking-execute ceiling instead. A method bundle
-    // can make the request *body* multi-megabyte, and the whole upload is
+    // `start` returns a 202 fast, so the poll timeout normally fits — with
+    // exceptions that get the blocking-execute ceiling instead. A method bundle,
+    // inline as `mthds_contents` or in `files`/`bundle_b64`, can make the
+    // request *body* multi-megabyte, and the whole upload is
     // charged against this budget — the same payload must not time out on the
     // durable path yet succeed on the fallback. And a `method_ref` start makes
     // the server FETCH the package before the ack (provenance rides the 202),
@@ -945,7 +946,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     // would surface as `ApiUnreachableError`, blaming the network for a healthy
     // server that is still cloning.
     const needsLongCeiling =
-      hasBundlePayload(options) || nonEmptyString(options.method_ref) !== undefined;
+      hasBundlePayload(options) ||
+      (options.mthds_contents?.length ?? 0) > 0 ||
+      nonEmptyString(options.method_ref) !== undefined;
     const res = await this.requestRaw("POST", url, {
       body: request,
       timeoutMs: needsLongCeiling ? DEFAULT_REQUEST_TIMEOUT_MS : POLL_REQUEST_TIMEOUT_MS,

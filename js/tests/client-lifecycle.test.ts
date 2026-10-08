@@ -1295,3 +1295,38 @@ describe("PipelexApiClient.startAndWaitForResult — an abort before the run exi
     expect(sentPaths(spy)).toEqual(["/v1/version", "/v1/start"]);
   });
 });
+
+describe("PipelexApiClient.start — the time limit of the request", () => {
+  const BLOCKING_CEILING_MS = 1_200_000;
+  const POLL_BUDGET_MS = 30_000;
+
+  /** The delay of the timer `start` arms for its request. */
+  async function startTimeLimit(
+    options: Parameters<PipelexApiClient["start"]>[0],
+  ): Promise<number> {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse(202, { pipeline_run_id: "r1", state: "STARTED", created_at: "t0" }),
+    );
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    await client.start(options);
+    const delays = timer.mock.calls.map(([, delay]) => delay);
+    expect(delays).toHaveLength(1);
+    return Number(delays[0]);
+  }
+
+  it.each([
+    ["an inline bundle as mthds_contents", { mthds_contents: ['domain = "d"\n'] }],
+    ["a bundle in files", { files: { "main.mthds": 'domain = "d"\n' } }],
+    ["a zipped bundle", { bundle_b64: "UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==" }],
+    ["a method_ref the server fetches", { method_ref: "github.com/acme/methods/x@v1.0.0" }],
+  ])("gives the blocking ceiling to a start carrying %s", async (_, options) => {
+    expect(await startTimeLimit(options)).toBe(BLOCKING_CEILING_MS);
+  });
+
+  it("gives the poll budget to a start that carries no bundle", async () => {
+    expect(await startTimeLimit({ pipe_code: "p" })).toBe(POLL_BUDGET_MS);
+    vi.restoreAllMocks();
+    expect(await startTimeLimit({ pipe_code: "p", mthds_contents: [] })).toBe(POLL_BUDGET_MS);
+  });
+});

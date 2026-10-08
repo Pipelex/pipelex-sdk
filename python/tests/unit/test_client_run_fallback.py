@@ -660,7 +660,7 @@ class TestClientRunFallback:
         """
         server = _Server({"/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)], **_hosted_run("r1")})
 
-        asyncio.run(server.client().start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        asyncio.run(server.client().start_and_wait(pipe_code="p"))
 
         assert server.requests == [("/v1/version", 30.0), ("/v1/start", 30.0), ("/v1/runs/r1/results", 30.0)]
 
@@ -668,10 +668,11 @@ class TestClientRunFallback:
         "selection",
         [
             {"method_ref": "github.com/acme/methods/receipt-review@v1.0.0"},
+            {"pipe_code": "p", "mthds_contents": ['domain = "d"']},
             {"pipe_code": "p", "extra": {"files": {"main.mthds": 'domain = "d"'}}},
             {"pipe_code": "p", "extra": {"bundle_b64": "UEsDBA=="}},
         ],
-        ids=["method_ref", "files", "bundle_b64"],
+        ids=["method_ref", "mthds_contents", "files", "bundle_b64"],
     )
     def test_a_start_that_fetches_or_uploads_a_method_takes_the_blocking_ceiling(self, selection: dict[str, Any]) -> None:
         """A `method_ref` start makes the server fetch the package before it answers, and a bundle can make the body

@@ -626,7 +626,9 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
         _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
-        token = _REQUEST_TIMEOUT_OVERRIDE.set(_start_request_timeout_seconds(self.request_timeout_seconds, merged_extra))
+        token = _REQUEST_TIMEOUT_OVERRIDE.set(
+            _start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, mthds_contents)
+        )
         try:
             result = await super().start(
                 pipe_code=pipe_code,
@@ -1715,18 +1717,21 @@ def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, m
         raise PipelineRequestError(msg)
 
 
-def _start_request_timeout_seconds(blocking_seconds: float, merged_extra: dict[str, Any] | None) -> float:
+def _start_request_timeout_seconds(
+    blocking_seconds: float, merged_extra: dict[str, Any] | None, mthds_contents: list[str] | None
+) -> float:
     """The time limit of `POST /v1/start`, by `@pipelex/sdk`'s rule.
 
-    The start answers its `202` fast, so the poll budget normally fits, with two exceptions that get
-    the blocking-execute ceiling instead. A method bundle riding the `files` or `bundle_b64` extension
-    can make the request body multi-megabyte, and the whole upload is charged against the limit: the
-    same payload must not time out on the durable path yet succeed on the blocking fallback. And a
-    `method_ref` start makes the server fetch the package before the acknowledgement, which can run
-    well past 30s on a cold cache; cutting it off would blame the network for a server still fetching.
+    The start answers its `202` fast, so the poll budget normally fits, with exceptions that get the
+    blocking-execute ceiling instead. A method bundle, inline as `mthds_contents` or riding the `files`
+    or `bundle_b64` extension, can make the request body multi-megabyte, and its upload is charged
+    against the limit: the same payload must not time out on the durable path yet succeed on the
+    blocking fallback. And a `method_ref` start makes the server fetch the package before the
+    acknowledgement, which can run well past 30s on a cold cache; cutting it off would blame the
+    network for a server still fetching.
     """
     extension = merged_extra or {}
-    carries_bundle = bool(extension.get("files")) or bool(extension.get("bundle_b64"))
+    carries_bundle = bool(mthds_contents) or bool(extension.get("files")) or bool(extension.get("bundle_b64"))
     fetches_package = bool(extension.get("method_ref"))
     return blocking_seconds if carries_bundle or fetches_package else _POLL_REQUEST_TIMEOUT_SECONDS
 
