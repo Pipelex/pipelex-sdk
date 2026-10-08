@@ -4,14 +4,13 @@ through this SDK's `run`, its version pinned.
 The checks that need no request come first, in this order: the flags, `--pipe`'s form, a control
 character in any value the script would carry, the method's form (a local bundle is refused),
 `--name`, `--dir`, the target file when its name is already known, the key and the base URL. Then, in
-the one `asyncio.run`, one pipe I/O call checks the method and the pipe, which spends no inference, and
+the command's one event loop (`loop.py`), one pipe I/O call checks the method and the pipe, which spends no inference, and
 a catalog id with no `--name` is named from its catalog entry. Last, the file is written, never over an
 existing one, with the permissions of an executable.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 import stat
 from pathlib import Path
@@ -22,6 +21,7 @@ from pipelex_sdk.command.bundle import system_reason
 from pipelex_sdk.command.environment import make_client
 from pipelex_sdk.command.help import SCRIPT_HELP
 from pipelex_sdk.command.io import EXIT_OK, CommandError, usage_error
+from pipelex_sdk.command.loop import before_request, run_until_done
 from pipelex_sdk.command.method import (
     AddressSelector,
     CatalogSelector,
@@ -115,7 +115,12 @@ def run_command_script(args: Sequence[str], io: CommandIO, progress: Progress) -
         _check_free(shown_dir, name)
 
     client = make_client(io)
-    name = asyncio.run(_check_method(client, source, pipe, name, shown_dir, method))
+    unnamed_catalog = source if name is None and isinstance(source, CatalogSource) else None
+    entry_name = run_until_done(_check_method(client, source, pipe, unnamed_catalog))
+    if name is None:
+        # Only a catalog id is left unnamed here, since an address's script is named after it.
+        name = _default_name(kebab_case(entry_name or ""), method)
+        _check_free(shown_dir, name)
 
     if isinstance(source, AddressSource) and address_tag(source.method_ref) is None:
         io.write_stderr(
@@ -134,26 +139,18 @@ async def _check_method(
     client: PipelexAPIClient,
     source: AddressSource | CatalogSource,
     pipe: str | None,
-    name: str | None,
-    shown_dir: str,
-    method: str,
-) -> str:
-    """Check the method and the pipe with one pipe I/O call, and name a catalog id's script from its
-    catalog entry when `--name` did not; return the script's name.
+    unnamed: CatalogSource | None,
+) -> str | None:
+    """Check the method and the pipe with one pipe I/O call, and read the name of the catalog entry
+    `unnamed` names, the method whose script `--name` did not name; return that name, or `None`.
     """
     async with client:
         await describe_pipe(client, source, pipe)
-        if name is not None:
-            return name
-        match source:
-            case CatalogSource(method_id=method_id):
-                entry = await client.get_method(method_id)
-                catalog_name = _default_name(kebab_case(entry.name), method)
-            case AddressSource():
-                msg = "an address's script is named before the method is checked"
-                raise RuntimeError(msg)
-    _check_free(shown_dir, catalog_name)
-    return catalog_name
+        if unnamed is None:
+            return None
+        await before_request()
+        entry = await client.get_method(unnamed.method_id)
+    return entry.name
 
 
 def script_body(name: str, method: str, pipe: str | None) -> str:

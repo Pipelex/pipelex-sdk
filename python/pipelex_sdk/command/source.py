@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, TypeAlias
 from pydantic import ValidationError
 
 from pipelex_sdk.command.io import EXIT_FAILED, CommandError
+from pipelex_sdk.command.loop import before_request
 from pipelex_sdk.command.present import METHOD_DOES_NOT_LOAD_SENTENCE, load_failure_lines
 from pipelex_sdk.crate_models import CrateInvalidReport, MthdsFileItem, PipeIORequest, PipeIOValidReport
 
@@ -104,6 +105,7 @@ async def describe_pipe(client: PipelexAPIClient, source: MethodSource, pipe: st
     """
     selector = crate_selector(source)
     request = PipeIORequest(files=selector.files, method_ref=selector.method_ref, method_id=selector.method_id, pipe_ref=pipe)
+    await before_request()
     try:
         answer = await client.pipe_io(request)
     except ValidationError as exc:

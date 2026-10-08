@@ -9,7 +9,7 @@
  * long that takes.
  */
 
-import { renderInputsTemplate } from "../index.js";
+import { MissingMainStuffError, RunFailedError, renderInputsTemplate } from "../index.js";
 import type { PipelexApiClient, RunResults } from "../index.js";
 import { parseFlags } from "./args.js";
 import { readBundle } from "./bundle.js";
@@ -23,10 +23,11 @@ import {
   Interrupted,
   untilInterrupted,
   usageError,
+  writeLines,
 } from "./io.js";
 import type { CommandIO } from "./io.js";
 import { checkPipeRef, classifyMethod } from "./method.js";
-import { printResult } from "./present.js";
+import { presentError, printResult } from "./present.js";
 import { crateSelector, describePipe, runSelector } from "./source.js";
 import type { MethodSource } from "./source.js";
 
@@ -108,12 +109,36 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
     printResult(results.main_stuff, io);
     return EXIT_OK;
   } catch (error) {
-    if (!(error instanceof Interrupted)) throw error;
+    if (!(error instanceof Interrupted)) {
+      const runId = waitedOnRun(stage, error);
+      if (runId === undefined) throw error;
+      // A failure that says nothing of the run, which goes on: a wrapper must not read it as a
+      // failed run and pay for another.
+      const presented = presentError(error);
+      writeLines(io, [...presented.lines, runStillGoingLine(runId)]);
+      return presented.exitCode;
+    }
     throw new CommandError(interruptMessage(stage, templateOnly), {
       exitCode: EXIT_INTERRUPTED,
       bare: true,
     });
   }
+}
+
+/**
+ * The run a failure leaves going on the server: the run that exists when the failure is not its
+ * own outcome, a failed run or a completed one without its output, but an unreachable API or a
+ * refused poll.
+ */
+function waitedOnRun(stage: Stage, error: unknown): string | undefined {
+  if (stage.kind !== "started") return undefined;
+  if (error instanceof RunFailedError || error instanceof MissingMainStuffError) return undefined;
+  return stage.runId;
+}
+
+/** The line under a failure met while waiting on a run that exists. */
+export function runStillGoingLine(runId: string): string {
+  return `Run ${runId} may still be going on the server, so do not start it again.`;
 }
 
 /** The method `--method` names, a path being read from disk. */

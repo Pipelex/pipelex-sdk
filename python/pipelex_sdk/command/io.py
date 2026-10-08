@@ -6,9 +6,9 @@ environment, and the test suite hands it its own. That is what lets one recorded
 the command in-process, in this SDK and in its JavaScript twin (`docs/cli.md`).
 
 An interrupt is not part of this world: Ctrl-C reaches the command as Python delivers it, a
-`KeyboardInterrupt` while the command does its local work, and, once `asyncio.run` waits on the API,
-a cancellation of the waiting task that `asyncio.run` turns into a `KeyboardInterrupt` when the task
-has unwound. `Progress` holds what the command says when that happens.
+`KeyboardInterrupt` while the command does its local work, and, once the command's event loop waits
+on the API, a cancellation of the waiting task that the loop turns into a `KeyboardInterrupt` when
+the task has unwound (`loop.py`). `Progress` holds what the command says when that happens.
 """
 
 from __future__ import annotations
@@ -42,14 +42,25 @@ class CommandIO:
 
 
 class Progress:
-    """Where the command stands, which decides what an interrupt says.
+    """Where the command stands, which decides what an interrupt and a failure say.
 
     Each stage sets the sentence an interrupt would print there, before the stage begins: nothing
     started yet, a run requested but not acknowledged, a run that exists and keeps going.
+    `waiting_on_run` is the id of a run that exists and whose outcome the command is waiting for: a
+    failure then, other than the run's own, leaves the run going on the server, and the command says
+    so rather than let it read as a failed run.
     """
 
     def __init__(self) -> None:
         self.interrupt_message = "Interrupted."
+        self.waiting_on_run: str | None = None
+
+
+def run_still_going_line(run_id: str) -> str:
+    """The line under a failure met while waiting on a run that exists: the run is not over, and a
+    second one would be paid for again.
+    """
+    return f"Run {run_id} may still be going on the server, so do not start it again."
 
 
 class CommandError(Exception):

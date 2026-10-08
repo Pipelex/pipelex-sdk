@@ -1,9 +1,11 @@
 """What the command reads from its environment, and the client it builds from it.
 
 The key comes from `PIPELEX_API_KEY` and nowhere else: a flag would put it in the shell's history and
-the process list. The API's address comes from `PIPELEX_BASE_URL`, the hosted API by default. An empty
-variable counts as unset. No `.env` file is read: a command started through `uvx` from wherever the
-person stands would otherwise pick a credential from whichever file it found there.
+the process list. The API's address comes from `PIPELEX_BASE_URL`, the hosted API when it is not set. An
+empty variable counts as unset, except `PIPELEX_BASE_URL`: an empty one, such as an unfilled CI secret,
+reaches the SDK, which refuses it, rather than send the key to the hosted API by default. No `.env`
+file is read: a command started through `uvx` from wherever the person stands would otherwise pick a
+credential from whichever file it found there.
 """
 
 from __future__ import annotations
@@ -73,10 +75,12 @@ def make_client(io: CommandIO) -> PipelexAPIClient:
                 "This command reads no .env file; to load one into the shell, run: set -a; . ./.env; set +a",
             ],
         )
+    # Absent, not empty, means the hosted API: the SDK refuses an empty base URL on purpose.
+    base_url = io.env.get(BASE_URL_VARIABLE)
     try:
         return PipelexAPIClient(
             api_key=api_key,
-            base_url=_variable(io, BASE_URL_VARIABLE) or DEFAULT_API_BASE_URL,
+            base_url=DEFAULT_API_BASE_URL if base_url is None else base_url,
             app_info=AppInfo(name=CLIENT_APP_NAME, version=__version__),
         )
     except PipelineRequestError as exc:

@@ -2,15 +2,14 @@
 
 Every check that needs no request comes first, in this order, so that a mistake costs nothing: the
 flags, `--pipe`'s form, the method (a path is read from disk), the inputs, the poll interval, the key
-and the base URL. They run before `asyncio.run`, so a Ctrl-C while stdin is read stops at once. Then,
-in the one `asyncio.run`, the inputs are prepared, which uploads each local file at a file input; the
+and the base URL. They run before the command's event loop starts, so a Ctrl-C while stdin or a file is
+read stops at once (`loop.py`). Then, on that one loop, the inputs are prepared, which uploads each local file at a file input; the
 run is started through the SDK's start-and-wait, whose `on_started` gives the run id to stderr as soon
 as the run exists; and the main output reaches stdout once the run completes, however long that takes.
 """
 
 from __future__ import annotations
 
-import asyncio
 import math
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +21,7 @@ from pipelex_sdk.command.environment import make_client, read_poll_interval
 from pipelex_sdk.command.help import RUN_HELP
 from pipelex_sdk.command.inputs import read_inputs
 from pipelex_sdk.command.io import EXIT_OK, usage_error
+from pipelex_sdk.command.loop import before_request, run_until_done
 from pipelex_sdk.command.method import AddressSelector, CatalogSelector, PathSelector, check_pipe_ref, classify_method
 from pipelex_sdk.command.present import print_result
 from pipelex_sdk.command.source import AddressSource, BundleSource, CatalogSource, crate_selector, describe_pipe, run_selector
@@ -72,8 +72,8 @@ def run_command_run(args: Sequence[str], io: CommandIO, progress: Progress) -> i
     client = make_client(io)
 
     if template_only:
-        return asyncio.run(_print_template(client, source, pipe, io))
-    return asyncio.run(_run(client, source, pipe, inputs, interval_seconds, io, progress))
+        return run_until_done(_print_template(client, source, pipe, io))
+    return run_until_done(_run(client, source, pipe, inputs, interval_seconds, io, progress))
 
 
 def _method_source(method: str) -> MethodSource:
@@ -109,6 +109,7 @@ async def _run(
 
     def on_started(ack: PipelexRunResultStart) -> None:
         progress.interrupt_message = f"Interrupted. Run {ack.pipeline_run_id} keeps going on the server."
+        progress.waiting_on_run = ack.pipeline_run_id
         io.write_stderr(f"Run started: {ack.pipeline_run_id}\n")
 
     # A run takes as long as it takes: the command waits for it until it ends or the person interrupts.
@@ -120,6 +121,9 @@ async def _run(
     selector = run_selector(source)
     async with client:
         prepared = await _prepare(client, source, pipe, inputs, io)
+        await before_request()
+        # Only once the start is under way: an interrupt that landed before it starts nothing, and
+        # the command says no run was started.
         progress.interrupt_message = _STARTING
         results = await client.start_and_wait(
             pipe_code=pipe,
@@ -131,6 +135,7 @@ async def _run(
             artifacts=[RunArtifact.MAIN_STUFF],
             on_started=on_started,
         )
+    progress.waiting_on_run = None
     print_result(results.main_stuff, io)
     return EXIT_OK
 
@@ -149,6 +154,7 @@ async def _prepare(
     if not inputs:
         return inputs
     selector = crate_selector(source)
+    await before_request()
     prepared = await client.prepare_inputs(
         files=selector.files,
         method_ref=selector.method_ref,

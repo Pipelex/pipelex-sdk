@@ -17,6 +17,9 @@ if TYPE_CHECKING:
     from pipelex_sdk.command.io import CommandIO
 
 
+_BYTE_ORDER_MARK = "\ufeff"
+
+
 def _refuse_constant(constant: str) -> NoReturn:
     """Refuse `NaN`, `Infinity` and `-Infinity`, which Python's reader accepts and JSON does not, so an
     inputs file reads here exactly as `JSON.parse` reads it in the JavaScript command.
@@ -47,6 +50,9 @@ def read_inputs(source: str, io: CommandIO) -> dict[str, Any]:
     except UnicodeDecodeError as exc:
         msg = f"{label} is not UTF-8 text."
         raise usage_error(msg) from exc
+    # A leading byte-order mark is dropped, as RFC 8259 lets a JSON reader do: Windows PowerShell 5.1
+    # writes one with `Out-File -Encoding utf8`. A bundle's mark is kept, since it is sent as written.
+    text = text.removeprefix(_BYTE_ORDER_MARK)
     try:
         parsed: Any = json.loads(text, parse_constant=_refuse_constant)
     except ValueError as exc:

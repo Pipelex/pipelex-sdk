@@ -1,4 +1,4 @@
-"""How the command names a method and a pipe: the three forms of `--method`, the qualified form of
+"""How the command names a method and a pipe: the forms of `--method`, the qualified form of
 `--pipe`, and the names and quoting `script` derives from them.
 """
 
@@ -119,6 +119,10 @@ def script_name_problem(name: str) -> str | None:
         return f'"{name}" names a directory'
     if "/" in name:
         return f'"{name}" holds a /, and --dir is where the script goes'
+    # On every platform, so both commands refuse the same names: Windows reads a \ as a /, and
+    # `..\outside` would leave --dir there.
+    if "\\" in name:
+        return f'"{name}" holds a \\, which Windows reads as a /, and --dir is where the script goes'
     if has_control_character(name):
         return "holds a control character"
     return None

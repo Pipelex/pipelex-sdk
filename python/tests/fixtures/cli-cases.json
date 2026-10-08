@@ -1528,6 +1528,36 @@
       }
     },
     {
+      "name": "environment/base-url-params",
+      "summary": "A base URL carrying ;params after its host has a path, which is refused without printing it, rather than sent in every request line.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "env": { "PIPELEX_BASE_URL": "https://api.test/;token=s3cret" },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: PIPELEX_BASE_URL is refused.\n",
+          "Reason: Invalid API base URL \"https://api.test\" with a path (not shown)"
+        ],
+        "stderr_excludes": ["s3cret", "token="]
+      }
+    },
+    {
+      "name": "environment/base-url-empty",
+      "summary": "An empty PIPELEX_BASE_URL, such as an unfilled CI secret, is refused rather than read as unset: the key must not reach the hosted API by default.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "env": { "PIPELEX_BASE_URL": "" },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: PIPELEX_BASE_URL is refused.\n",
+          "Reason: Invalid API base URL (not shown: it is not an absolute URL)"
+        ],
+        "stderr_excludes": ["pk_case_key"]
+      }
+    },
+    {
       "name": "environment/poll-interval-invalid",
       "summary": "The test-only poll interval must be a whole number of milliseconds.",
       "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
@@ -1863,7 +1893,8 @@
           "Error: run run-1 ended with status FAILED.\n",
           "Reason: The model refused the receipt.\n",
           "Next step: Send a clearer scan of the receipt.\n"
-        ]
+        ],
+        "stderr_excludes": ["may still be going"]
       }
     },
     {
@@ -2042,7 +2073,79 @@
       "expect": {
         "exit_code": 1,
         "stdout": "",
-        "stderr": ["Run started: run-1\n", "returned no main stuff"]
+        "stderr": ["Run started: run-1\n", "returned no main stuff"],
+        "stderr_excludes": ["may still be going"]
+      }
+    },
+    {
+      "name": "run/poll-unreachable",
+      "summary": "A poll that gets no answer once the run exists names the run and says it may still be going, so that no second run is started, and exits 1.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          { "answer": "results/running" },
+          { "unreachable": true }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Run started: run-1\n",
+          "Error: could not reach the Pipelex API at http://api.test",
+          "Run run-1 may still be going on the server, so do not start it again.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/poll-server-error",
+      "summary": "A poll the API answers with a server error once the run exists is reported, then the run is named as maybe still going, and the command exits 1.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 502,
+            "headers": { "content-type": "application/problem+json" },
+            "body": {
+              "type": "about:blank",
+              "title": "Bad Gateway",
+              "status": 502,
+              "detail": "The gateway got no answer from the run store."
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Run started: run-1\n",
+          "Error: the API refused the request (status 502).\n",
+          "Reason: The gateway got no answer from the run store.\n",
+          "Run run-1 may still be going on the server, so do not start it again.\n"
+        ]
       }
     },
     {

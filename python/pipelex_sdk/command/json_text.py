@@ -2,7 +2,8 @@ r"""A run's output as JSON text, byte for byte what `@pipelex/sdk`'s command pri
 
 The JavaScript command prints `JSON.stringify(value, null, 2)`. `json.dumps(value, indent=2,
 ensure_ascii=False)` agrees with it on the layout and on the escapes of quotes, backslashes and
-control characters, and parts from it in three places this module follows JavaScript on:
+control characters. Where the two part, this module follows JavaScript, and where JavaScript's output
+comes from how it reads JSON rather than how it prints it, this module prints the answer as it came:
 
 - **Numbers that are not integers in Python.** A JSON number written with a fraction or an exponent
   reads as a float, which Python prints as `1.0` and `1e+16` where JavaScript prints `1` and
@@ -11,10 +12,11 @@ control characters, and parts from it in three places this module follows JavaSc
   `Number.prototype.toString` does. `-0` prints `0`, and a value that is not finite prints `null`.
 - **Lone surrogates.** A string read from JSON can hold an unpaired `\ud800` escape; JavaScript writes
   it back as that escape, where Python would write the code point raw, which no UTF-8 stream can carry.
-- **Nothing else is guessed.** An integer keeps every digit, where JavaScript has already rounded one
-  beyond 2^53 when it read the answer, and an object keeps its keys in the order the answer gave them,
-  where JavaScript prints integer-like keys first. Both differences come from how JavaScript reads
-  JSON rather than how it prints it, and printing the answer as it came is the better of the two.
+- **What JavaScript read differently is printed as it came.** An integer keeps every digit, where
+  JavaScript has already rounded one beyond 2^53 when it read the answer, and an object keeps its keys
+  in the order the answer gave them, where JavaScript prints integer-like keys first. Both differences
+  come from how JavaScript reads JSON rather than how it prints it, and printing the answer as it came
+  is the better choice.
 """
 
 from __future__ import annotations

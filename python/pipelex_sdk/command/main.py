@@ -13,10 +13,11 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from pipelex_sdk.command.help import MAIN_HELP
-from pipelex_sdk.command.io import EXIT_INTERRUPTED, EXIT_OK, Progress, usage_error, write_lines
+from pipelex_sdk.command.io import EXIT_INTERRUPTED, EXIT_OK, Progress, run_still_going_line, usage_error, write_lines
 from pipelex_sdk.command.present import present_error
 from pipelex_sdk.command.run import run_command_run
 from pipelex_sdk.command.script import run_command_script
+from pipelex_sdk.errors import MissingMainStuffError, RunFailedError
 from pipelex_sdk.version import __version__
 
 if TYPE_CHECKING:
@@ -31,8 +32,9 @@ def run_command(argv: Sequence[str], io: CommandIO) -> int:
     and 130 when interrupted. Every failure is printed on stderr before it returns; it never raises.
 
     An interrupt arrives as a `KeyboardInterrupt`: raised where the command stood while it did its
-    local work, and raised by `asyncio.run` once it has cancelled the wait and the wait has unwound.
-    Either way the run, if one started, keeps going on the server, and `Progress` says which it was.
+    local work, and raised by the command's event loop once it has cancelled the wait and the wait has
+    unwound (`loop.py`). Either way the run, if one started, keeps going on the server, and `Progress`
+    says which it was.
     """
     progress = Progress()
     try:
@@ -42,7 +44,14 @@ def run_command(argv: Sequence[str], io: CommandIO) -> int:
         return EXIT_INTERRUPTED
     except Exception as exc:  # the command's top level: every failure is printed as sentences, never as a traceback
         presented = present_error(exc)
-        write_lines(io, presented.lines)
+        lines = presented.lines
+        # A failed run, or a completed one without its output, is the run's own outcome. Any other
+        # failure while waiting on a run that exists, an unreachable API or a refused poll, says
+        # nothing of the run, which goes on: a wrapper must not read it as a failed run and pay for
+        # another.
+        if progress.waiting_on_run is not None and not isinstance(exc, (RunFailedError, MissingMainStuffError)):
+            lines = [*lines, run_still_going_line(progress.waiting_on_run)]
+        write_lines(io, lines)
         return presented.exit_code
 
 

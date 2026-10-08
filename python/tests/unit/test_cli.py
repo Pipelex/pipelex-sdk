@@ -17,11 +17,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import json
+import os
 import signal
+import threading
+import time
+from dataclasses import dataclass
+from enum import StrEnum
 from itertools import starmap
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import httpx
 import pytest
@@ -52,6 +58,9 @@ _FILE_FIELDS = ["path", "text", "base64", "symlink", "directory"]
 _FILE_KINDS = ["text", "base64", "symlink", "directory"]
 _EXCHANGE_FIELDS = ["request_body", "answer", "status", "headers", "body", "text", "unreachable"]
 _PLACEHOLDER_LANGUAGE = "python"
+# How long a command interrupted during a blocked read may take to end: far more than it needs, far less
+# than a command left waiting for the read.
+_BLOCKED_READ_BUDGET_SECONDS = 5.0
 
 
 def _unknown_fields(value: Mapping[str, Any], known: list[str]) -> list[str]:
@@ -112,14 +121,14 @@ def _json_equal(left: Any, right: Any) -> bool:
 
 
 def _sent_body(content: bytes) -> Any:
-    """A request body as JSON, without the top-level keys sent as `null` or `false`, which mean "absent"."""
+    """A request body as JSON, without the top-level keys sent as `null`, which mean "absent"."""
     if not content:
         return None
     parsed: Any = json.loads(content)
     if not isinstance(parsed, dict):
         return parsed
     members = cast("dict[str, Any]", parsed)
-    return {key: value for key, value in members.items() if value is not None and value is not False}
+    return {key: value for key, value in members.items() if value is not None}
 
 
 class _RecordedApi:
@@ -128,9 +137,11 @@ class _RecordedApi:
     origin or without the case's key, is a problem the case reports.
     """
 
-    def __init__(self, case: dict[str, Any], env: dict[str, str]) -> None:
+    def __init__(self, case: dict[str, Any], env: dict[str, str], *, interrupt_while_answering: str | None = None) -> None:
         self.case = case
         self.env = env
+        # A route whose first answer lands with an interrupt, as Ctrl-C pressed while that answer is read.
+        self.interrupt_while_answering = interrupt_while_answering
         self.problems: list[str] = []
         self.calls: dict[str, int] = {}
 
@@ -173,6 +184,9 @@ class _RecordedApi:
                 headers["content-type"] = "application/json"
         elif "text" in answer:
             content = cast("str", answer["text"]).encode("utf-8")
+        if key == self.interrupt_while_answering and call == 1:
+            # The signal lands while the command's task runs, so it is delivered at the task's next wait.
+            signal.raise_signal(signal.SIGINT)
         return httpx.Response(answer.get("status", 200), headers=headers, content=content)
 
     def unserved(self) -> list[str]:
@@ -223,6 +237,206 @@ def _first_missing(text: str, needles: list[str]) -> str | None:
     return None
 
 
+class _EarlyInterrupt(StrEnum):
+    """Where an interrupt that the table cannot express lands, before any request the case records."""
+
+    #: As the command opens its API client, the first thing it does on its event loop.
+    CLIENT = "client"
+    #: While the command reads stdin, before its event loop starts.
+    STDIN = "stdin"
+
+
+@dataclass(frozen=True)
+class _Outcome:
+    exit_code: int
+    stdout: str
+    stderr: str
+    api: _RecordedApi
+
+    @property
+    def shown(self) -> str:
+        return f"stdout:\n{self.stdout}\nstderr:\n{self.stderr}"
+
+
+def _run_case(
+    case: dict[str, Any],
+    root: Path,
+    mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    early: _EarlyInterrupt | None = None,
+    interrupt_while_answering: str | None = None,
+) -> _Outcome:
+    """Run the command on a case, in `root`, with every API client answering from the case's routes."""
+    _materialize(root, case.get("files", []))
+    env = _case_env(case)
+    api = _RecordedApi(case, env, interrupt_while_answering=interrupt_while_answering)
+    real_async_client = httpx.AsyncClient
+
+    def recorded_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        if early == _EarlyInterrupt.CLIENT:
+            signal.raise_signal(signal.SIGINT)
+        return real_async_client(*args, transport=httpx.MockTransport(api.handle), **kwargs)
+
+    def read_stdin() -> bytes:
+        if early == _EarlyInterrupt.STDIN:
+            # Outside the event loop, Python's own handler raises `KeyboardInterrupt` right here.
+            signal.raise_signal(signal.SIGINT)
+        return cast("str", case.get("stdin", "")).encode("utf-8")
+
+    mocker.patch.object(httpx, "AsyncClient", recorded_client)
+    monkeypatch.chdir(root)
+    stdout: list[str] = []
+    stderr: list[str] = []
+    io = CommandIO(env=env, read_stdin=read_stdin, write_stdout=stdout.append, write_stderr=stderr.append)
+
+    exit_code = run_command(case["argv"], io)
+
+    return _Outcome(exit_code=exit_code, stdout="".join(stdout), stderr="".join(stderr), api=api)
+
+
+def _check(case: dict[str, Any], outcome: _Outcome, root: Path) -> None:
+    """Hold an outcome to everything the case expects."""
+    shown = outcome.shown
+    assert outcome.api.problems == [], shown
+    assert outcome.api.unserved() == [], shown
+    expect: dict[str, Any] = case["expect"]
+    assert outcome.exit_code == expect["exit_code"], shown
+    if "stdout" in expect:
+        assert outcome.stdout == _fill(expect["stdout"]), shown
+    if "stdout_includes" in expect:
+        assert _first_missing(outcome.stdout, [_fill(needle) for needle in expect["stdout_includes"]]) is None, shown
+    assert _first_missing(outcome.stderr, [_fill(needle) for needle in expect.get("stderr", [])]) is None, shown
+    for excluded in expect.get("stderr_excludes", []):
+        assert _fill(excluded) not in outcome.stderr, shown
+    for file in expect.get("files", []):
+        target = root / file["path"]
+        assert target.read_bytes().decode("utf-8") == _fill(file["text"])
+        if file.get("executable") is True:
+            assert target.stat().st_mode & 0o100, f"{file['path']} is not executable"
+    for absent in expect.get("absent_files", []):
+        assert not (root / absent).exists(), f"{absent} exists"
+
+
+# An interrupt that lands before any request: each case records no route, so any request the command
+# sent would fail it, as an unrecorded one. The five scenarios of `@pipelex/sdk`'s suite, landing where
+# a Python command meets them.
+_BUNDLE = 'domain = "receipts"\nmain_pipe = "review_receipt"\n'
+_NO_RUN = "Interrupted. No run was started.\n"
+_EARLY_SCENARIOS: list[tuple[str, _EarlyInterrupt, dict[str, Any]]] = [
+    (
+        "run",
+        _EarlyInterrupt.CLIENT,
+        {
+            "name": "early/run",
+            "argv": ["run", "--method", "mt_receipts01"],
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NO_RUN], "stderr_excludes": ["Error"]},
+        },
+    ),
+    (
+        "run-with-inputs",
+        _EarlyInterrupt.CLIENT,
+        {
+            "name": "early/run-with-inputs",
+            "argv": ["run", "--method", "receipt-review.mthds", "--inputs", "inputs.json"],
+            "files": [
+                {"path": "receipt-review.mthds", "text": _BUNDLE},
+                {"path": "inputs.json", "text": '{"receipt": "scans/receipt.pdf"}\n'},
+                {"path": "scans/receipt.pdf", "text": "%PDF-1.4\n"},
+            ],
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NO_RUN]},
+        },
+    ),
+    (
+        "stdin",
+        _EarlyInterrupt.STDIN,
+        {
+            "name": "early/stdin",
+            "argv": ["run", "--method", "mt_receipts01", "--inputs", "-"],
+            "stdin": '{"note": "Team lunch"}',
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NO_RUN]},
+        },
+    ),
+    (
+        "template",
+        _EarlyInterrupt.CLIENT,
+        {
+            "name": "early/template",
+            "argv": ["run", "--method", "mt_receipts01", "--inputs-template"],
+            "expect": {"exit_code": 130, "stdout": "", "stderr": ["Interrupted.\n"]},
+        },
+    ),
+    (
+        "script",
+        _EarlyInterrupt.CLIENT,
+        {
+            "name": "early/script",
+            "argv": ["script", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+            "expect": {
+                "exit_code": 130,
+                "stdout": "",
+                "stderr": ["Interrupted. Nothing was written.\n"],
+                "absent_files": ["receipt-review"],
+            },
+        },
+    ),
+]
+
+_PIPE_IO_FOR_ADDRESS: dict[str, Any] = {
+    "request_body": {"method_ref": "github.com/acme/methods/receipt-review@v1.0.0"},
+    "answer": "pipe-io/receipt-review",
+}
+
+
+class _BlockedRead:
+    """A named pipe the command reads and nobody writes to, so the read blocks, and Ctrl-C pressed then.
+
+    The writer's end is opened as soon as the command has the pipe open for reading, which leaves the
+    command blocked in its read, and the main thread is then interrupted as Ctrl-C would. Closing the
+    writer's end ends the read; it is closed once the command has returned, or after the budget, so
+    that a command left waiting for the read fails its test rather than hang it.
+    """
+
+    def __init__(self, fifo: Path) -> None:
+        os.mkfifo(fifo)
+        self._fifo = fifo
+        self._lock = threading.Lock()
+        self._writer: int | None = None
+        self._thread = threading.Thread(target=self._interrupt, daemon=True)
+        self._watchdog = threading.Timer(_BLOCKED_READ_BUDGET_SECONDS, self.release)
+
+    def __enter__(self) -> Self:
+        self._thread.start()
+        self._watchdog.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._watchdog.cancel()
+        self._thread.join(timeout=_BLOCKED_READ_BUDGET_SECONDS)
+        self.release()
+
+    def _interrupt(self) -> None:
+        while True:
+            try:
+                writer = os.open(self._fifo, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as exc:
+                if exc.errno != errno.ENXIO:
+                    raise
+                time.sleep(0.01)
+            else:
+                with self._lock:
+                    self._writer = writer
+                break
+        time.sleep(0.05)
+        signal.pthread_kill(threading.main_thread().ident or 0, signal.SIGINT)
+
+    def release(self) -> None:
+        with self._lock:
+            if self._writer is not None:
+                os.close(self._writer)
+                self._writer = None
+
+
 class TestCli:
     def test_the_table_is_one_this_suite_can_read(self) -> None:
         assert _unknown_fields(_TABLE, _TABLE_FIELDS) == []
@@ -236,44 +450,96 @@ class TestCli:
         # A case this suite cannot run fails here, naming what it does not know.
         assert _unrunnable(case) == []
         if "interrupt" in case:
-            # `asyncio.run` turns SIGINT into a cancellation only when it finds Python's own handler.
+            # The event loop turns SIGINT into a cancellation only when it finds Python's own handler.
             assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
         root = tmp_path.resolve()
-        _materialize(root, case.get("files", []))
-        env = _case_env(case)
-        api = _RecordedApi(case, env)
-        real_async_client = httpx.AsyncClient
 
-        def recorded_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-            return real_async_client(*args, transport=httpx.MockTransport(api.handle), **kwargs)
+        outcome = _run_case(case, root, mocker, monkeypatch)
 
-        mocker.patch.object(httpx, "AsyncClient", recorded_client)
-        monkeypatch.chdir(root)
-        stdout: list[str] = []
-        stderr: list[str] = []
-        stdin = cast("str", case.get("stdin", "")).encode("utf-8")
-        io = CommandIO(env=env, read_stdin=lambda: stdin, write_stdout=stdout.append, write_stderr=stderr.append)
+        _check(case, outcome, root)
 
-        exit_code = run_command(case["argv"], io)
+    # ── An interrupt the table cannot express ─────────────────────────────────────────────────────
 
-        out = "".join(stdout)
-        err = "".join(stderr)
-        shown = f"stdout:\n{out}\nstderr:\n{err}"
-        assert api.problems == [], shown
-        assert api.unserved() == [], shown
-        assert exit_code == case["expect"]["exit_code"], shown
-        expect: dict[str, Any] = case["expect"]
-        if "stdout" in expect:
-            assert out == _fill(expect["stdout"]), shown
-        if "stdout_includes" in expect:
-            assert _first_missing(out, [_fill(needle) for needle in expect["stdout_includes"]]) is None, shown
-        assert _first_missing(err, [_fill(needle) for needle in expect.get("stderr", [])]) is None, shown
-        for excluded in expect.get("stderr_excludes", []):
-            assert _fill(excluded) not in err, shown
-        for file in expect.get("files", []):
-            target = root / file["path"]
-            assert target.read_bytes().decode("utf-8") == _fill(file["text"])
-            if file.get("executable") is True:
-                assert target.stat().st_mode & 0o100, f"{file['path']} is not executable"
-        for absent in expect.get("absent_files", []):
-            assert not (root / absent).exists(), f"{absent} exists"
+    @pytest.mark.parametrize(("early", "case"), [(early, case) for _, early, case in _EARLY_SCENARIOS], ids=[name for name, _, _ in _EARLY_SCENARIOS])
+    def test_an_interrupt_before_any_request_sends_nothing(
+        self, early: _EarlyInterrupt, case: dict[str, Any], tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path.resolve()
+
+        outcome = _run_case(case, root, mocker, monkeypatch, early=early)
+
+        _check(case, outcome, root)
+        assert outcome.api.calls == {}, outcome.shown
+
+    def test_an_interrupt_while_the_pipe_io_answer_is_read_sends_no_more(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        case: dict[str, Any] = {
+            "name": "between/pipe-io",
+            "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--inputs", "inputs.json"],
+            "files": [{"path": "inputs.json", "text": '{"receipt": "https://files.example.test/r.pdf", "note": "Team lunch"}\n'}],
+            "routes": {"POST /v1/pipe-io": [_PIPE_IO_FOR_ADDRESS]},
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NO_RUN]},
+        }
+        root = tmp_path.resolve()
+
+        outcome = _run_case(case, root, mocker, monkeypatch, interrupt_while_answering="POST /v1/pipe-io")
+
+        _check(case, outcome, root)
+        assert outcome.api.calls == {"POST /v1/pipe-io": 1}, outcome.shown
+
+    def test_an_interrupt_while_the_version_answer_is_read_sends_no_start(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        case: dict[str, Any] = {
+            "name": "between/version",
+            "argv": ["run", "--method", "mt_receipts01"],
+            "routes": {"GET /v1/version": [{"answer": "version/hosted"}]},
+            # The start is under way once the handshake is asked, so the command cannot say no run started.
+            "expect": {"exit_code": 130, "stdout": "", "stderr": ["Interrupted before the API answered with a run id."]},
+        }
+        root = tmp_path.resolve()
+
+        outcome = _run_case(case, root, mocker, monkeypatch, interrupt_while_answering="GET /v1/version")
+
+        _check(case, outcome, root)
+        assert outcome.api.calls == {"GET /v1/version": 1}, outcome.shown
+
+    def test_an_interrupt_during_a_blocked_read_of_the_inputs_ends_the_command(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path.resolve()
+        case: dict[str, Any] = {
+            "name": "blocked/inputs",
+            "argv": ["run", "--method", "mt_receipts01", "--inputs", "inputs.json"],
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NO_RUN]},
+        }
+        started_at = time.monotonic()
+        with _BlockedRead(root / "inputs.json"):
+            outcome = _run_case(case, root, mocker, monkeypatch)
+
+        assert time.monotonic() - started_at < _BLOCKED_READ_BUDGET_SECONDS, outcome.shown
+        _check(case, outcome, root)
+        assert outcome.api.calls == {}, outcome.shown
+
+    def test_an_interrupt_during_a_blocked_read_of_a_file_to_upload_ends_the_command(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The file is read on a worker thread, which an interrupt cannot stop: the command must not wait for it."""
+        root = tmp_path.resolve()
+        (root / "scans").mkdir()
+        case: dict[str, Any] = {
+            "name": "blocked/upload",
+            "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--inputs", "inputs.json"],
+            "files": [{"path": "inputs.json", "text": '{"receipt": "scans/receipt.pdf", "note": "Team lunch"}\n'}],
+            "routes": {"POST /v1/pipe-io": [_PIPE_IO_FOR_ADDRESS]},
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NO_RUN]},
+        }
+        started_at = time.monotonic()
+        # Leaving the block closes the writer, which ends the read the command abandoned, and its thread.
+        with _BlockedRead(root / "scans" / "receipt.pdf"):
+            outcome = _run_case(case, root, mocker, monkeypatch)
+
+        assert time.monotonic() - started_at < _BLOCKED_READ_BUDGET_SECONDS, outcome.shown
+        _check(case, outcome, root)
+        assert outcome.api.calls == {"POST /v1/pipe-io": 1}, outcome.shown
