@@ -35,6 +35,8 @@ import {
   EmptyMethodSourceError,
   InputPreparationError,
   InvalidLocalSourceError,
+  InvalidInputValueError,
+  MethodLoadError,
   MissingMainStuffError,
   PagingNotTerminatingError,
   PipelexRequestError,
@@ -209,6 +211,8 @@ const BUILDERS: Record<string, (given: Given) => Promise<Error> | Error> = {
     ),
   EmptyMethodSourceError: () => new EmptyMethodSourceError("mt_1"),
   InvalidLocalSourceError: () => new InvalidLocalSourceError("No such file.", "/nope.pdf"),
+  InvalidInputValueError: () => new InvalidInputValueError("Malformed data URL."),
+  MethodLoadError: () => new MethodLoadError("The method does not load.", { validationErrors: [] }),
   RejectedAssetError: (given) =>
     new RejectedAssetError("Refused.", "a.pdf", given.status ?? 413, {
       code: (given.code ?? undefined) as RejectedAssetCode | undefined,

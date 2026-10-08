@@ -26,7 +26,13 @@ import type {
 } from "mthds/protocol";
 import { prepareInputs } from "../src/prepare-inputs.js";
 import type { PrepareCapableClient, PrepareInputsRequest } from "../src/prepare-inputs.js";
-import { InputPreparationError, RejectedAssetError, ApiResponseError } from "../src/errors.js";
+import {
+  InputPreparationError,
+  InvalidInputValueError,
+  MethodLoadError,
+  RejectedAssetError,
+  ApiResponseError,
+} from "../src/errors.js";
 import type { PipeIORequest, PipeIOResponse, PipeIOValidReport } from "../src/models.js";
 
 // ── Descriptor fixtures ──────────────────────────────────────────────
@@ -410,9 +416,30 @@ describe("prepareInputs", () => {
         files: FILES,
         inputs: { photo: { mimeType: "image/png", bytes: [1, 2, 3] } },
       }),
-    ).rejects.toBeInstanceOf(InputPreparationError);
+    ).rejects.toBeInstanceOf(InvalidInputValueError);
     expect(client.uploadCalls).toHaveLength(0);
   });
+
+  it.each([
+    ["a number", 42],
+    ["a boolean", true],
+    ["null", null],
+  ])(
+    "throws InvalidInputValueError, the inputs' fault, for %s at a file input",
+    async (_, value) => {
+      const client = makeClient([topLevel("photo", image())]);
+
+      const err = await prepareInputs(client, { files: FILES, inputs: { photo: value } }).catch(
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(InvalidInputValueError);
+      expect(err).not.toBeInstanceOf(MethodLoadError);
+      expect((err as InvalidInputValueError).errorDomain).toBe("input");
+      expect((err as InvalidInputValueError).retryable).toBe(false);
+      expect(client.uploadCalls).toHaveLength(0);
+    },
+  );
 
   it("throws InputPreparationError for a malformed data URL instead of a raw decode error", async () => {
     const client = makeClient([topLevel("photo", image())]);
@@ -421,7 +448,7 @@ describe("prepareInputs", () => {
     // that escapes the typed preparation-error contract.
     await expect(
       prepareInputs(client, { files: FILES, inputs: { photo: "data:text/plain,%ZZ" } }),
-    ).rejects.toBeInstanceOf(InputPreparationError);
+    ).rejects.toBeInstanceOf(InvalidInputValueError);
     expect(client.uploadCalls).toHaveLength(0);
   });
 
@@ -433,7 +460,7 @@ describe("prepareInputs", () => {
     // instead of failing the preparation contract. Both runtimes must reject it via `atob`.
     await expect(
       prepareInputs(client, { files: FILES, inputs: { photo: "data:image/png;base64,%%%%" } }),
-    ).rejects.toBeInstanceOf(InputPreparationError);
+    ).rejects.toBeInstanceOf(InvalidInputValueError);
     expect(client.uploadCalls).toHaveLength(0);
   });
 
@@ -917,21 +944,46 @@ describe("prepareInputs pipe selection", () => {
 // ── Verdicts, selectors, and errors ──────────────────────────────────
 
 describe("prepareInputs verdicts and guards", () => {
-  it("throws InputPreparationError when the closure does not resolve", async () => {
+  it("throws MethodLoadError, carrying the answer's items, when the closure does not resolve", async () => {
     const client = makeClient([], {
       result: {
         is_valid: false,
         message: "MTHDS library could not be resolved",
-        validation_errors: [{ category: "blueprint_validation", message: "unknown pipe type" }],
+        validation_errors: [
+          { category: "blueprint_validation", message: "unknown pipe type", source: "a.mthds" },
+          { category: "blueprint_validation", message: "unknown concept" },
+        ],
       },
     });
 
-    const failure = prepareInputs(client, {
+    const err = await prepareInputs(client, {
       files: FILES,
       inputs: { photo: new Uint8Array([1]) },
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MethodLoadError);
+    expect(err).toBeInstanceOf(InputPreparationError);
+    expect(err).not.toBeInstanceOf(InvalidInputValueError);
+    expect((err as Error).message).toMatch(/unknown pipe type/);
+    expect((err as MethodLoadError).validationErrors).toEqual([
+      { category: "blueprint_validation", message: "unknown pipe type", source: "a.mthds" },
+      { category: "blueprint_validation", message: "unknown concept" },
+    ]);
+    expect((err as MethodLoadError).serverMessage).toBe("MTHDS library could not be resolved");
+  });
+
+  it("keeps only the items of a failed load that carry a string category and message", async () => {
+    const client = makeClient([], {
+      result: {
+        is_valid: false,
+        validation_errors: ["oops", { message: "no category" }, { category: "c", message: "kept" }],
+      } as unknown as PipeIOResponse,
     });
-    await expect(failure).rejects.toBeInstanceOf(InputPreparationError);
-    await expect(failure).rejects.toThrow(/unknown pipe type/);
+
+    const err = await prepareInputs(client, { files: FILES, inputs: {} }).catch((e: unknown) => e);
+
+    expect((err as MethodLoadError).validationErrors).toEqual([{ category: "c", message: "kept" }]);
+    expect((err as MethodLoadError).serverMessage).toBeUndefined();
   });
 
   it.each([

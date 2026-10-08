@@ -238,6 +238,8 @@ export {
   InputPreparationError,
   EmptyMethodSourceError,
   InvalidLocalSourceError,
+  InvalidInputValueError,
+  MethodLoadError,
   RejectedAssetError,
   UnsupportedUploadCapabilityError,
   UploadAuthenticationError,

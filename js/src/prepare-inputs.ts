@@ -37,7 +37,13 @@ import type {
   InputFormTopLevelField,
   PipeInputFormDescriptor,
 } from "mthds/protocol";
-import { ApiResponseError, InputPreparationError } from "./errors.js";
+import { isValidationItem } from "./error-models.js";
+import {
+  ApiResponseError,
+  InputPreparationError,
+  InvalidInputValueError,
+  MethodLoadError,
+} from "./errors.js";
 import type { MthdsFileItem, PipeIORequest, PipeIOResponse, PipeIOValidReport } from "./models.js";
 import type { UploadCapableClient, UploadRecord } from "./upload.js";
 import { uploadFile } from "./upload.js";
@@ -153,7 +159,7 @@ function isExplicitEnvelope(value: unknown): value is { concept: unknown; conten
 function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; contentType: string } {
   const comma = dataUrl.indexOf(",");
   if (comma < 0) {
-    throw new InputPreparationError(
+    throw new InvalidInputValueError(
       `Malformed data URL (no comma separator): ${dataUrl.slice(0, 32)}…`,
     );
   }
@@ -163,7 +169,7 @@ function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; contentType: strin
   const contentType = header.split(";")[0] || "application/octet-stream";
   // Decoding can throw on a malformed payload — a URIError from percent-decoding,
   // or an InvalidCharacterError from `atob` on bad base64. Surface those as a typed
-  // InputPreparationError so a bad data URL stays within the preparation contract.
+  // InvalidInputValueError so a bad data URL stays within the preparation contract.
   try {
     if (isBase64) {
       // Decode via atob in every runtime. atob rejects malformed base64 with an
@@ -176,7 +182,7 @@ function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; contentType: strin
     const text = decodeURIComponent(payload);
     return { bytes: new TextEncoder().encode(text), contentType };
   } catch (cause) {
-    throw new InputPreparationError(
+    throw new InvalidInputValueError(
       `Malformed data URL payload (${isBase64 ? "invalid base64" : "invalid percent-encoding"}): ${dataUrl.slice(0, 32)}…`,
       { cause },
     );
@@ -228,7 +234,7 @@ async function doResolveSource(ctx: PrepareContext, source: unknown): Promise<st
   // An unrecognized value sits at a file-bearing position (neither a source string,
   // bytes, nor a canonical `{url}` content dict). Fail with a typed error rather than
   // letting a raw TypeError escape from the byte-extraction path.
-  throw new InputPreparationError(
+  throw new InvalidInputValueError(
     `Unsupported value at a file input: expected a path string, bytes (Blob/File/ArrayBuffer/Uint8Array), ` +
       `a data URL, an http(s)/pipelex-storage:// URL, or canonical {url} content; got ${typeof source}.`,
   );
@@ -414,8 +420,13 @@ async function fetchSignature(
     );
   }
   if (!answer.is_valid) {
-    throw new InputPreparationError(
+    const items = answer.validation_errors;
+    throw new MethodLoadError(
       `Cannot prepare inputs: the method signature did not resolve — ${invalidReason(answer)}`,
+      {
+        validationErrors: Array.isArray(items) ? items.filter(isValidationItem) : [],
+        serverMessage: typeof answer.message === "string" ? answer.message : undefined,
+      },
     );
   }
   return result as PipeIOValidReport;
