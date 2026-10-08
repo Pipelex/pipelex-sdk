@@ -325,10 +325,10 @@ class RunResults(BaseModel):
     #: (`docs/architecture.md`). It is what says what a `graph_spec` node's data IS: the graph
     #: carries the values, this carries their concepts and their schemas. Read it together with
     #: `output_form` — a renderer takes the pair or neither. A closed shape: a member the pinned
-    #: `mthds` does not define fails the parse of the whole results body with pydantic's
-    #: `ValidationError` (`docs/run-results.md` says what that costs on each path). The hosted
-    #: results body relays it as its own key, so it is set on that path: `None` for a run whose
-    #: artifact was not written.
+    #: `mthds` does not define fails the parse of the whole results body, which the client raises as
+    #: the `ApiResponseError` of an answer it cannot read (`docs/run-results.md` says what that costs on
+    #: each path). The hosted results body relays it as its own key, so it is set on that path:
+    #: `None` for a run whose artifact was not written.
     pipe_io_contracts: PipeIOContracts | None = None
     #: Per-pipe input-form descriptors for that same library — the standard's `InputForm`, keyed
     #: over the same `pipe_ref` set as `pipe_io_contracts`, describing each declared input as a

@@ -9,7 +9,7 @@ import httpx
 import pytest
 from pytest_mock import MockerFixture
 
-from pipelex_sdk.client import PipelexAPIClient
+from pipelex_sdk.client import _HEALTH_ANSWER_ADAPTER, PipelexAPIClient
 from pipelex_sdk.user_agent import AppInfo, build_user_agent
 from pipelex_sdk.version import __version__
 
@@ -41,7 +41,7 @@ class TestClientUserAgent:
     async def _health_then_me(client: PipelexAPIClient) -> None:
         async with client:
             await client.health()
-            await client._request_product("GET", "me")
+            await client._request_product("GET", "me", read=_HEALTH_ANSWER_ADAPTER.validate_python)
 
     def test_authenticated_client_sends_user_agent_on_every_request(self, captured: list[httpx.Request]) -> None:
         client = PipelexAPIClient(api_key="pk-test", base_url=_BASE_URL)

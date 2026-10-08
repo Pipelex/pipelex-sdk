@@ -297,11 +297,18 @@ class TestClientMethodVersions:
     def test_publish_method_refuses_an_answer_off_the_union(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, body: dict[str, Any]
     ) -> None:
-        """A body that names no known outcome, or breaks its arm, is never mistaken for a verdict."""
+        """A body that names no known outcome, or breaks its arm, is never mistaken for a verdict: it is an
+        answer the SDK cannot read, pydantic's refusal as its cause.
+        """
         patch_send(api_client, wire_response(200, json_body=body))
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.publish_method("mt_receipts01", expected_draft_updated_at=MethodVersionBodies.TOKEN))
+        unreadable = exc_info.value
+        assert str(unreadable) == "API POST /v1/methods/mt_receipts01/publish answered 200 with a body that is not the answer the route returns"
+        assert unreadable.status == 200
+        assert isinstance(unreadable.__cause__, ValidationError)
+        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
 
     def test_publish_method_raises_the_update_conflict_for_a_stale_token(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher

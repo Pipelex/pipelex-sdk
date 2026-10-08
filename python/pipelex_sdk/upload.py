@@ -103,6 +103,14 @@ def _map_upload_error(error: ApiResponseError | ApiUnreachableError, filename: s
         # The client's own request timeout surfaces as an unreachable host with this code.
         code = UploadTransportCode.TIMEOUT if error.code == ABORT_TIMEOUT_CODE else UploadTransportCode.UNREACHABLE
         return UploadTransportError(msg, filename=filename, code=code, cause=error)
+    if 200 <= error.status < 300:
+        # A 2xx the client could not read: storage may hold the file, but under no reference the SDK
+        # can return.
+        msg = (
+            f'Upload of "{filename}" was answered ({error.status}) with a body the SDK could not read, '
+            "so whether and where the file was stored is unknown."
+        )
+        return UploadTransportError(msg, status=error.status, filename=filename, code=UploadTransportCode.UNEXPECTED, cause=error)
     match error.status:
         case 413:
             detail = error.server_message or "asset exceeds the service size limit"
@@ -140,7 +148,8 @@ async def upload_file(
     `source` is a filesystem path (`str`/`Path`) or raw `bytes`. Maps the raw `upload()`
     transport errors onto the semantic input-preparation errors: a `413` is a rejected
     asset, `401`/`403` an auth failure, `404` an unsupported upload capability, an
-    unreachable host a transport failure.
+    unreachable host a transport failure, and a `2xx` answer the client could not read an
+    `unexpected` transport failure, since whether and where the file was stored is unknown.
     """
     # Offload the (possibly large) synchronous file read off the event loop — `read_bytes`
     # releases the GIL during the underlying os.read, so other coroutines run during disk I/O.

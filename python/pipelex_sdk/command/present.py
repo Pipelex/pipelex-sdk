@@ -9,12 +9,10 @@ holds them to.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from mthds.protocol.exceptions import PipelineRequestError
-from pydantic import ValidationError
 
 from pipelex_sdk.command.io import EXIT_FAILED, EXIT_USAGE, CommandError
 from pipelex_sdk.command.json_text import to_json_text
@@ -101,11 +99,6 @@ def present_error(exc: Exception) -> PresentedError:
         )
     if isinstance(exc, PipelineRequestError):
         return PresentedError(lines=[f"Error: {exc}"], exit_code=EXIT_FAILED)
-    if isinstance(exc, (ValidationError, json.JSONDecodeError, UnicodeDecodeError)):
-        # An answer the SDK could not read into the shape the route promises: the API's fault, not
-        # the person's, and not worth a traceback.
-        first_line = str(exc).splitlines()[0]
-        return PresentedError(lines=["Error: the API's answer could not be read.", f"Reason: {first_line}"], exit_code=EXIT_FAILED)
     return PresentedError(lines=[f"Error: unexpected failure, {type(exc).__name__}: {exc}"], exit_code=EXIT_FAILED)
 
 
