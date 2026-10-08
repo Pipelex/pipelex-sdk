@@ -67,7 +67,7 @@ The exit code is presentation, following the workspace's surface-output rule: a 
 | `0` | The result was printed, or the script written, or the help or version shown |
 | `1` | The run failed, the API refused a request, could not be reached, or answered what the command cannot read |
 | `2` | A usage error: a bad flag, an unreadable or invalid inputs file, a selector of no known form, a path that names no bundle, a missing key, a refused base URL, an `mt_` value that cannot be a catalog id, a local file the inputs name that cannot be read, a value at a file input that is no file, a script that would overwrite a file |
-| `130` | Interrupted |
+| `130` | Interrupted: on Linux and macOS the process ends by the interrupt signal, which a shell reports as `130` |
 
 Every error goes to stderr, its first line `Error: <sentence>` and the lines under it giving the details. The command words a failure from the error's typed fields rather than from an SDK message, wherever the fields carry what a person needs, so that the JavaScript and Python commands print the same lines for the same answer:
 
@@ -80,6 +80,10 @@ Every error goes to stderr, its first line `Error: <sentence>` and the lines und
 The checks that need no request come first, so a mistake costs nothing. `run` checks, in this order, its flags, `--pipe`'s form, the method (reading a path from disk), the inputs, the poll interval, the key and the base URL. `script` checks its flags, `--pipe`'s form, a control character in any value, the method's form, `--name`, `--dir`, the target file when its name is already known, the key and the base URL. The flags are read in command-line order and the first problem is the one reported: `--help` or `-h` anywhere before `--` asks for the help whatever else is there, and an argument that is exactly one of the two is never taken as a flag's value, so `run --method --help` prints the help; an unknown option or a positional argument is refused; a flag given twice is refused rather than the last one winning; a string flag needs a non-empty value, given as the next argument or after `=`, and a next argument starting with `-` is not taken as one, except `-` alone, which `--inputs` reads as stdin.
 
 **Ctrl-C does not stop the run.** The command stops waiting, says where the run stood and exits `130`: before any request to run, `Interrupted. No run was started.`; from the request that starts the run until the API answers with its id, `Interrupted before the API answered with a run id. A run may or may not have started on the server.`; once the run exists, `Interrupted. Run <id> keeps going on the server.` Fetching that run later is not built into the command: the SDK's `waitForResult(id)` does it. A second Ctrl-C ends the process at once.
+
+**An interrupt sends nothing more.** Every request the command makes starts only if no interrupt has landed, so a Ctrl-C during the local work (reading the bundle or the inputs, a read from stdin or a named pipe included) sends no request at all, not the pipe I/O call, the version check nor the start, and the command says `Interrupted. No run was started.` A local read that never completes, such as `--inputs` naming a pipe no one writes to, does not hold the command either: it stops waiting for the read. `script` interrupted writes nothing and says `Interrupted. Nothing was written.`, and `--inputs-template` says `Interrupted.`
+
+**How the executable ends after Ctrl-C.** On Linux and macOS, once it has said where the run stood, the process ends by the interrupt signal itself, which a shell reports as status `130` and which tells a calling loop that the person interrupted. It does not call `exit(130)`, because Node's exit waits for its worker threads, and one can stay blocked for good in a read the command stopped waiting for. On Windows it exits with `130`. `runCommand`, the function the executable calls, returns `130` in every case.
 
 ## Reading a bundle
 

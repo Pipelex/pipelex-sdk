@@ -318,13 +318,22 @@ interface Outcome {
   root: string;
 }
 
+/**
+ * When an interrupt lands outside any request, which the table cannot say: `"before"`, before the
+ * command starts, and `"stdin"`, while it reads stdin, the read then completing as a named pipe's
+ * would once its writer closes it.
+ */
+type EarlyInterrupt = "before" | "stdin";
+
 async function runCase(
   testCase: Case,
   root: string,
+  early?: EarlyInterrupt,
 ): Promise<{ outcome: Outcome; api: RecordedApi }> {
   materialize(root, testCase.files ?? []);
   const env = caseEnv(testCase);
   const interrupt = new AbortController();
+  if (early === "before") interrupt.abort();
   const api = new RecordedApi(testCase, env, interrupt);
   vi.spyOn(globalThis, "fetch").mockImplementation(api.fetch);
   let stdout = "";
@@ -334,7 +343,10 @@ async function runCase(
   try {
     const code = await runCommand(testCase.argv, {
       env,
-      readStdin: () => Promise.resolve(new TextEncoder().encode(testCase.stdin ?? "")),
+      readStdin: () => {
+        if (early === "stdin") interrupt.abort();
+        return Promise.resolve(new TextEncoder().encode(testCase.stdin ?? ""));
+      },
       writeStdout: (text) => {
         stdout += text;
       },
@@ -406,6 +418,86 @@ describe("pipelex-sdk, case by case", () => {
       }
     },
   );
+});
+
+describe("an interrupt that lands before any request", () => {
+  // Each case records no route, so any request the command sent would fail it.
+  const BUNDLE = 'domain = "receipts"\nmain_pipe = "review_receipt"\n';
+  const NO_RUN = "Interrupted. No run was started.\n";
+  const scenarios: Array<[string, EarlyInterrupt, Case]> = [
+    [
+      "sends nothing for a run without inputs, and says no run was started",
+      "before",
+      {
+        name: "early/run",
+        summary: "",
+        argv: ["run", "--method", "mt_receipts01"],
+        expect: { exit_code: 130, stdout: "", stderr: [NO_RUN], stderr_excludes: ["Error"] },
+      },
+    ],
+    [
+      "sends no input preparation for a run with inputs",
+      "before",
+      {
+        name: "early/run-with-inputs",
+        summary: "",
+        argv: ["run", "--method", "receipt-review.mthds", "--inputs", "inputs.json"],
+        files: [
+          { path: "receipt-review.mthds", text: BUNDLE },
+          { path: "inputs.json", text: '{"receipt": "scans/receipt.pdf"}\n' },
+          { path: "scans/receipt.pdf", text: "%PDF-1.4\n" },
+        ],
+        expect: { exit_code: 130, stdout: "", stderr: [NO_RUN] },
+      },
+    ],
+    [
+      "sends nothing when the interrupt lands while the inputs are read from stdin",
+      "stdin",
+      {
+        name: "early/stdin",
+        summary: "",
+        argv: ["run", "--method", "mt_receipts01", "--inputs", "-"],
+        stdin: '{"note": "Team lunch"}',
+        expect: { exit_code: 130, stdout: "", stderr: [NO_RUN] },
+      },
+    ],
+    [
+      "sends no pipe I/O request for --inputs-template",
+      "before",
+      {
+        name: "early/template",
+        summary: "",
+        argv: ["run", "--method", "mt_receipts01", "--inputs-template"],
+        expect: { exit_code: 130, stdout: "", stderr: ["Interrupted.\n"] },
+      },
+    ],
+    [
+      "sends nothing for script and writes nothing",
+      "before",
+      {
+        name: "early/script",
+        summary: "",
+        argv: ["script", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+        expect: {
+          exit_code: 130,
+          stdout: "",
+          stderr: ["Interrupted. Nothing was written.\n"],
+          absent_files: ["receipt-review"],
+        },
+      },
+    ],
+  ];
+
+  it.each(scenarios)("%s", async (_title, early, testCase) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pipelex-sdk-cli-")));
+    try {
+      const { outcome, api } = await runCase(testCase, root, early);
+      check(testCase, outcome, api);
+      expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("the command's packaging", () => {

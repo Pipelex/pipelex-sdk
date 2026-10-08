@@ -77,7 +77,7 @@ export async function describePipe(
     ...crateSelector(source),
     ...(pipe === undefined ? {} : { pipe_ref: pipe }),
   };
-  const answer: unknown = await untilInterrupted(client.pipeIo(request), interrupt);
+  const answer: unknown = await untilInterrupted(() => client.pipeIo(request), interrupt);
   if (!isPlainObject(answer) || typeof answer.is_valid !== "boolean") {
     throw new CommandError(
       "the API's pipe I/O answer says neither that the method loads nor why it does not.",

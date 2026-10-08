@@ -172,7 +172,7 @@ async function catalogName(
   methodId: string,
   io: CommandIO,
 ): Promise<string> {
-  const entry = await untilInterrupted(client.getMethod(methodId), io.interrupt);
+  const entry = await untilInterrupted(() => client.getMethod(methodId), io.interrupt);
   return kebabCase(entry.name);
 }
 

@@ -23,13 +23,16 @@ export async function readInputs(source: string, io: CommandIO): Promise<Record<
   const label = source === "-" ? "stdin" : `the inputs file "${source}"`;
   let bytes: Uint8Array;
   if (source === "-") {
-    bytes = await untilInterrupted(io.readStdin(), io.interrupt);
+    bytes = await untilInterrupted(() => io.readStdin(), io.interrupt);
   } else {
-    try {
-      bytes = await readFile(resolve(source));
-    } catch (error) {
-      throw usageError(`cannot read ${label}.`, [`Reason: ${systemReason(error)}`]);
-    }
+    // Raced like stdin: a named pipe, or a file on a stalled mount, can keep the read waiting.
+    bytes = await untilInterrupted(async () => {
+      try {
+        return await readFile(resolve(source));
+      } catch (error) {
+        throw usageError(`cannot read ${label}.`, [`Reason: ${systemReason(error)}`]);
+      }
+    }, io.interrupt);
   }
   let text: string;
   try {
