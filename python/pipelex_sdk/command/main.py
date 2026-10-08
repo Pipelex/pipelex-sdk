@@ -62,9 +62,14 @@ def _dispatch(argv: Sequence[str], io: CommandIO, progress: Progress) -> int:
     command, rest = argv[0], argv[1:]
     match command:
         case "--help" | "-h":
+            # The help wins whatever follows it, as it does in a subcommand.
             io.write_stdout(MAIN_HELP)
             return EXIT_OK
         case "--version":
+            # Unlike the help, the version is not printed over a command line it does not answer.
+            if rest:
+                msg = f'unexpected argument "{rest[0]}" after --version.'
+                raise usage_error(msg, ["Run 'pipelex-sdk --version' alone to print the version."])
             io.write_stdout(f"{__version__}\n")
             return EXIT_OK
         case "run":

@@ -168,6 +168,29 @@
       }
     },
     {
+      "name": "command/help-with-arguments",
+      "summary": "--help prints the command's help whatever follows it, as a subcommand's --help does.",
+      "argv": ["--help", "run", "--bogus"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["Usage:", "pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "command/version-with-arguments",
+      "summary": "--version followed by anything is refused rather than printed over a command line it does not answer.",
+      "argv": ["--version", "run", "--method", "mt_receipts01"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: unexpected argument \"run\" after --version.\n",
+          "Run 'pipelex-sdk --version' alone to print the version.\n"
+        ]
+      }
+    },
+    {
       "name": "run/help",
       "summary": "run --help prints run's help.",
       "argv": ["run", "--help"],
@@ -273,6 +296,16 @@
       "name": "run/flags/help-before-other-flags",
       "summary": "--help right after a string flag asks for the help whatever follows.",
       "argv": ["run", "--inputs", "--help", "--method", "x"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/flags/help-after-a-dash-dash-value",
+      "summary": "A -- taken as a flag's value ends no options, so a --help after it still asks for the help.",
+      "argv": ["run", "--pipe", "--", "--method", "--help"],
       "expect": {
         "exit_code": 0,
         "stdout_includes": ["pipelex-sdk run --method"],

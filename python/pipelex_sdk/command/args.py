@@ -11,7 +11,8 @@ order, the first problem being the one reported:
 - `--help` or `-h` anywhere before `--` asks for the subcommand's help, whatever else is there,
   even where a flag's value would be expected: an argument that is exactly one of the two is never
   taken as a value, so `run --method --help` prints the help. Since the tokens below take it as the
-  value, as `parseArgs` and `argparse` both would, the command line is scanned for it first.
+  value, as `parseArgs` and `argparse` both would, the command line is scanned for it too, up to the
+  `--` the tokens read as the end of the options, not a `--` a string flag took as its value.
 - An option the subcommand does not take is refused, and so is any positional argument.
 - A flag given twice is refused, rather than the last one winning: a script written by `script`
   passes its own arguments through, and a second `--method` must not quietly run another method.
@@ -84,7 +85,9 @@ class _PositionalToken:
 
 @dataclass(frozen=True)
 class _TerminatorToken:
-    """The `--` that ends the options."""
+    """The `--` that ends the options, at `index` in the command line."""
+
+    index: int
 
 
 _Token: TypeAlias = _OptionToken | _PositionalToken | _TerminatorToken
@@ -111,7 +114,8 @@ def _tokens(args: Sequence[str], specs: Mapping[str, FlagKind]) -> list[_Token]:
     while remaining:
         arg = remaining.pop(0)
         if arg == _TERMINATOR:
-            tokens.append(_TerminatorToken())
+            # Every argument after it is still to be read, and none of them was expanded from a group.
+            tokens.append(_TerminatorToken(index=len(args) - len(remaining) - 1))
             tokens.extend(_PositionalToken(value=rest) for rest in remaining)
             break
         if len(arg) == 2 and arg[0] == "-" and arg[1] != "-":
@@ -168,10 +172,12 @@ def parse_flags(command: str, args: Sequence[str], specs: Mapping[str, FlagKind]
     Raises:
         CommandError: A usage error naming the first problem, in command-line order.
     """
-    before_terminator = args[: args.index(_TERMINATOR)] if _TERMINATOR in args else args
-    if any(arg in _HELP_ARGUMENTS for arg in before_terminator):
-        return ParsedFlags(help=True)
     tokens = _tokens(args, specs)
+    # The `--` that ends the options is the one the tokens read as such: a `--` a string flag took as
+    # its value ends nothing, so `run --pipe -- --method --help` asks for the help.
+    terminator = next((token.index for token in tokens if isinstance(token, _TerminatorToken)), len(args))
+    if any(arg in _HELP_ARGUMENTS for arg in args[:terminator]):
+        return ParsedFlags(help=True)
     # `-h` inside a group of short options, such as `-xh`, asks for the help too.
     if any(isinstance(token, _OptionToken) and token.name == _HELP and token.value is None for token in tokens):
         return ParsedFlags(help=True)
