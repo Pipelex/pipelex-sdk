@@ -71,8 +71,10 @@ class ApiUnreachableError(PipelineRequestError):
     because they all send through its `_send` override; the httpx exception is the
     `__cause__`.
 
-    `code` is the underlying transport-failure class when available (`ABORT_TIMEOUT`
-    for a timeout, otherwise the httpx transport exception class name).
+    `code` names the failure: `ABORT_TIMEOUT` when the request reached the API and its
+    time limit ran out while it was sent or answered (httpx's `ReadTimeout` or
+    `WriteTimeout`), otherwise the httpx transport exception's class name, `ConnectError`,
+    `ConnectTimeout` and `PoolTimeout` included, none of which sent the request.
 
     It derives from the protocol's `PipelineRequestError` directly because the `mthds`
     client has no unreachable error of its own; when it gains one, this class subclasses it.

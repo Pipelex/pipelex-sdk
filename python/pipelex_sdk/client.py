@@ -572,7 +572,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 extra=merged_extra,
             )
         except (ApiResponseError, ApiUnreachableError) as exc:
-            # A client-side timeout arrives as the `ApiUnreachableError` the `_send` override maps it to,
+            # A client-side read or write timeout arrives as the `ApiUnreachableError` the `_send` override maps it to,
             # with the `code` `ABORT_TIMEOUT` that `_is_gateway_timeout` reads.
             elapsed_seconds = monotonic() - started_at
             if _is_gateway_timeout(exc, elapsed_seconds):
@@ -1793,7 +1793,7 @@ def _is_gateway_timeout(exc: ApiResponseError | ApiUnreachableError, elapsed_sec
     """Whether a failed blocking `execute` is the hosted gateway's ~30s synchronous cut-off.
 
     The elapsed threshold guards against mislabeling a fast `503` (the runner genuinely down)
-    as a timeout: a gateway `503`/`504`, or a client-side request timeout (the
+    as a timeout: a gateway `503`/`504`, or a client-side read or write timeout (the
     `ApiUnreachableError` whose `code` is `ABORT_TIMEOUT`), only counts once the request has
     run at least ~28s. Any other unreachable host is never the gateway's cut-off. Mirrors the
     JS `isGatewayTimeout`.
