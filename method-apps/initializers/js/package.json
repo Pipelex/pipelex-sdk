@@ -1,6 +1,6 @@
 {
   "name": "@pipelex/create-method-app",
-  "version": "0.35.0",
+  "version": "0.36.0",
   "description": "Start a Pipelex method app: npm create @pipelex/method-app@latest my-app -- --method <bundle | mt_… | address>",
   "keywords": [
     "pipelex",
