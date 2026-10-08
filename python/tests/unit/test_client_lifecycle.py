@@ -403,6 +403,36 @@ class TestClientLifecycle:
         assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
         send_mock.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "artifacts",
+        [
+            pytest.param("main_stuff", id="plain-string"),
+            pytest.param(RunArtifact.MAIN_STUFF, id="single-enum-member"),
+        ],
+    )
+    def test_a_bare_string_selection_is_a_type_error_before_sending(self, mocker: MockerFixture, artifacts: str) -> None:
+        """A bare string, an enum member included, is no selection: it is never split into characters
+        and refused as unknown names, and no run is read, polled or started for it.
+        """
+        client = self._client()
+        send_mock = mocker.patch.object(client, "_send", mocker.AsyncMock())
+        selection = cast("list[RunArtifact]", artifacts)
+        expected = (
+            '"artifacts" must be a list or tuple naming one or more of graph_spec, pipe_io_contracts, input_form, output_form, '
+            "main_stuff, working_memory, tokens_usages."
+        )
+
+        with pytest.raises(TypeError) as read_info:
+            asyncio.run(client.get_run_result("run_1", artifacts=selection))
+        with pytest.raises(TypeError) as wait_info:
+            asyncio.run(client.wait_for_result("run_1", artifacts=selection))
+        with pytest.raises(TypeError) as start_info:
+            asyncio.run(client.start_and_wait(pipe_code="p", artifacts=selection))
+        for exc_info in (read_info, wait_info, start_info):
+            assert str(exc_info.value) == expected
+            assert error_verdict_of(exc_info.value) is None
+        send_mock.assert_not_called()
+
     def test_get_run_result_takes_a_plain_string_that_names_an_artifact(self, mocker: MockerFixture) -> None:
         client = self._client()
         body: dict[str, object] = {"pipeline_run_id": "run_1", "graph_spec": {"nodes": []}}

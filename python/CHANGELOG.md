@@ -20,7 +20,7 @@
 
 ### Fixed
 
-- **An unknown artifact name is refused**: `get_run_result`, `wait_for_result` and `start_and_wait` raise `RequestArgumentError` before any request for an `artifacts` selection naming something that is no `RunArtifact`, such as a misspelt plain string, where they dropped it and sent a narrower selection or an empty one, as `@pipelex/sdk` refuses it.
+- **An unknown artifact name is refused**: `get_run_result`, `wait_for_result` and `start_and_wait` raise `RequestArgumentError` before any request for an `artifacts` selection naming something that is no `RunArtifact`, such as a misspelt plain string, where they dropped it and sent a narrower selection or an empty one, as `@pipelex/sdk` refuses it. A bare `str` given as the selection, a single `RunArtifact` included, raises `TypeError` before any request, as `@pipelex/sdk` throws one for a value that is not an array, where its characters were read as names.
 
 ## [v0.35.1] - 2026-10-08
 

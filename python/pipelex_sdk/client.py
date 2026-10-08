@@ -2347,9 +2347,20 @@ def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArt
     with a `400`, and both are refused here first, before any request, with `RequestArgumentError`,
     as `@pipelex/sdk` refuses them. Dropping an unknown name instead would send a narrower selection
     than the caller asked for, or an empty one.
+
+    A bare `str`, a single `RunArtifact` member included since a `StrEnum` member is one, is no
+    selection: read as a sequence it would name its characters. It raises `TypeError`, a bug in the
+    calling code that carries no verdict, as `@pipelex/sdk` throws one for a value that is not an array.
+
+    Raises:
+        TypeError: `artifacts` is a bare `str`.
+        RequestArgumentError: The selection is empty or names an artifact that is no `RunArtifact`.
     """
     if artifacts is None:
         return None
+    if isinstance(artifacts, str):
+        msg = f'"artifacts" must be a list or tuple naming one or more of {", ".join(RunArtifact)}.'
+        raise TypeError(msg)
     requested = set(artifacts)
     if not requested:
         msg = "An artifact selection must name at least one RunArtifact; pass artifacts=None to read them all."
