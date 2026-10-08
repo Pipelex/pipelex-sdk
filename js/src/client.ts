@@ -2197,6 +2197,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `createdFrom` / `createdTo` are applied server-side as index key
    * conditions, so a bounded page genuinely reads less. They are INSTANTS,
    * not days — see `ListRunsQuery`.
+   *
+   * Takes a bare catalog id: the history files the runs of every version and
+   * of the draft together under it, so `mt_…@3` names no history of its own
+   * and the platform refuses it with a `400`. Strip a suffix with
+   * `parseMethodSelector`, and read which version a run ran from its
+   * `method_version`.
    */
   async listRuns(methodId: string, query: ListRunsQuery = {}): Promise<RunPage> {
     const params = new URLSearchParams({ method_id: methodId });
@@ -2234,6 +2240,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * cliff: it yields until the server says there is no more, the caller decides
    * when to stop, and only one page is ever in memory. If you truly want an
    * array, `Array.fromAsync` makes that your explicit choice.
+   *
+   * Takes a bare catalog id, as `listRuns` does.
    */
   async *iterateRuns(
     methodId: string,

@@ -1692,7 +1692,10 @@ class PipelexAPIClient(MthdsAPIClient):
         """List one page of a method's runs — `GET /v1/runs?method_id={methodId}`.
 
         Args:
-            method_id: The method whose runs to list.
+            method_id: The bare catalog id of the method whose runs to list. The history files the runs
+                of every version and of the draft together under it, so `mt_…@3` names no history of
+                its own and the platform refuses it with a `400`; strip a suffix with
+                `parse_method_selector`, and read which version a run ran from its `method_version`.
             created_from: Inclusive lower bound on creation, an **instant**: ISO-8601 with a
                 UTC offset. These are index key conditions rather than filters, so a bare date
                 or a naive timestamp is a platform `400` surfaced as `ApiResponseError`.
@@ -1734,6 +1737,8 @@ class PipelexAPIClient(MthdsAPIClient):
         adjacent-cursor one, and would loop forever re-yielding the same runs. The ceiling is
         the cheap guard against the whole family — tracking every cursor seen would cost
         unbounded memory for the same protection.
+
+        Takes a bare catalog id, as `list_runs` does.
 
         Raises:
             PagingNotTerminatingError: If the server never stops handing out cursors.
