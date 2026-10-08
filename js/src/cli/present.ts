@@ -12,7 +12,9 @@ import {
   ApiResponseError,
   ApiUnreachableError,
   InputPreparationError,
+  InvalidInputValueError,
   InvalidLocalSourceError,
+  MethodLoadError,
   PipelineRequestError,
   RunFailedError,
 } from "../index.js";
@@ -50,6 +52,29 @@ export function presentError(error: unknown): PresentedError {
       exitCode: EXIT_USAGE,
     };
   }
+  if (error instanceof InvalidInputValueError) {
+    // A value at a file input that is no file, such as a data: URL that does not decode or a
+    // number, is the inputs' fault too.
+    return {
+      lines: [
+        "Error: the inputs hold a value at a file input that cannot be read as a file.",
+        `Reason: ${error.message}`,
+        FILE_INPUT_FORMS,
+      ],
+      exitCode: EXIT_USAGE,
+    };
+  }
+  if (error instanceof MethodLoadError) {
+    // The same lines whichever route said so: the input preparation here, the pipe I/O call of
+    // `--inputs-template` and `script` in `source.ts`.
+    return {
+      lines: [
+        METHOD_DOES_NOT_LOAD,
+        ...loadFailureLines(error.validationErrors, error.serverMessage),
+      ],
+      exitCode: EXIT_FAILED,
+    };
+  }
   if (error instanceof InputPreparationError && error.cause instanceof ApiResponseError) {
     return presentRefusal(error.cause);
   }
@@ -82,6 +107,33 @@ function presentRefusal(error: ApiResponseError): PresentedError {
   if (error.userAction?.detail) lines.push(`Next step: ${error.userAction.detail}`);
   if (error.requestId) lines.push(`Request id: ${error.requestId}`);
   return { lines, exitCode: EXIT_FAILED };
+}
+
+/** What a file input takes, the hint under a value it cannot take. */
+const FILE_INPUT_FORMS =
+  'A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL, or an object whose "url" is one of these.';
+
+/** The first line of a method that does not load, after `Error: `. */
+export const METHOD_DOES_NOT_LOAD_SENTENCE = "the method does not load.";
+const METHOD_DOES_NOT_LOAD = `Error: ${METHOD_DOES_NOT_LOAD_SENTENCE}`;
+
+/**
+ * The lines under "the method does not load": one per validation item that carries a string
+ * `category` and `message`, the rule the SDK reads a failed load's items by, and when there is
+ * none, the answer's own message.
+ */
+export function loadFailureLines(items: unknown, message: unknown): string[] {
+  const lines = (Array.isArray(items) ? items : []).filter(isLoadItem).map(validationLine);
+  if (lines.length === 0) {
+    lines.push(`  - ${typeof message === "string" ? message : "the answer gives no reason"}`);
+  }
+  return lines;
+}
+
+function isLoadItem(value: unknown): value is { message: string; source?: unknown } {
+  return (
+    isPlainObject(value) && typeof value.category === "string" && typeof value.message === "string"
+  );
 }
 
 /** One validation error, as an indented line naming its file when it has one. */

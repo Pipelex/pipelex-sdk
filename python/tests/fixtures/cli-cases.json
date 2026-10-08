@@ -964,6 +964,125 @@
       }
     },
     {
+      "name": "inputs/data-url-malformed",
+      "summary": "A data: URL at a file input that cannot be decoded is a usage error, and nothing is uploaded or run.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"data:application/pdf;base64\", \"note\": \"Team lunch\"}\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: the inputs hold a value at a file input that cannot be read as a file.\n",
+          "A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "inputs/value-not-a-file",
+      "summary": "A number at a file input is a usage error, and nothing is uploaded or run.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [{ "path": "inputs.json", "text": "{\"receipt\": 42, \"note\": \"Team lunch\"}\n" }],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: the inputs hold a value at a file input that cannot be read as a file.\n",
+          "A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "inputs/method-does-not-load",
+      "summary": "A method that does not load, met while the inputs are prepared, is reported as --inputs-template reports it, every validation error on its line, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs", "inputs.json"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        },
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"https://example.com/r.pdf\", \"note\": \"Team lunch\"}\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                {
+                  "content": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+                  "source": "receipt-review.mthds"
+                }
+              ]
+            },
+            "status": 200,
+            "body": {
+              "is_valid": false,
+              "validation_errors": [
+                {
+                  "category": "blueprint_validation",
+                  "message": "Unknown concept 'Receipt'.",
+                  "source": "receipt-review.mthds"
+                },
+                {
+                  "category": "blueprint_validation",
+                  "message": "Unknown pipe 'receipts.extract_total'.",
+                  "source": "receipt-review.mthds"
+                }
+              ],
+              "message": "MTHDS library could not be resolved"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the method does not load.\n",
+          "  - receipt-review.mthds: Unknown concept 'Receipt'.\n",
+          "  - receipt-review.mthds: Unknown pipe 'receipts.extract_total'.\n"
+        ],
+        "stderr_excludes": ["Cannot prepare inputs", "Run started"]
+      }
+    },
+    {
       "name": "inputs/empty-object",
       "summary": "An empty object has nothing to prepare, so no pipe I/O request is made, and the run gets it as it is.",
       "argv": [
