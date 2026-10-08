@@ -33,6 +33,7 @@ interface Exchange {
   unreachable?: boolean;
   lost?: string;
   base64?: string;
+  elapsed_ms?: number;
 }
 
 interface FileEntry {
@@ -115,6 +116,7 @@ const EXCHANGE_FIELDS = [
   "unreachable",
   "lost",
   "base64",
+  "elapsed_ms",
 ];
 const PLACEHOLDER_LANGUAGE = "js";
 
@@ -196,6 +198,7 @@ class RecordedApi {
     private readonly testCase: Case,
     private readonly env: Record<string, string>,
     private readonly interrupt: AbortController,
+    private readonly clock: CaseClock,
   ) {}
 
   fetch = async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
@@ -242,6 +245,8 @@ class RecordedApi {
       ...(exchange.answer === undefined ? {} : TABLE.answers[exchange.answer]),
       ...exchange,
     };
+    // The exchange takes this long on the clock the command and the SDK read, at once.
+    if (answer.elapsed_ms !== undefined) this.clock.advance(answer.elapsed_ms);
     if (answer.unreachable === true) {
       throw new TypeError("fetch failed", {
         cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
@@ -307,6 +312,24 @@ function sentBody(body: RequestInit["body"]): unknown {
 
 // ── Running a case ───────────────────────────────────────────────────────────────────────────
 
+/**
+ * The clock a case runs on: `Date.now`, which the command and the SDK read to time a request,
+ * runs as it does, plus the time the case's exchanges have taken (`elapsed_ms`), so that a case
+ * can hold an answer that came back half a minute later without waiting for it.
+ */
+class CaseClock {
+  private elapsedMs = 0;
+
+  constructor() {
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + this.elapsedMs);
+  }
+
+  advance(ms: number): void {
+    this.elapsedMs += ms;
+  }
+}
+
 function materialize(root: string, files: readonly FileEntry[]): void {
   for (const file of files) {
     const target = path.join(root, file.path);
@@ -362,7 +385,7 @@ async function runCase(
   const env = caseEnv(testCase);
   const interrupt = new AbortController();
   if (early === "before") interrupt.abort();
-  const api = new RecordedApi(testCase, env, interrupt);
+  const api = new RecordedApi(testCase, env, interrupt, new CaseClock());
   vi.spyOn(globalThis, "fetch").mockImplementation(api.fetch);
   let stdout = "";
   let stderr = "";
@@ -527,35 +550,6 @@ describe("an interrupt that lands before any request", () => {
     }
   });
 });
-
-describe("a run the API may have created before the command learned of it", () => {
-  it("says so when the gateway cuts a blocking execute off", async () => {
-    // The gateway's cut-off is told from a runner that is down by the time it took: every reading
-    // of the clock here is half a minute after the one before.
-    let now = 0;
-    vi.spyOn(Date, "now").mockImplementation(() => (now += 31_000));
-    const testCase: Case = {
-      name: "gateway/execute-cut-off",
-      summary: "A blocking execute the gateway cut off may have run the method.",
-      argv: ["run", "--method", "mt_receipts01"],
-      routes: {
-        "GET /v1/version": [{ answer: "version/bare-runner" }],
-        "POST /v1/execute": [{ status: 504, body: { detail: "Gateway Timeout" } }],
-      },
-      expect: { exit_code: 1, stdout: "", stderr: [RUN_MAY_HAVE_STARTED] },
-    };
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pipelex-sdk-cli-")));
-    try {
-      const { outcome, api } = await runCase(testCase, root);
-      check(testCase, outcome, api);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
-const RUN_MAY_HAVE_STARTED =
-  "A run may have started on the server without the command learning of it, so check before starting it again.\n";
 
 describe("the command's packaging", () => {
   it("is the package's one bin, an executable Node script", () => {

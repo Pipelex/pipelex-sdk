@@ -15,6 +15,7 @@ import {
   MissingMainStuffError,
   PipelineExecuteTimeoutError,
   RunFailedError,
+  isGatewayCutOff,
   renderInputsTemplate,
 } from "../index.js";
 import type { PipelexApiClient, RunResults } from "../index.js";
@@ -45,10 +46,13 @@ const RUN_FLAGS = {
   "inputs-template": { type: "boolean" },
 } as const;
 
-/** Where a run stands, which decides what an interrupt says. */
+/**
+ * Where a run stands, which decides what an interrupt and a failure say. `since` is when the
+ * request that may create a run left, on the clock the SDK times its requests with (`Date.now`).
+ */
 type Stage =
   | { readonly kind: "local" }
-  | { readonly kind: "starting" }
+  | { readonly kind: "starting"; readonly since: number }
   | { readonly kind: "started"; readonly runId: string };
 
 /** Run `pipelex-sdk run` and return its exit code. */
@@ -106,7 +110,7 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
           onStarting: () => {
             // Only once a request that may create a run is about to leave: an interrupt before
             // it, during the version handshake included, starts nothing, and the command says so.
-            stage = { kind: "starting" };
+            stage = { kind: "starting", since: Date.now() };
           },
           onStarted: (ack) => {
             if (io.interrupt.aborted) return;
@@ -166,17 +170,21 @@ const NOTHING_SENT_CODES: ReadonlySet<string> = new Set([
 /**
  * Whether a failure met once a request that may create a run was sent, and before the API named
  * the run, leaves it unknown whether one was created: its answer was lost to a time limit, a
- * connection that closed once the request had left or a gateway that cut a blocking execute off,
- * or it came back unreadable, or a gateway answered that it lost or never got the server's answer
- * (`502`, `504`, RFC 9110). Any other answer from the API, a `503` saying the request was not
- * handled included, and a failure that proves nothing was sent, say no run was created.
+ * connection that closed once the request had left or a gateway that cut the request off, or it
+ * came back unreadable, or a gateway answered that it lost or never got the server's answer
+ * (`502`, `504`, RFC 9110). A gateway cuts a request off at ~30 seconds, whether a blocking
+ * execute or a start the server is still handling, such as one fetching a `method_ref`'s package:
+ * the SDK's `isGatewayCutOff` tells it, past its threshold, from the time since `onStarting`. Any
+ * other answer from the API, a `503` that came back before that saying the request was not handled
+ * included, and a failure that proves nothing was sent, say no run was created.
  */
 function mayHaveStarted(stage: Stage, error: unknown): boolean {
   if (stage.kind !== "starting") return false;
   if (error instanceof PipelineExecuteTimeoutError) return true;
   if (error instanceof ApiUnreachableError) return !NOTHING_SENT_CODES.has(error.code ?? "");
   if (!(error instanceof ApiResponseError)) return false;
-  return (error.status >= 200 && error.status < 300) || GATEWAY_LOST_ANSWER.has(error.status);
+  if (error.status >= 200 && error.status < 300) return true;
+  return GATEWAY_LOST_ANSWER.has(error.status) || isGatewayCutOff(error, Date.now() - stage.since);
 }
 
 /** The gateway statuses that say the server's answer was lost or never came (RFC 9110). */

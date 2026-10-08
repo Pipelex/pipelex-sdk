@@ -898,7 +898,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // exceeds that comes back as a gateway 503/504 (or a client abort) —
       // translate it into a clear, actionable error pointing at start+poll.
       const elapsedMs = Date.now() - startedAt;
-      if (isGatewayTimeout(err, elapsedMs)) {
+      if (isGatewayCutOff(err, elapsedMs)) {
         throw new PipelineExecuteTimeoutError(elapsedMs, { cause: err });
       }
       throw err;
@@ -2365,15 +2365,32 @@ function withValidateMarkdownRender(render: string[] | undefined): string[] {
 }
 
 // The hosted gateway caps synchronous requests at 30s. A failure at/after this
-// threshold on the blocking execute is the timeout, not a transient outage —
-// the threshold guards against mislabelling a fast 503 (runner genuinely down)
-// as a timeout.
+// threshold is the gateway's cut-off, not a transient outage — the threshold
+// guards against mislabelling a fast 503 (runner genuinely down) as a timeout.
+// The one source of the threshold in this SDK: `isGatewayCutOff` reads it.
 const GATEWAY_TIMEOUT_THRESHOLD_MS = 28_000;
 
-function isGatewayTimeout(err: unknown, elapsedMs: number): boolean {
+/**
+ * Whether a request that failed `elapsedMs` after it was sent was cut off by the hosted gateway's
+ * ~30-second limit on a request it waits on, rather than refused.
+ *
+ * It is when, after at least ~28 seconds, the failure is a `503` or `504` answer, or the client's
+ * own time limit (`ApiUnreachableError` with the code `ABORT_TIMEOUT`). A fast `503` is the API
+ * saying the request was not handled, and any other unreachable host is never the gateway's
+ * cut-off, however long it took. The fetch API cannot say whether `ABORT_TIMEOUT` ran out before
+ * the connection was made, so it is read as the gateway's; with Node's own dispatcher it never
+ * does, since a connection that does not come fails first by the system's or undici's own connect
+ * limit, each shorter than any time limit this SDK sets. The Python SDK's `is_gateway_cut_off`
+ * reads the same failures, its `ABORT_TIMEOUT` being httpx's read or write timeout.
+ *
+ * The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. A caller timing
+ * a request that may create a run, such as `start` from `startAndWaitForResult`'s `onStarting`,
+ * reads it to know the server may still be handling the request the gateway gave up on.
+ */
+export function isGatewayCutOff(error: unknown, elapsedMs: number): boolean {
   if (elapsedMs < GATEWAY_TIMEOUT_THRESHOLD_MS) return false;
-  if (err instanceof ApiResponseError) return err.status === 503 || err.status === 504;
-  if (err instanceof ApiUnreachableError) return err.code === "ABORT_TIMEOUT";
+  if (error instanceof ApiResponseError) return error.status === 503 || error.status === 504;
+  if (error instanceof ApiUnreachableError) return error.code === "ABORT_TIMEOUT";
   return false;
 }
 

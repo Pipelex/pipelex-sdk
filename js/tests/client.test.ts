@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MODEL_CATEGORIES, type ModelCategory } from "mthds/protocol";
-import { PipelexApiClient } from "../src/client.js";
+import { PipelexApiClient, isGatewayCutOff } from "../src/client.js";
 import { PipelexExecuteResult } from "../src/execute-result.js";
 import {
   ApiResponseError,
@@ -736,6 +736,44 @@ describe("PipelexApiClient.execute gateway 30s timeout", () => {
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiResponseError);
     expect(err).not.toBeInstanceOf(PipelineExecuteTimeoutError);
+  });
+});
+
+describe("isGatewayCutOff", () => {
+  /** The error a start fails with on this answer or this failure, as the client throws it. */
+  async function startFailure(answer: () => Promise<Response>): Promise<unknown> {
+    vi.spyOn(globalThis, "fetch").mockImplementation(answer);
+    return makeClient()
+      .start({ pipe_code: "p" })
+      .then(
+        () => expect.fail("expected the start to fail"),
+        (thrown: unknown) => thrown,
+      );
+  }
+
+  it.each([
+    ["a 503", () => Promise.resolve(textResponse(503, "", "Service Unavailable")), true],
+    ["a 504", () => Promise.resolve(textResponse(504, "", "Gateway Timeout")), true],
+    ["a 500", () => Promise.resolve(textResponse(500, "", "Internal Server Error")), false],
+    ["a 502", () => Promise.resolve(textResponse(502, "", "Bad Gateway")), false],
+    [
+      "the client's own time limit",
+      () => Promise.reject(new DOMException("timed out", "TimeoutError")),
+      true,
+    ],
+    ["a refused connection", () => Promise.reject(networkError("ECONNREFUSED")), false],
+  ])("reads %s past ~28 seconds as the cut-off: %s", async (_name, answer, cutOff) => {
+    const error = await startFailure(answer);
+
+    expect(isGatewayCutOff(error, 31_000)).toBe(cutOff);
+    expect(isGatewayCutOff(error, 28_000)).toBe(cutOff);
+    // Before the threshold, nothing is the gateway's cut-off: a fast 503 is the API refusing.
+    expect(isGatewayCutOff(error, 27_999)).toBe(false);
+  });
+
+  it("reads nothing but the SDK's own errors", () => {
+    expect(isGatewayCutOff(new Error("503"), 31_000)).toBe(false);
+    expect(isGatewayCutOff(undefined, 31_000)).toBe(false);
   });
 });
 

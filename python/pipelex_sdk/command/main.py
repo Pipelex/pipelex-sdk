@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
+from pipelex_sdk.client import is_gateway_cut_off
 from pipelex_sdk.command.help import MAIN_HELP
 from pipelex_sdk.command.io import (
     EXIT_INTERRUPTED,
@@ -66,9 +67,10 @@ def run_command(argv: Sequence[str], io: CommandIO) -> int:
         # failure while waiting on a run that exists, an unreachable API or a refused poll, says
         # nothing of the run, which goes on: a wrapper must not read it as a failed run and pay for
         # another.
+        starting_seconds = progress.starting_seconds()
         if progress.waiting_on_run is not None and not isinstance(exc, (RunFailedError, MissingMainStuffError)):
             lines = [*lines, run_still_going_line(progress.waiting_on_run)]
-        elif progress.starting and _may_have_started(exc):
+        elif starting_seconds is not None and _may_have_started(exc, starting_seconds):
             lines = [*lines, RUN_MAY_HAVE_STARTED_LINE]
         write_lines(io, lines)
         return presented.exit_code
@@ -82,20 +84,23 @@ _NOTHING_SENT_CODES = frozenset({"ConnectError", "ConnectTimeout", "PoolTimeout"
 _GATEWAY_LOST_ANSWER = frozenset({502, 504})
 
 
-def _may_have_started(exc: Exception) -> bool:
-    """Whether a failure met once a request that may create a run was sent, and before the API named the
-    run, leaves it unknown whether one was created: its answer was lost to a time limit, a connection that
-    closed once the request had left or a gateway that cut a blocking execute off, or it came back
+def _may_have_started(exc: Exception, elapsed_seconds: float) -> bool:
+    """Whether a failure met `elapsed_seconds` after a request that may create a run was sent, and before the
+    API named the run, leaves it unknown whether one was created: its answer was lost to a time limit, a
+    connection that closed once the request had left or a gateway that cut the request off, or it came back
     unreadable, or a gateway answered that it lost or never got the server's answer (`502`, `504`, RFC 9110).
-    Any other answer from the API, a `503` saying the request was not handled included, and a failure that
-    proves nothing was sent, say no run was created.
+    A gateway cuts a request off at ~30 seconds, whether a blocking execute or a start the server is still
+    handling, such as one fetching a `method_ref`'s package: the SDK's `is_gateway_cut_off` tells it, past its
+    threshold, from the time since `on_starting`. Any other answer from the API, a `503` that came back before
+    that saying the request was not handled included, and a failure that proves nothing was sent, say no run
+    was created.
     """
     if isinstance(exc, PipelineExecuteTimeoutError):
         return True
     if isinstance(exc, ApiUnreachableError):
         return exc.code not in _NOTHING_SENT_CODES
     if isinstance(exc, ApiResponseError):
-        return 200 <= exc.status < 300 or exc.status in _GATEWAY_LOST_ANSWER
+        return 200 <= exc.status < 300 or exc.status in _GATEWAY_LOST_ANSWER or is_gateway_cut_off(exc, elapsed_seconds)
     return isinstance(exc, (ValidationError, json.JSONDecodeError, UnicodeDecodeError))
 
 

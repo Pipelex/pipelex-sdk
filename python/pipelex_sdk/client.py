@@ -154,9 +154,10 @@ _DEFAULT_DEGRADED_RETRY_SECONDS = 5  # matches the platform's `_DEGRADE_RETRY_AF
 # whole. The same limit as the `mthds` base, so a refusal reads the same from either client.
 _REASON_BODY_LIMIT = 500
 
-# The hosted gateway caps synchronous requests at ~30s. A blocking-`execute` failure at/after
-# this elapsed threshold is the gateway cut-off, not a transient outage — the threshold guards
-# against mislabeling a fast 503 (runner genuinely down) as a timeout.
+# The hosted gateway caps synchronous requests at ~30s. A failure at/after this elapsed threshold
+# is the gateway's cut-off, not a transient outage — the threshold guards against mislabeling a fast
+# 503 (runner genuinely down) as a timeout. The one source of the threshold in this SDK:
+# `is_gateway_cut_off` reads it.
 _GATEWAY_TIMEOUT_THRESHOLD_SECONDS = 28.0
 
 # The `ApiUnreachableError.code` of a request that reached the server and that this client's own timeout
@@ -581,9 +582,9 @@ class PipelexAPIClient(MthdsAPIClient):
             )
         except (ApiResponseError, ApiUnreachableError) as exc:
             # A client-side read or write timeout arrives as the `ApiUnreachableError` the `_send` override maps it to,
-            # with the `code` `ABORT_TIMEOUT` that `_is_gateway_timeout` reads.
+            # with the `code` `ABORT_TIMEOUT` that `is_gateway_cut_off` reads.
             elapsed_seconds = monotonic() - started_at
-            if _is_gateway_timeout(exc, elapsed_seconds):
+            if is_gateway_cut_off(exc, elapsed_seconds):
                 raise PipelineExecuteTimeoutError(_execute_timeout_message(elapsed_seconds), elapsed_seconds=elapsed_seconds) from exc
             raise
         # Re-validate the base result into the enriched subclass (adds the `.main_stuff` accessor;
@@ -1815,20 +1816,28 @@ def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArt
     return tuple(artifact for artifact in RunArtifact if artifact in requested)
 
 
-def _is_gateway_timeout(exc: ApiResponseError | ApiUnreachableError, elapsed_seconds: float) -> bool:
-    """Whether a failed blocking `execute` is the hosted gateway's ~30s synchronous cut-off.
+def is_gateway_cut_off(exc: BaseException, elapsed_seconds: float) -> bool:
+    """Whether a request that failed `elapsed_seconds` after it was sent was cut off by the hosted
+    gateway's ~30-second limit on a request it waits on, rather than refused.
 
-    The elapsed threshold guards against mislabeling a fast `503` (the runner genuinely down)
-    as a timeout: a gateway `503`/`504`, or a client-side read or write timeout (the
-    `ApiUnreachableError` whose `code` is `ABORT_TIMEOUT`), only counts once the request has
-    run at least ~28s. Any other unreachable host is never the gateway's cut-off. Mirrors the
-    JS `isGatewayTimeout`.
+    It is when, after at least ~28 seconds, the failure is a `503` or `504` answer (`ApiResponseError`),
+    or the client's own time limit on a request that had reached the API (the `ApiUnreachableError` whose
+    `code` is `ABORT_TIMEOUT`, httpx's read or write timeout). A fast `503` is the API saying the request
+    was not handled, and any other unreachable host, a connect or pool timeout included, never sent the
+    request, so it is never the gateway's cut-off, however long it took. Any other exception is not either.
+    `@pipelex/sdk`'s `isGatewayCutOff` reads the same failures.
+
+    The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. A caller timing a
+    request that may create a run, such as `start` from `start_and_wait`'s `on_starting`, reads it to know
+    the server may still be handling the request the gateway gave up on.
     """
     if elapsed_seconds < _GATEWAY_TIMEOUT_THRESHOLD_SECONDS:
         return False
     if isinstance(exc, ApiUnreachableError):
         return exc.code == _ABORT_TIMEOUT_CODE
-    return exc.status in {503, 504}
+    if isinstance(exc, ApiResponseError):
+        return exc.status in {503, 504}
+    return False
 
 
 def _execute_timeout_message(elapsed_seconds: float) -> str:

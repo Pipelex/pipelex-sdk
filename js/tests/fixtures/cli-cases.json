@@ -2269,6 +2269,52 @@
       }
     },
     {
+      "name": "run/execute-gateway-cut-off",
+      "summary": "A bare runner's blocking execute that a 503 ends past the gateway's ~30-second cut-off may have run the method, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/bare-runner" }],
+        "POST /v1/execute": [
+          {
+            "elapsed_ms": 31000,
+            "status": 503,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 503, "title": "Service Unavailable", "detail": "The gateway answered 503." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: ",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ]
+      }
+    },
+    {
+      "name": "run/execute-unavailable",
+      "summary": "A bare runner's blocking execute refused with a 503 before the gateway's cut-off ran nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/bare-runner" }],
+        "POST /v1/execute": [
+          {
+            "elapsed_ms": 27000,
+            "status": 503,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 503, "title": "Service Unavailable", "detail": "The gateway answered 503." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 503).\n"],
+        "stderr_excludes": ["may have started"]
+      }
+    },
+    {
       "name": "run/start-answer-unreadable",
       "summary": "A start accepted with an answer the command cannot read created a run it never learned of, so the failure says so.",
       "argv": ["run", "--method", "mt_receipts01"],
@@ -2325,12 +2371,13 @@
     },
     {
       "name": "run/start-unavailable",
-      "summary": "A 503 says the start was not handled, so no run was created and the failure says nothing of one.",
+      "summary": "A 503 that comes back before the gateway's ~30-second cut-off says the start was not handled, so no run was created and the failure says nothing of one.",
       "argv": ["run", "--method", "mt_receipts01"],
       "routes": {
         "GET /v1/version": [{ "answer": "version/hosted" }],
         "POST /v1/start": [
           {
+            "elapsed_ms": 27000,
             "status": 503,
             "headers": { "Content-Type": "application/problem+json" },
             "body": { "status": 503, "title": "Service Unavailable", "detail": "The gateway answered 503." }
@@ -2342,6 +2389,31 @@
         "stdout": "",
         "stderr": ["Error: the API refused the request (status 503).\n"],
         "stderr_excludes": ["may have started"]
+      }
+    },
+    {
+      "name": "run/start-gateway-cut-off",
+      "summary": "A 503 that comes back past the gateway's ~30-second cut-off is the gateway giving up on a start the server may still be handling, so a run may have been created and the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "elapsed_ms": 31000,
+            "status": 503,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 503, "title": "Service Unavailable", "detail": "The gateway answered 503." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API refused the request (status 503).\n",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
       }
     },
     {
