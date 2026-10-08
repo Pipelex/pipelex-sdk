@@ -711,7 +711,7 @@ describe("PipelexApiClient.execute gateway 30s timeout", () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
     // start = 0ms, failure observed at 31s → over the 30s gateway ceiling.
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(31_000);
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(31_000);
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PipelineExecuteTimeoutError);
     const e = err as PipelineExecuteTimeoutError;
@@ -723,16 +723,26 @@ describe("PipelexApiClient.execute gateway 30s timeout", () => {
   it("also fires on a client-side abort timeout past the ceiling", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("timed out", "TimeoutError"));
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(30_500);
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(30_500);
     await expect(client.execute({ pipe_code: "p" })).rejects.toBeInstanceOf(
       PipelineExecuteTimeoutError,
     );
   });
 
+  it("times the request on the monotonic clock, so a wall clock step makes no fast 503 a cut-off", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
+    // The system clock is set forward by a minute while the request is out, as a time sync may do.
+    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(60_000);
+    const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect(err).not.toBeInstanceOf(PipelineExecuteTimeoutError);
+  });
+
   it("leaves a fast 503 as an ordinary ApiResponseError (runner down, not a timeout)", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(2_000);
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(2_000);
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiResponseError);
     expect(err).not.toBeInstanceOf(PipelineExecuteTimeoutError);

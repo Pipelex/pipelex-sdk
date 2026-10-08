@@ -48,7 +48,8 @@ const RUN_FLAGS = {
 
 /**
  * Where a run stands, which decides what an interrupt and a failure say. `since` is when the
- * request that may create a run left, on the clock the SDK times its requests with (`Date.now`).
+ * request that may create a run left, on the monotonic clock the SDK times its requests with
+ * (`performance.now`), which a change of the system's time does not move.
  */
 type Stage =
   | { readonly kind: "local" }
@@ -110,7 +111,7 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
           onStarting: () => {
             // Only once a request that may create a run is about to leave: an interrupt before
             // it, during the version handshake included, starts nothing, and the command says so.
-            stage = { kind: "starting", since: Date.now() };
+            stage = { kind: "starting", since: performance.now() };
           },
           onStarted: (ack) => {
             if (io.interrupt.aborted) return;
@@ -260,7 +261,9 @@ function mayHaveStarted(stage: Stage, error: unknown): boolean {
   if (error instanceof ApiUnreachableError) return !provesNothingSent(error);
   if (!(error instanceof ApiResponseError)) return false;
   if (error.status >= 200 && error.status < 300) return true;
-  return GATEWAY_LOST_ANSWER.has(error.status) || isGatewayCutOff(error, Date.now() - stage.since);
+  return (
+    GATEWAY_LOST_ANSWER.has(error.status) || isGatewayCutOff(error, performance.now() - stage.since)
+  );
 }
 
 /** The gateway statuses that say the server's answer was lost or never came (RFC 9110). */

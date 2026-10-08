@@ -878,7 +878,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       ...extensions,
     };
 
-    const startedAt = Date.now();
+    // Timed on the monotonic clock, which a change of the system's time does not move.
+    const startedAt = performance.now();
     try {
       const res = await this.requestRaw("POST", this.url("execute"), {
         body: request,
@@ -897,7 +898,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // The hosted gateway terminates synchronous requests at ~30s. A run that
       // exceeds that comes back as a gateway 503/504 (or a client abort) —
       // translate it into a clear, actionable error pointing at start+poll.
-      const elapsedMs = Date.now() - startedAt;
+      const elapsedMs = performance.now() - startedAt;
       if (isGatewayCutOff(err, elapsedMs)) {
         throw new PipelineExecuteTimeoutError(elapsedMs, { cause: err });
       }
