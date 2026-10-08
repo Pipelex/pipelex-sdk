@@ -1,6 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [v0.34.0] - 2026-10-08
+
+### Highlights
+
+**A method runs from the shell, with no project around it.** `npx @pipelex/sdk run` runs a method on the hosted API through the SDK's durable run lifecycle and prints its main output as JSON, and `npx @pipelex/sdk script` writes a shell script that runs it with this version pinned. `pipelex-sdk` on PyPI ships the same command, and both are held to one recorded table of cases.
 
 ### Added
 

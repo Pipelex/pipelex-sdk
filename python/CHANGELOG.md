@@ -1,6 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [v0.34.0] - 2026-10-08
+
+### Highlights
+
+**A method runs from the shell, with no project around it.** `uvx pipelex-sdk run` runs a method on the hosted API through the SDK's durable run lifecycle and prints its main output as JSON, and `uvx pipelex-sdk script` writes a shell script that runs it with this version pinned. `@pipelex/sdk` on npm ships the same command, and both are held to one recorded table of cases. **Every route now reports a missing answer the same way**: a request that gets no answer raises `ApiUnreachableError`, whose `code` tells a read or write timeout from a failure to connect.
 
 ### Added
 
