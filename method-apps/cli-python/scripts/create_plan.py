@@ -4,7 +4,7 @@ The gesture takes one `METHOD`, in any of its forms, and every form ends in the 
 the package (`lib/binding.py`): `method/`, `generated/` and `binding.py`.
 
 - **A bundle**, a `.mthds` file or a directory of them, is read here and copied into `method/`.
-- **A catalog id** (`mt_…`) or **a published address** (`github.com/…`) stays where it is, and
+- **A catalog id** (`mt_…`, `mt_…@<version>` or `mt_…@draft`) or **a published address** (`github.com/…`) stays where it is, and
   `method/method.json` names it.
 
 `plan_method` is the read-only half. It parses the argument, reads the bundle or checks that the

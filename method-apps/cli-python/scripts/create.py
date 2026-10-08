@@ -103,9 +103,9 @@ MAKE_VARIABLES = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES")
 UV_LOCK_GATES = ("UV_LOCKED", "UV_FROZEN")
 
 USAGE = (
-    "usage: make create METHOD=<path/to/bundle | mt_… | github.com/owner/repo[/pkg][@tag]> [NAME=<package>] [TITLE=<title>] "
-    "[DESCRIPTION=<text>] [PIPE=<pipe_code>] [AUTHOR_NAME=…] [AUTHOR_EMAIL=…] [REPO_URL=…] [LICENSE=mit|proprietary|<spdx>] "
-    "[LICENSE_HOLDER=…] [LICENSE_YEAR=…] [DRY_RUN=1]"
+    "usage: make create METHOD=<path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/pkg][@tag]> [NAME=<package>] "
+    "[TITLE=<title>] [DESCRIPTION=<text>] [PIPE=<pipe_code>] [AUTHOR_NAME=…] [AUTHOR_EMAIL=…] [REPO_URL=…] "
+    "[LICENSE=mit|proprietary|<spdx>] [LICENSE_HOLDER=…] [LICENSE_YEAR=…] [DRY_RUN=1]"
 )
 
 
@@ -174,7 +174,10 @@ def parse_create_args(argv: Sequence[str]) -> CreateArgs:
         raise CreateError(msg)
     method: object = parsed.method
     if not isinstance(method, str) or not method.strip():
-        msg = f"no method given: pass a .mthds file or a directory of them, a catalog id (mt_…), or a published address.\n  {USAGE}"
+        msg = (
+            "no method given: pass a .mthds file or a directory of them, a catalog id (mt_…, mt_…@<version> or mt_…@draft), "
+            f"or a published address.\n  {USAGE}"
+        )
         raise CreateError(msg)
     values: dict[str, Any] = {}
     for field, _ in (*OWN_VALUES, *BOOTSTRAP_PASSTHROUGH):

@@ -49,7 +49,7 @@ from pipelex_method_cli_python.lib.run import RunPlan, execute_plan
 
 # template-only:begin
 #: What `make create` takes, as the template's empty state names it.
-CREATE_COMMAND = "make create METHOD=<path/to/bundle | mt_… | github.com/owner/repo[/pkg][@tag]>"
+CREATE_COMMAND = "make create METHOD=<path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/pkg][@tag]>"
 # template-only:end
 
 #: The empty state, one paragraph per line: the package holds no method, neither `binding.py` nor a
@@ -59,7 +59,10 @@ EMPTY_STATE_LINES: tuple[str, ...] = (
     # template-only:begin
     "Turn this template into the command for your method by running, in its directory:",
     f"  {CREATE_COMMAND}",
-    "METHOD is a .mthds file or a directory of them, a method id from your organization's catalog (mt_…), or a published method's address.",
+    (
+        "METHOD is a .mthds file or a directory of them, a method id from your organization's catalog (mt_…, or mt_…@<version> "
+        "and mt_…@draft to pin a version or run the draft), or a published method's address."
+    ),
     # template-only:end
 )
 

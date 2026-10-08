@@ -114,8 +114,8 @@ flag = $(if $(filter-out 0,$(call given,$(1))),$(2))
 require = @$(if $(call given,$(1)),:,echo "$(2)"; exit 2)
 
 .PHONY: create
-create: ## Turn this template into the CLI for METHOD=<path/to/bundle | mt_… | address> (one-shot; needs PIPELEX_API_KEY)
-	$(call require,METHOD,usage: make create METHOD=<path/to/bundle | mt_… | github.com/owner/repo[/pkg][@tag]> [NAME=<package>] [TITLE=<title>] [DESCRIPTION=<text>] [PIPE=<pipe_code>] [AUTHOR_NAME=…] [AUTHOR_EMAIL=…] [REPO_URL=…] [LICENSE=mit|proprietary|<spdx>] [LICENSE_HOLDER=…] [LICENSE_YEAR=…] [DRY_RUN=1])
+create: ## Turn this template into the CLI for METHOD=<path/to/bundle | mt_…[@<version>|@draft] | address> (one-shot; needs PIPELEX_API_KEY)
+	$(call require,METHOD,usage: make create METHOD=<path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/pkg][@tag]> [NAME=<package>] [TITLE=<title>] [DESCRIPTION=<text>] [PIPE=<pipe_code>] [AUTHOR_NAME=…] [AUTHOR_EMAIL=…] [REPO_URL=…] [LICENSE=mit|proprietary|<spdx>] [LICENSE_HOLDER=…] [LICENSE_YEAR=…] [DRY_RUN=1])
 	@[ -x $(PYTHON) ] || uv sync
 	$(PYTHON) -m scripts.create $(call shq,$(value METHOD)) $(call opt,NAME,--name) $(call opt,TITLE,--title) $(call opt,DESCRIPTION,--description) $(call opt,PIPE,--pipe) $(call opt,AUTHOR_NAME,--author-name) $(call opt,AUTHOR_EMAIL,--author-email) $(call opt,REPO_URL,--repo-url) $(call opt,LICENSE,--license) $(call opt,LICENSE_HOLDER,--license-holder) $(call opt,LICENSE_YEAR,--license-year) $(call flag,DRY_RUN,--dry-run)
 # template-only:end
