@@ -15,7 +15,7 @@ import type {
 } from "../index.js";
 import type { BundleFile } from "./bundle.js";
 import { CommandError, EXIT_FAILED, untilInterrupted } from "./io.js";
-import { validationLine } from "./present.js";
+import { loadFailureLines, METHOD_DOES_NOT_LOAD_SENTENCE } from "./present.js";
 
 /** A method the command can send: a bundle read from disk, an address or a catalog id. */
 export type MethodSource =
@@ -87,14 +87,10 @@ export async function describePipe(
     );
   }
   if (!answer.is_valid) {
-    const items = Array.isArray(answer.validation_errors) ? answer.validation_errors : [];
-    const lines = items.filter(isValidationItem).map(validationLine);
-    if (lines.length === 0) {
-      lines.push(
-        `  - ${typeof answer.message === "string" ? answer.message : "the answer gives no reason"}`,
-      );
-    }
-    throw new CommandError("the method does not load.", { exitCode: EXIT_FAILED, details: lines });
+    throw new CommandError(METHOD_DOES_NOT_LOAD_SENTENCE, {
+      exitCode: EXIT_FAILED,
+      details: loadFailureLines(answer.validation_errors, answer.message),
+    });
   }
   const report = answer as unknown as PipeIOValidReport;
   const pipeRef = report.pipe_ref;
@@ -113,8 +109,4 @@ export async function describePipe(
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isValidationItem(value: unknown): value is { message: string; source?: unknown } {
-  return isPlainObject(value) && typeof value.message === "string";
 }

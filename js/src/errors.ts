@@ -184,6 +184,44 @@ export class InvalidLocalSourceError extends InputPreparationError {
 }
 
 /**
+ * A value the caller gave at a file input cannot be turned into a file to upload: a `data:` URL
+ * that does not decode (no comma, bad base64, bad percent-encoding), or a value of a type no file
+ * input takes, neither a path or URL string, nor bytes, nor `{url}` content. `prepareInputs`
+ * raises it while it reads the inputs, before anything is uploaded. As with
+ * `InvalidLocalSourceError`, the inputs are what must change, which is how a consumer tells it
+ * apart from `MethodLoadError`, a method that does not load, raised by the same preparation.
+ */
+export class InvalidInputValueError extends InputPreparationError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "InvalidInputValueError";
+  }
+}
+
+/**
+ * The pipe I/O answer said the method does not load (`is_valid: false`), so its signature cannot
+ * be read and no input can be prepared: the method, not the inputs, must change.
+ * `validationErrors` holds the answer's items, each kept when it carries a string `category` and
+ * `message`, possibly none; `serverMessage` is the answer's own `message` when it is a string. The
+ * error's message names the first item's message, else the answer's own.
+ */
+export class MethodLoadError extends InputPreparationError {
+  public readonly validationErrors: ValidationErrorItem[];
+  public readonly serverMessage: string | undefined;
+
+  constructor(
+    message: string,
+    details: { validationErrors: ValidationErrorItem[]; serverMessage?: string | undefined },
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "MethodLoadError";
+    this.validationErrors = details.validationErrors;
+    this.serverMessage = details.serverMessage;
+  }
+}
+
+/**
  * Why an asset was refused, in a closed vocabulary a caller branches on rather than
  * on the message: `too_large` — past the service-defined size cap (`uploadFile`'s
  * `413`); `grant_used` — the upload grant already wrote its object (`412`);

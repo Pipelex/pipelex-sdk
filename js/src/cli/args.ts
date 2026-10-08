@@ -5,7 +5,10 @@
  * `parseArgs` runs in its lenient mode and returns its tokens, and the rules are applied to the
  * tokens in command-line order, the first problem being the one reported:
  *
- * - `--help` or `-h` anywhere before `--` asks for the subcommand's help, whatever else is there.
+ * - `--help` or `-h` anywhere before `--` asks for the subcommand's help, whatever else is there,
+ *   even where a flag's value would be expected: an argument that is exactly one of the two is
+ *   never taken as a value, so `run --method --help` prints the help. A parser that would take it
+ *   as the value, as `parseArgs` and `argparse` both do, is preceded by a scan for it.
  * - An option the subcommand does not take is refused, and so is any positional argument.
  * - A flag given twice is refused, rather than the last one winning: a script written by
  *   `script` passes its own arguments through, and a second `--method` must not quietly run
@@ -20,6 +23,9 @@ import { parseArgs } from "node:util";
 
 import { usageError } from "./io.js";
 import type { CommandError } from "./io.js";
+
+/** The two arguments that ask for a subcommand's help. */
+const HELP_ARGUMENTS: readonly string[] = ["--help", "-h"];
 
 /** One flag a subcommand takes, by its long name. */
 export interface FlagSpec {
@@ -51,6 +57,12 @@ export function parseFlags(
     help: { type: "boolean", short: "h" },
   };
   for (const [name, spec] of Object.entries(specs)) options[name] = { type: spec.type };
+  const terminator = args.indexOf("--");
+  const beforeTerminator = terminator < 0 ? args : args.slice(0, terminator);
+  if (beforeTerminator.some((arg) => HELP_ARGUMENTS.includes(arg))) {
+    return { help: true, strings: new Map(), booleans: new Set() };
+  }
+
   const { tokens } = parseArgs({
     args: [...args],
     options,
@@ -59,7 +71,12 @@ export function parseFlags(
     tokens: true,
   });
 
-  if (tokens.some((token) => token.kind === "option" && token.name === "help")) {
+  // `-h` inside a group of short options, such as `-xh`, asks for the help too.
+  if (
+    tokens.some(
+      (token) => token.kind === "option" && token.name === "help" && token.value === undefined,
+    )
+  ) {
     return { help: true, strings: new Map(), booleans: new Set() };
   }
 
@@ -71,6 +88,7 @@ export function parseFlags(
     if (token.kind === "positional") {
       throw misuse(command, `unexpected argument "${token.value}"`);
     }
+    if (token.name === "help") throw misuse(command, "--help takes no value");
     const spec = Object.hasOwn(specs, token.name) ? specs[token.name] : undefined;
     if (spec === undefined) {
       throw misuse(command, `unknown option ${token.rawName}`);

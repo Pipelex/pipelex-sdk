@@ -250,6 +250,46 @@
       }
     },
     {
+      "name": "run/flags/help-where-a-value-would-be",
+      "summary": "--help where --method's value would be asks for the help: it is never taken as a value.",
+      "argv": ["run", "--method", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/flags/short-help-where-a-value-would-be",
+      "summary": "-h where --method's value would be asks for the help too.",
+      "argv": ["run", "--method", "-h"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "run/flags/help-before-other-flags",
+      "summary": "--help right after a string flag asks for the help whatever follows.",
+      "argv": ["run", "--inputs", "--help", "--method", "x"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk run --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
+      "name": "script/flags/help-where-a-value-would-be",
+      "summary": "script reads --help and -h the same way: -h where --name's value would be asks for the help.",
+      "argv": ["script", "--name", "-h", "--method", "mt_receipts01"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_includes": ["pipelex-sdk script --method"],
+        "stderr_excludes": ["Error"]
+      }
+    },
+    {
       "name": "run/flags/empty-value",
       "summary": "An empty value is no value.",
       "argv": ["run", "--method="],
@@ -402,6 +442,56 @@
         "stderr": [
           "Error: --method \"https://github.com/acme/methods\" is not a catalog id (mt_...), not an address (github.com/...), and no file or directory of that name exists.\n"
         ]
+      }
+    },
+    {
+      "name": "method/catalog-id-malformed",
+      "summary": "An mt_ value holding a character no catalog id holds is refused before any request, even when a file of that name exists, and the refusal says to write ./ to name the file.",
+      "argv": ["run", "--method", "mt_receipts.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "mt_receipts.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"mt_receipts.mthds\" is not a catalog id: a catalog id holds only letters, digits, _ and -.\n",
+          "./mt_receipts.mthds"
+        ]
+      }
+    },
+    {
+      "name": "method/catalog-like-path",
+      "summary": "A file whose name starts with mt_ is reached as ./mt_..., a path.",
+      "argv": ["run", "--method", "./mt_receipts.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "mt_receipts.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                {
+                  "content": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+                  "source": "mt_receipts.mthds"
+                }
+              ]
+            },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
+        "stderr_excludes": ["Error"]
       }
     },
     {
@@ -964,6 +1054,125 @@
       }
     },
     {
+      "name": "inputs/data-url-malformed",
+      "summary": "A data: URL at a file input that cannot be decoded is a usage error, and nothing is uploaded or run.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"data:application/pdf;base64\", \"note\": \"Team lunch\"}\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: the inputs hold a value at a file input that cannot be read as a file.\n",
+          "A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "inputs/value-not-a-file",
+      "summary": "A number at a file input is a usage error, and nothing is uploaded or run.",
+      "argv": [
+        "run",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0",
+        "--inputs",
+        "inputs.json"
+      ],
+      "files": [{ "path": "inputs.json", "text": "{\"receipt\": 42, \"note\": \"Team lunch\"}\n" }],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": { "method_ref": "github.com/acme/methods/receipt-review@v1.0.0" },
+            "answer": "pipe-io/receipt-review"
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: the inputs hold a value at a file input that cannot be read as a file.\n",
+          "A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "inputs/method-does-not-load",
+      "summary": "A method that does not load, met while the inputs are prepared, is reported as --inputs-template reports it, every validation error on its line, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs", "inputs.json"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        },
+        {
+          "path": "inputs.json",
+          "text": "{\"receipt\": \"https://example.com/r.pdf\", \"note\": \"Team lunch\"}\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "files": [
+                {
+                  "content": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
+                  "source": "receipt-review.mthds"
+                }
+              ]
+            },
+            "status": 200,
+            "body": {
+              "is_valid": false,
+              "validation_errors": [
+                {
+                  "category": "blueprint_validation",
+                  "message": "Unknown concept 'Receipt'.",
+                  "source": "receipt-review.mthds"
+                },
+                {
+                  "category": "blueprint_validation",
+                  "message": "Unknown pipe 'receipts.extract_total'.",
+                  "source": "receipt-review.mthds"
+                }
+              ],
+              "message": "MTHDS library could not be resolved"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the method does not load.\n",
+          "  - receipt-review.mthds: Unknown concept 'Receipt'.\n",
+          "  - receipt-review.mthds: Unknown pipe 'receipts.extract_total'.\n"
+        ],
+        "stderr_excludes": ["Cannot prepare inputs", "Run started"]
+      }
+    },
+    {
       "name": "inputs/empty-object",
       "summary": "An empty object has nothing to prepare, so no pipe I/O request is made, and the run gets it as it is.",
       "argv": [
@@ -1452,11 +1661,7 @@
               "request_id": "req_123",
               "user_action": { "kind": "fix_input", "detail": "Fix the bundle and run it again." },
               "validation_errors": [
-                {
-                  "category": "blueprint_validation",
-                  "message": "Unknown concept 'Receipt'.",
-                  "source": "receipt-review.mthds"
-                }
+                { "category": "blueprint_validation", "message": "Unknown concept 'Receipt'." }
               ]
             }
           }
@@ -1468,11 +1673,11 @@
         "stderr": [
           "Error: the API refused the request (status 422).\n",
           "Reason: The method failed validation.\n",
-          "  - receipt-review.mthds: Unknown concept 'Receipt'.\n",
+          "  - Unknown concept 'Receipt'.\n",
           "Next step: Fix the bundle and run it again.\n",
           "Request id: req_123\n"
         ],
-        "stderr_excludes": ["Run started"]
+        "stderr_excludes": ["Run started", "receipt-review.mthds:"]
       }
     },
     {
@@ -2006,6 +2211,20 @@
           "Error: script takes a method address or a catalog id, and \"receipt-review.mthds\" is neither: a script naming a local bundle breaks as soon as the script or the bundle moves.\n",
           "github.com/<owner>/<repo>"
         ]
+      }
+    },
+    {
+      "name": "script/catalog-id-malformed",
+      "summary": "script refuses an mt_ value no catalog id has the shape of, before any request.",
+      "argv": ["script", "--method", "mt_receipts/v2"],
+      "expect": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": [
+          "Error: --method \"mt_receipts/v2\" is not a catalog id: a catalog id holds only letters, digits, _ and -.\n",
+          "./mt_receipts/v2"
+        ],
+        "absent_files": ["v2", "mt_receipts"]
       }
     },
     {

@@ -146,6 +146,20 @@
       ]
     },
     {
+      "class": "InvalidInputValueError",
+      "only_in": "js",
+      "variants": [
+        { "variant": "a malformed data URL at a file input", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
+      ]
+    },
+    {
+      "class": "MethodLoadError",
+      "only_in": "js",
+      "variants": [
+        { "variant": "a method that does not load", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
+      ]
+    },
+    {
       "class": "RejectedAssetError",
       "variants": [
         { "variant": "an asset past the size cap", "given": { "status": 413 }, "expected": { "error_domain": "input", "retryable": false } },

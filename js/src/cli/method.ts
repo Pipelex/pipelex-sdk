@@ -16,13 +16,29 @@ export type MethodSelector =
   | { readonly kind: "catalog"; readonly methodId: string }
   | { readonly kind: "path"; readonly path: string };
 
+/** The characters a catalog id is made of, which the API's run route accepts and no other. */
+const CATALOG_ID_SHAPE = /^[A-Za-z0-9_-]+$/;
+
 /**
  * Tell a `--method` value's form by its shape: `mt_…` is a catalog id, `github.com/…` an address,
- * and anything else a path to a `.mthds` file or a bundle directory. A directory that happens to
- * be named `mt_…` is reached as `./mt_…`.
+ * and anything else a path to a `.mthds` file or a bundle directory. A file or directory that
+ * happens to be named `mt_…` is reached as `./mt_…`, so that what a value names never depends on
+ * what the current directory holds.
+ *
+ * @throws {CommandError} A usage error for an `mt_…` value holding a character no catalog id
+ *   holds (a letter, a digit, `_` or `-`), such as `mt_review.mthds`, which is a path written
+ *   without its `./`.
  */
 export function classifyMethod(value: string): MethodSelector {
-  if (value.startsWith(CATALOG_ID_PREFIX)) return { kind: "catalog", methodId: value };
+  if (value.startsWith(CATALOG_ID_PREFIX)) {
+    if (!CATALOG_ID_SHAPE.test(value)) {
+      throw usageError(
+        `--method "${value}" is not a catalog id: a catalog id holds only letters, digits, _ and -.`,
+        [`To name a local file or directory whose name starts with mt_, write it as ./${value}.`],
+      );
+    }
+    return { kind: "catalog", methodId: value };
+  }
   if (value.startsWith(ADDRESS_PREFIX)) return { kind: "address", methodRef: value };
   return { kind: "path", path: value };
 }
