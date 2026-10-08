@@ -11,7 +11,6 @@ import signal
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
 import typer
 from pipelex_sdk.artifact_models import ArtifactItemError, DownloadArtifactsResult, DownloadedArtifact
@@ -618,8 +617,6 @@ class TestDownloads:
             (PermissionError(13, "Permission denied", "out"), "Permission denied"),
             # Python 3.11 and 3.12 raise this where `--out` is a symbolic link loop, which the SDK resolves first.
             (RuntimeError("Symlink loop from 'out'"), "Symlink loop"),
-            # A body httpx cannot decode, which the SDK's transport mapping leaves as httpx's own error.
-            (httpx.DecodingError("Error -3 while decompressing data"), "decompressing"),
             # A malformed answer from the route that resolves the files' links.
             (json.JSONDecodeError("Expecting value", "<html>", 0), "Expecting value"),
             (ValidationError.from_exception_data("BulkResolvedStorageUrls", []), "BulkResolvedStorageUrls"),
@@ -645,7 +642,7 @@ class TestDownloads:
         ("failure", "says"),
         [
             (PermissionError(13, "Permission denied", "out"), "PermissionError: [Errno 13] Permission denied: 'out'"),
-            (httpx.DecodingError("Error -3 while decompressing data"), "DecodingError: Error -3 while decompressing data"),
+            (RuntimeError("Symlink loop from 'out'"), "RuntimeError: Symlink loop from 'out'"),
         ],
     )
     def test_a_download_that_fails_unforeseen_after_a_printed_result_is_an_error_never_a_traceback(

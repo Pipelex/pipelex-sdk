@@ -50,7 +50,9 @@ import process from "node:process";
 import nextEnv from "@next/env";
 import {
   DEFAULT_API_BASE_URL,
+  parseMethodSelector,
   PipelexApiClient,
+  RequestArgumentError,
   type GeneratedArtifact,
   type InputForm,
   type InputFormItem,
@@ -113,20 +115,6 @@ export class ReportedFailure extends Error {
 
 // ── The argument ────────────────────────────────────────────────────────────
 
-/**
- * A catalog id before any version suffix: `mt_` and the characters the
- * platform's run routes accept, the grammar of the SDK's `parseMethodSelector`.
- * No catalog id holds a dot, so `mt_review.mthds` is a path.
- */
-const METHOD_ID_PATTERN = /^mt_[A-Za-z0-9_-]+$/;
-
-/**
- * A catalog id's version suffix: a positive number without a leading zero, or
- * `draft`, in lower case. A bare id runs the method's latest published
- * version, `mt_…@3` its version 3 for good, and `mt_…@draft` its draft.
- */
-const METHOD_VERSION_SUFFIX = /^([1-9][0-9]*|draft)$/;
-
 /** One segment of an address — host, owner, repo, or a package subpath segment. */
 const ADDRESS_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
@@ -188,18 +176,15 @@ export function parseMethodArg(
   if (onDisk(trimmed)) return { kind: "bundle", path: trimmed };
 
   if (trimmed.startsWith("mt_")) {
-    const [id, ...suffixes] = trimmed.split("@");
-    if (!METHOD_ID_PATTERN.test(id!)) {
-      throw new AddMethodError(`"${trimmed}" is not a well-formed catalog id (mt_…).`);
-    }
-    if (
-      suffixes.length > 1 ||
-      (suffixes.length === 1 && !METHOD_VERSION_SUFFIX.test(suffixes[0]!))
-    ) {
-      throw new AddMethodError(
-        `"${trimmed}" names no version — a catalog id ends in @<version>, a positive ` +
-          "number without a leading zero, in @draft, or in nothing.",
-      );
+    // The SDK's parser holds the platform's grammar: `mt_` and the characters
+    // the run routes accept, then nothing, `@<version>` (a positive number
+    // without a leading zero) or `@draft`. No catalog id holds a dot, so
+    // `mt_review.mthds` is refused here unless it exists on disk as a path.
+    try {
+      parseMethodSelector(trimmed);
+    } catch (error) {
+      if (error instanceof RequestArgumentError) throw new AddMethodError(error.message);
+      throw error;
     }
     // The suffix is kept: the manifest, the codegen and every run name the
     // version the app was scaffolded against.
@@ -536,16 +521,6 @@ export function respellAcronyms(text: string, prose: string): string {
   const spellings = spelledWords(prose);
   if (spellings.size === 0) return text;
   return text.replace(/[A-Za-z][A-Za-z0-9]*/g, (word) => spellings.get(word.toLowerCase()) ?? word);
-}
-
-/**
- * A catalog id without its version suffix. The method routes, `getMethod`
- * among them, address the method itself and take the bare id; the name belongs
- * to the method, whichever version the app runs.
- */
-export function bareMethodId(methodId: string): string {
-  const at = methodId.indexOf("@");
-  return at === -1 ? methodId : methodId.slice(0, at);
 }
 
 /**
@@ -1887,7 +1862,9 @@ export async function planAddMethod(
     if (selectorKind(selector) === "method_id") {
       let method;
       try {
-        method = await client.getMethod(bareMethodId(selector.method_id!));
+        // The method routes take the bare id: the name belongs to the method,
+        // whichever version the app runs.
+        method = await client.getMethod(parseMethodSelector(selector.method_id!).method_id);
       } catch (error) {
         const explained = explainSelectorFailure(error, selector);
         if (explained !== null) throw new AddMethodError(explained);

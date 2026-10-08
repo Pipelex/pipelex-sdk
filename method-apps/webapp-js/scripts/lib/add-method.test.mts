@@ -25,7 +25,6 @@ import { ApiResponseError, runCodegenCheck, type PipelexApiClient } from "@pipel
 import {
   AddMethodError,
   addressSegments,
-  bareMethodId,
   allowedMimesFor,
   bindOutput,
   camelCase,
@@ -157,6 +156,14 @@ describe("parseMethodArg", () => {
     ["github.com/o/r@", "an empty tag"],
   ])("refuses %s (%s)", (arg) => {
     expect(() => parseMethodArg(arg)).toThrow(AddMethodError);
+  });
+
+  it("refuses a malformed catalog id with the SDK's own reason", () => {
+    expect(() => parseMethodArg("mt_x@03")).toThrow(
+      '"mt_x@03" names no version: the suffix of a catalog id is @<version>, a positive ' +
+        "number without a leading zero, or @draft.",
+    );
+    expect(() => parseMethodArg("mt_bad id")).toThrow(/is not a method selector/);
   });
 
   // A name that exists is a path, whatever the selector grammar would make of it.
@@ -406,12 +413,6 @@ describe("the name derivations", () => {
   it("takes a stored method's slug from its catalog name — a person chose it", () => {
     expect(slugSource({ method_id: "mt_x" }, "CV screening")).toBe("CV screening");
     expect(() => slugSource({ method_id: "mt_x" }, "")).toThrow(/--name/);
-  });
-
-  it("reads a pinned catalog id's name by its bare id, which the method routes take", () => {
-    expect(bareMethodId("mt_x@3")).toBe("mt_x");
-    expect(bareMethodId("mt_x@draft")).toBe("mt_x");
-    expect(bareMethodId("mt_x")).toBe("mt_x");
   });
 
   it("puts every emitted file where the app's conventions place it", () => {

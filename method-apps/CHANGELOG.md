@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Both templates run on the SDK 0.35.1**: `@pipelex/sdk` in the web app and `pipelex-sdk` in the CLI, with `mthds` 0.19.0 unchanged, and the web app's `make add-method` and the CLI's `make create` now check a catalog id with the SDK's own parser instead of a copy of the grammar, so a malformed id or suffix is refused in the SDK's words. The CLI presents a request that gets no answer from `execute` or `start` as an unreachable API naming the base URL, where a failed connection crashed with httpx's traceback, and moves `httpx` from its dependencies to its dev group, since nothing it ships imports it any more; the web app's durable run of an inline bundle now waits as long for its start to be answered as a blocking run does. The SDK's reshaped method routes reach neither template, and `npm ls mthds` still lists two copies in the web app, the form kernel's and the SDK's, as before this move.
+
 ## [v0.35.0] - 2026-10-08
 
 ### Added

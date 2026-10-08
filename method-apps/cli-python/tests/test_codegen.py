@@ -22,14 +22,13 @@ import shutil
 from pathlib import Path
 from typing import NoReturn
 
-import httpx
 import pytest
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import VersionInfo
 from pipelex_sdk.codegen_check import run_codegen_check
 from pipelex_sdk.codegen_writer import write_codegen_tree
 from pipelex_sdk.crate_models import CodegenRequest, CodegenResponse, CodegenValidReport, CrateInvalidReport, PipeIORequest, PipeIOResponse
-from pipelex_sdk.errors import ApiResponseError
+from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
 
 from pipelex_method_cli_python.lib import client as client_module
 from pipelex_method_cli_python.lib.contracts import CONTRACTS_FILENAME, GENERATED_FILES, INIT_FILENAME, LOCK_FILENAME, SOURCES_SIDECAR
@@ -43,6 +42,9 @@ from tests.support import FIXTURES, pipe_io_report, wire_contracts
 #: The recordings of the summarize-pdf method.
 RECORDED = FIXTURES / "codegen" / "summarize-pdf"
 
+#: The base URL the fake client answers from.
+API_URL = "https://api.example.com"
+
 #: The typed models' file the recorded answer writes.
 MODELS = "models.py"
 
@@ -53,7 +55,7 @@ def recorded_codegen() -> CodegenValidReport:
 
 
 def _not_found(route: str) -> ApiResponseError:
-    return ApiResponseError(f"API {route} failed (404)", api_url="https://api.example.com", status=404, status_text="Not Found", response_body="")
+    return ApiResponseError(f"API {route} failed (404)", api_url=API_URL, status=404, status_text="Not Found", response_body="")
 
 
 def _refused_base_url() -> NoReturn:
@@ -66,7 +68,7 @@ class FakeCodegenClient:
     """Stands in for `PipelexAPIClient` on the three routes the gestures call, recording the order they are called in."""
 
     def __init__(self) -> None:
-        self.base_url = "https://api.example.com"
+        self.base_url = API_URL
         self.codegen_answer: CodegenResponse | BaseException = recorded_codegen()
         #: Answers `codegen` gives first, one per call in order, before it falls back to `codegen_answer`.
         self.codegen_queue: list[CodegenResponse | BaseException] = []
@@ -212,7 +214,7 @@ class TestGenerate:
         assert tree_bytes(layout) == before
 
     def test_a_confirming_request_that_fails_writes_nothing(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
-        api.codegen_queue = [recorded_codegen(), httpx.ReadTimeout("timed out")]
+        api.codegen_queue = [recorded_codegen(), ApiUnreachableError("timed out", api_url=API_URL, code="ABORT_TIMEOUT")]
         assert generate(layout) == 1
         assert "timed out" in capsys.readouterr().err
         assert tree_bytes(layout) == {}
@@ -220,9 +222,9 @@ class TestGenerate:
     @pytest.mark.parametrize(
         "error",
         [
-            pytest.param(httpx.ConnectError("connection refused"), id="a transport error the SDK leaves unmapped"),
+            pytest.param(ApiUnreachableError("connection refused", api_url=API_URL, code="ConnectError"), id="an unreachable API"),
             pytest.param(ValueError("the body is not JSON"), id="a body that is not the answer"),
-            pytest.param(PipelineRequestError("the API is unreachable"), id="an SDK error"),
+            pytest.param(PipelineRequestError("the request was refused"), id="an SDK error"),
         ],
     )
     def test_a_codegen_request_that_raises_is_reported_writing_nothing(
@@ -236,7 +238,7 @@ class TestGenerate:
     @pytest.mark.parametrize(
         "error",
         [
-            pytest.param(httpx.ConnectError("connection refused"), id="a transport error the SDK leaves unmapped"),
+            pytest.param(ApiUnreachableError("connection refused", api_url=API_URL, code="ConnectError"), id="an unreachable API"),
             pytest.param(ValueError("the body is not JSON"), id="a body that is not the answer"),
         ],
     )
@@ -432,7 +434,7 @@ class TestHandshake:
         "error",
         [
             pytest.param(_not_found("GET /v1/version"), id="a refusal"),
-            pytest.param(httpx.ConnectError("connection refused"), id="a transport error the SDK leaves unmapped"),
+            pytest.param(ApiUnreachableError("connection refused", api_url=API_URL, code="ConnectError"), id="an unreachable API"),
             pytest.param(ValueError("the body is not JSON"), id="a body that is not a version"),
         ],
     )
@@ -625,7 +627,7 @@ class TestVerify:
 
     def test_a_codegen_request_that_raises_is_reported(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
         generate(layout)
-        api.codegen_answer = httpx.ConnectError("connection refused")
+        api.codegen_answer = ApiUnreachableError("connection refused", api_url=API_URL, code="ConnectError")
         assert verify(layout) == 1
         assert "connection refused" in capsys.readouterr().err
 
