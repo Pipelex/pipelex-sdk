@@ -3,7 +3,7 @@
 Every check that needs no request runs before the loop starts, on the main thread, where Ctrl-C
 raises `KeyboardInterrupt` at once, a read that blocks (stdin, a named pipe, a stalled mount)
 included. Once the loop runs, the first Ctrl-C cancels the command's task, as `asyncio.run` does, and
-`KeyboardInterrupt` is raised once the task has unwound. Two things keep that promise:
+`KeyboardInterrupt` is raised once the task has unwound. Along the way, the command keeps these promises:
 
 - **Nothing is sent once the interrupt has landed.** Python runs its signal handler between two
   bytecodes, so the cancellation can land while the task runs, and it is delivered at the task's

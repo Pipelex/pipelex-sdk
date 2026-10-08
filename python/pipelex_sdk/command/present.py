@@ -2,8 +2,8 @@
 
 A failure is worded by the command from the error's typed fields, never from an SDK message whose
 wording is the SDK's own, wherever the fields carry what a person needs: the API's reason, the next
-step it advises and the request id support asks for. That keeps the two commands, this one and its
-JavaScript twin, saying the same thing for the same answer, which is what the recorded case table
+step it advises and the request id support asks for. That keeps this command and its JavaScript
+twin saying the same thing for the same answer, which is what the recorded case table
 holds them to.
 """
 
