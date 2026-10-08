@@ -340,10 +340,16 @@ class TestClientMethodVersions:
         assert version.python == [MethodFile(name="helper.py", content="x = 1")]
         assert version.published_by == "user_1"
 
-    @pytest.mark.parametrize("version", [0, -1, True])
-    def test_get_method_version_refuses_a_number_that_names_no_version(self, api_client: PipelexAPIClient, version: int) -> None:
+    @pytest.mark.parametrize("version", [0, -1, True, 2.0, 1.5, float("nan"), "3", None])
+    def test_get_method_version_refuses_a_value_that_names_no_version_before_any_request(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, version: object
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=MethodVersionBodies.VERSION))
+
         with pytest.raises(PipelineRequestError, match="positive integer"):
-            asyncio.run(api_client.get_method_version("mt_receipts01", version))
+            asyncio.run(api_client.get_method_version("mt_receipts01", cast("int", version)))
+
+        send.assert_not_called()
 
     def test_get_method_version_raises_the_version_not_found(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher

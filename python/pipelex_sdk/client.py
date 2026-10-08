@@ -1358,11 +1358,15 @@ class PipelexAPIClient(MthdsAPIClient):
             version: The version number, a positive integer.
 
         Raises:
-            PipelineRequestError: `version` is not a positive integer; nothing is sent.
+            PipelineRequestError: `version` is not a positive integer — a `bool`, a `float` such as
+                `2.0`, a numeric string and anything else that is not an `int` included; nothing is sent.
             ApiResponseError: `404` `method_version_not_found` for a version the method never
                 published; `404` `not_found` for an unknown method; `409` `method_being_deleted`.
         """
-        if isinstance(version, bool) or version < 1:
+        # Checked as an `object`: the annotation is a promise to the type checker, not to a caller
+        # forwarding a float or a CLI argument, and only an `int` puts a version number in the path.
+        candidate = cast("object", version)
+        if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 1:
             msg = f"get_method_version() takes a version number, a positive integer; got {version!r}."
             raise PipelineRequestError(msg)
         return MethodVersion.model_validate(await self._request_product("GET", f"methods/{quote(method_id, safe='')}/versions/{version}"))
