@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **A refused artifact selection is a `RequestArgumentError` (Breaking)**: `getRunResult`, `waitForResult` and `startAndWaitForResult` throw a `RequestArgumentError`, `input` and not retryable, for an `artifacts` selection that is empty or names an unknown artifact, where they threw a `RangeError` carrying no verdict, as the Python twin raises it; a value that is not an array is a `TypeError`.
+
+### Fixed
+
+- **The command names what it could not read**: under `Error: the API's answer could not be read (status <n>).`, the `pipelex-sdk` command's `Reason:` line is the SDK's message, naming the route and what could not be read (`API POST /v1/start answered 202 with a body that is not JSON`), where it said that the answer gives no reason.
+
 ## [v0.35.1] - 2026-10-08
 
 ### Added

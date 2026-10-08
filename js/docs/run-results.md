@@ -40,7 +40,7 @@ const results = await client.waitForResult(runId, { artifacts: ["working_memory"
 
 **Absent versus null.** With a selection, an artifact the caller did not name is absent from the result, reading `undefined`, while one it named that the run never wrote is `null`. So `undefined` means "not asked for" and `null` means "asked for, not there". That is also why `main_stuff` is declared optional: it is never null on a completed run, but it is absent from a read that left it out, and `MissingMainStuffError` is thrown only by a read that asked for it — one with no selection, or one naming `main_stuff`.
 
-An empty selection or a name outside the list is a `RangeError` thrown before any request, the same refusal the platform would answer with a `400`. `waitForResult` and `startAndWaitForResult` take the same `artifacts` in their poll options and send it on every poll; `startAndWaitForResult` refuses a bad selection before it starts the run. Against a bare runner the selection has nothing to narrow: the blocking fallback returns every artifact the runner sent. `downloadArtifacts` given a `run_id` asks for its scope's artifact alone.
+An empty selection or a name outside the list is a `RequestArgumentError` thrown before any request, `input` and not retryable, the same refusal the platform would answer with a `400`. `waitForResult` and `startAndWaitForResult` take the same `artifacts` in their poll options and send it on every poll; `startAndWaitForResult` refuses a bad selection before it starts the run. Against a bare runner the selection has nothing to narrow: the blocking fallback returns every artifact the runner sent. `downloadArtifacts` given a `run_id` asks for its scope's artifact alone.
 
 ## `pipeline_run_id` — the durable handle
 

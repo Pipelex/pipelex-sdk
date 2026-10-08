@@ -9,9 +9,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import TypeAlias
 
-from mthds.protocol.exceptions import PipelineRequestError
-
 from pipelex_sdk.command.io import usage_error
+from pipelex_sdk.errors import RequestArgumentError
 from pipelex_sdk.method_selector import parse_method_selector
 
 #: The prefix of a published method's address.
@@ -92,7 +91,7 @@ def _version_problem(value: str, suffix: str) -> str | None:
         return f'"{value}" names a version number too large to address exactly.'
     try:
         parse_method_selector(value)
-    except PipelineRequestError as exc:
+    except RequestArgumentError as exc:
         return str(exc)
     return None
 

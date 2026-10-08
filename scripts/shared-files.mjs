@@ -36,6 +36,11 @@ export const SETS = [
     source: "js/tests/fixtures/cli-cases.json",
     copies: ["python/tests/fixtures/cli-cases.json"],
   },
+  {
+    // The error verdicts both SDKs decide (js/docs/errors.md, python/docs/errors.md).
+    source: "js/tests/fixtures/error-verdicts.json",
+    copies: ["python/tests/fixtures/error-verdicts.json"],
+  },
 ];
 
 export class SharedFileError extends Error {

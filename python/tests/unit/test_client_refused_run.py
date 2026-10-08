@@ -166,10 +166,13 @@ class TestClientRefusedRun:
         assert exc.server_message.startswith("Pipe 'analyze_topics' failed (review_topics → analyze_topics)")
         assert exc.user_action is not None
         assert exc.user_action.kind == "change_input"
-        # The document carries no classification of an inference failure, no retry verdict and no itemized list.
+        # The document carries no classification of an inference failure and no itemized list.
         assert exc.error_category is None
-        assert exc.retryable is None
         assert exc.validation_errors is None
+        # It carries no `retryable` either, and the `input` domain it sends decides it: not retryable.
+        assert exc.problem is not None
+        assert "retryable" not in exc.problem
+        assert exc.retryable is False
 
     def test_a_run_failed_on_an_unserved_model_advises_changing_the_model(self, mocker: MockerFixture) -> None:
         exc = self._raised(mocker, RefusedRunBodies.UNSERVED_MODEL_AT_RUN, _execute)

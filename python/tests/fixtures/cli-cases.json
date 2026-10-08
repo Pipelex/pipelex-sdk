@@ -2407,8 +2407,29 @@
       "expect": {
         "exit_code": 1,
         "stdout": "",
-        "stderr": ["Error: the API's answer could not be read", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
-        "stderr_excludes": ["Run started"]
+        "stderr": [
+          "Error: the API's answer could not be read (status 202).\nReason: API POST /v1/start answered 202 with a body that is not JSON\n",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started", "gives no reason"]
+      }
+    },
+    {
+      "name": "run/start-answer-not-an-object",
+      "summary": "A start accepted with JSON that is not an object is an answer the command cannot read, and the reason says it is not an object.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "status": 202, "headers": { "Content-Type": "application/json" }, "body": [] }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's answer could not be read (status 202).\nReason: API POST /v1/start answered 202 with a body that is not an object\n",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started", "gives no reason"]
       }
     },
     {
@@ -2511,8 +2532,11 @@
       "expect": {
         "exit_code": 1,
         "stdout": "",
-        "stderr": ["Error: the API's answer could not be read", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
-        "stderr_excludes": ["Run started", "unexpected failure"]
+        "stderr": [
+          "Error: the API's answer could not be read (status 202).\nReason: API POST /v1/start answered 202 with a body that is not UTF-8\n",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started", "unexpected failure", "gives no reason"]
       }
     },
     {

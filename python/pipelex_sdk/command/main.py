@@ -10,11 +10,8 @@ public modules, as any other caller would.
 from __future__ import annotations
 
 import asyncio
-import json
 import ssl
 from typing import TYPE_CHECKING
-
-from pydantic import ValidationError
 
 from pipelex_sdk.client import is_gateway_cut_off
 from pipelex_sdk.command.help import MAIN_HELP
@@ -128,7 +125,7 @@ def _may_have_started(exc: Exception, elapsed_seconds: float) -> bool:
         return not _proves_nothing_sent(exc)
     if isinstance(exc, ApiResponseError):
         return 200 <= exc.status < 300 or exc.status in _GATEWAY_LOST_ANSWER or is_gateway_cut_off(exc, elapsed_seconds)
-    return isinstance(exc, (ValidationError, json.JSONDecodeError, UnicodeDecodeError))
+    return False
 
 
 def _proves_nothing_sent(exc: ApiUnreachableError) -> bool:

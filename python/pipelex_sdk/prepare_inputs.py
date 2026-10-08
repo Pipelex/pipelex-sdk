@@ -44,6 +44,7 @@ from mthds.protocol.input_form import (
 from pydantic import BaseModel
 
 from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIOValidReport
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
 from pipelex_sdk.errors import ApiResponseError, InputPreparationError, InvalidInputValueError, MethodLoadError
 from pipelex_sdk.upload import UploadRecord, UploadSource, upload_file
 
@@ -438,8 +439,9 @@ async def prepare_inputs(
         # The route promises the selected pipe's descriptor on every single-pipe valid answer.
         # Never a silent degrade to "no uploads": without it there is no signature to prepare
         # against, and the caller's local paths would travel to the runner verbatim.
+        # The API broke its own contract here, so the verdict is `runtime`, not the inputs' `input`.
         msg = f"Cannot prepare inputs: the pipe-io answer carries no input-form descriptor for the selected pipe ({selected_pipe_ref!r})."
-        raise InputPreparationError(msg)
+        raise InputPreparationError(msg, verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False))
     declared = {field.name: field for field in descriptor.fields}
 
     ctx = _PrepareContext(client)

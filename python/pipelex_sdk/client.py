@@ -8,9 +8,9 @@ validation), the richer transport/error layer, the durable run lifecycle, the pr
 surface, and `health`.
 
 This module holds construction, the `_send` override that every route sends through, which
-maps a request that got no answer to `ApiUnreachableError`, the transport extension helpers
-(`_request_product`, `_request_json`), the `_raise_api_response_error` override that
-every route raises through, the `execute` override (hosted gateway-timeout translation),
+maps a request that got no answer to `ApiUnreachableError`, the product-route helper
+(`_request_product`), the `_raise_api_response_error` override that every `/v1` route raises
+through, the `execute` override (hosted gateway-timeout translation),
 the `start` override (bare-runner 404 translation), the durable run lifecycle, the
 `validate` override (markdown-render injection + `validate_files`), the Pipelex product
 surface (methods, organizations, billing, API keys, onboarding, storage, run records),
@@ -22,14 +22,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextlib import contextmanager
 from contextvars import ContextVar
 from time import monotonic
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar, cast
 from urllib.parse import quote, urlencode, urlparse, urlsplit
 
 import httpx
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.runners.api.client import MthdsAPIClient
+from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
 from mthds.runners.api.problem import ProblemDocument
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic_core import to_json
@@ -59,14 +61,19 @@ from pipelex_sdk.crate_models import (
     ResolveResponseAdapter,
 )
 from pipelex_sdk.error_models import FieldError
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
 from pipelex_sdk.errors import (
+    ABORT_TIMEOUT_CODE,
     ApiResponseError,
     ApiUnreachableError,
     MissingMainStuffError,
     PagingNotTerminatingError,
+    PipelexRequestError,
     PipelineExecuteTimeoutError,
+    RequestArgumentError,
     RunFailedError,
     RunLifecycleUnavailableError,
+    RunStillRunningError,
     RunTimeoutError,
 )
 from pipelex_sdk.execute_result import PipelexExecuteResult, results_from_execute
@@ -116,11 +123,11 @@ from pipelex_sdk.user_agent import AppInfo, build_user_agent
 from pipelex_sdk.validation_models import PipelexValidationResultAdapter, ValidationErrorItem
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Sequence
+    from collections.abc import AsyncIterator, Callable, Generator, Sequence
     from contextlib import AbstractAsyncContextManager
     from pathlib import Path
 
-    from mthds.protocol.models import ValidationDiagnostic, VersionInfo
+    from mthds.protocol.models import ModelCategory, ModelDeck, ValidationDiagnostic, VersionInfo
     from mthds.protocol.pipe_output import VariableMultiplicity
     from mthds.protocol.pipeline_inputs import PipelineInputs
     from mthds.protocol.stuff import StuffType
@@ -166,16 +173,61 @@ _REASON_BODY_LIMIT = 500
 # `is_gateway_cut_off` reads it.
 _GATEWAY_TIMEOUT_THRESHOLD_SECONDS = 28.0
 
-# The `ApiUnreachableError.code` of a request that reached the server and that this client's own timeout
-# cut off while it was sent or answered, the JS SDK's code for the same case. Every other transport
-# failure carries the httpx exception's class name instead, a connect or pool timeout included.
-_ABORT_TIMEOUT_CODE = "ABORT_TIMEOUT"
-
 # The time limit of the one request an inherited route sends, when this client's override of that route
 # gives it another than the base's blocking-execute ceiling (`version`, `start`). The base builds and
 # sends the request itself, through `_send`, which reads this; a context variable keeps the choice to
 # the task that made it, so two calls in flight on one client never see each other's.
 _REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEOUT_OVERRIDE", default=None)
+
+
+class _AnswerSeen:
+    """The answer `_send` last received while an inherited protocol route ran, which that route then parses."""
+
+    __slots__ = ("response",)
+
+    def __init__(self) -> None:
+        self.response: httpx.Response | None = None
+
+
+# Where `_send` records the answer an inherited route (`execute`, `start`, `models`, `version`) receives:
+# the base parses that answer itself, so this client keeps it to report one the base cannot read
+# (`_reading_inherited_answer`). A context variable keeps the record to the task that asked, as above.
+_INHERITED_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_INHERITED_ANSWER", default=None)
+
+# What reads a 2xx answer into the type a route returns: a model's `model_validate`, an adapter's
+# `validate_python`, or a function of the route's own.
+_AnswerT = TypeVar("_AnswerT")
+
+# The response header the platform and its gateway set to correlate a request with their logs, read for
+# an answer the SDK cannot read, which carries no problem document to read it from.
+_REQUEST_ID_HEADER = "x-request-id"
+
+# The answers this client reads that are not objects of a model of its own: the liveness probe's
+# free-form object, and the plans and invoices the billing routes list.
+_HEALTH_ANSWER_ADAPTER: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
+_PLAN_LIST_ADAPTER: TypeAdapter[list[PlanView]] = TypeAdapter(list[PlanView])
+_INVOICE_LIST_ADAPTER: TypeAdapter[list[InvoiceView]] = TypeAdapter(list[InvoiceView])
+
+# The pydantic error types with which a reader refuses, at the root of the body, JSON that is not an object
+# where its route answers one: a model's `model_type`, the liveness probe's free-form object's `dict_type`, and
+# a discriminated union's `model_attributes_type` (`validate`, `pipe_io`, `publish_method` and the like). A
+# list route's root refusal, `list_type`, is not among them, since an object is no more its answer than `null`.
+_NOT_AN_OBJECT_ERROR_TYPES = frozenset({"model_type", "dict_type", "model_attributes_type"})
+
+
+def _no_answer(_answer: object) -> None:
+    """Take the JSON body of a route that answers no content, which nothing reads: decoding it is the check."""
+
+
+def _refuses_a_non_object(failure: ValidationError) -> bool:
+    """Whether a reader refused the body at its root for not being an object, where its route answers one.
+
+    Such a refusal is an error located at the root, `loc == ()`, of one of `_NOT_AN_OBJECT_ERROR_TYPES`.
+    An object of the wrong shape is refused below the root, or at it with another type (a discriminated
+    union's `union_tag_not_found`), so it is not one.
+    """
+    return any(error["loc"] == () and error["type"] in _NOT_AN_OBJECT_ERROR_TYPES for error in failure.errors(include_url=False))
+
 
 _PIPELEX_API_KEY_ENV = "PIPELEX_API_KEY"
 _PIPELEX_BASE_URL_ENV = "PIPELEX_BASE_URL"
@@ -318,14 +370,15 @@ class PipelexAPIClient(MthdsAPIClient):
         # clear base-URL one. Trailing slashes are stripped first; any remaining
         # path/query/fragment/credentials is rejected. The refusal never quotes the value whole:
         # what the rule refuses is where a secret travels (a password, a token in a query), so it
-        # names those parts without their text, word for word as `@pipelex/sdk` does.
+        # names those parts without their text, word for word as `@pipelex/sdk` does. Its verdict is
+        # `config`: the value typically comes from PIPELEX_BASE_URL, the environment.
         if not _is_valid_base_url(normalized_base_url):
             msg = (
                 f"Invalid API base URL {_describe_refused_base_url(normalized_base_url)}: it must be host-only "
                 "(http/https, no path, query, fragment, or credentials). "
                 "Endpoints compose as {base}/v1/{endpoint}."
             )
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg, verdict=ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False))
         self.base_url: str = normalized_base_url
         #: Origin root derived from the base URL — `/health` lives here, not under `/v1`.
         self.origin_url: str = _origin_of(normalized_base_url)
@@ -384,64 +437,183 @@ class PipelexAPIClient(MthdsAPIClient):
                 a `ConnectTimeout` or a `PoolTimeout` included: neither sent the request, so neither can be
                 the gateway's cut-off however long it took. A body httpx cannot decode, such as a broken
                 gzip stream, is `DecodingError`.
+
+        Inside `_reading_inherited_answer` it also records the answer, which the inherited route then
+        parses, so that an answer that route cannot read is reported as every other route reports it.
         """
         timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
         try:
-            return await super()._send(method, url, content=content, request_timeout=request_timeout if timeout is None else timeout)
+            response = await super()._send(method, url, content=content, request_timeout=request_timeout if timeout is None else timeout)
         except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
             msg = f"Could not reach Pipelex API at {self.base_url} (timeout)"
-            raise ApiUnreachableError(msg, api_url=self.base_url, code=_ABORT_TIMEOUT_CODE) from exc
+            raise ApiUnreachableError(msg, api_url=self.base_url, code=ABORT_TIMEOUT_CODE) from exc
         except (httpx.TransportError, httpx.DecodingError) as exc:
             # A body httpx cannot decode, a broken gzip stream for one, is lost on the way as surely as a
             # dropped connection, and `@pipelex/sdk` reports it the same way (`Z_DATA_ERROR`).
             code = type(exc).__name__
             msg = f"Could not reach Pipelex API at {self.base_url} ({code})"
             raise ApiUnreachableError(msg, api_url=self.base_url, code=code) from exc
+        seen = _INHERITED_ANSWER.get()
+        if seen is not None:
+            seen.response = response
+        return response
 
-    async def _request_product(self, method: str, endpoint: str, *, body: object | None = None, request_timeout: float | None = None) -> Any:
+    async def _request_product(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        read: Callable[[Any], _AnswerT],
+        body: object | None = None,
+        request_timeout: float | None = None,
+    ) -> _AnswerT:
         """Issue a Pipelex-product request (`/v1/me`, `/v1/methods`, `/v1/billing/*`, …)
-        and parse its JSON body, mapping a non-2xx response to the typed `ApiResponseError`
+        and read its JSON body with `read`, mapping a non-2xx response to the typed `ApiResponseError`
         so callers branch on the structured `code` discriminant, not the HTTP status.
 
-        Empty-body tolerant — DELETE / onboarding / update routes answer 2xx with no body,
-        returned as `None`. Uses the management-call timeout, not the blocking ceiling;
+        A 2xx answer `read` cannot take — a body that is not JSON, an empty one included, or not the
+        object the route returns — raises the `ApiResponseError` `_unreadable_answer` builds (see
+        `_read_answer`). Uses the management-call timeout, not the blocking ceiling;
         `request_timeout` overrides it for the crate calls whose `method_ref` closure
         the server may have to fetch first (see `_METHOD_REF_FETCH_TIMEOUT_SECONDS`).
         """
+        response = await self._product_answer(method, endpoint, body=body, request_timeout=request_timeout)
+        return self._read_v1_answer(read, method=method, endpoint=endpoint, response=response)
+
+    async def _request_product_without_answer(self, method: str, endpoint: str, *, body: object | None = None) -> None:
+        """Issue a Pipelex-product request whose route answers no content (`DELETE` of a key,
+        onboarding, a run update), mapping a non-2xx response to the typed `ApiResponseError`.
+
+        A 2xx with no body is the answer. A body the route does send must still be JSON, as
+        `@pipelex/sdk` reads it: one that is not raises the `ApiResponseError` of an answer the SDK
+        cannot read.
+        """
+        response = await self._product_answer(method, endpoint, body=body, request_timeout=None)
+        if response.content:
+            self._read_v1_answer(_no_answer, method=method, endpoint=endpoint, response=response)
+
+    async def _product_answer(self, method: str, endpoint: str, *, body: object | None, request_timeout: float | None) -> httpx.Response:
+        """Send a Pipelex-product request and return its 2xx answer, a non-2xx one raised as `ApiResponseError`."""
         content = to_json(body) if body is not None else None
         effective_timeout = request_timeout if request_timeout is not None else _POLL_REQUEST_TIMEOUT_SECONDS
         response = await self._send(method, self._url(endpoint), content=content, request_timeout=effective_timeout)
         if not 200 <= response.status_code < 300:
             self._raise_api_response_error(method=method, endpoint=endpoint, response=response)
-        if not response.content:
-            return None
-        return response.json()
+        return response
 
-    async def _request_json(self, method: str, url: str, *, body: object | None = None) -> Any:
-        """Issue a request to an absolute URL and parse the JSON body, raising the plainer
-        `PipelineRequestError` on a non-2xx response. Used by `health` (origin-level), a
-        surface that doesn't need the product `code` taxonomy.
-        Transport failures still map to `ApiUnreachableError`, through `_send`.
+    def _read_v1_answer(self, read: Callable[[Any], _AnswerT], *, method: str, endpoint: str, response: httpx.Response) -> _AnswerT:
+        """Read a `/v1` route's 2xx answer, `endpoint` being the endpoint below `/v1`, query included; see `_read_answer`."""
+        return self._read_answer(read, method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response)
+
+    def _read_answer(self, read: Callable[[Any], _AnswerT], *, method: str, path: str, request_url: str, response: httpx.Response) -> _AnswerT:
+        """Read a 2xx answer's JSON body into the type its route returns — the one place a success body is
+        parsed, but for the inherited protocol routes, which parse their own (`_reading_inherited_answer`).
+
+        `read` is what takes the decoded body: a model's `model_validate`, an adapter's
+        `validate_python`, or a function of the route's own, which may raise an error of its own that
+        passes through. A body that is not UTF-8 or not JSON, an empty one included, and JSON that `read`
+        refuses with a pydantic `ValidationError`, are an answer the SDK cannot read, raised as the
+        `ApiResponseError` `_unreadable_answer` builds, the parse failure as its `__cause__`.
+
+        Args:
+            read: What turns the decoded body into the route's answer.
+            method: The HTTP method of the request, for the message (`GET`).
+            path: The path the message names (`/v1/me`, or `/health` at the origin).
+            request_url: The URL the request was sent to.
+            response: The API's 2xx answer.
+
+        Raises:
+            ApiResponseError: The answer cannot be read; its verdict is `runtime`, not retryable.
         """
-        content = to_json(body) if body is not None else None
-        response = await self._send(method, url, content=content, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
-        if not 200 <= response.status_code < 300:
-            detail = response.text or response.reason_phrase
-            msg = f"API {method} {url} failed ({response.status_code}): {detail}"
-            raise PipelineRequestError(msg)
-        return response.json()
+        try:
+            return read(response.json())
+        except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
+            raise self._unreadable_answer(method=method, path=path, request_url=request_url, response=response, failure=exc) from exc
+
+    @contextmanager
+    def _reading_inherited_answer(self, *, method: str, endpoint: str) -> Generator[None, None, None]:
+        """Run an inherited protocol route so that a 2xx answer it cannot read raises this SDK's
+        `ApiResponseError`, as every other route's does.
+
+        The base's `execute`, `start`, `models` and `version` parse the answer `_send` handed them
+        themselves, with `response.json()` and a pydantic model, so a body that is not UTF-8, not JSON
+        or not the route's object raises a bare `UnicodeDecodeError`, `json.JSONDecodeError` or
+        `ValidationError` there. Inside this block `_send` records the answer it receives, and such a
+        failure met after a 2xx answer is raised again as the error `_unreadable_answer` builds, the
+        parse failure as its `__cause__`. One met before any answer, while the base built the request
+        from the caller's arguments, is the caller's and passes through untouched, as does one met after
+        a non-2xx answer. A block nested in another shares its record, so a block around a route and
+        the parse of its result that follows, as `_execute_blocking` lifts `execute`'s, reports a
+        failure of either. A test that replaces `_send` with a mock records nothing, so it meets the
+        bare failure: drive such a test through an `httpx.MockTransport` instead.
+
+        Args:
+            method: The HTTP method of the route's request, for the message (`POST`).
+            endpoint: The endpoint below `/v1`, query included, exactly as the base sends it.
+        """
+        seen = _INHERITED_ANSWER.get() or _AnswerSeen()
+        token = _INHERITED_ANSWER.set(seen)
+        try:
+            yield
+        except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
+            response = seen.response
+            if response is None or not response.is_success:
+                raise
+            raise self._unreadable_answer(
+                method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response, failure=exc
+            ) from exc
+        finally:
+            _INHERITED_ANSWER.reset(token)
+
+    def _unreadable_answer(
+        self,
+        *,
+        method: str,
+        path: str,
+        request_url: str,
+        response: httpx.Response,
+        failure: json.JSONDecodeError | UnicodeDecodeError | ValidationError,
+    ) -> ApiResponseError:
+        """The `ApiResponseError` of a 2xx answer the SDK cannot read, `@pipelex/sdk`'s `unreadableAnswer`.
+
+        Its message is `API <method> <path> answered <status> with <what>`, `what` naming the failure: a
+        body that is not UTF-8, a body that is not JSON, an empty body where JSON was expected, a body
+        that is not an object where the route answers one (`null`, a number, a string, a list), worded
+        as `@pipelex/sdk` words it, or a body that is not the answer the route returns: an object of the
+        wrong shape, or anything but a list where the route answers a list. It carries the answer's
+        status, its raw text as `response_body`, its headers, and the `X-Request-ID` header as
+        `request_id`, but no problem member, since a success body is no problem document; its verdict is
+        the fallback's for a status no refusal carries, `runtime` and not retryable, since no change to
+        the call fixes the answer. The caller raises it `from` the failure, which becomes its `__cause__`.
+        """
+        what: str
+        match failure:
+            case UnicodeDecodeError():
+                what = "a body that is not UTF-8"
+            case json.JSONDecodeError():
+                what = "a body that is not JSON" if response.content else "an empty body where JSON was expected"
+            case ValidationError():
+                what = "a body that is not an object" if _refuses_a_non_object(failure) else "a body that is not the answer the route returns"
+        request_id = response.headers.get(_REQUEST_ID_HEADER)
+        return ApiResponseError(
+            f"API {method} {path} answered {response.status_code} with {what}",
+            api_url=self.base_url,
+            status=response.status_code,
+            status_text=response.reason_phrase,
+            response_body=response.text,
+            headers=dict(response.headers),
+            request_url=request_url,
+            request_id=request_id or None,
+        )
 
     @override
     def _raise_api_response_error(self, *, method: str, endpoint: str, response: httpx.Response) -> NoReturn:
-        """Raise this SDK's `ApiResponseError` for a non-2xx answer — the one place an answer becomes an error.
+        """Raise this SDK's `ApiResponseError` for a non-2xx answer to a `/v1` route.
 
         Overrides the protected seam of the `mthds` base, so every inherited protocol route
         (`execute`, `start`, `validate`, `models`, `version`) raises this SDK's subclass, as do the
-        run status and results reads and the product routes, which call it directly. The members
-        both clients share are read through the base's own parse (`ProblemDocument`), so they read
-        the same from either client; this adds the Pipelex members the standard's client leaves
-        out — the platform's `code`, the runner's `error_category` and the platform's field-level
-        `errors[]` — and narrows `validation_errors` to `ValidationErrorItem`.
+        run status and results reads and the product routes, which call it directly. The error is
+        built by `_api_response_error`, which `health` shares.
 
         Args:
             method: The HTTP method of the request, for the message (`POST`).
@@ -452,17 +624,37 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             ApiResponseError: Always.
         """
+        raise self._api_response_error(method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response)
+
+    def _api_response_error(self, *, method: str, path: str, request_url: str, response: httpx.Response) -> ApiResponseError:
+        """Build this SDK's `ApiResponseError` for a non-2xx answer — the one place an answer becomes an error.
+
+        The members both clients share are read through the base's own parse (`ProblemDocument`), so
+        they read the same from either client; this adds the Pipelex members the standard's client
+        leaves out — the platform's `code`, the runner's `error_category` and the platform's field-level
+        `errors[]` — and narrows `validation_errors` to `ValidationErrorItem`. The error decides its
+        verdict from what the server sent and the fallback table.
+
+        Args:
+            method: The HTTP method of the request, for the message (`POST`).
+            path: The path the message names (`/v1/start`, or `/health` at the origin).
+            request_url: The URL the request was sent to.
+            response: The API's non-2xx answer.
+
+        Returns:
+            The error, for the caller to raise.
+        """
         document = ProblemDocument.make_from_response(response)
         members = document.members or {}
-        msg = f"API {method} /{_API_PREFIX}/{endpoint} failed ({response.status_code}): {_failure_reason(document, response)}"
-        raise ApiResponseError(
+        msg = f"API {method} {path} failed ({response.status_code}): {_failure_reason(document, response)}"
+        return ApiResponseError(
             msg,
             api_url=self.base_url,
             status=response.status_code,
             status_text=response.reason_phrase,
             response_body=response.text,
             headers=dict(response.headers),
-            request_url=self._url(endpoint),
+            request_url=request_url,
             error_type=document.error_type,
             server_message=document.server_message,
             validation_errors=_narrowed_validation_errors(document.validation_errors),
@@ -525,10 +717,11 @@ class PipelexAPIClient(MthdsAPIClient):
         consistent with the hosted gateway's ~30s synchronous ceiling — a gateway `503`/`504`,
         or a client-side request timeout, after at least ~28s have elapsed — is translated into
         a clear `PipelineExecuteTimeoutError` pointing at the durable start+poll path, matching
-        the JS SDK. The protocol's optional 202 async-degrade still raises
-        `RunStillRunningError` (from the inherited `execute`), and every other non-2xx raises
-        `ApiResponseError`, whose message and members carry the server's reason, the next step
-        it advises and, for a method it refuses to run, the diagnostics naming the failing pipe.
+        the JS SDK. The protocol's optional 202 async-degrade raises this SDK's
+        `RunStillRunningError`, a subclass of the one the inherited `execute` raises, and every other
+        non-2xx raises `ApiResponseError`, whose message and members carry the server's reason, the
+        next step it advises and, for a method it refuses to run, the diagnostics naming the failing
+        pipe.
 
         Args:
             pipe_code: The code identifying the pipe to execute. Beside a `method_ref` it
@@ -541,7 +734,7 @@ class PipelexAPIClient(MthdsAPIClient):
             extra: Server-specific extension args this client does not know about, merged into
                 the request body as top-level properties. Protocol args and this client's own
                 named args (`method_ref`, `method_id`) must be passed as named parameters, not
-                through `extra` (raises `PipelineRequestError`).
+                through `extra` (raises `RequestArgumentError`).
             method_ref: A published method's address —
                 `github.com/<owner>/<repo>[/<selector>][@<tag>]` (e.g.
                 `github.com/Pipelex/methods/documents@v0.1.0`) — a layer-2 Pipelex-API
@@ -570,10 +763,10 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             PipelineExecuteTimeoutError: The blocking request hit the hosted gateway's ~30s
                 synchronous ceiling — use `start_and_wait` (or `start` + `wait_for_result`).
-            PipelineRequestError: `extra` carries a protocol arg or a reserved named arg, a
-                selector is present and is not a string, `method_ref` is combined with inline
-                `mthds_contents` or with `method_id`, or a suffixed `method_id` is combined with
-                inline `mthds_contents`.
+            RequestArgumentError: Nothing to run was named, `extra` carries a protocol arg or a
+                reserved named arg, a selector is present and is not a string, `method_ref` is
+                combined with inline `mthds_contents` or with `method_id`, or a suffixed
+                `method_id` is combined with inline `mthds_contents`.
             RunStillRunningError: The server answered 202 (the protocol's optional async
                 degrade) — the run continues server-side; resume by `pipeline_run_id`.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
@@ -585,26 +778,33 @@ class PipelexAPIClient(MthdsAPIClient):
         _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
         _assert_linkage_method_id_is_bare(mthds_contents=mthds_contents, merged_extra=merged_extra)
         started_at = monotonic()
-        try:
-            result = await super().execute(
-                pipe_code=pipe_code,
-                mthds_contents=mthds_contents,
-                inputs=inputs,
-                output_name=output_name,
-                output_multiplicity=output_multiplicity,
-                dynamic_output_concept_ref=dynamic_output_concept_ref,
-                extra=merged_extra,
-            )
-        except (ApiResponseError, ApiUnreachableError) as exc:
-            # A client-side read or write timeout arrives as the `ApiUnreachableError` the `_send` override maps it to,
-            # with the `code` `ABORT_TIMEOUT` that `is_gateway_cut_off` reads.
-            elapsed_seconds = monotonic() - started_at
-            if is_gateway_cut_off(exc, elapsed_seconds):
-                raise PipelineExecuteTimeoutError(_execute_timeout_message(elapsed_seconds), elapsed_seconds=elapsed_seconds) from exc
-            raise
-        # Re-validate the base result into the enriched subclass (adds the `.main_stuff` accessor;
-        # the `main_stuff_name` extension + working memory ride `model_extra`/`pipe_output`).
-        return PipelexExecuteResult.model_validate(result.model_dump())
+        with self._reading_inherited_answer(method="POST", endpoint="execute"):
+            try:
+                result = await super().execute(
+                    pipe_code=pipe_code,
+                    mthds_contents=mthds_contents,
+                    inputs=inputs,
+                    output_name=output_name,
+                    output_multiplicity=output_multiplicity,
+                    dynamic_output_concept_ref=dynamic_output_concept_ref,
+                    extra=merged_extra,
+                )
+            except (ApiResponseError, ApiUnreachableError) as exc:
+                # A client-side read or write timeout arrives as the `ApiUnreachableError` the `_send` override maps it to,
+                # with the `code` `ABORT_TIMEOUT` that `is_gateway_cut_off` reads.
+                elapsed_seconds = monotonic() - started_at
+                if is_gateway_cut_off(exc, elapsed_seconds):
+                    raise PipelineExecuteTimeoutError(_execute_timeout_message(elapsed_seconds), elapsed_seconds=elapsed_seconds) from exc
+                raise
+            except PipelineRequestError as exc:
+                refined = _with_verdict(exc)
+                if refined is exc:
+                    raise
+                raise refined from exc
+            # Re-validate the base result into the enriched subclass (adds the `.main_stuff` accessor;
+            # the `main_stuff_name` extension + working memory ride `model_extra`/`pipe_output`). Inside
+            # the block, so an answer the subclass cannot read is reported as one the base cannot.
+            return PipelexExecuteResult.model_validate(result.model_dump())
 
     # ── Protocol surface: `start` override (bare-runner 404 → typed error) ──
 
@@ -640,10 +840,10 @@ class PipelexAPIClient(MthdsAPIClient):
             `None` otherwise.
 
         Raises:
-            PipelineRequestError: `extra` carries a protocol arg or a reserved named arg, a
-                selector is present and is not a string, `method_ref` is combined with inline
-                `mthds_contents` or with `method_id`, or a suffixed `method_id` is combined with
-                inline `mthds_contents`.
+            RequestArgumentError: Nothing to run was named, `extra` carries a protocol arg or a
+                reserved named arg, a selector is present and is not a string, `method_ref` is
+                combined with inline `mthds_contents` or with `method_id`, or a suffixed
+                `method_id` is combined with inline `mthds_contents`.
             RunLifecycleUnavailableError: The configured server has no run store.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
                 `422`, its diagnostics on `validation_errors`), auth, a server fault.
@@ -654,25 +854,33 @@ class PipelexAPIClient(MthdsAPIClient):
         _assert_linkage_method_id_is_bare(mthds_contents=mthds_contents, merged_extra=merged_extra)
         token = _REQUEST_TIMEOUT_OVERRIDE.set(_start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, mthds_contents))
         try:
-            result = await super().start(
-                pipe_code=pipe_code,
-                mthds_contents=mthds_contents,
-                inputs=inputs,
-                output_name=output_name,
-                output_multiplicity=output_multiplicity,
-                dynamic_output_concept_ref=dynamic_output_concept_ref,
-                extra=merged_extra,
-            )
-        except ApiResponseError as exc:
-            # The inherited route raised through `_raise_api_response_error`; the error keeps the
-            # status, the body and the URL, which is all the missing-route test reads.
-            self._raise_if_lifecycle_unavailable(status=exc.status, body=exc.response_body, url=exc.request_url or self._url("start"))
-            raise
+            with self._reading_inherited_answer(method="POST", endpoint="start"):
+                try:
+                    result = await super().start(
+                        pipe_code=pipe_code,
+                        mthds_contents=mthds_contents,
+                        inputs=inputs,
+                        output_name=output_name,
+                        output_multiplicity=output_multiplicity,
+                        dynamic_output_concept_ref=dynamic_output_concept_ref,
+                        extra=merged_extra,
+                    )
+                except ApiResponseError as exc:
+                    # The inherited route raised through `_raise_api_response_error`; the error keeps the
+                    # status, the body and the URL, which is all the missing-route test reads.
+                    self._raise_if_lifecycle_unavailable(status=exc.status, body=exc.response_body, url=exc.request_url or self._url("start"))
+                    raise
+                except PipelineRequestError as exc:
+                    refined = _with_verdict(exc)
+                    if refined is exc:
+                        raise
+                    raise refined from exc
+                # Re-validate the base ack into the Pipelex-branded subtype (types `method_provenance`;
+                # any other implementation extra keeps riding `model_extra`). Inside the block, so an
+                # answer the subtype cannot read is reported as one the base cannot.
+                return PipelexRunResultStart.model_validate(result.model_dump())
         finally:
             _REQUEST_TIMEOUT_OVERRIDE.reset(token)
-        # Re-validate the base ack into the Pipelex-branded subtype (types `method_provenance`;
-        # any other implementation extra keeps riding `model_extra`).
-        return PipelexRunResultStart.model_validate(result.model_dump())
 
     @override
     async def validate(  # type: ignore[override]
@@ -755,7 +963,7 @@ class PipelexAPIClient(MthdsAPIClient):
             read as enums; import the per-kind types from `mthds.protocol.input_form`.
 
         Raises:
-            PipelineRequestError: Zero or several selectors were supplied, a selector is not a
+            RequestArgumentError: Zero or several selectors were supplied, a selector is not a
                 string, or `mthds_sources` was supplied beside a selector.
             ApiResponseError: No verdict could be produced — a request-shape `422`, a selector
                 that did not resolve, auth, a server fault.
@@ -766,13 +974,13 @@ class PipelexAPIClient(MthdsAPIClient):
         selector_count = sum(1 for present in (bool(mthds_contents), selected_method_ref is not None, selected_method_id is not None) if present)
         if selector_count != 1:
             msg = "validate() takes exactly one method selector: inline mthds_contents, method_ref, or method_id."
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg)
         if mthds_sources is not None and not mthds_contents:
             msg = (
                 "mthds_sources labels inline mthds_contents; a method_ref / method_id validation gets "
                 "its source labels from the package's (or the stored method's) real file names."
             )
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg)
 
         if mthds_contents:
             extra: dict[str, Any] = {"render": _with_validate_markdown_render(render)}
@@ -784,7 +992,7 @@ class PipelexAPIClient(MthdsAPIClient):
             # call, then parse the 200-diagnostic body into this SDK's Pipelex-branded narrowing.
             # The base's own `validate` parses the same body into the neutral `ValidationResult`.
             response = await self._post_validate(mthds_contents, allow_signatures, extra)
-            return PipelexValidationResultAdapter.validate_python(response.json())
+            return self._read_v1_answer(PipelexValidationResultAdapter.validate_python, method="POST", endpoint="validate", response=response)
 
         # A selector validation must NOT carry the `mthds_contents` key at all (the server XORs
         # on presence, and an empty list is a request-shape 422), so the body is built here
@@ -799,7 +1007,7 @@ class PipelexAPIClient(MthdsAPIClient):
         response = await self._send("POST", self._url("validate"), content=to_json(body), request_timeout=self.request_timeout_seconds)
         if not response.is_success:
             self._raise_api_response_error(method="POST", endpoint="validate", response=response)
-        return PipelexValidationResultAdapter.validate_python(response.json())
+        return self._read_v1_answer(PipelexValidationResultAdapter.validate_python, method="POST", endpoint="validate", response=response)
 
     async def validate_files(
         self,
@@ -822,11 +1030,11 @@ class PipelexAPIClient(MthdsAPIClient):
                 `validate` for the semantics.
 
         Raises:
-            PipelineRequestError: If `files` is empty.
+            RequestArgumentError: If `files` is empty.
         """
         if not files:
             msg = "At least one MTHDS file must be provided to validate_files()."
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg)
 
         mthds_contents = [mthds_file.content for mthds_file in files]
         has_any_uri = any(mthds_file.uri is not None for mthds_file in files)
@@ -857,7 +1065,8 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RunLifecycleUnavailableError: If the lifecycle routes are absent (a bare runner).
             ApiUnreachableError: If the host cannot be reached (DNS / connect / TLS / timeout).
-            ApiResponseError: For a genuine run-not-found 404 or any other non-2xx response.
+            ApiResponseError: For a genuine run-not-found 404 or any other non-2xx response, or a 2xx
+                that is not a run.
         """
         endpoint = f"{_RUNS}/{quote(run_id, safe='')}/status"
         url = self._url(endpoint)
@@ -865,7 +1074,7 @@ class PipelexAPIClient(MthdsAPIClient):
         self._raise_if_lifecycle_unavailable(status=response.status_code, body=response.text, url=url)
         if not response.is_success:
             self._raise_api_response_error(method="GET", endpoint=endpoint, response=response)
-        run = RunRead.model_validate(response.json())
+        run = self._read_v1_answer(RunRead.model_validate, method="GET", endpoint=endpoint, response=response)
         retry_after = _parse_retry_after(response.headers)
         if retry_after is not None:
             run = run.model_copy(update={"retry_after_seconds": retry_after})
@@ -892,12 +1101,13 @@ class PipelexAPIClient(MthdsAPIClient):
                 applies only when `main_stuff` was asked for.
 
         Raises:
-            PipelineRequestError: If `artifacts` is an empty selection, which names nothing to read.
+            RequestArgumentError: If `artifacts` is an empty selection, which names nothing to read,
+                or names an artifact that is no `RunArtifact`.
             MissingMainStuffError: If a completed run asked for its main stuff delivers none.
             RunLifecycleUnavailableError: If the lifecycle routes are absent (a bare runner).
             ApiUnreachableError: If the host cannot be reached (DNS / connect / TLS / timeout).
-            ApiResponseError: For a genuine run-not-found 404 or any other non-2xx response
-                (an artifact name the platform does not know is its `400`).
+            ApiResponseError: For a genuine run-not-found 404 or any other non-2xx response, or a
+                `200` that is not the run's results.
         """
         selection = _artifact_selection(artifacts)
         endpoint = f"{_RUNS}/{quote(run_id, safe='')}/results"
@@ -919,16 +1129,20 @@ class PipelexAPIClient(MthdsAPIClient):
         self._raise_if_lifecycle_unavailable(status=response.status_code, body=response.text, url=url)
         if not response.is_success:
             self._raise_api_response_error(method="GET", endpoint=endpoint, response=response)
-        # A completed run asked for its main stuff must deliver one. `.get(...) is None` covers both the
-        # missing-key and explicit-null cases for the same un-deliverable-output condition (a
-        # present-but-falsy main stuff — `[]`, `0` — stays). A selection that left `main_stuff` out
-        # asked for none, so its absence there is the answer, not a fault.
-        payload = response.json()
         wants_main_stuff = selection is None or RunArtifact.MAIN_STUFF in selection
-        if wants_main_stuff and isinstance(payload, dict) and cast("dict[str, Any]", payload).get("main_stuff") is None:
-            msg = f"Completed run '{run_id}' returned no main stuff — a completed run always delivers a main stuff."
-            raise MissingMainStuffError(msg, run_id=run_id)
-        result = RunResults.model_validate(payload)
+
+        def read_results(payload: Any) -> RunResults:
+            # A completed run asked for its main stuff must deliver one. `.get(...) is None` covers both the
+            # missing-key and explicit-null cases for the same un-deliverable-output condition (a
+            # present-but-falsy main stuff — `[]`, `0` — stays). A selection that left `main_stuff` out
+            # asked for none, so its absence there is the answer, not a fault. A payload that is no
+            # object is no results at all, which `RunResults` refuses.
+            if wants_main_stuff and isinstance(payload, dict) and cast("dict[str, Any]", payload).get("main_stuff") is None:
+                msg = f"Completed run '{run_id}' returned no main stuff — a completed run always delivers a main stuff."
+                raise MissingMainStuffError(msg, run_id=run_id)
+            return RunResults.model_validate(payload)
+
+        result = self._read_v1_answer(read_results, method="GET", endpoint=endpoint, response=response)
         return RunResultCompleted(pipeline_run_id=run_id, result=result)
 
     async def wait_for_result(
@@ -999,14 +1213,33 @@ class PipelexAPIClient(MthdsAPIClient):
         twenty minutes before the start is even sent.
 
         Raises:
-            ApiResponseError: If the server answers non-2xx.
+            ApiResponseError: If the server answers non-2xx, or a 2xx that is not a version.
             ApiUnreachableError: No answer came back.
         """
         token = _REQUEST_TIMEOUT_OVERRIDE.set(_quick_request_timeout_seconds(self.request_timeout_seconds))
         try:
-            return await super().version()
+            with self._reading_inherited_answer(method="GET", endpoint="version"):
+                return await super().version()
         finally:
             _REQUEST_TIMEOUT_OVERRIDE.reset(token)
+
+    @override
+    async def models(self, category: ModelCategory | None = None) -> ModelDeck:
+        """The model deck the runner can route to — `GET /v1/models[?type=]`, the inherited route.
+
+        Overridden only so that a 2xx answer that is not a deck raises this SDK's `ApiResponseError`, as
+        every route's does (`_reading_inherited_answer`).
+
+        Args:
+            category: Optional filter (`llm`, `extract`, `img_gen`, `search`, `judgment`).
+
+        Raises:
+            ApiResponseError: If the server answers non-2xx, or a 2xx that is not a model deck.
+            ApiUnreachableError: No answer came back.
+        """
+        endpoint = f"models?type={quote(category, safe='')}" if category is not None else "models"
+        with self._reading_inherited_answer(method="GET", endpoint=endpoint):
+            return await super().models(category)
 
     async def _supports_run_lifecycle(self) -> bool:
         """Whether the configured server serves the durable run lifecycle, decided via the
@@ -1029,8 +1262,8 @@ class PipelexAPIClient(MthdsAPIClient):
             try:
                 info = await self.version()
             # The server answered with something that is no version: a non-2xx status, a body that is not
-            # JSON or not UTF-8, or JSON that does not validate as one. Assume hosted.
-            except (ApiResponseError, ValidationError, json.JSONDecodeError, UnicodeDecodeError):
+            # JSON or not UTF-8, or JSON that does not validate as one, each an `ApiResponseError`. Assume hosted.
+            except ApiResponseError:
                 self._lifecycle_available = True
             except ApiUnreachableError as exc:
                 # A body that arrived and could not be decoded is an answer too, so assume hosted. Any
@@ -1181,19 +1414,24 @@ class PipelexAPIClient(MthdsAPIClient):
         must survive this path, not just the durable one — a `method_ref` run must run the
         same fetched package here, and a hosted `method_id` must reach the server too, so a
         runner that cannot resolve it says so instead of the client silently dropping it.
+
+        The lift onto `RunResults` parses the run's artifacts strictly, so an answer `execute` took
+        can still be one this path cannot read; it raises the same `ApiResponseError` as an answer
+        `execute` itself cannot read (`_reading_inherited_answer`).
         """
-        result = await self.execute(
-            pipe_code=pipe_code,
-            mthds_contents=mthds_contents,
-            inputs=inputs,
-            output_name=output_name,
-            output_multiplicity=output_multiplicity,
-            dynamic_output_concept_ref=dynamic_output_concept_ref,
-            extra=extra,
-            method_ref=method_ref,
-            method_id=method_id,
-        )
-        return results_from_execute(result)
+        with self._reading_inherited_answer(method="POST", endpoint="execute"):
+            result = await self.execute(
+                pipe_code=pipe_code,
+                mthds_contents=mthds_contents,
+                inputs=inputs,
+                output_name=output_name,
+                output_multiplicity=output_multiplicity,
+                dynamic_output_concept_ref=dynamic_output_concept_ref,
+                extra=extra,
+                method_ref=method_ref,
+                method_id=method_id,
+            )
+            return results_from_execute(result)
 
     # ── Pipelex product surface (hosted management routes) ─────────────────
     #
@@ -1204,7 +1442,7 @@ class PipelexAPIClient(MthdsAPIClient):
 
     async def get_me(self) -> UserProfile:
         """The authenticated user's profile — `GET /v1/me`."""
-        return UserProfile.model_validate(await self._request_product("GET", "me"))
+        return await self._request_product("GET", "me", read=UserProfile.model_validate)
 
     async def list_methods(self, *, q: str | None = None, limit: int | None = None, cursor: str | None = None) -> MethodPage:
         """List one page of the caller's saved methods — `GET /v1/methods`.
@@ -1221,7 +1459,7 @@ class PipelexAPIClient(MthdsAPIClient):
             `iterate_methods`, which follows the cursors and cannot truncate.
         """
         query = _product_query({"q": q, "limit": limit, "cursor": cursor})
-        return MethodPage.model_validate(await self._request_product("GET", f"methods{query}"))
+        return await self._request_product("GET", f"methods{query}", read=MethodPage.model_validate)
 
     async def iterate_methods(self, *, q: str | None = None, limit: int | None = None) -> AsyncIterator[MethodSummary]:
         """Yield every saved method, following the cursors — `GET /v1/methods`.
@@ -1266,10 +1504,10 @@ class PipelexAPIClient(MthdsAPIClient):
         Takes a bare catalog id: the method routes address the method itself, never a version of
         it. A caller holding `mt_…@3` strips the suffix with
         `pipelex_sdk.method_selector.parse_method_selector` and reads that version with
-        `get_method_version`. Every method route raises `PipelineRequestError` for a suffixed id,
+        `get_method_version`. Every method route raises `RequestArgumentError` for a suffixed id,
         before any request, rather than read back the `404` the platform would answer.
         """
-        return MethodData.model_validate(await self._request_product("GET", _method_path(method_id)))
+        return await self._request_product("GET", _method_path(method_id), read=MethodData.model_validate)
 
     async def create_method(self, write_input: MethodWriteInput) -> MethodData:
         """Create a method — `POST /v1/methods`.
@@ -1284,7 +1522,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 run could import or for text holding a lone surrogate.
         """
         body = write_input.model_dump(mode="json", exclude_none=True)
-        return MethodData.model_validate(await self._request_product("POST", "methods", body=body))
+        return await self._request_product("POST", "methods", body=body, read=MethodData.model_validate)
 
     async def write_draft(self, method_id: str, draft: MethodDraftInput) -> MethodData:
         """Replace a method's draft — `PUT /v1/methods/{id}/draft`.
@@ -1313,7 +1551,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 when the method kept changing under the write.
         """
         body = draft.model_dump(mode="json", exclude_unset=True)
-        return MethodData.model_validate(await self._request_product("PUT", f"{_method_path(method_id)}/draft", body=body))
+        return await self._request_product("PUT", f"{_method_path(method_id)}/draft", body=body, read=MethodData.model_validate)
 
     async def rename_method(self, method_id: str, name: str) -> MethodData:
         """Rename a method — `PATCH /v1/methods/{id}`.
@@ -1333,7 +1571,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 publish; a `503` that wrote nothing, safe to retry, when draft writes kept landing
                 under the rename.
         """
-        return MethodData.model_validate(await self._request_product("PATCH", _method_path(method_id), body={"name": name}))
+        return await self._request_product("PATCH", _method_path(method_id), body={"name": name}, read=MethodData.model_validate)
 
     async def publish_method(self, method_id: str, *, expected_draft_updated_at: str) -> MethodPublishResult:
         """Publish a method's draft as its next version — `POST /v1/methods/{id}/publish`.
@@ -1362,7 +1600,7 @@ class PipelexAPIClient(MthdsAPIClient):
             Every arm carries the `method`.
 
         Raises:
-            PipelineRequestError: `expected_draft_updated_at` is not a `str` — `None` included; nothing
+            RequestArgumentError: `expected_draft_updated_at` is not a `str` — `None` included; nothing
                 is sent.
             ApiResponseError: When no verdict was produced: `409` `method_update_conflict` for a draft
                 that moved since the token; `409` `method_being_deleted`; `404` `not_found`; `422`
@@ -1378,10 +1616,9 @@ class PipelexAPIClient(MthdsAPIClient):
                 "publish_method() needs expected_draft_updated_at: the draft token (the method's updated_at) the caller "
                 f"last saw, so a publish never takes a draft it has not seen; got {type(token).__name__}."
             )
-            raise PipelineRequestError(msg)
+            raise RequestArgumentError(msg)
         body = {"expected_draft_updated_at": token}
-        answer = await self._request_product("POST", f"{_method_path(method_id)}/publish", body=body)
-        return MethodPublishResultAdapter.validate_python(answer)
+        return await self._request_product("POST", f"{_method_path(method_id)}/publish", body=body, read=MethodPublishResultAdapter.validate_python)
 
     async def list_method_versions(self, method_id: str, *, limit: int | None = None, cursor: str | None = None) -> MethodVersionPage:
         """List one page of a method's published versions, newest first — `GET /v1/methods/{id}/versions`.
@@ -1403,7 +1640,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 `422` for a `limit` outside 1 to 100.
         """
         query = _product_query({"limit": limit, "cursor": cursor})
-        return MethodVersionPage.model_validate(await self._request_product("GET", f"{_method_path(method_id)}/versions{query}"))
+        return await self._request_product("GET", f"{_method_path(method_id)}/versions{query}", read=MethodVersionPage.model_validate)
 
     async def get_method_version(self, method_id: str, version: int) -> MethodVersion:
         """Read one published version of a method, with its sources — `GET /v1/methods/{id}/versions/{n}`.
@@ -1415,7 +1652,7 @@ class PipelexAPIClient(MthdsAPIClient):
             version: The version number, a positive integer.
 
         Raises:
-            PipelineRequestError: `version` is not a positive integer — a `bool`, a `float` such as
+            RequestArgumentError: `version` is not a positive integer — a `bool`, a `float` such as
                 `2.0`, a numeric string and anything else that is not an `int` included; nothing is sent.
             ApiResponseError: `404` `method_version_not_found` for a version the method never
                 published; `404` `not_found` for an unknown method; `409` `method_being_deleted`.
@@ -1425,8 +1662,8 @@ class PipelexAPIClient(MthdsAPIClient):
         candidate = cast("object", version)
         if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 1:
             msg = f"get_method_version() takes a version number, a positive integer; got {version!r}."
-            raise PipelineRequestError(msg)
-        return MethodVersion.model_validate(await self._request_product("GET", f"{_method_path(method_id)}/versions/{version}"))
+            raise RequestArgumentError(msg)
+        return await self._request_product("GET", f"{_method_path(method_id)}/versions/{version}", read=MethodVersion.model_validate)
 
     async def delete_method(self, method_id: str) -> MethodDeletionAccepted:
         """Erase a method and everything it produced — `DELETE /v1/methods/{id}`.
@@ -1452,37 +1689,35 @@ class PipelexAPIClient(MthdsAPIClient):
             The platform's acceptance — `method_id`, the `deletion_state` the cascade started
             in, and the `deletion_job_id` a caller can log or correlate.
         """
-        return MethodDeletionAccepted.model_validate(await self._request_product("DELETE", _method_path(method_id)))
+        return await self._request_product("DELETE", _method_path(method_id), read=MethodDeletionAccepted.model_validate)
 
     async def list_memberships(self) -> MembershipsResponse:
         """The caller's org memberships + active-org feature flags — `GET /v1/organizations/memberships`."""
-        return MembershipsResponse.model_validate(await self._request_product("GET", "organizations/memberships"))
+        return await self._request_product("GET", "organizations/memberships", read=MembershipsResponse.model_validate)
 
     async def create_organization(self, name: str) -> Membership:
         """Create an organization — `POST /v1/organizations`."""
-        return Membership.model_validate(await self._request_product("POST", "organizations", body={"name": name}))
+        return await self._request_product("POST", "organizations", body={"name": name}, read=Membership.model_validate)
 
     async def rename_organization(self, org_id: str, name: str) -> Membership:
         """Rename an organization — `PATCH /v1/organizations/{org_id}`."""
-        return Membership.model_validate(await self._request_product("PATCH", f"organizations/{quote(org_id, safe='')}", body={"name": name}))
+        return await self._request_product("PATCH", f"organizations/{quote(org_id, safe='')}", body={"name": name}, read=Membership.model_validate)
 
     async def get_subscription(self) -> SubscriptionResponse:
         """The active org's subscription state — `GET /v1/billing/subscription`."""
-        return SubscriptionResponse.model_validate(await self._request_product("GET", "billing/subscription"))
+        return await self._request_product("GET", "billing/subscription", read=SubscriptionResponse.model_validate)
 
     async def list_plans(self) -> list[PlanView]:
         """Available plans (with `is_current`) — `GET /v1/billing/plans`."""
-        result = await self._request_product("GET", "billing/plans")
-        return [PlanView.model_validate(item) for item in result]
+        return await self._request_product("GET", "billing/plans", read=_PLAN_LIST_ADAPTER.validate_python)
 
     async def list_invoices(self) -> list[InvoiceView]:
         """Past invoices — `GET /v1/billing/invoices`."""
-        result = await self._request_product("GET", "billing/invoices")
-        return [InvoiceView.model_validate(item) for item in result]
+        return await self._request_product("GET", "billing/invoices", read=_INVOICE_LIST_ADAPTER.validate_python)
 
     async def create_checkout(self, plan: str) -> CheckoutResponse:
         """Open a Stripe checkout for a plan — `POST /v1/billing/checkout`."""
-        return CheckoutResponse.model_validate(await self._request_product("POST", "billing/checkout", body={"plan": plan}))
+        return await self._request_product("POST", "billing/checkout", body={"plan": plan}, read=CheckoutResponse.model_validate)
 
     async def change_plan(self, plan: str) -> ChangePlanResponse:
         """Switch the existing subscription's plan — `POST /v1/billing/change-plan`.
@@ -1490,18 +1725,18 @@ class PipelexAPIClient(MthdsAPIClient):
         A 409 `conflict` (`ApiResponseError.code`) means there is no subscription to change —
         start one via `create_checkout` first.
         """
-        return ChangePlanResponse.model_validate(await self._request_product("POST", "billing/change-plan", body={"plan": plan}))
+        return await self._request_product("POST", "billing/change-plan", body={"plan": plan}, read=ChangePlanResponse.model_validate)
 
     async def get_billing_portal(self) -> BillingPortalResponse:
         """A Stripe billing-portal session URL — `GET /v1/billing/portal`.
 
         A 409 `conflict` (`ApiResponseError.code`) means there is no subscription yet.
         """
-        return BillingPortalResponse.model_validate(await self._request_product("GET", "billing/portal"))
+        return await self._request_product("GET", "billing/portal", read=BillingPortalResponse.model_validate)
 
     async def list_pipelex_api_keys(self) -> PipelexApiKeyList:
         """List the caller's Pipelex API keys — `GET /v1/pipelex-api-keys`."""
-        return PipelexApiKeyList.model_validate(await self._request_product("GET", "pipelex-api-keys"))
+        return await self._request_product("GET", "pipelex-api-keys", read=PipelexApiKeyList.model_validate)
 
     async def create_pipelex_api_key(self, label: str) -> PipelexApiKeyCreated:
         """Mint a Pipelex API key — `POST /v1/pipelex-api-keys`.
@@ -1509,27 +1744,27 @@ class PipelexAPIClient(MthdsAPIClient):
         The plaintext `api_key` is returned ONCE. A 409 `pipelex_api_key_limit_reached`
         (`ApiResponseError.code`) means the per-account key limit is hit.
         """
-        return PipelexApiKeyCreated.model_validate(await self._request_product("POST", "pipelex-api-keys", body={"label": label}))
+        return await self._request_product("POST", "pipelex-api-keys", body={"label": label}, read=PipelexApiKeyCreated.model_validate)
 
     async def revoke_pipelex_api_key(self, key_id: str) -> None:
         """Revoke a Pipelex API key — `DELETE /v1/pipelex-api-keys/{id}` (empty body)."""
-        await self._request_product("DELETE", f"pipelex-api-keys/{quote(key_id, safe='')}")
+        await self._request_product_without_answer("DELETE", f"pipelex-api-keys/{quote(key_id, safe='')}")
 
     async def rotate_pipelex_api_key(self, key_id: str) -> PipelexApiKeyCreated:
         """Rotate a Pipelex API key — `POST /v1/pipelex-api-keys/{id}/rotate` (no body).
 
         Returns the new plaintext `api_key` once; the old key stops working.
         """
-        return PipelexApiKeyCreated.model_validate(await self._request_product("POST", f"pipelex-api-keys/{quote(key_id, safe='')}/rotate"))
+        return await self._request_product("POST", f"pipelex-api-keys/{quote(key_id, safe='')}/rotate", read=PipelexApiKeyCreated.model_validate)
 
     async def submit_onboarding(self, submission: OnboardingSubmission) -> None:
         """Submit the onboarding questionnaire — `POST /v1/onboarding/submit` (empty body)."""
         body = submission.model_dump(mode="json", exclude_none=True)
-        await self._request_product("POST", "onboarding/submit", body=body)
+        await self._request_product_without_answer("POST", "onboarding/submit", body=body)
 
     async def resolve_storage_url(self, uri: str) -> ResolvedStorageUrl:
         """Resolve a storage URI to a presigned URL — `POST /v1/resolve-storage-url`."""
-        return ResolvedStorageUrl.model_validate(await self._request_product("POST", "resolve-storage-url", body={"uri": uri}))
+        return await self._request_product("POST", "resolve-storage-url", body={"uri": uri}, read=ResolvedStorageUrl.model_validate)
 
     async def resolve_storage_urls_bulk(self, uris: list[str]) -> BulkResolvedStorageUrls:
         """Resolve a list of storage URIs in one request — `POST /v1/resolve-storage-url/bulk`.
@@ -1540,7 +1775,7 @@ class PipelexAPIClient(MthdsAPIClient):
         (a longer list is a `422`) — `resolve_artifacts` chunks a longer set. Served by the hosted
         platform only: a deployment without the route answers a `404` `ApiResponseError`.
         """
-        return BulkResolvedStorageUrls.model_validate(await self._request_product("POST", "resolve-storage-url/bulk", body={"uris": uris}))
+        return await self._request_product("POST", "resolve-storage-url/bulk", body={"uris": uris}, read=BulkResolvedStorageUrls.model_validate)
 
     async def resolve_artifacts(self, uris: list[str]) -> list[ResolvedArtifact]:
         """Resolve a whole list of `pipelex-storage://` references through the bulk route, chunked at
@@ -1580,7 +1815,7 @@ class PipelexAPIClient(MthdsAPIClient):
     async def upload(self, upload_input: UploadInput) -> UploadedFile:
         """Upload a base64 file — `POST /v1/upload`."""
         body = upload_input.model_dump(mode="json", exclude_none=True)
-        return UploadedFile.model_validate(await self._request_product("POST", "upload", body=body))
+        return await self._request_product("POST", "upload", body=body, read=UploadedFile.model_validate)
 
     # ── Crate extensions (Pipelex API — `/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`) ─────
     #
@@ -1610,8 +1845,13 @@ class PipelexAPIClient(MthdsAPIClient):
         `ApiResponseError`, never an `is_valid: false` verdict.
         """
         body = request.model_dump(mode="json", exclude_none=True)
-        raw = await self._request_product("POST", "resolve", body=body, request_timeout=_crate_request_timeout_seconds(request.method_ref))
-        return ResolveResponseAdapter.validate_python(raw)
+        return await self._request_product(
+            "POST",
+            "resolve",
+            body=body,
+            read=ResolveResponseAdapter.validate_python,
+            request_timeout=_crate_request_timeout_seconds(request.method_ref),
+        )
 
     async def codegen(self, request: CodegenRequest) -> CodegenResponse:
         """Project a closure's crate into stamped typed artifacts — `POST /v1/codegen`.
@@ -1629,8 +1869,13 @@ class PipelexAPIClient(MthdsAPIClient):
         raises `ApiResponseError`; a registry-form `method_ref` is a `501`.
         """
         body = request.model_dump(mode="json", exclude_none=True)
-        raw = await self._request_product("POST", "codegen", body=body, request_timeout=_crate_request_timeout_seconds(request.method_ref))
-        return CodegenResponseAdapter.validate_python(raw)
+        return await self._request_product(
+            "POST",
+            "codegen",
+            body=body,
+            read=CodegenResponseAdapter.validate_python,
+            request_timeout=_crate_request_timeout_seconds(request.method_ref),
+        )
 
     async def pipe_io(self, request: PipeIORequest) -> PipeIOResponse:
         """Read a method's I/O artifacts without validating it — `POST /v1/pipe-io`.
@@ -1660,8 +1905,13 @@ class PipelexAPIClient(MthdsAPIClient):
         # `all_pipes` and `include_files` default to False on the server too, so a flag left at its
         # default is not sent, as `@pipelex/sdk` sends it: the two SDKs put the same body on the wire.
         body = request.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
-        raw = await self._request_product("POST", "pipe-io", body=body, request_timeout=_crate_request_timeout_seconds(request.method_ref))
-        return PipeIOResponseAdapter.validate_python(raw)
+        return await self._request_product(
+            "POST",
+            "pipe-io",
+            body=body,
+            read=PipeIOResponseAdapter.validate_python,
+            request_timeout=_crate_request_timeout_seconds(request.method_ref),
+        )
 
     # ── Model reference check (Pipelex API — `/v1/models/check`) ────────────
     #
@@ -1698,8 +1948,7 @@ class PipelexAPIClient(MthdsAPIClient):
         query: dict[str, str] = {"reference": reference}
         if category is not None:
             query["type"] = category
-        raw = await self._request_product("GET", f"models/check?{urlencode(query)}")
-        return ModelReferenceVerdictAdapter.validate_python(raw)
+        return await self._request_product("GET", f"models/check?{urlencode(query)}", read=ModelReferenceVerdictAdapter.validate_python)
 
     async def upload_file(
         self,
@@ -1786,7 +2035,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 "wrong key".
         """
         query = _product_query({"method_id": method_id, "created_from": created_from, "created_to": created_to, "limit": limit, "cursor": cursor})
-        return RunPage.model_validate(await self._request_product("GET", f"{_RUNS}{query}"))
+        return await self._request_product("GET", f"{_RUNS}{query}", read=RunPage.model_validate)
 
     async def iterate_runs(
         self,
@@ -1840,30 +2089,59 @@ class PipelexAPIClient(MthdsAPIClient):
         fetches `/results`. This is the catalog-style record, and the only read that carries
         `mthds_contents` and `inputs`.
         """
-        return RunDetail.model_validate(await self._request_product("GET", f"{_RUNS}/{quote(run_id, safe='')}"))
+        return await self._request_product("GET", f"{_RUNS}/{quote(run_id, safe='')}", read=RunDetail.model_validate)
 
     async def update_run(self, run_id: str, update_input: UpdateRunInput) -> None:
         """Patch a run's status (admin/manual) — `PUT /v1/runs/{id}` (empty body)."""
         body = update_input.model_dump(mode="json", exclude_none=True)
-        await self._request_product("PUT", f"{_RUNS}/{quote(run_id, safe='')}", body=body)
+        await self._request_product_without_answer("PUT", f"{_RUNS}/{quote(run_id, safe='')}", body=body)
 
     # ── Health ─────────────────────────────────────────────────────────────
     #
     # The origin-level liveness probe. `/health` is served at the origin, NOT under the
     # `/v1` prefix, and is out-of-protocol — the MTHDS Protocol defines no health route.
-    # It rides `_request_json`, the plainer regime: a non-2xx raises `PipelineRequestError`,
-    # not the product `ApiResponseError`, since liveness needs no `code` taxonomy.
+    # It rides the same transport and the same error as every route, as `@pipelex/sdk`'s does.
 
     async def health(self) -> dict[str, Any]:
-        """Origin-level liveness probe — `GET {origin}/health` (NOT under the `/v1` prefix)."""
-        result = await self._request_json("GET", f"{self.origin_url}/health")
-        return cast("dict[str, Any]", result)
+        """Origin-level liveness probe — `GET {origin}/health` (NOT under the `/v1` prefix).
+
+        Raises:
+            ApiResponseError: The origin answered non-2xx, or a 2xx whose body is not a JSON object; the
+                message names `/health`, and the verdict is the fallback's reading of the status, since
+                the probe answers no problem document.
+            ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
+        """
+        url = f"{self.origin_url}/health"
+        response = await self._send("GET", url, content=None, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
+        if not response.is_success:
+            raise self._api_response_error(method="GET", path="/health", request_url=url, response=response)
+        return self._read_answer(_HEALTH_ANSWER_ADAPTER.validate_python, method="GET", path="/health", request_url=url, response=response)
 
 
 # ── Module helpers ──────────────────────────────────────────────────────
 
 
 _KNOWN_RUN_STATUS_NAMES: frozenset[str] = frozenset(RunStatus.__members__)
+
+# The artifacts a results read can be narrowed to; a plain string equal to one's value is in it too.
+_RUN_ARTIFACTS: frozenset[RunArtifact] = frozenset(RunArtifact)
+
+
+def _with_verdict(exc: PipelineRequestError) -> PipelineRequestError:
+    """The error the inherited `execute` or `start` raised, as this SDK's class carrying a verdict.
+
+    The base client raises errors of the standard's own classes, which carry none: a bare
+    `PipelineRequestError` refusing the arguments before any request (nothing to run was named, or
+    `extra` carries a protocol arg), answered here with a `RequestArgumentError` of the same message, and
+    `mthds`'s `RunStillRunningError` on the protocol's 202 degrade, answered with this SDK's subclass of it,
+    the same members carried over. An error that already carries a verdict, such as the
+    `ApiUnreachableError` the `_send` override raises, is returned as it is.
+    """
+    if isinstance(exc, PipelexRequestError):
+        return exc
+    if isinstance(exc, _MthdsRunStillRunningError):
+        return RunStillRunningError(str(exc), run_id=exc.run_id, retry_after_seconds=exc.retry_after_seconds, location=exc.location)
+    return RequestArgumentError(str(exc))
 
 
 def _normalized_selector(*, name: str, value: object) -> str | None:
@@ -1881,13 +2159,13 @@ def _normalized_selector(*, name: str, value: object) -> str | None:
     it is not sent and does not satisfy the base client's "something to run" precondition.
 
     Raises:
-        PipelineRequestError: If the value is present and is not a string.
+        RequestArgumentError: If the value is present and is not a string.
     """
     if value is None:
         return None
     if not isinstance(value, str):
         msg = f"{name} must be a string, received {type(value).__name__}."
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
     return value or None
 
 
@@ -1915,14 +2193,14 @@ def _merge_run_extensions(extra: dict[str, Any] | None, *, method_ref: object, m
         The merged extension mapping to hand to the base client, or None if there is nothing.
 
     Raises:
-        PipelineRequestError: If `extra` carries a named arg this client reserves, or if a
+        RequestArgumentError: If `extra` carries a named arg this client reserves, or if a
             selector is present and is not a string.
     """
     extensions: dict[str, Any] = dict(extra or {})
     reserved_overlap = extensions.keys() & _RESERVED_RUN_ARGS
     if reserved_overlap:
         msg = f"extra carries reserved request args {sorted(reserved_overlap)} — pass them as named parameters instead."
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
     selected_method_ref = _normalized_selector(name="method_ref", value=method_ref)
     if selected_method_ref is not None:
         extensions["method_ref"] = selected_method_ref
@@ -1953,13 +2231,13 @@ def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, m
         return
     if mthds_contents:
         msg = "method_ref and inline mthds_contents are mutually exclusive; send one or the other."
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
     if "method_id" in merged_extra:
         msg = (
             "method_ref and method_id are mutually exclusive: an address run carries its own provenance "
             "and takes no run-history linkage id. Send exactly one method selector."
         )
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
 
 
 def _assert_linkage_method_id_is_bare(*, mthds_contents: list[str] | None, merged_extra: dict[str, Any] | None) -> None:
@@ -1976,7 +2254,7 @@ def _assert_linkage_method_id_is_bare(*, mthds_contents: list[str] | None, merge
     suffixed id beside them.
 
     Raises:
-        PipelineRequestError: A `method_id` carrying a version suffix rides beside inline
+        RequestArgumentError: A `method_id` carrying a version suffix rides beside inline
             `mthds_contents`.
     """
     if not mthds_contents or merged_extra is None:
@@ -1989,7 +2267,7 @@ def _assert_linkage_method_id_is_bare(*, mthds_contents: list[str] | None, merge
         "inline source is what runs, so a version suffix would claim a version that did not. Send the bare id "
         "(parse_method_selector(...).method_id), or drop the inline source to run the version the selector names."
     )
-    raise PipelineRequestError(msg)
+    raise RequestArgumentError(msg)
 
 
 def _quick_request_timeout_seconds(request_timeout_seconds: float) -> float:
@@ -2066,7 +2344,7 @@ def _method_path(method_id: str) -> str:
     the draft for a caller that named a version.
 
     Raises:
-        PipelineRequestError: `method_id` carries a version suffix.
+        RequestArgumentError: `method_id` carries a version suffix.
     """
     if "@" in method_id:
         msg = (
@@ -2074,7 +2352,7 @@ def _method_path(method_id: str) -> str:
             "itself, never one of its versions. Strip the suffix with parse_method_selector, and read a published version "
             "with get_method_version."
         )
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
     return f"methods/{quote(method_id, safe='')}"
 
 
@@ -2082,16 +2360,33 @@ def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArt
     """Normalise a results-read selection: `None` reads everything, anything else is deduplicated
     into the enum's declaration order, so the same selection always builds the same query.
 
-    An empty selection names nothing to read; the platform refuses it with a `400`, and it is
-    refused here first, before any request, with the request-shape error the client already raises
-    for an empty `validate_files`.
+    An empty selection names nothing to read, and a name that is no `RunArtifact`, which a caller
+    passing plain strings can send, names an artifact the platform does not know; it refuses either
+    with a `400`, and both are refused here first, before any request, with `RequestArgumentError`,
+    as `@pipelex/sdk` refuses them. Dropping an unknown name instead would send a narrower selection
+    than the caller asked for, or an empty one.
+
+    A bare `str`, a single `RunArtifact` member included since a `StrEnum` member is one, is no
+    selection: read as a sequence it would name its characters. It raises `TypeError`, a bug in the
+    calling code that carries no verdict, as `@pipelex/sdk` throws one for a value that is not an array.
+
+    Raises:
+        TypeError: `artifacts` is a bare `str`.
+        RequestArgumentError: The selection is empty or names an artifact that is no `RunArtifact`.
     """
     if artifacts is None:
         return None
+    if isinstance(artifacts, str):
+        msg = f'"artifacts" must be a list or tuple naming one or more of {", ".join(RunArtifact)}.'
+        raise TypeError(msg)
     requested = set(artifacts)
     if not requested:
         msg = "An artifact selection must name at least one RunArtifact; pass artifacts=None to read them all."
-        raise PipelineRequestError(msg)
+        raise RequestArgumentError(msg)
+    unknown = sorted(f"{name}" for name in requested if name not in _RUN_ARTIFACTS)
+    if unknown:
+        msg = f"Unknown result artifact(s) {', '.join(unknown)}; valid artifacts are: {', '.join(RunArtifact)}."
+        raise RequestArgumentError(msg)
     return tuple(artifact for artifact in RunArtifact if artifact in requested)
 
 
@@ -2113,7 +2408,7 @@ def is_gateway_cut_off(exc: BaseException, elapsed_seconds: float) -> bool:
     if elapsed_seconds < _GATEWAY_TIMEOUT_THRESHOLD_SECONDS:
         return False
     if isinstance(exc, ApiUnreachableError):
-        return exc.code == _ABORT_TIMEOUT_CODE
+        return exc.code == ABORT_TIMEOUT_CODE
     if isinstance(exc, ApiResponseError):
         return exc.status in {503, 504}
     return False

@@ -6,6 +6,12 @@
  * the next step it advises and the request id support asks for. That keeps the two commands, this
  * one and its Python twin, saying the same thing for the same answer, which is what the recorded
  * case table holds them to.
+ *
+ * Where no field carries the reason, the command prints the SDK's message as it: a file that
+ * could not be uploaded, whose message says what the upload route's status means for an upload,
+ * and a 2xx answer the SDK could not read, which carries no problem document, so that its message
+ * alone names what could not be read (`API POST /v1/start answered 202 with a body that is not
+ * JSON`). Both SDKs word those messages alike, and the case table holds the ones both meet.
  */
 
 import {
@@ -133,13 +139,23 @@ function presentUploadFailure(
   return { lines, exitCode: EXIT_FAILED };
 }
 
-/** An answer the API gave instead of a result: its status, its reason and its advice. */
+/**
+ * An answer the API gave instead of a result: its status, its reason and its advice.
+ *
+ * A 2xx status is an answer the SDK could not read, the one `ApiResponseError` it throws with a
+ * success status: its reason is the SDK's message, which names the route and what could not be
+ * read, since the answer is no problem document. A refusal's reason is the problem's `detail`,
+ * else its `title`, and a problem that gives neither is said to give no reason.
+ */
 function presentRefusal(error: ApiResponseError): PresentedError {
-  const lines =
-    error.status >= 200 && error.status < 300
-      ? [`Error: the API's answer could not be read (status ${error.status}).`]
-      : [`Error: the API refused the request (status ${error.status}).`];
-  lines.push(`Reason: ${error.serverMessage ?? error.title ?? "the answer gives no reason"}`);
+  const unreadable = error.status >= 200 && error.status < 300;
+  const lines = unreadable
+    ? [`Error: the API's answer could not be read (status ${error.status}).`]
+    : [`Error: the API refused the request (status ${error.status}).`];
+  const reason = unreadable
+    ? error.message
+    : (error.serverMessage ?? error.title ?? "the answer gives no reason");
+  lines.push(`Reason: ${reason}`);
   for (const item of error.validationErrors ?? []) lines.push(validationLine(item));
   if (error.userAction?.detail) lines.push(`Next step: ${error.userAction.detail}`);
   if (error.requestId) lines.push(`Request id: ${error.requestId}`);

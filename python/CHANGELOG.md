@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A verdict on every error**: every class `pipelex_sdk.errors` defines now carries `retryable`, whether asking again can succeed, and `error_domain`, who can fix the failure (`input`, `config` or `runtime`), both always decided and the same, class for class, as `@pipelex/sdk`'s. The new `pipelex_sdk.error_verdicts` module holds `ErrorDomain`, the `ErrorVerdict` pair, `error_verdict_of`, which reads the pair off anything an `except` holds and returns `None` for an error that carries none, and `fallback_verdict`, the table a refused request falls back to. See `docs/errors.md`.
+- **`PipelexRequestError` and `RequestArgumentError`**: every error raised over a request derives from the new `PipelexRequestError`, itself a `PipelineRequestError`, and an argument the client refuses before sending anything raises `RequestArgumentError`, `input` and not retryable, or `config` for a base URL that is not host-only. `InputPreparationError`, `ArtifactOperationError` and `FieldNotIncludedError` take an optional `verdict`, so a subclass of your own can declare another.
+- **Codes on upload failures**: `RejectedAssetError` and `UploadTransportError` carry a `code` from the closed vocabularies `RejectedAssetCode` and `UploadTransportCode`, shared with `@pipelex/sdk`; `upload_file` sets `too_large` on a `413`, and `timeout`, `unreachable`, `server_error` or `unexpected` on a transport failure, whose verdict is the one of the client error it wraps, so a `402` plan limit is `config` and not retryable.
+- **`ABORT_TIMEOUT_CODE`**: the `ApiUnreachableError.code` of the client's own request timeout is public, as `pipelex_sdk.errors.ABORT_TIMEOUT_CODE`.
+
+### Changed
+
+- **`ApiResponseError` decides its verdict (Breaking)**: `retryable` and `error_domain` are no longer `None` when the server sent no valid member: each is the server's member when it is valid, and otherwise read from the status, the platform `code` and whether the body names what it refused, a sent `input` or `config` domain without `retryable` being not retryable. What the server sent stays on `problem`.
+- **Refused arguments raise `RequestArgumentError` (Breaking)**: the refusals `execute`, `start`, `validate`, `validate_files`, the run reads, the method routes, `publish_method`, `get_method_version`, `parse_method_selector` and the constructor made with a bare `PipelineRequestError`, and those the inherited protocol client makes (nothing to run, a protocol arg in `extra`), now raise `RequestArgumentError`, still a `PipelineRequestError`; the standard client's error is kept as `__cause__`.
+- **`health` raises `ApiResponseError` (Breaking)**: a non-2xx `health` answer raises `ApiResponseError` naming `/health`, with its problem members and verdict, where it raised a bare `PipelineRequestError`, as `@pipelex/sdk`'s `health` does.
+- **`RunStillRunningError` is this SDK's own (Breaking)**: `execute`'s `202` degrade and `download_artifacts` raise `pipelex_sdk.errors.RunStillRunningError`, which subclasses `mthds`'s class of the same name and carries a verdict, where `pipelex_sdk.errors` re-exported `mthds`'s.
+- **An answer the SDK cannot read raises `ApiResponseError` (Breaking)**: a `2xx` whose body is not UTF-8 or not JSON, an empty one where the route answers JSON, or JSON that is not what the route answers, such as a publish result naming no known `outcome`, an `upload` answer with no non-empty `uri` or run results whose artifacts drift from the pinned `mthds`, raises on every route an `ApiResponseError` carrying the `2xx` status, `runtime` and not retryable, with the `json.JSONDecodeError`, `UnicodeDecodeError` or pydantic `ValidationError` as `__cause__`, where those escaped bare; `upload_file` wraps it as an `UploadTransportError` with code `unexpected`, as `@pipelex/sdk` does. Its message names what could not be read in `@pipelex/sdk`'s words, `a body that is not an object` for JSON such as `null` or a list where the route answers an object.
+- **The command names what it could not read**: under an answer the SDK could not read, the `pipelex-sdk` command prints `Error: the API's answer could not be read (status <n>).`, then a `Reason:` line that is the SDK's message, naming the route and what could not be read (`API POST /v1/start answered 202 with a body that is not JSON`), where it printed the first line of the parser's error, so it says what the JavaScript command says.
+
+### Fixed
+
+- **An unknown artifact name is refused**: `get_run_result`, `wait_for_result` and `start_and_wait` raise `RequestArgumentError` before any request for an `artifacts` selection naming something that is no `RunArtifact`, such as a misspelt plain string, where they dropped it and sent a narrower selection or an empty one, as `@pipelex/sdk` refuses it. A bare `str` given as the selection, a single `RunArtifact` included, raises `TypeError` before any request, as `@pipelex/sdk` throws one for a value that is not an array, where its characters were read as names.
+
 ## [v0.35.1] - 2026-10-08
 
 ### Changed
