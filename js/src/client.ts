@@ -1782,7 +1782,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `publishMethod`.
    *
    * Takes a bare catalog id. Throws `ApiResponseError`: `404` `not_found`, `409`
-   * `method_being_deleted`, `403` for a read-only key, `422` for an empty name.
+   * `method_being_deleted`, `403` for a read-only key, `422` for an empty name, and `413`
+   * `payload_too_large` for a name so long it would leave the method too large to publish.
    */
   async renameMethod(methodId: string, input: MethodRenameInput): Promise<MethodData> {
     return this.requestMethodData("PATCH", `methods/${encodeURIComponent(methodId)}`, {
@@ -1807,11 +1808,18 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Takes a bare catalog id. Throws `RequestArgumentError` when `expected_draft_updated_at` is not
    * a string, before any request. Throws `ApiResponseError` when no verdict was produced: `409`
    * `method_update_conflict` for a draft that moved since the token, `409`
-   * `method_being_deleted`, `404` `not_found`, `422` for a draft with no `.mthds` file, `413`,
-   * `403` for a read-only key, and `502` or `503` when the runner cannot be reached for a draft
-   * that differs from the latest version. An answer whose `outcome` is not one of the outcomes above, or
-   * that carries no `method` object, is an answer the SDK cannot read, thrown as an
-   * `ApiResponseError` too.
+   * `method_being_deleted`, `404` `not_found`, `422` for a draft with no `.mthds` file or whose
+   * file names a run could not assemble (one name used by a `.mthds` and a Python file), `413`
+   * `payload_too_large` for a draft too large to publish, and `403` for a read-only key.
+   *
+   * Only a draft that differs from the latest version reaches the runner, and a runner that
+   * cannot be reached, answers unusably or does not finish within the platform's deadline is a
+   * `502` or a `503` with nothing written, so a retry is safe; a runner that refuses the request
+   * itself is relayed under its own status. A retry of a publish that landed while its answer was
+   * lost, as on a client timeout, answers `unchanged` with the version it wrote.
+   *
+   * An answer whose `outcome` is not one of the outcomes above, or that carries no `method`
+   * object, is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async publishMethod(methodId: string, input: MethodPublishInput): Promise<MethodPublishResult> {
     const token: unknown = (input as Partial<MethodPublishInput> | undefined)

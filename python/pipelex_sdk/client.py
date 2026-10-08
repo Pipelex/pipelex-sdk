@@ -1294,7 +1294,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Raises:
             ApiResponseError: `404` `not_found`; `409` `method_being_deleted`; `403` for a read-only
-                key; `422` for an empty name.
+                key; `422` for an empty name; `413` `payload_too_large` for a name so long it would
+                leave the method too large to publish.
         """
         return MethodData.model_validate(await self._request_product("PATCH", f"methods/{quote(method_id, safe='')}", body={"name": name}))
 
@@ -1306,6 +1307,12 @@ class PipelexAPIClient(MthdsAPIClient):
         checks the token, answers `unchanged` without asking the runner when the draft's digest
         equals the latest version's, and otherwise validates the draft and, when it validates and
         runs, writes version N+1. A publish moves no token.
+
+        Only a draft that differs from the latest version reaches the runner, and a runner that cannot
+        be reached, answers unusably or does not finish within the platform's deadline is a `502` or a
+        `503` with nothing written, so a retry is safe; a runner that refuses the request itself is
+        relayed under its own status. A retry of a publish that landed while its answer was lost, as
+        on a client timeout, answers `unchanged` with the version it wrote.
 
         Args:
             method_id: The method's bare catalog id.
@@ -1321,8 +1328,9 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             ApiResponseError: When no verdict was produced: `409` `method_update_conflict` for a draft
                 that moved since the token; `409` `method_being_deleted`; `404` `not_found`; `422`
-                for a draft with no `.mthds` file; `413`; `403` for a read-only key; `502` or `503`
-                when the runner cannot be reached for a draft that differs from the latest version.
+                for a draft with no `.mthds` file or whose file names a run could not assemble (one
+                name used by a `.mthds` and a Python file); `413` `payload_too_large` for a draft too
+                large to publish; `403` for a read-only key; `502` or `503` from the runner, as above.
         """
         body = {"expected_draft_updated_at": expected_draft_updated_at}
         answer = await self._request_product("POST", f"methods/{quote(method_id, safe='')}/publish", body=body)
