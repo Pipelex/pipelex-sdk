@@ -166,7 +166,6 @@ name = "pipelex-method-cli-python"
 version = "0.35.0"
 source = { editable = "." }
 dependencies = [
-    { name = "httpx" },
     { name = "mthds" },
     { name = "pipelex-sdk" },
     { name = "pydantic" },
@@ -177,6 +176,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -185,9 +185,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
     { name = "mthds", specifier = ">=0.19.0" },
-    { name = "pipelex-sdk", specifier = ">=0.31.0" },
+    { name = "pipelex-sdk", specifier = ">=0.35.1" },
     { name = "pydantic", specifier = ">=2.10.6,<3.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "rich", specifier = ">=13.0.0" },
@@ -196,6 +195,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
@@ -204,7 +204,7 @@ dev = [
 
 [[package]]
 name = "pipelex-sdk"
-version = "0.31.0"
+version = "0.35.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -212,9 +212,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/95/36/c2e3d1e4783cc8371cf0ca76357198992100f57d6ff96434dcd28bfd35e4/pipelex_sdk-0.31.0.tar.gz", hash = "sha256:caca6d52b07a4672eb0f75a97f919c864df63a88eaae4ed739c151d95edd5587", size = 368507, upload-time = "2026-10-05T00:18:32.979Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/73/c13bbd619e72cc4da891a6c610c404e5e610613efe6e299bbe85fa43efed/pipelex_sdk-0.35.1.tar.gz", hash = "sha256:7186150818290625dd579bfe04747ca56484d0e68035dcaf2b066348eef2cddf", size = 491058, upload-time = "2026-10-08T13:27:53.237Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/4a/45d96ab1643d1f8c8d7a40dea0e5754fc10915ba2738a3cc4a0d826071a9/pipelex_sdk-0.31.0-py3-none-any.whl", hash = "sha256:d48f24364a9d1123466640a86ce3a7e2800f45a9fa553ae316d7f152ef1b9ad0", size = 138964, upload-time = "2026-10-05T00:18:31.291Z" },
+    { url = "https://files.pythonhosted.org/packages/da/aa/83596cf47a8788e5d56bc4cd1e31fbf633cd29e626f8877e755278d32c61/pipelex_sdk-0.35.1-py3-none-any.whl", hash = "sha256:fea28cc9c32bb3dd7f1e8675124d8cd5a7852b2502b6e57f4c91cc36e2e0d373", size = 199197, upload-time = "2026-10-08T13:27:51.688Z" },
 ]
 
 [[package]]

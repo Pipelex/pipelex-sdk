@@ -51,11 +51,13 @@ from pathlib import Path
 from typing import Any, NamedTuple, cast
 
 from dotenv import load_dotenv
+from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.input_form import BooleanField, DocumentField, EnumField, FieldKind, InputFormField, NumberField
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.codegen_writer import write_codegen_tree
 from pipelex_sdk.crate_models import CodegenValidReport
 from pipelex_sdk.errors import CodegenError
+from pipelex_sdk.method_selector import parse_method_selector
 from pipelex_sdk.validation_models import VALIDATION_VIEW_INPUT_FORM, PipelexValidationReport
 
 from scripts.codegen import METHODS_DIR, REPO_ROOT, MethodSource, explain, generated_package_dir, insecure_base_url_reason
@@ -120,13 +122,18 @@ LIFECYCLE_COMMANDS = frozenset({"wait", "status", "result"})
 IMPORT_ANCHOR = "# add-method:imports"
 COMMAND_ANCHOR = "# add-method:commands"
 
-#: A catalog id, and the address form of a published method — with or without an `https://` prefix,
-#: with or without a package segment, with or without a tag. Anything else is refused naming both.
-#: A catalog id may end in a version suffix, kept in the manifest: a bare id runs the method's latest
-#: published version, `mt_…@3` its version 3 for good, and `mt_…@draft` its draft. The suffix is a
-#: positive number without a leading zero, or `draft` in lower case.
-CATALOG_ID_PATTERN = re.compile(r"^mt_[A-Za-z0-9_-]+(?:@(?:[1-9][0-9]*|draft))?$")
+#: The address form of a published method — with or without an `https://` prefix, with or without a
+#: package segment, with or without a tag. A catalog id is read by the SDK's `parse_method_selector`, and
+#: anything that is neither is refused naming both.
 ADDRESS_PATTERN = re.compile(r"^(?:https?://)?(?P<address>github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?(?:@[A-Za-z0-9._-]+)?)$")
+
+#: The two forms `parse_selector` reads, as its refusals name them.
+SELECTOR_FORMS = (
+    "    A catalog id looks like `mt_abc123` (a method saved on app.pipelex.com), `mt_abc123@3` for its version 3\n"
+    "    or `mt_abc123@draft` for its draft.\n"
+    "    An address looks like `github.com/owner/repo/package@v1.0.0`.\n"
+    "    A bundle you have on disk is not scaffolded: put it in widget/methods/<name>/ and run `make codegen`."
+)
 
 #: A slug has to be a directory name, a command name and the stem of a Python package at once.
 SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -249,18 +256,19 @@ def parse_selector(raw: str) -> MethodSelector:
         Refusal: The value is neither form.
     """
     candidate = raw.strip()
-    if CATALOG_ID_PATTERN.match(candidate):
+    if candidate.startswith("mt_"):
+        # The SDK's parser holds the platform's grammar. A catalog id may end in a version suffix, kept in the
+        # manifest: a bare id runs the method's latest published version, `mt_…@3` its version 3 for good, and
+        # `mt_…@draft` its draft.
+        try:
+            parse_method_selector(candidate)
+        except PipelineRequestError as exc:
+            raise Refusal(f"{exc}\n{SELECTOR_FORMS}") from exc
         return MethodSelector(method_id=candidate)
     address_match = ADDRESS_PATTERN.match(candidate)
     if address_match is not None:
         return MethodSelector(method_ref=address_match.group("address"))
-    msg = (
-        f"{raw!r} is neither a catalog id nor a published address.\n"
-        "    A catalog id looks like `mt_abc123` (a method saved on app.pipelex.com), `mt_abc123@3` for its version 3\n"
-        "    or `mt_abc123@draft` for its draft.\n"
-        "    An address looks like `github.com/owner/repo/package@v1.0.0`.\n"
-        "    A bundle you have on disk is not scaffolded: put it in widget/methods/<name>/ and run `make codegen`."
-    )
+    msg = f"{raw!r} is neither a catalog id nor a published address.\n{SELECTOR_FORMS}"
     raise Refusal(msg)
 
 

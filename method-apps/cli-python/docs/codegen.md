@@ -57,7 +57,7 @@ Each of these replaced a way the gates could be silently wrong, and each has its
 - **A lock under another name is refused**, since the offline check opens `codegen.lock` by name and would keep validating the old one.
 - **The self-check runs before anything is written**, as step 3 says.
 - **The models and the contracts describe one revision**, as step 5 says, or nothing is written.
-- **A failed request is caught by what it can raise**, and nothing else: the SDK's request errors, a transport error the SDK leaves unmapped, and a body that is not the answer. Anything else is a bug, which surfaces with its traceback rather than as a refusal.
+- **A failed request is caught by what it can raise**, and nothing else: the SDK's request errors, which cover a refusal and an API that gave no answer alike, and a body that is not the answer. Anything else is a bug, which surfaces with its traceback rather than as a refusal.
 
 ## Two staleness gates
 

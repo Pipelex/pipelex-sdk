@@ -42,10 +42,10 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Protocol, cast
 
-import httpx
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.pipe_io_contracts import PipeIOContract, PipeIOContracts
 from pipelex_sdk.crate_models import CodegenValidReport, MthdsFileItem, PipeIOValidReport
+from pipelex_sdk.method_selector import parse_method_selector
 from pipelex_sdk.product_models import MethodData
 from pydantic import BaseModel
 
@@ -85,18 +85,6 @@ class CreateClient(CodegenClient, Protocol):
 
 
 # ── The argument ────────────────────────────────────────────────────────────
-
-#: A catalog id before any version suffix: `mt_` and the characters the platform's run routes accept, the
-#: grammar of the SDK's `parse_method_selector`. No catalog id holds a dot, so `mt_review.mthds` is a path.
-METHOD_ID_PATTERN = re.compile(r"mt_[A-Za-z0-9_-]+")
-
-#: A catalog id's version suffix: a positive number without a leading zero, or `draft` in lower case.
-#: A bare id runs the method's latest published version, `mt_…@3` its version 3 for good, and
-#: `mt_…@draft` its draft.
-METHOD_VERSION_SUFFIX = re.compile(r"[1-9][0-9]*|draft")
-
-#: What a catalog id may end in, as the refusal of a malformed suffix names it.
-METHOD_VERSION_FORMS = "@<version>, a positive number without a leading zero, in @draft, or in nothing"
 
 #: One segment of an address: the host, the owner, the repository, or a package's subpath segment.
 ADDRESS_SEGMENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
@@ -152,13 +140,13 @@ def parse_method_arg(arg: str, on_disk: Callable[[str], bool]) -> BundlePath | M
     if on_disk(trimmed):
         return BundlePath(trimmed)
     if trimmed.startswith("mt_"):
-        method_id, *suffixes = trimmed.split("@")
-        if METHOD_ID_PATTERN.fullmatch(method_id) is None:
-            msg = f'"{trimmed}" is not a well-formed catalog id (mt_…).'
-            raise PlanError(msg)
-        if len(suffixes) > 1 or (suffixes and METHOD_VERSION_SUFFIX.fullmatch(suffixes[0]) is None):
-            msg = f'"{trimmed}" names no version: a catalog id ends in {METHOD_VERSION_FORMS}.'
-            raise PlanError(msg)
+        # The SDK's parser holds the platform's grammar: `mt_` and the characters the run routes accept, then
+        # nothing, `@<version>` (a positive number without a leading zero) or `@draft`. No catalog id holds a
+        # dot, so `mt_review.mthds` is refused here unless it exists on disk as a path.
+        try:
+            parse_method_selector(trimmed)
+        except PipelineRequestError as exc:
+            raise PlanError(str(exc)) from exc
         # The suffix is kept: the manifest, the codegen and every run name the version the CLI was made from.
         return MethodSelector(method_id=trimmed)
     has_scheme = re.match(r"https?://", trimmed) is not None
@@ -886,15 +874,6 @@ async def plan_method(args: MethodArgs, client: CreateClient, *, layout: Layout,
     )
 
 
-def bare_method_id(method_id: str) -> str:
-    """A catalog id without its version suffix.
-
-    The method routes, `get_method` among them, address the method itself and take the bare id; the
-    name belongs to the method, whichever version the CLI runs.
-    """
-    return method_id.split("@", 1)[0]
-
-
 async def _catalog_entry(client: CreateClient, source: CodegenSource, method_id: str) -> CatalogEntry:
     """A stored method's name: a person chose it, so it names the project unless overridden.
 
@@ -902,8 +881,9 @@ async def _catalog_entry(client: CreateClient, source: CodegenSource, method_id:
         PlanError: The catalog does not answer for the method.
     """
     try:
-        method = await client.get_method(bare_method_id(method_id))
-    except (PipelineRequestError, httpx.HTTPError, ValueError) as exc:
+        # The method routes take the bare id: the name belongs to the method, whichever version the CLI runs.
+        method = await client.get_method(parse_method_selector(method_id).method_id)
+    except (PipelineRequestError, ValueError) as exc:
         raise PlanError(explain(exc, client.base_url, "GET /v1/methods/{id}", source)) from exc
     return CatalogEntry(name=method.name)
 

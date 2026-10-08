@@ -6,9 +6,9 @@ package's `_run()` wrapper (`widget/blocking/cli.py`, `widget/attended/cli.py`,
 the `pipelex-sdk` client raises) exactly once, turns it into an `ErrorPresentation` here —
 a message, the lines that explain it, and a hint — prints it with `print_error`, and
 exits non-zero. Unexpected exceptions are deliberately NOT caught anywhere: they crash
-loudly with a full traceback, and so, for now, does a connection that fails on `execute`
-or `start`, which the SDK passes through as httpx's own transport error rather than as
-`ApiUnreachableError`.
+loudly with a full traceback. A connection that fails, on `execute` and `start` as on every
+other route, is not one of them: the SDK raises it as `ApiUnreachableError`, presented here
+with the `PIPELEX_BASE_URL` hint.
 
 A run that ended without a result is presented from the error report the runner stored
 when it failed, which the SDK hands back typed as `RunErrorReport`: `report_lines` reads
