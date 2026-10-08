@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 import pytest
 from mthds.protocol.exceptions import PipelineRequestError
-from pytest_mock import MockerFixture
+from pytest_mock import MockerFixture, MockType
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import (
@@ -752,3 +752,51 @@ class TestClientLifecycle:
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(client.wait_for_result("run_1"))
+
+    def test_wait_for_result_honours_a_cancellation_in_the_step_its_poll_answers(self, mocker: MockerFixture) -> None:
+        """A cancellation arriving in the same loop step as a poll's answer stops the wait after that one poll.
+
+        `asyncio.wait_for` on Python 3.11 returned the finished poll instead of raising here, so the loop
+        polled on until its timeout; `asyncio.timeout` delivers the cancellation on every supported version.
+        """
+        client = self._client()
+        options = WaitForResultOptions(interval_seconds=0.02, timeout_seconds=1.0)
+
+        async def _scenario() -> MockType:
+            first_answer: asyncio.Future[RunResultRunning] = asyncio.get_running_loop().create_future()
+            first_poll_sent = asyncio.Event()
+
+            async def _poll(run_id: str, **_options: object) -> RunResultRunning:
+                if not first_poll_sent.is_set():
+                    first_poll_sent.set()
+                    return await first_answer
+                return RunResultRunning(pipeline_run_id=run_id, retry_after_seconds=0)
+
+            poll_mock = mocker.patch.object(client, "get_run_result", mocker.AsyncMock(side_effect=_poll))
+            waiting = asyncio.create_task(client.wait_for_result("run_1", options))
+            await first_poll_sent.wait()
+            # Release the poll's answer and cancel the waiting task in one synchronous step.
+            first_answer.set_result(RunResultRunning(pipeline_run_id="run_1", retry_after_seconds=0))
+            waiting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiting
+            return poll_mock
+
+        poll_mock = asyncio.run(_scenario())
+        assert poll_mock.await_count == 1
+
+    def test_wait_for_result_times_out_on_a_poll_that_outlasts_the_budget(self, mocker: MockerFixture) -> None:
+        """A poll still unanswered when the budget runs out ends the wait with RunTimeoutError, not asyncio's TimeoutError."""
+        client = self._client()
+
+        async def _never_answers(run_id: str, **_options: object) -> RunResultRunning:
+            await asyncio.Event().wait()
+            return RunResultRunning(pipeline_run_id=run_id)
+
+        mocker.patch.object(client, "get_run_result", mocker.AsyncMock(side_effect=_never_answers))
+
+        with pytest.raises(RunTimeoutError) as exc_info:
+            asyncio.run(client.wait_for_result("run_1", WaitForResultOptions(timeout_seconds=0.05)))
+        assert exc_info.value.run_id == "run_1"
+        assert exc_info.value.timeout_seconds == 0.05
+        assert isinstance(exc_info.value.__cause__, TimeoutError)
