@@ -2380,9 +2380,10 @@ const GATEWAY_TIMEOUT_THRESHOLD_MS = 28_000;
  * saying the request was not handled, and any other unreachable host is never the gateway's
  * cut-off, however long it took. The fetch API cannot say whether `ABORT_TIMEOUT` ran out before
  * the connection was made, so it is read as the gateway's; with Node's own dispatcher it never
- * does, since a connection that does not come fails first by the system's or undici's own connect
- * limit, each shorter than any time limit this SDK sets. The Python SDK's `is_gateway_cut_off`
- * reads the same failures, its `ABORT_TIMEOUT` being httpx's read or write timeout.
+ * does past the threshold, since undici gives up a connection that does not come after ten
+ * seconds (`UND_ERR_CONNECT_TIMEOUT`), the TLS handshake included. The Python SDK's
+ * `is_gateway_cut_off` reads the same failures, its `ABORT_TIMEOUT` being httpx's read or write
+ * timeout.
  *
  * The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. A caller timing
  * a request that may create a run, such as `start` from `startAndWaitForResult`'s `onStarting`,
