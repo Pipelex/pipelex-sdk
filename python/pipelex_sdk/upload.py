@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import mimetypes
 from pathlib import Path
 from typing import Protocol
@@ -63,11 +64,16 @@ def _guess_content_type(filename: str) -> str:
 
 
 def _read_path(path: Path) -> bytes:
-    """Read a filesystem path into bytes, mapping read failures to `InvalidLocalSourceError`."""
+    """Read a filesystem path into bytes, mapping read failures to `InvalidLocalSourceError`.
+
+    The message names the system's error code (`ENOENT`, `EACCES`, …), the one `@pipelex/sdk`'s
+    `uploadFile` names, so the refusal reads the same from either SDK.
+    """
     try:
         return path.read_bytes()
     except OSError as exc:
-        msg = f'Local file cannot be read: "{path}" ({type(exc).__name__}).'
+        code = errno.errorcode.get(exc.errno, "read error") if exc.errno is not None else "read error"
+        msg = f'Local file cannot be read: "{path}" ({code}).'
         raise InvalidLocalSourceError(msg, source=str(path)) from exc
 
 

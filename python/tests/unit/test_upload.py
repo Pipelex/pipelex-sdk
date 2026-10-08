@@ -93,8 +93,11 @@ class TestUploadFile:
     def test_missing_path_raises_invalid_local_source(self, tmp_path: Path) -> None:
         client = _FakeUploadClient()
         missing = tmp_path / "nope.png"
-        with pytest.raises(InvalidLocalSourceError):
+        with pytest.raises(InvalidLocalSourceError) as exc_info:
             asyncio.run(upload_file(client, missing))
+        # The system's error code, as `@pipelex/sdk` names it.
+        assert str(exc_info.value) == f'Local file cannot be read: "{missing}" (ENOENT).'
+        assert exc_info.value.source == str(missing)
 
     def test_413_maps_to_rejected_asset(self) -> None:
         client = _FakeUploadClient(error=_api_error(413, "too big"))

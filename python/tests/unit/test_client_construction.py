@@ -76,6 +76,39 @@ class TestClientConstruction:
         with pytest.raises(PipelineRequestError):
             PipelexAPIClient(base_url=bad_url)
 
+    # The rule refuses exactly the parts of a URL a secret travels in, so its refusal must not carry
+    # them: the message reaches logs, and a page that relays an error's message. The shown forms are
+    # `@pipelex/sdk`'s, word for word (`js/tests/client.test.ts`), so a refusal reads the same from
+    # either SDK and the `pipelex-sdk` command's case table holds both.
+    @pytest.mark.parametrize(
+        ("base_url", "shown", "secrets"),
+        [
+            ("https://user:s3cret-pass@api.example.com", '"https://api.example.com" with credentials (not shown)', ["user", "s3cret-pass"]),
+            ("https://proxy.example.com?token=abc123", '"https://proxy.example.com" with a query (not shown)', ["token", "abc123"]),
+            (
+                "https://api.example.com:8443/k3y/v1?sig=zzz#an-anchor",
+                '"https://api.example.com:8443" with a path, a query and a fragment (not shown)',
+                ["k3y", "sig", "zzz", "an-anchor"],
+            ),
+            ("http://admin:hunter2@localhost:8081/v1", '"http://localhost:8081" with credentials and a path (not shown)', ["admin", "hunter2"]),
+            ("https://API.Example.com:443/v1", '"https://api.example.com" with a path (not shown)', []),
+            ("http://[::1]:8081/v1", '"http://[::1]:8081" with a path (not shown)', []),
+            ("user:hunter2@api.example.com", "(not shown: it is not an http or https URL)", ["user", "hunter2", "api.example.com"]),
+            ("not a url hunter2", "(not shown: it is not an absolute URL)", ["hunter2"]),
+            ("", "(not shown: it is not an absolute URL)", []),
+        ],
+    )
+    def test_refuses_a_base_url_without_echoing_it(self, base_url: str, shown: str, secrets: list[str]) -> None:
+        with pytest.raises(PipelineRequestError) as raised:
+            PipelexAPIClient(base_url=base_url)
+        message = str(raised.value)
+        assert message == (
+            f"Invalid API base URL {shown}: it must be host-only (http/https, no path, query, fragment, or credentials). "
+            "Endpoints compose as {base}/v1/{endpoint}."
+        )
+        for secret in secrets:
+            assert secret not in message
+
     def test_set_but_empty_base_url_env_raises(self, mocker: MockerFixture) -> None:
         """A set-but-empty `PIPELEX_BASE_URL` (e.g. an unfilled CI secret) must fail fast
         instead of silently targeting the hosted default with whatever API key is configured.

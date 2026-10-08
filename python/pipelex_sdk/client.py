@@ -23,7 +23,7 @@ import asyncio
 import os
 from time import monotonic
 from typing import TYPE_CHECKING, Any, NoReturn, cast
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse, urlsplit
 
 import httpx
 from mthds.protocol.exceptions import PipelineRequestError
@@ -297,10 +297,12 @@ class PipelexAPIClient(MthdsAPIClient):
         # The base URL must be host-only: a path-prefixed value (e.g. `.../v1`) would
         # compose as `/v1/v1/...` and fail with a misleading endpoint error instead of a
         # clear base-URL one. Trailing slashes are stripped first; any remaining
-        # path/query/fragment/credentials is rejected.
+        # path/query/fragment/credentials is rejected. The refusal never quotes the value whole:
+        # what the rule refuses is where a secret travels (a password, a token in a query), so it
+        # names those parts without their text, word for word as `@pipelex/sdk` does.
         if not _is_valid_base_url(normalized_base_url):
             msg = (
-                f'Invalid API base URL "{normalized_base_url}": must be host-only '
+                f"Invalid API base URL {_describe_refused_base_url(normalized_base_url)}: it must be host-only "
                 "(http/https, no path, query, fragment, or credentials). "
                 "Endpoints compose as {base}/v1/{endpoint}."
             )
@@ -1789,6 +1791,53 @@ def _is_valid_base_url(value: str) -> bool:
     if parsed.username or parsed.password:
         return False
     return not parsed.query and not parsed.fragment
+
+
+# The default port of each scheme a base URL may carry, which a URL shown in a refusal leaves out,
+# as the WHATWG URL parser `@pipelex/sdk` reads the value with does.
+_DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}
+
+
+def _describe_refused_base_url(value: str) -> str:
+    """A refused base URL as its refusal may show it: the scheme and the host, then the names of the
+    parts beyond them that the URL carried, never their text.
+
+    Credentials, a query and a path are exactly where a secret travels in a URL, and the refusal
+    reaches logs and, through an app that relays an error's message, a browser. A value that is not
+    an http or https URL is not shown at all, since nothing says which of its characters are a
+    secret: `localhost:8081`, with no scheme, parses as a URL whose scheme is `localhost`. The
+    wording is `@pipelex/sdk`'s `describeRefusedBaseUrl`, word for word, so a refusal reads the same
+    from either SDK.
+    """
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "(not shown: it is not an absolute URL)"
+    if not parsed.scheme:
+        return "(not shown: it is not an absolute URL)"
+    if parsed.scheme not in _DEFAULT_PORTS:
+        return "(not shown: it is not an http or https URL)"
+    if not hostname:
+        return "(not shown: it is not an absolute URL)"
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None and port != _DEFAULT_PORTS[parsed.scheme]:
+        host = f"{host}:{port}"
+    parts: list[str] = []
+    if parsed.username or parsed.password:
+        parts.append("credentials")
+    if parsed.path not in {"", "/"}:
+        parts.append("a path")
+    if parsed.query:
+        parts.append("a query")
+    if parsed.fragment:
+        parts.append("a fragment")
+    shown = f'"{parsed.scheme}://{host}"'
+    if not parts:
+        return shown
+    named = parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
+    return f"{shown} with {named} (not shown)"
 
 
 def _origin_of(base_url: str) -> str:
