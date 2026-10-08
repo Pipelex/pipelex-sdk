@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`checkModelReference`**: `client.checkModelReference(reference, category?)` asks the runner whether one model reference resolves, as what kind and to which model (`GET /v1/models/check`, served by `pipelex-api` from pipelex 0.78.0 and on the hosted API), and returns the typed `ModelReferenceVerdict`, whose `kind` narrows its `matches`; a reference that resolves nowhere is a `not_found` verdict carrying the names the caller may have meant, and one the runner cannot read is an `ApiResponseError` whose `errorType` is `InvalidModelReference` or `InvalidModelCategory`. `docs/architecture.md` describes it.
+
 ## [v0.34.0] - 2026-10-08
 
 ### Highlights
