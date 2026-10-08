@@ -1,8 +1,9 @@
 """The `User-Agent` this SDK sends on every request to the Pipelex API.
 
-The header follows the workspace spec `docs/specs/client-identification.md`: product tokens,
-outermost first — the integrator's `app_info`, then this SDK, then the `mthds` library whose
-transport it inherits, then the Python runtime and its `(<os>; <arch>)` comment:
+The header follows the spec `conformance/specs/client-identification.md`, in the `conformance`
+repository beside the specs' tests: product tokens, outermost first — the integrator's `app_info`,
+then this SDK, then the `mthds` library whose transport it inherits, then the Python runtime and
+its `(<os>; <arch>)` comment:
 
     acme-invoicer/1.4.0 pipelex-sdk-python/0.11.0 mthds-python/0.15.0 python/3.12.4 (linux; x86_64)
 

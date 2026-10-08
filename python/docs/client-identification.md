@@ -1,6 +1,6 @@
 # Client identification (`User-Agent`)
 
-Every request this SDK sends to the Pipelex API carries a `User-Agent` header that says which program made it. The platform reads that header to tell a run started from an SDK script apart from one started by the web app, the MCP server, the CLI or a hand-written `curl`, and records the result in product analytics and its access log. The convention is shared by every first-party client and is fixed by the workspace spec `docs/specs/client-identification.md`; this page describes how this SDK follows it.
+Every request this SDK sends to the Pipelex API carries a `User-Agent` header that says which program made it. The platform reads that header to tell a run started from an SDK script apart from one started by the web app, the MCP server, the CLI or a hand-written `curl`, and records the result in product analytics and its access log. The convention is shared by every first-party client and is fixed by the spec `conformance/specs/client-identification.md`, in the `conformance` repository, where the cross-repo specs sit beside the tests that verify them; this page describes how this SDK follows it.
 
 ## What the header contains
 

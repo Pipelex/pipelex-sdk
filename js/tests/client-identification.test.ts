@@ -1,6 +1,6 @@
 /**
- * The `User-Agent` the client sends, per the workspace spec
- * `docs/specs/client-identification.md`: on every request to the API (both fetch
+ * The `User-Agent` the client sends, per the spec `conformance/specs/client-identification.md`
+ * in the `conformance` repository: on every request to the API (both fetch
  * helpers), with `appInfo` in front, absent in a browser, and never on the
  * third-party fetch of a presigned object-store link.
  */
