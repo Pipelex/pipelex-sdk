@@ -201,20 +201,28 @@ export interface PipelexApiRunExtensions {
  */
 export interface PipelexHostedRunExtensions {
   /**
-   * A stored method's catalog id (`mt_…`) — a **pass-through to the hosted
-   * API**, resolved server-side against the org's catalog. Nothing is expanded
-   * client-side, and it is meaningless off-platform: an open-source runner has
-   * no catalog, so it answers a `422` naming the key.
+   * A stored method's catalog id (`mt_…`), optionally naming a version — a
+   * **pass-through to the hosted API**, resolved server-side against the org's
+   * catalog. Nothing is expanded client-side, and it is meaningless off-platform:
+   * an open-source runner has no catalog, so it answers a `422` naming the key.
    *
    * Its meaning depends on what else the request carries:
    *
-   * - **Alone** — the platform resolves the stored method's source (assembling
-   *   its bundle when the method carries Python) and runs that.
+   * - **Alone** — the platform resolves the version the id names and runs its
+   *   files, with the method's Python files beside them. A bare `mt_…` runs the
+   *   latest published version, a `409` `method_not_published` for a method never
+   *   published; `mt_…@<n>` runs version `n`, a `404` `method_version_not_found`
+   *   for a version never published; `mt_…@draft` runs the draft. The suffix
+   *   rides the string untouched, any other suffix is a `422`, and the answer's
+   *   `method_version` says which version runs.
    * - **Alongside an inline source** (`mthds_contents` / `files` / `bundle_b64`)
    *   — the inline source is what RUNS (precedence), and the id is recorded as
    *   **run-history linkage** on the Run row. That linkage is what writes the
    *   index key `GET /v1/runs?method_id=` queries, so a run started without it
-   *   is absent from its method's history permanently.
+   *   is absent from its method's history permanently. The id must be bare
+   *   there: the inline source is what runs, so a suffix would claim a version
+   *   that did not, and a suffixed id is rejected client-side (a `422` on the
+   *   hosted API).
    * - **Alongside `method_ref`** — rejected client-side (and a 422 on the
    *   hosted API): an address run carries its own provenance, so it takes no
    *   linkage id.
@@ -910,6 +918,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     assertRunSourcesExclusive(options);
     assertMethodRefPairsWithNothing(options);
+    assertLinkageMethodIdIsBare(options);
 
     const request: RunRequest & Record<string, unknown> = {
       pipe_code: options.pipe_code,
@@ -984,6 +993,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     assertRunSourcesExclusive(options);
     assertMethodRefPairsWithNothing(options);
+    assertLinkageMethodIdIsBare(options);
 
     // `?? undefined` so JSON.stringify drops absent fields from the wire body.
     const request: StartRequest & Record<string, unknown> = {
@@ -1050,13 +1060,17 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *   `method_ref` run, the package's real file names feeding the diagnostics'
    *   source labels;
    * - **`{ method_id }`** — a stored method's catalog id, hosted-only: the
-   *   platform resolves it and injects the stored source before the runner sees
-   *   the request (a bare runner rejects the request as carrying no source it
-   *   understands).
+   *   platform resolves the version it names and injects that version's `.mthds`
+   *   files before the runner sees the request (a bare runner rejects the request
+   *   as carrying no source it understands). A bare `mt_…` validates the latest
+   *   published version, `mt_…@<n>` version `n` and `mt_…@draft` the draft.
    *
    * A selector-resolution failure (fetch failure, no package at the address, an
-   * unknown or foreign-org id) is a non-2xx `ApiResponseError` — never an
-   * `is_valid: false` verdict, which is reserved for actual MTHDS content.
+   * unknown or foreign-org id, a bare id of a method never published, `409`
+   * `method_not_published`, a version never published, `404`
+   * `method_version_not_found`, or a malformed suffix, `422`) is a non-2xx
+   * `ApiResponseError` — never an `is_valid: false` verdict, which is reserved
+   * for actual MTHDS content.
    *
    * `mthdsSources` (optional, parallel to inline contents) names each submitted
    * content — a Pipelex-API extension threaded onto `blueprint.source`, so
@@ -1815,6 +1829,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Create a method — `POST /v1/methods`. The new method holds the input as its draft and has
    * no published version, so its bare id answers `409 method_not_published` on the run and
    * tooling routes until its first `publishMethod`; its draft runs as `mt_…@draft` at once.
+   *
+   * Throws `ApiResponseError`: `413` `payload_too_large` for a method that would leave no room
+   * for a publish, measured as a draft write is, and `422` `validation_failed` for Python files
+   * no run could import or for text holding a lone surrogate.
    */
   async createMethod(input: MethodWriteInput): Promise<MethodData> {
     return this.requestMethodData("POST", "methods", withWirePython(input));
@@ -1833,8 +1851,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *
    * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`
    * for an unknown or foreign-org method, `409` `method_being_deleted` while its erasure runs,
-   * `413` `payload_too_large` for a draft over the store's item limit, `403` for a read-only
-   * key.
+   * `413` `payload_too_large` for a draft that would grow the method past the room a publish
+   * needs, which keeps a draft that saves publishable, `422` `validation_failed` for Python
+   * files no run could import or for text holding a lone surrogate, `403` for a read-only key,
+   * and a `503` that wrote nothing, safe to retry, when the method kept changing under the
+   * write.
    */
   async writeDraft(methodId: string, input: MethodDraftInput): Promise<MethodData> {
     return this.requestMethodData("PUT", `${methodPath(methodId)}/draft`, withWirePython(input));
@@ -1847,8 +1868,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `publishMethod`.
    *
    * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`,
-   * `409` `method_being_deleted`, `403` for a read-only key, `422` for an empty name, and `413`
-   * `payload_too_large` for a name so long it would leave the method too large to publish.
+   * `409` `method_being_deleted`, `403` for a read-only key, `422` for an empty name or one
+   * holding a lone surrogate, `413` `payload_too_large` for a name so long it would leave the
+   * method too large to publish, and a `503` that wrote nothing, safe to retry, when draft
+   * writes kept landing under the rename.
    */
   async renameMethod(methodId: string, input: MethodRenameInput): Promise<MethodData> {
     return this.requestMethodData("PATCH", methodPath(methodId), {
@@ -1937,8 +1960,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * never published answers an empty page.
    *
    * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`
-   * for an unknown method, `409` `method_being_deleted`, `400` for a cursor from another method.
-   * A page whose `items` is not an array or whose `next_cursor` is neither a string nor `null`
+   * for an unknown method, `409` `method_being_deleted`, `400` `malformed_request` for a cursor
+   * the listing did not issue for this method, `422` for a `limit` outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a string nor `null`
    * is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async listMethodVersions(
@@ -2576,7 +2599,8 @@ function assertRunSourcesExclusive(options: RunRequest): void {
  *
  * The one documented run-route exception is deliberately NOT here: inline
  * source + `method_id` stays legal (the inline source runs; the id demotes to
- * run-history linkage). `pipe_code` beside a `method_ref` is legal too — it
+ * run-history linkage), its one condition, a bare id, held by
+ * `assertLinkageMethodIdIsBare` below. `pipe_code` beside a `method_ref` is legal too — it
  * overrides the manifest's `main_pipe`. The wording of the first two errors
  * mirrors the server's validator; presence semantics match it as well
  * (`mthds_contents` counts when non-empty, a bundle encoding counts when the
@@ -2602,6 +2626,35 @@ function assertMethodRefPairsWithNothing(
         "and takes no run-history linkage id. Send exactly one method selector.",
     );
   }
+}
+
+/**
+ * Enforce the run routes' linkage clause, mirroring the platform's own `422` so a
+ * suffixed linkage id fails before anything hits the wire. Beside an inline source
+ * (`mthds_contents`, `files` or `bundle_b64`) the `method_id` is run-history linkage
+ * and must be a bare catalog id: the inline source is what runs, so a version suffix
+ * (`mt_…@3`, `mt_…@draft`) would claim a version that did not. A `method_id` alone
+ * keeps its suffix, which names the version to run.
+ *
+ * Presence semantics match `assertMethodRefPairsWithNothing`: `mthds_contents`
+ * counts when non-empty, a bundle encoding when the key is present, the id when
+ * non-empty. Only the suffix is checked, by its `@`, since the catalog id's alphabet
+ * has none: the id itself stays a pass-through the platform resolves.
+ */
+function assertLinkageMethodIdIsBare(options: PipelexHostedRunExtensions & RunRequest): void {
+  const methodId = nonEmptyString(options.method_id);
+  if (methodId === undefined || !methodId.includes("@")) return;
+  const hasInlineSource =
+    (options.mthds_contents != null && options.mthds_contents.length > 0) ||
+    options.files != null ||
+    options.bundle_b64 != null;
+  if (!hasInlineSource) return;
+  throw new RequestArgumentError(
+    `method_id "${methodId}" beside an inline source is run-history linkage and must be a bare ` +
+      "catalog id: the inline source is what runs, so a version suffix would claim a version " +
+      "that did not. Send the bare id (parseMethodSelector(...).method_id), or drop the inline " +
+      "source to run the version the selector names.",
+  );
 }
 
 /**

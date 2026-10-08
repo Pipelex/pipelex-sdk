@@ -115,7 +115,7 @@ Exactly one per call. The type pins the other two to `never`, so a second select
 | --- | --- | --- |
 | `files` | the inline MTHDS closure (`{content, source?}` entries) | nobody — inline |
 | `method_ref` | a published method's address, `github.com/<owner>/<repo>[/<selector>][@<tag>]` | the runner, server-side (pipelex-api >= 0.21.0 fetches the repository at the tag) |
-| `method_id` | a stored method's catalog id (`mt_…`) | the hosted platform, which injects the stored source before the runner sees the request |
+| `method_id` | a stored method's catalog id (`mt_…`, `mt_…@<n>` or `mt_…@draft`) | the hosted platform, which injects the `.mthds` files of the version it names before the runner sees the request |
 
 Nothing is expanded client-side: `method_id` here is a **pass-through**, the same rule every other id-taking operation follows. `getMethodClosure` stays available for callers that want the files in hand, but it is no longer a step on the way to preparing inputs.
 

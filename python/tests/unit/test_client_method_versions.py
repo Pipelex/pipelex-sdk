@@ -418,6 +418,50 @@ class TestClientMethodVersions:
         )
         send.assert_not_called()
 
+    # ----- the run routes' linkage form takes a bare id ----------------------------------------
+
+    @pytest.mark.parametrize("selector", ["mt_receipts01@3", "mt_receipts01@draft"])
+    @pytest.mark.parametrize("route", ["start", "execute"])
+    def test_a_suffixed_id_beside_an_inline_source_is_refused_before_any_request(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, route: str, selector: str
+    ) -> None:
+        """Beside an inline source the id is linkage, and a suffix would claim a version that did not run."""
+        send = patch_send(api_client, wire_response(202, json_body={}))
+        run = api_client.start if route == "start" else api_client.execute
+
+        with pytest.raises(PipelineRequestError) as exc_info:
+            asyncio.run(run(mthds_contents=['domain = "receipts"'], method_id=selector))
+
+        assert str(exc_info.value) == (
+            f'method_id "{selector}" beside an inline source is run-history linkage and must be a bare catalog id: the '
+            "inline source is what runs, so a version suffix would claim a version that did not. Send the bare id "
+            "(parse_method_selector(...).method_id), or drop the inline source to run the version the selector names."
+        )
+        send.assert_not_called()
+
+    def test_a_suffixed_id_beside_empty_inline_contents_is_sent(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        """Empty `mthds_contents` carry no source to link, so the id is the run source and keeps its suffix."""
+        ack = {"pipeline_run_id": "run_1", "state": "RUNNING", "created_at": "2026-10-08T00:00:00Z", "method_version": 3}
+        send = patch_send(api_client, wire_response(202, json_body=ack))
+
+        asyncio.run(api_client.start(mthds_contents=[], method_id="mt_receipts01@3"))
+
+        assert _sent_body(send)["method_id"] == "mt_receipts01@3"
+
+    def test_a_bare_id_beside_an_inline_source_is_sent_as_linkage(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        ack = {"pipeline_run_id": "run_1", "state": "RUNNING", "created_at": "2026-10-08T00:00:00Z"}
+        send = patch_send(api_client, wire_response(202, json_body=ack))
+
+        asyncio.run(api_client.start(mthds_contents=['domain = "receipts"'], method_id="mt_receipts01"))
+
+        body = _sent_body(send)
+        assert body["method_id"] == "mt_receipts01"
+        assert body["mthds_contents"] == ['domain = "receipts"']
+
     # ----- the error codes ---------------------------------------------------------------------
 
     def test_the_method_error_codes_are_the_platform_wire_strings(self) -> None:
