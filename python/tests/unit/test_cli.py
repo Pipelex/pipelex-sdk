@@ -18,10 +18,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import errno
-import itertools
 import json
 import os
 import signal
+import socket
+import ssl
 import threading
 import time
 from dataclasses import dataclass
@@ -35,12 +36,15 @@ import pytest
 
 from pipelex_sdk.command.io import CommandIO
 from pipelex_sdk.command.main import run_command
+from pipelex_sdk.command.script import _write_script
 from pipelex_sdk.version import __version__
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from pytest_mock import MockerFixture
+
+    from pipelex_sdk.command.io import Progress
 
 # ── The table's shape ─────────────────────────────────────────────────────────────────────────────
 
@@ -60,11 +64,11 @@ _BASE_ORIGIN = f"{_BASE_URL.scheme}://{_BASE_URL.netloc.decode('ascii')}"
 
 # Every field this suite knows how to run. Anything else in the table is a case it cannot run.
 _TABLE_FIELDS = ["about", "base_url", "env", "placeholders", "answers", "cases"]
-_CASE_FIELDS = ["name", "summary", "argv", "env", "files", "stdin", "routes", "interrupt", "expect"]
+_CASE_FIELDS = ["name", "summary", "argv", "env", "files", "stdin", "stdin_error", "routes", "interrupt", "expect"]
 _EXPECT_FIELDS = ["exit_code", "stdout", "stdout_includes", "stderr", "stderr_excludes", "files", "absent_files"]
 _FILE_FIELDS = ["path", "text", "base64", "symlink", "directory"]
 _FILE_KINDS = ["text", "base64", "symlink", "directory"]
-_EXCHANGE_FIELDS = ["request_body", "answer", "status", "headers", "body", "text", "base64", "unreachable", "lost"]
+_EXCHANGE_FIELDS = ["request_body", "answer", "status", "headers", "body", "text", "base64", "unreachable", "lost", "elapsed_ms"]
 _PLACEHOLDER_LANGUAGE = "python"
 # How long a command interrupted during a blocked read may take to end: far more than it needs, far less
 # than a command left waiting for the read.
@@ -139,6 +143,83 @@ def _sent_body(content: bytes) -> Any:
     return {key: value for key, value in members.items() if value is not None}
 
 
+def _caused(failure: httpx.TransportError, cause: BaseException) -> httpx.TransportError:
+    """`failure` raised from `cause`, as httpx chains the transport's own error under its."""
+    failure.__cause__ = cause
+    return failure
+
+
+def _connect_error(message: str, cause: BaseException) -> Callable[[httpx.Request], httpx.TransportError]:
+    """A connection that failed while it was set up, as httpx reports it: its `ConnectError`, over the cause."""
+    return lambda request: _caused(httpx.ConnectError(message, request=request), cause)
+
+
+def _connect_timeout(request: httpx.Request) -> httpx.TransportError:
+    """A connection not made within httpx's connect timeout, the TCP connect still under way: its
+    `ConnectTimeout`, over the `TimeoutError` of the deadline.
+    """
+    return _caused(httpx.ConnectTimeout("", request=request), TimeoutError())
+
+
+def _connect_timeout_during_handshake(request: httpx.Request) -> httpx.TransportError:
+    """A connection not made within httpx's connect timeout, the TLS handshake still under way: the deadline
+    lands on the handshake's pending read, so the `ssl.SSLWantReadError` of that read is among the causes.
+    """
+    deadline = TimeoutError()
+    deadline.__context__ = ssl.SSLWantReadError(ssl.SSL_ERROR_WANT_READ, "The operation did not complete (read) (_ssl.c:1032)")
+    return _caused(httpx.ConnectTimeout("", request=request), deadline)
+
+
+# Each kind of `unreachable` exchange, a request that never got a connection to answer it, as httpx
+# reports it, its cause chained: each was read off httpx against a local server, a closed port, a listener
+# that never answers the TLS handshake, a connect timeout too short for any connection, a pool of one
+# connection held by a request left unanswered, and certificates of a local authority, but for no route to
+# the host or the network and the system giving up connecting, which take the shape every failed connect
+# call takes (`docs/cli.md`).
+_UNREACHABLE: dict[str, Callable[[httpx.Request], httpx.TransportError]] = {
+    "refused": _connect_error("All connection attempts failed", ConnectionRefusedError(errno.ECONNREFUSED, "Connect call failed")),
+    "refused-every-address": _connect_error("All connection attempts failed", ConnectionRefusedError(errno.ECONNREFUSED, "Connect call failed")),
+    "unknown-host": _connect_error(
+        "[Errno 8] nodename nor servname provided, or not known", socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided, or not known")
+    ),
+    "no-route": _connect_error("All connection attempts failed", OSError(errno.EHOSTUNREACH, "Connect call failed")),
+    "no-network": _connect_error("All connection attempts failed", OSError(errno.ENETUNREACH, "Connect call failed")),
+    # httpx's connect timeout, which the one time limit the client passes bounds: a host that drops packets
+    # ends a start this way, well before the system gives up connecting.
+    "connect-timeout": _connect_timeout,
+    # The system giving up connecting, which a request whose time limit is longer than the system's meets first.
+    "system-connect-timeout": _connect_error("All connection attempts failed", TimeoutError(errno.ETIMEDOUT, "Connect call failed")),
+    "certificate": _connect_error(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired",
+        ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired"),
+    ),
+    "certificate-unnamed": _connect_error(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unhandled critical extension",
+        ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unhandled critical extension"),
+    ),
+    # A server that drops the connection during the TLS handshake, which httpx reads as the pipe it broke.
+    "handshake-dropped": _connect_error("", BrokenPipeError(errno.EPIPE, "Broken pipe")),
+    # This suite's own kinds, which no shared case holds, run by its test of the timeouts httpx places before
+    # the connection: the connect timeout run out during the TLS handshake, which `@pipelex/sdk`'s fetch
+    # reports as it reports `connect-timeout`, and the request's time limit run out while it waited for a
+    # connection from httpx's pool, which that fetch could only report as its own time limit.
+    "connect-timeout-during-handshake": _connect_timeout_during_handshake,
+    "pool-timeout": lambda request: _caused(httpx.PoolTimeout("", request=request), TimeoutError()),
+}
+
+# Each kind of `lost` exchange, a request that left and whose answer never came back, as httpx reports it.
+_LOST: dict[str, Callable[[httpx.Request], httpx.TransportError]] = {
+    "timeout": lambda request: httpx.ReadTimeout("timed out", request=request),
+    "closed": lambda request: httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request),
+    "reset": lambda request: _caused(
+        httpx.ReadError("[Errno 54] Connection reset by peer", request=request), ConnectionResetError(errno.ECONNRESET, "Connection reset by peer")
+    ),
+    "no-route": lambda request: _caused(
+        httpx.ReadError("[Errno 65] No route to host", request=request), OSError(errno.EHOSTUNREACH, "No route to host")
+    ),
+}
+
+
 class _RecordedApi:
     """The API answering from a case's routes. A route is `METHOD /path?query` on the table's base URL;
     its exchanges answer its calls in order, each once. A request the case did not record, to another
@@ -152,6 +233,8 @@ class _RecordedApi:
         self.interrupt_while_answering = interrupt_while_answering
         self.problems: list[str] = []
         self.calls: dict[str, int] = {}
+        #: The time the case's exchanges have taken (`elapsed_ms`), which the case's clock adds to the real one.
+        self.elapsed_seconds = 0.0
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         key = f"{request.method} {request.url.raw_path.decode('ascii')}"
@@ -181,22 +264,22 @@ class _RecordedApi:
             if not _json_equal(sent, exchange["request_body"]):
                 self.problems.append(f"{key}, call {call}, sent {json.dumps(sent)} where the case records {json.dumps(exchange['request_body'])}")
         answer: dict[str, Any] = {**_ANSWERS.get(exchange.get("answer", ""), {}), **exchange}
-        if answer.get("unreachable") is True:
-            msg = "connect ECONNREFUSED"
-            raise httpx.ConnectError(msg, request=request)
+        # The exchange takes this long on the clock the command and the SDK read, at once.
+        self.elapsed_seconds += cast("int", answer.get("elapsed_ms", 0)) / 1000
+        unreachable: str | None = answer.get("unreachable")
+        if unreachable is not None:
+            if unreachable not in _UNREACHABLE:
+                self.problems.append(f'{key}, call {call}: unreachable is "{unreachable}", no kind')
+            else:
+                raise _UNREACHABLE[unreachable](request)
         # The request went out and its answer never came back: the time limit ran out, or the
-        # connection closed, each as httpx reports it.
-        match answer.get("lost"):
-            case None:
-                pass
-            case "timeout":
-                msg = "timed out"
-                raise httpx.ReadTimeout(msg, request=request)
-            case "closed":
-                msg = "Server disconnected without sending a response."
-                raise httpx.RemoteProtocolError(msg, request=request)
-            case other:
-                self.problems.append(f'{key}, call {call}: lost is "{other}", not timeout or closed')
+        # connection closed or failed, each as httpx reports it.
+        lost: str | None = answer.get("lost")
+        if lost is not None:
+            if lost not in _LOST:
+                self.problems.append(f'{key}, call {call}: lost is "{lost}", no kind')
+            else:
+                raise _LOST[lost](request)
         headers: dict[str, str] = dict(answer.get("headers", {}))
         content = b""
         if "body" in answer:
@@ -225,27 +308,40 @@ class _RecordedApi:
         return left
 
 
-class _WriteCutShort:
-    """A file handle whose write stores the first bytes, then takes Ctrl-C, as a write the person interrupts."""
+def _write_interrupted(interrupts: int = 1) -> Callable[[int, bytes], int]:
+    """An `os.write` whose first call stores the first bytes, then takes Ctrl-C, once or more, as a write the
+    person interrupts; the calls after it write as `os.write` does.
+    """
+    real_write = os.write
+    calls: list[int] = []
 
-    def __init__(self, handle: Any) -> None:
-        self._handle = handle
+    def write(descriptor: int, data: bytes) -> int:
+        if calls:
+            return real_write(descriptor, data)
+        calls.append(descriptor)
+        written = real_write(descriptor, data[:8])
+        # Outside the event loop, Python's own handler would raise `KeyboardInterrupt` right here.
+        for _ in range(interrupts):
+            signal.raise_signal(signal.SIGINT)
+        return written
 
-    def __enter__(self) -> Self:
-        return self
+    return write
 
-    def __exit__(self, *exc_info: object) -> None:
-        self._handle.close()
 
-    def write(self, data: bytes) -> int:
-        self._handle.write(data[:8])
-        self._handle.flush()
-        # Outside the event loop, Python's own handler raises `KeyboardInterrupt` right here.
-        signal.raise_signal(signal.SIGINT)
-        return 8
+def _write_failing() -> Callable[[int, bytes], int]:
+    """An `os.write` that stores the first bytes, then fails as a full disk fails it."""
+    real_write = os.write
+
+    def write(descriptor: int, data: bytes) -> int:
+        real_write(descriptor, data[:20])
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    return write
 
 
 # ── Running a case ────────────────────────────────────────────────────────────────────────────────
+
+_REAL_MONOTONIC = time.monotonic
 
 
 def _materialize(root: Path, files: list[dict[str, Any]]) -> None:
@@ -312,8 +408,13 @@ def _run_case(
     *,
     early: _EarlyInterrupt | None = None,
     interrupt_while_answering: str | None = None,
+    interrupt_while_printing: bool = False,
 ) -> _Outcome:
-    """Run the command on a case, in `root`, with every API client answering from the case's routes."""
+    """Run the command on a case, in `root`, with every API client answering from the case's routes.
+
+    With `interrupt_while_printing`, Ctrl-C lands as the command prints its first line on stdout, before
+    the line is out.
+    """
     _materialize(root, case.get("files", []))
     env = _case_env(case)
     api = _RecordedApi(case, env, interrupt_while_answering=interrupt_while_answering)
@@ -328,13 +429,31 @@ def _run_case(
         if early == _EarlyInterrupt.STDIN:
             # Outside the event loop, Python's own handler raises `KeyboardInterrupt` right here.
             signal.raise_signal(signal.SIGINT)
+        if "stdin_error" in case:
+            code = cast("str", case["stdin_error"])
+            raise OSError(getattr(errno, code), os.strerror(getattr(errno, code)))
         return cast("str", case.get("stdin", "")).encode("utf-8")
 
+    def case_clock() -> float:
+        # The clock the SDK times its requests with, and the command the request that may create a run:
+        # it runs as it does, plus the time the case's exchanges have taken, so that a case can hold an
+        # answer that came back half a minute later without waiting for it.
+        return _REAL_MONOTONIC() + api.elapsed_seconds
+
     mocker.patch.object(httpx, "AsyncClient", recorded_client)
+    mocker.patch("pipelex_sdk.client.monotonic", case_clock)
+    mocker.patch("pipelex_sdk.command.io.monotonic", case_clock)
     monkeypatch.chdir(root)
     stdout: list[str] = []
     stderr: list[str] = []
-    io = CommandIO(env=env, read_stdin=read_stdin, write_stdout=stdout.append, write_stderr=stderr.append)
+
+    def write_stdout(text: str) -> None:
+        if interrupt_while_printing and not stdout:
+            # Outside the event loop, Python's own handler raises `KeyboardInterrupt` right here.
+            signal.raise_signal(signal.SIGINT)
+        stdout.append(text)
+
+    io = CommandIO(env=env, read_stdin=read_stdin, write_stdout=write_stdout, write_stderr=stderr.append)
 
     exit_code = run_command(case["argv"], io)
 
@@ -368,7 +487,24 @@ def _check(case: dict[str, Any], outcome: _Outcome, root: Path) -> None:
 # sent would fail it, as an unrecorded one. The scenarios of `@pipelex/sdk`'s suite, landing where a
 # Python command meets them.
 _NOTHING_WRITTEN = "Interrupted. Nothing was written.\n"
-_RUN_MAY_HAVE_STARTED = "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+
+
+def _script_written_then_interrupted() -> dict[str, Any]:
+    """`script/catalog-id`, whose file an interrupt lands on once it is written: the file is whole, the
+    command says it was written and exits 130, and nothing reaches stdout.
+    """
+    written = _case_named("script/catalog-id")
+    return {
+        **written,
+        "expect": {
+            "exit_code": 130,
+            "stdout": "",
+            "stderr": ["Interrupted. ./resume-review-v2 was written.\n"],
+            "files": written["expect"]["files"],
+        },
+    }
+
+
 _BUNDLE = 'domain = "receipts"\nmain_pipe = "review_receipt"\n'
 _NO_RUN = "Interrupted. No run was started.\n"
 _EARLY_SCENARIOS: list[tuple[str, _EarlyInterrupt, dict[str, Any]]] = [
@@ -506,6 +642,32 @@ class TestCli:
 
         _check(case, outcome, root)
 
+    # ── A timeout httpx places before the connection ──────────────────────────────────────────────
+
+    @pytest.mark.parametrize(
+        ("kind", "code"),
+        [("connect-timeout-during-handshake", "ConnectTimeout"), ("pool-timeout", "PoolTimeout")],
+    )
+    def test_a_start_that_timed_out_before_it_had_a_connection_sent_nothing(
+        self, kind: str, code: str, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A start whose connection timed out during the TLS handshake, or whose time limit ran out while it
+        waited for a pooled connection, never had a connection to be written on: like `run/start-connect-timeout`,
+        it says nothing of a run.
+        """
+        connect_timeout = _case_named("run/start-connect-timeout")
+        case: dict[str, Any] = {
+            **connect_timeout,
+            "name": f"python/start-{kind}",
+            "routes": {**connect_timeout["routes"], "POST /v1/start": [{"unreachable": kind}]},
+        }
+        root = tmp_path.resolve()
+
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
+        assert f"Error: could not reach the Pipelex API at http://api.test ({code}).\n" in outcome.stderr, outcome.shown
+
     # ── An interrupt the table cannot express ─────────────────────────────────────────────────────
 
     @pytest.mark.parametrize(("early", "case"), [(early, case) for _, early, case in _EARLY_SCENARIOS], ids=[name for name, _, _ in _EARLY_SCENARIOS])
@@ -616,19 +778,90 @@ class TestCli:
         check_free.assert_called_once_with(".", "resume-review-v2")
         assert list(root.iterdir()) == [], outcome.shown
 
-    def test_an_interrupt_during_the_write_leaves_no_file(self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A write Ctrl-C cuts short removes what it wrote, so a script is whole or absent."""
+    def test_an_interrupt_during_the_write_is_held_until_the_file_is_whole(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C while the script is written waits for the file to be whole, then says it was written."""
+        case = _script_written_then_interrupted()
+        root = tmp_path.resolve()
+        mocker.patch("pipelex_sdk.command.script.os.write", side_effect=_write_interrupted())
+
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
+
+    def test_a_second_interrupt_during_the_write_stops_it_and_removes_the_file(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second Ctrl-C is not held, so a write that blocks can still be stopped: what it wrote is removed."""
         case: dict[str, Any] = {
             **_case_named("script/catalog-id"),
             "expect": {"exit_code": 130, "stdout": "", "stderr": [_NOTHING_WRITTEN], "absent_files": ["resume-review-v2"]},
         }
         root = tmp_path.resolve()
-        real_fdopen = os.fdopen
+        mocker.patch("pipelex_sdk.command.script.os.write", side_effect=_write_interrupted(interrupts=2))
 
-        def fdopen_cut_short(fd: int, mode: str) -> _WriteCutShort:
-            return _WriteCutShort(real_fdopen(fd, mode))
+        outcome = _run_case(case, root, mocker, monkeypatch)
 
-        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_cut_short)
+        _check(case, outcome, root)
+        assert list(root.iterdir()) == [], outcome.shown
+
+    def test_an_interrupt_held_once_the_file_is_whole_says_it_was_written(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C once the file is whole, while the interrupt is still held, says it was written."""
+        case = _script_written_then_interrupted()
+        root = tmp_path.resolve()
+
+        def write_then_interrupt(target: str, body: str, progress: Progress) -> None:
+            _write_script(target, body, progress)
+            signal.raise_signal(signal.SIGINT)
+
+        mocker.patch("pipelex_sdk.command.script._write_script", side_effect=write_then_interrupt)
+
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
+
+    def test_an_interrupt_after_the_hold_says_the_file_was_written(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C once the hold is over, as the command prints the script's path, says the file was written."""
+        case = _script_written_then_interrupted()
+        root = tmp_path.resolve()
+
+        outcome = _run_case(case, root, mocker, monkeypatch, interrupt_while_printing=True)
+
+        _check(case, outcome, root)
+
+    def test_an_ignored_interrupt_stays_ignored_during_the_write(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Started with SIGINT ignored, as a background job may be, the command is not stopped by one meanwhile."""
+        case = _case_named("script/catalog-id")
+        root = tmp_path.resolve()
+        mocker.patch("pipelex_sdk.command.script.os.write", side_effect=_write_interrupted())
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            outcome = _run_case(case, root, mocker, monkeypatch)
+        finally:
+            signal.signal(signal.SIGINT, previous)
+
+        _check(case, outcome, root)
+
+    def test_a_write_that_fails_once_the_file_exists_removes_it(self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A disk that fills up during the write leaves no truncated script, which would run half a command."""
+        case: dict[str, Any] = {
+            **_case_named("script/catalog-id"),
+            "expect": {
+                "exit_code": 2,
+                "stdout": "",
+                "stderr": ['Error: cannot write "./resume-review-v2".\nReason: ENOSPC\n'],
+                "absent_files": ["resume-review-v2"],
+            },
+        }
+        root = tmp_path.resolve()
+        mocker.patch("pipelex_sdk.command.script.os.write", side_effect=_write_failing())
 
         outcome = _run_case(case, root, mocker, monkeypatch)
 
@@ -677,25 +910,3 @@ class TestCli:
 
         _check(case, outcome, root)
         assert list(root.iterdir()) == [], outcome.shown
-
-    def test_a_blocking_execute_the_gateway_cut_off_may_have_started_a_run(
-        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The gateway's cut-off is told from a runner that is down by the time it took, so every reading of the
-        clock here is half a minute after the one before.
-        """
-        case: dict[str, Any] = {
-            "name": "gateway/execute-cut-off",
-            "argv": ["run", "--method", "mt_receipts01"],
-            "routes": {
-                "GET /v1/version": [{"answer": "version/bare-runner"}],
-                "POST /v1/execute": [{"status": 504, "body": {"detail": "Gateway Timeout"}}],
-            },
-            "expect": {"exit_code": 1, "stdout": "", "stderr": [_RUN_MAY_HAVE_STARTED]},
-        }
-        root = tmp_path.resolve()
-        mocker.patch("pipelex_sdk.client.monotonic", side_effect=itertools.count(0.0, 31.0))
-
-        outcome = _run_case(case, root, mocker, monkeypatch)
-
-        _check(case, outcome, root)

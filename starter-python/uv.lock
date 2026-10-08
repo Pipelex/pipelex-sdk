@@ -629,7 +629,7 @@ wheels = [
 
 [[package]]
 name = "widget"
-version = "0.32.1"
+version = "0.34.0"
 source = { editable = "." }
 dependencies = [
     { name = "mthds" },

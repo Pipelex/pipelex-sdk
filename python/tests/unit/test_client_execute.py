@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 
-from pipelex_sdk.client import PipelexAPIClient
+from pipelex_sdk.client import PipelexAPIClient, is_gateway_cut_off
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, MissingMainStuffError, PipelineExecuteTimeoutError, RunStillRunningError
 
 if TYPE_CHECKING:
@@ -125,6 +125,42 @@ class TestClientExecute:
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client.execute(pipe_code="p"))
         assert exc_info.value.code == failure.__name__
+
+    @pytest.mark.parametrize(
+        ("failure", "cut_off"),
+        [
+            (503, True),
+            (504, True),
+            (500, False),
+            (502, False),
+            (httpx.ReadTimeout, True),
+            (httpx.WriteTimeout, True),
+            (httpx.ConnectError, False),
+            (httpx.ConnectTimeout, False),
+            (httpx.PoolTimeout, False),
+        ],
+    )
+    def test_is_gateway_cut_off_reads_a_start_failure_past_the_threshold(
+        self, mocker: MockerFixture, unreachable_client: UnreachableClientBuilder, failure: int | type[httpx.TransportError], cut_off: bool
+    ) -> None:
+        """The rule `execute` applies, public for a caller timing a request that may create a run, such as a start."""
+        client: PipelexAPIClient
+        if isinstance(failure, int):
+            client = self._client()
+            mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(failure)))
+        else:
+            client = unreachable_client(failure)
+
+        with pytest.raises((ApiResponseError, ApiUnreachableError)) as exc_info:
+            asyncio.run(client.start(pipe_code="p"))
+
+        assert is_gateway_cut_off(exc_info.value, 31.0) is cut_off
+        assert is_gateway_cut_off(exc_info.value, 28.0) is cut_off
+        # Before the threshold, nothing is the gateway's cut-off: a fast 503 is the API refusing.
+        assert is_gateway_cut_off(exc_info.value, 27.9) is False
+
+    def test_is_gateway_cut_off_reads_nothing_but_the_sdks_own_errors(self) -> None:
+        assert is_gateway_cut_off(ValueError("503"), 31.0) is False
 
     def test_fast_503_stays_an_api_response_error(self, mocker: MockerFixture) -> None:
         client = self._client()

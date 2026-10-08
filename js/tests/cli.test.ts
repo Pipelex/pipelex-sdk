@@ -30,9 +30,10 @@ interface Exchange {
   headers?: Record<string, string>;
   body?: unknown;
   text?: string;
-  unreachable?: boolean;
+  unreachable?: string;
   lost?: string;
   base64?: string;
+  elapsed_ms?: number;
 }
 
 interface FileEntry {
@@ -56,6 +57,7 @@ interface Case {
   env?: Record<string, string | null>;
   files?: FileEntry[];
   stdin?: string;
+  stdin_error?: string;
   routes?: Record<string, Exchange[]>;
   interrupt?: { route: string; call: number };
   expect: {
@@ -91,6 +93,7 @@ const CASE_FIELDS = [
   "env",
   "files",
   "stdin",
+  "stdin_error",
   "routes",
   "interrupt",
   "expect",
@@ -115,6 +118,7 @@ const EXCHANGE_FIELDS = [
   "unreachable",
   "lost",
   "base64",
+  "elapsed_ms",
 ];
 const PLACEHOLDER_LANGUAGE = "js";
 
@@ -182,6 +186,68 @@ function sortKeys(value: unknown): unknown {
   return value;
 }
 
+/** A system error as Node raises it: its code, its number and the call that failed. */
+function systemError(message: string, code: string, errno: number, syscall: string): Error {
+  return Object.assign(new Error(message), { code, errno, syscall });
+}
+
+/**
+ * Each kind of `unreachable` exchange, a request that never got a connection to answer it, as
+ * fetch reports it: undici's failure under fetch's `TypeError`. Each shape was read off Node's own
+ * fetch against a local server, a closed port, a listener that never answers the TLS handshake and
+ * certificates of a local authority, but for no route to the host or the network, which take the
+ * shape every failed `connect` call takes (`docs/cli.md`, "The case table").
+ */
+const UNREACHABLE: Record<string, () => Error> = {
+  refused: () => systemError("connect ECONNREFUSED 127.0.0.1:80", "ECONNREFUSED", -61, "connect"),
+  // A name with several addresses, each refused: Node tries each and reports them together.
+  "refused-every-address": () =>
+    Object.assign(
+      new AggregateError(
+        [
+          systemError("connect ECONNREFUSED ::1:80", "ECONNREFUSED", -61, "connect"),
+          systemError("connect ECONNREFUSED 127.0.0.1:80", "ECONNREFUSED", -61, "connect"),
+        ],
+        "",
+      ),
+      { code: "ECONNREFUSED" },
+    ),
+  "unknown-host": () =>
+    systemError("getaddrinfo ENOTFOUND api.test", "ENOTFOUND", -3008, "getaddrinfo"),
+  "no-route": () =>
+    systemError("connect EHOSTUNREACH 127.0.0.1:80", "EHOSTUNREACH", -65, "connect"),
+  "no-network": () =>
+    systemError("connect ENETUNREACH 127.0.0.1:80", "ENETUNREACH", -51, "connect"),
+  // undici's own connect time limit, ten seconds by default, which covers the TLS handshake and
+  // runs out before the time limit of any request the command sends: what a host that drops
+  // packets gives.
+  "connect-timeout": () =>
+    Object.assign(
+      new Error("Connect Timeout Error (attempted address: api.test:80, timeout: 10000ms)"),
+      { name: "ConnectTimeoutError", code: "UND_ERR_CONNECT_TIMEOUT" },
+    ),
+  "system-connect-timeout": () =>
+    systemError("connect ETIMEDOUT 127.0.0.1:80", "ETIMEDOUT", -60, "connect"),
+  certificate: () =>
+    Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" }),
+  // A verdict Node's table does not name, which it reports as `UNSPECIFIED`.
+  "certificate-unnamed": () =>
+    Object.assign(new Error("unhandled critical extension"), { code: "UNSPECIFIED" }),
+  // A server that drops the connection during the TLS handshake: the same reset, from the same
+  // call, as one that drops it once the request has left.
+  "handshake-dropped": () => systemError("read ECONNRESET", "ECONNRESET", -54, "read"),
+};
+
+/**
+ * Each kind of `lost` exchange but `timeout`, a request that left and whose connection then
+ * failed, as undici reports it under fetch's `TypeError`.
+ */
+const LOST: Record<string, () => Error> = {
+  closed: () => Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+  reset: () => systemError("read ECONNRESET", "ECONNRESET", -54, "read"),
+  "no-route": () => systemError("read EHOSTUNREACH", "EHOSTUNREACH", -65, "read"),
+};
+
 /**
  * `fetch` answering from a case's routes. A route is `METHOD /path?query` on the table's base
  * URL; its exchanges answer its calls in order, each once. A request the case did not record, to
@@ -196,6 +262,7 @@ class RecordedApi {
     private readonly testCase: Case,
     private readonly env: Record<string, string>,
     private readonly interrupt: AbortController,
+    private readonly clock: CaseClock,
   ) {}
 
   fetch = async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
@@ -242,21 +309,26 @@ class RecordedApi {
       ...(exchange.answer === undefined ? {} : TABLE.answers[exchange.answer]),
       ...exchange,
     };
-    if (answer.unreachable === true) {
-      throw new TypeError("fetch failed", {
-        cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
-      });
+    // The exchange takes this long on the clock the command and the SDK read, at once.
+    if (answer.elapsed_ms !== undefined) this.clock.advance(answer.elapsed_ms);
+    if (answer.unreachable !== undefined) {
+      const failure = UNREACHABLE[answer.unreachable];
+      if (failure === undefined) {
+        this.problems.push(`${key}, call ${call}: unreachable is "${answer.unreachable}", no kind`);
+      } else {
+        throw new TypeError("fetch failed", { cause: failure() });
+      }
     }
     // The request went out and its answer never came back: the time limit ran out, as the
-    // client's own timer reports it, or the connection closed, as undici reports it.
+    // client's own timer reports it, or the connection closed or failed, as undici reports it.
     if (answer.lost === "timeout") throw new DOMException("Request timed out.", "TimeoutError");
-    if (answer.lost === "closed") {
-      throw new TypeError("fetch failed", {
-        cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
-      });
-    }
     if (answer.lost !== undefined) {
-      this.problems.push(`${key}, call ${call}: lost is "${answer.lost}", not timeout or closed`);
+      const failure = LOST[answer.lost];
+      if (failure === undefined) {
+        this.problems.push(`${key}, call ${call}: lost is "${answer.lost}", no kind`);
+      } else {
+        throw new TypeError("fetch failed", { cause: failure() });
+      }
     }
     const headers = new Headers(answer.headers);
     if (headers.get("content-encoding") === "gzip") {
@@ -306,6 +378,24 @@ function sentBody(body: RequestInit["body"]): unknown {
 }
 
 // ── Running a case ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The clock a case runs on: `performance.now`, which the command and the SDK read to time a request,
+ * runs as it does, plus the time the case's exchanges have taken (`elapsed_ms`), so that a case
+ * can hold an answer that came back half a minute later without waiting for it.
+ */
+class CaseClock {
+  private elapsedMs = 0;
+
+  constructor() {
+    const realNow = performance.now.bind(performance);
+    vi.spyOn(performance, "now").mockImplementation(() => realNow() + this.elapsedMs);
+  }
+
+  advance(ms: number): void {
+    this.elapsedMs += ms;
+  }
+}
 
 function materialize(root: string, files: readonly FileEntry[]): void {
   for (const file of files) {
@@ -362,7 +452,7 @@ async function runCase(
   const env = caseEnv(testCase);
   const interrupt = new AbortController();
   if (early === "before") interrupt.abort();
-  const api = new RecordedApi(testCase, env, interrupt);
+  const api = new RecordedApi(testCase, env, interrupt, new CaseClock());
   vi.spyOn(globalThis, "fetch").mockImplementation(api.fetch);
   let stdout = "";
   let stderr = "";
@@ -373,6 +463,10 @@ async function runCase(
       env,
       readStdin: () => {
         if (early === "stdin") interrupt.abort();
+        if (testCase.stdin_error !== undefined) {
+          const code = testCase.stdin_error;
+          return Promise.reject(systemError(`${code}: failed to read`, code, -1, "read"));
+        }
         return Promise.resolve(new TextEncoder().encode(testCase.stdin ?? ""));
       },
       writeStdout: (text) => {
@@ -527,35 +621,6 @@ describe("an interrupt that lands before any request", () => {
     }
   });
 });
-
-describe("a run the API may have created before the command learned of it", () => {
-  it("says so when the gateway cuts a blocking execute off", async () => {
-    // The gateway's cut-off is told from a runner that is down by the time it took: every reading
-    // of the clock here is half a minute after the one before.
-    let now = 0;
-    vi.spyOn(Date, "now").mockImplementation(() => (now += 31_000));
-    const testCase: Case = {
-      name: "gateway/execute-cut-off",
-      summary: "A blocking execute the gateway cut off may have run the method.",
-      argv: ["run", "--method", "mt_receipts01"],
-      routes: {
-        "GET /v1/version": [{ answer: "version/bare-runner" }],
-        "POST /v1/execute": [{ status: 504, body: { detail: "Gateway Timeout" } }],
-      },
-      expect: { exit_code: 1, stdout: "", stderr: [RUN_MAY_HAVE_STARTED] },
-    };
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pipelex-sdk-cli-")));
-    try {
-      const { outcome, api } = await runCase(testCase, root);
-      check(testCase, outcome, api);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
-const RUN_MAY_HAVE_STARTED =
-  "A run may have started on the server without the command learning of it, so check before starting it again.\n";
 
 describe("the command's packaging", () => {
   it("is the package's one bin, an executable Node script", () => {

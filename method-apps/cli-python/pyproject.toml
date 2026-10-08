@@ -1,6 +1,6 @@
 [project]
 name = "pipelex-method-cli-python"
-version = "0.32.1"
+version = "0.34.0"
 description = "A command-line tool that runs one MTHDS method through the Pipelex API."
 license = "MIT"
 readme = "README.md"

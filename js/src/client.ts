@@ -26,6 +26,8 @@ import type {
   DictRunResultExecute,
   FormatResponse,
   LintResponse,
+  ModelCheckCategory,
+  ModelReferenceVerdict,
   MthdsFileItem,
   PipeIORequest,
   PipeIOResponse,
@@ -275,11 +277,11 @@ export interface PipelexApiClientOptions {
   appInfo?: AppInfo;
 }
 
-/** Low-level transport over a generic fetch, before status interpretation. */
 /** Decoders of an answer's bytes: the strict one tells a body that is not UTF-8. */
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 const LENIENT_UTF8 = new TextDecoder("utf-8");
 
+/** Low-level transport over a generic fetch, before status interpretation. */
 interface RawResponse {
   status: number;
   statusText: string;
@@ -923,7 +925,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       ...extensions,
     };
 
-    const startedAt = Date.now();
+    // Timed on the monotonic clock, which a change of the system's time does not move.
+    const startedAt = performance.now();
     try {
       const res = await this.requestRaw("POST", this.url("execute"), {
         body: request,
@@ -942,8 +945,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // The hosted gateway terminates synchronous requests at ~30s. A run that
       // exceeds that comes back as a gateway 503/504 (or a client abort) —
       // translate it into a clear, actionable error pointing at start+poll.
-      const elapsedMs = Date.now() - startedAt;
-      if (isGatewayTimeout(err, elapsedMs)) {
+      const elapsedMs = performance.now() - startedAt;
+      if (isGatewayCutOff(err, elapsedMs)) {
         throw new PipelineExecuteTimeoutError(elapsedMs, { cause: err });
       }
       throw err;
@@ -1310,6 +1313,43 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
+   * Check one model reference — `GET /v1/models/check?reference=<ref>[&type=<category>]`, a
+   * Pipelex API extension served by any `pipelex-api` runner from pipelex 0.78.0 and on the
+   * hosted API.
+   *
+   * Answers whether `reference` resolves on the runner, as what kind and to which model, from
+   * the parser and the deck lookups a validation runs. `reference` is written as a method's
+   * `model` field writes it — `$preset`, `@alias`, `~waterfall`, a bare handle, or a
+   * spelled-out namespace (`handle:gpt-4o`) — and is sent percent-encoded. `category` checks
+   * in that category alone; without it, the check covers every one.
+   *
+   * Returns a **200 verdict** whatever the resolution: a reference that resolves nowhere is
+   * `resolution: "not_found"` with the names it may have meant, never a thrown error. Narrow
+   * on `kind` to read the shape of `matches`. A request that cannot produce a verdict throws
+   * the typed `ApiResponseError`, a `422` whose `errorType` says why: `InvalidModelReference`
+   * (a blank reference, a sigil or a namespace alone, or one past the runner's length limit),
+   * `InvalidModelCategory` (an unknown `type`) or `ValidationError`. None of that is checked
+   * here, so the runner's rule is the only one.
+   */
+  async checkModelReference(
+    reference: string,
+    category?: ModelCheckCategory,
+  ): Promise<ModelReferenceVerdict> {
+    const query = new URLSearchParams({ reference });
+    if (category !== undefined) {
+      query.set("type", category);
+    }
+    const endpoint = `models/check?${query.toString()}`;
+    const res = await this.requestRaw("GET", this.url(endpoint), {
+      timeoutMs: POLL_REQUEST_TIMEOUT_MS,
+    });
+    if (res.status < 200 || res.status >= 300) {
+      this.throwApiResponseError("GET", endpoint, res);
+    }
+    return this.readObjectAnswer<ModelReferenceVerdict>("GET", endpoint, res);
+  }
+
+  /**
    * Protocol + implementation versions — `GET /v1/version` (always public).
    * The handshake for feature detection (hosted extensions or not).
    */
@@ -1531,8 +1571,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Whether the configured server serves the durable run lifecycle, decided
    * via the `GET /v1/version` handshake and cached for the client's lifetime. A
    * bare `pipelex-api` runner has no run store; anything else is assumed hosted.
-   * When the handshake gets an answer it cannot read as a version, assume hosted
-   * (the SDK default) and let the start call surface the real error.
+   *
+   * The rule, the one the Python SDK follows: an answer that is not a usable
+   * version means assume hosted (the SDK default), and let the start surface the
+   * real error; no answer at all propagates, uncached. An answer is anything the
+   * server sent back: a non-2xx status, a body that is not JSON, not UTF-8 or no
+   * version, and a body that arrived but could not be decoded, such as a broken
+   * gzip stream, which `requestRaw` reports as an `ApiUnreachableError` carrying
+   * the decompressor's code (see `isUndecodableBody`).
    *
    * @throws {ApiUnreachableError} The handshake got no answer. Nothing is cached,
    *   so the next call asks again, and no start is sent to a host that did not
@@ -1547,7 +1593,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
           typeof impl === "string" && impl === BARE_RUNNER_IMPLEMENTATION
         );
       } catch (error) {
-        if (error instanceof ApiUnreachableError) throw error;
+        // No answer at all propagates. A body that arrived and could not be decoded is an answer,
+        // and so is every other failure here: a non-2xx status, or a body that is no version.
+        if (error instanceof ApiUnreachableError && !isUndecodableBody(error)) throw error;
         this.lifecycleAvailable = true;
       }
     }
@@ -2579,16 +2627,51 @@ function withValidateMarkdownRender(render: string[] | undefined): string[] {
 }
 
 // The hosted gateway caps synchronous requests at 30s. A failure at/after this
-// threshold on the blocking execute is the timeout, not a transient outage —
-// the threshold guards against mislabelling a fast 503 (runner genuinely down)
-// as a timeout.
+// threshold is the gateway's cut-off, not a transient outage — the threshold
+// guards against mislabelling a fast 503 (runner genuinely down) as a timeout.
+// The one source of the threshold in this SDK: `isGatewayCutOff` reads it.
 const GATEWAY_TIMEOUT_THRESHOLD_MS = 28_000;
 
-function isGatewayTimeout(err: unknown, elapsedMs: number): boolean {
+/**
+ * Whether a request that failed `elapsedMs` after it was sent was cut off by the hosted gateway's
+ * ~30-second limit on a request it waits on, rather than refused.
+ *
+ * It is when, after at least ~28 seconds, the failure is a `503` or `504` answer, or the client's
+ * own time limit (`ApiUnreachableError` with the code `ABORT_TIMEOUT`). A fast `503` is the API
+ * saying the request was not handled, and any other unreachable host is never the gateway's
+ * cut-off, however long it took. The fetch API cannot say whether `ABORT_TIMEOUT` ran out before
+ * the connection was made, so it is read as the gateway's; with Node's own dispatcher it never
+ * does past the threshold, since undici gives up a connection that does not come after ten
+ * seconds (`UND_ERR_CONNECT_TIMEOUT`), the TLS handshake included. The Python SDK's
+ * `is_gateway_cut_off` reads the same failures, its `ABORT_TIMEOUT` being httpx's read or write
+ * timeout.
+ *
+ * The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. A caller timing
+ * a request that may create a run, such as `start` from `startAndWaitForResult`'s `onStarting`,
+ * reads it to know the server may still be handling the request the gateway gave up on.
+ */
+export function isGatewayCutOff(error: unknown, elapsedMs: number): boolean {
   if (elapsedMs < GATEWAY_TIMEOUT_THRESHOLD_MS) return false;
-  if (err instanceof ApiResponseError) return err.status === 503 || err.status === 504;
-  if (err instanceof ApiUnreachableError) return err.code === "ABORT_TIMEOUT";
+  if (error instanceof ApiResponseError) return error.status === 503 || error.status === 504;
+  if (error instanceof ApiUnreachableError) return error.code === "ABORT_TIMEOUT";
   return false;
+}
+
+/**
+ * The codes Node's fetch gives a body that arrived and could not be decoded. It decodes a
+ * `Content-Encoding` while it reads the body, after the status and the headers, and a body that
+ * does not decode fails the read with the decompressor's own code: zlib's `Z_…` for `gzip` and
+ * `deflate`, brotli's `ERR__ERROR_…` for `br`, zstd's `ZSTD_error_…` for `zstd`.
+ */
+const UNDECODABLE_BODY_CODE = /^(Z_|ERR__ERROR_|ZSTD_error_)/;
+
+/**
+ * Whether an `ApiUnreachableError` is an answer whose body could not be decoded, rather than no
+ * answer at all. The Python SDK's twin is the `ApiUnreachableError` whose cause is httpx's
+ * `DecodingError`.
+ */
+function isUndecodableBody(error: ApiUnreachableError): boolean {
+  return error.code !== undefined && UNDECODABLE_BODY_CODE.test(error.code);
 }
 
 function extractNetworkErrorCode(err: unknown): string | undefined {

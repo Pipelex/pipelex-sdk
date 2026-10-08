@@ -32,19 +32,15 @@ def read_inputs(source: str, io: CommandIO) -> dict[str, Any]:
     """Read and parse the inputs. A relative path resolves against the current directory.
 
     Raises:
-        CommandError: A usage error for an unreadable file, text that is not UTF-8 or not JSON, and
-            JSON that is not an object.
+        CommandError: A usage error for an unreadable file or stdin, text that is not UTF-8 or not JSON,
+            and JSON that is not an object.
     """
     label = "stdin" if source == "-" else f'the inputs file "{source}"'
-    data: bytes
-    if source == "-":
-        data = io.read_stdin()
-    else:
-        try:
-            data = Path(os.path.abspath(source)).read_bytes()
-        except OSError as exc:
-            msg = f"cannot read {label}."
-            raise usage_error(msg, [f"Reason: {system_reason(exc)}"]) from exc
+    try:
+        data = io.read_stdin() if source == "-" else Path(os.path.abspath(source)).read_bytes()
+    except OSError as exc:
+        msg = f"cannot read {label}."
+        raise usage_error(msg, [f"Reason: {system_reason(exc)}"]) from exc
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:

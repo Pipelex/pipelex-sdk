@@ -208,6 +208,88 @@ describe("PipelexApiClient.startAndWaitForResult (hosted — durable start+poll 
     expect(paths()).toEqual(["/v1/version", "/v1/version", "/v1/start", "/v1/runs/r1/results"]);
   });
 
+  /** An answer whose body fails while it is read, as undici fails it, with `cause` under its error. */
+  function bodyFailing(cause: { code: string; message: string }, encoding: string): Response {
+    const failure = new TypeError("terminated", {
+      cause: Object.assign(new Error(cause.message), { code: cause.code }),
+    });
+    return new Response(new ReadableStream({ start: (controller) => controller.error(failure) }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Content-Encoding": encoding },
+    });
+  }
+
+  // Each as Node's fetch reports a body it cannot decode, read off a local server.
+  it.each([
+    [
+      "gzip",
+      () => bodyFailing({ code: "Z_DATA_ERROR", message: "incorrect header check" }, "gzip"),
+    ],
+    [
+      "brotli",
+      () =>
+        bodyFailing({ code: "ERR__ERROR_FORMAT_PADDING_2", message: "Decompression failed" }, "br"),
+    ],
+    [
+      "zstd",
+      () =>
+        bodyFailing(
+          { code: "ZSTD_error_prefix_unknown", message: "Unknown frame descriptor" },
+          "zstd",
+        ),
+    ],
+    ["not JSON", () => new Response("<html>a gateway's page</html>", { status: 200 })],
+    [
+      "not UTF-8",
+      () =>
+        new Response(Uint8Array.from([...Buffer.from('{"implementation": "x'), 0xff, 0x22, 0x7d]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ],
+    ["JSON that is no version", () => jsonResponse(200, ["not", "a", "version"])],
+  ])(
+    "assumes hosted when the handshake's answer is no usable version: %s",
+    async (_name, answer) => {
+      // A body that arrived and cannot be decoded is an answer: the server is there, so the start is
+      // sent and surfaces whatever is wrong.
+      const client = makeClient();
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(answer())
+        .mockResolvedValueOnce(
+          jsonResponse(202, { pipeline_run_id: "r1", state: "STARTED", created_at: "t0" }),
+        )
+        .mockResolvedValueOnce(jsonResponse(200, { pipeline_run_id: "r1", main_stuff: {} }));
+
+      await client.startAndWaitForResult({ pipe_code: "p" });
+
+      expect(fetchSpy.mock.calls.map((call) => new URL(String(call[0])).pathname)).toEqual([
+        "/v1/version",
+        "/v1/start",
+        "/v1/runs/r1/results",
+      ]);
+    },
+  );
+
+  it("raises a handshake whose answer the connection cut short, as no answer at all", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        bodyFailing({ code: "UND_ERR_SOCKET", message: "other side closed" }, "identity"),
+      );
+
+    const err = await client.startAndWaitForResult({ pipe_code: "p" }).then(
+      () => expect.fail("expected the handshake's failure"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(ApiUnreachableError);
+    expect((err as ApiUnreachableError).code).toBe("UND_ERR_SOCKET");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("parses the usage pair on the hosted results payload, records verbatim", async () => {
     const client = makeClient();
     const tokensUsages = [
@@ -819,6 +901,11 @@ describe("PipelexApiClient answers it cannot read", () => {
     ["health", (client: PipelexApiClient) => client.health(), "GET /health"],
     ["version", (client: PipelexApiClient) => client.version(), "GET /v1/version"],
     ["models", (client: PipelexApiClient) => client.models(), "GET /v1/models"],
+    [
+      "checkModelReference",
+      (client: PipelexApiClient) => client.checkModelReference("$writing-factual"),
+      "GET /v1/models/check?reference=%24writing-factual",
+    ],
     [
       "getRunStatus",
       (client: PipelexApiClient) => client.getRunStatus("run-1"),

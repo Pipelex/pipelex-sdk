@@ -6,7 +6,7 @@ TypeScript SDK for the **Pipelex hosted API** — execute MTHDS methods, manage 
 
 ## Status
 
-Early. `PipelexApiClient` implements the MTHDS protocol-execution routes (`execute` / `start` / `validate` / `models` / `version`), the crate routes (`resolve` / `codegen` / `pipeIo`), the durable run lifecycle (`start` → poll → result), and the Pipelex product routes (user profile, methods catalog, organizations, billing, API keys, onboarding, storage, runs list/update).
+Early. `PipelexApiClient` implements the MTHDS protocol-execution routes (`execute` / `start` / `validate` / `models` / `version`), the crate routes (`resolve` / `codegen` / `pipeIo`), the model reference check (`checkModelReference`), the durable run lifecycle (`start` → poll → result), and the Pipelex product routes (user profile, methods catalog, organizations, billing, API keys, onboarding, storage, runs list/update).
 
 Besides the client, the package exports `runCodegenCheck` — a **pure** offline check that verifies a committed `codegen()` tree still matches its `codegen.lock`. It needs no server, no key, and no client instance, so it fits a CI job. See [`docs/crate-routes.md`](./docs/crate-routes.md#the-offline-check--runcodegencheck).
 
@@ -71,6 +71,25 @@ console.log(ack.method_provenance); // { address, tag, commit_sha }
 const saved = await client.start({ method_id: "mt_abc123@3", inputs: {} });
 console.log(saved.method_version); // 3
 ```
+
+### Checking a model reference
+
+`checkModelReference` asks the runner whether a reference a method's `model` field could name resolves, as what kind and to which model (`GET /v1/models/check`, served by `pipelex-api` from pipelex 0.78.0). A reference that resolves nowhere is a verdict, not an error, and narrowing on `kind` types its `matches`:
+
+```ts
+const verdict = await client.checkModelReference("$writing-factual", "llm");
+if (verdict.resolution === "resolved") {
+  for (const match of verdict.matches) {
+    // `resolves_to` is null when the name exists but a run through it would reach no model.
+    console.log(match.category, match.resolves_to ?? "warning: no model the runner can call");
+  }
+  if (verdict.kind === "preset") console.log(verdict.matches[0]?.description);
+} else {
+  console.log(verdict.other_kinds, verdict.suggestions); // what the caller may have meant
+}
+```
+
+A reference the runner cannot read at all (blank, a sigil alone, too long) or an unknown category throws `ApiResponseError`, a `422` whose `errorType` is `InvalidModelReference` or `InvalidModelCategory`.
 
 ### Product routes
 

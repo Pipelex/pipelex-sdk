@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { MODEL_CATEGORIES, type ModelCategory } from "mthds/protocol";
-import { PipelexApiClient } from "../src/client.js";
+import { PipelexApiClient, isGatewayCutOff } from "../src/client.js";
 import { PipelexExecuteResult } from "../src/execute-result.js";
+import type { ModelCheckCategory, ModelReferenceVerdict, PresetMatch } from "../src/models.js";
 import {
   ApiResponseError,
   ApiUnreachableError,
@@ -711,7 +712,7 @@ describe("PipelexApiClient.execute gateway 30s timeout", () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
     // start = 0ms, failure observed at 31s → over the 30s gateway ceiling.
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(31_000);
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(31_000);
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PipelineExecuteTimeoutError);
     const e = err as PipelineExecuteTimeoutError;
@@ -723,19 +724,67 @@ describe("PipelexApiClient.execute gateway 30s timeout", () => {
   it("also fires on a client-side abort timeout past the ceiling", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("timed out", "TimeoutError"));
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(30_500);
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(30_500);
     await expect(client.execute({ pipe_code: "p" })).rejects.toBeInstanceOf(
       PipelineExecuteTimeoutError,
     );
   });
 
-  it("leaves a fast 503 as an ordinary ApiResponseError (runner down, not a timeout)", async () => {
+  it("times the request on the monotonic clock, so a wall clock step makes no fast 503 a cut-off", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(2_000);
+    // The system clock is set forward by a minute while the request is out, as a time sync may do.
+    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(60_000);
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiResponseError);
     expect(err).not.toBeInstanceOf(PipelineExecuteTimeoutError);
+  });
+
+  it("leaves a fast 503 as an ordinary ApiResponseError (runner down, not a timeout)", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(503, "", "Service Unavailable"));
+    vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(2_000);
+    const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect(err).not.toBeInstanceOf(PipelineExecuteTimeoutError);
+  });
+});
+
+describe("isGatewayCutOff", () => {
+  /** The error a start fails with on this answer or this failure, as the client throws it. */
+  async function startFailure(answer: () => Promise<Response>): Promise<unknown> {
+    vi.spyOn(globalThis, "fetch").mockImplementation(answer);
+    return makeClient()
+      .start({ pipe_code: "p" })
+      .then(
+        () => expect.fail("expected the start to fail"),
+        (thrown: unknown) => thrown,
+      );
+  }
+
+  it.each([
+    ["a 503", () => Promise.resolve(textResponse(503, "", "Service Unavailable")), true],
+    ["a 504", () => Promise.resolve(textResponse(504, "", "Gateway Timeout")), true],
+    ["a 500", () => Promise.resolve(textResponse(500, "", "Internal Server Error")), false],
+    ["a 502", () => Promise.resolve(textResponse(502, "", "Bad Gateway")), false],
+    [
+      "the client's own time limit",
+      () => Promise.reject(new DOMException("timed out", "TimeoutError")),
+      true,
+    ],
+    ["a refused connection", () => Promise.reject(networkError("ECONNREFUSED")), false],
+  ])("reads %s past ~28 seconds as the cut-off: %s", async (_name, answer, cutOff) => {
+    const error = await startFailure(answer);
+
+    expect(isGatewayCutOff(error, 31_000)).toBe(cutOff);
+    expect(isGatewayCutOff(error, 28_000)).toBe(cutOff);
+    // Before the threshold, nothing is the gateway's cut-off: a fast 503 is the API refusing.
+    expect(isGatewayCutOff(error, 27_999)).toBe(false);
+  });
+
+  it("reads nothing but the SDK's own errors", () => {
+    expect(isGatewayCutOff(new Error("503"), 31_000)).toBe(false);
+    expect(isGatewayCutOff(undefined, 31_000)).toBe(false);
   });
 });
 
@@ -1636,6 +1685,162 @@ describe("PipelexApiClient.models", () => {
     expect(knownCategories).toContain(deck.models[1]!.type);
     expect(knownCategories).not.toContain(deck.models[2]!.type);
   });
+});
+
+describe("PipelexApiClient.checkModelReference", () => {
+  // Verdicts shaped as the runner's own `ModelReferenceVerdict` writes them (pipelex 0.78.0):
+  // every field present, and a match carrying exactly the fields of the verdict's kind.
+  const RESOLVED_PRESET: ModelReferenceVerdict = {
+    reference: "$writing-factual",
+    kind: "preset",
+    name: "writing-factual",
+    category: "llm",
+    resolution: "resolved",
+    matches: [
+      {
+        category: "llm",
+        resolves_to: "claude-4.8-opus",
+        target: "@default-premium",
+        description: "Factual writing with high accuracy",
+      },
+    ],
+    suggestions: [],
+    other_kinds: [],
+    other_categories: [],
+  };
+  const NOT_FOUND_IN_CATEGORY: ModelReferenceVerdict = {
+    reference: "$writing-factual",
+    kind: "preset",
+    name: "writing-factual",
+    category: "img_gen",
+    resolution: "not_found",
+    matches: [],
+    suggestions: [],
+    other_kinds: [],
+    other_categories: ["llm"],
+  };
+  const NOT_FOUND_MISSPELT: ModelReferenceVerdict = {
+    reference: "@best-cluade",
+    kind: "alias",
+    name: "best-cluade",
+    category: null,
+    resolution: "not_found",
+    matches: [],
+    suggestions: ["@best-claude"],
+    other_kinds: [],
+    other_categories: [],
+  };
+
+  /** An RFC 9457 problem as the runner renders a refusal of the check. */
+  function checkRefusal(errorType: string, title: string, detail: string): Response {
+    return new Response(
+      JSON.stringify({
+        type: `https://docs.pipelex.com/latest/errors/${title.toLowerCase().replaceAll(" ", "-")}/`,
+        title,
+        status: 422,
+        detail,
+        instance: "/v1/models/check",
+        error_type: errorType,
+        error_domain: "input",
+        retryable: false,
+      }),
+      { status: 422, headers: { "Content-Type": "application/problem+json" } },
+    );
+  }
+
+  it("GETs /v1/models/check with the reference and the type in an encoded query", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, RESOLVED_PRESET));
+    await client.checkModelReference("$writing-factual", "llm");
+    expect(fetchSpy.mock.calls[0]![0]).toBe(
+      "http://localhost:8081/v1/models/check?reference=%24writing-factual&type=llm",
+    );
+    expect((fetchSpy.mock.calls[0]![1] as RequestInit).method).toBe("GET");
+  });
+
+  it.each([
+    ["@best-claude", "%40best-claude"],
+    ["~robust-llm", "%7Erobust-llm"],
+    ["handle:claude-4.8-opus", "handle%3Aclaude-4.8-opus"],
+    // Whitespace is the runner's to trim, so it travels as given.
+    [" @best-claude ", "+%40best-claude+"],
+    // A reference cannot smuggle a parameter of its own into the query.
+    ["@a&type=img_gen", "%40a%26type%3Dimg_gen"],
+  ])("encodes the reference %j and sends no type when none is asked", async (ref, encoded) => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, NOT_FOUND_MISSPELT));
+    await client.checkModelReference(ref);
+    expect(fetchSpy.mock.calls[0]![0]).toBe(
+      `http://localhost:8081/v1/models/check?reference=${encoded}`,
+    );
+  });
+
+  it("returns a resolved verdict whose kind narrows its matches", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, RESOLVED_PRESET));
+    const verdict = await client.checkModelReference("$writing-factual", "llm");
+    expect(verdict).toEqual(RESOLVED_PRESET);
+    expect(verdict.resolution).toBe("resolved");
+    expect(verdict.kind).toBe("preset");
+    if (verdict.kind === "preset") {
+      // The wire's own `kind` narrows `matches`: no field is added to an entry to tell its shape.
+      expectTypeOf(verdict.matches).toEqualTypeOf<PresetMatch[]>();
+      expect(verdict.matches[0]!.description).toBe("Factual writing with high accuracy");
+      expect(verdict.matches[0]!.target).toBe("@default-premium");
+      expect(verdict.matches[0]!.resolves_to).toBe("claude-4.8-opus");
+    }
+  });
+
+  // The category asked is written out rather than read back off the verdict, whose categories
+  // are typed open while a request names a known one.
+  it.each<[string, ModelReferenceVerdict, ModelCheckCategory | undefined]>([
+    ["a preset asked in another category", NOT_FOUND_IN_CATEGORY, "img_gen"],
+    ["a misspelt alias", NOT_FOUND_MISSPELT, undefined],
+  ])("returns a not_found verdict for %s, never a thrown error", async (_, body, category) => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
+    const verdict = await client.checkModelReference(body.reference, category);
+    expect(verdict).toEqual(body);
+    expect(verdict.resolution).toBe("not_found");
+    expect(verdict.matches).toEqual([]);
+  });
+
+  it.each([
+    [
+      "InvalidModelReference",
+      "Invalid model reference",
+      "Waterfall reference '~' has no name after '~' prefix",
+    ],
+    [
+      "InvalidModelCategory",
+      "Invalid model category",
+      "Invalid model category. Valid values: doc_gen, extract, img_gen, judgment, llm, search",
+    ],
+    [
+      "ValidationError",
+      "Validation error",
+      "The `reference` query parameter accepts a single value",
+    ],
+  ])(
+    "throws ApiResponseError on a 422 %s, its error_type intact",
+    async (errorType, title, detail) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(checkRefusal(errorType, title, detail));
+      const failure = client.checkModelReference("~");
+      await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
+      await expect(failure).rejects.toMatchObject({
+        status: 422,
+        errorType,
+        errorDomain: "input",
+        retryable: false,
+        serverMessage: detail,
+      });
+    },
+  );
 });
 
 describe("PipelexApiClient.version", () => {

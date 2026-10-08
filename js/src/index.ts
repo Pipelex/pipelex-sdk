@@ -17,7 +17,7 @@ export { SDK_VERSION } from "./version.js";
 export * from "mthds/protocol";
 
 // ── Pipelex product client ───────────────────────────────────────────
-export { PipelexApiClient, DEFAULT_API_BASE_URL } from "./client.js";
+export { PipelexApiClient, DEFAULT_API_BASE_URL, isGatewayCutOff } from "./client.js";
 // Client identification: the `User-Agent` the client sends, exported so a caller that
 // makes its own raw requests to the API sends the same value, and can check an `appInfo`
 // against the grammar and the length ceiling before constructing a client.
@@ -87,7 +87,7 @@ export type {
   ResolvedArtifact,
 } from "./artifacts.js";
 
-// ── Wire models (Dict concretes, validate surface, tools + crate routes) ──
+// ── Wire models (Dict concretes, validate surface, tools + crate routes, model check) ──
 export type {
   DiagnosticKind,
   DiagnosticRange,
@@ -138,6 +138,21 @@ export type {
   PipeIORequest,
   PipeIOValidReport,
   PipeIOResponse,
+  ModelCheckCategory,
+  ModelReferenceKind,
+  ModelReferenceResolution,
+  ModelReferenceMatchBase,
+  PresetMatch,
+  AliasMatch,
+  WaterfallMatch,
+  HandleMatch,
+  ModelReferenceMatch,
+  ModelReferenceVerdictBase,
+  PresetReferenceVerdict,
+  AliasReferenceVerdict,
+  WaterfallReferenceVerdict,
+  HandleReferenceVerdict,
+  ModelReferenceVerdict,
 } from "./models.js";
 
 // ── Offline codegen drift check (pure — no filesystem, no network, no key) ──

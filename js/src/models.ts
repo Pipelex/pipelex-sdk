@@ -3,9 +3,10 @@
  *
  * Holds the Dict-serialized protocol concretes (`DictStuff` / `DictWorkingMemory`
  * / `DictPipeOutput` and the default `RunResultExecute` binding), the Pipelex
- * `/v1/validate` surface (`PipelexValidationResult` + `ValidationErrorItem`), and
- * the request/response models of the tools routes and the crate routes. Built on
- * the protocol wire types imported from the `mthds/protocol` subpath.
+ * `/v1/validate` surface (`PipelexValidationResult` + `ValidationErrorItem`), the
+ * request/response models of the tools routes and the crate routes, and the verdict of
+ * the model reference check. Built on the protocol wire types imported from the
+ * `mthds/protocol` subpath.
  */
 
 import type {
@@ -815,3 +816,151 @@ export interface PipeIOValidReport {
 
 /** The `POST /v1/pipe-io` 200 response — pattern-match `is_valid` before reading the arm. */
 export type PipeIOResponse = PipeIOValidReport | CrateInvalidReport;
+
+// ── Model reference check (Pipelex API — `GET /v1/models/check`) ────────
+//
+// Whether one model reference resolves on the runner, as what kind of reference and to
+// which model. A Pipelex API extension (NOT `x-mthds-protocol`), served by any
+// `pipelex-api` runner from pipelex 0.78.0 and relayed byte-identically by the hosted
+// platform. It answers from pipelex's own reference parser and deck lookups, the ones a
+// validation runs, so a reference found `resolved` in a category is one a pipe of that
+// category may name, and one found `not_found` is one a validation refuses.
+//
+// A verdict is a 200 whatever the resolution. Only a request that cannot produce one is
+// a 422 problem, surfaced as `ApiResponseError`: `InvalidModelReference` for a reference
+// that is blank, a sigil or a namespace alone, or too long; `InvalidModelCategory` for an
+// unknown `type`; `ValidationError` for a missing or repeated parameter. The SDK checks
+// none of this itself, so the runner's rule is the only one.
+
+/**
+ * The categories the check covers, in the order every list it returns follows: the MTHDS
+ * Protocol's model categories, in the protocol's order, then `doc_gen`, the family of
+ * `PipeDocGen`. The protocol defines no category for `doc_gen`, so `GET /v1/models` leaves
+ * it out, but a method names a `doc_gen` model in its `model` field like any other, so the
+ * check covers it.
+ *
+ * A request names one of these. A verdict reads them open, as `mthds` reads `ModelInfo.type`: a
+ * runner of a later version may add a category, so a consumer that switches on one has to
+ * say what an unknown value does.
+ */
+export type ModelCheckCategory = "llm" | "extract" | "img_gen" | "search" | "judgment" | "doc_gen";
+
+/**
+ * What a reference names, from its parsing: a sigil (`$` preset, `@` alias, `~` waterfall),
+ * else a spelled-out namespace (`preset:`, `alias:`, `waterfall:`, `handle:`), else a bare
+ * model handle.
+ */
+export type ModelReferenceKind = "preset" | "alias" | "waterfall" | "handle";
+
+/** Whether a reference resolves in a category in scope. Both values are definitive. */
+export type ModelReferenceResolution = "resolved" | "not_found";
+
+/** The fields every `matches` entry carries, whatever the reference's kind. */
+export interface ModelReferenceMatchBase {
+  /** The category this entry is about; read open (see {@link ModelCheckCategory}). */
+  category: ModelCheckCategory | (string & {});
+  /**
+   * The model handle a run through the reference would call now in this category, or
+   * `null` when it would find none: a target on a backend the runner has not enabled, a
+   * waterfall none of whose usable steps the runner serves, an alias cycle. The reference
+   * still resolves, as a validation accepts it, but a run through it fails, so show it as a
+   * warning rather than as an unknown name.
+   */
+  resolves_to: string | null;
+}
+
+/** What a preset reference is in one category. */
+export interface PresetMatch extends ModelReferenceMatchBase {
+  /** The model the deck binds the preset to, as the deck writes it, which may itself be a reference (`@default-premium`). */
+  target: string;
+  /** The preset's description, or `null` when the deck gives it none. */
+  description: string | null;
+}
+
+/** What an alias reference is in one category. */
+export interface AliasMatch extends ModelReferenceMatchBase {
+  /** The model the deck binds the alias to, as the deck writes it, which may itself be a reference. */
+  target: string;
+}
+
+/** What a waterfall reference is in one category. */
+export interface WaterfallMatch extends ModelReferenceMatchBase {
+  /** The waterfall's steps, in order. */
+  fallbacks: string[];
+}
+
+/** What a bare handle reference is in one category. */
+export interface HandleMatch extends ModelReferenceMatchBase {
+  /** The presets, aliases and waterfalls of this category whose binding names the handle directly, each written as a reference. */
+  via: string[];
+}
+
+/**
+ * One `matches` entry. An entry carries no `kind` of its own: the verdict's `kind` says
+ * which shape every entry of that verdict has, so narrow the verdict (see
+ * {@link ModelReferenceVerdict}) rather than the entry.
+ */
+export type ModelReferenceMatch = PresetMatch | AliasMatch | WaterfallMatch | HandleMatch;
+
+/** The fields every verdict carries, whatever the reference's kind. */
+export interface ModelReferenceVerdictBase {
+  /** The caller's reference, trimmed. */
+  reference: string;
+  /** The reference without its sigil or namespace. */
+  name: string;
+  /** The `type` asked, or `null` when none was; read open (see {@link ModelCheckCategory}). */
+  category: ModelCheckCategory | (string & {}) | null;
+  /**
+   * Whether the reference resolves in a category in scope. Open on purpose, under the
+   * spec's reader rule: "a client that reads a value it does not know treats the reference
+   * as unresolved". `string & {}` keeps the editor's completion on the two known values,
+   * and a consumer that switches on this field has to say what an unknown value does.
+   */
+  resolution: ModelReferenceResolution | (string & {});
+  /** On `not_found`, the nearest names the caller may have meant, written as a method writes them; empty when it is `resolved`. */
+  suggestions: string[];
+  /** On `not_found`, the same name under another kind, in the categories in scope (`@best-claude` for `$best-claude`); empty when it is `resolved`. Show it first: it is the likeliest fault. */
+  other_kinds: string[];
+  /** On `not_found` with a `type`, the categories outside it where the same reference resolves; empty otherwise. Read open (see {@link ModelCheckCategory}). */
+  other_categories: (ModelCheckCategory | (string & {}))[];
+}
+
+/** A verdict on a preset reference (`$name` or `preset:name`). */
+export interface PresetReferenceVerdict extends ModelReferenceVerdictBase {
+  kind: "preset";
+  /** One entry per category in scope where the reference resolves, in the order of the categories the check covers; empty on `not_found`. */
+  matches: PresetMatch[];
+}
+
+/** A verdict on an alias reference (`@name` or `alias:name`). */
+export interface AliasReferenceVerdict extends ModelReferenceVerdictBase {
+  kind: "alias";
+  /** One entry per category in scope where the reference resolves, in the order of the categories the check covers; empty on `not_found`. */
+  matches: AliasMatch[];
+}
+
+/** A verdict on a waterfall reference (`~name` or `waterfall:name`). */
+export interface WaterfallReferenceVerdict extends ModelReferenceVerdictBase {
+  kind: "waterfall";
+  /** One entry per category in scope where the reference resolves, in the order of the categories the check covers; empty on `not_found`. */
+  matches: WaterfallMatch[];
+}
+
+/** A verdict on a bare model handle (`name` or `handle:name`). */
+export interface HandleReferenceVerdict extends ModelReferenceVerdictBase {
+  kind: "handle";
+  /** One entry per category in scope where the reference resolves, in the order of the categories the check covers; empty on `not_found`. */
+  matches: HandleMatch[];
+}
+
+/**
+ * The `GET /v1/models/check` 200 response — one arm per reference kind, discriminated on
+ * the wire's own `kind`. Narrowing on `kind` narrows `matches` with it
+ * (`verdict.kind === "preset"` makes every entry a {@link PresetMatch}), since all the
+ * matches of one verdict share its kind; no field is added to the wire to make it so.
+ */
+export type ModelReferenceVerdict =
+  | PresetReferenceVerdict
+  | AliasReferenceVerdict
+  | WaterfallReferenceVerdict
+  | HandleReferenceVerdict;

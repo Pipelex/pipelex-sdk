@@ -6,9 +6,11 @@
 
 - **A catalog id may pin a version**: `make add-method` takes `mt_…@<version>` and `mt_…@draft` beside a bare `mt_…`, which runs the method's latest published version, and keeps the suffix in `method.json`, so the command runs the version it was scaffolded against. A malformed suffix is refused. `docs/add-method.md` describes the forms, and the Makefile's usage line names them.
 
+## [v0.34.0] - 2026-10-08
+
 ### Changed
 
-- **`pipelex-sdk` 0.31.0 and `mthds` 0.19.0 are the floors**: bumped from 0.30.0 and 0.18.0, the `mthds` that both `pipelex-sdk` and `pipelex` now pin, so a project can install the two together again. `mthds` 0.19.0 reads a stuff's `concept` as its ref string, which nothing in the template reads; a project's own code that read `stuff.concept.code` reads `stuff.concept` instead.
+- **`pipelex-sdk` 0.31.0 and `mthds` 0.19.0 are the floors (Breaking)**: bumped from 0.30.0 and 0.18.0, the `mthds` that both `pipelex-sdk` and `pipelex` now pin, so a project can install the two together again. `mthds` 0.19.0 reads a stuff's `concept` as its ref string, which nothing in the template reads; a project's own code that read `stuff.concept.code` reads `stuff.concept` instead.
 
 ## [v0.32.1] - 2026-10-07
 

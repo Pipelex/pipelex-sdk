@@ -159,6 +159,26 @@ if not report.is_current:
 
 The drift categories are `pipelex codegen check`'s, and so are the sentences: an artifact edited below its stamp is `hand-edited`, one off the locked hash is `modified`, one the lock tracks and disk has lost is `missing`, and a stamped file the lock does not track is an `orphan` — the stale-artifact class a per-file stamp cannot catch alone. The two readers reach the same verdict over the same bytes apart from two deliberate divergences, both documented in `docs/architecture.md`: this one accepts a projection line whose axes are outside its own vocabulary, where the CLI calls such a tree hand-edited, and it refuses a Python artifact that declares a PEP 263 source encoding, where the CLI calls that one current. Regeneration stays a developer action, because it needs the engine; the check is the CI action, because it needs only hashes, so an upstream template improvement never reddens your pipeline. Whether the tree still matches what the *method* resolves to is a separate question the engine alone can answer — compare `report.crate_fingerprint` against a live `codegen()` response to close it.
 
+### Check a model reference
+
+`check_model_reference()` asks the runner whether a reference a method's `model` field could name resolves, as what kind and to which model (`GET /v1/models/check`, served by `pipelex-api` from pipelex 0.78.0). A reference that resolves nowhere is a verdict, not an error, and the verdict is one arm per reference kind, so narrowing it types its `matches`:
+
+```python
+from pipelex_sdk.model_reference_models import ModelCheckCategory, ModelReferenceResolution, PresetReferenceVerdict
+
+verdict = await client.check_model_reference("$writing-factual", category=ModelCheckCategory.LLM)
+if verdict.resolution is ModelReferenceResolution.RESOLVED:
+    for entry in verdict.matches:
+        # `resolves_to` is None when the name exists but a run through it would reach no model.
+        print(entry.category, entry.resolves_to or "warning: no model the runner can call")
+    if isinstance(verdict, PresetReferenceVerdict):
+        print(verdict.matches[0].description)
+else:
+    print(verdict.other_kinds, verdict.suggestions)  # what the caller may have meant
+```
+
+A reference the runner cannot read at all (blank, a sigil alone, too long) or an unknown category raises `ApiResponseError`, a `422` whose `error_type` is `InvalidModelReference` or `InvalidModelCategory`.
+
 ### Long runs: start + poll explicitly
 
 Behind the hosted gateway, a synchronous `execute()` is cut off at ~30s and surfaces a `PipelineExecuteTimeoutError` pointing here. For long methods, drive the durable lifecycle yourself — the run survives client disconnects and is resumable by `pipeline_run_id`:
@@ -220,7 +240,7 @@ Branch on `error_domain` (`input`, `config`, `runtime`), `type_uri` and `retryab
 
 ### API errors: branch on `type_uri` and `error_domain`, not the HTTP status
 
-Every `/v1` route raises a typed `ApiResponseError` on a non-2xx answer, carrying the members of the RFC 9457 problem document: the protocol routes (`execute`, `start`, `validate`, `models`, `version`), the run status and results reads, and the product routes — the account, methods, organization, billing, API-key, onboarding, storage and upload methods, `codegen`, `resolve` and `pipe_io`, and the run records (`list_runs`, `iterate_runs`, `get_run_detail`, `update_run`). It is `mthds`'s own `ApiResponseError` narrowed, so `except mthds.runners.api.exceptions.ApiResponseError` catches it too; `health` raises `PipelineRequestError`, and `docs/architecture.md` lists the error regimes. The branch fields are `type_uri`, the problem's `type`, a stable URI naming the error class that every problem carries, and `error_domain`, the coarse class (`input` means the caller can fix it, `config` that a configuration change is needed, `runtime` that execution failed). `error_domain` is carried only by the problems the runner renders — a run route's refusal, and those of `codegen`, `resolve` and `pipe_io`, which the hosted API relays from the runner — and is `None` on the platform's own problems, such as those of the account, billing and API-key routes, which name their class by `type_uri` alone:
+Every `/v1` route raises a typed `ApiResponseError` on a non-2xx answer, carrying the members of the RFC 9457 problem document: the protocol routes (`execute`, `start`, `validate`, `models`, `version`), the run status and results reads, and the product routes — the account, methods, organization, billing, API-key, onboarding, storage and upload methods, `codegen`, `resolve`, `pipe_io` and `check_model_reference`, and the run records (`list_runs`, `iterate_runs`, `get_run_detail`, `update_run`). It is `mthds`'s own `ApiResponseError` narrowed, so `except mthds.runners.api.exceptions.ApiResponseError` catches it too; `health` raises `PipelineRequestError`, and `docs/architecture.md` lists the error regimes. The branch fields are `type_uri`, the problem's `type`, a stable URI naming the error class that every problem carries, and `error_domain`, the coarse class (`input` means the caller can fix it, `config` that a configuration change is needed, `runtime` that execution failed). `error_domain` is carried only by the problems the runner renders — a run route's refusal, and those of `codegen`, `resolve`, `pipe_io` and `check_model_reference`, which the hosted API relays from the runner — and is `None` on the platform's own problems, such as those of the account, billing and API-key routes, which name their class by `type_uri` alone:
 
 ```python
 from pipelex_sdk.errors import ApiResponseError
@@ -264,6 +284,7 @@ There is no barrel import — package `__init__.py` files stay empty. Import eac
 - **Method selectors** — `from pipelex_sdk.method_selector import parse_method_selector, ParsedMethodSelector`
 - **Validation verdict types** — `from pipelex_sdk.validation_models import PipelexValidationResult, PipelexValidationReport, PipelexInvalidReport, ValidationErrorItem, SuggestedFix, VALIDATION_VIEW_INPUT_FORM, ...`
 - **Crate routes** — `from pipelex_sdk.crate_models import ResolveRequest, CodegenRequest, PipeIORequest, PipeIOValidReport, CrateInvalidReport, MthdsFileItem, ...`, the requests and the two 200 arms of `resolve`, `codegen` and `pipe_io`
+- **Model reference check** — `from pipelex_sdk.model_reference_models import ModelReferenceVerdict, PresetReferenceVerdict, AliasReferenceVerdict, WaterfallReferenceVerdict, HandleReferenceVerdict, PresetMatch, AliasMatch, WaterfallMatch, HandleMatch, ModelCheckCategory, ModelReferenceKind, ModelReferenceResolution, ...`, the verdict of `check_model_reference`, one arm per reference kind
 - **Codegen tree** — `from pipelex_sdk.codegen_writer import write_codegen_tree, CodegenTreeWriteReport` to write one, `from pipelex_sdk.codegen_check import run_codegen_check, CodegenCheckReport, CodegenDrift, DriftCategory` to verify one, with the format primitives in `pipelex_sdk.codegen_lock` (`CodegenLock`, `parse_lock`, `load_lock`, `validate_artifact_path`, ...) and `pipelex_sdk.codegen_stamp` (`STAMPABLE_SUFFIXES`, `is_stampable_artifact_path`, `compute_content_hash`, `parse_stamped`, ...)
 - **Typed errors** — `from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, PipelineExecuteTimeoutError, PagingNotTerminatingError, RunFailedError, RunTimeoutError, RunLifecycleUnavailableError, RunStillRunningError, CodegenError, CodegenLockError, MethodErrorCode, ...`
 - **Version** — `from pipelex_sdk.version import __version__`

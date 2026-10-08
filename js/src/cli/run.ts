@@ -15,6 +15,7 @@ import {
   MissingMainStuffError,
   PipelineExecuteTimeoutError,
   RunFailedError,
+  isGatewayCutOff,
   renderInputsTemplate,
 } from "../index.js";
 import type { PipelexApiClient, RunResults } from "../index.js";
@@ -45,10 +46,14 @@ const RUN_FLAGS = {
   "inputs-template": { type: "boolean" },
 } as const;
 
-/** Where a run stands, which decides what an interrupt says. */
+/**
+ * Where a run stands, which decides what an interrupt and a failure say. `since` is when the
+ * request that may create a run left, on the monotonic clock the SDK times its requests with
+ * (`performance.now`), which a change of the system's time does not move.
+ */
 type Stage =
   | { readonly kind: "local" }
-  | { readonly kind: "starting" }
+  | { readonly kind: "starting"; readonly since: number }
   | { readonly kind: "started"; readonly runId: string };
 
 /** Run `pipelex-sdk run` and return its exit code. */
@@ -106,7 +111,7 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
           onStarting: () => {
             // Only once a request that may create a run is about to leave: an interrupt before
             // it, during the version handshake included, starts nothing, and the command says so.
-            stage = { kind: "starting" };
+            stage = { kind: "starting", since: performance.now() };
           },
           onStarted: (ack) => {
             if (io.interrupt.aborted) return;
@@ -153,30 +158,115 @@ function waitedOnRun(stage: Stage, error: unknown): string | undefined {
 }
 
 /**
- * The transport failures that prove the request never left, no connection having been made, so
- * that no run was created by it.
+ * Whether a transport failure proves the request never left, so that no run was created by it: it
+ * names a step of the connection's set-up, which no request follows. That is the name lookup or
+ * the connection itself failing (the system calls `getaddrinfo` and `connect`: an unknown host, a
+ * refused connection, no route to the host or the network, the system's connect time limit),
+ * undici's own connect time limit, which covers the TLS handshake, and a server certificate the
+ * TLS handshake refused. Several addresses each failing so, which Node reports together as an
+ * `AggregateError`, prove it too. A host that drops packets is a connection that never comes:
+ * undici gives it up after ten seconds (`UND_ERR_CONNECT_TIMEOUT`), before the time limit of any
+ * request the command sends, as the Python command meets httpx's connect timeout first and reads
+ * it the same way.
+ *
+ * Anything else may have come once the request had left, the Python command reading the same
+ * failures the same way. A reset (`ECONNRESET`) comes from a `read` whether the connection dropped
+ * during the TLS handshake or after the request, and so does an `EHOSTUNREACH` met once connected,
+ * so neither proves anything; nor does another TLS failure, which may come after the handshake;
+ * nor does the SDK's own time limit (`ABORT_TIMEOUT`), which fetch cannot place before or after
+ * the connection was made. Every request the command sends has a limit longer than undici's
+ * connect limit, so with Node's own dispatcher it runs out only once the request has left.
  */
-const NOTHING_SENT_CODES: ReadonlySet<string> = new Set([
+function provesNothingSent(error: ApiUnreachableError): boolean {
+  // The SDK keeps fetch's own failure as `cause`, and undici gives the transport's under it.
+  const fetchFailure = error.cause;
+  return fetchFailure instanceof Error && isConnectionSetupFailure(fetchFailure.cause);
+}
+
+function isConnectionSetupFailure(failure: unknown): boolean {
+  if (failure instanceof AggregateError) {
+    return failure.errors.length > 0 && failure.errors.every(isConnectionSetupFailure);
+  }
+  if (typeof failure !== "object" || failure === null) return false;
+  const { code, syscall } = failure as { code?: unknown; syscall?: unknown };
+  if (typeof code === "string" && CONNECTION_SETUP_CODES.has(code)) return true;
+  return typeof syscall === "string" && CONNECTION_SETUP_CALLS.has(syscall);
+}
+
+/** The system calls that resolve the host's name and open the connection. */
+const CONNECTION_SETUP_CALLS: ReadonlySet<string> = new Set(["getaddrinfo", "connect"]);
+
+/**
+ * The codes only a step of the connection's set-up gives: the name lookup's and the connect call's
+ * own (set even where Node reports several addresses together, without a system call), undici's
+ * connect time limit, Node's limit on one attempt among several addresses, Node's own check of the
+ * host's name, and every code Node gives a server certificate the TLS handshake refused.
+ */
+const CONNECTION_SETUP_CODES: ReadonlySet<string> = new Set([
   "ECONNREFUSED",
   "ENOTFOUND",
   "EAI_AGAIN",
   "UND_ERR_CONNECT_TIMEOUT",
+  "ERR_SOCKET_CONNECTION_TIMEOUT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "ERR_TLS_CERT_ALTNAME_FORMAT",
+  // Node names the verdicts of OpenSSL's certificate check from a fixed table, the "X509 certificate
+  // error codes" of its `tls` docs, and gives every other verdict, such as an unhandled critical
+  // extension or a CA certificate that may not sign certificates, the code `UNSPECIFIED`. The
+  // error carries nothing else that marks it, so these codes are the mark: the table as Node 24
+  // compiles it, in its order, then its default. The Python command reads every
+  // `ssl.SSLCertVerificationError` the same way.
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_CRL",
+  "UNABLE_TO_DECRYPT_CERT_SIGNATURE",
+  "UNABLE_TO_DECRYPT_CRL_SIGNATURE",
+  "UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY",
+  "CERT_SIGNATURE_FAILURE",
+  "CRL_SIGNATURE_FAILURE",
+  "CERT_NOT_YET_VALID",
+  "CERT_HAS_EXPIRED",
+  "CRL_NOT_YET_VALID",
+  "CRL_HAS_EXPIRED",
+  "ERROR_IN_CERT_NOT_BEFORE_FIELD",
+  "ERROR_IN_CERT_NOT_AFTER_FIELD",
+  "ERROR_IN_CRL_LAST_UPDATE_FIELD",
+  "ERROR_IN_CRL_NEXT_UPDATE_FIELD",
+  "OUT_OF_MEM",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "CERT_CHAIN_TOO_LONG",
+  "CERT_REVOKED",
+  "INVALID_CA",
+  "PATH_LENGTH_EXCEEDED",
+  "INVALID_PURPOSE",
+  "CERT_UNTRUSTED",
+  "CERT_REJECTED",
+  "HOSTNAME_MISMATCH",
+  "UNSPECIFIED",
 ]);
 
 /**
  * Whether a failure met once a request that may create a run was sent, and before the API named
  * the run, leaves it unknown whether one was created: its answer was lost to a time limit, a
- * connection that closed once the request had left or a gateway that cut a blocking execute off,
- * or it came back unreadable, or a gateway answered that it lost or never got the server's answer
- * (`502`, `504`, RFC 9110). Any other answer from the API, a `503` saying the request was not
- * handled included, and a failure that proves nothing was sent, say no run was created.
+ * connection that closed once the request had left or a gateway that cut the request off, or it
+ * came back unreadable, or a gateway answered that it lost or never got the server's answer
+ * (`502`, `504`, RFC 9110). A gateway cuts a request off at ~30 seconds, whether a blocking
+ * execute or a start the server is still handling, such as one fetching a `method_ref`'s package:
+ * the SDK's `isGatewayCutOff` tells it, past its threshold, from the time since `onStarting`. Any
+ * other answer from the API, a `503` that came back before that saying the request was not handled
+ * included, and a failure that proves nothing was sent, say no run was created.
  */
 function mayHaveStarted(stage: Stage, error: unknown): boolean {
   if (stage.kind !== "starting") return false;
   if (error instanceof PipelineExecuteTimeoutError) return true;
-  if (error instanceof ApiUnreachableError) return !NOTHING_SENT_CODES.has(error.code ?? "");
+  if (error instanceof ApiUnreachableError) return !provesNothingSent(error);
   if (!(error instanceof ApiResponseError)) return false;
-  return (error.status >= 200 && error.status < 300) || GATEWAY_LOST_ANSWER.has(error.status);
+  if (error.status >= 200 && error.status < 300) return true;
+  return (
+    GATEWAY_LOST_ANSWER.has(error.status) || isGatewayCutOff(error, performance.now() - stage.since)
+  );
 }
 
 /** The gateway statuses that say the server's answer was lost or never came (RFC 9110). */
