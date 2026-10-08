@@ -131,6 +131,14 @@ export async function runCommandScript(args: readonly string[], io: CommandIO): 
     );
   }
   const target = `${shownDir}/${name}`;
+  // The last check before the file exists: an interrupt that landed during the checks above
+  // writes nothing.
+  if (io.interrupt.aborted) {
+    throw new CommandError("Interrupted. Nothing was written.", {
+      exitCode: EXIT_INTERRUPTED,
+      bare: true,
+    });
+  }
   try {
     await writeFile(resolve(target), scriptBody(name, method, pipe), { flag: "wx", mode: 0o755 });
   } catch (error) {
@@ -166,14 +174,18 @@ function defaultName(candidate: string, method: string): string {
   return candidate;
 }
 
-/** A catalog method's name, kebab-cased, read from its catalog entry. */
+/**
+ * A catalog method's name, kebab-cased, read from its catalog entry. An entry whose name is
+ * missing or not a string gives an empty one, which asks for `--name` as an unusable name does.
+ */
 async function catalogName(
   client: PipelexApiClient,
   methodId: string,
   io: CommandIO,
 ): Promise<string> {
   const entry = await untilInterrupted(() => client.getMethod(methodId), io.interrupt);
-  return kebabCase(entry.name);
+  const name: unknown = entry.name;
+  return typeof name === "string" ? kebabCase(name) : "";
 }
 
 async function checkDirectory(dir: string): Promise<void> {

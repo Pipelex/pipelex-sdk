@@ -46,6 +46,13 @@ if TYPE_CHECKING:
 _TABLE_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "cli-cases.json"
 _TABLE: dict[str, Any] = json.loads(_TABLE_PATH.read_text(encoding="utf-8"))
 _CASES: list[dict[str, Any]] = _TABLE["cases"]
+
+
+def _case_named(name: str) -> dict[str, Any]:
+    """The table's case of that name, for a test that lands an interrupt the table cannot express."""
+    return next(case for case in _CASES if case["name"] == name)
+
+
 _ANSWERS: dict[str, dict[str, Any]] = _TABLE["answers"]
 _BASE_URL = httpx.URL(_TABLE["base_url"])
 _BASE_ORIGIN = f"{_BASE_URL.scheme}://{_BASE_URL.netloc.decode('ascii')}"
@@ -199,6 +206,26 @@ class _RecordedApi:
         return left
 
 
+class _WriteCutShort:
+    """A file handle whose write stores the first bytes, then takes Ctrl-C, as a write the person interrupts."""
+
+    def __init__(self, handle: Any) -> None:
+        self._handle = handle
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._handle.close()
+
+    def write(self, data: bytes) -> int:
+        self._handle.write(data[:8])
+        self._handle.flush()
+        # Outside the event loop, Python's own handler raises `KeyboardInterrupt` right here.
+        signal.raise_signal(signal.SIGINT)
+        return 8
+
+
 # ── Running a case ────────────────────────────────────────────────────────────────────────────────
 
 
@@ -319,8 +346,9 @@ def _check(case: dict[str, Any], outcome: _Outcome, root: Path) -> None:
 
 
 # An interrupt that lands before any request: each case records no route, so any request the command
-# sent would fail it, as an unrecorded one. The five scenarios of `@pipelex/sdk`'s suite, landing where
-# a Python command meets them.
+# sent would fail it, as an unrecorded one. The scenarios of `@pipelex/sdk`'s suite, landing where a
+# Python command meets them.
+_NOTHING_WRITTEN = "Interrupted. Nothing was written.\n"
 _BUNDLE = 'domain = "receipts"\nmain_pipe = "review_receipt"\n'
 _NO_RUN = "Interrupted. No run was started.\n"
 _EARLY_SCENARIOS: list[tuple[str, _EarlyInterrupt, dict[str, Any]]] = [
@@ -546,3 +574,43 @@ class TestCli:
         assert time.monotonic() - started_at < _BLOCKED_READ_BUDGET_SECONDS, outcome.shown
         _check(case, outcome, root)
         assert outcome.api.calls == {"POST /v1/pipe-io": 1}, outcome.shown
+
+    def test_an_interrupt_during_the_last_check_before_the_write_writes_nothing(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C while `script` checks that the name its catalog entry gave is free: nothing is written, and it says so."""
+        case: dict[str, Any] = {
+            **_case_named("script/catalog-id"),
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NOTHING_WRITTEN], "absent_files": ["resume-review-v2"]},
+        }
+        root = tmp_path.resolve()
+
+        def interrupted(*_: object) -> None:
+            # Outside the event loop, Python's own handler raises `KeyboardInterrupt` right here.
+            signal.raise_signal(signal.SIGINT)
+
+        check_free = mocker.patch("pipelex_sdk.command.script._check_free", side_effect=interrupted)
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
+        check_free.assert_called_once_with(".", "resume-review-v2")
+        assert list(root.iterdir()) == [], outcome.shown
+
+    def test_an_interrupt_during_the_write_leaves_no_file(self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A write Ctrl-C cuts short removes what it wrote, so a script is whole or absent."""
+        case: dict[str, Any] = {
+            **_case_named("script/catalog-id"),
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NOTHING_WRITTEN], "absent_files": ["resume-review-v2"]},
+        }
+        root = tmp_path.resolve()
+        real_fdopen = os.fdopen
+
+        def fdopen_cut_short(fd: int, mode: str) -> _WriteCutShort:
+            return _WriteCutShort(real_fdopen(fd, mode))
+
+        mocker.patch("pipelex_sdk.command.script.os.fdopen", side_effect=fdopen_cut_short)
+
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
+        assert list(root.iterdir()) == [], outcome.shown

@@ -16,6 +16,8 @@ import stat
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 from pipelex_sdk.command.args import FlagKind, parse_flags
 from pipelex_sdk.command.bundle import system_reason
 from pipelex_sdk.command.environment import make_client
@@ -128,8 +130,11 @@ def run_command_script(args: Sequence[str], io: CommandIO, progress: Progress) -
             "each time it runs. Add @<tag> to pin a release.\n"
         )
     target = f"{shown_dir}/{name}"
-    progress.interrupt_message = "Interrupted."
+    # Ctrl-C reaches this synchronous part as `KeyboardInterrupt` at once, so nothing is written once
+    # it lands, and a write it cuts short leaves no file (`_write_script`): until the file is whole,
+    # nothing was written.
     _write_script(target, script_body(name, method, pipe))
+    progress.interrupt_message = "Interrupted."
     io.write_stdout(f"{target}\n")
     io.write_stderr(f"Wrote {target}. Run it with: {target} --inputs inputs.json\n")
     return EXIT_OK
@@ -142,14 +147,22 @@ async def _check_method(
     unnamed: CatalogSource | None,
 ) -> str | None:
     """Check the method and the pipe with one pipe I/O call, and read the name of the catalog entry
-    `unnamed` names, the method whose script `--name` did not name; return that name, or `None`.
+    `unnamed` names, the method whose script `--name` did not name; return that name, or `None` when
+    there is none to read.
     """
     async with client:
         await describe_pipe(client, source, pipe)
         if unnamed is None:
             return None
         await before_request()
-        entry = await client.get_method(unnamed.method_id)
+        try:
+            entry = await client.get_method(unnamed.method_id)
+        except ValidationError as exc:
+            # An entry whose name is missing or no string gives no name, which asks for `--name` as an
+            # unusable name does; any other fault in the entry is the API's answer that cannot be read.
+            if any(error["loc"][:1] != ("name",) for error in exc.errors()):
+                raise
+            return None
     return entry.name
 
 
@@ -200,11 +213,20 @@ def _check_free(shown_dir: str, name: str) -> None:
 
 
 def _write_script(target: str, body: str) -> None:
-    """Create the file, executable, refusing one that exists, a dangling link included (`O_EXCL`)."""
+    """Create the file, executable, refusing one that exists, a dangling link included (`O_EXCL`).
+
+    A write that fails or is interrupted once the file exists removes it, so a script is either whole
+    or absent.
+    """
+    path = os.path.abspath(target)
     try:
-        descriptor = os.open(os.path.abspath(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL, _EXECUTABLE_MODE)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(body.encode("utf-8"))
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _EXECUTABLE_MODE)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(body.encode("utf-8"))
+        except BaseException:
+            Path(path).unlink(missing_ok=True)
+            raise
     except FileExistsError as exc:
         raise _already_there(target) from exc
     except OSError as exc:
