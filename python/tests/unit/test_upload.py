@@ -145,6 +145,23 @@ class TestUploadFile:
         assert exc_info.value.filename == "scan.pdf"
         assert exc_info.value.__cause__ is error
 
+    def test_a_cancellation_once_the_bytes_are_read_uploads_nothing(self, mocker: MockerFixture) -> None:
+        """A cancellation that lands while the bytes are encoded, the task running, stops before the upload request."""
+        client = _FakeUploadClient()
+        encode = base64.b64encode
+
+        def encode_then_cancel(data: bytes) -> bytes:
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            return encode(data)
+
+        mocker.patch("pipelex_sdk.upload.base64.b64encode", side_effect=encode_then_cancel)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(upload_file(client, bytes([1]), filename="scan.pdf"))
+        assert client.calls == []
+
     def test_reads_the_local_file_off_the_event_loop(self, mocker: MockerFixture, tmp_path: Path) -> None:
         # The (possibly large) file read is offloaded via asyncio.to_thread so it never blocks
         # the event loop. `wraps` keeps the real behavior; we only assert the offload happened.

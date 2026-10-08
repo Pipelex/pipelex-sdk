@@ -133,6 +133,10 @@ async def upload_file(
     # not free the loop (and this matches the JS SDK, which also reads off-loop but encodes inline).
     data, resolved_name, resolved_type = await asyncio.to_thread(_to_asset_bytes, source, filename, content_type)
     encoded = base64.b64encode(data).decode("ascii")
+    # A cancellation that landed once the bytes were read, while they were encoded, stops here, before
+    # the upload request, rather than at the request's own first wait: nothing is uploaded once the
+    # caller has stopped.
+    await asyncio.sleep(0)
     try:
         uploaded = await client.upload(UploadInput(filename=resolved_name, data=encoded, content_type=resolved_type))
     except (ApiResponseError, ApiUnreachableError) as exc:

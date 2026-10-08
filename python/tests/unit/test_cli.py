@@ -471,13 +471,16 @@ class TestCli:
         _check(case, outcome, root)
         assert outcome.api.calls == {}, outcome.shown
 
-    def test_an_interrupt_while_the_pipe_io_answer_is_read_sends_no_more(
+    def test_an_interrupt_while_the_pipe_io_answer_is_read_uploads_nothing(
         self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         case: dict[str, Any] = {
             "name": "between/pipe-io",
             "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0", "--inputs", "inputs.json"],
-            "files": [{"path": "inputs.json", "text": '{"receipt": "https://files.example.test/r.pdf", "note": "Team lunch"}\n'}],
+            "files": [
+                {"path": "inputs.json", "text": '{"receipt": "scans/receipt.pdf", "note": "Team lunch"}\n'},
+                {"path": "scans/receipt.pdf", "text": "%PDF-1.4 a receipt\n"},
+            ],
             "routes": {"POST /v1/pipe-io": [_PIPE_IO_FOR_ADDRESS]},
             "expect": {"exit_code": 130, "stdout": "", "stderr": [_NO_RUN]},
         }

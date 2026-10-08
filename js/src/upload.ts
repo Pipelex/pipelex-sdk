@@ -16,6 +16,7 @@ import {
   UnsupportedUploadCapabilityError,
 } from "./errors.js";
 import { ApiResponseError, ApiUnreachableError } from "./errors.js";
+import { throwIfAborted } from "./runs.js";
 
 /** A local asset `uploadFile` accepts. A path string is Node-only (see {@link readLocalPath}). */
 export type UploadableAsset = Blob | ArrayBuffer | Uint8Array | string;
@@ -40,6 +41,12 @@ export interface UploadRecord {
 export interface UploadFileOptions {
   filename?: string;
   contentType?: string;
+  /**
+   * Read once the asset's bytes are in hand, right before the upload request: once it has
+   * aborted, nothing is uploaded and `uploadFile` throws the abort, however long the read took.
+   * A request already sent runs to its end. It is not sent to the server.
+   */
+  signal?: AbortSignal;
 }
 
 /** The subset of the client `uploadFile` needs — the raw base64 `upload` wire call. */
@@ -183,6 +190,8 @@ export async function uploadFile(
   options: UploadFileOptions = {},
 ): Promise<UploadRecord> {
   const { bytes, filename, contentType } = await toAssetBytes(asset, options);
+  // A slow read, or a Blob's `arrayBuffer()`, may outlast the caller's patience.
+  throwIfAborted(options.signal);
   const data = bytesToBase64(bytes);
   let uploaded: { uri: string; filename: string };
   try {
