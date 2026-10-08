@@ -943,6 +943,67 @@ describe("prepareInputs pipe selection", () => {
 
 // ── Verdicts, selectors, and errors ──────────────────────────────────
 
+describe("prepareInputs and the caller's signal", () => {
+  it("starts no upload once the signal aborted while the pipe I/O request was in flight", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+    const controller = new AbortController();
+    const answer = client.pipeIo.bind(client);
+    client.pipeIo = async (request) => {
+      const result = await answer(request);
+      controller.abort();
+      return result;
+    };
+
+    const failure = await prepareInputs(client, {
+      files: FILES,
+      inputs: { photo: new Uint8Array([1]) },
+      signal: controller.signal,
+    }).catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(DOMException);
+    expect(failure).toBe(controller.signal.reason);
+    expect(client.pipeIoCalls).toHaveLength(1);
+    expect(client.uploadCalls).toHaveLength(0);
+  });
+
+  it("starts no further upload once the signal aborted during one", async () => {
+    const client = makeClient([topLevel("first", image()), topLevel("second", image())]);
+    const controller = new AbortController();
+    const upload = client.upload.bind(client);
+    client.upload = async (request) => {
+      const result = await upload(request);
+      controller.abort();
+      return result;
+    };
+
+    const failure = await prepareInputs(client, {
+      files: FILES,
+      inputs: { first: new Uint8Array([1]), second: new Uint8Array([2]) },
+      signal: controller.signal,
+    }).catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(DOMException);
+    expect(failure).toBe(controller.signal.reason);
+    expect(client.uploadCalls).toHaveLength(1);
+  });
+
+  it("sends nothing when the signal had aborted before the call", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+    const controller = new AbortController();
+    controller.abort();
+
+    const failure = await prepareInputs(client, {
+      files: FILES,
+      inputs: { photo: new Uint8Array([1]) },
+      signal: controller.signal,
+    }).catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(DOMException);
+    expect(failure).toBe(controller.signal.reason);
+    expect(client.pipeIoCalls).toHaveLength(0);
+  });
+});
+
 describe("prepareInputs verdicts and guards", () => {
   it("throws MethodLoadError, carrying the answer's items, when the closure does not resolve", async () => {
     const client = makeClient([], {

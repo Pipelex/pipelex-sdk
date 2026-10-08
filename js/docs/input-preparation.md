@@ -105,6 +105,8 @@ Takes the **method** as exactly one of three selectors, the optional target **pi
 
 The prepared `inputs` are passed to the existing run lifecycle unchanged.
 
+**Stopping it.** An optional `signal` stops the preparation between its steps: once it has aborted, neither the pipe I/O request nor any upload starts, and `prepareInputs` throws the abort, as the run wait does. A request already sent runs to its end, so an upload under way finishes, but the file after it is not sent. The signal is not sent to the server.
+
 #### The three selectors
 
 Exactly one per call. The type pins the other two to `never`, so a second selector is a compile error; an untyped caller gets an `InputPreparationError` naming the three forms. **Empty is absent** — `files: []`, `method_ref: ""`, `method_id: "  "` — mirroring the run options' rule, so an empty selector may sit beside a real one without tripping the XOR.
