@@ -16,6 +16,7 @@ from pipelex_sdk.command.io import EXIT_FAILED, CommandError
 from pipelex_sdk.command.loop import before_request
 from pipelex_sdk.command.present import METHOD_DOES_NOT_LOAD_SENTENCE, load_failure_lines
 from pipelex_sdk.crate_models import CrateInvalidReport, MthdsFileItem, PipeIORequest, PipeIOValidReport
+from pipelex_sdk.errors import ApiResponseError
 
 if TYPE_CHECKING:
     from mthds.protocol.input_form import PipeInputFormDescriptor
@@ -101,14 +102,19 @@ async def describe_pipe(client: PipelexAPIClient, source: MethodSource, pipe: st
 
     Raises:
         CommandError: When the method does not load, or the answer does not describe the pipe it
-            selected. A refusal of the request itself propagates as the SDK's `ApiResponseError`.
+            selected or says neither that the method loads nor why it does not. A refusal of the
+            request itself, and an answer that is not JSON, propagate as the SDK's `ApiResponseError`.
     """
     selector = crate_selector(source)
     request = PipeIORequest(files=selector.files, method_ref=selector.method_ref, method_id=selector.method_id, pipe_ref=pipe)
     await before_request()
     try:
         answer = await client.pipe_io(request)
-    except ValidationError as exc:
+    except ApiResponseError as exc:
+        # JSON that is no verdict is raised as an answer the client cannot read, pydantic's refusal as
+        # its cause: it is worded here as what the answer fails to say.
+        if not isinstance(exc.__cause__, ValidationError):
+            raise
         msg = "the API's pipe I/O answer says neither that the method loads nor why it does not."
         raise CommandError(msg, exit_code=EXIT_FAILED) from exc
     match answer:

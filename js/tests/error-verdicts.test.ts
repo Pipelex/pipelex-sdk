@@ -2,9 +2,10 @@
  * The verdict every error carries — `retryable` and `errorDomain` — driven through the case file
  * `fixtures/error-verdicts.json`.
  *
- * The file is the contract between this package and `pipelex-sdk` (Python), which must follow it
- * too: the Python suite is to keep a byte-for-byte copy and drive its own code through the same
- * cases, with a check at the repository's root holding the two copies identical. Here:
+ * The file is the contract between this package and `pipelex-sdk` (Python), which follows it too:
+ * this file is the source, `make shared-files` at the repository's root writes its byte-for-byte
+ * copy to `python/tests/fixtures/`, `make check-shared-files` fails on a stale one, and the Python
+ * suite drives its own code through the same cases. Here:
  *
  * - every `fallback` case drives the fallback table directly, and an `ApiResponseError` built
  *   with nothing but that status, code and naming;

@@ -5,9 +5,10 @@ same malformed suffixes are refused before anything is sent, as the platform ref
 """
 
 import pytest
-from mthds.protocol.exceptions import PipelineRequestError
 from pydantic import ValidationError
 
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
+from pipelex_sdk.errors import RequestArgumentError
 from pipelex_sdk.method_selector import ParsedMethodSelector, parse_method_selector
 
 
@@ -43,7 +44,7 @@ class TestMethodSelector:
         ],
     )
     def test_refuses_a_malformed_suffix_saying_what_a_suffix_may_be(self, selector: str) -> None:
-        with pytest.raises(PipelineRequestError, match=r"names no version: the suffix of a catalog id is @<version>"):
+        with pytest.raises(RequestArgumentError, match=r"names no version: the suffix of a catalog id is @<version>"):
             parse_method_selector(selector)
 
     @pytest.mark.parametrize(
@@ -59,7 +60,7 @@ class TestMethodSelector:
         ],
     )
     def test_refuses_a_value_that_is_no_catalog_id(self, selector: str) -> None:
-        with pytest.raises(PipelineRequestError, match=r"a catalog id is mt_ followed by"):
+        with pytest.raises(RequestArgumentError, match=r"a catalog id is mt_ followed by"):
             parse_method_selector(selector)
 
     @pytest.mark.parametrize(
@@ -71,21 +72,23 @@ class TestMethodSelector:
         ],
     )
     def test_refuses_a_value_that_is_not_a_string_as_an_untyped_caller_may_pass(self, selector: object, type_name: str) -> None:
-        with pytest.raises(PipelineRequestError) as exc_info:
+        with pytest.raises(RequestArgumentError) as exc_info:
             parse_method_selector(selector)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
 
         assert str(exc_info.value) == f"parse_method_selector() takes a method selector string (mt_…); got {type_name}."
 
     def test_quotes_the_refused_selector(self) -> None:
-        with pytest.raises(PipelineRequestError) as exc_info:
+        with pytest.raises(RequestArgumentError) as exc_info:
             parse_method_selector("mt_abc@v3")
 
         assert str(exc_info.value) == (
             '"mt_abc@v3" names no version: the suffix of a catalog id is @<version>, a positive number without a leading zero, or @draft.'
         )
+        # The selector may come from a model's tool arguments: the caller fixes it, and asking again unchanged cannot pass.
+        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
     def test_refuses_a_version_past_the_integer_conversion_limit(self) -> None:
-        with pytest.raises(PipelineRequestError, match="too long to read"):
+        with pytest.raises(RequestArgumentError, match="too long to read"):
             parse_method_selector("mt_abc@" + "9" * 5000)
 
     def test_the_parsed_selector_is_frozen(self) -> None:

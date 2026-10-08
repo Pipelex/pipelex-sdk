@@ -55,6 +55,7 @@ from pipelex_sdk.artifact_models import (
     FetchArtifactOptions,
     ResolvedArtifact,
 )
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
 from pipelex_sdk.errors import (
     ApiResponseError,
     ArtifactAuthenticationError,
@@ -66,6 +67,10 @@ from pipelex_sdk.errors import (
     ScopeUnavailableError,
 )
 from pipelex_sdk.runs import RunArtifact, RunResultCompleted, RunResultFailed, RunResultRunning, RunResults
+
+# The verdict of an argument the artifact operations refuse — a scope, a bound, a location, both selectors
+# or neither: the caller changes it. `ArtifactOperationError` is `runtime` otherwise.
+_ARGUMENT_REFUSED = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Sequence
@@ -355,12 +360,12 @@ def artifact_filename(location: ArtifactLocation, content_type: str | None, scop
     loose = cast("object", location)
     if not isinstance(loose, ArtifactLocation):
         msg = f"artifact_filename needs an ArtifactLocation, as locate_artifacts answers; got a {type(loose).__name__}."
-        raise ArtifactOperationError(msg)
+        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED)
     first = loose.found_at[0] if loose.found_at else None
     segments = _parse_path(first) if first is not None else None
     if segments is None:
         msg = f'artifact_filename needs a location whose first "found_at" entry is a path such as "$.items[0].url"; got {first!r}.'
-        raise ArtifactOperationError(msg)
+        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED)
     return _filename_for(segments, loose.uri, content_type, checked_scope)
 
 
@@ -446,7 +451,7 @@ def _require_scope(scope: ArtifactScope) -> ArtifactScope:
         return ArtifactScope(scope)
     except ValueError as exc:
         msg = f'"scope" must be "main_stuff" or "working_memory", got {scope!r}.'
-        raise ArtifactOperationError(msg) from exc
+        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED) from exc
 
 
 # ── resolve_artifacts ────────────────────────────────────────────────
@@ -638,7 +643,7 @@ def _require_positive(name: str, value: float) -> None:
     """Refuse a bound that is not a positive, finite number."""
     if not math.isfinite(value) or value <= 0:
         msg = f'"{name}" must be a positive number, got {value}.'
-        raise ArtifactOperationError(msg)
+        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED)
 
 
 def _checked_url(uri: str, download_url: str, *, allow_http: bool) -> str:
@@ -777,16 +782,16 @@ async def download_artifacts(
     bounds = _validated_bounds(opts)
     if opts.concurrency < 1:
         msg = f'"concurrency" must be a positive integer, got {opts.concurrency}.'
-        raise ArtifactOperationError(msg)
+        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED)
     _require_positive("max_total_bytes", opts.max_total_bytes)
 
     # An empty `run_id` is no selector at all, and is refused here rather than sent to the results
     # read, which would answer a 404 about a run nobody named.
     if bool(run_id) == (results is not None):
         msg = "download_artifacts takes exactly one of `run_id` (the results are re-read) or `results` (a RunResults in hand)."
-        raise ArtifactOperationError(msg)
+        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED)
     read_results = results if results is not None else await _read_completed_results(client, cast("str", run_id), scope)
-    walked = _scope_value(read_results, scope)
+    walked = _scope_value(read_results, scope, read_here=results is None)
 
     # The walk's own record names the files; `locations` is what the verdict reports.
     located = _walk_references(walked, with_paths=True)
@@ -800,7 +805,8 @@ async def download_artifacts(
         await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
     except OSError as exc:
         msg = f'The download directory "{target_dir}" cannot be created or used: {exc}.'
-        raise ArtifactOperationError(msg) from exc
+        # The environment refuses the download, not the run: someone fixes the directory.
+        raise ArtifactOperationError(msg, verdict=ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False)) from exc
 
     budget = _DownloadBudget(max_total_bytes=opts.max_total_bytes)
     try:
@@ -861,15 +867,19 @@ async def _read_completed_results(client: ArtifactCapableClient, run_id: str, sc
     return completed.result
 
 
-def _scope_value(results: RunResults, scope: ArtifactScope) -> Any:
+def _scope_value(results: RunResults, scope: ArtifactScope, *, read_here: bool) -> Any:
     """The artifact the scope names, or the typed error saying why there is none to walk.
 
     The two readings of an absent value are distinct, and only one of them is the platform's answer:
     a key the results read never carried is not in `model_fields_set` and is `FieldNotIncludedError`,
-    where a key relayed as `None` is a value and is `ScopeUnavailableError`.
+    where a key relayed as `None` is a value and is `ScopeUnavailableError`. When the results were read
+    here (`read_here`), asking for the scope's artifact, an answer without its key broke the API's own
+    contract, so the error is `runtime` rather than the caller's `input`.
     """
     field_name = scope.results_field
     if field_name not in results.model_fields_set:
+        if read_here:
+            raise FieldNotIncludedError(field_name, verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False))
         raise FieldNotIncludedError(field_name)
     value = getattr(results, field_name, None)
     if value is None:

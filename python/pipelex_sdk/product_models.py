@@ -796,11 +796,15 @@ class UploadInput(BaseModel):
 
 
 class UploadedFile(BaseModel):
-    """An uploaded file's storage handle — `POST /v1/upload`."""
+    """An uploaded file's storage handle — `POST /v1/upload`.
+
+    An answer with no non-empty `uri` names no stored file, so it does not validate, and `upload`
+    raises the `ApiResponseError` of an answer the SDK cannot read, as `@pipelex/sdk` does.
+    """
 
     model_config = ConfigDict(extra="allow")
 
-    uri: str
+    uri: str = Field(min_length=1)
     filename: str
 
 

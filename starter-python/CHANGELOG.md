@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.36.0] - 2026-10-09
+
+### Changed
+
+- **The starter runs on `pipelex-sdk` 0.35.1, with `mthds` 0.19.0 unchanged**: a request that gets no answer from `execute` or `start` is now presented as an unreachable API with the `PIPELEX_BASE_URL` hint, as on every other route, where a failed connection crashed with httpx's traceback, and a blocking run whose connection timed out is no longer reported as one the gateway cut off. `make add-method` checks a catalog id with the SDK's `parse_method_selector` instead of its own copy of the grammar, so a malformed id or suffix is refused in the SDK's words. The SDK's reshaped method routes reach nothing in the starter, so no project has to act.
+
 ## [v0.35.0] - 2026-10-08
 
 ### Added

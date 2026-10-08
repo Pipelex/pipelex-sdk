@@ -38,7 +38,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import httpx
 from mthds.protocol.exceptions import PipelineRequestError
 from pipelex_sdk.artifact_models import DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
@@ -63,10 +62,11 @@ from pipelex_method_cli_python.lib.usage import print_cost_report
 #: What saving a run's files can raise besides the SDK's own errors and the CLI's: an `OSError` from
 #: the filesystem, such as a working directory removed before `--out` is resolved or an `--out` the
 #: command may not write; the `RuntimeError` Python 3.11 and 3.12 raise when `--out` is a symbolic link
-#: loop; a body httpx cannot decode, which the SDK's transport mapping leaves as httpx's own error; and
-#: a malformed answer from the route that resolves the files' links, as JSON or as its model. `deliver`
-#: words each of them as an `AppError`.
-UNWORDED_DOWNLOAD_FAILURES = (OSError, RuntimeError, httpx.HTTPError, json.JSONDecodeError, ValidationError)
+#: loop; and a malformed answer from the route that resolves the files' links, as JSON or as its
+#: model. `deliver` words each of them as an `AppError`. A request that got no answer, or a body
+#: httpx cannot decode, is the SDK's own `ApiUnreachableError`, and a file that would not come down
+#: is an item of the download's verdict, so neither is listed here.
+UNWORDED_DOWNLOAD_FAILURES = (OSError, RuntimeError, json.JSONDecodeError, ValidationError)
 
 
 @dataclass(frozen=True)

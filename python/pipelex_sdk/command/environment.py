@@ -13,10 +13,9 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from mthds.protocol.exceptions import PipelineRequestError
-
 from pipelex_sdk.client import DEFAULT_API_BASE_URL, PipelexAPIClient
 from pipelex_sdk.command.io import usage_error
+from pipelex_sdk.errors import RequestArgumentError
 from pipelex_sdk.user_agent import AppInfo
 from pipelex_sdk.version import __version__
 
@@ -83,6 +82,6 @@ def make_client(io: CommandIO) -> PipelexAPIClient:
             base_url=DEFAULT_API_BASE_URL if base_url is None else base_url,
             app_info=AppInfo(name=CLIENT_APP_NAME, version=__version__),
         )
-    except PipelineRequestError as exc:
+    except RequestArgumentError as exc:
         msg = f"{BASE_URL_VARIABLE} is refused."
         raise usage_error(msg, [f"Reason: {exc}"]) from exc

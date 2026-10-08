@@ -1530,8 +1530,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * comma-separated `?artifacts=` parameter: only those are read, and an
    * unselected artifact is absent from the result (`undefined`) while a
    * selected one the run never wrote is `null`. Omitted, every artifact is
-   * read. An empty selection or an unknown name throws a `RangeError` before
-   * any request. `MissingMainStuffError` is thrown only for a read that asked
+   * read. An empty selection or an unknown name throws a `RequestArgumentError`
+   * before any request. `MissingMainStuffError` is thrown only for a read that asked
    * for `main_stuff` — no selection, or one naming it.
    *
    * Throws `RunLifecycleUnavailableError` when the lifecycle routes are absent
@@ -1639,7 +1639,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     options: PipelexStartOptions,
     pollOptions?: StartAndWaitForResultOptions,
   ): Promise<RunResults> {
-    // Before the run starts: a RangeError after it would carry no run id to re-poll by.
+    // Before the run starts: a refusal after it would carry no run id to re-poll by.
     assertWaitOptions(pollOptions);
     const { onStarted, onStarting, ...waitOptions } = pollOptions ?? {};
     const hosted = await this.supportsRunLifecycle();

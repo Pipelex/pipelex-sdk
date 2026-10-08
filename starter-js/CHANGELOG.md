@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.36.0] - 2026-10-09
+
+### Changed
+
+- **The starter runs on `@pipelex/sdk` 0.35.1**: `make add-method` checks a catalog id with the SDK's `parseMethodSelector` instead of its own copy of the grammar, so a malformed id or suffix is refused in the SDK's words, and a durable run of an inline bundle now waits as long for its start to be answered as a blocking run does, where a large bundle on a slow connection timed out after 30 seconds. The SDK's reshaped method routes reach nothing in the starter, so no project has to act. `npm ls mthds` still lists two copies, the form kernel's and the SDK's, as before this move, until a release of `@pipelex/mthds-form` takes the SDK's range.
+
 ## [v0.35.0] - 2026-10-08
 
 ### Added

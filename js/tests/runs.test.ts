@@ -3,7 +3,9 @@ import type { InputForm, OutputForm, PipeIOContracts } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
 import {
   ApiResponseError,
+  errorVerdictOf,
   MissingMainStuffError,
+  RequestArgumentError,
   RunFailedError,
   RunLifecycleUnavailableError,
   RunTimeoutError,
@@ -412,14 +414,38 @@ describe("PipelexApiClient.getRunResult artifact selection", () => {
   );
 
   it.each([
-    ["an empty selection", []],
-    ["an unknown name", ["graphspec"]],
-  ])("refuses %s with a RangeError before any request", async (_name, artifacts) => {
+    ["an empty selection", [], /must name one or more of/],
+    ["an unknown name", ["graphspec"], /Unknown result artifact\(s\) graphspec;/],
+  ])(
+    "refuses %s with a RequestArgumentError before any request",
+    async (_name, artifacts, message) => {
+      const client = makeClient();
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const err = await client
+        .getRunResult("run-1", { artifacts: artifacts as RunResultArtifact[] })
+        .then(
+          () => expect.fail("expected the read to throw"),
+          (thrown: unknown) => thrown,
+        );
+      expect(err).toBeInstanceOf(RequestArgumentError);
+      expect((err as RequestArgumentError).message).toMatch(message);
+      // The caller must change the selection: input, and asking again cannot help.
+      expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a selection that is not an array with a TypeError carrying no verdict", async () => {
     const client = makeClient();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    await expect(
-      client.getRunResult("run-1", { artifacts: artifacts as RunResultArtifact[] }),
-    ).rejects.toBeInstanceOf(RangeError);
+    const err = await client
+      .getRunResult("run-1", { artifacts: "main_stuff" as unknown as RunResultArtifact[] })
+      .then(
+        () => expect.fail("expected the read to throw"),
+        (thrown: unknown) => thrown,
+      );
+    expect(err).toBeInstanceOf(TypeError);
+    expect(errorVerdictOf(err)).toBeUndefined();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -447,7 +473,7 @@ describe("PipelexApiClient.getRunResult artifact selection", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     await expect(
       client.startAndWaitForResult({ pipe_code: "p" }, { artifacts: [] }),
-    ).rejects.toBeInstanceOf(RangeError);
+    ).rejects.toBeInstanceOf(RequestArgumentError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
