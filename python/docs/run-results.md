@@ -83,6 +83,7 @@ Against a bare runner the id identifies the call the runner just answered, but t
 def show_run(ack: PipelexRunResultStart) -> None:
     print(f"Run started: {ack.pipeline_run_id}", file=sys.stderr)
 
+
 results = await client.start_and_wait(
     method_ref="github.com/acme/methods/receipt-review@v1.0.0",
     inputs=inputs,

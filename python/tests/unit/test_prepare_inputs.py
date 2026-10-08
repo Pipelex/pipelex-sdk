@@ -383,7 +383,7 @@ class TestPrepareInputs:
         # mistake (never a raw binascii.Error), and must never upload silently-corrupted bytes.
         client = _image_client()
 
-        with pytest.raises(InvalidInputValueError, match="^Malformed data URL"):
+        with pytest.raises(InvalidInputValueError, match=r"^Malformed data URL"):
             asyncio.run(prepare_inputs(client, files=_FILES, inputs={"photo": data_url}))
         assert client.upload_calls == []
 
