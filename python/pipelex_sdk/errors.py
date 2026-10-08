@@ -1,7 +1,7 @@
 """Pipelex SDK errors — the argument, transport, run-lifecycle, input-preparation, artifact and codegen
 errors `pipelex-sdk` raises, each carrying a verdict.
 
-Every error class this module exports says two things a program needs before anything else:
+Every error class this module exports says what a program needs to know before anything else:
 `retryable`, whether asking again can plausibly succeed, and `error_domain`, who can fix the failure
 (`input`, `config` or `runtime`, `pipelex_sdk.error_verdicts.ErrorDomain`). Both are always decided,
 and `pipelex_sdk.error_verdicts.error_verdict_of` reads the pair off anything an `except` holds. The
@@ -38,7 +38,7 @@ verdict's item. See `docs/artifact-download.md`.
 The codegen tree errors (`CodegenError`, `CodegenLockError`) are not request errors at all: they are
 raised by `pipelex_sdk.codegen_writer`, `pipelex_sdk.codegen_check`, `pipelex_sdk.codegen_lock` and
 `pipelex_sdk.codegen_stamp` over bytes and a directory, so they derive from `Exception` rather than from
-the protocol base, and declare the two verdict members themselves.
+the protocol base, and declare the verdict members themselves.
 
 `FieldNotIncludedError` is raised by `pipelex_sdk.usage` and `pipelex_sdk.artifacts` over an
 already-validated `RunResults` whose body did not carry a key the operation needs. Like
@@ -82,14 +82,14 @@ def _verdict(error_domain: ErrorDomain, *, retryable: bool) -> ErrorVerdict:
 
 
 class PipelexRequestError(PipelineRequestError):
-    """The base of every error this SDK raises over a request, carrying the verdict as two attributes:
+    """The base of every error this SDK raises over a request, carrying the verdict as attributes:
     `retryable` and `error_domain`.
 
     Each subclass passes its verdict to this constructor, as the keyword `verdict`, so every class says
     its verdict where it is defined. It refines the standard's `PipelineRequestError`, so
     `except PipelineRequestError` still catches every SDK request error. To read a verdict from anything
     an `except` holds, use `pipelex_sdk.error_verdicts.error_verdict_of`, which also reads it off an
-    error that is not one of these classes but carries the two members.
+    error that is not one of these classes but carries both members.
 
     The keyword arguments the constructor does not name pass on to the next class in the method
     resolution order: that is how `ApiResponseError` and `RunStillRunningError`, which also refine one of
@@ -293,7 +293,7 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
             instance: The problem's `instance`, the occurrence.
             request_id: The request's correlation id.
             error_domain: The `error_domain` the server sent, `None` when it sent none. The error's own
-                `error_domain` is this when it is one of the three domains, and the fallback's otherwise.
+                `error_domain` is this when it is a known domain, and the fallback's otherwise.
             retryable: The `retryable` the server sent, `None` when it sent none. The error's own
                 `retryable` is this when it is a boolean, and decided as the class says otherwise.
             user_action: The next step the server advises.
@@ -393,8 +393,8 @@ class RunFailedError(PipelexRequestError):
       tells the reason.
     - `run_id` locates the run, for a status read or a support request.
 
-    Its verdict comes from the report. `error_domain` is the report's `error_domain` when it is one of
-    the three domains, and `runtime` otherwise, including a run with no report. `retryable` is true only
+    Its verdict comes from the report. `error_domain` is the report's `error_domain` when it is a known
+    domain, and `runtime` otherwise, including a run with no report. `retryable` is true only
     when the report's `retryable` is `True`: a report that says nothing, and a run with none, read as not
     retryable, since starting the run again spends credit and nothing says it would succeed. The report
     keeps its own `retryable` as written, so a consumer that words the unknown differently still can.
@@ -627,8 +627,8 @@ class UploadTransportCode(StrEnum):
     the message.
 
     The vocabulary is `@pipelex/sdk`'s, shared so a consumer of both SDKs branches on one set.
-    `upload_file` raises the first three and `unexpected`; the others name the failures of an upload to
-    storage made with a grant, which `@pipelex/sdk`'s `uploadWithGrant` performs.
+    `upload_file` raises `timeout`, `unreachable`, `server_error` and `unexpected`; the others name the
+    failures of an upload to storage made with a grant, which `@pipelex/sdk`'s `uploadWithGrant` performs.
 
     - `timeout` — the SDK's own time limit ran out before an answer came back (the client's request
       timeout, `ApiUnreachableError` with code `ABORT_TIMEOUT`). Whether the file was stored is unknown.

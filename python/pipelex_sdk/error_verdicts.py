@@ -1,6 +1,6 @@
 """The verdict every Pipelex SDK error carries, and the table a refused request falls back to.
 
-Every error `pipelex-sdk` raises says two things a program needs before anything else: whether asking
+Every error `pipelex-sdk` raises says what a program needs to know before anything else: whether asking
 again can plausibly succeed (`retryable`), and who can fix the failure (`error_domain`). Both are always
 decided. This module holds that vocabulary — `ErrorDomain` and `ErrorVerdict` — the structural reader
 `error_verdict_of`, and `fallback_verdict`, the table an `ApiResponseError` reads a member from when the
@@ -29,8 +29,8 @@ class ErrorDomain(StrEnum):
     - `config` — someone changing the environment: the base URL, the credential, the plan, the deployment.
     - `runtime` — nobody beforehand: a fault during execution or in the service.
 
-    The set is closed: the hosted envelope spec names these three, so a fourth would be a contract change
-    and would reach the SDK as one.
+    The set is closed: the hosted envelope spec names these, so another would be a contract change and
+    would reach the SDK as one.
     """
 
     INPUT = "input"
@@ -54,7 +54,7 @@ class ErrorVerdict(BaseModel):
     retryable: bool
 
 
-# The four verdicts the fallback table answers.
+# The verdicts the fallback table answers.
 _INPUT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 _CONFIG = ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False)
 _TRANSIENT = ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
@@ -65,7 +65,7 @@ _API_KEY_LIMIT_CODE = "pipelex_api_key_limit_reached"
 
 
 def error_domain_of(value: object) -> ErrorDomain | None:
-    """The domain `value` names when it is one of the three, else `None`: any other string, an empty
+    """The domain `value` names when it is a known one, else `None`: any other string, an empty
     one, or a value that is not a string.
     """
     if not isinstance(value, str):

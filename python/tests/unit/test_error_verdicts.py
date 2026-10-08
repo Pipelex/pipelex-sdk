@@ -485,7 +485,7 @@ class TestErrorVerdicts:
             pytest.param(None, "runtime", id="no retryable"),
             pytest.param("yes", "runtime", id="a retryable that is not a boolean"),
             pytest.param(1, "runtime", id="a retryable that is a number"),
-            pytest.param(True, "network", id="a domain outside the three"),
+            pytest.param(True, "network", id="an unknown domain"),
             pytest.param(True, "", id="an empty domain"),
             pytest.param(True, 3, id="a domain that is not a string"),
         ],

@@ -202,7 +202,7 @@ _AnswerT = TypeVar("_AnswerT")
 # an answer the SDK cannot read, which carries no problem document to read it from.
 _REQUEST_ID_HEADER = "x-request-id"
 
-# The two answers this client reads that are not objects of a model of its own: the liveness probe's
+# The answers this client reads that are not objects of a model of its own: the liveness probe's
 # free-form object, and the plans and invoices the billing routes list.
 _HEALTH_ANSWER_ADAPTER: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
 _PLAN_LIST_ADAPTER: TypeAdapter[list[PlanView]] = TypeAdapter(list[PlanView])
@@ -2112,7 +2112,7 @@ _RUN_ARTIFACTS: frozenset[RunArtifact] = frozenset(RunArtifact)
 def _with_verdict(exc: PipelineRequestError) -> PipelineRequestError:
     """The error the inherited `execute` or `start` raised, as this SDK's class carrying a verdict.
 
-    The base client raises two errors of the standard's own classes, which carry none: a bare
+    The base client raises errors of the standard's own classes, which carry none: a bare
     `PipelineRequestError` refusing the arguments before any request (nothing to run was named, or
     `extra` carries a protocol arg), answered here with a `RequestArgumentError` of the same message, and
     `mthds`'s `RunStillRunningError` on the protocol's 202 degrade, answered with this SDK's subclass of it,
