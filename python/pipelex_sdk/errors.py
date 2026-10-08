@@ -66,10 +66,16 @@ class ApiUnreachableError(PipelineRequestError):
 
     DNS failure, connection refused, TLS handshake failure, or a request timeout —
     the HTTP exchange never produced a response. Distinguish from `ApiResponseError`,
-    which represents a non-2xx response that did come back.
+    which represents a non-2xx response that did come back. Every route of
+    `PipelexAPIClient` raises it, the protocol routes it inherits from `mthds` included,
+    because they all send through its `_send` override; the httpx exception is the
+    `__cause__`.
 
     `code` is the underlying transport-failure class when available (`ABORT_TIMEOUT`
     for a timeout, otherwise the httpx transport exception class name).
+
+    It derives from the protocol's `PipelineRequestError` directly because the `mthds`
+    client has no unreachable error of its own; when it gains one, this class subclasses it.
     """
 
     def __init__(self, message: str, api_url: str, code: str | None = None) -> None:

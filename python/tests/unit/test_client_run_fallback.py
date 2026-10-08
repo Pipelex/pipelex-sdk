@@ -4,17 +4,23 @@ No equivalent exists in `mthds-python` (whose `start_and_wait` raises on a bare 
 SDK's own enhancement (`supports_run_lifecycle` + `execute_blocking`), mirroring `pipelex-sdk-js`.
 """
 
+from __future__ import annotations
+
 import asyncio
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import pytest
 from mthds.protocol.pipe_io_contracts import PipeIOContract
-from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, MissingMainStuffError, RunLifecycleUnavailableError
 from pipelex_sdk.runs import TokensUsageRecord
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+
+    from tests.unit.conftest import UnreachableClientBuilder
 
 _BASE_URL = "http://localhost:8081"
 
@@ -496,10 +502,9 @@ class TestClientRunFallback:
         with pytest.raises(RunLifecycleUnavailableError):
             asyncio.run(client.wait_for_result("r"))
 
-    def test_unreachable_host_maps_to_api_unreachable_on_poll(self, mocker: MockerFixture) -> None:
+    def test_unreachable_host_maps_to_api_unreachable_on_poll(self, unreachable_client: UnreachableClientBuilder) -> None:
         """A transport failure on a lifecycle GET maps to ApiUnreachableError (the richer transport layer)."""
-        client = self._client()
-        mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=httpx.ConnectError("refused")))
+        client = unreachable_client(httpx.ConnectError)
 
         with pytest.raises(ApiUnreachableError):
             asyncio.run(client.get_run_result("r"))
