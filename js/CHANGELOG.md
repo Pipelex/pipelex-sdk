@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **A refused artifact selection is a `RequestArgumentError` (Breaking)**: `getRunResult`, `waitForResult` and `startAndWaitForResult` throw a `RequestArgumentError`, `input` and not retryable, for an `artifacts` selection that is empty or names an unknown artifact, where they threw a `RangeError` carrying no verdict, as the Python twin raises it; a value that is not an array is a `TypeError`.
+
 ## [v0.35.1] - 2026-10-08
 
 ### Added

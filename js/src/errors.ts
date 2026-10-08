@@ -113,8 +113,8 @@ export function errorVerdictOf(err: unknown): ErrorVerdict | undefined {
  * `execute()` or `start()`, run sources or method selectors that exclude each other, a selector
  * rule of `validate()`, an empty `validateFiles()`, a reserved key in `extra`, a `publishMethod()`
  * without its draft token, a `getMethodVersion()` version that is not a positive integer, a
- * selector `parseMethodSelector()` refuses, a method route given a suffixed id, or a base URL
- * that is not host-only. Nothing reached the API, so the message says what to change.
+ * selector `parseMethodSelector()` refuses, a method route given a suffixed id, an artifact
+ * selection that is empty or names an unknown artifact, or a base URL that is not host-only. Nothing reached the API, so the message says what to change.
  *
  * Its verdict is `input`, not retryable — the caller must change the arguments — unless
  * `options.verdict` declares another: the client declares `config` for a base URL that is not

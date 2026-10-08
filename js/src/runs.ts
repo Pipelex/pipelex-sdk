@@ -1,6 +1,6 @@
 import type { InputForm, OutputForm, PipeIOContracts } from "mthds/protocol";
 
-import { RunFailedError, RunTimeoutError } from "./errors.js";
+import { RequestArgumentError, RunFailedError, RunTimeoutError } from "./errors.js";
 import { MAX_TIMER_DELAY_MS } from "./timers.js";
 import type { RunErrorReport } from "./error-models.js";
 import type { DictPipeOutput, DictWorkingMemory, PipelexRunResultStart } from "./models.js";
@@ -193,12 +193,19 @@ export type RunResultArtifact = (typeof RUN_RESULT_ARTIFACTS)[number];
 
 /**
  * Refuse an artifact selection the platform would answer with a 400: an empty one, or one naming
- * an artifact it does not know. `undefined` is no selection, which reads every artifact.
+ * an artifact it does not know, each a `RequestArgumentError`, `input` and not retryable, as the
+ * Python twin refuses it. `undefined` is no selection, which reads every artifact; a value that is
+ * not an array at all is a `TypeError`, a bug in the calling code that carries no verdict.
  */
 export function assertArtifactSelection(artifacts: readonly string[] | undefined): void {
   if (artifacts === undefined) return;
-  if (!Array.isArray(artifacts) || artifacts.length === 0) {
-    throw new RangeError(
+  if (!Array.isArray(artifacts)) {
+    throw new TypeError(
+      `"artifacts" must be an array naming one or more of ${RUN_RESULT_ARTIFACTS.join(", ")}.`,
+    );
+  }
+  if (artifacts.length === 0) {
+    throw new RequestArgumentError(
       `"artifacts" must name one or more of ${RUN_RESULT_ARTIFACTS.join(", ")}; omit it to read ` +
         "every artifact.",
     );
@@ -206,7 +213,7 @@ export function assertArtifactSelection(artifacts: readonly string[] | undefined
   const known: readonly string[] = RUN_RESULT_ARTIFACTS;
   const unknown = artifacts.filter((name) => !known.includes(name));
   if (unknown.length > 0) {
-    throw new RangeError(
+    throw new RequestArgumentError(
       `Unknown result artifact(s) ${unknown.join(", ")}; valid artifacts are: ` +
         `${RUN_RESULT_ARTIFACTS.join(", ")}.`,
     );
@@ -228,7 +235,7 @@ export interface GetRunResultOptions {
    * Read only these artifacts, sent as one comma-separated `?artifacts=` parameter. Omitted, the
    * read returns every artifact. With a selection, an unselected artifact is ABSENT from the
    * result (`undefined`), while a selected one the run never wrote is `null`. An empty selection
-   * or an unknown name is a `RangeError` before any request.
+   * or an unknown name is a `RequestArgumentError` before any request.
    */
   artifacts?: readonly RunResultArtifact[];
 }

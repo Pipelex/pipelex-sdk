@@ -115,8 +115,8 @@ class RequestArgumentError(PipelexRequestError):
     """The SDK refused a call's arguments before sending any request: no run source given to `execute()`
     or `start()`, a protocol argument or a reserved one passed through `extra`, run sources or method
     selectors that exclude each other, a selector that is not a string, a suffixed `method_id` beside
-    inline `mthds_contents`, a selector rule of `validate()`, an empty `validate_files()`, an empty
-    artifact selection, a suffixed id given to a method route, a `publish_method()` token that is not a
+    inline `mthds_contents`, a selector rule of `validate()`, an empty `validate_files()`, an artifact
+    selection that is empty or names an unknown artifact, a suffixed id given to a method route, a `publish_method()` token that is not a
     string, a `get_method_version()` version that is not a positive integer, a value
     `parse_method_selector()` refuses, or a base URL that is not host-only. Nothing reached the API, so
     the message says what to change.

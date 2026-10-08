@@ -1,7 +1,7 @@
 """Tests for `PipelexAPIClient`'s durable run-lifecycle surface (start/status/results/wait), httpx mocked."""
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -9,9 +9,11 @@ from mthds.protocol.exceptions import PipelineRequestError
 from pytest_mock import MockerFixture, MockType
 
 from pipelex_sdk.client import PipelexAPIClient
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import (
     ApiResponseError,
     MissingMainStuffError,
+    RequestArgumentError,
     RunFailedError,
     RunLifecycleUnavailableError,
     RunStillRunningError,
@@ -382,6 +384,32 @@ class TestClientLifecycle:
         with pytest.raises(PipelineRequestError, match="at least one RunArtifact"):
             asyncio.run(client.get_run_result("run_1", artifacts=[]))
         send_mock.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("artifacts", "unknown"),
+        [
+            pytest.param(["graphspec"], "graphspec", id="alone"),
+            pytest.param([RunArtifact.MAIN_STUFF, "graphspec", "forms"], "forms, graphspec", id="beside-a-known-one"),
+        ],
+    )
+    def test_get_run_result_refuses_an_unknown_name_before_sending(self, mocker: MockerFixture, artifacts: list[str], unknown: str) -> None:
+        """A plain string that names no `RunArtifact` is refused, never dropped into a narrower selection."""
+        client = self._client()
+        send_mock = mocker.patch.object(client, "_send", mocker.AsyncMock())
+
+        with pytest.raises(RequestArgumentError) as exc_info:
+            asyncio.run(client.get_run_result("run_1", artifacts=cast("list[RunArtifact]", artifacts)))
+        assert str(exc_info.value).startswith(f"Unknown result artifact(s) {unknown}; valid artifacts are: graph_spec, ")
+        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
+        send_mock.assert_not_called()
+
+    def test_get_run_result_takes_a_plain_string_that_names_an_artifact(self, mocker: MockerFixture) -> None:
+        client = self._client()
+        body: dict[str, object] = {"pipeline_run_id": "run_1", "graph_spec": {"nodes": []}}
+        send_mock = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=body)))
+
+        asyncio.run(client.get_run_result("run_1", artifacts=cast("list[RunArtifact]", ["graph_spec"])))
+        assert send_mock.call_args.args[1] == f"{_BASE_URL}/v1/runs/run_1/results?artifacts=graph_spec"
 
     def test_get_run_result_selection_without_main_stuff_does_not_require_one(self, mocker: MockerFixture) -> None:
         """A selection that leaves `main_stuff` out reads a body without it, and that is the answer, not a fault."""

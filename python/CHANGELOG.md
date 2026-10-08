@@ -17,6 +17,10 @@
 - **`RunStillRunningError` is this SDK's own (Breaking)**: `execute`'s `202` degrade and `download_artifacts` raise `pipelex_sdk.errors.RunStillRunningError`, which subclasses `mthds`'s class of the same name and carries a verdict, where `pipelex_sdk.errors` re-exported `mthds`'s.
 - **An answer the SDK cannot read raises `ApiResponseError` (Breaking)**: a `2xx` whose body is not UTF-8 or not JSON, an empty one where the route answers JSON, or JSON that is not what the route answers, such as a publish result naming no known `outcome`, an `upload` answer with no non-empty `uri` or run results whose artifacts drift from the pinned `mthds`, raises on every route an `ApiResponseError` carrying the `2xx` status, `runtime` and not retryable, with the `json.JSONDecodeError`, `UnicodeDecodeError` or pydantic `ValidationError` as `__cause__`, where those escaped bare; `upload_file` wraps it as an `UploadTransportError` with code `unexpected`, as `@pipelex/sdk` does.
 
+### Fixed
+
+- **An unknown artifact name is refused**: `get_run_result`, `wait_for_result` and `start_and_wait` raise `RequestArgumentError` before any request for an `artifacts` selection naming something that is no `RunArtifact`, such as a misspelt plain string, where they dropped it and sent a narrower selection or an empty one, as `@pipelex/sdk` refuses it.
+
 ## [v0.35.1] - 2026-10-08
 
 ### Changed

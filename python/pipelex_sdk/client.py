@@ -1083,13 +1083,13 @@ class PipelexAPIClient(MthdsAPIClient):
                 applies only when `main_stuff` was asked for.
 
         Raises:
-            RequestArgumentError: If `artifacts` is an empty selection, which names nothing to read.
+            RequestArgumentError: If `artifacts` is an empty selection, which names nothing to read,
+                or names an artifact that is no `RunArtifact`.
             MissingMainStuffError: If a completed run asked for its main stuff delivers none.
             RunLifecycleUnavailableError: If the lifecycle routes are absent (a bare runner).
             ApiUnreachableError: If the host cannot be reached (DNS / connect / TLS / timeout).
-            ApiResponseError: For a genuine run-not-found 404 or any other non-2xx response
-                (an artifact name the platform does not know is its `400`), or a `200` that is not
-                the run's results.
+            ApiResponseError: For a genuine run-not-found 404 or any other non-2xx response, or a
+                `200` that is not the run's results.
         """
         selection = _artifact_selection(artifacts)
         endpoint = f"{_RUNS}/{quote(run_id, safe='')}/results"
@@ -2105,6 +2105,9 @@ class PipelexAPIClient(MthdsAPIClient):
 
 _KNOWN_RUN_STATUS_NAMES: frozenset[str] = frozenset(RunStatus.__members__)
 
+# The artifacts a results read can be narrowed to; a plain string equal to one's value is in it too.
+_RUN_ARTIFACTS: frozenset[RunArtifact] = frozenset(RunArtifact)
+
 
 def _with_verdict(exc: PipelineRequestError) -> PipelineRequestError:
     """The error the inherited `execute` or `start` raised, as this SDK's class carrying a verdict.
@@ -2339,15 +2342,21 @@ def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArt
     """Normalise a results-read selection: `None` reads everything, anything else is deduplicated
     into the enum's declaration order, so the same selection always builds the same query.
 
-    An empty selection names nothing to read; the platform refuses it with a `400`, and it is
-    refused here first, before any request, with the request-shape error the client already raises
-    for an empty `validate_files`.
+    An empty selection names nothing to read, and a name that is no `RunArtifact`, which a caller
+    passing plain strings can send, names an artifact the platform does not know; it refuses either
+    with a `400`, and both are refused here first, before any request, with `RequestArgumentError`,
+    as `@pipelex/sdk` refuses them. Dropping an unknown name instead would send a narrower selection
+    than the caller asked for, or an empty one.
     """
     if artifacts is None:
         return None
     requested = set(artifacts)
     if not requested:
         msg = "An artifact selection must name at least one RunArtifact; pass artifacts=None to read them all."
+        raise RequestArgumentError(msg)
+    unknown = sorted(f"{name}" for name in requested if name not in _RUN_ARTIFACTS)
+    if unknown:
+        msg = f"Unknown result artifact(s) {', '.join(unknown)}; valid artifacts are: {', '.join(RunArtifact)}."
         raise RequestArgumentError(msg)
     return tuple(artifact for artifact in RunArtifact if artifact in requested)
 
