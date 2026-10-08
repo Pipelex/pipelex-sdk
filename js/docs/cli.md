@@ -9,7 +9,7 @@ npx @pipelex/sdk script --method github.com/acme/methods/receipt-review@v1.0.0 -
 ./receipt-review --inputs inputs.json
 ```
 
-`npx` runs a package's only command whatever its name, so `npx @pipelex/sdk …` is enough. In a project that has the SDK installed, the command is `npx pipelex-sdk …`. The Python SDK, `pipelex-sdk` on PyPI, is to publish the same command under the same name (`uvx pipelex-sdk …`), with the same flags and the same output, held to this one by the recorded case table described at the end of this page.
+`npx` runs a package's only command whatever its name, so `npx @pipelex/sdk …` is enough. In a project that has the SDK installed, the command is `npx pipelex-sdk …`. The Python SDK, `pipelex-sdk` on PyPI, publishes the same command under the same name (`uvx pipelex-sdk …`, its `docs/cli.md`), with the same flags and the same output, held to this one by the recorded case table described at the end of this page.
 
 The command lives in `src/cli.ts`, the executable, and `src/cli/`. It sits at the top of the SDK's dependency graph: nothing in the SDK imports it, the package entry does not export it, and it reaches the SDK only through the public barrel, as any other caller would (`.dependency-cruiser.cjs` holds both rules). It adds no runtime dependency: its flags are read with `node:util`'s `parseArgs`.
 
@@ -56,7 +56,7 @@ The key comes from `PIPELEX_API_KEY` and nowhere else, since a flag would put it
 
 **No `.env` file is read.** A command started through `npx` from wherever the person stands would otherwise pick up a credential from whichever file it found there. To load one into the shell: `set -a; . ./.env; set +a`.
 
-**`PIPELEX_SDK_POLL_INTERVAL_MS` is for tests only.** It sets the poll interval in milliseconds, a whole number; the case table sets it to `0` so that a run answered "still running" is polled again at once, and serves its `202` answers with `Retry-After: 0`, since the SDK waits at least as long as the server's `Retry-After` and five seconds when a `202` gives none. Unset, the SDK's own interval applies. The Python command is to read the same variable.
+**`PIPELEX_SDK_POLL_INTERVAL_MS` is for tests only.** It sets the poll interval in milliseconds, a whole number; the case table sets it to `0` so that a run answered "still running" is polled again at once, and serves its `202` answers with `Retry-After: 0`, since the SDK waits at least as long as the server's `Retry-After` and five seconds when a `202` gives none. Unset, the SDK's own interval applies. The Python command reads the same variable.
 
 ## Exit codes, errors and Ctrl-C
 
@@ -95,7 +95,7 @@ A `--method` path is read by the command's own reader (`src/cli/bundle.ts`), who
 
 ## The case table
 
-The two commands share no code, so they are held together by one recorded table of cases written for both: `tests/fixtures/cli-cases.json` is its source, and `python/tests/fixtures/cli-cases.json` its copy, which `make shared-files` at the repository root writes and `make check-shared-files` holds byte for byte (`docs/ci.md` at the root). A behaviour of the command changes here, in the table and in `src/cli/`, and the Python command follows it. `tests/cli.test.ts` runs every case through `runCommand` in-process; a case that uses a field the suite does not know fails rather than being skipped, so a case added for one language reaches the other.
+The two commands share no code, so they are held together by one recorded table of cases written for both: `tests/fixtures/cli-cases.json` is its source, and `python/tests/fixtures/cli-cases.json` its copy, which `make shared-files` at the repository root writes and `make check-shared-files` holds byte for byte (`docs/ci.md` at the root). A behaviour of the command changes here, in the table and in `src/cli/`, and the Python command follows it. `tests/cli.test.ts` runs every case through `runCommand` in-process, and the Python SDK's `tests/unit/test_cli.py` runs every case through its own `run_command`; a case that uses a field a suite does not know fails rather than being skipped, so a case added for one language reaches the other.
 
 The table holds:
 
@@ -108,7 +108,7 @@ The table holds:
   - `env`, merged over the table's `env`; a `null` value unsets the variable. The command sees only this environment.
   - `files`, created in a fresh, empty working directory before the command runs, parents included: `{path, text}`, `{path, base64}` for bytes that are not UTF-8, `{path, symlink}` whose value is the link's target as written, relative to the link's directory, and `{path, directory: true}`.
   - `stdin`, the text stdin holds; empty when absent.
-  - `routes`, keyed `"<METHOD> <path>[?<query>]"` on the base URL, each a list of exchanges answering that route's calls in order, each once. An exchange gives the answer's `status`, `headers` and JSON `body` (or raw `text`, or none), or `answer`, the name of a table-level answer whose fields it takes, or `unreachable: true`, a connection refused. `request_body`, when given, is what the command must send: the sent JSON body, without its top-level keys whose value is `null`, which mean absent, must equal it. Every request must carry `Authorization: Bearer <PIPELEX_API_KEY>`. A request the case did not record, and a recorded exchange the command never asked for, fail the case.
+  - `routes`, keyed `"<METHOD> <path>[?<query>]"` on the base URL, each a list of exchanges answering that route's calls in order, each once. An exchange gives the answer's `status`, `headers` and JSON `body` (or raw `text`, or none), or `answer`, the name of a table-level answer whose fields it takes, or `unreachable: true`, a connection refused. `request_body`, when given, is what the command must send: the sent JSON body, without its top-level keys whose value is `null` or `false`, which mean absent (the Python SDK sends an unset flag such as the pipe I/O route's `all_pipes` as `false`, this one leaves it out, and the API reads both the same way), must equal it. Every request must carry `Authorization: Bearer <PIPELEX_API_KEY>`. A request the case did not record, and a recorded exchange the command never asked for, fail the case.
   - `interrupt`, optional, `{route, call}`: when that call of that route arrives, the suite interrupts the command, as Ctrl-C would, instead of answering; the route lists no exchange for it.
   - `expect`: `exit_code`; either `stdout`, exact, or `stdout_includes`, substrings that must appear in order; `stderr`, substrings that must appear in stderr in this order, each found after the end of the one before, so a case pins the command's own sentences and the data they carry without pinning every line an SDK adds; `stderr_excludes`, substrings that must not appear anywhere, such as a key or a password; `files`, each `{path, text, executable}` that must exist with exactly that text, and with its owner's execute bit when `executable`; and `absent_files`, paths that must not exist.
 

@@ -4,8 +4,8 @@
  * Each case runs the command in-process, in a fresh working directory holding the case's files,
  * with the case's environment and stdin, and with `fetch` answering from the case's recorded
  * routes. So the command runs on the SDK's real client: what is checked is what it sends and what
- * it prints, never which client method it called. The Python SDK's command is to run the same
- * table, serving the same answers through its own HTTP mock (`docs/cli.md`, "The case table").
+ * it prints, never which client method it called. The Python SDK's command runs the same table,
+ * serving the same answers through its own HTTP mock (`docs/cli.md`, "The case table").
  *
  * A case that uses a field this suite does not know fails rather than being skipped, so a case
  * added to the table for the other language reaches this one.
@@ -269,12 +269,18 @@ class RecordedApi {
   }
 }
 
-/** A request body as JSON, without the top-level keys sent as `null`, which mean "absent". */
+/**
+ * A request body as JSON, without the top-level keys sent as `null` or `false`, which mean
+ * "absent": the Python SDK's request models send their unset flags as `false` where this one
+ * leaves them out, and the API reads both the same way.
+ */
 function sentBody(body: RequestInit["body"]): unknown {
   if (typeof body !== "string") return body ?? null;
   const parsed: unknown = JSON.parse(body);
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return parsed;
-  return Object.fromEntries(Object.entries(parsed).filter(([, value]) => value !== null));
+  return Object.fromEntries(
+    Object.entries(parsed).filter(([, value]) => value !== null && value !== false),
+  );
 }
 
 // ── Running a case ───────────────────────────────────────────────────────────────────────────
