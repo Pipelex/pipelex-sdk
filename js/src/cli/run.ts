@@ -64,7 +64,8 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
 
   let stage: Stage = { kind: "local" };
   try {
-    const source = await methodSource(method);
+    // Raced like the inputs read: a bundle on a stalled mount must not hold the command.
+    const source = await untilInterrupted(() => methodSource(method), io.interrupt);
     const inputs = inputsSource === undefined ? undefined : await readInputs(inputsSource, io);
     const intervalMs = readPollInterval(io);
     const client = makeClient(io);
