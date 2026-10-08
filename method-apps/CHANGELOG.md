@@ -4,7 +4,7 @@
 
 ### Added
 
-- **A catalog id may pin a version in both templates**: `make create` and the web app template's `make add-method` take `mt_…@<version>` and `mt_…@draft` beside a bare `mt_…`, which runs the method's latest published version, and keep the suffix in `method.json`, so the app or the CLI runs the version it was made from; the name, the label and the description still come from the method's catalog entry, read by the bare id. A malformed suffix is refused before anything is sent.
+- **A catalog id may pin a version in both templates**: `make create` and the web app template's `make add-method` take `mt_…@<version>` and `mt_…@draft` beside a bare `mt_…`, which runs the method's latest published version, and keep the suffix in `method.json`, so the app or the CLI runs the version it was made from. The name and the label still come from the method's catalog entry, read by the bare id, but the description now comes from the files the app or the CLI runs, the version its selector names, where it came from the catalog entry, which carries the draft's description and would have described a pinned version in words its draft had since replaced. A malformed suffix is refused before anything is sent.
 
 ### Changed
 

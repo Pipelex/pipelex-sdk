@@ -722,10 +722,14 @@ class MethodArgs:
 
 @dataclass(frozen=True)
 class CatalogEntry:
-    """What the catalog says about a stored method."""
+    """What the catalog says about a stored method that names the project: its name, which a person chose.
+
+    The name belongs to the method, whichever version the CLI runs. The catalog's description does not: the
+    method's row carries its draft's, so the project is described by the files the platform resolved for the
+    selector instead (`MethodPlan.prose`), which are the version the CLI runs.
+    """
 
     name: str
-    description: str | None
 
 
 @dataclass(frozen=True)
@@ -886,13 +890,13 @@ def bare_method_id(method_id: str) -> str:
     """A catalog id without its version suffix.
 
     The method routes, `get_method` among them, address the method itself and take the bare id; the
-    name and the description belong to the method, whichever version the CLI runs.
+    name belongs to the method, whichever version the CLI runs.
     """
     return method_id.split("@", 1)[0]
 
 
 async def _catalog_entry(client: CreateClient, source: CodegenSource, method_id: str) -> CatalogEntry:
-    """A stored method's name and description: a person chose both, so they name the project unless overridden.
+    """A stored method's name: a person chose it, so it names the project unless overridden.
 
     Raises:
         PlanError: The catalog does not answer for the method.
@@ -901,7 +905,7 @@ async def _catalog_entry(client: CreateClient, source: CodegenSource, method_id:
         method = await client.get_method(bare_method_id(method_id))
     except (PipelineRequestError, httpx.HTTPError, ValueError) as exc:
         raise PlanError(explain(exc, client.base_url, "GET /v1/methods/{id}", source)) from exc
-    return CatalogEntry(name=method.name, description=method.description)
+    return CatalogEntry(name=method.name)
 
 
 def _options_for(report: PipeIOValidReport, pipe: ChosenPipe) -> tuple[InputOption, ...]:

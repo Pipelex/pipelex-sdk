@@ -163,8 +163,13 @@ class TestDeriveIdentity:
         assert (identity.name, identity.package, identity.title) == ("text-stats", "text_stats", "Text Stats")
         assert identity.description.startswith("Deterministic text statistics")
 
-    def test_a_catalog_entry_names_and_describes_the_project(self, text_stats_plan: MethodPlan):
-        plan = replace(text_stats_plan, slug="invoice-extraction", catalog=CatalogEntry(name="Invoice  extraction", description="Reads invoices."))
+    def test_a_catalog_entry_names_the_project_and_the_files_it_runs_describe_it(self, text_stats_plan: MethodPlan):
+        plan = replace(
+            text_stats_plan,
+            slug="invoice-extraction",
+            catalog=CatalogEntry(name="Invoice  extraction"),
+            prose=MethodProse(description="Reads invoices.", pipe_descriptions={}),
+        )
         identity = derive_identity(plan, CreateArgs(method=STORED_METHOD_ID))
         assert (identity.name, identity.title, identity.description) == ("invoice-extraction", "Invoice extraction", "Reads invoices.")
 
@@ -183,7 +188,9 @@ class TestDeriveIdentity:
         assert (identity.name, identity.title, identity.description) == ("mine", "Mine", "My own.")
 
     def test_every_value_reaches_the_bootstrap_in_the_equals_form_whatever_it_starts_with(self, text_stats_plan: MethodPlan):
-        plan = replace(text_stats_plan, catalog=CatalogEntry(name="-- CV", description="-- draft: screens CVs"))
+        plan = replace(
+            text_stats_plan, catalog=CatalogEntry(name="-- CV"), prose=MethodProse(description="-- draft: screens CVs", pipe_descriptions={})
+        )
         args = CreateArgs(method="x", license_holder="--Acme")
         flags = bootstrap_flags(derive_identity(plan, args), args)
         assert flags == ["--name=text-stats", "--title=-- CV", "--description=-- draft: screens CVs", "--clean", "--license-holder=--Acme"]
@@ -793,12 +800,26 @@ class TestWithTheRealBootstrap:
         self, tmp_path: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
         async def drafted(method_id: str) -> MethodData:
-            return MethodData.model_validate(stored_method(method_id, name="Text stats", description="-- draft: screens CVs"))
+            return MethodData.model_validate(stored_method(method_id, name="-- draft: text stats"))
 
         monkeypatch.setattr(api, "get_method", drafted)
         root = copy_template(tmp_path / "project")
         assert await run_create([STORED_METHOD_ID, "--dry-run"], deps(root, RealBootstrap())) == 0
         assert "Nothing was written (--dry-run)." in capsys.readouterr().out
+
+    async def test_a_pinned_catalog_id_is_described_by_the_version_it_runs_not_by_the_draft(
+        self, tmp_path: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        # The method's row carries its draft's description, which may have moved on since the version the CLI runs.
+        async def drafted(method_id: str) -> MethodData:
+            return MethodData.model_validate(stored_method(method_id, name="Text stats", description="WIP: receipts"))
+
+        monkeypatch.setattr(api, "get_method", drafted)
+        root = copy_template(tmp_path / "project")
+        assert await run_create([f"{STORED_METHOD_ID}@3", "--dry-run"], deps(root, RealBootstrap())) == 0
+        out = capsys.readouterr().out
+        assert "description: Deterministic text statistics" in out
+        assert "WIP: receipts" not in out
 
     async def test_a_binding_the_bootstrap_would_refuse_is_refused_before_anything_is_written(
         self, tmp_path: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

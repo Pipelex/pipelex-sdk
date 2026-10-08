@@ -540,8 +540,8 @@ export function respellAcronyms(text: string, prose: string): string {
 
 /**
  * A catalog id without its version suffix. The method routes, `getMethod`
- * among them, address the method itself and take the bare id; the name and the
- * description belong to the method, whichever version the app runs.
+ * among them, address the method itself and take the bare id; the name belongs
+ * to the method, whichever version the app runs.
  */
 export function bareMethodId(methodId: string): string {
   const at = methodId.indexOf("@");
@@ -1772,10 +1772,15 @@ export interface EmittedFile {
   content: string;
 }
 
-/** What the catalog says about a stored method. */
+/**
+ * What the catalog says about a stored method that names the app: its name,
+ * which a person chose and which belongs to the method, whichever version the
+ * app runs. The catalog's description is not read: the method's row carries its
+ * draft's, while the app runs the version its selector names, so the app is
+ * described by the prose of the files the API resolved for that selector.
+ */
 export interface CatalogEntry {
   name: string;
-  description: string | null;
 }
 
 /**
@@ -1887,7 +1892,7 @@ export async function planAddMethod(
         if (explained !== null) throw new AddMethodError(explained);
         throw error;
       }
-      catalog = { name: method.name, description: method.description ?? null };
+      catalog = { name: method.name };
       warnings.push(
         "a method_id is scoped to your key's organization, so `npm run codegen` on this " +
           "slice needs a key of that same org. A published address (method_ref) is the " +

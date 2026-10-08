@@ -204,8 +204,10 @@ export function oneLine(text: string): string {
  * - **name** — the method's slug, the same one its directory takes.
  * - **title** — the catalog name of a stored method (a person chose it), else
  *   the name title-cased, which is what the bootstrap would choose itself.
- * - **description** — the catalog description, else the domain's own
- *   description, else the chosen pipe's, else a sentence naming the method.
+ * - **description** — the domain's own description, read from the files the
+ *   app runs (for a catalog id, the version its selector names, never the
+ *   draft's description the catalog entry carries), else the chosen pipe's,
+ *   else a sentence naming the method.
  */
 export function deriveIdentity(plan: AddMethodPlan, args: CreateArgs): Identity {
   const name = args.name ?? plan.names.slug;
@@ -220,7 +222,6 @@ export function deriveIdentity(plan: AddMethodPlan, args: CreateArgs): Identity 
     respellAcronyms(titleFromName(name), methodVocabulary(prose));
   const description =
     present(args.description) ??
-    present(plan.catalog?.description) ??
     present(prose.description) ??
     present(prose.pipeDescriptions[plan.scaffold.pipe.ref]) ??
     `Runs the ${title} method through the Pipelex API.`;
