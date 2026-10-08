@@ -15,7 +15,7 @@ from mthds.protocol.pipe_io_contracts import PipeIOContract
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, MissingMainStuffError, RunLifecycleUnavailableError
-from pipelex_sdk.runs import TokensUsageRecord
+from pipelex_sdk.runs import PipelexRunResultStart, TokensUsageRecord, WaitForResultOptions
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -156,6 +156,118 @@ class TestClientRunFallback:
 
         with pytest.raises(MissingMainStuffError):
             asyncio.run(client.start_and_wait(pipe_code="p"))
+
+    # ── `on_started`: the run's id while the wait goes on ────────
+
+    def test_on_started_hands_over_the_ack_once_before_the_first_poll(self, mocker: MockerFixture) -> None:
+        """The callback gets the start acknowledgement whole, a `method_ref` run's provenance included,
+        once, after the start and before any results read.
+        """
+        client = self._client()
+        events: list[str] = []
+        acks: list[PipelexRunResultStart] = []
+        responses = iter(
+            [
+                _response(200, json=_HOSTED_VERSION),
+                _response(
+                    202,
+                    json={
+                        "pipeline_run_id": "run-1",
+                        "state": "STARTED",
+                        "created_at": "t0",
+                        "method_provenance": {"address": "github.com/acme/methods", "tag": "v1.0.0", "commit_sha": "abc123"},
+                    },
+                ),
+                _response(202, headers={"Retry-After": "0"}),
+                _response(200, json={"pipeline_run_id": "run-1", "main_stuff": {"answer": 42}}),
+            ]
+        )
+
+        def _send(method: str, url: str, **_kwargs: object) -> httpx.Response:
+            events.append(f"{method} {url.removeprefix(_BASE_URL)}")
+            return next(responses)
+
+        def _on_started(ack: PipelexRunResultStart) -> None:
+            events.append("on_started")
+            acks.append(ack)
+
+        mocker.patch.object(client, "_send", side_effect=_send)
+
+        result = asyncio.run(
+            client.start_and_wait(
+                method_ref="github.com/acme/methods@v1.0.0",
+                wait_options=WaitForResultOptions(interval_seconds=0),
+                on_started=_on_started,
+            )
+        )
+        assert result.main_stuff == {"answer": 42}
+        assert events == [
+            "GET /v1/version",
+            "POST /v1/start",
+            "on_started",
+            "GET /v1/runs/run-1/results",
+            "GET /v1/runs/run-1/results",
+        ]
+        assert len(acks) == 1
+        assert acks[0].pipeline_run_id == "run-1"
+        assert acks[0].method_provenance is not None
+        assert acks[0].method_provenance.commit_sha == "abc123"
+
+    def test_on_started_is_never_called_on_a_bare_runner(self, mocker: MockerFixture) -> None:
+        """The blocking execute has no run id to give before it answers, so the callback is not called."""
+        client = self._client()
+        mocker.patch.object(
+            client,
+            "_send",
+            mocker.AsyncMock(side_effect=[_response(200, json=_BARE_VERSION), _response(200, json=_EXECUTE_BODY)]),
+        )
+        on_started = mocker.Mock()
+
+        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"], on_started=on_started))
+        assert result.main_stuff == {"text": "hello"}
+        on_started.assert_not_called()
+
+    def test_on_started_is_never_called_on_the_fallback_to_blocking(self, mocker: MockerFixture) -> None:
+        """A start refused for want of a run store creates no run, so the fallback has nothing to announce."""
+        client = self._client()
+        mocker.patch.object(
+            client,
+            "_send",
+            mocker.AsyncMock(
+                side_effect=[
+                    _response(200, json=_BASE_ONLY_VERSION),
+                    _response(404, json={"detail": "Not Found"}),
+                    _response(200, json=_EXECUTE_BODY),
+                ]
+            ),
+        )
+        on_started = mocker.Mock()
+
+        result = asyncio.run(client.start_and_wait(pipe_code="p", on_started=on_started))
+        assert result.pipeline_run_id == "run-x"
+        on_started.assert_not_called()
+
+    def test_an_exception_from_on_started_propagates_before_any_poll(self, mocker: MockerFixture) -> None:
+        """The callback runs synchronously: what it raises leaves `start_and_wait` at once, nothing polled."""
+        client = self._client()
+        send = mocker.patch.object(
+            client,
+            "_send",
+            mocker.AsyncMock(
+                side_effect=[
+                    _response(200, json=_HOSTED_VERSION),
+                    _response(202, json={"pipeline_run_id": "run-1", "state": "STARTED", "created_at": "t0"}),
+                ]
+            ),
+        )
+
+        def _on_started(_ack: PipelexRunResultStart) -> None:
+            msg = "the caller's own failure"
+            raise ValueError(msg)
+
+        with pytest.raises(ValueError, match="the caller's own failure"):
+            asyncio.run(client.start_and_wait(pipe_code="p", on_started=_on_started))
+        assert _urls(send) == [f"{_BASE_URL}/v1/version", f"{_BASE_URL}/v1/start"]
 
     # ── Bare runner (blocking execute fallback) ──────────────────
 

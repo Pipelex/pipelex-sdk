@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`on_started` on `start_and_wait`**: a keyword taking a callable that is called once with the start acknowledgement, a `PipelexRunResultStart`, as soon as the durable run exists and before the first poll, so a caller that waits through `start_and_wait` holds the run's id while it waits, to show it, log it or resume the run by it after cancelling the wait. It is never called on the blocking path, which has no run id to give, and an exception it raises propagates before anything is polled. It is the twin of `@pipelex/sdk`'s `onStarted`; `docs/run-results.md` describes it.
+
 ### Fixed
 
 - **`execute`, `start`, `validate`, `models` and `version` raise `ApiUnreachableError` when no answer comes back (Breaking)**: a refused connection, a DNS failure, a TLS failure or a timeout on the protocol routes the client inherits from `mthds` escaped as httpx's own exception, outside `PipelineRequestError`, while the run reads and the product routes already raised `ApiUnreachableError`. Every route now raises it, `start_and_wait` included, so a caller that caught `httpx.TransportError` or `httpx.TimeoutException` from these routes catches `ApiUnreachableError` and reads its `code` (`ABORT_TIMEOUT` for a timeout, the httpx failure's name otherwise). A blocking `execute` cut off by a timeout after about 28 seconds still raises `PipelineExecuteTimeoutError`, whose cause is now that `ApiUnreachableError`.

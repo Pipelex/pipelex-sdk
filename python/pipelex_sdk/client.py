@@ -110,7 +110,7 @@ from pipelex_sdk.user_agent import AppInfo, build_user_agent
 from pipelex_sdk.validation_models import PipelexValidationResultAdapter, ValidationErrorItem
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator, Callable, Sequence
     from contextlib import AbstractAsyncContextManager
     from pathlib import Path
 
@@ -973,6 +973,7 @@ class PipelexAPIClient(MthdsAPIClient):
         method_ref: str | None = None,
         method_id: str | None = None,
         artifacts: Sequence[RunArtifact] | None = None,
+        on_started: Callable[[PipelexRunResultStart], None] | None = None,
     ) -> RunResults:
         """Start a run and wait for its result — the whole lifecycle in one call, self-healing
         across hosted and bare runners.
@@ -995,6 +996,15 @@ class PipelexAPIClient(MthdsAPIClient):
         `artifacts` narrows the hosted results read, as on `get_run_result`. The blocking path
         ignores it: the execute response already holds every artifact, so there is nothing to save
         by narrowing it, and the result it returns answers for every field.
+
+        `on_started` is called once with the start acknowledgement as soon as the durable run
+        exists and before the first poll, so a caller that waits through this method holds the
+        run's id while it waits: to show it, to log it, or to resume the run by it with
+        `wait_for_result` after cancelling the wait, which leaves the run going on the server. It
+        is never called on the blocking path, a bare runner's `POST /v1/execute` or the fallback to
+        it, which has no run id to give before it answers. The callback runs synchronously and its
+        return value is ignored; an exception it raises propagates out of this method before
+        anything is polled, and the run it was told about keeps going.
 
         Raises:
             RunFailedError: If the run reaches a terminal status other than COMPLETED.
@@ -1030,6 +1040,8 @@ class PipelexAPIClient(MthdsAPIClient):
                     method_ref=method_ref,
                     method_id=method_id,
                 )
+            if on_started is not None:
+                on_started(started)
             return await self.wait_for_result(started.pipeline_run_id, options=wait_options, artifacts=artifacts)
 
         return await self._execute_blocking(
