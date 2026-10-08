@@ -32,7 +32,7 @@ The **base URL** resolves, in order: explicit `base_url` argument → `PIPELEX_B
 
 The SDK never reads the `mthds` resolver (`MTHDS_API_KEY` / `MTHDS_BASE_URL` / `~/.mthds/config`) — those settings configure the vendor-neutral `mthds` tooling and whichever runner it targets, not this Pipelex client.
 
-`request_timeout_seconds` (constructor argument, default 20 min) sets the per-instance blocking-execute ceiling the inherited protocol routes (`execute` / `start` / `validate` / `models` / `version`) use.
+`request_timeout_seconds` (constructor argument, default 20 min) is the time limit of the routes that can take long: the blocking `execute`, `validate`, `models`, and a `start` carrying a bundle (`mthds_contents`, `files` or `bundle_b64`) or a `method_ref`, which the server resolves before it answers. `version` and any other `start` answer fast, so they take `request_timeout_seconds` capped at the 30-second poll budget, the hosted gateway's own cut-off. The SDK's own polls and product requests keep budgets of their own.
 
 `app_info` (constructor argument, an `AppInfo` from `pipelex_sdk.user_agent`) puts your application's name in front of the SDK's own tokens in the `User-Agent` that every request carries — `acme-invoicer/1.4.0 pipelex-sdk-python/0.11.0 mthds-python/0.15.0 python/3.12.4 (linux; x86_64)` — which the platform uses to attribute traffic in its analytics. The header follows the spec `conformance/specs/client-identification.md`, in the `conformance` repository, where the cross-repo specs sit beside the tests that verify them; see [`docs/client-identification.md`](docs/client-identification.md).
 

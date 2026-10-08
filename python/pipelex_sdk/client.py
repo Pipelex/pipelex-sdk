@@ -210,9 +210,9 @@ _RESERVED_RUN_ARGS: frozenset[str] = _PIPELEX_API_RUN_ARGS | _HOSTED_RUN_ARGS
 # abort there would report a healthy, still-cloning server as unreachable. So a
 # `method_ref`-carrying crate request gets this internal fetch-sized budget instead of
 # `_POLL_REQUEST_TIMEOUT_SECONDS` (no new caller-facing parameter, and inert behind the
-# hosted gateway's own cap). The run routes and `validate` need no such override: they
-# already ride `request_timeout_seconds` (the 20-min blocking-execute ceiling), which clears
-# any clone. Mirrors the JS SDK's `METHOD_REF_FETCH_TIMEOUT_MS`.
+# hosted gateway's own cap). The run routes and `validate` need no such override: the
+# blocking `execute`, `validate` and a `method_ref` start take the whole
+# `request_timeout_seconds` (20 min by default), which clears any clone. Mirrors the JS SDK's `METHOD_REF_FETCH_TIMEOUT_MS`.
 _METHOD_REF_FETCH_TIMEOUT_SECONDS = 180.0
 
 
@@ -258,8 +258,11 @@ class PipelexAPIClient(MthdsAPIClient):
     return `401`. The base URL resolves from the `base_url` argument, then
     `PIPELEX_BASE_URL`, then the hosted default (`https://api.pipelex.com`). Both chains
     match the JS SDK exactly. The base URL is validated host-only (no
-    path/query/fragment/credentials; http/https only). `request_timeout_seconds` sets the
-    per-instance blocking-execute ceiling the inherited protocol routes read (default 20 min).
+    path/query/fragment/credentials; http/https only). `request_timeout_seconds` (default 20 min)
+    is the time limit of the routes that can take long: the blocking `execute`, `validate`,
+    `models`, and a `start` carrying a bundle (`mthds_contents`, `files` or `bundle_b64`) or a
+    `method_ref`. `version` and any other `start` answer fast, so they take it capped at the
+    30-second poll budget, the hosted gateway's own cut-off.
     `app_info` (an `AppInfo`) puts the integrator's own name before this SDK's tokens in the
     `User-Agent` every request carries (see `pipelex_sdk.user_agent`).
     """
@@ -318,11 +321,12 @@ class PipelexAPIClient(MthdsAPIClient):
         self.base_url: str = normalized_base_url
         #: Origin root derived from the base URL — `/health` lives here, not under `/v1`.
         self.origin_url: str = _origin_of(normalized_base_url)
-        #: Per-request timeout the inherited protocol routes (`execute` / `start` / `validate`
-        #: / `models` / `version`) read — the blocking-execute ceiling. The default is the
-        #: base's `_DEFAULT_REQUEST_TIMEOUT_SECONDS` ClassVar (20 min, the runner's
-        #: blocking-execute ceiling — part of the documented protected extension surface).
-        #: The SDK's own poll and product GETs pass `_POLL_REQUEST_TIMEOUT_SECONDS` instead.
+        #: The time limit of the routes that can take long: the blocking `execute`, `validate`,
+        #: `models`, and a `start` carrying a bundle or a `method_ref`. `version` and any other
+        #: `start` take it capped at `_POLL_REQUEST_TIMEOUT_SECONDS`. The default is the base's
+        #: `_DEFAULT_REQUEST_TIMEOUT_SECONDS` ClassVar (20 min, the runner's blocking-execute
+        #: ceiling — part of the documented protected extension surface). The SDK's own poll and
+        #: product GETs pass `_POLL_REQUEST_TIMEOUT_SECONDS` instead.
         self.request_timeout_seconds: float = (
             request_timeout_seconds if request_timeout_seconds is not None else self._DEFAULT_REQUEST_TIMEOUT_SECONDS
         )
