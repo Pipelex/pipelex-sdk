@@ -154,10 +154,28 @@ def _connect_error(message: str, cause: BaseException) -> Callable[[httpx.Reques
     return lambda request: _caused(httpx.ConnectError(message, request=request), cause)
 
 
+def _connect_timeout(request: httpx.Request) -> httpx.TransportError:
+    """A connection not made within httpx's connect timeout, the TCP connect still under way: its
+    `ConnectTimeout`, over the `TimeoutError` of the deadline.
+    """
+    return _caused(httpx.ConnectTimeout("", request=request), TimeoutError())
+
+
+def _connect_timeout_during_handshake(request: httpx.Request) -> httpx.TransportError:
+    """A connection not made within httpx's connect timeout, the TLS handshake still under way: the deadline
+    lands on the handshake's pending read, so the `ssl.SSLWantReadError` of that read is among the causes.
+    """
+    deadline = TimeoutError()
+    deadline.__context__ = ssl.SSLWantReadError(ssl.SSL_ERROR_WANT_READ, "The operation did not complete (read) (_ssl.c:1032)")
+    return _caused(httpx.ConnectTimeout("", request=request), deadline)
+
+
 # Each kind of `unreachable` exchange, a request that never got a connection to answer it, as httpx
 # reports it, its cause chained: each was read off httpx against a local server, a closed port, a listener
-# that never accepts and certificates of a local authority, but for no route to the host or the network,
-# which take the shape every failed connect call takes (`docs/cli.md`).
+# that never answers the TLS handshake, a connect timeout too short for any connection, a pool of one
+# connection held by a request left unanswered, and certificates of a local authority, but for no route to
+# the host or the network and the system giving up connecting, which take the shape every failed connect
+# call takes (`docs/cli.md`).
 _UNREACHABLE: dict[str, Callable[[httpx.Request], httpx.TransportError]] = {
     "refused": _connect_error("All connection attempts failed", ConnectionRefusedError(errno.ECONNREFUSED, "Connect call failed")),
     "refused-every-address": _connect_error("All connection attempts failed", ConnectionRefusedError(errno.ECONNREFUSED, "Connect call failed")),
@@ -166,12 +184,11 @@ _UNREACHABLE: dict[str, Callable[[httpx.Request], httpx.TransportError]] = {
     ),
     "no-route": _connect_error("All connection attempts failed", OSError(errno.EHOSTUNREACH, "Connect call failed")),
     "no-network": _connect_error("All connection attempts failed", OSError(errno.ENETUNREACH, "Connect call failed")),
-    # httpx has no connect time limit of its own below the request's, so the transport's is the system's.
-    "connect-timeout": _connect_error("All connection attempts failed", TimeoutError(errno.ETIMEDOUT, "Connect call failed")),
+    # httpx's connect timeout, which the one time limit the client passes bounds: a host that drops packets
+    # ends a start this way, well before the system gives up connecting.
+    "connect-timeout": _connect_timeout,
+    # The system giving up connecting, which a request whose time limit is longer than the system's meets first.
     "system-connect-timeout": _connect_error("All connection attempts failed", TimeoutError(errno.ETIMEDOUT, "Connect call failed")),
-    # The client's own time limit, run out before the connection was made or while it waited for one.
-    "timeout-before-connecting": lambda request: _caused(httpx.ConnectTimeout("", request=request), TimeoutError()),
-    "pool-timeout": lambda request: httpx.PoolTimeout("", request=request),
     "certificate": _connect_error(
         "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired",
         ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired"),
@@ -182,6 +199,12 @@ _UNREACHABLE: dict[str, Callable[[httpx.Request], httpx.TransportError]] = {
     ),
     # A server that drops the connection during the TLS handshake, which httpx reads as the pipe it broke.
     "handshake-dropped": _connect_error("", BrokenPipeError(errno.EPIPE, "Broken pipe")),
+    # This suite's own kinds, which no shared case holds, run by its test of the timeouts httpx places before
+    # the connection: the connect timeout run out during the TLS handshake, which `@pipelex/sdk`'s fetch
+    # reports as it reports `connect-timeout`, and the request's time limit run out while it waited for a
+    # connection from httpx's pool, which that fetch could only report as its own time limit.
+    "connect-timeout-during-handshake": _connect_timeout_during_handshake,
+    "pool-timeout": lambda request: _caused(httpx.PoolTimeout("", request=request), TimeoutError()),
 }
 
 # Each kind of `lost` exchange, a request that left and whose answer never came back, as httpx reports it.
@@ -618,6 +641,32 @@ class TestCli:
         outcome = _run_case(case, root, mocker, monkeypatch)
 
         _check(case, outcome, root)
+
+    # ── A timeout httpx places before the connection ──────────────────────────────────────────────
+
+    @pytest.mark.parametrize(
+        ("kind", "code"),
+        [("connect-timeout-during-handshake", "ConnectTimeout"), ("pool-timeout", "PoolTimeout")],
+    )
+    def test_a_start_that_timed_out_before_it_had_a_connection_sent_nothing(
+        self, kind: str, code: str, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A start whose connection timed out during the TLS handshake, or whose time limit ran out while it
+        waited for a pooled connection, never had a connection to be written on: like `run/start-connect-timeout`,
+        it says nothing of a run.
+        """
+        connect_timeout = _case_named("run/start-connect-timeout")
+        case: dict[str, Any] = {
+            **connect_timeout,
+            "name": f"python/start-{kind}",
+            "routes": {**connect_timeout["routes"], "POST /v1/start": [{"unreachable": kind}]},
+        }
+        root = tmp_path.resolve()
+
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
+        assert f"Error: could not reach the Pipelex API at http://api.test ({code}).\n" in outcome.stderr, outcome.shown
 
     # ── An interrupt the table cannot express ─────────────────────────────────────────────────────
 

@@ -2538,7 +2538,7 @@
     },
     {
       "name": "run/start-connect-timeout",
-      "summary": "A start whose connection was not made within the transport's own connect time limit, shorter than the request's, sent nothing, so the failure says nothing of a run.",
+      "summary": "A start whose connection was not made within its transport's connect time limit, which is what a host that drops packets meets first, undici's ten seconds in Node and httpx's connect timeout in Python, sent nothing, so the failure says nothing of a run.",
       "argv": ["run", "--method", "mt_receipts01"],
       "routes": {
         "GET /v1/version": [{ "answer": "version/hosted" }],
@@ -2564,42 +2564,6 @@
         "stdout": "",
         "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
         "stderr_excludes": ["may have started", "may still be going"]
-      }
-    },
-    {
-      "name": "run/start-timeout-before-connecting",
-      "summary": "A start whose own time limit ran out before its connection was made sent nothing, but the JavaScript client cannot tell that from the limit running out once the request had left, so both commands read it as that: a run may have started.",
-      "argv": ["run", "--method", "mt_receipts01"],
-      "routes": {
-        "GET /v1/version": [{ "answer": "version/hosted" }],
-        "POST /v1/start": [{ "unreachable": "timeout-before-connecting" }]
-      },
-      "expect": {
-        "exit_code": 1,
-        "stdout": "",
-        "stderr": [
-          "Error: could not reach the Pipelex API at http://api.test (",
-          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
-        ],
-        "stderr_excludes": ["Run started"]
-      }
-    },
-    {
-      "name": "run/start-pool-timeout",
-      "summary": "A start whose own time limit ran out while it waited for a free connection sent nothing, but the JavaScript client cannot tell that from the limit running out once the request had left either, so both commands read it as that: a run may have started.",
-      "argv": ["run", "--method", "mt_receipts01"],
-      "routes": {
-        "GET /v1/version": [{ "answer": "version/hosted" }],
-        "POST /v1/start": [{ "unreachable": "pool-timeout" }]
-      },
-      "expect": {
-        "exit_code": 1,
-        "stdout": "",
-        "stderr": [
-          "Error: could not reach the Pipelex API at http://api.test (",
-          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
-        ],
-        "stderr_excludes": ["Run started"]
       }
     },
     {
