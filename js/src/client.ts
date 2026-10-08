@@ -25,6 +25,8 @@ import type {
   DictRunResultExecute,
   FormatResponse,
   LintResponse,
+  ModelCheckCategory,
+  ModelReferenceVerdict,
   MthdsFileItem,
   PipeIORequest,
   PipeIOResponse,
@@ -1263,6 +1265,43 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       this.throwApiResponseError("GET", endpoint, res);
     }
     return this.readObjectAnswer<ModelDeck>("GET", endpoint, res);
+  }
+
+  /**
+   * Check one model reference — `GET /v1/models/check?reference=<ref>[&type=<category>]`, a
+   * Pipelex API extension served by any `pipelex-api` runner from pipelex 0.78.0 and on the
+   * hosted API.
+   *
+   * Answers whether `reference` resolves on the runner, as what kind and to which model, from
+   * the parser and the deck lookups a validation runs. `reference` is written as a method's
+   * `model` field writes it — `$preset`, `@alias`, `~waterfall`, a bare handle, or a
+   * spelled-out namespace (`handle:gpt-4o`) — and is sent percent-encoded. `category` checks
+   * in that category alone; without it, the check covers every one.
+   *
+   * Returns a **200 verdict** whatever the resolution: a reference that resolves nowhere is
+   * `resolution: "not_found"` with the names it may have meant, never a thrown error. Narrow
+   * on `kind` to read the shape of `matches`. A request that cannot produce a verdict throws
+   * the typed `ApiResponseError`, a `422` whose `errorType` says why: `InvalidModelReference`
+   * (a blank reference, a sigil or a namespace alone, or one past the runner's length limit),
+   * `InvalidModelCategory` (an unknown `type`) or `ValidationError`. None of that is checked
+   * here, so the runner's rule is the only one.
+   */
+  async checkModelReference(
+    reference: string,
+    category?: ModelCheckCategory,
+  ): Promise<ModelReferenceVerdict> {
+    const query = new URLSearchParams({ reference });
+    if (category !== undefined) {
+      query.set("type", category);
+    }
+    const endpoint = `models/check?${query.toString()}`;
+    const res = await this.requestRaw("GET", this.url(endpoint), {
+      timeoutMs: POLL_REQUEST_TIMEOUT_MS,
+    });
+    if (res.status < 200 || res.status >= 300) {
+      this.throwApiResponseError("GET", endpoint, res);
+    }
+    return this.readObjectAnswer<ModelReferenceVerdict>("GET", endpoint, res);
   }
 
   /**

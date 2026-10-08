@@ -902,6 +902,11 @@ describe("PipelexApiClient answers it cannot read", () => {
     ["version", (client: PipelexApiClient) => client.version(), "GET /v1/version"],
     ["models", (client: PipelexApiClient) => client.models(), "GET /v1/models"],
     [
+      "checkModelReference",
+      (client: PipelexApiClient) => client.checkModelReference("$writing-factual"),
+      "GET /v1/models/check?reference=%24writing-factual",
+    ],
+    [
       "getRunStatus",
       (client: PipelexApiClient) => client.getRunStatus("run-1"),
       "GET /v1/runs/run-1/status",
