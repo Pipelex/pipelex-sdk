@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -39,7 +40,7 @@ from pipelex_sdk.errors import (
 from pipelex_sdk.version import __version__
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
     from pipelex_sdk.command.io import CommandIO
 
@@ -76,9 +77,22 @@ def run_command(argv: Sequence[str], io: CommandIO) -> int:
         return presented.exit_code
 
 
-#: The transport failures that prove the request never left, no connection having been made, so that
-#: no run was created by it.
-_NOTHING_SENT_CODES = frozenset({"ConnectError", "ConnectTimeout", "PoolTimeout", "UnsupportedProtocol"})
+#: The transport failures that can only come before the request leaves, as the `ApiUnreachableError`'s
+#: `code` names httpx's: a connection whose set-up failed (`ConnectError`: an unknown host, a refused
+#: connection, no route to the host or the network, the system giving up connecting, a server certificate
+#: the TLS handshake refused), and a URL the client cannot send to (`UnsupportedProtocol`). The request's
+#: own time limit running out before the connection was made (`ConnectTimeout`) or while it waited for one
+#: (`PoolTimeout`) is not among them, though it too sent nothing: `@pipelex/sdk`'s fetch reports that limit
+#: the same whether it ran out before the connection or once the request had left, and cannot tell the two
+#: apart, so both commands read it as they must read the latter.
+_NOTHING_SENT_CODES = frozenset({"ConnectError", "UnsupportedProtocol"})
+
+#: What, under a `ConnectError`, says the TLS handshake failed for another reason than the server
+#: certificate, or the connection dropped during it. Nothing was sent then either, yet `@pipelex/sdk`'s fetch
+#: reports a dropped handshake as the same `ECONNRESET` a connection dropped once the request had left gives,
+#: and another TLS failure as one that can come after the handshake, so both commands read these as they must
+#: read those: a run may have started.
+_HANDSHAKE_FAILURES: tuple[type[BaseException], ...] = (ssl.SSLError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
 
 #: The gateway statuses that say the server's answer was lost or never came (RFC 9110).
 _GATEWAY_LOST_ANSWER = frozenset({502, 504})
@@ -98,10 +112,30 @@ def _may_have_started(exc: Exception, elapsed_seconds: float) -> bool:
     if isinstance(exc, PipelineExecuteTimeoutError):
         return True
     if isinstance(exc, ApiUnreachableError):
-        return exc.code not in _NOTHING_SENT_CODES
+        return not _proves_nothing_sent(exc)
     if isinstance(exc, ApiResponseError):
         return 200 <= exc.status < 300 or exc.status in _GATEWAY_LOST_ANSWER or is_gateway_cut_off(exc, elapsed_seconds)
     return isinstance(exc, (ValidationError, json.JSONDecodeError, UnicodeDecodeError))
+
+
+def _proves_nothing_sent(exc: ApiUnreachableError) -> bool:
+    """Whether a transport failure proves the request never left, so that no run was created by it: it names
+    a step of the connection's set-up, which no request follows, and one `@pipelex/sdk`'s command can tell
+    from a failure that came once the request had left, so that both commands print the same for it.
+    """
+    if exc.code not in _NOTHING_SENT_CODES:
+        return False
+    return not any(isinstance(cause, _HANDSHAKE_FAILURES) and not isinstance(cause, ssl.SSLCertVerificationError) for cause in _causes(exc))
+
+
+def _causes(exc: BaseException) -> Iterator[BaseException]:
+    """The exceptions `exc` was raised from, nearest first: httpx's own, then the transport's under it."""
+    seen: set[int] = set()
+    cause = exc.__cause__ or exc.__context__
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        yield cause
+        cause = cause.__cause__ or cause.__context__
 
 
 def _dispatch(argv: Sequence[str], io: CommandIO, progress: Progress) -> int:

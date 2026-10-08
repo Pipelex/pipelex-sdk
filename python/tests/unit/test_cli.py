@@ -21,6 +21,8 @@ import errno
 import json
 import os
 import signal
+import socket
+import ssl
 import threading
 import time
 from dataclasses import dataclass
@@ -37,7 +39,7 @@ from pipelex_sdk.command.main import run_command
 from pipelex_sdk.version import __version__
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from pytest_mock import MockerFixture
 
@@ -138,6 +140,56 @@ def _sent_body(content: bytes) -> Any:
     return {key: value for key, value in members.items() if value is not None}
 
 
+def _caused(failure: httpx.TransportError, cause: BaseException) -> httpx.TransportError:
+    """`failure` raised from `cause`, as httpx chains the transport's own error under its."""
+    failure.__cause__ = cause
+    return failure
+
+
+def _connect_error(message: str, cause: BaseException) -> Callable[[httpx.Request], httpx.TransportError]:
+    """A connection that failed while it was set up, as httpx reports it: its `ConnectError`, over the cause."""
+    return lambda request: _caused(httpx.ConnectError(message, request=request), cause)
+
+
+# Each kind of `unreachable` exchange, a request that never got a connection to answer it, as httpx
+# reports it, its cause chained: each was read off httpx against a local server, a closed port, a listener
+# that never accepts and certificates of a local authority, but for no route to the host or the network,
+# which take the shape every failed connect call takes (`docs/cli.md`).
+_UNREACHABLE: dict[str, Callable[[httpx.Request], httpx.TransportError]] = {
+    "refused": _connect_error("All connection attempts failed", ConnectionRefusedError(errno.ECONNREFUSED, "Connect call failed")),
+    "refused-every-address": _connect_error("All connection attempts failed", ConnectionRefusedError(errno.ECONNREFUSED, "Connect call failed")),
+    "unknown-host": _connect_error(
+        "[Errno 8] nodename nor servname provided, or not known", socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided, or not known")
+    ),
+    "no-route": _connect_error("All connection attempts failed", OSError(errno.EHOSTUNREACH, "Connect call failed")),
+    "no-network": _connect_error("All connection attempts failed", OSError(errno.ENETUNREACH, "Connect call failed")),
+    # httpx has no connect time limit of its own below the request's, so the transport's is the system's.
+    "connect-timeout": _connect_error("All connection attempts failed", TimeoutError(errno.ETIMEDOUT, "Connect call failed")),
+    "system-connect-timeout": _connect_error("All connection attempts failed", TimeoutError(errno.ETIMEDOUT, "Connect call failed")),
+    # The client's own time limit, run out before the connection was made or while it waited for one.
+    "timeout-before-connecting": lambda request: _caused(httpx.ConnectTimeout("", request=request), TimeoutError()),
+    "pool-timeout": lambda request: httpx.PoolTimeout("", request=request),
+    "certificate": _connect_error(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired",
+        ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired"),
+    ),
+    # A server that drops the connection during the TLS handshake, which httpx reads as the pipe it broke.
+    "handshake-dropped": _connect_error("", BrokenPipeError(errno.EPIPE, "Broken pipe")),
+}
+
+# Each kind of `lost` exchange, a request that left and whose answer never came back, as httpx reports it.
+_LOST: dict[str, Callable[[httpx.Request], httpx.TransportError]] = {
+    "timeout": lambda request: httpx.ReadTimeout("timed out", request=request),
+    "closed": lambda request: httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request),
+    "reset": lambda request: _caused(
+        httpx.ReadError("[Errno 54] Connection reset by peer", request=request), ConnectionResetError(errno.ECONNRESET, "Connection reset by peer")
+    ),
+    "no-route": lambda request: _caused(
+        httpx.ReadError("[Errno 65] No route to host", request=request), OSError(errno.EHOSTUNREACH, "No route to host")
+    ),
+}
+
+
 class _RecordedApi:
     """The API answering from a case's routes. A route is `METHOD /path?query` on the table's base URL;
     its exchanges answer its calls in order, each once. A request the case did not record, to another
@@ -184,22 +236,20 @@ class _RecordedApi:
         answer: dict[str, Any] = {**_ANSWERS.get(exchange.get("answer", ""), {}), **exchange}
         # The exchange takes this long on the clock the command and the SDK read, at once.
         self.elapsed_seconds += cast("int", answer.get("elapsed_ms", 0)) / 1000
-        if answer.get("unreachable") is True:
-            msg = "connect ECONNREFUSED"
-            raise httpx.ConnectError(msg, request=request)
+        unreachable: str | None = answer.get("unreachable")
+        if unreachable is not None:
+            if unreachable not in _UNREACHABLE:
+                self.problems.append(f'{key}, call {call}: unreachable is "{unreachable}", no kind')
+            else:
+                raise _UNREACHABLE[unreachable](request)
         # The request went out and its answer never came back: the time limit ran out, or the
-        # connection closed, each as httpx reports it.
-        match answer.get("lost"):
-            case None:
-                pass
-            case "timeout":
-                msg = "timed out"
-                raise httpx.ReadTimeout(msg, request=request)
-            case "closed":
-                msg = "Server disconnected without sending a response."
-                raise httpx.RemoteProtocolError(msg, request=request)
-            case other:
-                self.problems.append(f'{key}, call {call}: lost is "{other}", not timeout or closed')
+        # connection closed or failed, each as httpx reports it.
+        lost: str | None = answer.get("lost")
+        if lost is not None:
+            if lost not in _LOST:
+                self.problems.append(f'{key}, call {call}: lost is "{lost}", no kind')
+            else:
+                raise _LOST[lost](request)
         headers: dict[str, str] = dict(answer.get("headers", {}))
         content = b""
         if "body" in answer:

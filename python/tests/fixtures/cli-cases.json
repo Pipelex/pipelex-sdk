@@ -1315,7 +1315,7 @@
               "data": "JVBERi0xLjQgYSByZWNlaXB0Cg==",
               "content_type": "application/pdf"
             },
-            "unreachable": true
+            "unreachable": "refused"
           }
         ]
       },
@@ -2128,7 +2128,7 @@
         ],
         "GET /v1/runs/run-1/results?artifacts=main_stuff": [
           { "answer": "results/running" },
-          { "unreachable": true }
+          { "unreachable": "refused" }
         ]
       },
       "expect": {
@@ -2456,17 +2456,206 @@
     },
     {
       "name": "run/start-unreachable",
-      "summary": "A start whose connection is refused sent nothing, so no run can exist and the failure says nothing of one.",
+      "summary": "A start whose connection is refused sent nothing, so no run can exist and the failure says nothing of one: a failure of the connection's set-up, the name lookup, the connection itself or the certificate check, proves the request never left.",
       "argv": ["run", "--method", "mt_receipts01"],
       "routes": {
         "GET /v1/version": [{ "answer": "version/hosted" }],
-        "POST /v1/start": [{ "unreachable": true }]
+        "POST /v1/start": [{ "unreachable": "refused" }]
       },
       "expect": {
         "exit_code": 1,
         "stdout": "",
         "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
         "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-refused-every-address",
+      "summary": "A start whose connection every address of the host refuses sent nothing either.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "refused-every-address" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-unknown-host",
+      "summary": "A start to a host whose name does not resolve sent nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "unknown-host" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-no-route",
+      "summary": "A start whose connection found no route to the host sent nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "no-route" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-no-network",
+      "summary": "A start whose connection found no route to the network sent nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "no-network" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-connect-timeout",
+      "summary": "A start whose connection was not made within the transport's own connect time limit, shorter than the request's, sent nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "connect-timeout" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-system-connect-timeout",
+      "summary": "A start whose connection the system gave up making sent nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "system-connect-timeout" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-timeout-before-connecting",
+      "summary": "A start whose own time limit ran out before its connection was made sent nothing, but the JavaScript client cannot tell that from the limit running out once the request had left, so both commands read it as that: a run may have started.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "timeout-before-connecting" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-pool-timeout",
+      "summary": "A start whose own time limit ran out while it waited for a free connection sent nothing, but the JavaScript client cannot tell that from the limit running out once the request had left either, so both commands read it as that: a run may have started.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "pool-timeout" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-certificate-refused",
+      "summary": "A start to a host whose certificate the client refused sent nothing, since the request follows the TLS handshake, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "certificate" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: could not reach the Pipelex API at http://api.test ("],
+        "stderr_excludes": ["may have started", "may still be going"]
+      }
+    },
+    {
+      "name": "run/start-handshake-dropped",
+      "summary": "A start whose connection dropped during the TLS handshake sent nothing, but Node reports it as the reset a dropped request gives, so both commands read it as one: a run may have started.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "unreachable": "handshake-dropped" }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-connection-reset",
+      "summary": "A start whose connection was reset once the request had left may have created a run, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": { "GET /v1/version": [{ "answer": "version/hosted" }], "POST /v1/start": [{ "lost": "reset" }] },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-route-lost",
+      "summary": "A start whose connection lost its route once the request had left may have created a run, though the failure names no route to the host as a refused connection would, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": { "GET /v1/version": [{ "answer": "version/hosted" }], "POST /v1/start": [{ "lost": "no-route" }] },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: could not reach the Pipelex API at http://api.test (",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started"]
       }
     },
     {
@@ -2656,7 +2845,7 @@
         "github.com/acme/methods/receipt-review@v1.0.0",
         "--inputs-template"
       ],
-      "routes": { "POST /v1/pipe-io": [{ "unreachable": true }] },
+      "routes": { "POST /v1/pipe-io": [{ "unreachable": "refused" }] },
       "expect": {
         "exit_code": 1,
         "stdout": "",

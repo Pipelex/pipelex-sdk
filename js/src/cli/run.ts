@@ -157,14 +157,83 @@ function waitedOnRun(stage: Stage, error: unknown): string | undefined {
 }
 
 /**
- * The transport failures that prove the request never left, no connection having been made, so
- * that no run was created by it.
+ * Whether a transport failure proves the request never left, so that no run was created by it: it
+ * names a step of the connection's set-up, which no request follows. That is the name lookup or
+ * the connection itself failing (the system calls `getaddrinfo` and `connect`: an unknown host, a
+ * refused connection, no route to the host or the network, the system's connect time limit),
+ * undici's own connect time limit, and a server certificate the TLS handshake refused. Several
+ * addresses each failing so, which Node reports together as an `AggregateError`, prove it too.
+ *
+ * Anything else may have come once the request had left, the Python command reading the same
+ * failures the same way. A reset (`ECONNRESET`) comes from a `read` whether the connection dropped
+ * during the TLS handshake or after the request, and so does an `EHOSTUNREACH` met once connected,
+ * so neither proves anything; nor does another TLS failure, which may come after the handshake;
+ * nor does the SDK's own time limit (`ABORT_TIMEOUT`), which fetch cannot place before or after
+ * the connection was made: a limit shorter than undici's ten-second connect limit can run out
+ * before it, while the request waits for no connection at all. The Python command, whose httpx
+ * does tell that phase, reads its own connect and pool timeouts as a run that may exist too.
  */
-const NOTHING_SENT_CODES: ReadonlySet<string> = new Set([
+function provesNothingSent(error: ApiUnreachableError): boolean {
+  // The SDK keeps fetch's own failure as `cause`, and undici gives the transport's under it.
+  const fetchFailure = error.cause;
+  return fetchFailure instanceof Error && isConnectionSetupFailure(fetchFailure.cause);
+}
+
+function isConnectionSetupFailure(failure: unknown): boolean {
+  if (failure instanceof AggregateError) {
+    return failure.errors.length > 0 && failure.errors.every(isConnectionSetupFailure);
+  }
+  if (typeof failure !== "object" || failure === null) return false;
+  const { code, syscall } = failure as { code?: unknown; syscall?: unknown };
+  if (typeof code === "string" && CONNECTION_SETUP_CODES.has(code)) return true;
+  return typeof syscall === "string" && CONNECTION_SETUP_CALLS.has(syscall);
+}
+
+/** The system calls that resolve the host's name and open the connection. */
+const CONNECTION_SETUP_CALLS: ReadonlySet<string> = new Set(["getaddrinfo", "connect"]);
+
+/**
+ * The codes only a step of the connection's set-up gives: the name lookup's and the connect call's
+ * own (set even where Node reports several addresses together, without a system call), undici's
+ * connect time limit, Node's limit on one attempt among several addresses, and every verdict of
+ * the server certificate's check in the TLS handshake, as Node names them: OpenSSL's verification
+ * codes and Node's own check of the host's name.
+ */
+const CONNECTION_SETUP_CODES: ReadonlySet<string> = new Set([
   "ECONNREFUSED",
   "ENOTFOUND",
   "EAI_AGAIN",
   "UND_ERR_CONNECT_TIMEOUT",
+  "ERR_SOCKET_CONNECTION_TIMEOUT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "ERR_TLS_CERT_ALTNAME_FORMAT",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_CRL",
+  "UNABLE_TO_DECRYPT_CERT_SIGNATURE",
+  "UNABLE_TO_DECRYPT_CRL_SIGNATURE",
+  "UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY",
+  "CERT_SIGNATURE_FAILURE",
+  "CRL_SIGNATURE_FAILURE",
+  "CERT_NOT_YET_VALID",
+  "CERT_HAS_EXPIRED",
+  "CRL_NOT_YET_VALID",
+  "CRL_HAS_EXPIRED",
+  "ERROR_IN_CERT_NOT_BEFORE_FIELD",
+  "ERROR_IN_CERT_NOT_AFTER_FIELD",
+  "ERROR_IN_CRL_LAST_UPDATE_FIELD",
+  "ERROR_IN_CRL_NEXT_UPDATE_FIELD",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "CERT_CHAIN_TOO_LONG",
+  "CERT_REVOKED",
+  "INVALID_CA",
+  "PATH_LENGTH_EXCEEDED",
+  "INVALID_PURPOSE",
+  "CERT_UNTRUSTED",
+  "CERT_REJECTED",
+  "HOSTNAME_MISMATCH",
 ]);
 
 /**
@@ -181,7 +250,7 @@ const NOTHING_SENT_CODES: ReadonlySet<string> = new Set([
 function mayHaveStarted(stage: Stage, error: unknown): boolean {
   if (stage.kind !== "starting") return false;
   if (error instanceof PipelineExecuteTimeoutError) return true;
-  if (error instanceof ApiUnreachableError) return !NOTHING_SENT_CODES.has(error.code ?? "");
+  if (error instanceof ApiUnreachableError) return !provesNothingSent(error);
   if (!(error instanceof ApiResponseError)) return false;
   if (error.status >= 200 && error.status < 300) return true;
   return GATEWAY_LOST_ANSWER.has(error.status) || isGatewayCutOff(error, Date.now() - stage.since);
