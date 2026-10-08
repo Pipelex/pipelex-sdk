@@ -964,8 +964,9 @@ class PipelexAPIClient(MthdsAPIClient):
         """Protocol + runner versions — `GET /v1/version` (public), the handshake for feature detection.
 
         Identical to the inherited route, except for its time limit: the answer is small and the
-        hosted gateway caps responses at ~30s, so it gets the poll budget rather than the
-        blocking-execute ceiling, as `@pipelex/sdk`'s `version` does. `start_and_wait` asks it
+        hosted gateway caps responses at ~30s, so it gets `request_timeout_seconds` capped at the poll
+        budget rather than the whole blocking-execute ceiling, as `@pipelex/sdk`'s `version` gets the
+        poll budget. `start_and_wait` asks it
         first, and a host that accepts the connection and never answers must not hold the run for
         twenty minutes before the start is even sent.
 
@@ -973,7 +974,7 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiResponseError: If the server answers non-2xx.
             ApiUnreachableError: No answer came back.
         """
-        token = _REQUEST_TIMEOUT_OVERRIDE.set(_POLL_REQUEST_TIMEOUT_SECONDS)
+        token = _REQUEST_TIMEOUT_OVERRIDE.set(_quick_request_timeout_seconds(self.request_timeout_seconds))
         try:
             return await super().version()
         finally:
@@ -1718,11 +1719,20 @@ def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, m
         raise PipelineRequestError(msg)
 
 
-def _start_request_timeout_seconds(blocking_seconds: float, merged_extra: dict[str, Any] | None, mthds_contents: list[str] | None) -> float:
+def _quick_request_timeout_seconds(request_timeout_seconds: float) -> float:
+    """The time limit of a request that answers fast (`version`, a plain `start`): the caller's
+    `request_timeout_seconds`, capped at the poll budget, since the hosted gateway cuts a response off
+    at ~30s anyway.
+    """
+    return min(request_timeout_seconds, _POLL_REQUEST_TIMEOUT_SECONDS)
+
+
+def _start_request_timeout_seconds(request_timeout_seconds: float, merged_extra: dict[str, Any] | None, mthds_contents: list[str] | None) -> float:
     """The time limit of `POST /v1/start`, by `@pipelex/sdk`'s rule.
 
-    The start answers its `202` fast, so the poll budget normally fits, with exceptions that get the
-    blocking-execute ceiling instead. A method bundle, inline as `mthds_contents` or riding the `files`
+    The start answers its `202` fast, so it normally gets the time limit of a quick request (see
+    `_quick_request_timeout_seconds`), with exceptions that get the caller's whole
+    `request_timeout_seconds`, the blocking-execute ceiling by default. A method bundle, inline as `mthds_contents` or riding the `files`
     or `bundle_b64` extension, can make the request body multi-megabyte, and its upload is charged
     against the limit: the same payload must not time out on the durable path yet succeed on the
     blocking fallback. And a `method_ref` start makes the server fetch the package before the
@@ -1732,7 +1742,9 @@ def _start_request_timeout_seconds(blocking_seconds: float, merged_extra: dict[s
     extension = merged_extra or {}
     carries_bundle = bool(mthds_contents) or bool(extension.get("files")) or bool(extension.get("bundle_b64"))
     fetches_package = bool(extension.get("method_ref"))
-    return blocking_seconds if carries_bundle or fetches_package else _POLL_REQUEST_TIMEOUT_SECONDS
+    if carries_bundle or fetches_package:
+        return request_timeout_seconds
+    return _quick_request_timeout_seconds(request_timeout_seconds)
 
 
 def _crate_request_timeout_seconds(method_ref: str | None) -> float:

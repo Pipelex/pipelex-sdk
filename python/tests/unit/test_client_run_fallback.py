@@ -686,6 +686,38 @@ class TestClientRunFallback:
         assert server.requests[1] == ("/v1/start", client.request_timeout_seconds)
         assert client.request_timeout_seconds == 1200.0
 
+    @pytest.mark.parametrize(
+        ("request_timeout_seconds", "quick", "carrying"),
+        [(5.0, 5.0, 5.0), (60.0, 30.0, 60.0)],
+        ids=["shorter-than-the-poll-budget", "longer-than-the-poll-budget"],
+    )
+    def test_the_quick_routes_take_the_callers_limit_capped_at_the_poll_budget(
+        self, request_timeout_seconds: float, quick: float, carrying: float
+    ) -> None:
+        """A caller who set a short limit to fail fast gets it on the handshake and a plain start; a long one is capped
+        at the poll budget there, the hosted gateway's own cut-off, and applies whole to a start carrying a bundle.
+        """
+        server = _Server(
+            {
+                "/v1/version": [httpx.Response(200, json=_HOSTED_VERSION)],
+                "/v1/start": [
+                    httpx.Response(202, json={"pipeline_run_id": "r1", "state": "STARTED", "created_at": "t0"}),
+                    httpx.Response(202, json={"pipeline_run_id": "r2", "state": "STARTED", "created_at": "t0"}),
+                ],
+            }
+        )
+        client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL, request_timeout_seconds=request_timeout_seconds)
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(server.handle))
+
+        async def scenario() -> None:
+            await client.version()
+            await client.start(pipe_code="p")
+            await client.start(pipe_code="p", mthds_contents=['domain = "d"'])
+
+        asyncio.run(scenario())
+
+        assert server.requests == [("/v1/version", quick), ("/v1/start", quick), ("/v1/start", carrying)]
+
     def test_an_unanswered_handshake_sends_no_start_and_is_asked_again(self) -> None:
         server = _Server(
             {
