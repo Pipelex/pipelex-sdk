@@ -93,6 +93,9 @@ def stored_method(method_id: str, *, name: str = "Stored text stats", descriptio
         "created_by_user_id": "user_00000000",
         "created_at": "2026-10-06T00:00:00Z",
         "updated_at": "2026-10-06T00:00:00Z",
+        "draft_digest": "0" * 64,
+        "latest_version": None,
+        "latest_published": None,
     }
 
 
