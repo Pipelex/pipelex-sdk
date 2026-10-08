@@ -2284,6 +2284,67 @@
       }
     },
     {
+      "name": "run/start-gateway-timeout",
+      "summary": "A gateway that timed out waiting for the start's answer may have let a run be created, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 504,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 504, "title": "Gateway Timeout", "detail": "The gateway answered 504." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 504).\n", "A run may have started on the server without the command learning of it, so check before starting it again.\n"]
+      }
+    },
+    {
+      "name": "run/start-bad-gateway",
+      "summary": "A gateway that got no valid answer to the start may have let a run be created, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 502,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 502, "title": "Bad Gateway", "detail": "The gateway answered 502." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 502).\n", "A run may have started on the server without the command learning of it, so check before starting it again.\n"]
+      }
+    },
+    {
+      "name": "run/start-unavailable",
+      "summary": "A 503 says the start was not handled, so no run was created and the failure says nothing of one.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 503,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 503, "title": "Service Unavailable", "detail": "The gateway answered 503." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 503).\n"],
+        "stderr_excludes": ["may have started"]
+      }
+    },
+    {
       "name": "run/start-unreachable",
       "summary": "A start whose connection is refused sent nothing, so no run can exist and the failure says nothing of one.",
       "argv": ["run", "--method", "mt_receipts01"],

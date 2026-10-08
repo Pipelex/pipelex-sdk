@@ -78,19 +78,24 @@ def run_command(argv: Sequence[str], io: CommandIO) -> int:
 #: no run was created by it.
 _NOTHING_SENT_CODES = frozenset({"ConnectError", "ConnectTimeout", "PoolTimeout", "UnsupportedProtocol"})
 
+#: The gateway statuses that say the server's answer was lost or never came (RFC 9110).
+_GATEWAY_LOST_ANSWER = frozenset({502, 504})
+
 
 def _may_have_started(exc: Exception) -> bool:
     """Whether a failure met once a request that may create a run was sent, and before the API named the
     run, leaves it unknown whether one was created: its answer was lost to a time limit, a connection that
     closed once the request had left or a gateway that cut a blocking execute off, or it came back
-    unreadable. A refusal from the API, and a failure that proves nothing was sent, say no run was created.
+    unreadable, or a gateway answered that it lost or never got the server's answer (`502`, `504`, RFC 9110).
+    Any other answer from the API, a `503` saying the request was not handled included, and a failure that
+    proves nothing was sent, say no run was created.
     """
     if isinstance(exc, PipelineExecuteTimeoutError):
         return True
     if isinstance(exc, ApiUnreachableError):
         return exc.code not in _NOTHING_SENT_CODES
     if isinstance(exc, ApiResponseError):
-        return 200 <= exc.status < 300
+        return 200 <= exc.status < 300 or exc.status in _GATEWAY_LOST_ANSWER
     return isinstance(exc, (ValidationError, json.JSONDecodeError))
 
 

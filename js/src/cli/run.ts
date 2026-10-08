@@ -167,15 +167,20 @@ const NOTHING_SENT_CODES: ReadonlySet<string> = new Set([
  * Whether a failure met once a request that may create a run was sent, and before the API named
  * the run, leaves it unknown whether one was created: its answer was lost to a time limit, a
  * connection that closed once the request had left or a gateway that cut a blocking execute off,
- * or it came back unreadable. A refusal from the API, and a failure that proves nothing was sent,
- * say no run was created.
+ * or it came back unreadable, or a gateway answered that it lost or never got the server's answer
+ * (`502`, `504`, RFC 9110). Any other answer from the API, a `503` saying the request was not
+ * handled included, and a failure that proves nothing was sent, say no run was created.
  */
 function mayHaveStarted(stage: Stage, error: unknown): boolean {
   if (stage.kind !== "starting") return false;
   if (error instanceof PipelineExecuteTimeoutError) return true;
   if (error instanceof ApiUnreachableError) return !NOTHING_SENT_CODES.has(error.code ?? "");
-  return error instanceof ApiResponseError && error.status >= 200 && error.status < 300;
+  if (!(error instanceof ApiResponseError)) return false;
+  return (error.status >= 200 && error.status < 300) || GATEWAY_LOST_ANSWER.has(error.status);
 }
+
+/** The gateway statuses that say the server's answer was lost or never came (RFC 9110). */
+const GATEWAY_LOST_ANSWER: ReadonlySet<number> = new Set([502, 504]);
 
 /** The line under a failure that leaves it unknown whether a run was created. */
 export const RUN_MAY_HAVE_STARTED_LINE =
