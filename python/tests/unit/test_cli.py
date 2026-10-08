@@ -614,3 +614,47 @@ class TestCli:
 
         _check(case, outcome, root)
         assert list(root.iterdir()) == [], outcome.shown
+
+    def test_an_interrupt_while_the_last_answer_is_read_writes_nothing(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C while the catalog entry, the last answer `script` needs, is read: the task is cancelled, not finished."""
+        case: dict[str, Any] = {
+            **_case_named("script/catalog-id"),
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NOTHING_WRITTEN], "absent_files": ["resume-review-v2"]},
+        }
+        root = tmp_path.resolve()
+
+        outcome = _run_case(case, root, mocker, monkeypatch, interrupt_while_answering="GET /v1/methods/mt_receipts01")
+
+        _check(case, outcome, root)
+        assert list(root.iterdir()) == [], outcome.shown
+
+    @pytest.mark.parametrize("moment", ["while-closing", "once-the-task-is-done"])
+    def test_an_interrupt_after_the_last_answer_writes_nothing(
+        self, moment: str, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C while the API client closes, or once the command's task is done and the loop is winding down: the
+        interrupt is not lost, and the loop's close does not fail over it.
+        """
+        case: dict[str, Any] = {
+            **_case_named("script/catalog-id"),
+            "expect": {"exit_code": 130, "stdout": "", "stderr": [_NOTHING_WRITTEN], "absent_files": ["resume-review-v2"]},
+        }
+        root = tmp_path.resolve()
+        real_aclose = httpx.AsyncClient.aclose
+
+        async def aclose(client: httpx.AsyncClient) -> None:
+            await real_aclose(client)
+            if moment == "while-closing":
+                signal.raise_signal(signal.SIGINT)
+            else:
+                # Queued ahead of the task's own completion, so it runs once the task is done.
+                asyncio.get_running_loop().call_soon(signal.raise_signal, signal.SIGINT)
+
+        mocker.patch.object(httpx.AsyncClient, "aclose", aclose)
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
+        assert list(root.iterdir()) == [], outcome.shown
+

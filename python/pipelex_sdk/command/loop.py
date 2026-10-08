@@ -71,8 +71,18 @@ def run_until_done(main: Coroutine[Any, Any, _T]) -> _T:
         KeyboardInterrupt: Ctrl-C, once the task it cancelled has unwound.
     """
     with asyncio.Runner() as runner:
-        runner.get_loop().set_default_executor(_AbandoningExecutor())
-        return runner.run(main)
+        loop = runner.get_loop()
+        loop.set_default_executor(_AbandoningExecutor())
+        try:
+            return runner.run(main)
+        except KeyboardInterrupt:
+            # A Ctrl-C that lands once the task is done is raised from inside the loop, with the task's
+            # own callback, the one that stops the loop, still queued. The runner's close would run it
+            # while it waits for the executor's shutdown, stop there and fail. One turn of the loop
+            # runs it first, so the close completes and the interrupt is what the command reports.
+            loop.call_soon(loop.stop)
+            loop.run_forever()
+            raise
 
 
 async def before_request() -> None:
