@@ -23,14 +23,14 @@ The source repositories are the five whose trees were copied at the import (see 
 | `pipelex-sdk-js` | `version-check.yml`: the version against `main` and the release branch | `Release version`, reading `VERSION` | `Lint (all)` | pipelex-sdk#16, #19 |
 | `pipelex-sdk-js` | `changelog-check.yml`: the release's changelog entry | `Release version`, `make check-release-versions` | `Lint (all)` | pipelex-sdk#16, #19 |
 | `pipelex-sdk-js` | `guard-branches.yml` | `Branch flow` | `Lint (all)` | pipelex-sdk#2, #3 |
-| `pipelex-sdk-js` | `cla.yml` | the root `cla.yml` | reported | pipelex-sdk#17 |
+| `pipelex-sdk-js` | `cla.yml` | the organization ruleset `cla`, running Pipelex/.github's `cla.yml` | required by the ruleset | pipelex-sdk#44 |
 | `pipelex-sdk-python` | `lint-check.yml`: `TEST_PROFILE=ci make install` and the four merge checks, Python 3.11 to 3.14, then `Lint (all versions)` | `python lint (<version>)` | `Lint (all)` | pipelex-sdk#2, #3 |
 | `pipelex-sdk-python` | `tests-check.yml`: `make install`, then `make gha-tests`, Python 3.11 to 3.14, then `Tests (all)` | `python tests (py<version>)` | `Tests (all)` | pipelex-sdk#2, #3 |
 | `pipelex-sdk-python` | `package-check.yml`: `uv lock --locked` leaves `uv.lock` unchanged | `python package-check` | `Lint (all)` | pipelex-sdk#2, #3 |
 | `pipelex-sdk-python` | `version-check.yml`, `changelog-check.yml` | `Release version` | `Lint (all)` | pipelex-sdk#16, #19 |
 | `pipelex-sdk-python` | `guard-branches.yml`: the branch flow | `Branch flow` | `Lint (all)` | pipelex-sdk#2, #3 |
 | `pipelex-sdk-python` | `guard-branches.yml`: `protect-workflows` | the root `protect-workflows.yml` | reported | pipelex-sdk#17 |
-| `pipelex-sdk-python` | `cla.yml` | the root `cla.yml` | reported | pipelex-sdk#17 |
+| `pipelex-sdk-python` | `cla.yml` | the organization ruleset `cla`, running Pipelex/.github's `cla.yml` | required by the ruleset | pipelex-sdk#44 |
 | `pipelex-starter-js` | `lint-check.yml`: `npm ci`, then `make check` | `starter-js-lint`, the standalone twin `starter-js-lint-check.yml` | `Lint (all)` | pipelex-sdk#2, #3 |
 | `pipelex-starter-js` | `tests-check.yml`: `npm ci`, `make agent-test`, `make build` | `starter-js-tests`, the standalone twin `starter-js-tests-check.yml` | `Tests (all)` | pipelex-sdk#2, #3 |
 | `pipelex-starter-python` | `lint-check.yml`: `make install` and the four merge checks, Python 3.11 to 3.13 | `starter-python-lint`, the standalone twin `starter-python-lint-check.yml` | `Lint (all)` | pipelex-sdk#2 |
@@ -38,7 +38,7 @@ The source repositories are the five whose trees were copied at the import (see 
 | `pipelex-starter-python` | `package-check.yml`: `uv lock --locked` | `starter-python-package`, the standalone twin `starter-python-package-check.yml` | `Lint (all)` | pipelex-sdk#2 |
 | `pipelex-starter-python` | `version-check.yml`, `changelog-check.yml` | `Release version` | `Lint (all)` | pipelex-sdk#16, #19 |
 | `pipelex-starter-python` | `guard-branches.yml` | `Branch flow` | `Lint (all)` | pipelex-sdk#2, #3 |
-| `pipelex-starter-python` | `cla.yml` | the root `cla.yml` | reported | pipelex-sdk#17 |
+| `pipelex-starter-python` | `cla.yml` | the organization ruleset `cla`, running Pipelex/.github's `cla.yml` | required by the ruleset | pipelex-sdk#44 |
 | `pipelex-method-apps` | `family-check.yml`: the family's version, the workflow twins, Prettier on the family's files, the root's scripts and the initializers' tests | `method-apps family` for Prettier, the family's scripts and the initializers; `Root` for the versions and the twins, now the repository's | `Tests (all)`, `Lint (all)` | pipelex-sdk#2, #3 |
 | `pipelex-method-apps` | `webapp-js-lint-check.yml`, the twin of `webapp-js`'s `lint-check.yml` | `method-apps-webapp-js-lint`, the standalone twin `method-apps-webapp-js-lint-check.yml` | `Lint (all)` | pipelex-sdk#2, #3 |
 | `pipelex-method-apps` | `webapp-js-tests-check.yml`, the twin of `webapp-js`'s `tests-check.yml` | `method-apps-webapp-js-tests`, the standalone twin `method-apps-webapp-js-tests-check.yml` | `Tests (all)` | pipelex-sdk#2, #3 |
