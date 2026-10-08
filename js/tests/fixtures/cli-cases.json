@@ -1661,11 +1661,7 @@
               "request_id": "req_123",
               "user_action": { "kind": "fix_input", "detail": "Fix the bundle and run it again." },
               "validation_errors": [
-                {
-                  "category": "blueprint_validation",
-                  "message": "Unknown concept 'Receipt'.",
-                  "source": "receipt-review.mthds"
-                }
+                { "category": "blueprint_validation", "message": "Unknown concept 'Receipt'." }
               ]
             }
           }
@@ -1677,11 +1673,11 @@
         "stderr": [
           "Error: the API refused the request (status 422).\n",
           "Reason: The method failed validation.\n",
-          "  - receipt-review.mthds: Unknown concept 'Receipt'.\n",
+          "  - Unknown concept 'Receipt'.\n",
           "Next step: Fix the bundle and run it again.\n",
           "Request id: req_123\n"
         ],
-        "stderr_excludes": ["Run started"]
+        "stderr_excludes": ["Run started", "receipt-review.mthds:"]
       }
     },
     {
