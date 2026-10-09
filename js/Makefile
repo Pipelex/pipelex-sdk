@@ -210,10 +210,14 @@ pack: rebuild
 # --- Switch mthds source ---
 # use-local:  file link to the workspace's ../../mthds-js for live development
 # use-npm:    install from the npm registry (latest by default, or VERSION=x.y.z)
+#
+# The checkout's dependencies install with `npm install --no-save`, which writes neither its
+# package.json nor its lockfile, since those belong to another repository, and which keeps the
+# node_modules a watcher there may be running from, where `npm ci` would empty it.
 
 use-local:
 	@if [ ! -d $(MTHDS_JS_DIR) ]; then echo "ERROR: $(MTHDS_JS_DIR) not found. Clone mthds-js at the workspace root, beside this repository."; exit 1; fi
-	cd $(MTHDS_JS_DIR) && npm ci && npm run build
+	cd $(MTHDS_JS_DIR) && npm install --no-save && npm run build
 	npm install mthds@file:$(MTHDS_JS_DIR)
 	@echo "Switched to local mthds (file link). Run 'make use-npm' to switch back."
 

@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- **`js/`'s lockfile installs under npm 10**: `package-lock.json` is a valid install tree again, so `npm ci` in `js/` installs it under the npm that Node 22 bundles, where it stopped with `EUSAGE` because vite 8's optional `esbuild` peer could not share the `esbuild` 0.25 the package pinned; `esbuild` moves to 0.28, which the hook bundle built by `npm run build:hook` is now built with. `make install` installs from the lockfile with `npm ci` and no longer rewrites it, and `make check` runs a new `make check-lock`, which refuses a lockfile whose tree `npm ls` calls invalid and names the dependency at fault.
+- **`js/`'s lockfile installs under npm 10**: `package-lock.json` is a valid install tree again, so `npm ci` in `js/` installs it under the npm that Node 22 bundles, where it stopped with `EUSAGE` because vite 8's optional `esbuild` peer could not share the `esbuild` 0.25 the package pinned; `esbuild` moves to 0.28, which the hook bundle built by `npm run build:hook` is now built with. `make install` installs from the lockfile with `npm ci` and no longer rewrites it, `make use-local` no longer rewrites the `mthds-js` checkout's lockfile either, and `make check` runs a new `make check-lock`, which refuses a lockfile whose tree `npm ls` calls invalid and names the dependency at fault.
 
 ## [v0.36.0] - 2026-10-09
 
