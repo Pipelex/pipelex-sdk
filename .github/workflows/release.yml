@@ -122,8 +122,8 @@ jobs:
         id: check
         run: node scripts/publish.mjs check --tag "$TAG" --package @pipelex/sdk
 
-      # npm trusted publishing needs npm 11.5.1 or later, and `npm ci` in js/ fails under the
-      # npm that Node 22 bundles, as the old pipelex-sdk-js publish workflow found.
+      # The major the publish job publishes with, since trusted publishing needs npm 11.5.1 or
+      # later, so the tarball is installed and packed by the npm that publishes it.
       - name: Upgrade npm
         if: steps.check.outputs.publish == 'true'
         run: npm install -g npm@11

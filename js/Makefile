@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-if-missing check c test t test-e2e te test-pack clean build rebuild dev pack all depcruise agent-check agent-test use-local use-npm ul un
+.PHONY: help install install-if-missing check check-lock c test t test-e2e te test-pack clean build rebuild dev pack all depcruise agent-check agent-test use-local use-npm ul un
 
 # The workspace's mthds-js checkout, for live mthds development (see use-local / use-npm). It
 # sits beside this repository's root, the main checkout or a worktree alike, two levels up.
@@ -26,9 +26,10 @@ define HELP
 Manage $(PACKAGE_NAME) located in $(CURDIR).
 Usage:
 
-make install    - Install dependencies
+make install    - Install the dependencies from the lockfile (npm ci, which never rewrites it)
 make all        - Clean, check, and test
 make check      - Run quality checks, excluding tests
+make check-lock - Fail when package-lock.json is not a valid install tree
 make test       - Run the test suite
 make test-e2e   - Run e2e tests against a live pipelex-api [PIPELEX_E2E_BASE_URL=...]
 make test-pack  - Pack the package and run its pipelex-sdk command from the tarball through npx
@@ -58,9 +59,13 @@ export HELP
 help:
 	@echo "$$HELP"
 
+# `npm ci` installs exactly what the lockfile pins and refuses a lockfile that is out of step
+# with package.json, where `npm install` would rewrite it in whichever shape the running npm
+# prefers. Changing a dependency is the deliberate `npm install <package>@<range>`, then a
+# commit of both files.
 install:
 	$(call PRINT_TITLE,"Installing Dependencies")
-	@npm install
+	@npm ci
 	@echo "$(GREEN)✓ Installation complete$(NC)"
 
 # The agent targets install the package first when node_modules is missing, so a fresh
@@ -143,13 +148,35 @@ depcruise:
 	@npm run depcruise
 	@echo "$(GREEN)✓ protocol boundary intact$(NC)"
 
-check:
+# npm ls reads only package.json and the lockfile, so it fails on a tree npm itself calls
+# invalid whichever npm wrote it, and the grep leaves only the edge at fault on the screen:
+# npm's own markers for a wrong version, a dependency the lockfile lacks and one nothing needs,
+# never `UNMET OPTIONAL DEPENDENCY`, which a valid tree prints too. When it fails without printing
+# any of them, npm could not read the lockfile at all, or npm itself is missing, and the check
+# runs it once more to show npm's own error.
+# While `make use-local` links mthds to a checkout, the lockfile cannot see that checkout's own
+# dependencies and reads every one of them as unmet, so the check steps aside and says so; a
+# committed link would fail CI's `npm ci` anyway, since the checkout is not there.
+check-lock:
+	@if grep -qE '"(file|link):' package.json; then \
+		echo "$(YELLOW)• Lockfile check skipped: package.json links a local checkout (make use-local); run make use-npm before committing$(NC)"; \
+	elif ! tree=$$(npm ls --all --package-lock-only 2>/dev/null); then \
+		if printf '%s\n' "$$tree" | grep -E "invalid: |UNMET DEPENDENCY|extraneous"; then \
+			echo "$(RED)package-lock.json is not a valid install tree: fix the dependency above, then run npm install to rewrite the lock$(NC)"; \
+		else \
+			npm ls --all --package-lock-only > /dev/null; \
+			echo "$(RED)npm ls could not read package-lock.json as an install tree: see its error above$(NC)"; \
+		fi; \
+		exit 1; \
+	fi
+
+check: check-lock
 	@npm run check
 	@echo "$(GREEN)✓ All checks passed$(NC)"
 
 c: check
 
-agent-check: install-if-missing
+agent-check: install-if-missing check-lock
 	@npm run check
 	@echo "$(GREEN)✓ All checks passed$(NC)"
 
@@ -183,10 +210,14 @@ pack: rebuild
 # --- Switch mthds source ---
 # use-local:  file link to the workspace's ../../mthds-js for live development
 # use-npm:    install from the npm registry (latest by default, or VERSION=x.y.z)
+#
+# The checkout's dependencies install with `npm install --no-save`, which writes neither its
+# package.json nor its lockfile, since those belong to another repository, and which keeps the
+# node_modules a watcher there may be running from, where `npm ci` would empty it.
 
 use-local:
 	@if [ ! -d $(MTHDS_JS_DIR) ]; then echo "ERROR: $(MTHDS_JS_DIR) not found. Clone mthds-js at the workspace root, beside this repository."; exit 1; fi
-	cd $(MTHDS_JS_DIR) && npm install && npm run build
+	cd $(MTHDS_JS_DIR) && npm install --no-save && npm run build
 	npm install mthds@file:$(MTHDS_JS_DIR)
 	@echo "Switched to local mthds (file link). Run 'make use-npm' to switch back."
 
