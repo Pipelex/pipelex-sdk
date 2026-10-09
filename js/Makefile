@@ -151,16 +151,22 @@ depcruise:
 # npm ls reads only package.json and the lockfile, so it fails on a tree npm itself calls
 # invalid whichever npm wrote it, and the grep leaves only the edge at fault on the screen:
 # npm's own markers for a wrong version, a dependency the lockfile lacks and one nothing needs,
-# never `UNMET OPTIONAL DEPENDENCY`, which a valid tree prints too.
+# never `UNMET OPTIONAL DEPENDENCY`, which a valid tree prints too. When it fails without printing
+# any of them, npm could not read the lockfile at all, or npm itself is missing, and the check
+# runs it once more to show npm's own error.
 # While `make use-local` links mthds to a checkout, the lockfile cannot see that checkout's own
 # dependencies and reads every one of them as unmet, so the check steps aside and says so; a
 # committed link would fail CI's `npm ci` anyway, since the checkout is not there.
 check-lock:
 	@if grep -qE '"(file|link):' package.json; then \
 		echo "$(YELLOW)• Lockfile check skipped: package.json links a local checkout (make use-local); run make use-npm before committing$(NC)"; \
-	elif ! npm ls --all --package-lock-only > /dev/null 2>&1; then \
-		npm ls --all --package-lock-only 2>/dev/null | grep -E "invalid: |UNMET DEPENDENCY|extraneous"; \
-		echo "$(RED)package-lock.json is not a valid install tree: fix the dependency above, then run npm install to rewrite the lock$(NC)"; \
+	elif ! tree=$$(npm ls --all --package-lock-only 2>/dev/null); then \
+		if printf '%s\n' "$$tree" | grep -E "invalid: |UNMET DEPENDENCY|extraneous"; then \
+			echo "$(RED)package-lock.json is not a valid install tree: fix the dependency above, then run npm install to rewrite the lock$(NC)"; \
+		else \
+			npm ls --all --package-lock-only > /dev/null; \
+			echo "$(RED)npm ls could not read package-lock.json as an install tree: see its error above$(NC)"; \
+		fi; \
 		exit 1; \
 	fi
 
