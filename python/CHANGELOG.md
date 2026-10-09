@@ -1,9 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [v0.37.0] - 2026-10-09
 
 ### Changed
 
+- **Requires `mthds` 0.20.0, the release that reports MTHDS standard 4.0.0 (Breaking)**: the exact pin moves from `mthds==0.19.0` to `mthds==0.20.0`, so every environment holding this `pipelex-sdk` installs exactly that `mthds`, and a project that also pins `mthds` itself has to move with it. The release's one behavioural change is `MTHDS_STANDARD_VERSION` going from `3.0.0` to `4.0.0`, which this client never reads, so nothing in `pipelex-sdk`'s own surface changes and `PROTOCOL_VERSION` stays where it was. Code of your own that checks a manifest's `mthds_version` with `mthds` now evaluates it against `4.0.0`, where a constraint of `^3.0.0`, `~3.0.0` or exactly `3.0.0` no longer passes.
 - **The `pipelex-sdk` command names `~/.pipelex/.env`**: its help and its missing-key error say that the key `pipelex login` saves in `~/.pipelex/.env`, or under `PIPELEX_HOME` when that is set, is not read, and how to load it into the shell, `set -a; . "${PIPELEX_HOME:-$HOME/.pipelex}/.env"; set +a`. The README and `docs/architecture.md` say the same of the client, and give the other way in when `pipelex` is installed, importing `pipelex.system.environment` first.
 
 ## [v0.36.0] - 2026-10-09
