@@ -6,6 +6,10 @@
 
 - **The `pipelex-sdk` command names `~/.pipelex/.env`**: its help and its missing-key error say that the key `pipelex login` saves in `~/.pipelex/.env`, or under `PIPELEX_HOME` when that is set, is not read, and how to load it into the shell, `set -a; . "${PIPELEX_HOME:-$HOME/.pipelex}/.env"; set +a`, word for word as the Python command says it.
 
+### Fixed
+
+- **`js/`'s lockfile installs under npm 10**: `package-lock.json` is a valid install tree again, so `npm ci` in `js/` installs it under the npm that Node 22 bundles, where it stopped with `EUSAGE` because vite 8's optional `esbuild` peer could not share the `esbuild` 0.25 the package pinned; `esbuild` moves to 0.28, which the hook bundle built by `npm run build:hook` is now built with. `make install` installs from the lockfile with `npm ci` and no longer rewrites it, and `make check` runs a new `make check-lock`, which refuses a lockfile whose tree `npm ls` calls invalid and names the dependency at fault.
+
 ## [v0.36.0] - 2026-10-09
 
 ### Changed
