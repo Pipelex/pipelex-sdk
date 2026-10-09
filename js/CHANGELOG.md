@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The `pipelex-sdk` command names `~/.pipelex/.env`**: its help and its missing-key error say that the key `pipelex login` saves in `~/.pipelex/.env`, or under `PIPELEX_HOME` when that is set, is not read, and how to load it into the shell, `set -a; . "${PIPELEX_HOME:-$HOME/.pipelex}/.env"; set +a`, word for word as the Python command says it.
+
 ## [v0.36.0] - 2026-10-09
 
 ### Changed

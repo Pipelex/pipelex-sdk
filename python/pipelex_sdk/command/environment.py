@@ -72,6 +72,10 @@ def make_client(io: CommandIO) -> PipelexAPIClient:
             [
                 f"Get a key at https://app.pipelex.com and export it: export {API_KEY_VARIABLE}=<your key>",
                 "This command reads no .env file; to load one into the shell, run: set -a; . ./.env; set +a",
+                (
+                    "A key saved by pipelex login is in ~/.pipelex/.env, or under PIPELEX_HOME when that is set; "
+                    'to load it, run: set -a; . "${PIPELEX_HOME:-$HOME/.pipelex}/.env"; set +a'
+                ),
             ],
         )
     # Absent, not empty, means the hosted API: the SDK refuses an empty base URL on purpose.

@@ -19,7 +19,9 @@ id, mt_..., or, for run only, a .mthds file or a bundle directory. A bare catalo
 method's latest published version, mt_...@<version> a fixed version, and mt_...@draft its draft.
 
 The API key is read from PIPELEX_API_KEY, and the API's address from PIPELEX_BASE_URL
-(https://api.pipelex.com when unset). No .env file is read.
+(https://api.pipelex.com when unset). No .env file is read, not even the one pipelex login
+saves the key in, ~/.pipelex/.env or the .env under PIPELEX_HOME when that is set. To load it
+into the shell: set -a; . "${PIPELEX_HOME:-$HOME/.pipelex}/.env"; set +a
 
 Exit codes: 0 done, 1 the run failed or the API refused it, 2 a usage error, 130 interrupted.
 """
