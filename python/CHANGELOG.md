@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **The `pipelex-sdk` command names `~/.pipelex/.env`**: its help and its missing-key error say that the key `pipelex login` saves in `~/.pipelex/.env` is not read, and how to load it into the shell, `set -a; . ~/.pipelex/.env; set +a`. The README and `docs/architecture.md` say the same of the client, and give the other way in when `pipelex` is installed, importing `pipelex.system.environment` first.
+- **The `pipelex-sdk` command names `~/.pipelex/.env`**: its help and its missing-key error say that the key `pipelex login` saves in `~/.pipelex/.env`, or under `PIPELEX_HOME` when that is set, is not read, and how to load it into the shell, `set -a; . "${PIPELEX_HOME:-$HOME/.pipelex}/.env"; set +a`. The README and `docs/architecture.md` say the same of the client, and give the other way in when `pipelex` is installed, importing `pipelex.system.environment` first.
 
 ## [v0.36.0] - 2026-10-09
 

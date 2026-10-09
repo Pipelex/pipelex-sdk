@@ -163,7 +163,7 @@
           "pipelex-sdk run --method",
           "pipelex-sdk script --method",
           "PIPELEX_API_KEY",
-          "set -a; . ~/.pipelex/.env; set +a"
+          "set -a; . \"${PIPELEX_HOME:-$HOME/.pipelex}/.env\"; set +a"
         ],
         "stderr_excludes": ["Error"]
       }
@@ -1581,7 +1581,7 @@
         "stderr": [
           "Error: PIPELEX_API_KEY is not set.\n",
           "https://app.pipelex.com",
-          "A key saved by pipelex login is in ~/.pipelex/.env; to load it, run: set -a; . ~/.pipelex/.env; set +a\n"
+          "A key saved by pipelex login is in ~/.pipelex/.env, or under PIPELEX_HOME when that is set; to load it, run: set -a; . \"${PIPELEX_HOME:-$HOME/.pipelex}/.env\"; set +a\n"
         ]
       }
     },
