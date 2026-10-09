@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Sign-up points at app.pipelex.com**: the README's prerequisites say to sign up and get a key at app.pipelex.com, where they sent you to a waitlist.
+
 ## [v0.36.0] - 2026-10-09
 
 ### Changed

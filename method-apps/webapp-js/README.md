@@ -50,7 +50,7 @@ The command refuses rather than overwriting a slice that already exists, and `DR
 ## Prerequisites
 
 - Node.js 22.12+.
-- Access to the **hosted Pipelex API**, currently in private beta. Join the waitlist at [go.pipelex.com/waitlist](https://go.pipelex.com/waitlist); once you have access, get an API key at [app.pipelex.com](https://app.pipelex.com).
+- Access to the **hosted Pipelex API**: sign up at [app.pipelex.com](https://app.pipelex.com) and get an API key there.
 
 ## Environment variables
 

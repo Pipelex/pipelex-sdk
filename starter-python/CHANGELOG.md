@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Sign-up points at app.pipelex.com**: the README and `.env.example` say to sign up and get a key at app.pipelex.com, where they sent you to a waitlist, and the self-hosted option names the API server's current home, the `api/` member of `Pipelex/pipelex`, published as `pipelex-api` and the `pipelex/pipelex-api` image.
+
 ## [v0.36.0] - 2026-10-09
 
 ### Changed

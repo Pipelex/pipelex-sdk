@@ -44,6 +44,8 @@ Resolved at construction time, Pipelex-only — the SDK **never** consults the `
 
 A token is **optional** (anonymous access is allowed; protocol routes work against anonymous bare runners, product routes return `401`). The base URL is validated host-only (no path/query/fragment/embedded credentials; http/https only).
 
+No file is read for either chain: not a `.env`, and not `~/.pipelex/.env` (or the `.env` under `PIPELEX_HOME`), where `pipelex login` and `pipelex init` save the key as `PIPELEX_API_KEY`. A program that wants that key loads it into the process environment before constructing the client: from the shell, `set -a; . ~/.pipelex/.env; set +a`, or, when `pipelex` is installed, by importing `pipelex.system.environment`, which loads that file and then the working directory's `.env` ([README](../README.md), "Configuration").
+
 `app_info` (constructor argument, an `AppInfo`) names the integrator in the `User-Agent`; it is validated when constructed, and the whole header is built and length-checked when the client is constructed ([`client-identification.md`](client-identification.md)).
 
 `request_timeout_seconds` (constructor argument, default `1200.0`, 20 min) is the time limit of the routes that can take long: the blocking `execute`, `validate`, `models`, and a `start` carrying a bundle (`mthds_contents`, `files` or `bundle_b64`) or a `method_ref`, which the server resolves before it answers. `version` and any other `start` answer fast, so they take `request_timeout_seconds` capped at the 30-second poll budget, the hosted gateway's own cut-off. The SDK's own polls and product requests keep budgets of their own. The SDK's polls and product GETs use `_POLL_REQUEST_TIMEOUT_SECONDS`.
@@ -295,9 +297,9 @@ The command is the twin of `@pipelex/sdk`'s, which it shares no code with. The t
 
 ## Out of scope
 
-- The `/v1/build/*` helpers. Neither SDK carries them any more. This one never shipped `build_output`, `build_runner`, `concept` or `pipe_spec`, and removed `build_inputs`, which shipped in 0.5.0, once `prepare_inputs`, its only caller, moved onto the input-form descriptor (read from `validate` then, from `pipe_io` now). `@pipelex/sdk` retired all five of its wrappers together once no consumer was left. The workspace is retiring the routes themselves (L-260829-848001 in the workspace ledger); a caller that wants an inputs template projects it from the descriptor `pipe_io` returns, with `mthds.protocol.inputs_template`.
+- The `/v1/build/*` helpers. Neither SDK carries them any more. This one never shipped `build_output`, `build_runner`, `concept` or `pipe_spec`, and removed `build_inputs`, which shipped in 0.5.0, once `prepare_inputs`, its only caller, moved onto the input-form descriptor (read from `validate` then, from `pipe_io` now). `@pipelex/sdk` retired all five of its wrappers together once no consumer was left. The workspace is retiring the routes themselves; a caller that wants an inputs template projects it from the descriptor `pipe_io` returns, with `mthds.protocol.inputs_template`.
 - Organization *switch* (a WorkOS session operation, not a `/v1` route).
-- A `~/.pipelex/config` file reader (env-only for now, matching the JS SDK).
+- A reader of `~/.pipelex/.env`, the file `pipelex login` saves the key to. The client reads its arguments and the process environment only, as the JS SDK does, and the `pipelex-sdk` command reads no `.env` file on purpose ([`cli.md`](cli.md), "The environment"), so loading that file is the caller's step ("Credentials & configuration" above).
 - A synchronous client facade.
 
 ## Versioning

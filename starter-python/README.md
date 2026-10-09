@@ -29,8 +29,8 @@ Prefer to do it by hand? The manual equivalent:
 
 Access to a **Pipelex API** server. You have two options:
 
-- **Hosted** — currently in private beta. Join the waitlist at [go.pipelex.com/waitlist](https://go.pipelex.com/waitlist). Once you have access, get an API key at [app.pipelex.com](https://app.pipelex.com) and point `PIPELEX_BASE_URL` at `https://api.pipelex.com` (the default).
-- **Self-hosted** — the Pipelex API is open source at [github.com/Pipelex/pipelex-api](https://github.com/Pipelex/pipelex-api). Run it locally or on your own infra and point `PIPELEX_BASE_URL` at your instance (e.g. `http://127.0.0.1:8081`).
+- **Hosted** — sign up at [app.pipelex.com](https://app.pipelex.com), get an API key there, and point `PIPELEX_BASE_URL` at `https://api.pipelex.com` (the default).
+- **Self-hosted** — the Pipelex API server is open source: it is the `api/` member of [github.com/Pipelex/pipelex](https://github.com/Pipelex/pipelex/tree/main/api), published as `pipelex-api` on PyPI and as the `pipelex/pipelex-api` Docker image. Run it locally or on your own infra and point `PIPELEX_BASE_URL` at your instance (e.g. `http://127.0.0.1:8081`).
 
 ## Quick start
 
