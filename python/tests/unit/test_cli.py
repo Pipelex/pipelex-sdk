@@ -341,7 +341,7 @@ def _write_failing() -> Callable[[int, bytes], int]:
 
 # ── Running a case ────────────────────────────────────────────────────────────────────────────────
 
-_REAL_MONOTONIC = time.monotonic
+_real_monotonic = time.monotonic
 
 
 def _materialize(root: Path, files: list[dict[str, Any]]) -> None:
@@ -438,7 +438,7 @@ def _run_case(
         # The clock the SDK times its requests with, and the command the request that may create a run:
         # it runs as it does, plus the time the case's exchanges have taken, so that a case can hold an
         # answer that came back half a minute later without waiting for it.
-        return _REAL_MONOTONIC() + api.elapsed_seconds
+        return _real_monotonic() + api.elapsed_seconds
 
     mocker.patch.object(httpx, "AsyncClient", recorded_client)
     mocker.patch("pipelex_sdk.client.monotonic", case_clock)

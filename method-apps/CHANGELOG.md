@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.37.0] - 2026-10-09
+
+### Changed
+
+- **Sign-up points at app.pipelex.com**: the web app template's README says to sign up and get a key at app.pipelex.com, where it sent you to a waitlist.
+
 ## [v0.36.0] - 2026-10-09
 
 ### Changed

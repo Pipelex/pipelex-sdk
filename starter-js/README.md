@@ -37,7 +37,7 @@ Prefer to do it by hand? The manual equivalent:
 ## Prerequisites
 
 - Node.js 22.12+ (the SDK is ESM-only and the e2e specs `require()` it, which needs Node's unflagged `require(esm)`)
-- Access to the **hosted Pipelex API**, currently in private beta. Join the waitlist at [go.pipelex.com/waitlist](https://go.pipelex.com/waitlist); once you have access, get an API key at [app.pipelex.com](https://app.pipelex.com). `PIPELEX_BASE_URL` already defaults to `https://api.pipelex.com`, so the key is the only thing you set.
+- Access to the **hosted Pipelex API**: sign up at [app.pipelex.com](https://app.pipelex.com) and get an API key there. `PIPELEX_BASE_URL` already defaults to `https://api.pipelex.com`, so the key is the only thing you set.
 
   **This template targets the hosted Pipelex API.** The hosted API is what serves everything the examples rely on — durable runs (start + poll), file upload and storage, and codegen. Dedicated deployments of the hosted plane exist and are not self-serve; talk to us at [pipelex.com](https://pipelex.com).
 

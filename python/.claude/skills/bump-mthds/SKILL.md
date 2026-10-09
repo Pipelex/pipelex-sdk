@@ -3,7 +3,9 @@ name: bump-mthds
 description: >
   Move this repo's exact `mthds` dependency pin to the latest release on PyPI
   (or a version you name), re-lock, adapt the client to whatever the new release
-  broke, run the checks, and write the CHANGELOG entry — stopping before the
+  broke, run the checks, write the CHANGELOG entry, and name `pipelex`, which
+  pins both `mthds` and `pipelex-sdk` exactly, as the consumer whose pins follow
+  once a `pipelex-sdk` release carries the move — stopping before the
   commit. Use whenever the user says "bump mthds", "update mthds", "upgrade
   mthds", "move to mthds 0.11.0", "get us on the latest mthds", "is our mthds
   floor stale", "what's the latest mthds", or asks to build this SDK against a
@@ -44,6 +46,8 @@ two directions at once:
   a breaking change to `pipelex-sdk`'s API even though the diff is one version
   string. It has to reach the changelog as one.
 
+**`pipelex` follows this pin, never the reverse.** `pipelex` requires `pipelex-sdk` with an exact pin (its hosted runs go through this client) and pins `mthds` exactly as well, so its two pins have to name the same `mthds` as one published `pipelex-sdk` release: a `pipelex` release can only take an `mthds` that some `pipelex-sdk` release on PyPI also pins. That makes this repository the first move of every `mthds` bump the engine takes. pipelex's own `/bump-mthds` reads PyPI for the `pipelex-sdk` release whose pin is its target `mthds`, and stops when there is none, so this bump is finished for the workspace only once the root's `/release` has published a `pipelex-sdk` carrying it and `pipelex` has a ledger item to follow it (step 10).
+
 The job is to land the new pin in a state a human can read and commit: pin
 moved, lock regenerated, source adapted, checks green, changelog and docs
 written, ledger squared. **Stop before committing** — the user stages and commits.
@@ -79,12 +83,7 @@ worth naming when you report:
 - Every downstream install is forced onto exactly that `mthds`. Say so in the
   changelog when the bump is otherwise uneventful, because for a consumer
   "pipelex-sdk now requires mthds 0.11.1" *is* the change.
-- `pipelex` (the engine) pins `mthds` exactly too, and the two packages
-  routinely land in one environment. **Two exact pins on different versions do
-  not resolve at all**, so a skew between the repos is an install-time failure
-  for anyone holding both, not a silent drift that surfaces later. Read
-  `pipelex/pyproject.toml` as part of this bump and report the skew if you find
-  one; keeping the two moving together is why both repos run this same skill.
+- `pipelex` (the engine) pins `mthds` exactly too, and since it also requires this package with an exact pin, the two always land in one environment. **Two exact pins on different versions do not resolve at all**, so a `pipelex` naming a different `mthds` than the `pipelex-sdk` it pins could never be installed; what keeps it installable is that `pipelex` holds on to its older `pipelex-sdk` until it moves both pins at once. Read `../../pipelex/pyproject.toml` as part of this bump and report where its two pins stand; keeping the two repositories moving together is why both run this same skill, each naming the other.
 
 ## Four numbers, none of which is the others
 
@@ -120,6 +119,14 @@ where a venv resolved above the minimum was normal and unremarkable.)
 Check `git status` and note what was already dirty **before** you start. At the
 end you need to separate your changes from theirs and never stage something that
 isn't yours.
+
+Read the engine's two pins too, from the workspace's `pipelex` checkout two levels above `python/`, since they are what this bump ends up moving at step 10:
+
+```bash
+grep -n '"mthds\|"pipelex-sdk' ../../pipelex/pyproject.toml
+```
+
+Expect its `mthds` pin to equal the one you are about to leave behind, beside a `pipelex-sdk` pin naming a release that pins that same `mthds`. Anything else is a skew worth naming in your report.
 
 Then ask the ledger what it already knows. Both `mthds-python` and `pipelex`
 file items here when they land something this SDK will have to absorb, and those
@@ -329,8 +336,7 @@ make agent-check
 make agent-test
 ```
 
-`agent-check` is `fix-unused-imports format lint pyright mypy`. Before you call
-the bump done, also run the two gates it leaves out, since CI runs them:
+`agent-check` is `fix-unused-imports format lint pyright mypy`. Before you call the bump done, also run the two gates it leaves out, which `make check` runs and CI does not, so nothing else catches what they find:
 
 ```bash
 make pylint
@@ -403,9 +409,14 @@ loud ones harder to spot.
 
   Note the symbol and the version on an item that already covers the move;
   otherwise file it (`ledger new --owner pipelex-sdk/js …`) naming both.
-- **File the engine item if the pins have diverged.** If `pipelex` names a
-  different exact `mthds` after this, the two packages no longer co-install at
-  all — that is not a latent gap but a live break, and it belongs to that repo.
+- **Name `pipelex` as the consumer that follows.** After this bump `pipelex` still names the `mthds` you left behind, and it cannot move until a `pipelex-sdk` release carrying the new pin is on PyPI; then it moves both of its pins in one change, `mthds` to the version you pinned and `pipelex-sdk` to that release, with its own `/bump-mthds`. That move is `pipelex`'s to make, so it gets an item owned by `pipelex`. Look for an open one first, since `ledger new` files a duplicate without refusing it: pipelex's own skill files the request for this bump against `pipelex-sdk/python` and often files its own half beside it, blocked by that request, so `ledger show` on the item you claimed lists it under `blocks:`. Without such an item, search the engine's open pin items:
+
+  ```bash
+  ledger list --owner pipelex --status open --json \
+    | jq -r '.[] | select(.title | test("\\bpins?\\b|\\bbump"; "i")) | select(.title | test("mthds|pipelex-sdk")) | "\(.id)  \(.title)"'
+  ```
+
+  An item that already covers the move gets a note naming the `mthds` version, and an `after_release` on `pipelex-sdk` if it has none (`ledger link <id> --after-release pipelex-sdk@<version>`). Otherwise file one (`ledger new --owner pipelex --type task --after-release pipelex-sdk …`, where the bare repository records its next patch release, which any later release, a minor one included, satisfies too) whose body names both pins it has to move and the version each moves to, so it turns ready the moment the root's `/release` tags the `pipelex-sdk` that carries this bump. Either way, say in your report that the bump reaches `pipelex` only through that release.
 - **File the reverse direction if you found an upstream problem.** A protocol
   model that cannot express what the hosted API emits is an item owned by
   `mthds-python`, with the payload that broke it.
@@ -416,7 +427,7 @@ loud ones harder to spot.
 Show the user:
 
 - The pin move, old → new, and whether `uv.lock` actually followed.
-- Whether `pipelex`'s exact `mthds` pin agrees with the one you just wrote.
+- Where `pipelex`'s two exact pins stand against the one you just wrote, and the `pipelex` item that has them follow once a `pipelex-sdk` release carries it (step 10).
 - What changed on the **inherited seam** (step 6) — that is the part nobody can
   see from the diff, and the part most likely to matter next time.
 - Every file you changed, separated from what was already dirty when you started.
@@ -444,10 +455,8 @@ and PRs target `dev`.
   pointing back at the lint config.
 - **`reportUnnecessaryTypeIgnoreComment` is off.** Suppressions here never
   expire on their own; step 6 is the only thing that finds them.
-- **The pin and `pipelex`'s pin are one system.** Both packages name `mthds`
-  exactly, so a version this repo moves to alone makes the pair uninstallable
-  together. Check `pipelex/pyproject.toml` in the same pass, and say what you
-  found even when they agree.
+- **The pin and `pipelex`'s pins are one system, and this repo moves first.** `pipelex` pins both `mthds` and `pipelex-sdk` exactly, so it can only take an `mthds` some published `pipelex-sdk` release also pins. Check `../../pipelex/pyproject.toml` in the same pass, and say what you found even when they agree.
+- **An unreleased bump strands `pipelex`.** Moving the pin here does nothing for the engine until the root's `/release` publishes it: pipelex's `/bump-mthds` reads PyPI, not this checkout, for the `pipelex-sdk` that pins its target, and stops when no release does. A bump with no `pipelex` item waiting on that release is half a cascade (step 10).
 - **The sibling checkout is routinely ahead of PyPI.** Read `mthds-python`'s
   changelog for *understanding*, PyPI for *the target version*. A pin naming
   an unpublished version fails `uv lock`.
