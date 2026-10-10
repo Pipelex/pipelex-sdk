@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Requires `mthds` 0.21.0, the release that reports MTHDS standard 5.0.0 (Breaking)**: the exact pin moves from `mthds==0.20.0` to `mthds==0.21.0`, so every environment holding this `pipelex-sdk` installs exactly that `mthds`, and a project that also pins `mthds` itself has to move with it. The release's one behavioural change is `MTHDS_STANDARD_VERSION` going from `4.0.0` to `5.0.0`, which this client never reads, so nothing in `pipelex-sdk`'s own surface changes and `PROTOCOL_VERSION` stays where it was. Code of your own that checks a manifest's `mthds_version` with `mthds` now evaluates it against `5.0.0`, where a constraint of `^4.0.0`, `~4.0.0`, `4.*` or exactly `4.0.0` no longer passes.
+
 ## [v0.37.0] - 2026-10-09
 
 ### Changed
