@@ -42,7 +42,7 @@ The release skills that each source repository carried, the templates' own inclu
 
 `make install` at the root wires the git hooks and installs nothing else. Each directory's `agent-check` and `agent-test` run that directory's own `install` first when its `node_modules` or `.venv` is missing, so a worktree pays only for the directories its work touches: installing every directory takes over a gigabyte of disk, while one SDK takes a small fraction of that. The root's `make agent-check` and `make agent-test` run every directory's targets and so install every directory the first time; `make -C <directory> agent-check` checks one.
 
-Each directory installs the way its own `Makefile` says: `npm install` for the JavaScript packages, and a uv virtual environment in the directory's `.venv` for the Python ones.
+Each directory installs the way its own `Makefile` says: `npm ci` for `js/`, which installs exactly what its lockfile pins and never rewrites it, `npm install` for the JavaScript templates, and a uv virtual environment in the directory's `.venv` for the Python ones.
 
 ## This tree's SDK in the templates
 

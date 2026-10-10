@@ -216,8 +216,8 @@ These pages ship inside the published package, so a reader who has only installe
 ## Develop
 
 ```bash
-make install    # Install dependencies
-make check      # Lint + format check + typecheck + build + depcruise (alias: make c)
+make install    # Install the dependencies from the lockfile (npm ci, which never rewrites it)
+make check      # Lockfile check + lint + format check + typecheck + build + depcruise (alias: make c)
 make test       # Run the test suite (alias: make t)
 make all        # Clean, check, and test
 ```
