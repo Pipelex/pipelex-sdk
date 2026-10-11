@@ -28,6 +28,15 @@ function networkError(code: string): TypeError {
   return err;
 }
 
+/** The smallest answer to `execute` that is the completed run the route returns. */
+function completedRun(runId: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    pipeline_run_id: runId,
+    pipe_output: { pipeline_run_id: runId, working_memory: { root: {}, aliases: {} } },
+    ...extra,
+  };
+}
+
 function jsonResponse(
   status: number,
   body: unknown,
@@ -65,7 +74,7 @@ describe("PipelexApiClient constructor", () => {
       const client = new PipelexApiClient({ apiKey: "t" });
       const fetchSpy = vi
         .spyOn(globalThis, "fetch")
-        .mockResolvedValue(jsonResponse(200, { pipeline_run_id: "x" }));
+        .mockResolvedValue(jsonResponse(200, completedRun("x")));
       await client.execute({ pipe_code: "p" });
       expect(fetchSpy).toHaveBeenCalledWith(
         "https://api.pipelex.com/v1/execute",
@@ -82,7 +91,7 @@ describe("PipelexApiClient constructor", () => {
     });
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { pipeline_run_id: "x" }));
+      .mockResolvedValue(jsonResponse(200, completedRun("x")));
     await client.execute({ pipe_code: "p" });
     expect(fetchSpy).toHaveBeenCalledWith(
       "http://localhost:8081/v1/execute",
@@ -162,7 +171,7 @@ describe("PipelexApiClient constructor", () => {
       const client = new PipelexApiClient({ apiKey: "t" });
       const fetchSpy = vi
         .spyOn(globalThis, "fetch")
-        .mockResolvedValue(jsonResponse(200, { pipeline_run_id: "x" }));
+        .mockResolvedValue(jsonResponse(200, completedRun("x")));
       await client.execute({ pipe_code: "p" });
       expect(fetchSpy).toHaveBeenCalledWith(
         "http://env-host:9999/v1/execute",
@@ -344,7 +353,11 @@ describe("PipelexApiClient method_ref run source", () => {
         pipeline_run_id: "run-r",
         main_stuff_name: "out",
         pipe_output: {
-          working_memory: { root: { out: { concept: "native.Text", content: { text: "hi" } } } },
+          pipeline_run_id: "run-r",
+          working_memory: {
+            root: { out: { concept: "native.Text", content: { text: "hi" } } },
+            aliases: {},
+          },
         },
         method_provenance: { address: ADDRESS, tag: "v0.1.0", commit_sha: "23dda75" },
       }),
@@ -807,13 +820,30 @@ describe("PipelexApiClient.execute 202 degrade", () => {
     expect(e.message).toContain("run-202");
   });
 
-  it("survives a 202 with a malformed body (unknown run id)", async () => {
+  // A 202 that names no run leaves the caller a run it cannot follow: an answer the SDK cannot
+  // read, which may have started a run, so it is never a `RunStillRunningError` without an id.
+  it.each([
+    ["a body that is not JSON", textResponse(202, "accepted"), "a body that is not JSON"],
+    [
+      "an acknowledgement naming no run",
+      jsonResponse(202, { state: "RUNNING" }),
+      "a body that is not the answer the route returns",
+    ],
+    [
+      "a run id that is not a string",
+      jsonResponse(202, { pipeline_run_id: 42 }),
+      "a body that is not the answer the route returns",
+    ],
+  ])("refuses a 202 with %s as an answer it cannot read", async (_label, answer, what) => {
     const client = makeClient();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse(202, "accepted"));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(answer);
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(RunStillRunningError);
-    expect((err as RunStillRunningError).runId).toBe("");
-    expect((err as RunStillRunningError).message).toContain("<unknown>");
+    expect(err).toBeInstanceOf(ApiResponseError);
+    const e = err as ApiResponseError;
+    expect(e.message).toBe(`API POST /v1/execute answered 202 with ${what}`);
+    expect(e.status).toBe(202);
+    expect(e.runMayHaveStarted).toBe(true);
+    expect(e.retryable).toBe(false);
   });
 });
 
@@ -821,7 +851,7 @@ describe("PipelexApiClient happy path", () => {
   it("returns the parsed RunResult on 200", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(200, { pipeline_run_id: "ok", created_at: "t0", state: "COMPLETED" }),
+      jsonResponse(200, completedRun("ok", { created_at: "t0", state: "COMPLETED" })),
     );
     const result = await client.execute({ pipe_code: "p" });
     expect(result.pipeline_run_id).toBe("ok");

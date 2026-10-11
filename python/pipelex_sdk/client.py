@@ -30,6 +30,7 @@ from urllib.parse import quote, urlencode, urlparse, urlsplit
 
 import httpx
 from mthds.protocol.exceptions import PipelineRequestError
+from mthds.protocol.models import RunResultStart
 from mthds.runners.api.client import MthdsAPIClient
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
 from mthds.runners.api.problem import ProblemDocument
@@ -625,6 +626,21 @@ class PipelexAPIClient(MthdsAPIClient):
             request_id=request_id or None,
             may_start_run=_MAY_START_RUN.get(),
         )
+
+    @override
+    def _raise_if_execute_degraded(self, response: httpx.Response) -> None:
+        """Map the protocol's optional `202` execute degrade to `RunStillRunningError`, once the answer names its run.
+
+        The base raises `RunStillRunningError` for any `202`, with an empty run id when the body names
+        none. Such an answer leaves the caller a run it cannot follow, as a start acknowledgement without
+        its id does, so it is read here against the protocol's acknowledgement, `RunResultStart`: a body
+        that is not JSON, or that names no run, fails the read, and the `_reading_inherited_answer` block
+        around `execute` raises it as an answer the SDK cannot read, which inside `_creating_run` may
+        have started a run. `@pipelex/sdk`'s `throwIfExecuteDegraded` reads the same answers the same way.
+        """
+        if response.status_code == 202:
+            RunResultStart.model_validate(response.json())
+        super()._raise_if_execute_degraded(response)
 
     @override
     def _raise_api_response_error(self, *, method: str, endpoint: str, response: httpx.Response) -> NoReturn:

@@ -891,18 +891,30 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * error. Hosted does not emit 202 today, but the protocol permits it;
    * raising a typed error (with the `pipeline_run_id` + `Location` + `Retry-After`
    * hints) beats a generic parse failure on an unexpected body shape.
+   *
+   * The 202 must name the run it accepted, as `start`'s acknowledgement must: one whose body is
+   * not JSON, or names no run, leaves the caller a run it cannot follow, so it is an answer the
+   * SDK cannot read, which may have started a run, never a `RunStillRunningError` without an id.
+   * The Python SDK reads the same answers the same way.
    */
   private throwIfExecuteDegraded(res: RawResponse): void {
     if (res.status !== 202) return;
-    let runId = "";
-    try {
-      const parsed: unknown = JSON.parse(res.body);
-      if (parsed && typeof parsed === "object") {
-        const candidate = (parsed as { pipeline_run_id?: unknown }).pipeline_run_id;
-        if (typeof candidate === "string") runId = candidate;
-      }
-    } catch {
-      // Non-JSON 202 body — keep runId empty; the error message covers it.
+    const ack = this.readObjectAnswer<{ pipeline_run_id?: unknown }>(
+      "POST",
+      "execute",
+      res,
+      STARTS_RUN,
+    );
+    const runId = ack.pipeline_run_id;
+    if (typeof runId !== "string") {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/execute`,
+        res,
+        "a body that is not the answer the route returns",
+        undefined,
+        STARTS_RUN,
+      );
     }
     throw new RunStillRunningError(
       `execute() was accepted asynchronously (202): run ${runId || "<unknown>"} is still ` +
@@ -997,9 +1009,23 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       }
       // Wrap the base result in the enriched subtype (adds the `.main_stuff` accessor; the
       // `main_stuff_name` extension + working memory ride `pipe_output`).
-      return new PipelexExecuteResult(
-        this.readObjectAnswer<DictRunResultExecute>("POST", "execute", res, STARTS_RUN),
+      const answer = this.readObjectAnswer<DictRunResultExecute>(
+        "POST",
+        "execute",
+        res,
+        STARTS_RUN,
       );
+      if (!isCompletedRunAnswer(answer)) {
+        throw this.unreadableAnswer(
+          "POST",
+          `/${API_PREFIX}/execute`,
+          res,
+          "a body that is not the answer the route returns",
+          undefined,
+          STARTS_RUN,
+        );
+      }
+      return new PipelexExecuteResult(answer);
     } catch (err) {
       if (err instanceof RunStillRunningError) throw err;
       // The hosted gateway terminates synchronous requests at ~30s. A run that
@@ -2841,6 +2867,28 @@ function isMissingRoute404(body: string): boolean {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
   return !("code" in parsed);
+}
+
+/**
+ * Whether a 2xx answer to `execute` is the completed run the route returns, as far as the SDK reads
+ * it: a string `pipeline_run_id`, and a `pipe_output` object whose `working_memory` carries its
+ * `root` and `aliases` objects and whose own `pipeline_run_id` is a string, the members the Python
+ * SDK's model of the answer requires. Anything less is an answer the SDK cannot read, rather than
+ * a result that fails with a bare `TypeError` once its output is lifted.
+ */
+function isCompletedRunAnswer(answer: object): answer is DictRunResultExecute {
+  const { pipeline_run_id: runId, pipe_output: pipeOutput } = answer as {
+    pipeline_run_id?: unknown;
+    pipe_output?: unknown;
+  };
+  if (typeof runId !== "string" || !isPlainObject(pipeOutput)) return false;
+  const workingMemory = pipeOutput["working_memory"];
+  return (
+    typeof pipeOutput["pipeline_run_id"] === "string" &&
+    isPlainObject(workingMemory) &&
+    isPlainObject(workingMemory["root"]) &&
+    isPlainObject(workingMemory["aliases"])
+  );
 }
 
 /** Parse the `Retry-After` header (seconds form, which the platform uses). */

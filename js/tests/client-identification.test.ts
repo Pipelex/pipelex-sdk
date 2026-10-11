@@ -40,9 +40,12 @@ afterEach(() => {
 describe("PipelexApiClient User-Agent", () => {
   it("sends the library's header on a protocol route (requestRaw)", async () => {
     const client = new PipelexApiClient({ baseUrl: BASE_URL, apiKey: "t" });
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { pipeline_run_id: "x" }));
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        pipeline_run_id: "x",
+        pipe_output: { pipeline_run_id: "x", working_memory: { root: {}, aliases: {} } },
+      }),
+    );
     await client.execute({ pipe_code: "p" });
     expect(headersOf(spy)["User-Agent"]).toBe(LIBRARY_UA);
     expect(headersOf(spy)["Authorization"]).toBe("Bearer t");

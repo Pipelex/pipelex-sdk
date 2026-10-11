@@ -16,7 +16,7 @@
 
 ### Fixed
 
-- **`start` refuses an acknowledgement without a run id**: a `2xx` answer to `start` whose `pipeline_run_id` is not a string is an `ApiResponseError` the SDK could not read, `runtime`, not retryable and `runMayHaveStarted`, as the Python twin raises it, where it was returned as an acknowledgement naming no run.
+- **`start` and `execute` refuse an answer that is not the run they created**: a `start` acknowledgement whose `pipeline_run_id` is not a string, an `execute` `202` whose body is not JSON or names no run, and an `execute` `2xx` that is not the completed run (no string `pipeline_run_id`, or a `pipe_output` without its `pipeline_run_id` or its `working_memory` with `root` and `aliases`) are each an `ApiResponseError` the SDK could not read, `runtime`, not retryable and `runMayHaveStarted`, as the Python twin raises them. The acknowledgement was returned naming no run, the `202` was a retryable `RunStillRunningError` with an empty `runId`, and the incomplete result failed later with a bare `TypeError` or a `MissingMainStuffError`.
 
 ## [v0.38.0] - 2026-10-10
 
