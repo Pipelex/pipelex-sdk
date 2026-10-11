@@ -354,8 +354,6 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
         """
         run_may_have_started = may_start_run and answer_may_have_started_run(status=status, code=code)
         verdict = _response_verdict(status=status, error_type=error_type, code=code, sent_domain=error_domain, sent_retryable=retryable)
-        if run_may_have_started:
-            verdict = _verdict(verdict.error_domain, retryable=False)
         super().__init__(
             message,
             verdict=verdict,
