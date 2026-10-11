@@ -46,7 +46,6 @@ import {
   MethodLoadError,
   UploadNotAllowedError,
 } from "./errors.js";
-import type { UploadNotAllowedKind } from "./errors.js";
 import type { MthdsFileItem, PipeIORequest, PipeIOResponse, PipeIOValidReport } from "./models.js";
 import type { UploadCapableClient, UploadRecord } from "./upload.js";
 import { uploadFile } from "./upload.js";
@@ -223,45 +222,76 @@ function base64ToBytes(base64: string): Uint8Array {
   return bytes;
 }
 
-/** Resolve one source (string reference or bytes) to the URL/URI to write, deduped by identity. */
-function resolveSource(ctx: PrepareContext, source: unknown): Promise<string> {
-  const cached = ctx.dedup.get(source);
+/**
+ * A source at a file position, classified once from its type and prefix, never from the file a
+ * path names. The guard under `allowUploads: false` and `doResolveSource` read this one answer, and
+ * the guard refuses every kind but the two that need no upload, so a source the resolver would
+ * upload is a source the guard refuses: a new kind of source is an `UploadNotAllowedKind` or the
+ * guard does not compile.
+ *
+ * - `reference` — a `pipelex-storage://` reference or an http(s) URL, which passes through;
+ * - `data_url`, `local_path`, `bytes` — what an upload is needed for;
+ * - `unsupported` — a value no file input takes, refused as an `InvalidInputValueError` whether
+ *   uploads are allowed or not.
+ */
+type FileSource =
+  | { kind: "reference"; value: string }
+  | { kind: "data_url"; value: string }
+  | { kind: "local_path"; value: string }
+  | { kind: "bytes"; value: Blob | ArrayBuffer | Uint8Array }
+  | { kind: "unsupported"; value: unknown };
+
+function classifySource(source: unknown): FileSource {
+  if (typeof source === "string") {
+    if (source.startsWith(PIPELEX_STORAGE_SCHEME) || HTTP_URL_RE.test(source)) {
+      return { kind: "reference", value: source };
+    }
+    if (source.startsWith("data:")) return { kind: "data_url", value: source };
+    // Anything else is a local filesystem path — Node only (uploadFile enforces it).
+    return { kind: "local_path", value: source };
+  }
+  if (source instanceof Blob || source instanceof ArrayBuffer || source instanceof Uint8Array) {
+    return { kind: "bytes", value: source };
+  }
+  return { kind: "unsupported", value: source };
+}
+
+/** Resolve one classified source to the URL/URI to write, deduped by the caller's value's identity. */
+function resolveSource(ctx: PrepareContext, source: FileSource): Promise<string> {
+  const cached = ctx.dedup.get(source.value);
   if (cached !== undefined) return cached;
   const pending = doResolveSource(ctx, source);
-  ctx.dedup.set(source, pending);
+  ctx.dedup.set(source.value, pending);
   return pending;
 }
 
-async function doResolveSource(ctx: PrepareContext, source: unknown): Promise<string> {
-  if (typeof source === "string") {
-    if (source.startsWith(PIPELEX_STORAGE_SCHEME)) return source; // already prepared
-    if (HTTP_URL_RE.test(source)) return source; // reachable URL — pass through
-    if (source.startsWith("data:")) {
-      const { bytes, contentType } = decodeDataUrl(source);
+async function doResolveSource(ctx: PrepareContext, source: FileSource): Promise<string> {
+  switch (source.kind) {
+    case "reference":
+      return source.value; // already prepared, or a reachable URL — pass through
+    case "data_url": {
+      const { bytes, contentType } = decodeDataUrl(source.value);
       throwIfAborted(ctx.signal);
       const record = await uploadFile(ctx.client, bytes, { contentType, signal: ctx.signal });
       ctx.uploads.push(record);
       return record.uri;
     }
-    // Anything else is a local filesystem path — Node only (uploadFile enforces it).
-    throwIfAborted(ctx.signal);
-    const record = await uploadFile(ctx.client, source, { signal: ctx.signal });
-    ctx.uploads.push(record);
-    return record.uri;
+    case "local_path":
+    case "bytes": {
+      throwIfAborted(ctx.signal);
+      const record = await uploadFile(ctx.client, source.value, { signal: ctx.signal });
+      ctx.uploads.push(record);
+      return record.uri;
+    }
+    case "unsupported":
+      // An unrecognized value sits at a file-bearing position (neither a source string,
+      // bytes, nor a canonical `{url}` content dict). Fail with a typed error rather than
+      // letting a raw TypeError escape from the byte-extraction path.
+      throw new InvalidInputValueError(
+        `Unsupported value at a file input: expected a path string, bytes (Blob/File/ArrayBuffer/Uint8Array), ` +
+          `a data URL, an http(s)/pipelex-storage:// URL, or canonical {url} content; got ${typeof source.value}.`,
+      );
   }
-  if (source instanceof Blob || source instanceof ArrayBuffer || source instanceof Uint8Array) {
-    throwIfAborted(ctx.signal);
-    const record = await uploadFile(ctx.client, source, { signal: ctx.signal });
-    ctx.uploads.push(record);
-    return record.uri;
-  }
-  // An unrecognized value sits at a file-bearing position (neither a source string,
-  // bytes, nor a canonical `{url}` content dict). Fail with a typed error rather than
-  // letting a raw TypeError escape from the byte-extraction path.
-  throw new InvalidInputValueError(
-    `Unsupported value at a file input: expected a path string, bytes (Blob/File/ArrayBuffer/Uint8Array), ` +
-      `a data URL, an http(s)/pipelex-storage:// URL, or canonical {url} content; got ${typeof source}.`,
-  );
 }
 
 /**
@@ -275,23 +305,6 @@ interface InputPosition {
 }
 
 /**
- * What a source at a file position would need an upload for, or `undefined` when it needs none:
- * a reference that passes through, or a value no file input takes, which `doResolveSource` refuses
- * as an `InvalidInputValueError` whether uploads are allowed or not. It reads the value's type and
- * prefix only, never the file a path names.
- */
-function uploadKindOf(source: unknown): UploadNotAllowedKind | undefined {
-  if (typeof source === "string") {
-    if (source.startsWith(PIPELEX_STORAGE_SCHEME) || HTTP_URL_RE.test(source)) return undefined;
-    return source.startsWith("data:") ? "data_url" : "local_path";
-  }
-  if (source instanceof Blob || source instanceof ArrayBuffer || source instanceof Uint8Array) {
-    return "bytes";
-  }
-  return undefined;
-}
-
-/**
  * Resolve a value known to sit at a file position into canonical content with a rewritten `url`.
  * Under `allowUploads: false`, a source that would need an upload is refused here, before
  * `resolveSource` could read, decode or upload it.
@@ -302,12 +315,13 @@ async function resolveFilePosition(
   at: InputPosition,
 ): Promise<unknown> {
   const fileContent = isFileContent(callerValue);
-  const source = fileContent ? callerValue.url : callerValue;
-  if (!ctx.allowUploads) {
-    const valueKind = uploadKindOf(source);
-    if (valueKind !== undefined) {
-      throw new UploadNotAllowedError({ inputName: at.name, inputPath: at.path, valueKind });
-    }
+  const source = classifySource(fileContent ? callerValue.url : callerValue);
+  if (!ctx.allowUploads && source.kind !== "reference" && source.kind !== "unsupported") {
+    throw new UploadNotAllowedError({
+      inputName: at.name,
+      inputPath: at.path,
+      valueKind: source.kind,
+    });
   }
   const resolved = await resolveSource(ctx, source);
   return fileContent ? { ...callerValue, url: resolved } : { url: resolved };

@@ -24,8 +24,9 @@ import base64
 import binascii
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, assert_never, cast
 from urllib.parse import unquote_to_bytes
 
 from mthds.protocol.input_form import (
@@ -179,42 +180,68 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
     return unquote_to_bytes(payload), content_type
 
 
-async def _do_resolve_source(ctx: _PrepareContext, source: Any) -> str:
-    """Resolve one source to the URL/URI to write."""
+class _NoUpload(StrEnum):
+    """A kind of source that needs no upload: a reference passes through as it is, and a value no file input
+    takes is refused as an `InvalidInputValueError` whether uploads are allowed or not.
+    """
+
+    REFERENCE = "reference"
+    UNSUPPORTED = "unsupported"
+
+
+def _classify_source(source: Any) -> UploadNotAllowedKind | _NoUpload:
+    """What a source at a file position is, read once from its type and prefix, never from the file a path
+    names.
+
+    The guard under `allow_uploads=False` and `_do_resolve_source` read this one answer, and the guard
+    refuses every kind that is not a `_NoUpload`, so a source the resolver would upload is a source the
+    guard refuses: a new kind of source is declared as needing no upload, or it is refused.
+    """
     if isinstance(source, str):
-        if source.startswith(PIPELEX_STORAGE_SCHEME):
-            return source  # already prepared
-        if _HTTP_URL_RE.match(source):
-            return source  # reachable URL — pass through
+        if source.startswith(PIPELEX_STORAGE_SCHEME) or _HTTP_URL_RE.match(source):
+            return _NoUpload.REFERENCE
         if source.startswith("data:"):
+            return UploadNotAllowedKind.DATA_URL
+        # Anything else is a local filesystem path.
+        return UploadNotAllowedKind.LOCAL_PATH
+    if isinstance(source, Path):
+        return UploadNotAllowedKind.LOCAL_PATH
+    if isinstance(source, bytes):
+        return UploadNotAllowedKind.BYTES
+    return _NoUpload.UNSUPPORTED
+
+
+async def _do_resolve_source(ctx: _PrepareContext, source: Any, kind: UploadNotAllowedKind | _NoUpload) -> str:
+    """Resolve one classified source to the URL/URI to write."""
+    match kind:
+        case _NoUpload.REFERENCE:
+            return cast("str", source)  # already prepared, or a reachable URL — pass through
+        case _NoUpload.UNSUPPORTED:
+            # An unrecognized value sits at a file-bearing position (neither a source string,
+            # bytes/Path, nor a canonical {url} content dict). Fail with a typed error rather than
+            # passing an unusable value through to a later run.
+            msg = (
+                "Unsupported value at a file input: expected a path (str/Path), bytes, a data URL, "
+                f"an http(s)/pipelex-storage:// URL, or canonical {{url}} content; got {type(source).__name__}."
+            )
+            raise InvalidInputValueError(msg)
+        case UploadNotAllowedKind.DATA_URL:
             data, content_type = _decode_data_url(source)
             record = await upload_file(ctx.client, data, content_type=content_type)
-            ctx.uploads.append(record)
-            return record.uri
-        # Anything else is a local filesystem path.
-        record = await upload_file(ctx.client, source)
-        ctx.uploads.append(record)
-        return record.uri
-    if isinstance(source, (bytes, Path)):
-        record = await upload_file(ctx.client, source)
-        ctx.uploads.append(record)
-        return record.uri
-    # An unrecognized value sits at a file-bearing position (neither a source string,
-    # bytes/Path, nor a canonical {url} content dict). Fail with a typed error rather than
-    # passing an unusable value through to a later run.
-    msg = (
-        "Unsupported value at a file input: expected a path (str/Path), bytes, a data URL, "
-        f"an http(s)/pipelex-storage:// URL, or canonical {{url}} content; got {type(source).__name__}."
-    )
-    raise InvalidInputValueError(msg)
+        case UploadNotAllowedKind.LOCAL_PATH | UploadNotAllowedKind.BYTES:
+            record = await upload_file(ctx.client, source)
+        case _:
+            assert_never(kind)
+    ctx.uploads.append(record)
+    return record.uri
 
 
-async def _resolve_source(ctx: _PrepareContext, source: Any) -> str:
-    """Resolve a source, deduped by identity (same source uploads once)."""
+async def _resolve_source(ctx: _PrepareContext, source: Any, kind: UploadNotAllowedKind | _NoUpload) -> str:
+    """Resolve a classified source, deduped by identity (same source uploads once)."""
     hashable = isinstance(source, (str, bytes, Path))
     if hashable and source in ctx.dedup:
         return ctx.dedup[source]
-    resolved = await _do_resolve_source(ctx, source)
+    resolved = await _do_resolve_source(ctx, source, kind)
     if hashable:
         ctx.dedup[source] = resolved
     return resolved
@@ -237,23 +264,6 @@ class _InputPosition:
         return _InputPosition(name=self.name, path=f"{self.path}[{index}]")
 
 
-def _upload_kind_of(source: Any) -> UploadNotAllowedKind | None:
-    """What a source at a file position would need an upload for, or `None` when it needs none: a
-    reference that passes through, or a value no file input takes, which `_do_resolve_source` refuses
-    as an `InvalidInputValueError` whether uploads are allowed or not. It reads the value's type and
-    prefix only, never the file a path names.
-    """
-    if isinstance(source, str):
-        if source.startswith(PIPELEX_STORAGE_SCHEME) or _HTTP_URL_RE.match(source):
-            return None
-        return UploadNotAllowedKind.DATA_URL if source.startswith("data:") else UploadNotAllowedKind.LOCAL_PATH
-    if isinstance(source, Path):
-        return UploadNotAllowedKind.LOCAL_PATH
-    if isinstance(source, bytes):
-        return UploadNotAllowedKind.BYTES
-    return None
-
-
 async def _resolve_file_position(ctx: _PrepareContext, caller_value: Any, at: _InputPosition) -> Any:
     """Resolve a value known to sit at a file position into canonical content with a rewritten `url`.
 
@@ -262,11 +272,10 @@ async def _resolve_file_position(ctx: _PrepareContext, caller_value: Any, at: _I
     """
     content = cast("dict[str, Any]", caller_value) if _is_file_content(caller_value) else None
     source = content["url"] if content is not None else caller_value
-    if not ctx.allow_uploads:
-        value_kind = _upload_kind_of(source)
-        if value_kind is not None:
-            raise UploadNotAllowedError(input_name=at.name, input_path=at.path, value_kind=value_kind)
-    resolved = await _resolve_source(ctx, source)
+    kind = _classify_source(source)
+    if not ctx.allow_uploads and not isinstance(kind, _NoUpload):
+        raise UploadNotAllowedError(input_name=at.name, input_path=at.path, value_kind=kind)
+    resolved = await _resolve_source(ctx, source, kind)
     if content is not None:
         return {**content, "url": resolved}
     return {"url": resolved}
