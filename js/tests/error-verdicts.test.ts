@@ -11,6 +11,8 @@
  *   with nothing but that status, code and naming;
  * - every `server_sent` case is answered to a real client call, so the body goes through the
  *   client's own parsing;
+ * - every `run_start` case is answered to a real `start()` or `execute()`, so the flag the client
+ *   hands its errors on a request that may create a run is tested where it is set;
  * - every class in `classes` is built from each variant's `given` by a builder below, and a class
  *   with no builder fails the suite, so a case added to the file reaches this language;
  * - and the completeness test walks the package entry, failing on an exported error class the
@@ -54,6 +56,7 @@ import {
   UploadAuthenticationError,
   UploadTransportError,
   errorVerdictOf,
+  runMayHaveStartedOf,
   type ErrorDomain,
   type ErrorVerdict,
   type RejectedAssetCode,
@@ -69,6 +72,11 @@ interface WireVerdict {
   retryable: boolean;
 }
 
+/** A verdict with the third member, absent meaning false. */
+interface WireRunVerdict extends WireVerdict {
+  run_may_have_started?: boolean;
+}
+
 interface FallbackCase {
   case: string;
   status: number;
@@ -82,6 +90,14 @@ interface ServerSentCase {
   status: number;
   body: Record<string, unknown> | string | null;
   expected: WireVerdict;
+}
+
+interface RunStartCase {
+  case: string;
+  route: "start" | "execute";
+  status: number;
+  body: Record<string, unknown> | string | null;
+  expected: Required<WireRunVerdict>;
 }
 
 /** A wrapped error: an SDK class built from its own members, or `Error`, which carries no verdict. */
@@ -105,7 +121,7 @@ interface Variant {
   variant: string;
   only_in?: "js" | "python";
   given: Given;
-  expected: WireVerdict;
+  expected: WireRunVerdict;
 }
 
 interface ClassEntry {
@@ -119,6 +135,7 @@ interface CaseFile {
   about: string;
   fallback: FallbackCase[];
   server_sent: ServerSentCase[];
+  run_start: RunStartCase[];
   classes: ClassEntry[];
 }
 
@@ -268,6 +285,7 @@ describe("the case file", () => {
     expect(CASES.about).toMatch(/byte for byte identical/);
     expect(CASES.fallback.length).toBeGreaterThan(0);
     expect(CASES.server_sent.length).toBeGreaterThan(0);
+    expect(CASES.run_start.length).toBeGreaterThan(0);
     expect(CASES.classes.length).toBeGreaterThan(0);
   });
 
@@ -315,6 +333,69 @@ describe("a verdict the server sent", () => {
   });
 });
 
+describe("a failed request that may create a run", () => {
+  it.each(CASES.run_start.map((c) => [`${c.route}: ${c.case}`, c] as const))("%s", async (_, c) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(answer(c.status, c.body));
+    const client = new PipelexApiClient({ baseUrl: BASE_URL, apiKey: "test-token" });
+    const call =
+      c.route === "start" ? client.start({ pipe_code: "p" }) : client.execute({ pipe_code: "p" });
+
+    const err = await call.then(
+      () => expect.fail(`expected the ${c.route} answered ${c.status} to throw`),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    const refused = err as ApiResponseError;
+    expect({
+      runMayHaveStarted: refused.runMayHaveStarted,
+      retryable: refused.retryable,
+      errorDomain: refused.errorDomain,
+    }).toEqual({
+      runMayHaveStarted: c.expected.run_may_have_started,
+      retryable: c.expected.retryable,
+      errorDomain: c.expected.error_domain,
+    });
+    expect(runMayHaveStartedOf(err)).toBe(c.expected.run_may_have_started);
+    expect(Object.hasOwn(err as object, "runMayHaveStarted")).toBe(true);
+  });
+
+  it.each(CASES.run_start.map((c) => [`${c.route}: ${c.case}`, c] as const))(
+    "%s, built by hand with mayStartRun, reads the same",
+    (_, c) => {
+      const body = typeof c.body === "object" && c.body !== null ? c.body : undefined;
+      const code = typeof body?.code === "string" ? body.code : undefined;
+      const errorType = typeof body?.error_type === "string" ? body.error_type : undefined;
+      const err = new ApiResponseError(
+        `HTTP ${c.status}`,
+        BASE_URL,
+        c.status,
+        "",
+        "",
+        errorType,
+        undefined,
+        undefined,
+        code,
+        {
+          problem: {
+            ...(isErrorDomainValue(body?.error_domain) ? { errorDomain: body.error_domain } : {}),
+            ...(typeof body?.retryable === "boolean" ? { retryable: body.retryable } : {}),
+          },
+          mayStartRun: true,
+        },
+      );
+
+      expect(err.runMayHaveStarted).toBe(c.expected.run_may_have_started);
+      expect(err.retryable).toBe(c.expected.retryable);
+      expect(err.errorDomain).toBe(c.expected.error_domain);
+    },
+  );
+});
+
+function isErrorDomainValue(value: unknown): value is ErrorDomain {
+  return value === "input" || value === "config" || value === "runtime";
+}
+
 describe("each exported class's verdict", () => {
   describe.each(OUR_CLASSES.map((c) => [c.class, c] as const))("%s", (name, classEntry) => {
     if (classEntry.abstract === true) {
@@ -348,6 +429,11 @@ describe("each exported class's verdict", () => {
       expect({ errorDomain: own.errorDomain, retryable: own.retryable }).toEqual(expected);
       expect(Object.hasOwn(err, "retryable")).toBe(true);
       expect(Object.hasOwn(err, "errorDomain")).toBe(true);
+      // CodegenLockError declares the verdict's two members and nothing else.
+      if (name !== "CodegenLockError") {
+        expect(Object.hasOwn(err, "runMayHaveStarted")).toBe(true);
+      }
+      expect(runMayHaveStartedOf(err)).toBe(variant.expected.run_may_have_started ?? false);
     });
   });
 });

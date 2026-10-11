@@ -168,6 +168,10 @@ class PipelexRunResultStart(RunResultStart):
     any other implementation field still rides `model_extra`.
     """
 
+    pipeline_run_id: str = Field(min_length=1)
+    """The run the server accepted. An empty id names no run, so an acknowledgement carrying one is an
+    answer the SDK cannot read, as one without the member is."""
+
     method_provenance: MethodProvenance | None = None
 
     method_version: int | Literal["draft"] | None = None

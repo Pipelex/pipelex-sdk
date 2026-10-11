@@ -4,12 +4,19 @@
 
 ### Added
 
+- **`run_may_have_started` and `run_may_have_started_of`**: every SDK error carries `run_may_have_started`, `True` when a failed `start` or blocking `execute`, the ones `start_and_wait` sends included, may have created a run whose id never reached the caller, and `False` otherwise; `pipelex_sdk.error_verdicts.run_may_have_started_of` reads it from anything an `except` holds. It is `True` for an answer the SDK could not read, a `408`, every `5xx` but a `501` and the platform's `503` coded `pipeline_start_unavailable`, a transport failure that does not prove the request never left, and `PipelineExecuteTimeoutError`, whatever the timing (`docs/errors.md`).
 - **`RunRead.degradation` and `DegradationReason`**: `get_run_status` types the `degradation` the platform sends with `degraded`, as `RunDegradation` (`reason`, `message`, `failed_attempts`, `failing_since`, `ends_at`) in `pipelex_sdk.runs`, read leniently so a malformed one never fails the poll. `degraded` no longer means only that the platform could not reach the workflow engine (`STATUS_UNAVAILABLE`): `WORKFLOW_TASK_FAILING` means the run is stuck and the platform ends it `FAILED` at `ends_at`, so code that branches on `degraded` now reads `degradation.reason` as well (`docs/run-results.md`).
 - **`request_id` on a run**: `RunRead.request_id` and `RunDetail.request_id` type the id of the request that started the run, the one to quote to support.
 
 ### Changed
 
+- **A run that may have started is not retryable (Breaking)**: on an error whose `run_may_have_started` is `True`, `retryable` is `False`, whatever the problem document sent and whatever the status says, so a caller that retries on `retryable` alone no longer starts a second paid run; `error_domain` is unchanged and the server's members stay on `problem`. A `start` or `execute` answered with a `500`, a `502`, an uncoded `503`, a `504` or a `408`, or cut off once the request had left, was retryable and no longer is.
+- **The command's "a run may have started" line follows the SDK**: `pipelex-sdk run` prints it when the failed request's error says `run_may_have_started`, so it now prints it for a `500`, a `503` without the platform's `pipeline_start_unavailable` code however soon it came, and a `408`, and no longer times the start itself.
 - **A failed run's report is documented as the platform's STRICT projection**: the docstrings of `RunErrorReport`, `ProviderErrorMetadata`, `RunFailedError`, the run records' `error` and `RunDegradation.message`, with `docs/run-results.md`, `docs/architecture.md` and the README, now say what the hosted platform serves, where they said it served the runner's VERBOSE report: `message` and `user_action` are the author's only when `caller_facing_message` is `True` and the placeholder `An internal error occurred.` otherwise, `provider_metadata` keeps only `status_code` and `retry_after_seconds`, `model`, `provider` and `migration` are `None`, and a `WORKFLOW_TASK_FAILING` degradation's `message` does not quote the worker's failure. They also say that a cancelled, terminated or timed-out run holds a report when a completion callback carried one, and a timed-out run otherwise the platform's timeout report; the models are unchanged.
+
+### Fixed
+
+- **An acknowledgement that names no run is an answer the SDK could not read**: an `execute` `202` whose body is not JSON, or does not carry a non-empty string `pipeline_run_id`, raises an `ApiResponseError`, `runtime`, not retryable and `run_may_have_started`, where it raised a retryable `RunStillRunningError` with an empty `run_id`, and a `start` acknowledgement whose `pipeline_run_id` is empty raises the same error, where it was returned naming no run, as `@pipelex/sdk` now does too.
 
 ## [v0.38.0] - 2026-10-10
 

@@ -435,14 +435,13 @@ def _run_case(
         return cast("str", case.get("stdin", "")).encode("utf-8")
 
     def case_clock() -> float:
-        # The clock the SDK times its requests with, and the command the request that may create a run:
-        # it runs as it does, plus the time the case's exchanges have taken, so that a case can hold an
-        # answer that came back half a minute later without waiting for it.
+        # The clock the SDK times its requests with: it runs as it does, plus the time the case's
+        # exchanges have taken, so that a case can hold an answer that came back half a minute later
+        # without waiting for it.
         return _real_monotonic() + api.elapsed_seconds
 
     mocker.patch.object(httpx, "AsyncClient", recorded_client)
     mocker.patch("pipelex_sdk.client.monotonic", case_clock)
-    mocker.patch("pipelex_sdk.command.io.monotonic", case_clock)
     monkeypatch.chdir(root)
     stdout: list[str] = []
     stderr: list[str] = []

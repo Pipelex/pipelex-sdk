@@ -553,7 +553,7 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
     ["null", null],
     ["absent", undefined],
   ])(
-    "never maps a blocking pipe_output whose working memory is %s — it throws MissingMainStuffError",
+    "refuses a blocking pipe_output whose working memory is %s as an answer it cannot read",
     async (_label, workingMemory) => {
       const client = makeClient();
       const body = executeBody("run-x");
@@ -568,11 +568,18 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
         .mockResolvedValueOnce(jsonResponse(200, BARE_VERSION))
         .mockResolvedValueOnce(jsonResponse(200, body));
 
-      // `main_stuff` is resolved out of the working memory, so a response that carries none can
-      // deliver no output: the blocking path never hands back a `RunResults` without the field.
-      await expect(
-        client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] }),
-      ).rejects.toBeInstanceOf(MissingMainStuffError);
+      // A completed run's answer carries its working memory, as the Python SDK's model of it
+      // requires: one without it is no run the SDK can read, and the blocking execute may have
+      // started one, so the error says so and is not retryable.
+      const err = await client
+        .startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ApiResponseError);
+      expect((err as ApiResponseError).message).toBe(
+        "API POST /v1/execute answered 200 with a body that is not the answer the route returns",
+      );
+      expect((err as ApiResponseError).runMayHaveStarted).toBe(true);
+      expect((err as ApiResponseError).retryable).toBe(false);
     },
   );
 

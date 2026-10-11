@@ -2,8 +2,8 @@
 
 Every error `pipelex-sdk` raises says what a program needs to know before anything else: whether asking
 again can plausibly succeed (`retryable`), and who can fix the failure (`error_domain`). Both are always
-decided. This module holds that vocabulary — `ErrorDomain` and `ErrorVerdict` — the structural reader
-`error_verdict_of`, and `fallback_verdict`, the table an `ApiResponseError` reads a member from when the
+decided. This module holds that vocabulary — `ErrorDomain` and `ErrorVerdict` — the structural readers
+`error_verdict_of` and `run_may_have_started_of`, and `fallback_verdict`, the table an `ApiResponseError` reads a member from when the
 server sent no usable one. The members the server sent are read first: the runner sends them on the
 problems it renders, and the platform on those it renders itself once its deployment classifies them.
 A route that sends neither, as the platform's Lambda-backed routes do not yet, a gateway's HTML page or
@@ -41,9 +41,11 @@ class ErrorDomain(StrEnum):
 class ErrorVerdict(BaseModel):
     """The verdict an error carries: who can fix the failure, and whether asking again can succeed.
 
-    "Retryable" says a retry can succeed, never that it is safe: it says nothing about whether the first
-    attempt had an effect. A start answered with a `500` may already have created a run, so a caller that
-    must not start a run twice decides that for itself.
+    "Retryable" says a retry can succeed, and on a request that may create a run, that it cannot start a
+    second one: a failed `start` or `execute` that may still have started a run (an error whose
+    `run_may_have_started` is `True`) is never retryable, whatever the server or the fallback table says,
+    since asking again could pay for the run twice. Everywhere else it says nothing about whether the first
+    attempt had an effect.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -144,3 +146,23 @@ def error_verdict_of(error: object) -> ErrorVerdict | None:
     if not isinstance(retryable, bool) or error_domain is None:
         return None
     return ErrorVerdict(error_domain=error_domain, retryable=retryable)
+
+
+def run_may_have_started_of(error: object) -> bool:
+    """Whether anything an `except` holds is a failed run start that may still have started a run: `True`
+    only for an exception carrying `run_may_have_started` as `True`.
+
+    The check is structural, as `error_verdict_of`'s is, so it reads an error of a consumer's own subclass
+    or of another installed copy of this SDK. Anything else is `False`: an error of a request that cannot
+    start a run, an `mthds` error, which the standard's client never raises over a start of this SDK, and a
+    value that is not an exception.
+
+    Args:
+        error: Anything, typically the exception an `except` clause caught.
+
+    Returns:
+        Whether the error says a run may have started.
+    """
+    if not isinstance(error, BaseException):
+        return False
+    return getattr(error, "run_may_have_started", None) is True

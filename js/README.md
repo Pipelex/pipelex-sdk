@@ -134,7 +134,7 @@ try {
 
 ### Errors
 
-Every error the SDK throws carries a verdict: `retryable`, whether asking again can succeed, and `errorDomain`, who can fix the failure (`input` for the caller, `config` for a change to the environment such as the credential, the plan or the base URL, `runtime` for nobody beforehand). Both are always decided, and `errorVerdictOf` reads them from anything a `catch` holds, returning `undefined` for what is not an SDK error, such as a bug in the calling code or your own abort. "Retryable" means a retry can succeed, not that it is safe: a start answered with a `500` may already have created a run.
+Every error the SDK throws carries a verdict: `retryable`, whether asking again can succeed, and `errorDomain`, who can fix the failure (`input` for the caller, `config` for a change to the environment such as the credential, the plan or the base URL, `runtime` for nobody beforehand). Both are always decided, and `errorVerdictOf` reads them from anything a `catch` holds, returning `undefined` for what is not an SDK error, such as a bug in the calling code or your own abort. A failed `start` or blocking `execute` also says whether it may have created a run anyway, as `runMayHaveStarted`, read with `runMayHaveStartedOf`: when it is `true`, `retryable` is `false`, since asking again could start a second paid run, and the person should look the run up in the run history first ([`docs/errors.md`](./docs/errors.md#a-failed-run-start--runmayhavestarted)).
 
 ```ts
 import { errorVerdictOf } from "@pipelex/sdk";

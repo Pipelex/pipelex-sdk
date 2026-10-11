@@ -132,10 +132,10 @@ export class PipelexExecuteResult implements DictRunResultExecute {
  * lifted here but absent from the hosted body.
  */
 export function resultsFromExecute(response: PipelexExecuteResult): RunResults {
-  // `working_memory` is a declared field of `DictPipeOutput`, so it lifts without a cast. By the
-  // time it is read, `main_stuff` has already been resolved out of it, so a response that carries
-  // no working memory has thrown `MissingMainStuffError` above; the `?? null` keeps the blocking
-  // path's convention for an absent key all the same. The graph pair and the usage pair ride
+  // `working_memory` is a declared field of `DictPipeOutput`, so it lifts without a cast. The
+  // client's `execute` refuses an answer whose `pipe_output` carries no working memory as one it
+  // cannot read, so `pipe_output` and its working memory are objects here; the `?? null` keeps the
+  // blocking path's convention for an absent key all the same. The graph pair and the usage pair ride
   // `pipe_output` as Pipelex extension fields, beside `working_memory` — `DictPipeOutput` is
   // extension-open, mirroring the Python model's `extra="allow"`, so they are read through the
   // type rather than by casting the whole value away. Lifting every one of them onto its
