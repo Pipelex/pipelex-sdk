@@ -173,6 +173,22 @@ class TestRunMayHaveStarted:
         assert isinstance(err, RunStillRunningError)
         assert run_may_have_started_of(err) is False
 
+    @pytest.mark.parametrize(
+        "extension",
+        [
+            pytest.param({"method_provenance": {"address": 5}}, id="malformed_provenance"),
+            pytest.param({"method_version": "latest"}, id="unknown_method_version"),
+        ],
+    )
+    def test_a_202_naming_its_run_stays_followable_whatever_its_extensions(self, extension: dict[str, object]) -> None:
+        client = _client({"POST /v1/execute": [_json(202, {"pipeline_run_id": "run-1", **extension})]})
+
+        err = _failure_of(client.execute(pipe_code="p"))
+
+        assert isinstance(err, RunStillRunningError)
+        assert err.run_id == "run-1"
+        assert run_may_have_started_of(err) is False
+
     # ── start_and_wait ──
 
     def test_start_and_wait_carries_the_reading_on_an_error_from_its_start(self) -> None:

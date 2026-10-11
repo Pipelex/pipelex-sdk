@@ -820,6 +820,22 @@ describe("PipelexApiClient.execute 202 degrade", () => {
     expect(e.message).toContain("run-202");
   });
 
+  // Only the run id is read, so a malformed extension never hides a run that is going; the Python
+  // SDK reads the same member and no other.
+  it.each([
+    ["a malformed method_provenance", { method_provenance: { address: 5 } }],
+    ["an unknown method_version", { method_version: "latest" }],
+  ])("keeps a 202 naming its run followable despite %s", async (_label, extension) => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(202, { pipeline_run_id: "run-1", ...extension }),
+    );
+    const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RunStillRunningError);
+    expect((err as RunStillRunningError).runId).toBe("run-1");
+    expect((err as RunStillRunningError).runMayHaveStarted).toBe(false);
+  });
+
   // A 202 that names no run leaves the caller a run it cannot follow: an answer the SDK cannot
   // read, which may have started a run, so it is never a `RunStillRunningError` without an id.
   it.each([

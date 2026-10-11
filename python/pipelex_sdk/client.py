@@ -30,10 +30,11 @@ from urllib.parse import quote, urlencode, urlparse, urlsplit
 
 import httpx
 from mthds.protocol.exceptions import PipelineRequestError
+from mthds.protocol.models import RunResultStart
 from mthds.runners.api.client import MthdsAPIClient
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
 from mthds.runners.api.problem import ProblemDocument
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import to_json
 from typing_extensions import override
 
@@ -195,6 +196,16 @@ def _creating_run() -> Generator[None, None, None]:
         yield
     finally:
         _MAY_START_RUN.reset(token)
+
+
+class _ExecuteAcceptance(RunResultStart):
+    """What an `execute` `202` must carry to be a run the caller can follow: the protocol's acknowledgement
+    with a run id that is not empty. Its extensions are not read, since the `RunStillRunningError` it becomes
+    carries only the id, so a malformed one never turns a run that is going into an answer the SDK cannot
+    read; `@pipelex/sdk`'s `throwIfExecuteDegraded` checks the same member and no other.
+    """
+
+    pipeline_run_id: str = Field(min_length=1)
 
 
 class _AnswerSeen:
@@ -632,13 +643,13 @@ class PipelexAPIClient(MthdsAPIClient):
 
         The base raises `RunStillRunningError` for any `202`, with an empty run id when the body names
         none. Such an answer leaves the caller a run it cannot follow, as a start acknowledgement without
-        its id does, so it is read here as `start`'s acknowledgement is, against `PipelexRunResultStart`:
-        a body that is not JSON, or that names no run or an empty one, fails the read, and the
-        `_reading_inherited_answer` block around `execute` raises it as an answer the SDK cannot read,
-        which inside `_creating_run` may have started a run. `@pipelex/sdk`'s `throwIfExecuteDegraded` reads the same answers the same way.
+        its id does, so it is read here against `_ExecuteAcceptance`: a body that is not JSON, or that names
+        no run or an empty one, fails the read, and the `_reading_inherited_answer` block around `execute`
+        raises it as an answer the SDK cannot read, which inside `_creating_run` may have started a run.
+        `@pipelex/sdk`'s `throwIfExecuteDegraded` reads the same answers the same way.
         """
         if response.status_code == 202:
-            PipelexRunResultStart.model_validate(response.json())
+            _ExecuteAcceptance.model_validate(response.json())
         super()._raise_if_execute_degraded(response)
 
     @override
