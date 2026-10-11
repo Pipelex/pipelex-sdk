@@ -45,8 +45,9 @@ from mthds.protocol.models import RunResultStart
 from mthds.protocol.output_form import OutputForm
 from mthds.protocol.pipe_io_contracts import PipeIOContracts
 from mthds.runners.api.models import DictPipeOutputAbstract, DictWorkingMemoryAbstract
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidatorFunctionWrapHandler, WrapValidator, field_validator
 
+from pipelex_sdk._pydantic_utils import none_when_it_does_not_fit
 from pipelex_sdk.error_models import LenientRunErrorReport
 
 if TYPE_CHECKING:
@@ -192,9 +193,12 @@ class RunPublic(BaseModel):
     status: RunStatus
     created_at: str
     finished_at: str | None = None
-    #: Why the run failed — the runner's report as the platform stored it, whole and typed (see
-    #: `pipelex_sdk.error_models`). `None` for a run that has not failed, and for one that ended with
-    #: no stored report (cancelled, terminated, timed out, or finalized by the platform itself). Read
+    #: Why the run failed — the stored report, whole and typed (see `pipelex_sdk.error_models`). The
+    #: runner writes it for a run that fails while it runs; the platform writes one in the runner's
+    #: shape for a run it ends or settles itself (a workflow task that kept failing, a timeout, a
+    #: workflow that vanished). `None` for a run that has not failed, and for one that ended with no
+    #: stored report (a cancelled run, one terminated by anything but the platform, one whose start
+    #: the platform gave up, one that ended before the platform wrote reports of its own). Read
     #: leniently, so a report written by another runner version never fails the read carrying it.
     error: LenientRunErrorReport = None
     #: Which version of its stored method the run ran: the version number for a run addressed by a
@@ -207,15 +211,90 @@ class RunPublic(BaseModel):
     source_digest: str | None = None
 
 
-class RunRead(RunPublic):
-    """A run read through the self-healing path (`RunPublic` + `degraded`).
+class DegradationReason(StrEnum):
+    """Why a status read is `degraded` — `RunDegradation.reason`.
 
-    When `degraded` is true, Temporal was unreachable and `status` is the
-    last-known DB value, not a freshly-derived one — pair with
-    `retry_after_seconds` (parsed from the `Retry-After` header by the client).
+    - `STATUS_UNAVAILABLE`: the platform could not reach the workflow engine, so `status` is the last
+      one recorded. It says nothing about the run itself, which may be fine; read again after
+      `retry_after_seconds`.
+    - `WORKFLOW_TASK_FAILING`: `status` is live, and the run is not making progress. The workflow task
+      that drives it has failed `failed_attempts` times in a row since `failing_since`; the workflow
+      engine keeps retrying it, and if it is still failing at `ends_at` the platform ends the run
+      `FAILED` with a `WorkflowTaskKeptFailingError` report.
+
+    Read open, as `RunDegradation.reason` types it: a reason a later platform adds arrives as its raw
+    string rather than failing the read, and a consumer that does not know it should not tell the
+    person the run is fine.
+    """
+
+    STATUS_UNAVAILABLE = "status_unavailable"
+    WORKFLOW_TASK_FAILING = "workflow_task_failing"
+
+
+class RunDegradation(BaseModel):
+    """What a `degraded` status read means for this run — `RunRead.degradation`.
+
+    Branch on `reason` (see `DegradationReason`), never on the wording of `message`. Extension-open
+    (`extra="allow"`), so a member a later platform adds rides `model_extra`. Read leniently, so it
+    never fails the poll carrying it: `reason` must be a string, and a degradation without one reads as
+    `None` as a whole (`LenientRunDegradation`), since it cannot be branched on; each other field that
+    does not fit its type reads as `None` and the rest stands.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    #: Why the read is degraded: the `DegradationReason` member when this SDK knows the reason, its raw
+    #: string otherwise.
+    reason: Annotated[DegradationReason | str, Field(union_mode="left_to_right")]
+    #: What the platform says about it, in a sentence. For `workflow_task_failing` it quotes the
+    #: worker's own failure text, written for the platform's engineers and not yet redacted, so a
+    #: product surface should show `failed_attempts` and `ends_at` rather than this.
+    message: str | None = None
+    #: How many times in a row the run's workflow task has failed; `None` for `status_unavailable`.
+    #: Strictly an integer, as `@pipelex/sdk` reads it: a string or a boolean reads as `None`.
+    failed_attempts: StrictInt | None = None
+    #: ISO-8601 instant of the first failure in the current run of failures. `None` when the platform
+    #: could not find the recorded failure in the workflow's history, and always for `status_unavailable`.
+    failing_since: str | None = None
+    #: ISO-8601 instant at which the platform ends the run `FAILED` if its workflow task is still
+    #: failing. `None` when the platform could not find the recorded failure: it then does not end the
+    #: run itself, and the run's own time limit ends it `TIMED_OUT`. Always `None` for
+    #: `status_unavailable`.
+    ends_at: str | None = None
+
+    @field_validator("message", "failed_attempts", "failing_since", "ends_at", mode="wrap")
+    @classmethod
+    def _read_a_field_that_does_not_fit_as_none(cls, value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
+        return none_when_it_does_not_fit(value, handler)
+
+
+#: The type of `RunRead.degradation`: a degradation read field by field as `RunDegradation` says, and a
+#: value that is not one at all — not an object, or without a string `reason` — read as `None`, so the
+#: status read carrying it always answers.
+LenientRunDegradation: TypeAlias = Annotated[RunDegradation | None, WrapValidator(none_when_it_does_not_fit)]
+
+
+class RunRead(RunPublic):
+    """A run read through the self-healing status path (`RunPublic` + `degraded`, `degradation`,
+    `request_id` and the `Retry-After` hint).
+
+    `degraded` is true when the read is not a plain fresh reading of a healthy run, and
+    `degradation.reason` says which of two things holds (see `DegradationReason`): the platform could
+    not reach the workflow engine and `status` is the last one recorded (`status_unavailable`, paired
+    with `retry_after_seconds`), or `status` is live and the run is stuck, its workflow task failing
+    until the platform ends it (`workflow_task_failing`). So `degraded` alone no longer means the run is
+    fine. A platform older than the degradation sends `degraded` with no `degradation`; read that as
+    `status_unavailable`, the only meaning `degraded` had then.
     """
 
     degraded: bool = False
+    #: What `degraded` means for this run; `None` whenever `degraded` is false, and on a platform that
+    #: predates it. Read leniently (`LenientRunDegradation`).
+    degradation: LenientRunDegradation = None
+    #: The id of the request that started the run — the one to quote to support. `None` for a run saved
+    #: before the platform recorded it, and on a server that does not serve it.
+    request_id: str | None = None
+    #: The `Retry-After` header's delay, in seconds, lifted by the client when the platform sent one.
     retry_after_seconds: int | None = None
 
 

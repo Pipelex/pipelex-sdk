@@ -145,7 +145,17 @@ A field a newer runner adds is reachable through the interface's index signature
 
 **The report is checked field by field, never cast.** Every read that hands one back applies the same check: a value that is not an object reads as no report (`null`); each named field is kept when it has the type the table above gives it and is absent otherwise, so a `message` that is a number or a `retryable` of `"no"` never reaches you as typed; `null` is kept wherever the type allows it, and an empty string is kept, since deciding that a blank field says nothing is presentation. `provider_metadata` and `migration` are checked one level down, `validation_errors` keeps only the items that are objects with a string `category` and `message`, and members the SDK does not name, in the report or in a nested object, are relayed as sent. **`user_action` is kept whole or not at all**: an object whose `kind` and `detail` are both strings, which is what its type promises. This is the one place the check differs from the Python SDK's, which keeps a partial action, its stored-report action being a lenient type of its own. On the run records, the check runs only when the record carries the `error` key, so a server that does not serve it still leaves it absent.
 
-**The report is `null` when the run has none.** A run the platform finalized itself carries no report: one whose start failed, and a timeout, a termination or a vanished workflow resolved by the platform. A cancelled run usually has none either. The status and the `detail` sentence still say what happened, and the absence of a report says nothing about why.
+**A run the platform ends or settles itself carries the platform's report.** Some endings have no runner to write a report, and the platform writes one instead, in the runner's shape, so it reads like any other:
+
+| `error_type` | When | `error_domain` | `retryable` | `user_action.kind` |
+|---|---|---|---|---|
+| `WorkflowTaskKeptFailingError` | The run's workflow task kept failing for the whole failure window, and the platform ended the run `FAILED`. While the window runs, the status read says so as a `workflow_task_failing` degradation ([run-results.md](./run-results.md#a-degraded-status--degraded-and-degradation)). | `runtime` | `false` | `contact_support` |
+| `RunTimedOutError` | The workflow engine timed the run out, and it ended `TIMED_OUT`. | `runtime` | `false` | `contact_support` |
+| `RunWorkflowNotFoundError` | The run's workflow cannot be found: it aged out of the engine's retention, or the run was lost while starting. The run ends `FAILED`. | `runtime` | `true` | `wait_and_retry` |
+
+Such a report's `caller_facing_message` is `false` when its `message` quotes the worker's own failure text, written for the platform's engineers, and `true` when it quotes nothing of it.
+
+**The report is `null` when the run has none.** A cancelled run, one terminated by anything but the platform and one whose start the platform gave up carry no report, and neither does a run that ended before the platform wrote reports of its own. The status and the `detail` sentence still say what happened, and the absence of a report says nothing about why.
 
 **Nothing is stripped, so presentation is yours.** The platform serves the runner's VERBOSE report, so `message` and `provider_metadata.message` can hold a provider's raw text. The SDK types what the platform sends; deciding what a person sees is the consumer's decision. `RunFailedError.message`, being the `detail`, already contains the report's message.
 

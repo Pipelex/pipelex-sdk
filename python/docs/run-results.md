@@ -97,6 +97,45 @@ It is never called on the blocking path, a bare runner's `POST /v1/execute` or t
 
 **Knowing whether a run may exist.** `on_starting` takes a callable with no argument, called right before each request that may create a run is sent: `POST /v1/start`, and the blocking `POST /v1/execute` of a bare runner or of the fallback to it, so it is called twice when a runner that looked hosted refuses the start. Until it is called no run exists, and once the task is cancelled it is not called and no such request is sent, so a caller that stops waiting before then can say that no run was started; from then until `on_started`, a run may exist that the API has not yet named. It runs synchronously and its return value is ignored; an exception it raises propagates before the request is sent. It is the twin of `@pipelex/sdk`'s `onStarting`, and the `pipelex-sdk` command words its interrupt message by it ([`cli.md`](cli.md)).
 
+## A degraded status — `degraded` and `degradation`
+
+`get_run_status(run_id)` reads a run's status row, which is how a caller shows a run while it runs. It returns a `RunRead` (`pipelex_sdk.runs`): the run record plus `degraded`, `degradation`, `request_id` and `retry_after_seconds`, the last lifted from the `Retry-After` header.
+
+**`degraded` means the read is not a plain fresh reading, and `degradation.reason` says why.** So `degraded` alone no longer means the run is fine; branch on the reason, a `DegradationReason`.
+
+| `reason` | What holds | `status` | What to tell the person |
+|---|---|---|---|
+| `STATUS_UNAVAILABLE` | The platform could not reach the workflow engine. | The last one recorded. | Nothing about the run, which may be fine: the status is not fresh, and the next read comes after `retry_after_seconds`. |
+| `WORKFLOW_TASK_FAILING` | The workflow task that drives the run has failed `failed_attempts` times in a row since `failing_since`, so the run is not making progress. | Live. | The run is stuck. The workflow engine keeps retrying, and if the task is still failing at `ends_at` the platform ends the run `FAILED`, with a `WorkflowTaskKeptFailingError` report (`RunErrorReport`). |
+
+```python
+from pipelex_sdk.runs import DegradationReason
+
+run = await client.get_run_status(run_id)
+if run.degraded:
+    # A platform older than the degradation sends none; `degraded` then meant only this.
+    reason = run.degradation.reason if run.degradation is not None else DegradationReason.STATUS_UNAVAILABLE
+    match reason:
+        case DegradationReason.WORKFLOW_TASK_FAILING:
+            assert run.degradation is not None
+            ends = run.degradation.ends_at or "its time limit"
+            print(f"The run is stuck ({run.degradation.failed_attempts} failures in a row); it ends at {ends}.")
+        case DegradationReason.STATUS_UNAVAILABLE:
+            print(f"The status is not fresh; reading again in {run.retry_after_seconds or 5}s.")
+        case _:
+            print(f"The status read is degraded ({reason}).")  # a reason this SDK does not know yet
+```
+
+- **`failing_since` and `ends_at` are `None` when the platform could not find the recorded failure** in the workflow's history. It then does not end the run itself, and the run's own time limit ends it `TIMED_OUT`, with a `RunTimedOutError` report. Both are always `None` for `STATUS_UNAVAILABLE`, and so is `failed_attempts`.
+- **`message` is the platform's sentence, written for its engineers.** For `WORKFLOW_TASK_FAILING` it quotes the worker's own failure text, which the platform does not yet redact, so a product surface shows `failed_attempts` and `ends_at` and keeps `message` for its logs. Never branch on its wording.
+- **`reason` is read open**: a reason this SDK knows reads as its `DegradationReason` member, and one a later platform adds keeps its raw string rather than failing the read. A consumer that does not know it should not tell the person the run is fine.
+- **The degradation is read leniently, so it never fails the poll** (`LenientRunDegradation`). A `degradation` that is not an object, or whose `reason` is not a string, reads as `None`, since it cannot be branched on; `message`, `failing_since` and `ends_at` that are not strings read as `None`, and so does a `failed_attempts` that is not strictly an integer, a numeric string or a boolean included, as `@pipelex/sdk` reads it; members this SDK does not name ride `model_extra`. `degradation` is `None` whenever `degraded` is false, and on a platform that predates it.
+- **`request_id` is the id of the request that started the run**, the one to quote to support beside the run id. `get_run_detail` carries it too; it is `None` for a run saved before the platform recorded it.
+
+**The wait loops never see a degradation, and need not.** `wait_for_result` and `start_and_wait` poll the results route, whose in-flight answer is a `202` with no body. That route settles the run the same way the status read does, so a waiter receives a stuck run's end as a `RunFailedError` carrying the `WorkflowTaskKeptFailingError` report within one poll of `ends_at`. A caller that wants to show the degradation while it waits reads `get_run_status` beside the wait.
+
+Both SDKs read a status body the same way, held to it by a case file they share, `tests/fixtures/run-status-reads.json`, whose source is `@pipelex/sdk`'s.
+
 ## `main_stuff` — the output
 
 `main_stuff` is the resolved content of the run's main output and is always present for a completed run read in full, or read with a selection that names it (a selection that leaves it out reads it as `None`, [above](#reading-only-some-artifacts)). On the hosted path it is the `main_stuff.json` artifact; on the blocking path the SDK resolves it out of the returned working memory through the response's `main_stuff_name`. Both deliver the same content shape, so there is no shape-guessing and no path-dependent branch to write. A completed run that cannot deliver one raises `MissingMainStuffError` rather than handing back a half-filled result.
@@ -126,7 +165,7 @@ match state:
 
 `get_run_result` is the single-shot lookup and returns that discriminated state. `wait_for_result(run_id)` drives the same lookup in a loop, honouring the server's `Retry-After`, and returns the `RunResults` directly — raising `RunFailedError` on a terminal non-completed status and `RunTimeoutError` when the budget runs out.
 
-A run that ended without a result has no `RunResults`, but it does have a reason. The results read answers it with a `409` whose problem document carries the run's status and its stored error report, and the failed arm carries both: `status` is the typed `RunStatus`, `message` is the platform's sentence (`Run finished with status FAILED: <message>`), and `error` is the report typed whole as `RunErrorReport` (`pipelex_sdk.error_models`) — `error_type`, `title`, `type_uri`, `error_domain`, `error_category`, `retryable`, `user_action`, `model`, `provider`, `provider_metadata`, `validation_errors`, and anything newer on `model_extra`. It is `None` for a run that ended with no report, such as a cancelled one. `RunFailedError` carries the same three as `status`, its message and `error`. Branch on `error_domain`, `type_uri` and `retryable`, never on the wording of `message`; the report is the runner's verbose one, provider text included, so what a person sees of it is the application's decision.
+A run that ended without a result has no `RunResults`, but it does have a reason. The results read answers it with a `409` whose problem document carries the run's status and its stored error report, and the failed arm carries both: `status` is the typed `RunStatus`, `message` is the platform's sentence (`Run finished with status FAILED: <message>`), and `error` is the report typed whole as `RunErrorReport` (`pipelex_sdk.error_models`) — `error_type`, `title`, `type_uri`, `error_domain`, `error_category`, `retryable`, `user_action`, `model`, `provider`, `provider_metadata`, `validation_errors`, and anything newer on `model_extra`. A run the platform ends or settles itself carries a report the platform wrote in the same shape: `WorkflowTaskKeptFailingError` for a workflow task that kept failing (`runtime`, not retryable, contact support), `RunTimedOutError` for a timeout (`runtime`, not retryable, contact support) and `RunWorkflowNotFoundError` for a workflow that vanished (`runtime`, retryable, wait and retry); its `caller_facing_message` is `False` when its `message` quotes the worker's own failure text. `error` is `None` for a run that ended with no report: a cancelled run, one terminated by anything but the platform, one whose start the platform gave up, one that ended before the platform wrote reports of its own. `RunFailedError` carries the same three as `status`, its message and `error`. Branch on `error_domain`, `type_uri` and `retryable`, never on the wording of `message`; the report is the runner's verbose one, provider text included, so what a person sees of it is the application's decision.
 
 ## `working_memory` — every named stuff of the run
 

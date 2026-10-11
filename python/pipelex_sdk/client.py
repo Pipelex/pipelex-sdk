@@ -1059,8 +1059,13 @@ class PipelexAPIClient(MthdsAPIClient):
         """Fetch a run's status by bare id — `GET /v1/runs/{run_id}/status`.
 
         Self-healing: a finished-but-unrecorded run resolves to its true terminal status on read.
-        `degraded=True` means Temporal was unreachable and `status` is the last-known value;
-        `retry_after_seconds` carries the server's `Retry-After` hint when present.
+        `degraded=True` means the read is not a plain fresh reading, and `degradation.reason` says why
+        (see `DegradationReason`): `status_unavailable` when the platform could not reach the workflow
+        engine and `status` is the last one recorded, `workflow_task_failing` when `status` is live and
+        the run is stuck, its workflow task failing until the platform ends it at
+        `degradation.ends_at`. `retry_after_seconds` carries the server's `Retry-After` hint when
+        present, and `request_id` the id to quote to support. A failed run's stored report, `error`,
+        and the `degradation` are each read leniently, so neither ever fails the read.
 
         Raises:
             RunLifecycleUnavailableError: If the lifecycle routes are absent (a bare runner).

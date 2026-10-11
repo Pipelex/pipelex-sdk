@@ -42,6 +42,7 @@ import {
   assertArtifactSelection,
   assertWaitOptions,
   pollUntilResult,
+  readRunDegradation,
   selectionIncludesMainStuff,
   throwIfAborted,
   type GetRunResultOptions,
@@ -1492,12 +1493,17 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Fetch a run's status by bare id — `GET /v1/runs/{pipeline_run_id}/status`.
    *
    * Self-healing: a finished-but-unrecorded run resolves to its true terminal
-   * status on read. `degraded: true` means Temporal was unreachable and
-   * `status` is the last-known value; `retry_after_seconds` carries the
-   * server's backoff hint when present. A failed run's stored report, `error`,
-   * is checked field by field (see `RunErrorReport`). Throws
-   * `RunLifecycleUnavailableError` when the lifecycle routes are absent (a bare
-   * runner).
+   * status on read. `degraded: true` means the read is not a plain fresh reading,
+   * and `degradation.reason` says why (see `DegradationReason`):
+   * `status_unavailable` when the platform could not reach the workflow engine
+   * and `status` is the last one recorded, `workflow_task_failing` when `status`
+   * is live and the run is stuck, its workflow task failing until the platform
+   * ends it at `degradation.ends_at`. `retry_after_seconds` carries the server's
+   * `Retry-After` hint when present, and `request_id` the id to quote to support.
+   * A failed run's stored report, `error`, and the `degradation` are each
+   * checked field by field (see `RunErrorReport` and `RunDegradation`), so
+   * neither ever fails the read. Throws `RunLifecycleUnavailableError` when the
+   * lifecycle routes are absent (a bare runner).
    */
   async getRunStatus(runId: string, options: { signal?: AbortSignal } = {}): Promise<RunRead> {
     const endpoint = `${RUNS}/${encodeURIComponent(runId)}/status`;
@@ -1510,7 +1516,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    const run = withCheckedReport(this.readObjectAnswer<RunRead>("GET", endpoint, res));
+    const run = withCheckedDegradation(
+      withCheckedReport(this.readObjectAnswer<RunRead>("GET", endpoint, res)),
+    );
     const retryAfter = parseRetryAfter(res.headers);
     return retryAfter !== null ? { ...run, retry_after_seconds: retryAfter } : run;
   }
@@ -2819,6 +2827,15 @@ function runResultFailed(runId: string, body: string): RunResultState {
 function withCheckedReport<T>(record: T): T {
   if (!isPlainObject(record) || !Object.hasOwn(record, "error")) return record;
   return { ...record, error: readRunErrorReport(record.error) } as T;
+}
+
+/**
+ * A status read with its `degradation` checked by `readRunDegradation`. Only when the read carries
+ * the key, so a platform that predates it still leaves it absent; `degraded` is left as sent.
+ */
+function withCheckedDegradation(run: RunRead): RunRead {
+  if (!Object.hasOwn(run, "degradation")) return run;
+  return { ...run, degradation: readRunDegradation(run.degradation) };
 }
 
 function knownRunStatus(value: unknown): RunStatus | undefined {

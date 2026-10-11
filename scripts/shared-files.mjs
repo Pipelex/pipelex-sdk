@@ -41,6 +41,11 @@ export const SETS = [
     source: "js/tests/fixtures/error-verdicts.json",
     copies: ["python/tests/fixtures/error-verdicts.json"],
   },
+  {
+    // What both SDKs read from a run's status read (js/docs/run-results.md, python/docs/run-results.md).
+    source: "js/tests/fixtures/run-status-reads.json",
+    copies: ["python/tests/fixtures/run-status-reads.json"],
+  },
 ];
 
 export class SharedFileError extends Error {

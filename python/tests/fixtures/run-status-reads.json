@@ -1,0 +1,306 @@
+{
+  "about": "The status reads the two Pipelex SDKs must agree on: what each makes of a body of GET /v1/runs/{id}/status. Each case gives the body the platform answered with a 200, and 'retry_after' the Retry-After header it set, or null for none. 'expected' says what the read yields: 'degraded' as the server sent it; 'retry_after_seconds' parsed from the header; 'request_id' the run's request id; and 'degradation' the degradation as the SDK reads it, field by field. A field is kept when it has its declared type, the null the platform sends for an unknown value included: 'reason' a string, 'message', 'failing_since' and 'ends_at' strings, 'failed_attempts' an integer. A known field that does not fit is not kept, and a field 'expected' does not list is one the reading does not keep, which JavaScript reads as absent and Python as None; members the SDK does not name are relayed as sent. A degradation that is not an object, or whose 'reason' is not a string, reads as none. A null in 'expected' means none, which Python reads as None and JavaScript as null, or as absent when the body did not carry the key. Each SDK's suite answers every case to its own client's status read over a mocked transport. This file exists twice: js/tests/fixtures/run-status-reads.json is the source, and python/tests/fixtures/run-status-reads.json its copy, which must stay byte for byte identical. Change the source, then run make shared-files at the repository's root to write the copy; make check-shared-files fails on a stale one.",
+  "cases": [
+    {
+      "name": "a healthy read",
+      "body": {
+        "pipeline_run_id": "plr_healthy",
+        "pipe_code": "summarize",
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "finished_at": null,
+        "error": null,
+        "request_id": "req_healthy",
+        "degraded": false,
+        "degradation": null
+      },
+      "retry_after": null,
+      "expected": {
+        "degraded": false,
+        "degradation": null,
+        "request_id": "req_healthy",
+        "retry_after_seconds": null
+      }
+    },
+    {
+      "name": "the platform could not reach the workflow engine",
+      "body": {
+        "pipeline_run_id": "plr_unreachable",
+        "pipe_code": "summarize",
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "finished_at": null,
+        "error": null,
+        "request_id": "req_unreachable",
+        "degraded": true,
+        "degradation": {
+          "reason": "status_unavailable",
+          "message": "The platform could not reach the workflow engine to read this run's live status, so `status` is the last one recorded. This says nothing about the run itself; read it again after the Retry-After delay.",
+          "failed_attempts": null,
+          "failing_since": null,
+          "ends_at": null
+        }
+      },
+      "retry_after": "5",
+      "expected": {
+        "degraded": true,
+        "degradation": {
+          "reason": "status_unavailable",
+          "message": "The platform could not reach the workflow engine to read this run's live status, so `status` is the last one recorded. This says nothing about the run itself; read it again after the Retry-After delay.",
+          "failed_attempts": null,
+          "failing_since": null,
+          "ends_at": null
+        },
+        "request_id": "req_unreachable",
+        "retry_after_seconds": 5
+      }
+    },
+    {
+      "name": "a workflow task that keeps failing, within its failure window",
+      "body": {
+        "pipeline_run_id": "plr_failing",
+        "pipe_code": "summarize",
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "finished_at": null,
+        "error": null,
+        "request_id": "req_failing",
+        "degraded": true,
+        "degradation": {
+          "reason": "workflow_task_failing",
+          "message": "The workflow driving this run has failed 3 times in a row, so the run is not making progress. The recorded failure is: ValueError: the activity input is malformed. Temporal keeps retrying it; if it is still failing at 2026-10-11T08:10:00+00:00, the platform ends the run as FAILED.",
+          "failed_attempts": 3,
+          "failing_since": "2026-10-11T08:05:00+00:00",
+          "ends_at": "2026-10-11T08:10:00+00:00"
+        }
+      },
+      "retry_after": null,
+      "expected": {
+        "degraded": true,
+        "degradation": {
+          "reason": "workflow_task_failing",
+          "message": "The workflow driving this run has failed 3 times in a row, so the run is not making progress. The recorded failure is: ValueError: the activity input is malformed. Temporal keeps retrying it; if it is still failing at 2026-10-11T08:10:00+00:00, the platform ends the run as FAILED.",
+          "failed_attempts": 3,
+          "failing_since": "2026-10-11T08:05:00+00:00",
+          "ends_at": "2026-10-11T08:10:00+00:00"
+        },
+        "request_id": "req_failing",
+        "retry_after_seconds": null
+      }
+    },
+    {
+      "name": "a workflow task that keeps failing, its recorded failure not found",
+      "body": {
+        "pipeline_run_id": "plr_failing_unrecorded",
+        "pipe_code": null,
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "finished_at": null,
+        "error": null,
+        "request_id": null,
+        "degraded": true,
+        "degradation": {
+          "reason": "workflow_task_failing",
+          "message": "The workflow driving this run has failed 4 times in a row, so the run is not making progress. The recorded failure is: the platform could not find the recorded failure in the workflow's recent history. Temporal keeps retrying it until the run's own time limit.",
+          "failed_attempts": 4,
+          "failing_since": null,
+          "ends_at": null
+        }
+      },
+      "retry_after": null,
+      "expected": {
+        "degraded": true,
+        "degradation": {
+          "reason": "workflow_task_failing",
+          "message": "The workflow driving this run has failed 4 times in a row, so the run is not making progress. The recorded failure is: the platform could not find the recorded failure in the workflow's recent history. Temporal keeps retrying it until the run's own time limit.",
+          "failed_attempts": 4,
+          "failing_since": null,
+          "ends_at": null
+        },
+        "request_id": null,
+        "retry_after_seconds": null
+      }
+    },
+    {
+      "name": "a reason this SDK does not know, with a member it does not name",
+      "body": {
+        "pipeline_run_id": "plr_future_reason",
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "request_id": "req_future_reason",
+        "degraded": true,
+        "degradation": {
+          "reason": "worker_pool_draining",
+          "message": "The workers are draining; the run resumes on the next pool.",
+          "resumes_at": "2026-10-11T08:20:00+00:00"
+        }
+      },
+      "retry_after": "30",
+      "expected": {
+        "degraded": true,
+        "degradation": {
+          "reason": "worker_pool_draining",
+          "message": "The workers are draining; the run resumes on the next pool.",
+          "resumes_at": "2026-10-11T08:20:00+00:00"
+        },
+        "request_id": "req_future_reason",
+        "retry_after_seconds": 30
+      }
+    },
+    {
+      "name": "known fields that do not fit their types",
+      "body": {
+        "pipeline_run_id": "plr_drifted_fields",
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "degraded": true,
+        "degradation": {
+          "reason": "workflow_task_failing",
+          "message": 42,
+          "failed_attempts": "3",
+          "failing_since": false,
+          "ends_at": { "at": "2026-10-11T08:10:00+00:00" }
+        }
+      },
+      "retry_after": null,
+      "expected": {
+        "degraded": true,
+        "degradation": {
+          "reason": "workflow_task_failing"
+        },
+        "request_id": null,
+        "retry_after_seconds": null
+      }
+    },
+    {
+      "name": "a failed-attempt count that is not an integer",
+      "body": {
+        "pipeline_run_id": "plr_fractional_attempts",
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "degraded": true,
+        "degradation": {
+          "reason": "workflow_task_failing",
+          "message": "The workflow driving this run keeps failing.",
+          "failed_attempts": 2.5
+        }
+      },
+      "retry_after": null,
+      "expected": {
+        "degraded": true,
+        "degradation": {
+          "reason": "workflow_task_failing",
+          "message": "The workflow driving this run keeps failing."
+        },
+        "request_id": null,
+        "retry_after_seconds": null
+      }
+    },
+    {
+      "name": "a degradation that is not an object",
+      "body": {
+        "pipeline_run_id": "plr_degradation_text",
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "degraded": true,
+        "degradation": "the run is stuck"
+      },
+      "retry_after": null,
+      "expected": {
+        "degraded": true,
+        "degradation": null,
+        "request_id": null,
+        "retry_after_seconds": null
+      }
+    },
+    {
+      "name": "a reason that is not a string",
+      "body": {
+        "pipeline_run_id": "plr_numeric_reason",
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "degraded": true,
+        "degradation": {
+          "reason": 2,
+          "message": "The workflow driving this run keeps failing.",
+          "failed_attempts": 3
+        }
+      },
+      "retry_after": null,
+      "expected": {
+        "degraded": true,
+        "degradation": null,
+        "request_id": null,
+        "retry_after_seconds": null
+      }
+    },
+    {
+      "name": "a degradation with no reason",
+      "body": {
+        "pipeline_run_id": "plr_no_reason",
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "degraded": true,
+        "degradation": {
+          "message": "The workflow driving this run keeps failing."
+        }
+      },
+      "retry_after": null,
+      "expected": {
+        "degraded": true,
+        "degradation": null,
+        "request_id": null,
+        "retry_after_seconds": null
+      }
+    },
+    {
+      "name": "a degraded read from a platform that predates the degradation",
+      "body": {
+        "pipeline_run_id": "plr_older_platform",
+        "pipe_code": "summarize",
+        "status": "RUNNING",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "finished_at": null,
+        "error": null,
+        "degraded": true
+      },
+      "retry_after": "5",
+      "expected": {
+        "degraded": true,
+        "degradation": null,
+        "request_id": null,
+        "retry_after_seconds": 5
+      }
+    },
+    {
+      "name": "a run the platform ended because its workflow task kept failing",
+      "body": {
+        "pipeline_run_id": "plr_ended",
+        "pipe_code": "summarize",
+        "status": "FAILED",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "finished_at": "2026-10-11T08:10:02+00:00",
+        "error": {
+          "error_type": "WorkflowTaskKeptFailingError",
+          "title": "Workflow kept failing",
+          "type_uri": "https://pipelex.com/errors/workflow_task_kept_failing",
+          "message": "The platform stopped this run because the workflow driving it kept failing for 5 minutes (7 attempts in a row) without making progress.",
+          "error_domain": "runtime",
+          "retryable": false,
+          "user_action": { "kind": "contact_support", "detail": "Give support the run id plr_ended." },
+          "caller_facing_message": false
+        },
+        "request_id": "req_ended",
+        "degraded": false,
+        "degradation": null
+      },
+      "retry_after": null,
+      "expected": {
+        "degraded": false,
+        "degradation": null,
+        "request_id": "req_ended",
+        "retry_after_seconds": null
+      }
+    }
+  ]
+}

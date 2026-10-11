@@ -229,7 +229,9 @@ export type {
 // ── Run lifecycle (hosted extension — NOT part of the protocol) ──────
 export { isTerminalRunStatus, isSuccessRunStatus, RUN_RESULT_ARTIFACTS } from "./runs.js";
 export type {
+  DegradationReason,
   GetRunResultOptions,
+  RunDegradation,
   RunResultArtifact,
   RunStatus,
   RunPublic,
