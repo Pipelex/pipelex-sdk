@@ -7,6 +7,10 @@
 - **`RunRead.degradation` and `DegradationReason`**: `get_run_status` types the `degradation` the platform sends with `degraded`, as `RunDegradation` (`reason`, `message`, `failed_attempts`, `failing_since`, `ends_at`) in `pipelex_sdk.runs`, read leniently so a malformed one never fails the poll. `degraded` no longer means only that the platform could not reach the workflow engine (`STATUS_UNAVAILABLE`): `WORKFLOW_TASK_FAILING` means the run is stuck and the platform ends it `FAILED` at `ends_at`, so code that branches on `degraded` now reads `degradation.reason` as well (`docs/run-results.md`).
 - **`request_id` on a run**: `RunRead.request_id` and `RunDetail.request_id` type the id of the request that started the run, the one to quote to support.
 
+### Changed
+
+- **A failed run's report is documented as the platform's STRICT projection**: the docstrings of `RunErrorReport`, `ProviderErrorMetadata`, `RunFailedError`, the run records' `error` and `RunDegradation.message`, with `docs/run-results.md`, `docs/architecture.md` and the README, now say what the hosted platform serves, where they said it served the runner's VERBOSE report: `message` and `user_action` are the author's only when `caller_facing_message` is `True` and the placeholder `An internal error occurred.` otherwise, `provider_metadata` keeps only `status_code` and `retry_after_seconds`, `model`, `provider` and `migration` are `None`, and a `WORKFLOW_TASK_FAILING` degradation's `message` does not quote the worker's failure. They also say that a cancelled, terminated or timed-out run holds a report when a completion callback carried one, and a timed-out run otherwise the platform's timeout report; the models are unchanged.
+
 ## [v0.38.0] - 2026-10-10
 
 ### Changed

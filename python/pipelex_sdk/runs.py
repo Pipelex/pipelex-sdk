@@ -193,13 +193,16 @@ class RunPublic(BaseModel):
     status: RunStatus
     created_at: str
     finished_at: str | None = None
-    #: Why the run failed — the stored report, whole and typed (see `pipelex_sdk.error_models`). The
-    #: runner writes it for a run that fails while it runs; the platform writes one in the runner's
-    #: shape for a run it ends or settles itself (a workflow task that kept failing, a timeout, a
-    #: workflow that vanished). `None` for a run that has not failed, and for one that ended with no
-    #: stored report (a cancelled run, one terminated by anything but the platform, one whose start
-    #: the platform gave up, one that ended before the platform wrote reports of its own). Read
-    #: leniently, so a report written by another runner version never fails the read carrying it.
+    #: Why the run failed — the stored report as the platform serves it, the runner's STRICT
+    #: projection, whole and typed (see `pipelex_sdk.error_models`). The runner writes it for a run
+    #: that fails while it runs; the platform writes one in the runner's shape for a run it ends or
+    #: settles itself (a workflow task that kept failing, a timeout, a workflow that vanished). A
+    #: cancelled, terminated or timed-out run holds a report when a completion callback carried one,
+    #: and a timed-out run otherwise the platform's timeout report. `None` for a completed run, and
+    #: for one that ended with no stored report (one whose start failed, a blocking `execute` run, one
+    #: cancelled, terminated or given its status by hand with no completion callback carrying a
+    #: report, one that ended before the platform wrote reports of its own). Read leniently, so a
+    #: report written by another runner version never fails the read carrying it.
     error: LenientRunErrorReport = None
     #: Which version of its stored method the run ran: the version number for a run addressed by a
     #: bare `method_id` (the latest published version) or by `mt_…@<n>`, `"draft"` for one
@@ -246,9 +249,10 @@ class RunDegradation(BaseModel):
     #: Why the read is degraded: the `DegradationReason` member when this SDK knows the reason, its raw
     #: string otherwise.
     reason: Annotated[DegradationReason | str, Field(union_mode="left_to_right")]
-    #: What the platform says about it, in a sentence. For `workflow_task_failing` it quotes the
-    #: worker's own failure text, written for the platform's engineers and not yet redacted, so a
-    #: product surface should show `failed_attempts` and `ends_at` rather than this.
+    #: What the platform says about it, in a sentence. For `workflow_task_failing` it says how many
+    #: attempts have failed in a row, that the run is not making progress and when the platform will
+    #: end it. It does not quote the worker's own failure text, which only a platform run locally with
+    #: `ERROR_DISCLOSURE=verbose` adds. `failed_attempts` and `ends_at` carry the same facts as fields.
     message: str | None = None
     #: How many times in a row the run's workflow task has failed; `None` for `status_unavailable`.
     #: Strictly an integer, as `@pipelex/sdk` reads it: a string or a boolean reads as `None`.

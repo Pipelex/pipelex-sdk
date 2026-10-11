@@ -223,7 +223,7 @@ except ApiResponseError as exc:
 
 ### When a run fails: `RunFailedError` carries the run's report
 
-A run that ends without a result — `FAILED`, `CANCELLED`, `TERMINATED` or `TIMED_OUT` — makes `wait_for_result`, `start_and_wait` and `download_artifacts` raise `RunFailedError`. Its message already names the status and the reason (`Run finished with status FAILED: <message>`), `status` is the typed `RunStatus`, and `error` is the run's stored error report, typed whole as `RunErrorReport` (`pipelex_sdk.error_models`): the runner's `error_type`, `message`, `title`, `type_uri`, `error_domain`, `error_category`, `retryable`, `user_action`, `model`, `provider`, `provider_metadata`, `validation_errors`, and anything newer on `model_extra`. `error` is `None` for a run that ended with no report, such as a cancelled one.
+A run that ends without a result — `FAILED`, `CANCELLED`, `TERMINATED` or `TIMED_OUT` — makes `wait_for_result`, `start_and_wait` and `download_artifacts` raise `RunFailedError`. Its message already names the status and the reason (`Run finished with status FAILED: <message>`), `status` is the typed `RunStatus`, and `error` is the run's stored error report, typed whole as `RunErrorReport` (`pipelex_sdk.error_models`): the runner's `error_type`, `message`, `title`, `type_uri`, `error_domain`, `error_category`, `retryable`, `user_action`, `provider_metadata`, `caller_facing_message`, `validation_errors`, and anything newer on `model_extra`. `error` is `None` for a run that ended with no report, such as one whose start failed or one cancelled with no completion callback carrying a report.
 
 ```python
 from pipelex_sdk.errors import RunFailedError
@@ -240,7 +240,7 @@ except RunFailedError as exc:
             ...  # the same run may succeed if started again
 ```
 
-Branch on `error_domain` (`input`, `config`, `runtime`), `type_uri` and `retryable`, never on the wording of `message`. The report is the runner's verbose one, so `message` and `provider_metadata` can hold a model provider's raw text: what a person should see of it is your application's decision. The same report is on `RunRead.error` when you read the run's status, on `RunResultFailed.error` from `get_run_result`, and on `RunHistoryItem.error` in the run lists.
+Branch on `error_domain` (`input`, `config`, `runtime`), `type_uri` and `retryable`, never on the wording of `message`. The platform serves the runner's STRICT projection of the report: `message` is the author's copy when `caller_facing_message` is `True` and `An internal error occurred.` otherwise, `user_action` comes only with caller-facing copy, `provider_metadata` keeps only `status_code` and `retry_after_seconds`, and `model`, `provider` and `migration` are `None`, so `message` can be shown as it comes and what a person should see is still your application's decision. The same report is on `RunRead.error` when you read the run's status, on `RunResultFailed.error` from `get_run_result`, and on `RunHistoryItem.error` in the run lists.
 
 ### API errors: branch on `type_uri` and `error_domain`, not the HTTP status
 

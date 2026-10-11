@@ -79,15 +79,18 @@ export interface RunPublic {
   created_at: string;
   finished_at?: string | null;
   /**
-   * Why the run failed: the stored error report, typed whole (see `RunErrorReport`). The runner
-   * writes it for a run that fails while it runs; the platform writes one in the runner's shape
-   * for a run it ends or settles itself — a workflow task that kept failing
-   * (`WorkflowTaskKeptFailingError`), a timeout (`RunTimedOutError`), a workflow that vanished
-   * (`RunWorkflowNotFoundError`). `null` on a completed run and on a run that ended without a
-   * report — a cancelled run, one terminated by anything but the platform, one whose start the
-   * platform gave up, one that ended before the platform wrote reports of its own; absent on a
-   * server that does not serve it. The results read of the same run carries the same object in
-   * its `409`, which is where `getRunResult`'s failed arm and `RunFailedError` take it from.
+   * Why the run failed: the stored error report as the platform serves it, the runner's STRICT
+   * projection, typed whole (see `RunErrorReport`). The runner writes it for a run that fails
+   * while it runs; the platform writes one in the runner's shape for a run it ends or settles
+   * itself — a workflow task that kept failing (`WorkflowTaskKeptFailingError`), a timeout
+   * (`RunTimedOutError`), a workflow that vanished (`RunWorkflowNotFoundError`). A cancelled,
+   * terminated or timed-out run holds a report when a completion callback carried one, and a
+   * timed-out run otherwise the platform's timeout report. `null` on a completed run and on a
+   * run that ended without a report — one whose start failed, a blocking `execute` run, one
+   * cancelled, terminated or given its status by hand with no completion callback carrying a
+   * report, one that ended before the platform wrote reports of its own; absent on a server that
+   * does not serve it. The results read of the same run carries the same object in its `409`,
+   * which is where `getRunResult`'s failed arm and `RunFailedError` take it from.
    */
   error?: RunErrorReport | null;
   /**
@@ -135,9 +138,11 @@ export interface RunDegradation {
   /** Why the read is degraded: a `DegradationReason`, or the raw string of one this SDK does not know. */
   reason: DegradationReason | (string & {});
   /**
-   * What the platform says about it, in a sentence. For `workflow_task_failing` it quotes the
-   * worker's own failure text, written for the platform's engineers and not yet redacted, so a
-   * product surface should show `failed_attempts` and `ends_at` rather than this.
+   * What the platform says about it, in a sentence. For `workflow_task_failing` it says how many
+   * attempts have failed in a row, that the run is not making progress and when the platform will
+   * end it. It does not quote the worker's own failure text, which only a platform run locally
+   * with `ERROR_DISCLOSURE=verbose` adds. `failed_attempts` and `ends_at` carry the same facts as
+   * fields.
    */
   message?: string | null;
   /** How many times in a row the run's workflow task has failed; `null` for `status_unavailable`. */

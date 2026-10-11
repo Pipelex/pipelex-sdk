@@ -8,9 +8,10 @@
  *
  * - `results-409-failed.json` and `results-409-cancelled.json` are what the platform's error
  *   handler rendered for `RunFinishedWithoutResultError`. The first carries the VERBOSE report
- *   `pipelex` builds for an `LLMCompletionError` (with its next step and provider metadata),
- *   read back the way the run store hands it over, every number a `Decimal` — which is why its
- *   `provider_metadata.status_code` and `retry_after_seconds` arrive as strings.
+ *   `pipelex` builds for an `LLMCompletionError` (with its next step and provider metadata), as a
+ *   platform run with `ERROR_DISCLOSURE=verbose` serves it (a deployed platform serves its STRICT
+ *   projection), read back the way the run store hands it over, every number a `Decimal` — which
+ *   is why its `provider_metadata.status_code` and `retry_after_seconds` arrive as strings.
  * - `runner-500-model-unavailable.json` is `ErrorReport.to_problem_document` for the same fault,
  *   the body a runner answers `/v1/execute` with.
  * - `platform-422-field-errors.json` is the platform's request-validation `422`, with `errors[]`.

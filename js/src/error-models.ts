@@ -4,9 +4,10 @@
  *
  * **The runner owns these shapes; this SDK follows them.** A run that fails reports why as
  * the runner's `ErrorReport` (`pipelex.base_exceptions`), which the hosted platform stores
- * whole on the run row as `error` and serves as it was stored: on the status read
- * (`RunRead.error`), on the run records (`PipelineRun.error`), and inside the problem
- * document of the results read's `409`, where the client lifts it onto the failed arm of
+ * whole on the run row as `error` and serves through the runner's STRICT disclosure: on the
+ * status read (`RunRead.error`), on the run records (`PipelineRun.error`,
+ * `RunHistoryItem.error`), and inside the problem document of the results read's `409`, where
+ * the client lifts it onto the failed arm of
  * `RunResultState` and onto `RunFailedError.error`. The same classification fields
  * (`error_domain`, `user_action`, …) ride a runner-rendered problem document as extension
  * members, which is why `ApiResponseError` types its members with the models declared here.
@@ -26,10 +27,19 @@
  * `providerMetadata`, `migration`, `validationErrors` and `errors` hold to their types as a stored
  * report's do.
  *
- * **Nothing else is stripped.** The platform serves the runner's VERBOSE report, so `message` and
- * `provider_metadata` can hold a provider's raw text. Deciding what of it a person should see
- * is each consumer's presentation, not this SDK's; the report arrives here whole, members this
- * SDK does not name included.
+ * **The platform serves the STRICT projection; this SDK strips nothing further.** The run row
+ * keeps the runner's VERBOSE report as the operators' record, and every read that hands it to a
+ * caller serves the rule the hosted runner applies to an error on `execute`: `error_type`,
+ * `title`, `type_uri`, `error_domain`, `error_category`, `retryable` and `validation_errors`
+ * pass through; `message` and `user_action` pass through only when `caller_facing_message` is
+ * `true`, which the served report then keeps, and otherwise `message` is the placeholder
+ * `An internal error occurred.` while `user_action` and the flag are absent; `provider_metadata`
+ * keeps only `status_code` and `retry_after_seconds`; `model`, `provider` and `migration` are
+ * absent. The reports the platform writes itself are caller-facing copy, so they keep their
+ * message and their next step. A platform run locally with `ERROR_DISCLOSURE=verbose` serves the
+ * report whole, which is why the types still name every member the runner writes. Deciding what
+ * a person should see is each consumer's presentation; the report arrives here as served,
+ * members this SDK does not name included.
  */
 
 import type { ValidationErrorItem } from "./models.js";
@@ -54,7 +64,10 @@ export interface UserAction {
  * What the inference provider's SDK said about a failed call — the runner's
  * `ProviderErrorMetadata`. Present on a report whose failure came back from a model provider.
  * `message` is the provider SDK's own text, relayed raw; the provider's response body never
- * crosses the wire, because the runner excludes it from every serialization.
+ * crosses the wire, because the runner excludes it from every serialization. A hosted run read
+ * keeps only `status_code` and `retry_after_seconds`, the client hints; the other members reach a
+ * caller only from a server that discloses errors VERBOSE, such as a platform run locally with
+ * `ERROR_DISCLOSURE=verbose`.
  *
  * **The hosted store turns its numbers into strings.** A report read back from the platform's
  * run store carries `status_code` and `retry_after_seconds` as JSON strings (`"404"`,
@@ -109,12 +122,18 @@ export interface MigrationErrorBlock {
  * decide; read them as given.
  *
  * The runner writes the report of a run that fails while it runs. A run the platform ends or
- * settles itself carries one the platform wrote in the same shape: `WorkflowTaskKeptFailingError`
- * for a workflow task that kept failing, `RunTimedOutError` for a timeout and
- * `RunWorkflowNotFoundError` for a workflow that vanished. A report is `null` where the run has
- * none — a cancelled run, one terminated by anything but the platform, one whose start the
- * platform gave up, one that ended before the platform wrote reports of its own — so the absence
- * of a report says nothing about why.
+ * settles itself carries one the platform wrote in the same shape, as caller-facing copy:
+ * `WorkflowTaskKeptFailingError` for a workflow task that kept failing (the run ends `FAILED`,
+ * not `TERMINATED`), `RunTimedOutError` for a timeout and `RunWorkflowNotFoundError` for a
+ * workflow that vanished. A `CANCELLED`, `TERMINATED` or `TIMED_OUT` run holds a report when a
+ * completion callback carried one, and a `TIMED_OUT` run otherwise holds the platform's timeout
+ * report. A report is `null` on a completed run and where a run has none — one whose start
+ * failed, a blocking `execute` run, whose answer carried its reason, one cancelled, terminated or
+ * given its status by hand with no completion callback carrying a report, one that ended before
+ * the platform wrote reports of its own — so the absence of a report says nothing about why.
+ *
+ * What the platform serves of a report is the runner's STRICT projection (see the module
+ * comment), so the members the projection drops are absent on a hosted read.
  */
 export interface RunErrorReport {
   /**
@@ -123,8 +142,8 @@ export interface RunErrorReport {
    */
   error_type?: string | null;
   /**
-   * What went wrong, as the runner wrote it. On the VERBOSE report the platform serves, it can
-   * carry a provider's raw text.
+   * What went wrong. The platform serves the author's copy only when `caller_facing_message` is
+   * `true`, and the placeholder `An internal error occurred.` otherwise.
    */
   message?: string | null;
   /** A stable human label for the error class (`LLM completion`). */
@@ -144,22 +163,38 @@ export interface RunErrorReport {
   error_category?: string | null;
   /** Whether retrying the same run can succeed. Absent or `null` means unknown, never "no". */
   retryable?: boolean | null;
-  /** The next step the runner advises. */
+  /** The next step the runner advises. The platform serves it only beside caller-facing copy. */
   user_action?: UserAction | null;
-  /** The model the failing call used, when the failure is an inference failure. */
+  /**
+   * The model the failing call used, when the failure is an inference failure. Absent on a
+   * hosted read, whose STRICT projection drops it.
+   */
   model?: string | null;
-  /** The provider the failing call reached, when the failure is an inference failure. */
+  /**
+   * The provider the failing call reached, when the failure is an inference failure. Absent on
+   * a hosted read, whose STRICT projection drops it.
+   */
   provider?: string | null;
-  /** What the provider's SDK said, when the failure came back from a provider. */
+  /**
+   * What the provider's SDK said, when the failure came back from a provider. A hosted read
+   * keeps only its `status_code` and `retry_after_seconds`.
+   */
   provider_metadata?: ProviderErrorMetadata | null;
-  /** True when `message` was written as caller-facing copy. The runner emits it only when true. */
+  /**
+   * True when `message` was written as caller-facing copy. The runner emits it only when true,
+   * and the platform keeps it on a caller-facing report and leaves it out otherwise, so it is how
+   * a consumer tells the author's copy from the placeholder.
+   */
   caller_facing_message?: boolean | null;
   /**
    * The structured diagnostics of a bundle that failed validation — the same items the
    * validate report and a `422`'s `ApiResponseError.validationErrors` carry.
    */
   validation_errors?: ValidationErrorItem[] | null;
-  /** A pending configuration migration that explains the failure. */
+  /**
+   * A pending configuration migration that explains the failure. Absent on a hosted read, whose
+   * STRICT projection drops it.
+   */
   migration?: MigrationErrorBlock | null;
   /** Fields a newer runner adds, reachable before this SDK names them. */
   [extension: string]: unknown;

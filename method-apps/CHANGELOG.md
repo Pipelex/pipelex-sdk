@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **A failed run's report is described as the platform serves it**: the web app template's `docs/errors.md`, `CLAUDE.md` and the comments of `classifyRunFailed`, `visibleReportMessage` and `reportDetails`, and the docstring of the CLI template's `report_lines`, say that the platform serves the runner's STRICT projection of a run's report, whose `message` is the author's copy only when `caller_facing_message` is true and `An internal error occurred.` otherwise, and whose `provider_metadata` keeps only `status_code` and `retry_after_seconds`, so a hosted report never carries a provider's raw text. The web app's cut of that text and its omission of `provider_metadata` from the technical details stay as defence in depth for a report served whole, and neither template's display changes. The web app's docs also say which runs hold no report, since a cancelled, terminated or timed-out run holds one when a completion callback carried one.
+
 ## [v0.37.0] - 2026-10-09
 
 ### Changed

@@ -622,16 +622,21 @@ export class PipelineExecuteTimeoutError extends PipelexRequestError {
  *
  * - `status` is the run's terminal status, read from the problem's `run_status` member, or from
  *   its `detail` sentence on a platform that predates the member.
- * - `error` is the run's stored error report, typed whole as `RunErrorReport`: the runner's
- *   `error_type`, `message`, `title`, `type_uri`, `error_domain`, `error_category`,
- *   `retryable`, `user_action`, `model`, `provider`, `provider_metadata`, `validation_errors`
- *   and anything newer through its index signature. Branch on `error.error_domain`,
- *   `error.type_uri` and `error.retryable`; show `error.user_action` as the next step. It is
- *   the runner's VERBOSE report, so `message` and `provider_metadata` can hold a provider's raw
- *   text — deciding what a person sees is the consumer's. A run the platform ended or settled
- *   itself carries the report the platform wrote, in the same shape. `null` when the run ended
- *   with no stored report (a cancelled run, one terminated by anything but the platform, one
- *   whose start the platform gave up).
+ * - `error` is the run's stored error report as the platform serves it, typed whole as
+ *   `RunErrorReport`: the runner's `error_type`, `message`, `title`, `type_uri`, `error_domain`,
+ *   `error_category`, `retryable`, `user_action`, `provider_metadata`, `caller_facing_message`,
+ *   `validation_errors` and anything newer through its index signature. Branch on
+ *   `error.error_domain`, `error.type_uri` and `error.retryable`; show `error.user_action` as the
+ *   next step. The platform serves the runner's STRICT projection, so `message` is the author's
+ *   copy only when `caller_facing_message` is `true` and the placeholder
+ *   `An internal error occurred.` otherwise, `user_action` comes only with caller-facing copy,
+ *   `provider_metadata` keeps only `status_code` and `retry_after_seconds`, and `model`,
+ *   `provider` and `migration` are absent; deciding what a person sees is still the consumer's.
+ *   A run the platform ended or settled itself carries the caller-facing report the platform
+ *   wrote, in the same shape. A cancelled, terminated or timed-out run carries a report when a
+ *   completion callback carried one, and a timed-out run otherwise the platform's timeout report.
+ *   `null` when the run ended with no stored report (one whose start failed, or one cancelled,
+ *   terminated or given its status by hand with no completion callback carrying a report).
  * - The error's own `message` is the problem's `detail`, which names the status and then the
  *   report's message (`Run finished with status FAILED: <message>`), so printing the error
  *   already tells the reason.
@@ -913,7 +918,13 @@ export class ApiResponseError extends PipelexRequestError {
   public readonly model: string | undefined;
   /** The body's `provider`: the provider an inference failure reached. */
   public readonly provider: string | undefined;
-  /** The body's `provider_metadata`: what the provider's SDK said, raw text included. */
+  /**
+   * The body's `provider_metadata`: what the provider's SDK said. On the hosted API it comes
+   * from the runner's problem document, which the hosted runner renders under its STRICT
+   * disclosure, so it keeps only `status_code` and `retry_after_seconds`; a runner that
+   * discloses errors VERBOSE, as a self-hosted one does when `ERROR_DISCLOSURE` is unset, sends
+   * it whole, the provider's raw text included.
+   */
   public readonly providerMetadata: ProviderErrorMetadata | undefined;
   /** The body's `migration`: a pending configuration migration that explains the failure. */
   public readonly migration: MigrationErrorBlock | undefined;

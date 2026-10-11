@@ -36,8 +36,9 @@ from pipelex_sdk.runs import (
 
 _BASE_URL = "http://localhost:8081"
 
-# A runner `ErrorReport` in its VERBOSE form, as the platform stores it on the run row and serves it
-# on the status read and in the results read's 409 — here the gateway refusing a model, the case
+# A runner `ErrorReport` in its VERBOSE form, as the platform stores it on the run row and as a
+# platform run with `ERROR_DISCLOSURE=verbose` serves it on the status read and in the results read's
+# 409 (a deployed platform serves its STRICT projection) — here the gateway refusing a model, the case
 # recorded live on the dev API: every inference field of the report is set.
 _MODEL_REFUSED_REPORT: dict[str, Any] = {
     "error_type": "LLMCompletionError",
