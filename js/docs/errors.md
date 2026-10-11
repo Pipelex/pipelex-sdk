@@ -81,7 +81,7 @@ The members the server sent are read first, and the fallback answers only for on
 
 **The verdicts are a contract with the Python SDK.** `pipelex-sdk` must apply the same fallback and declare the same verdict on each class it shares with this package. `tests/fixtures/error-verdicts.json` holds every case the two must agree on, the fallback's rows, the server-sent resolution and each class's variants, and this package's test suite drives its own code through it. The file is the source: `make shared-files` at the repository's root writes its byte for byte identical copy to `python/tests/fixtures/error-verdicts.json`, `make check-shared-files` fails on a stale copy, and the Python suite drives its own code through the same cases (`python/docs/errors.md`). A class or a variant only one SDK has is marked `only_in` in the file, and the other suite skips it. So a change to a verdict is made in the file here, copied, and then made in both packages.
 
-The shapes are not this SDK's invention. The report is the runner's `ErrorReport` (in `pipelex`), stored and served by the platform exactly as the runner wrote it, and the problem members are the ones the hosted-envelope spec names, `conformance/specs/pipelex-hosted-envelope.md` in the `conformance` repository, where the cross-repo specs sit beside the tests that verify them. The types live in `src/error-models.ts`; `pipelex-sdk` (Python) carries the same fields under snake_case names.
+The shapes are not this SDK's invention. The report is the runner's `ErrorReport` (in `pipelex`), stored by the platform exactly as the runner wrote it and served through the runner's STRICT disclosure, as [below](#what-the-platform-serves-of-a-report), and the problem members are the ones the hosted-envelope spec names, `conformance/specs/pipelex-hosted-envelope.md` in the `conformance` repository, where the cross-repo specs sit beside the tests that verify them. The types live in `src/error-models.ts`; `pipelex-sdk` (Python) carries the same fields under snake_case names.
 
 ## A failed run — `RunErrorReport`
 
@@ -127,19 +127,19 @@ The report's fields, all optional because the runner owns the shape:
 
 | Field | Meaning |
 |---|---|
-| `message` | What went wrong, as the runner wrote it. For a run failure it is where the failing pipe is named. |
+| `message` | What went wrong. For a run failure it is where the failing pipe is named. A hosted read serves the author's copy only when `caller_facing_message` is `true`, and the placeholder `An internal error occurred.` otherwise. |
 | `error_domain` | Who can fix it: `input` (the caller — a malformed method, a bad input), `config` (a configuration change — a model the backend does not serve, a missing secret), `runtime` (nobody beforehand — a provider outage). **A branch field.** |
 | `type_uri` | The stable URI naming the error class, the same on every occurrence. **A branch field.** |
 | `retryable` | Whether running it again can succeed. Absent means unknown, which is not `false`. **A branch field.** |
-| `user_action` | The next step, as `{ kind, detail }`: `detail` is the advice in words, `kind` its category (`wait_and_retry`, `check_billing`, `check_credentials`, `change_input`, `change_model`, `contact_support`, `unknown`). |
+| `user_action` | The next step, as `{ kind, detail }`: `detail` is the advice in words, `kind` its category (`wait_and_retry`, `check_billing`, `check_credentials`, `change_input`, `change_model`, `contact_support`, `unknown`). A hosted read serves it only beside caller-facing copy. |
 | `title` | The stable human label of the error class. |
 | `error_type` | The runner's exception class name — an open set, for display and support, never matched against. |
 | `error_category` | The finer class of an inference failure: `transient`, `configuration`, `content`, `capacity`, `ambiguous`, `unknown`. |
-| `model`, `provider` | The model and provider an inference failure involved. |
-| `provider_metadata` | What the provider's SDK said: `provider`, `sdk_exception_type`, `message`, `status_code`, `request_id` (the provider's own), `retry_after_seconds`, `provider_error_code`. |
+| `model`, `provider` | The model and provider an inference failure involved. Absent on a hosted read. |
+| `provider_metadata` | What the provider's SDK said: `provider`, `sdk_exception_type`, `message`, `status_code`, `request_id` (the provider's own), `retry_after_seconds`, `provider_error_code`. A hosted read keeps only `status_code` and `retry_after_seconds`. |
 | `validation_errors` | The structured diagnostics of a method that failed validation, the same [items](#a-validation-item--validationerroritem) the validate report carries. |
-| `migration` | A pending configuration migration that explains the failure, present only when the runner's scan found one. |
-| `caller_facing_message` | `true` when `message` was written as caller-facing copy. |
+| `migration` | A pending configuration migration that explains the failure, present only when the runner's scan found one. Absent on a hosted read. |
+| `caller_facing_message` | `true` when `message` was written as caller-facing copy. A hosted read keeps it on a caller-facing report and leaves it out otherwise. |
 
 A field a newer runner adds is reachable through the interface's index signature before this SDK names it.
 
@@ -153,11 +153,22 @@ A field a newer runner adds is reachable through the interface's index signature
 | `RunTimedOutError` | The workflow engine timed the run out, and it ended `TIMED_OUT`. | `runtime` | `false` | `contact_support` |
 | `RunWorkflowNotFoundError` | The run's workflow cannot be found: it aged out of the engine's retention, or the run was lost while starting. The run ends `FAILED`. | `runtime` | `true` | `wait_and_retry` |
 
-Such a report's `caller_facing_message` is `false` when its `message` quotes the worker's own failure text, written for the platform's engineers, and `true` when it quotes nothing of it.
+These reports are caller-facing copy: they quote nothing of the worker's own failure text, their `caller_facing_message` is `true`, and so they keep their message and their next step on a hosted read. The one exception is a `WorkflowTaskKeptFailingError` report rebuilt from a termination an earlier platform recorded, whose message quotes the worker's failure: it is not caller-facing, so it reads as the placeholder.
 
-**The report is `null` when the run has none.** A cancelled run, one terminated by anything but the platform and one whose start the platform gave up carry no report, and neither does a run that ended before the platform wrote reports of its own. The status and the `detail` sentence still say what happened, and the absence of a report says nothing about why.
+**A cancelled, terminated or timed-out run holds a report when one was sent.** Its `error` holds the report a completion callback carried, or, on a `TIMED_OUT` run, the `RunTimedOutError` report the platform writes for the timeout. A run the platform ended because its workflow kept failing is `FAILED`, never `TERMINATED`.
 
-**Nothing is stripped, so presentation is yours.** The platform serves the runner's VERBOSE report, so `message` and `provider_metadata.message` can hold a provider's raw text. The SDK types what the platform sends; deciding what a person sees is the consumer's decision. `RunFailedError.message`, being the `detail`, already contains the report's message.
+**The report is `null` when the run has none**: a completed run, one whose start failed, a blocking `execute` run, whose answer carried its reason, one cancelled, terminated or given its status by hand with no completion callback carrying a report, and one that ended before the platform wrote reports of its own. The status and the `detail` sentence still say what happened, and the absence of a report says nothing about why.
+
+### What the platform serves of a report
+
+**The platform serves the runner's STRICT projection, and the SDK strips nothing further.** The run row keeps the runner's report whole, as the record of the people who operate the platform, but every read that hands it to a caller (the status read, the run records and the results read's `409`) serves it through the rule the hosted runner applies to an error on `execute`:
+
+- `error_type`, `title`, `type_uri`, `error_domain`, `error_category`, `retryable` and `validation_errors` pass through when present;
+- `message` and `user_action` pass through only when the report's `caller_facing_message` is `true`, which the served report then keeps; otherwise `message` is the placeholder `An internal error occurred.`, and `user_action` and `caller_facing_message` are absent;
+- `provider_metadata` keeps only `status_code` and `retry_after_seconds`, and is absent when neither is present;
+- `model`, `provider` and `migration` are absent.
+
+So `caller_facing_message` is how a consumer tells the author's copy from the placeholder, and `message` can be shown as it comes: it never carries the worker's internal text or a provider's raw answer. `RunFailedError.message`, being the `detail`, already contains the served message. Every deployed environment serves the projection; a platform run locally with `ERROR_DISCLOSURE=verbose` serves the report whole, which is why the type still names every member the runner writes. Deciding what a person sees is still the consumer's decision.
 
 **Numbers in `provider_metadata` may arrive as strings.** A report read back from the platform's run store carries `status_code` and `retry_after_seconds` as strings (`"404"`, `"1.5"`), because the store returns its numbers as decimals that the platform serializes as strings; a problem document a runner renders carries them as numbers. Both are in the type, so read them with `Number(...)`.
 

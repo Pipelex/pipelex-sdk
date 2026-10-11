@@ -386,15 +386,21 @@ class RunFailedError(PipelexRequestError):
 
     - `status` is the run's terminal status, the typed `RunStatus` enum, read from the problem's
       `run_status` member — so callers can match/case on it.
-    - `error` is the run's stored error report, typed whole as `RunErrorReport`: the runner's
-      `error_type`, `message`, `title`, `type_uri`, `error_domain`, `error_category`, `retryable`,
-      `user_action`, `model`, `provider`, `provider_metadata`, `validation_errors` and anything newer
-      on `model_extra`. Branch on `error.error_domain`, `error.type_uri` and `error.retryable`; show
-      `error.user_action` as the next step. It is the runner's VERBOSE report, so `message` and
-      `provider_metadata` can hold a provider's raw text — deciding what a person sees is yours. A
-      run the platform ended or settled itself carries the report the platform wrote, in the same
-      shape. `None` when the run ended with no stored report (a cancelled run, one terminated by
-      anything but the platform, one whose start the platform gave up).
+    - `error` is the run's stored error report as the platform serves it, typed whole as
+      `RunErrorReport`: the runner's `error_type`, `message`, `title`, `type_uri`, `error_domain`,
+      `error_category`, `retryable`, `user_action`, `provider_metadata`, `caller_facing_message`,
+      `validation_errors` and anything newer on `model_extra`. Branch on `error.error_domain`,
+      `error.type_uri` and `error.retryable`; show `error.user_action` as the next step. The platform
+      serves the runner's STRICT projection, so `message` is the author's copy only when
+      `caller_facing_message` is `True` and the placeholder `An internal error occurred.` otherwise,
+      `user_action` comes only with caller-facing copy, `provider_metadata` keeps only `status_code`
+      and `retry_after_seconds`, and `model`, `provider` and `migration` are `None`; deciding what a
+      person sees is still yours. A run the platform ended or settled itself carries the
+      caller-facing report the platform wrote, in the same shape. A cancelled, terminated or timed-out
+      run carries a report when a completion callback carried one, and a timed-out run otherwise the
+      platform's timeout report. `None` when the run ended with no stored report (one whose start
+      failed, or one cancelled, terminated or given its status by hand with no completion callback
+      carrying a report).
     - The exception's own message is the problem's `detail`, which names the status and then the
       report's message (`Run finished with status FAILED: <message>`), so printing the error already
       tells the reason.
