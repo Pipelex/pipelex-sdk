@@ -834,6 +834,11 @@ describe("PipelexApiClient.execute 202 degrade", () => {
       jsonResponse(202, { pipeline_run_id: 42 }),
       "a body that is not the answer the route returns",
     ],
+    [
+      "an empty run id",
+      jsonResponse(202, { pipeline_run_id: "" }),
+      "a body that is not the answer the route returns",
+    ],
   ])("refuses a 202 with %s as an answer it cannot read", async (_label, answer, what) => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(answer);

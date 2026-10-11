@@ -16,7 +16,7 @@
 
 ### Fixed
 
-- **An `execute` `202` that names no run is an answer the SDK could not read**: a `202` whose body is not JSON, or does not carry a string `pipeline_run_id`, raises an `ApiResponseError`, `runtime`, not retryable and `run_may_have_started`, where it raised a retryable `RunStillRunningError` with an empty `run_id`, as `@pipelex/sdk` now does too.
+- **An acknowledgement that names no run is an answer the SDK could not read**: an `execute` `202` whose body is not JSON, or does not carry a non-empty string `pipeline_run_id`, raises an `ApiResponseError`, `runtime`, not retryable and `run_may_have_started`, where it raised a retryable `RunStillRunningError` with an empty `run_id`, and a `start` acknowledgement whose `pipeline_run_id` is empty raises the same error, where it was returned naming no run, as `@pipelex/sdk` now does too.
 
 ## [v0.38.0] - 2026-10-10
 

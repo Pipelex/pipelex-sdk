@@ -893,7 +893,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * hints) beats a generic parse failure on an unexpected body shape.
    *
    * The 202 must name the run it accepted, as `start`'s acknowledgement must: one whose body is
-   * not JSON, or names no run, leaves the caller a run it cannot follow, so it is an answer the
+   * not JSON, or names no run (an empty id included), leaves the caller a run it cannot follow, so it is an answer the
    * SDK cannot read, which may have started a run, never a `RunStillRunningError` without an id.
    * The Python SDK reads the same answers the same way.
    */
@@ -906,7 +906,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       STARTS_RUN,
     );
     const runId = ack.pipeline_run_id;
-    if (typeof runId !== "string") {
+    if (typeof runId !== "string" || runId === "") {
       throw this.unreadableAnswer(
         "POST",
         `/${API_PREFIX}/execute`,
@@ -917,7 +917,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       );
     }
     throw new RunStillRunningError(
-      `execute() was accepted asynchronously (202): run ${runId || "<unknown>"} is still ` +
+      `execute() was accepted asynchronously (202): run ${runId} is still ` +
         "running server-side. Poll its results (hosted) or use start().",
       runId,
       parseRetryAfter(res.headers),
@@ -1116,9 +1116,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     const ack = this.readObjectAnswer<PipelexRunResultStart>("POST", "start", res, STARTS_RUN);
     // The acknowledgement's one job is to name the run: without its id, the run the server
-    // accepted is lost to the caller, as surely as behind a body that is not JSON. Worded as the
-    // Python SDK words an answer its model refuses.
-    if (typeof ack.pipeline_run_id !== "string") {
+    // accepted is lost to the caller, as surely as behind a body that is not JSON, and an empty id
+    // names no run either. Worded as the Python SDK words an answer its model refuses.
+    if (typeof ack.pipeline_run_id !== "string" || ack.pipeline_run_id === "") {
       throw this.unreadableAnswer(
         "POST",
         `/${API_PREFIX}/start`,
@@ -2872,9 +2872,11 @@ function isMissingRoute404(body: string): boolean {
 /**
  * Whether a 2xx answer to `execute` is the completed run the route returns, as far as the SDK reads
  * it: a string `pipeline_run_id`, and a `pipe_output` object whose `working_memory` carries its
- * `root` and `aliases` objects and whose own `pipeline_run_id` is a string, the members the Python
+ * `root` and `aliases` objects and whose own `pipeline_run_id` is a string, the envelope the Python
  * SDK's model of the answer requires. Anything less is an answer the SDK cannot read, rather than
- * a result that fails with a bare `TypeError` once its output is lifted.
+ * a result that fails with a bare `TypeError` once its output is lifted. The stuffs inside `root`,
+ * which the Python model also checks, are left to the read of the main stuff, whose
+ * `MissingMainStuffError` names the run.
  */
 function isCompletedRunAnswer(answer: object): answer is DictRunResultExecute {
   const { pipeline_run_id: runId, pipe_output: pipeOutput } = answer as {
