@@ -14,6 +14,10 @@ back in place, and with the Pipelex credentials removed, so the validate stage n
 
 Run it with `python3 -I`. It prints a Markdown report and exits 0 when every entry meets the rule,
 1 when one does not, and 2 when it could not answer.
+
+With `--probe FILE...` instead of a corpus, it runs the bundle on each given `.mthds` file the same
+way and reports what the hook did, block or pass, with the diagnostics, for a form the corpus does not
+cover. A probe has no expected verdict, so it exits 0 whenever it could run.
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ SCHEMA_DIAGNOSTIC = "[schema/"
 HOOK_TIMEOUT_SECONDS = 60
 
 
-class CannotAnswer(Exception):
+class CannotAnswerError(Exception):
     pass
 
 
@@ -65,13 +69,13 @@ class EntryResult(NamedTuple):
 
 def extract_corpus(vscode_pipelex: Path, ref: str, into: Path) -> Path:
     if not (vscode_pipelex / ".git").exists():
-        raise CannotAnswer(f"no vscode-pipelex checkout at {vscode_pipelex}; pass --vscode-pipelex")
-    verify = subprocess.run(["git", "-C", str(vscode_pipelex), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True, text=True)
+        raise CannotAnswerError(f"no vscode-pipelex checkout at {vscode_pipelex}; pass --vscode-pipelex")
+    verify = subprocess.run(["git", "-C", str(vscode_pipelex), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True, text=True, check=False)
     if verify.returncode != 0:
-        raise CannotAnswer(f"`{ref}` is not a ref of {vscode_pipelex}; fetch its tags first (`git -C {vscode_pipelex} fetch --tags`)")
-    archive = subprocess.run(["git", "-C", str(vscode_pipelex), "archive", "--format=tar", ref, CORPUS_PATH], capture_output=True)
+        raise CannotAnswerError(f"`{ref}` is not a ref of {vscode_pipelex}; fetch its tags first (`git -C {vscode_pipelex} fetch --tags`)")
+    archive = subprocess.run(["git", "-C", str(vscode_pipelex), "archive", "--format=tar", ref, CORPUS_PATH], capture_output=True, check=False)
     if archive.returncode != 0:
-        raise CannotAnswer(f"`{ref}` carries no `{CORPUS_PATH}`: {archive.stderr.decode().strip()}")
+        raise CannotAnswerError(f"`{ref}` carries no `{CORPUS_PATH}`: {archive.stderr.decode().strip()}")
     with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
         tar.extractall(into, filter="data")
     return into / CORPUS_PATH
@@ -138,6 +142,29 @@ def first_line(text: str) -> str:
     return (diagnostics or lines or [""])[0][:240]
 
 
+def probe(bundle: Path, methods: list[Path], environment: dict[str, str], scratch: Path) -> int:
+    missing = [str(method) for method in methods if not method.is_file()]
+    if missing:
+        print(f"## Probe: could not answer\n\nNo such file: {', '.join(missing)}")
+        return 2
+    print(f"## Probe\n\n- Bundle: `{bundle}`, provenance `{provenance(bundle)}`\n")
+    for index, method in enumerate(methods):
+        copy = scratch / str(index) / method.name
+        copy.parent.mkdir(parents=True)
+        shutil.copyfile(method, copy)
+        verdict = run_hook(bundle, copy, environment)
+        if verdict.blocked:
+            lines = [line.strip() for line in verdict.reason.splitlines() if line.strip().startswith("- [")]
+            print(f"- `{method}`: **blocks**")
+            for line in lines or [first_line(verdict.reason)]:
+                print(f"  {line[:300]}")
+        elif verdict.stdout.strip() or verdict.stderr.strip():
+            print(f"- `{method}`: passes with output: {first_line(verdict.stdout or verdict.stderr)}")
+        else:
+            print(f"- `{method}`: passes silently")
+    return 0
+
+
 def provenance(bundle: Path) -> str:
     with bundle.open(encoding="utf-8") as handle:
         for _ in range(3):
@@ -151,34 +178,39 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Sweep the built .mthds hook bundle over the MTHDS Test Corpus of one vscode-pipelex ref.")
     parser.add_argument("--ref", help="the vscode-pipelex ref whose corpus to sweep, e.g. pipelex-tools-wasm/v0.5.0")
     parser.add_argument("--corpus", type=Path, help="an extracted corpus directory, instead of --ref")
+    parser.add_argument("--probe", type=Path, nargs="+", help="run the bundle on these .mthds files and report its verdicts, instead of a corpus")
     parser.add_argument("--bundle", type=Path, default=DEFAULT_BUNDLE, help=f"the hook bundle (default {DEFAULT_BUNDLE})")
     parser.add_argument("--vscode-pipelex", type=Path, default=DEFAULT_VSCODE_PIPELEX, help=f"the vscode-pipelex checkout (default {DEFAULT_VSCODE_PIPELEX})")
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
     args = parser.parse_args()
 
-    if bool(args.ref) == bool(args.corpus):
-        parser.error("pass exactly one of --ref and --corpus")
+    if sum(bool(source) for source in (args.ref, args.corpus, args.probe)) != 1:
+        parser.error("pass exactly one of --ref, --corpus and --probe")
+    title = "Probe" if args.probe else "Corpus sweep"
     if shutil.which("node") is None:
-        print("## Corpus sweep: could not answer\n\n`node` is not on the PATH.")
+        print(f"## {title}: could not answer\n\n`node` is not on the PATH.")
         return 2
     if not args.bundle.is_file():
-        print(f"## Corpus sweep: could not answer\n\nNo bundle at `{args.bundle}`: run `npm run build:hook` in `js/` first.")
+        print(f"## {title}: could not answer\n\nNo bundle at `{args.bundle}`: run `npm run build:hook` in `js/` first.")
         return 2
 
     environment = {key: value for key, value in os.environ.items() if not key.startswith(CREDENTIAL_PREFIXES)}
+    if args.probe:
+        with tempfile.TemporaryDirectory(prefix="tools-wasm-probe-") as temporary:
+            return probe(args.bundle, [method.resolve() for method in args.probe], environment, Path(temporary))
     with tempfile.TemporaryDirectory(prefix="tools-wasm-sweep-") as temporary:
         scratch = Path(temporary)
         try:
             corpus = extract_corpus(args.vscode_pipelex, args.ref, scratch / "src") if args.ref else args.corpus.resolve()
             if not (corpus / "vocabulary.toml").is_file():
-                raise CannotAnswer(f"no `vocabulary.toml` in {corpus}")
+                raise CannotAnswerError(f"no `vocabulary.toml` in {corpus}")
             schema_tags = schema_fault_tags(corpus)
             entries = sorted(manifest.parent for manifest in (corpus / "entries").rglob(MANIFEST_NAME))
             if not entries:
-                raise CannotAnswer(f"no entry under {corpus / 'entries'}, so the sweep would pass having run nothing")
+                raise CannotAnswerError(f"no entry under {corpus / 'entries'}, so the sweep would pass having run nothing")
             if not schema_tags:
-                raise CannotAnswer('the vocabulary declares no `fails_at = "schema"` tag, so no entry is expected to block')
-        except CannotAnswer as reason:
+                raise CannotAnswerError('the vocabulary declares no `fails_at = "schema"` tag, so no entry is expected to block')
+        except CannotAnswerError as reason:
             print(f"## Corpus sweep: could not answer\n\n{reason}")
             return 2
 
@@ -194,7 +226,7 @@ def main() -> int:
     print(f"## Corpus sweep: {verdict}\n")
     print(f"- Bundle: `{args.bundle}`, provenance `{provenance(args.bundle)}`")
     print(f"- Corpus: {source}, {len(results)} entries, {blocking} expected to block on a schema fault and {len(results) - blocking} to pass silently")
-    if blocking in (0, len(results)):
+    if blocking in {0, len(results)}:
         print("- Warning: every entry expects the same verdict, so one side of the rule went unexercised")
     if failures:
         print(f"\n### {len(failures)} entries broke the rule\n")
