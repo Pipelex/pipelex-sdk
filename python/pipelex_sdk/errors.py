@@ -607,6 +607,50 @@ class InvalidInputValueError(InputPreparationError):
     """
 
 
+class UploadNotAllowedKind(StrEnum):
+    """What a value refused under `allow_uploads=False` is, in a closed vocabulary a caller branches on
+    rather than on the message: `local_path` — a string or a `Path` that is neither an `http(s)` URL nor
+    a `pipelex-storage://` reference, which preparation would read from disk; `data_url` — a `data:`
+    URL, which it would decode and upload; `bytes` — inline `bytes`. The vocabulary is `@pipelex/sdk`'s
+    `UploadNotAllowedKind`, shared so a consumer of both SDKs branches on one set.
+    """
+
+    LOCAL_PATH = "local_path"
+    DATA_URL = "data_url"
+    BYTES = "bytes"
+
+
+_UPLOAD_NOT_ALLOWED_KIND_WORDS: dict[UploadNotAllowedKind, str] = {
+    UploadNotAllowedKind.LOCAL_PATH: "a local file path",
+    UploadNotAllowedKind.DATA_URL: "a data: URL",
+    UploadNotAllowedKind.BYTES: "inline bytes",
+}
+
+
+class UploadNotAllowedError(InputPreparationError):
+    """`prepare_inputs` was called with `allow_uploads=False`, and a value at a file input would need an
+    upload: a local path, a `data:` URL or bytes.
+
+    It is raised before anything is read from disk, decoded or sent to the upload route, so a server
+    preparing inputs on a caller's behalf never reads a file of its own because the caller named it.
+    `input_name` is the input the value belongs to, `input_path` where it sits inside that input
+    (`report.attachments[1]`, or the name alone for a top-level file), and `value_kind` what it is. The
+    value itself is neither in the message nor on the error, since it is the caller's data. Its verdict
+    is `input`, not retryable: the caller must pass an `http(s)` URL or a `pipelex-storage://` reference
+    instead. The twin of `@pipelex/sdk`'s class of the same name, whose `inputName`, `inputPath` and
+    `valueKind` these are.
+    """
+
+    def __init__(self, *, input_name: str, input_path: str, value_kind: UploadNotAllowedKind) -> None:
+        super().__init__(
+            f'Input "{input_path}" is {_UPLOAD_NOT_ALLOWED_KIND_WORDS[value_kind]}, which would need an upload, and this '
+            "preparation uploads nothing: pass an http(s) URL or a pipelex-storage:// reference instead."
+        )
+        self.input_name = input_name
+        self.input_path = input_path
+        self.value_kind = value_kind
+
+
 class MethodLoadError(InputPreparationError):
     """The pipe I/O answer said the method does not load (`is_valid: false`), so its signature cannot
     be read and no input can be prepared: the method, not the inputs, must change.

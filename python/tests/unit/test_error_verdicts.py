@@ -69,6 +69,8 @@ from pipelex_sdk.errors import (
     ScopeUnavailableError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
+    UploadNotAllowedError,
+    UploadNotAllowedKind,
     UploadTransportCode,
     UploadTransportError,
 )
@@ -329,6 +331,7 @@ _BUILDERS: dict[str, Callable[[_Given], BaseException]] = {
     "InputPreparationError": lambda given: InputPreparationError("Cannot prepare inputs.", verdict=given.verdict),
     "InvalidLocalSourceError": lambda _: InvalidLocalSourceError("No such file.", "/nope.pdf"),
     "InvalidInputValueError": lambda _: InvalidInputValueError("Malformed data URL."),
+    "UploadNotAllowedError": lambda _: UploadNotAllowedError(input_name="photo", input_path="photo", value_kind=UploadNotAllowedKind.LOCAL_PATH),
     "MethodLoadError": lambda _: MethodLoadError("The method does not load.", validation_errors=[]),
     "RejectedAssetError": _rejected_asset,
     "UnsupportedUploadCapabilityError": lambda _: UnsupportedUploadCapabilityError("No upload here."),

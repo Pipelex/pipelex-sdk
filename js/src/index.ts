@@ -274,6 +274,7 @@ export {
   EmptyMethodSourceError,
   InvalidLocalSourceError,
   InvalidInputValueError,
+  UploadNotAllowedError,
   MethodLoadError,
   RejectedAssetError,
   UnsupportedUploadCapabilityError,
@@ -290,6 +291,7 @@ export type {
   ErrorVerdict,
   MethodErrorCode,
   RejectedAssetCode,
+  UploadNotAllowedKind,
   UploadTransportCode,
 } from "./errors.js";
 
