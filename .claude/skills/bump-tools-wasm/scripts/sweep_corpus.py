@@ -13,11 +13,14 @@ nothing on stdout or stderr. Each entry runs from a temporary copy, because the 
 back in place, and with the Pipelex credentials removed, so the validate stage never runs.
 
 Run it with `python3 -I`. It prints a Markdown report and exits 0 when every entry meets the rule,
-1 when one does not, and 2 when it could not answer.
+1 when one does not, and 2 when it could not answer. The hook fails open and speaks only through a
+JSON object on stdout, so a hook that exits nonzero, prints something other than JSON or does not
+finish is a broken bundle, about which the sweep can say nothing: it could not answer.
 
 With `--probe FILE...` instead of a corpus, it runs the bundle on each given `.mthds` file the same
 way and reports what the hook did, block or pass, with the diagnostics, for a form the corpus does not
-cover. A probe has no expected verdict, so it exits 0 whenever it could run.
+cover. A probe has no expected verdict, so it exits 0 when the hook answered on every file, and 2 when
+a file is missing or does not end in `.mthds`, which the hook ignores, or when the hook could not answer.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import argparse
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +50,7 @@ MANIFEST_NAME = "entry.toml"
 CREDENTIAL_PREFIXES = ("PIPELEX_", "CLAUDE_PLUGIN_OPTION_")
 SCHEMA_DIAGNOSTIC = "[schema/"
 HOOK_TIMEOUT_SECONDS = 60
+NODE_ERROR = re.compile(r"^[A-Za-z]*Error\b")
 
 
 class CannotAnswerError(Exception):
@@ -54,6 +59,7 @@ class CannotAnswerError(Exception):
 
 class HookVerdict(NamedTuple):
     method: str
+    answered: bool
     blocked: bool
     reason: str
     stdout: str
@@ -82,7 +88,10 @@ def extract_corpus(vscode_pipelex: Path, ref: str, into: Path) -> Path:
 
 
 def schema_fault_tags(corpus: Path) -> frozenset[str]:
-    vocabulary: dict[str, Any] = tomllib.loads((corpus / "vocabulary.toml").read_text(encoding="utf-8"))
+    try:
+        vocabulary: dict[str, Any] = tomllib.loads((corpus / "vocabulary.toml").read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as error:
+        raise CannotAnswerError(f"`vocabulary.toml` does not parse: {error}") from error
     errors: dict[str, dict[str, Any]] = vocabulary.get("error", {})
     return frozenset(f"error.{name}" for name, spec in errors.items() if spec.get("fails_at") == "schema")
 
@@ -90,31 +99,44 @@ def schema_fault_tags(corpus: Path) -> frozenset[str]:
 def run_hook(bundle: Path, method: Path, environment: dict[str, str]) -> HookVerdict:
     """One PostToolUse `Write` of `method`, as Claude Code hands it to the hook."""
     payload = json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Write", "tool_input": {"file_path": str(method)}})
-    result = subprocess.run(
-        ["node", str(bundle), "--platform=claude"],
-        input=payload,
-        capture_output=True,
-        text=True,
-        env=environment,
-        timeout=HOOK_TIMEOUT_SECONDS,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["node", str(bundle), "--platform=claude"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=HOOK_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return HookVerdict(method.name, False, False, f"the hook did not finish within {HOOK_TIMEOUT_SECONDS} seconds", "", "")
     if result.returncode != 0:
-        return HookVerdict(method.name, False, f"the hook exited {result.returncode}", result.stdout, result.stderr or f"exit {result.returncode}")
+        return HookVerdict(method.name, False, False, f"the hook exited {result.returncode}", result.stdout, result.stderr)
     blocked = False
     reason = ""
     if result.stdout.strip():
         try:
             decision: dict[str, Any] = json.loads(result.stdout)
         except json.JSONDecodeError:
-            return HookVerdict(method.name, False, "stdout is not JSON", result.stdout, result.stderr)
+            return HookVerdict(method.name, False, False, "the hook printed something other than JSON", result.stdout, result.stderr)
         blocked = decision.get("decision") == "block"
         reason = str(decision.get("reason", ""))
-    return HookVerdict(method.name, blocked, reason, result.stdout, result.stderr)
+    return HookVerdict(method.name, True, blocked, reason, result.stdout, result.stderr)
+
+
+def unanswered(verdict: HookVerdict) -> str:
+    """Why the hook gave no verdict, with the line of its output that says most: a Node error, else the first."""
+    lines = [line.strip() for line in (verdict.stderr or verdict.stdout).splitlines() if line.strip()]
+    said = next((line for line in lines if NODE_ERROR.match(line)), lines[0] if lines else "")
+    return f"{verdict.reason}: {said[:240]}" if said else verdict.reason
 
 
 def sweep_entry(bundle: Path, entry: Path, schema_tags: frozenset[str], environment: dict[str, str], scratch: Path) -> EntryResult:
-    manifest: dict[str, Any] = tomllib.loads((entry / MANIFEST_NAME).read_text(encoding="utf-8"))
+    try:
+        manifest: dict[str, Any] = tomllib.loads((entry / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as error:
+        raise CannotAnswerError(f"`{entry.name}/{MANIFEST_NAME}` does not parse: {error}") from error
     caught = sorted(schema_tags & frozenset(manifest.get("covers", [])))
     expects_block = bool(caught)
     copy = scratch / entry.name
@@ -123,6 +145,9 @@ def sweep_entry(bundle: Path, entry: Path, schema_tags: frozenset[str], environm
     if not methods:
         return EntryResult(entry.name, expects_block, False, "the entry holds no `.mthds` file")
     verdicts = [run_hook(bundle, method, environment) for method in methods]
+    for verdict in verdicts:
+        if not verdict.answered:
+            raise CannotAnswerError(f"On `{entry.name}/{verdict.method}`, {unanswered(verdict)}")
     if expects_block:
         if any(verdict.blocked and SCHEMA_DIAGNOSTIC in verdict.reason for verdict in verdicts):
             return EntryResult(entry.name, True, True, "")
@@ -143,17 +168,22 @@ def first_line(text: str) -> str:
 
 
 def probe(bundle: Path, methods: list[Path], environment: dict[str, str], scratch: Path) -> int:
-    missing = [str(method) for method in methods if not method.is_file()]
-    if missing:
-        print(f"## Probe: could not answer\n\nNo such file: {', '.join(missing)}")
+    refused = [f"No such file: `{method}`" for method in methods if not method.is_file()]
+    refused += [f"Not a `.mthds` file, which the hook ignores: `{method}`" for method in methods if method.is_file() and method.suffix != ".mthds"]
+    if refused:
+        print("## Probe: could not answer\n\n" + "\n".join(f"- {line}" for line in refused))
         return 2
     print(f"## Probe\n\n- Bundle: `{bundle}`, provenance `{provenance(bundle)}`\n")
+    exit_code = 0
     for index, method in enumerate(methods):
         copy = scratch / str(index) / method.name
         copy.parent.mkdir(parents=True)
         shutil.copyfile(method, copy)
         verdict = run_hook(bundle, copy, environment)
-        if verdict.blocked:
+        if not verdict.answered:
+            print(f"- `{method}`: **could not answer**, {unanswered(verdict)}")
+            exit_code = 2
+        elif verdict.blocked:
             lines = [line.strip() for line in verdict.reason.splitlines() if line.strip().startswith("- [")]
             print(f"- `{method}`: **blocks**")
             for line in lines or [first_line(verdict.reason)]:
@@ -162,7 +192,7 @@ def probe(bundle: Path, methods: list[Path], environment: dict[str, str], scratc
             print(f"- `{method}`: passes with output: {first_line(verdict.stdout or verdict.stderr)}")
         else:
             print(f"- `{method}`: passes silently")
-    return 0
+    return exit_code
 
 
 def provenance(bundle: Path) -> str:
@@ -172,6 +202,49 @@ def provenance(bundle: Path) -> str:
             if line.startswith("// Provenance:"):
                 return line.removeprefix("// Provenance:").strip()
     return "no provenance line"
+
+
+def sweep(args: argparse.Namespace, environment: dict[str, str], scratch: Path) -> int:
+    try:
+        corpus = extract_corpus(args.vscode_pipelex, args.ref, scratch / "src") if args.ref else args.corpus.resolve()
+        if not (corpus / "vocabulary.toml").is_file():
+            raise CannotAnswerError(f"no `vocabulary.toml` in {corpus}")
+        schema_tags = schema_fault_tags(corpus)
+        entries = sorted(manifest.parent for manifest in (corpus / "entries").rglob(MANIFEST_NAME))
+        if not entries:
+            raise CannotAnswerError(f"no entry under {corpus / 'entries'}, so the sweep would pass having run nothing")
+        if not schema_tags:
+            raise CannotAnswerError('the vocabulary declares no `fails_at = "schema"` tag, so no entry is expected to block')
+    except CannotAnswerError as reason:
+        print(f"## Corpus sweep: could not answer\n\n{reason}")
+        return 2
+
+    runs = scratch / "runs"
+    runs.mkdir()
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        try:
+            results = list(pool.map(lambda entry: sweep_entry(args.bundle, entry, schema_tags, environment, runs), entries))
+        except CannotAnswerError as reason:
+            pool.shutdown(cancel_futures=True)
+            print(f"## Corpus sweep: could not answer\n\n- Bundle: `{args.bundle}`, provenance `{provenance(args.bundle)}`\n- {reason}")
+            return 2
+
+    blocking = sum(result.expects_block for result in results)
+    failures = [result for result in results if not result.ok]
+    source = f"vscode-pipelex `{args.ref}`" if args.ref else f"`{args.corpus}`"
+    verdict = "pass" if not failures else "FAIL"
+    print(f"## Corpus sweep: {verdict}\n")
+    print(f"- Bundle: `{args.bundle}`, provenance `{provenance(args.bundle)}`")
+    print(f"- Corpus: {source}, {len(results)} entries, {blocking} expected to block on a schema fault and {len(results) - blocking} to pass silently")
+    if blocking in {0, len(results)}:
+        print("- Warning: every entry expects the same verdict, so one side of the rule went unexercised")
+    if failures:
+        print(f"\n### {len(failures)} entries broke the rule\n")
+        for failure in failures:
+            print(f"- `{failure.name}` ({'should block' if failure.expects_block else 'should pass'}): {failure.detail}")
+        return 1
+    print("- Every entry met the rule.")
+    return 0
 
 
 def main() -> int:
@@ -199,42 +272,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="tools-wasm-probe-") as temporary:
             return probe(args.bundle, [method.resolve() for method in args.probe], environment, Path(temporary))
     with tempfile.TemporaryDirectory(prefix="tools-wasm-sweep-") as temporary:
-        scratch = Path(temporary)
-        try:
-            corpus = extract_corpus(args.vscode_pipelex, args.ref, scratch / "src") if args.ref else args.corpus.resolve()
-            if not (corpus / "vocabulary.toml").is_file():
-                raise CannotAnswerError(f"no `vocabulary.toml` in {corpus}")
-            schema_tags = schema_fault_tags(corpus)
-            entries = sorted(manifest.parent for manifest in (corpus / "entries").rglob(MANIFEST_NAME))
-            if not entries:
-                raise CannotAnswerError(f"no entry under {corpus / 'entries'}, so the sweep would pass having run nothing")
-            if not schema_tags:
-                raise CannotAnswerError('the vocabulary declares no `fails_at = "schema"` tag, so no entry is expected to block')
-        except CannotAnswerError as reason:
-            print(f"## Corpus sweep: could not answer\n\n{reason}")
-            return 2
-
-        runs = scratch / "runs"
-        runs.mkdir()
-        with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-            results = list(pool.map(lambda entry: sweep_entry(args.bundle, entry, schema_tags, environment, runs), entries))
-
-    blocking = sum(result.expects_block for result in results)
-    failures = [result for result in results if not result.ok]
-    source = f"vscode-pipelex `{args.ref}`" if args.ref else f"`{args.corpus}`"
-    verdict = "pass" if not failures else "FAIL"
-    print(f"## Corpus sweep: {verdict}\n")
-    print(f"- Bundle: `{args.bundle}`, provenance `{provenance(args.bundle)}`")
-    print(f"- Corpus: {source}, {len(results)} entries, {blocking} expected to block on a schema fault and {len(results) - blocking} to pass silently")
-    if blocking in {0, len(results)}:
-        print("- Warning: every entry expects the same verdict, so one side of the rule went unexercised")
-    if failures:
-        print(f"\n### {len(failures)} entries broke the rule\n")
-        for failure in failures:
-            print(f"- `{failure.name}` ({'should block' if failure.expects_block else 'should pass'}): {failure.detail}")
-        return 1
-    print("- Every entry met the rule.")
-    return 0
+        return sweep(args, environment, Path(temporary))
 
 
 if __name__ == "__main__":

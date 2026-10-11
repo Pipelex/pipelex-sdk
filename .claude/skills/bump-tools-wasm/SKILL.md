@@ -82,7 +82,7 @@ In the worktree's `js/`:
    python3 -I .claude/skills/bump-tools-wasm/scripts/sweep_corpus.py --ref pipelex-tools-wasm/v<TARGET> --bundle <scratchpad>/check-before.mjs
    ```
 
-   The script reads the MTHDS Test Corpus vscode-pipelex carried at the engine's tag (`test-data/mthds-corpus/`, read with `git archive`, no checkout moved) and runs the bundle on every entry as a Claude `PostToolUse` `Write`, offline, from a temporary copy. Its rule is the corpus contract's, the one pipelex-plugins' corpus test applies: an entry whose `error.*` tag has `fails_at = "schema"` in the corpus's `vocabulary.toml` must block with a schema diagnostic, and every other entry must pass with nothing on stdout or stderr. It exits 0 on a pass, 1 on a broken rule and 2 when it could not answer, with a Markdown report.
+   The script reads the MTHDS Test Corpus vscode-pipelex carried at the engine's tag (`test-data/mthds-corpus/`, read with `git archive`, no checkout moved) and runs the bundle on every entry as a Claude `PostToolUse` `Write`, offline, from a temporary copy. Its rule is the corpus contract's, the one pipelex-plugins' corpus test applies: an entry whose `error.*` tag has `fails_at = "schema"` in the corpus's `vocabulary.toml` must block with a schema diagnostic, and every other entry must pass with nothing on stdout or stderr. It exits 0 on a pass, 1 on a broken rule and 2 when it could not answer, with a Markdown report. The hook fails open and answers only with JSON on stdout, so a bundle that crashes, prints anything else or hangs past a minute on some entry is reported as could not answer, naming the entry, rather than as a broken rule, since the corpus cannot judge a bundle that gives no verdict.
 
    - **The new bundle must pass.** A failure is a disagreement between the engine and the corpus it was released against, or between the engine and how the hook drives it: it is not fixed by loosening the hook. Read the failing entry and its diagnostic, then file on vscode-pipelex when the engine refuses a form its own corpus says is valid (or accepts a fault), or fix `js/src/hooks/` here when the hook's handling is what went wrong.
    - **The old bundle is expected to fail** (it was swept in Step 5.1), and its failures are the evidence of what the bump changes: every entry listed is a form whose verdict flips, "should pass" ones being forms the hook stops blocking and "should block" ones being forms it starts blocking. They should match the Step 3 verdicts; an unexplained one is worth reading before going on.
@@ -94,7 +94,7 @@ In the worktree's `js/`:
    python3 -I .claude/skills/bump-tools-wasm/scripts/sweep_corpus.py --probe <scratchpad>/<form>.mthds --bundle <scratchpad>/check-before.mjs
    ```
 
-   Each prints whether the hook blocks or passes the file, with its diagnostics. A probe that flips between the two is a verdict proven; one that does not is a Step 3 reading to correct before the changelog repeats it.
+   Each prints whether the hook blocks or passes the file, with its diagnostics, and exits 0. It exits 2, saying why, for a file that does not end in `.mthds`, which the hook ignores and so would pass on both bundles, and for a bundle that crashed or hung on it. A probe that flips between the two is a verdict proven; one that does not is a Step 3 reading to correct before the changelog repeats it.
 
 ## Step 7 — Write the changelog entry
 
