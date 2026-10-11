@@ -238,6 +238,52 @@ export class InvalidInputValueError extends InputPreparationError {
 }
 
 /**
+ * What a value refused under `allowUploads: false` is, in a closed vocabulary a caller branches on
+ * rather than on the message: `local_path` — a string that is neither an `http(s)` URL nor a
+ * `pipelex-storage://` reference, which preparation would read from disk; `data_url` — a `data:`
+ * URL, which it would decode and upload; `bytes` — a `Blob`, `File`, `ArrayBuffer` or `Uint8Array`.
+ */
+export type UploadNotAllowedKind = "local_path" | "data_url" | "bytes";
+
+const UPLOAD_NOT_ALLOWED_KIND_WORDS: Record<UploadNotAllowedKind, string> = {
+  local_path: "a local file path",
+  data_url: "a data: URL",
+  bytes: "inline bytes",
+};
+
+/**
+ * `prepareInputs` was called with `allowUploads: false`, and a value at a file input would need an
+ * upload: a local path, a `data:` URL or bytes. It is raised before anything is read from disk,
+ * decoded or sent to the upload route, so a server preparing inputs on a caller's behalf never
+ * reads a file of its own because the caller named it. `inputName` is the input the value belongs
+ * to, `inputPath` where it sits inside that input (`report.attachments[1]`, or the name alone for a
+ * top-level file), and `valueKind` what it is. The value itself is neither in the message nor on
+ * the error, since it is the caller's data. Its verdict is `input`, not retryable: the caller must
+ * pass an `http(s)` URL or a `pipelex-storage://` reference instead.
+ */
+export class UploadNotAllowedError extends InputPreparationError {
+  public readonly inputName: string;
+  public readonly inputPath: string;
+  public readonly valueKind: UploadNotAllowedKind;
+
+  constructor(
+    details: { inputName: string; inputPath: string; valueKind: UploadNotAllowedKind },
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `Input "${details.inputPath}" is ${UPLOAD_NOT_ALLOWED_KIND_WORDS[details.valueKind]}, which ` +
+        "would need an upload, and this preparation uploads nothing: pass an http(s) URL or a " +
+        "pipelex-storage:// reference instead.",
+      options,
+    );
+    this.name = "UploadNotAllowedError";
+    this.inputName = details.inputName;
+    this.inputPath = details.inputPath;
+    this.valueKind = details.valueKind;
+  }
+}
+
+/**
  * The pipe I/O answer said the method does not load (`is_valid: false`), so its signature cannot
  * be read and no input can be prepared: the method, not the inputs, must change.
  * `validationErrors` holds the answer's items, each kept when it carries a string `category` and

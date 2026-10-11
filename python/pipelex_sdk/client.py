@@ -2033,6 +2033,7 @@ class PipelexAPIClient(MthdsAPIClient):
         method_id: str | None = None,
         pipe_ref: str | None = None,
         inputs: dict[str, Any],
+        allow_uploads: bool = True,
     ) -> PreparedInputs:
         """Prepare a pipe's inputs — resolve the declared signature, upload the file-bearing
         assets, and return copy-on-write rewritten inputs (canonical content carrying
@@ -2050,6 +2051,9 @@ class PipelexAPIClient(MthdsAPIClient):
         `pipe_ref` is qualified-only (`domain.pipe_code`); omit it and the server selects the
         method's entry pipe. A refused selection raises `InputPreparationError` with the
         server's reason. See `docs/input-preparation.md`.
+
+        With `allow_uploads=False` it uploads nothing and reads no file: a value that would need
+        an upload raises `UploadNotAllowedError`, naming the input.
         """
         return await _prepare_inputs_impl(
             self,
@@ -2058,6 +2062,7 @@ class PipelexAPIClient(MthdsAPIClient):
             method_id=method_id,
             pipe_ref=pipe_ref,
             inputs=inputs,
+            allow_uploads=allow_uploads,
         )
 
     async def list_runs(

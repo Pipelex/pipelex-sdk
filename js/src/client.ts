@@ -2348,6 +2348,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * answers with, which states the kind of every input at every depth, so a file
    * position is a fact of the method, never a guess from the value's shape. It
    * needs an API serving `POST /v1/pipe-io`. See `docs/input-preparation.md`.
+   *
+   * With `allowUploads: false` it uploads nothing and reads no file: a value that
+   * would need an upload throws `UploadNotAllowedError`, naming the input.
    */
   async prepareInputs(request: PrepareInputsRequest): Promise<PreparedInputs> {
     return prepareInputsImpl(this, request);

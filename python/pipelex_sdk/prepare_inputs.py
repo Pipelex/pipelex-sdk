@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import binascii
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import unquote_to_bytes
@@ -45,7 +46,14 @@ from pydantic import BaseModel
 
 from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIOValidReport
 from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
-from pipelex_sdk.errors import ApiResponseError, InputPreparationError, InvalidInputValueError, MethodLoadError
+from pipelex_sdk.errors import (
+    ApiResponseError,
+    InputPreparationError,
+    InvalidInputValueError,
+    MethodLoadError,
+    UploadNotAllowedError,
+    UploadNotAllowedKind,
+)
 from pipelex_sdk.upload import UploadRecord, UploadSource, upload_file
 
 if TYPE_CHECKING:
@@ -93,8 +101,10 @@ class _PrepareClient(Protocol):
 class _PrepareContext:
     """Mutable state threaded through one preparation walk."""
 
-    def __init__(self, client: _PrepareClient) -> None:
+    def __init__(self, client: _PrepareClient, *, allow_uploads: bool) -> None:
         self.client = client
+        # False under `allow_uploads=False`: every upload-needing value is refused before it is read.
+        self.allow_uploads = allow_uploads
         self.uploads: list[UploadRecord] = []
         # Dedup by source identity: same source (str/bytes/Path value) uploads once.
         self.dedup: dict[UploadSource, str] = {}
@@ -210,17 +220,59 @@ async def _resolve_source(ctx: _PrepareContext, source: Any) -> str:
     return resolved
 
 
-async def _resolve_file_position(ctx: _PrepareContext, caller_value: Any) -> Any:
-    """Resolve a value known to sit at a file position into canonical content with a rewritten `url`."""
-    if _is_file_content(caller_value):
-        content = cast("dict[str, Any]", caller_value)
-        resolved = await _resolve_source(ctx, content["url"])
+@dataclass(frozen=True)
+class _InputPosition:
+    """Where a value sits in the caller's inputs: the input it belongs to, and its path inside that
+    input, `.field` for an object's declared field and `[index]` for a list's element. An explicit
+    envelope adds nothing to the path, since its `content` is the input's value.
+    """
+
+    name: str
+    path: str
+
+    def field(self, field_name: str) -> _InputPosition:
+        return _InputPosition(name=self.name, path=f"{self.path}.{field_name}")
+
+    def element(self, index: int) -> _InputPosition:
+        return _InputPosition(name=self.name, path=f"{self.path}[{index}]")
+
+
+def _upload_kind_of(source: Any) -> UploadNotAllowedKind | None:
+    """What a source at a file position would need an upload for, or `None` when it needs none: a
+    reference that passes through, or a value no file input takes, which `_do_resolve_source` refuses
+    as an `InvalidInputValueError` whether uploads are allowed or not. It reads the value's type and
+    prefix only, never the file a path names.
+    """
+    if isinstance(source, str):
+        if source.startswith(PIPELEX_STORAGE_SCHEME) or _HTTP_URL_RE.match(source):
+            return None
+        return UploadNotAllowedKind.DATA_URL if source.startswith("data:") else UploadNotAllowedKind.LOCAL_PATH
+    if isinstance(source, Path):
+        return UploadNotAllowedKind.LOCAL_PATH
+    if isinstance(source, bytes):
+        return UploadNotAllowedKind.BYTES
+    return None
+
+
+async def _resolve_file_position(ctx: _PrepareContext, caller_value: Any, at: _InputPosition) -> Any:
+    """Resolve a value known to sit at a file position into canonical content with a rewritten `url`.
+
+    Under `allow_uploads=False`, a source that would need an upload is refused here, before
+    `_resolve_source` could read, decode or upload it.
+    """
+    content = cast("dict[str, Any]", caller_value) if _is_file_content(caller_value) else None
+    source = content["url"] if content is not None else caller_value
+    if not ctx.allow_uploads:
+        value_kind = _upload_kind_of(source)
+        if value_kind is not None:
+            raise UploadNotAllowedError(input_name=at.name, input_path=at.path, value_kind=value_kind)
+    resolved = await _resolve_source(ctx, source)
+    if content is not None:
         return {**content, "url": resolved}
-    resolved = await _resolve_source(ctx, caller_value)
     return {"url": resolved}
 
 
-async def _resolve_node(ctx: _PrepareContext, node: InputFormItem, caller_value: Any) -> Any:
+async def _resolve_node(ctx: _PrepareContext, node: InputFormItem, caller_value: Any, at: _InputPosition) -> Any:
     """Descriptor-guided walk, discriminated on the node's declared kind.
 
     - `document` / `image` — a file position, whatever the value's shape;
@@ -243,7 +295,7 @@ async def _resolve_node(ctx: _PrepareContext, node: InputFormItem, caller_value:
     """
     match node:
         case DocumentItem() | ImageItem():
-            return await _resolve_file_position(ctx, caller_value)
+            return await _resolve_file_position(ctx, caller_value, at)
         case ObjectItem():
             if not isinstance(caller_value, dict):
                 return caller_value
@@ -251,13 +303,13 @@ async def _resolve_node(ctx: _PrepareContext, node: InputFormItem, caller_value:
             result: dict[str, Any] = dict(caller_dict)
             for field in node.fields:
                 if field.name in caller_dict:
-                    result[field.name] = await _resolve_node(ctx, field, caller_dict[field.name])
+                    result[field.name] = await _resolve_node(ctx, field, caller_dict[field.name], at.field(field.name))
             return result
         case ListItem():
             if not isinstance(caller_value, list):
                 return caller_value
             elements = cast("list[Any]", caller_value)
-            return [await _resolve_node(ctx, node.item, element) for element in elements]
+            return [await _resolve_node(ctx, node.item, element, at.element(index)) for index, element in enumerate(elements)]
         case TextItem() | ProseItem() | DateItem() | NumberItem() | BooleanItem() | EnumItem() | UnknownItem():
             return caller_value
 
@@ -333,6 +385,18 @@ def _checked_pipe_ref(pipe_ref: object) -> str | None:
     return requested
 
 
+def _checked_allow_uploads(allow_uploads: object) -> bool:
+    """The caller's `allow_uploads`, refused before any request when it is not a `bool`.
+
+    A value of the wrong type is not read as either answer, since reading a stray `"false"` or `0` by
+    its truthiness would decide, unseen, whether the caller's files are read and uploaded.
+    """
+    if isinstance(allow_uploads, bool):
+        return allow_uploads
+    msg = f"Cannot prepare inputs: `allow_uploads` must be a bool, got {type(allow_uploads).__name__}."
+    raise InputPreparationError(msg)
+
+
 def _is_pipe_selection_refusal(exc: ApiResponseError) -> bool:
     """Whether a `/v1/pipe-io` error is the route refusing the pipe selection, and nothing else."""
     return exc.status == _HTTP_UNPROCESSABLE_ENTITY and exc.error_type in _PIPE_SELECTION_ERROR_TYPES
@@ -382,9 +446,13 @@ async def prepare_inputs(
     method_id: str | None = None,
     pipe_ref: str | None = None,
     inputs: dict[str, Any],
+    allow_uploads: bool = True,
 ) -> PreparedInputs:
     """Prepare a pipe's inputs: upload local/byte/data-URL assets at the signature's
     file-bearing positions and return copy-on-write rewritten inputs plus upload records.
+
+    With `allow_uploads=False`, nothing is read from disk or uploaded: a value that would need
+    either raises `UploadNotAllowedError`, naming the input and where inside it the value sits.
 
     Args:
         client: The client supplying `upload` and `pipe_io`.
@@ -401,6 +469,12 @@ async def prepare_inputs(
             which names a dependency package's pipe rather than one of the method's own.
         inputs: The caller's inputs (variable name → value), compact or explicit-envelope
             per input.
+        allow_uploads: Whether preparation may upload, `True` by default. With `False`, a value
+            at a file input that would need an upload — a local path, a `data:` URL, bytes — is
+            refused with `UploadNotAllowedError`, and nothing is read from disk, decoded or sent
+            to the upload route; `http(s)` URLs and `pipelex-storage://` references pass through
+            as always. It is for a server preparing inputs on a caller's behalf, which must never
+            read a file of its own because the caller named it. It is not sent to the server.
 
     Returns:
         `PreparedInputs` — a copy of `inputs` with each file-bearing value rewritten to
@@ -417,7 +491,9 @@ async def prepare_inputs(
             its subclasses name who must change: `MethodLoadError` when the closure does not load
             (the method), `InvalidInputValueError` when a value at a file position is unusable, a
             `data:` URL that does not decode or a value of a type no file input takes (the inputs),
-            beside `InvalidLocalSourceError` for a local path that cannot be read. HTTP(S) URLs and existing
+            beside `InvalidLocalSourceError` for a local path that cannot be read, and
+            `UploadNotAllowedError` under `allow_uploads=False` for a value that would need an
+            upload; an `allow_uploads` that is not a `bool` is refused before any request. HTTP(S) URLs and existing
             `pipelex-storage://` URIs pass through unchanged, and every failure is raised
             BEFORE any run is created.
         ApiResponseError: Any other no-verdict condition from `/v1/pipe-io` — an unknown or
@@ -430,6 +506,7 @@ async def prepare_inputs(
     # Checked here rather than after the round-trip, so a mistyped or bare `pipe_ref` is refused
     # on the same pre-request boundary as a mistyped selector.
     requested_pipe_ref = _checked_pipe_ref(pipe_ref)
+    uploads_allowed = _checked_allow_uploads(allow_uploads)
     request = PipeIORequest(files=selected_files, method_ref=selected_method_ref, method_id=selected_method_id, pipe_ref=requested_pipe_ref)
     report = await _fetch_signature(client, request=request)
 
@@ -444,7 +521,7 @@ async def prepare_inputs(
         raise InputPreparationError(msg, verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False))
     declared = {field.name: field for field in descriptor.fields}
 
-    ctx = _PrepareContext(client)
+    ctx = _PrepareContext(client, allow_uploads=uploads_allowed)
     rewritten = dict(inputs)
     for name, caller_value in inputs.items():
         field = declared.get(name)
@@ -455,9 +532,9 @@ async def prepare_inputs(
             # Unwrap, walk the content against the same node, re-wrap: the concept annotation
             # rides through to the run, which accepts the envelope as an input.
             envelope = cast("dict[str, Any]", caller_value)
-            walked = await _resolve_node(ctx, field, envelope["content"])
+            walked = await _resolve_node(ctx, field, envelope["content"], _InputPosition(name=name, path=name))
             rewritten[name] = {**envelope, "content": walked}
         else:
-            rewritten[name] = await _resolve_node(ctx, field, caller_value)
+            rewritten[name] = await _resolve_node(ctx, field, caller_value, _InputPosition(name=name, path=name))
 
     return PreparedInputs(inputs=rewritten, uploads=ctx.uploads)

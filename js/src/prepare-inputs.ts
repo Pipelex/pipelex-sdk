@@ -44,7 +44,9 @@ import {
   InputPreparationError,
   InvalidInputValueError,
   MethodLoadError,
+  UploadNotAllowedError,
 } from "./errors.js";
+import type { UploadNotAllowedKind } from "./errors.js";
 import type { MthdsFileItem, PipeIORequest, PipeIOResponse, PipeIOValidReport } from "./models.js";
 import type { UploadCapableClient, UploadRecord } from "./upload.js";
 import { uploadFile } from "./upload.js";
@@ -87,6 +89,15 @@ export interface PrepareInputsBase {
    * abort. A request already sent runs to its end. It is not sent to the server.
    */
   signal?: AbortSignal;
+  /**
+   * Whether preparation may upload, `true` when omitted. With `false`, a value at a file input
+   * that would need an upload — a local path, a `data:` URL, bytes — is refused with an
+   * {@link UploadNotAllowedError} naming the input, and nothing is read from disk, decoded or
+   * sent to the upload route; `http(s)` URLs and `pipelex-storage://` references pass through as
+   * always. It is for a server preparing inputs on a caller's behalf, which must never read a file
+   * of its own because the caller named it. It is not sent to the server.
+   */
+  allowUploads?: boolean;
 }
 
 /**
@@ -125,6 +136,8 @@ export interface PrepareCapableClient extends UploadCapableClient {
 interface PrepareContext {
   client: UploadCapableClient;
   signal: AbortSignal | undefined;
+  /** False under `allowUploads: false`: every upload-needing value is refused before it is read. */
+  allowUploads: boolean;
   uploads: UploadRecord[];
   /** Dedup by source identity: same source (string value / bytes reference) uploads once. */
   dedup: Map<unknown, Promise<string>>;
@@ -251,14 +264,53 @@ async function doResolveSource(ctx: PrepareContext, source: unknown): Promise<st
   );
 }
 
-/** Resolve a value known to sit at a file position into canonical content with a rewritten `url`. */
-async function resolveFilePosition(ctx: PrepareContext, callerValue: unknown): Promise<unknown> {
-  if (isFileContent(callerValue)) {
-    const resolved = await resolveSource(ctx, callerValue.url);
-    return { ...callerValue, url: resolved };
+/**
+ * Where a value sits in the caller's inputs: the input it belongs to, and its path inside that
+ * input, `.field` for an object's declared field and `[index]` for a list's element. An explicit
+ * envelope adds nothing to the path, since its `content` is the input's value.
+ */
+interface InputPosition {
+  name: string;
+  path: string;
+}
+
+/**
+ * What a source at a file position would need an upload for, or `undefined` when it needs none:
+ * a reference that passes through, or a value no file input takes, which `doResolveSource` refuses
+ * as an `InvalidInputValueError` whether uploads are allowed or not. It reads the value's type and
+ * prefix only, never the file a path names.
+ */
+function uploadKindOf(source: unknown): UploadNotAllowedKind | undefined {
+  if (typeof source === "string") {
+    if (source.startsWith(PIPELEX_STORAGE_SCHEME) || HTTP_URL_RE.test(source)) return undefined;
+    return source.startsWith("data:") ? "data_url" : "local_path";
   }
-  const resolved = await resolveSource(ctx, callerValue);
-  return { url: resolved };
+  if (source instanceof Blob || source instanceof ArrayBuffer || source instanceof Uint8Array) {
+    return "bytes";
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a value known to sit at a file position into canonical content with a rewritten `url`.
+ * Under `allowUploads: false`, a source that would need an upload is refused here, before
+ * `resolveSource` could read, decode or upload it.
+ */
+async function resolveFilePosition(
+  ctx: PrepareContext,
+  callerValue: unknown,
+  at: InputPosition,
+): Promise<unknown> {
+  const fileContent = isFileContent(callerValue);
+  const source = fileContent ? callerValue.url : callerValue;
+  if (!ctx.allowUploads) {
+    const valueKind = uploadKindOf(source);
+    if (valueKind !== undefined) {
+      throw new UploadNotAllowedError({ inputName: at.name, inputPath: at.path, valueKind });
+    }
+  }
+  const resolved = await resolveSource(ctx, source);
+  return fileContent ? { ...callerValue, url: resolved } : { url: resolved };
 }
 
 /**
@@ -283,24 +335,32 @@ async function resolveNode(
   ctx: PrepareContext,
   node: InputFormItem,
   callerValue: unknown,
+  at: InputPosition,
 ): Promise<unknown> {
   switch (node.kind) {
     case "document":
     case "image":
-      return resolveFilePosition(ctx, callerValue);
+      return resolveFilePosition(ctx, callerValue, at);
     case "object": {
       if (!isPlainObject(callerValue)) return callerValue;
       const result: Record<string, unknown> = { ...callerValue };
       for (const field of node.fields) {
         if (Object.hasOwn(callerValue, field.name)) {
-          result[field.name] = await resolveNode(ctx, field, callerValue[field.name]);
+          result[field.name] = await resolveNode(ctx, field, callerValue[field.name], {
+            name: at.name,
+            path: `${at.path}.${field.name}`,
+          });
         }
       }
       return result;
     }
     case "list": {
       if (!Array.isArray(callerValue)) return callerValue;
-      return Promise.all(callerValue.map((element) => resolveNode(ctx, node.item, element)));
+      return Promise.all(
+        callerValue.map((element, index) =>
+          resolveNode(ctx, node.item, element, { name: at.name, path: `${at.path}[${index}]` }),
+        ),
+      );
     }
     default:
       return callerValue;
@@ -381,6 +441,19 @@ function normalizePipeRef(raw: unknown): string | undefined {
     );
   }
   return pipeRef;
+}
+
+/**
+ * Read the caller's `allowUploads`: `true` when omitted, the boolean when given, and refused
+ * before any request otherwise. A value of the wrong type is not read as either answer, since
+ * reading a stray `"false"` as permission would upload exactly what the caller meant to refuse.
+ */
+function resolveAllowUploads(raw: unknown): boolean {
+  if (raw === undefined) return true;
+  if (typeof raw === "boolean") return raw;
+  throw new InputPreparationError(
+    `Cannot prepare inputs: \`allowUploads\` must be a boolean, got ${raw === null ? "null" : typeof raw}.`,
+  );
 }
 
 /**
@@ -484,6 +557,10 @@ function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor 
  * records. HTTP(S) URLs and existing `pipelex-storage://` URIs pass through
  * unchanged. All failures are raised before any run is created.
  *
+ * With `allowUploads: false`, nothing is read from disk or uploaded: a value that
+ * would need either throws {@link UploadNotAllowedError}, naming the input and
+ * where inside it the value sits.
+ *
  * The pipe and its signature come from one `POST /v1/pipe-io`, whatever the
  * selector — inline `files`, a `method_ref` the runner resolves, or a
  * `method_id` the platform resolves. A bare or alias-qualified `pipe_ref`, a
@@ -499,6 +576,7 @@ export async function prepareInputs(
 ): Promise<PreparedInputs> {
   const selector = resolveSelector(request);
   const pipeRef = normalizePipeRef(request.pipe_ref);
+  const allowUploads = resolveAllowUploads((request as { allowUploads?: unknown }).allowUploads);
   throwIfAborted(request.signal);
   const report = await fetchSignature(client, selector, pipeRef);
   throwIfAborted(request.signal);
@@ -508,7 +586,13 @@ export async function prepareInputs(
     descriptor.fields.map((field) => [field.name, field]),
   );
 
-  const ctx: PrepareContext = { client, signal: request.signal, uploads: [], dedup: new Map() };
+  const ctx: PrepareContext = {
+    client,
+    signal: request.signal,
+    allowUploads,
+    uploads: [],
+    dedup: new Map(),
+  };
   const rewritten: Record<string, unknown> = { ...request.inputs };
   for (const [name, callerValue] of Object.entries(request.inputs)) {
     const field = declared.get(name);
@@ -519,10 +603,10 @@ export async function prepareInputs(
       // The caller filled the explicit `{ concept, content }` envelope: walk the
       // inner content against the same node, then re-wrap so the concept
       // annotation rides through to the run (the runtime accepts the envelope).
-      const walked = await resolveNode(ctx, field, callerValue.content);
+      const walked = await resolveNode(ctx, field, callerValue.content, { name, path: name });
       rewritten[name] = { ...callerValue, content: walked };
     } else {
-      rewritten[name] = await resolveNode(ctx, field, callerValue);
+      rewritten[name] = await resolveNode(ctx, field, callerValue, { name, path: name });
     }
   }
 

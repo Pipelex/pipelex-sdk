@@ -189,6 +189,12 @@
       ]
     },
     {
+      "class": "UploadNotAllowedError",
+      "variants": [
+        { "variant": "a local path where uploads are not allowed", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
+      ]
+    },
+    {
       "class": "MethodLoadError",
       "variants": [
         { "variant": "a method that does not load", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
