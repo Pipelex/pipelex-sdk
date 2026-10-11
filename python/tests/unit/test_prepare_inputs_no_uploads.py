@@ -82,7 +82,7 @@ def read_spy(mocker: MockerFixture) -> Any:
     return mocker.patch.object(upload_module, "_read_path", wraps=upload_module._read_path)  # pyright: ignore[reportPrivateUsage]
 
 
-class TestRefusesEveryValueThatWouldNeedAnUpload:
+class TestPrepareInputsWithoutUploads:
     def test_refuses_a_local_path_that_exists_without_reading_it(self, tmp_path: Path, read_spy: Any) -> None:
         path = tmp_path / "shot.png"
         path.write_bytes(b"\x01\x02\x03\x04")
@@ -151,8 +151,6 @@ class TestRefusesEveryValueThatWouldNeedAnUpload:
         assert verdict is not None
         assert (verdict.error_domain, verdict.retryable) == (ErrorDomain.INPUT, False)
 
-
-class TestPassesReferencesThrough:
     def test_rewrites_urls_and_storage_references_uploading_nothing(self, read_spy: Any) -> None:
         client = _FakeClient(
             ImageField(name="photo", **_required()),
@@ -188,9 +186,7 @@ class TestPassesReferencesThrough:
 
         assert not isinstance(exc_info.value, UploadNotAllowedError)
 
-
-class TestTheAllowUploadsOption:
-    def test_uploads_as_before_when_true(self, tmp_path: Path, read_spy: Any) -> None:
+    def test_uploads_as_before_when_allow_uploads_is_true(self, tmp_path: Path, read_spy: Any) -> None:
         path = tmp_path / "shot.png"
         path.write_bytes(b"\x01\x02\x03\x04")
         client = _image_client()
@@ -209,7 +205,7 @@ class TestTheAllowUploadsOption:
 
         assert client.pipe_io_calls == []
 
-    def test_is_not_sent_to_the_server(self) -> None:
+    def test_allow_uploads_is_not_sent_to_the_server(self) -> None:
         client = _image_client()
 
         asyncio.run(prepare_inputs(client, method_id="mt_abc", inputs={"photo": "https://example.com/p.png"}, allow_uploads=False))
