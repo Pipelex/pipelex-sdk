@@ -10,6 +10,8 @@ case. Here:
   but that status, code and naming;
 - every `server_sent` case is answered to a real client call, so the body goes through the client's own
   parsing;
+- every `run_start` case is answered to a real `start()` or `execute()` through an `httpx.MockTransport`,
+  so the context variable that marks a request that may create a run is tested where it is set;
 - every class in `classes` is built from each variant's `given` by a builder below; a class the file
   lists for this SDK with no builder fails the suite, and so does a field the suite does not know, so a
   case added to the file reaches this language;
@@ -39,7 +41,7 @@ from pipelex_sdk import errors as errors_module
 from pipelex_sdk.artifact_models import ArtifactScope, DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.error_models import RunErrorReport
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of, fallback_verdict
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of, fallback_verdict, run_may_have_started_of
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
@@ -96,6 +98,23 @@ class _Language(StrEnum):
     PYTHON = "python"
 
 
+class _ExpectedVerdict(_CaseModel):
+    """A verdict as the case file expects it, with the third member, absent meaning `False`."""
+
+    error_domain: ErrorDomain
+    retryable: bool
+    run_may_have_started: bool = False
+
+    @property
+    def verdict(self) -> ErrorVerdict:
+        return ErrorVerdict(error_domain=self.error_domain, retryable=self.retryable)
+
+
+class _Route(StrEnum):
+    START = "start"
+    EXECUTE = "execute"
+
+
 class _FallbackCase(_CaseModel):
     case: str
     status: int
@@ -109,6 +128,14 @@ class _ServerSentCase(_CaseModel):
     status: int
     body: _Body
     expected: ErrorVerdict
+
+
+class _RunStartCase(_CaseModel):
+    case: str
+    route: _Route
+    status: int
+    body: _Body
+    expected: _ExpectedVerdict
 
 
 class _Cause(_CaseModel):
@@ -135,7 +162,7 @@ class _Variant(_CaseModel):
     variant: str
     only_in: _Language | None = None
     given: _Given
-    expected: ErrorVerdict
+    expected: _ExpectedVerdict
 
 
 class _ClassEntry(_CaseModel):
@@ -149,6 +176,7 @@ class _CaseFile(_CaseModel):
     about: str
     fallback: list[_FallbackCase]
     server_sent: list[_ServerSentCase]
+    run_start: list[_RunStartCase]
     classes: list[_ClassEntry]
 
 
@@ -211,6 +239,29 @@ def _refused_with(status: int, body: _Body) -> ApiResponseError:
     """The `ApiResponseError` the client builds for an answer of `status` carrying `body`."""
     client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
     return client._api_response_error(method="GET", path="/v1/x", request_url=f"{_BASE_URL}/v1/x", response=_answer(status, body))
+
+
+def _client_answering(status: int, body: _Body) -> PipelexAPIClient:
+    """A client whose every request the API answers with `status` and `body`, below its `_send`."""
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        if body is None:
+            return httpx.Response(status, request=request)
+        if isinstance(body, str):
+            return httpx.Response(status, text=body, request=request)
+        return httpx.Response(status, json=body, headers={"content-type": "application/problem+json"}, request=request)
+
+    client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(_respond))
+    return client
+
+
+async def _run_start(client: PipelexAPIClient, route: _Route) -> object:
+    match route:
+        case _Route.START:
+            return await client.start(pipe_code="p")
+        case _Route.EXECUTE:
+            return await client.execute(pipe_code="p")
 
 
 def _status_of(given: _Given) -> int:
@@ -368,6 +419,7 @@ class TestErrorVerdicts:
         assert "byte for byte identical" in _CASES.about
         assert _CASES.fallback
         assert _CASES.server_sent
+        assert _CASES.run_start
         assert _CASES.classes
 
     def test_has_a_builder_for_exactly_the_classes_it_lists_for_this_sdk(self) -> None:
@@ -410,6 +462,48 @@ class TestErrorVerdicts:
         if isinstance(case.body, dict):
             assert caught.value.problem == case.body
 
+    # ── A failed request that may create a run ──
+
+    @pytest.mark.parametrize("case", [pytest.param(case, id=f"{case.route}: {case.case}") for case in _CASES.run_start])
+    def test_a_failed_request_that_may_create_a_run(self, case: _RunStartCase) -> None:
+        client = _client_answering(case.status, case.body)
+
+        with pytest.raises(ApiResponseError) as caught:
+            asyncio.run(_run_start(client, case.route))
+
+        err = caught.value
+        assert (err.run_may_have_started, err.retryable, err.error_domain) == (
+            case.expected.run_may_have_started,
+            case.expected.retryable,
+            case.expected.error_domain,
+        )
+        assert run_may_have_started_of(err) is case.expected.run_may_have_started
+        assert "run_may_have_started" in vars(err)
+
+    @pytest.mark.parametrize("case", [pytest.param(case, id=f"{case.route}: {case.case}") for case in _CASES.run_start])
+    def test_a_failed_request_that_may_create_a_run_built_by_hand_reads_the_same(self, case: _RunStartCase) -> None:
+        body = case.body if isinstance(case.body, dict) else {}
+        code = body.get("code")
+        error_type = body.get("error_type")
+        err = ApiResponseError(
+            f"HTTP {case.status}",
+            api_url=_BASE_URL,
+            status=case.status,
+            status_text="",
+            response_body="",
+            error_type=error_type if isinstance(error_type, str) else None,
+            code=code if isinstance(code, str) else None,
+            error_domain=body.get("error_domain"),
+            retryable=body.get("retryable"),
+            may_start_run=True,
+        )
+
+        assert (err.run_may_have_started, err.retryable, err.error_domain) == (
+            case.expected.run_may_have_started,
+            case.expected.retryable,
+            case.expected.error_domain,
+        )
+
     # ── Each exported class's verdict ──
 
     def test_the_abstract_base_is_the_base_of_every_request_error(self) -> None:
@@ -432,11 +526,15 @@ class TestErrorVerdicts:
 
         assert isinstance(err, _exported_class(class_name))
         assert type(err).__name__ == class_name
-        assert error_verdict_of(err) == variant.expected
+        assert error_verdict_of(err) == variant.expected.verdict
         # The verdict is the instance's own pair, the domain one of the enum's members.
         own = vars(err)
         assert (own["error_domain"], own["retryable"]) == (variant.expected.error_domain, variant.expected.retryable)
         assert isinstance(own["error_domain"], ErrorDomain)
+        # A codegen tree error declares the verdict's two members and nothing else.
+        if not isinstance(err, CodegenError):
+            assert own["run_may_have_started"] is variant.expected.run_may_have_started
+        assert run_may_have_started_of(err) is variant.expected.run_may_have_started
 
     @pytest.mark.parametrize(("class_name", "variant"), _variant_params())
     def test_a_verdict_survives_the_rebuild_pickling_performs(self, class_name: str, variant: _Variant) -> None:
@@ -447,7 +545,8 @@ class TestErrorVerdicts:
 
         assert type(rebuilt) is type(err)
         assert str(rebuilt) == str(err)
-        assert error_verdict_of(rebuilt) == variant.expected
+        assert error_verdict_of(rebuilt) == variant.expected.verdict
+        assert run_may_have_started_of(rebuilt) is variant.expected.run_may_have_started
 
     # ── Completeness ──
 

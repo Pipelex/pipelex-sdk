@@ -65,7 +65,7 @@ The root's `make install` points git at `.githooks/`. A JavaScript template carr
 
 ## Local files
 
-Each directory keeps its own local env files (`.env`, `.env.local`) and Claude Code settings, all gitignored. The root's `.worktreeinclude` names them at any depth, so `wt` and Claude Code copy them from the main checkout into a new worktree.
+Each directory keeps its own local env files (`.env`, `.env.local`) and Claude Code settings, all gitignored. The root's `.worktreeinclude` names them at any depth, so `wt` and Claude Code copy them from the main checkout into a new worktree. It leaves out everything under a `node_modules`, since a dependency can ship a settings file of its own, and copying it would create a `node_modules` that stops a directory's first gate run from installing it.
 
 ## Where the code came from
 

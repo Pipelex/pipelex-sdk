@@ -380,7 +380,7 @@ function sentBody(body: RequestInit["body"]): unknown {
 // ── Running a case ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The clock a case runs on: `performance.now`, which the command and the SDK read to time a request,
+ * The clock a case runs on: `performance.now`, which the SDK reads to time a request,
  * runs as it does, plus the time the case's exchanges have taken (`elapsed_ms`), so that a case
  * can hold an answer that came back half a minute later without waiting for it.
  */

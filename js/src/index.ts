@@ -254,10 +254,12 @@ export type {
 } from "./usage.js";
 
 // ── Typed errors (PipelineRequestError rides the protocol re-export above) ──
-// Every one carries a verdict — `retryable` and `errorDomain` — read with `errorVerdictOf`.
+// Every one carries a verdict — `retryable` and `errorDomain` — read with `errorVerdictOf`, and
+// `runMayHaveStarted`, read with `runMayHaveStartedOf`.
 export {
   PipelexRequestError,
   errorVerdictOf,
+  runMayHaveStartedOf,
   RequestArgumentError,
   ApiResponseError,
   ApiUnreachableError,
