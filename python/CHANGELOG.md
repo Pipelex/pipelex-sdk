@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`RunRead.degradation` and `DegradationReason`**: `get_run_status` types the `degradation` the platform sends with `degraded`, as `RunDegradation` (`reason`, `message`, `failed_attempts`, `failing_since`, `ends_at`) in `pipelex_sdk.runs`, read leniently so a malformed one never fails the poll. `degraded` no longer means only that the platform could not reach the workflow engine (`STATUS_UNAVAILABLE`): `WORKFLOW_TASK_FAILING` means the run is stuck and the platform ends it `FAILED` at `ends_at`, so code that branches on `degraded` now reads `degradation.reason` as well (`docs/run-results.md`).
+- **`request_id` on a run**: `RunRead.request_id` and `RunDetail.request_id` type the id of the request that started the run, the one to quote to support.
+
 ## [v0.38.0] - 2026-10-10
 
 ### Changed

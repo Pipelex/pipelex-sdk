@@ -37,17 +37,10 @@ from __future__ import annotations
 
 from typing import Annotated, Any, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, ValidationError, ValidatorFunctionWrapHandler, WrapValidator, field_validator
+from pydantic import BaseModel, ConfigDict, ValidatorFunctionWrapHandler, WrapValidator, field_validator
 
+from pipelex_sdk._pydantic_utils import none_when_it_does_not_fit
 from pipelex_sdk.validation_models import ValidationErrorItem
-
-
-def _none_when_it_does_not_fit(value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
-    """Validate `value`, or read it as `None` when it does not fit its declared type."""
-    try:
-        return handler(value)
-    except ValidationError:
-        return None
 
 
 class _LenientReportPart(BaseModel):
@@ -58,7 +51,7 @@ class _LenientReportPart(BaseModel):
     @field_validator("*", mode="wrap")
     @classmethod
     def _read_a_field_that_does_not_fit_as_none(cls, value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
-        return _none_when_it_does_not_fit(value, handler)
+        return none_when_it_does_not_fit(value, handler)
 
 
 class UserAction(_LenientReportPart):
@@ -122,8 +115,12 @@ class RunErrorReport(_LenientReportPart):
     `error_type` is the runner's open-ended exception class name: finer than `error_domain`, useful in
     a support line, but not a closed set to match against.
 
-    A report is `None` where the run has none — a cancelled, terminated or timed-out run, or one the
-    platform finalized itself — so the absence of a report says nothing about why.
+    The runner writes the report of a run that fails while it runs. A run the platform ends or settles
+    itself carries one the platform wrote in the same shape: `WorkflowTaskKeptFailingError` for a
+    workflow task that kept failing, `RunTimedOutError` for a timeout and `RunWorkflowNotFoundError`
+    for a workflow that vanished. A report is `None` where the run has none — a cancelled run, one
+    terminated by anything but the platform, one whose start the platform gave up, one that ended
+    before the platform wrote reports of its own — so the absence of a report says nothing about why.
     """
 
     #: The runner's exception class name (`LLMCompletionError`, `SandboxProvisioningError`, …) — an
@@ -173,4 +170,4 @@ class FieldError(_LenientReportPart):
 #: The type of every `error` field that holds a run's report: `RunPublic.error`, `PipelineRun.error`
 #: and `RunResultFailed.error`. A report is read field by field as `RunErrorReport` says, and a value
 #: that is not a report at all reads as `None`, so the read carrying it always answers.
-LenientRunErrorReport: TypeAlias = Annotated[RunErrorReport | None, WrapValidator(_none_when_it_does_not_fit)]
+LenientRunErrorReport: TypeAlias = Annotated[RunErrorReport | None, WrapValidator(none_when_it_does_not_fit)]

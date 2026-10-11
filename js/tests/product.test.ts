@@ -913,13 +913,19 @@ describe("runs list / update", () => {
 
   it("GETs /v1/runs/{id} for the whole record, bundle included", async () => {
     const client = makeClient();
-    const detail = { ...RUN_ROW, mthds_contents: ['domain = "x"'], inputs: { name: "Ada" } };
+    const detail = {
+      ...RUN_ROW,
+      mthds_contents: ['domain = "x"'],
+      inputs: { name: "Ada" },
+      request_id: "req_r1",
+    };
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, detail));
 
     const result = await client.getRunDetail("r1");
 
     expect(lastRequest(spy).url).toBe("http://localhost:8081/v1/runs/r1");
     expect(result.mthds_contents).toEqual(['domain = "x"']);
+    expect(result.request_id).toBe("req_r1");
   });
 
   it("PUTs /v1/runs/{id} and tolerates an empty body", async () => {

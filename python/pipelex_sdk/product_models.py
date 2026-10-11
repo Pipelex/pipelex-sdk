@@ -893,6 +893,11 @@ class RunDetail(PipelineRun):
 
     mthds_contents: list[str] | None = None
     inputs: dict[str, Any] | None = None
+    request_id: str | None = None
+    """The id of the request that started the run — the one to quote to support, and the one the
+    platform and the runner logged it under. `None` for a run saved before the platform recorded it,
+    and on a server that does not serve it. The run list does not carry it; the status read does, as
+    `RunRead.request_id`."""
 
 
 class RunPage(BaseModel):

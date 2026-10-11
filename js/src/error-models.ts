@@ -108,8 +108,13 @@ export interface MigrationErrorBlock {
  * failure's report carries, and how its `message` names the failing pipe, is the runner's to
  * decide; read them as given.
  *
- * A report is `null` where the run has none — a cancelled, terminated or timed-out run, or one
- * the platform finalized itself — so the absence of a report says nothing about why.
+ * The runner writes the report of a run that fails while it runs. A run the platform ends or
+ * settles itself carries one the platform wrote in the same shape: `WorkflowTaskKeptFailingError`
+ * for a workflow task that kept failing, `RunTimedOutError` for a timeout and
+ * `RunWorkflowNotFoundError` for a workflow that vanished. A report is `null` where the run has
+ * none — a cancelled run, one terminated by anything but the platform, one whose start the
+ * platform gave up, one that ended before the platform wrote reports of its own — so the absence
+ * of a report says nothing about why.
  */
 export interface RunErrorReport {
   /**
@@ -255,9 +260,10 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 
 /**
  * Drop each of `fields` from `record` when it is present and fails `fits`. `null` always fits,
- * since every field of these shapes allows it.
+ * since every field of these shapes allows it. Internal: the run status read's degradation
+ * (`readRunDegradation` in `runs.ts`) is checked with it too.
  */
-function dropUnfit(
+export function dropUnfit(
   record: Record<string, unknown>,
   fields: readonly string[],
   fits: (value: unknown) => boolean,

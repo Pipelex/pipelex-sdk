@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { InputForm, OutputForm, PipeIOContracts } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
@@ -11,7 +13,14 @@ import {
   RunTimeoutError,
 } from "../src/errors.js";
 import { isTerminalRunStatus, isSuccessRunStatus, RUN_RESULT_ARTIFACTS } from "../src/runs.js";
-import type { RunResultArtifact, RunResults, TokensUsageRecord } from "../src/runs.js";
+import type {
+  DegradationReason,
+  RunDegradation,
+  RunRead,
+  RunResultArtifact,
+  RunResults,
+  TokensUsageRecord,
+} from "../src/runs.js";
 import * as sdk from "../src/index.js";
 
 const BASE_URL = "http://localhost:8081";
@@ -124,6 +133,68 @@ describe("PipelexApiClient.getRunStatus", () => {
     const err = await client.getRunStatus("run-1").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiResponseError);
     expect(err).not.toBeInstanceOf(RunLifecycleUnavailableError);
+  });
+});
+
+/**
+ * The status reads both SDKs must agree on, `fixtures/run-status-reads.json`: this file is the
+ * source, `make shared-files` at the repository's root writes its copy to `python/tests/fixtures/`,
+ * and the Python suite answers the same cases to its own status read.
+ */
+interface StatusReadCase {
+  name: string;
+  body: Record<string, unknown>;
+  retry_after: string | null;
+  expected: {
+    degraded: boolean;
+    degradation: Record<string, unknown> | null;
+    request_id: string | null;
+    retry_after_seconds: number | null;
+  };
+}
+
+const STATUS_READS = (
+  JSON.parse(
+    readFileSync(new URL("./fixtures/run-status-reads.json", import.meta.url), "utf8"),
+  ) as { cases: StatusReadCase[] }
+).cases;
+
+describe("PipelexApiClient.getRunStatus over the shared status reads", () => {
+  it.each(STATUS_READS.map((c) => [c.name, c] as const))("%s", async (_name, statusRead) => {
+    const headers: Record<string, string> =
+      statusRead.retry_after === null ? {} : { "Retry-After": statusRead.retry_after };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, statusRead.body, headers));
+
+    const run = await makeClient().getRunStatus(String(statusRead.body.pipeline_run_id));
+
+    const { expected } = statusRead;
+    expect(run.degraded).toBe(expected.degraded);
+    expect(run.degradation ?? null).toEqual(expected.degradation);
+    // A body without the key leaves it absent: a platform that predates the degradation.
+    expect(Object.hasOwn(run, "degradation")).toBe(Object.hasOwn(statusRead.body, "degradation"));
+    expect(run.request_id ?? null).toBe(expected.request_id);
+    expect(run.retry_after_seconds ?? null).toBe(expected.retry_after_seconds);
+  });
+
+  it("keeps the rest of the read as the server sent it", async () => {
+    const statusRead = STATUS_READS.find(
+      (c) => c.name === "known fields that do not fit their types",
+    )!;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, statusRead.body));
+
+    const run = await makeClient().getRunStatus("plr_drifted_fields");
+
+    expect(run.pipeline_run_id).toBe("plr_drifted_fields");
+    expect(run.status).toBe("RUNNING");
+    expect(run.created_at).toBe("2026-10-11T08:00:00+00:00");
+  });
+
+  it("types the degradation's reason open, its known values first", () => {
+    expectTypeOf<RunRead["degradation"]>().toEqualTypeOf<RunDegradation | null | undefined>();
+    expectTypeOf<"workflow_task_failing">().toExtend<DegradationReason>();
+    expectTypeOf<DegradationReason>().toExtend<RunDegradation["reason"]>();
+    expectTypeOf<string>().toExtend<RunDegradation["reason"]>();
+    expectTypeOf<RunRead["request_id"]>().toEqualTypeOf<string | null | undefined>();
   });
 });
 

@@ -623,6 +623,13 @@ export interface RunDetail extends PipelineRun {
   mthds_contents?: string[] | null;
   /** The inputs the run was started with, as sent. */
   inputs?: Record<string, unknown> | null;
+  /**
+   * The id of the request that started the run — the one to quote to support, and the one the
+   * platform and the runner logged it under. `null` for a run saved before the platform recorded
+   * it; absent on a server that does not serve it. The run history does not carry it; the status
+   * read does, as `RunRead.request_id`.
+   */
+  request_id?: string | null;
 }
 
 /** Query for one page of run history. */

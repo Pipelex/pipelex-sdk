@@ -391,9 +391,10 @@ class RunFailedError(PipelexRequestError):
       `user_action`, `model`, `provider`, `provider_metadata`, `validation_errors` and anything newer
       on `model_extra`. Branch on `error.error_domain`, `error.type_uri` and `error.retryable`; show
       `error.user_action` as the next step. It is the runner's VERBOSE report, so `message` and
-      `provider_metadata` can hold a provider's raw text — deciding what a person sees is yours.
-      `None` when the run ended with no stored report (a cancelled, terminated or timed-out run, or
-      one the platform finalized itself).
+      `provider_metadata` can hold a provider's raw text — deciding what a person sees is yours. A
+      run the platform ended or settled itself carries the report the platform wrote, in the same
+      shape. `None` when the run ended with no stored report (a cancelled run, one terminated by
+      anything but the platform, one whose start the platform gave up).
     - The exception's own message is the problem's `detail`, which names the status and then the
       report's message (`Run finished with status FAILED: <message>`), so printing the error already
       tells the reason.

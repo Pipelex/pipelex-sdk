@@ -1,6 +1,8 @@
 """Tests for `PipelexAPIClient`'s durable run-lifecycle surface (start/status/results/wait), httpx mocked."""
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -20,6 +22,7 @@ from pipelex_sdk.errors import (
     RunTimeoutError,
 )
 from pipelex_sdk.runs import (
+    DegradationReason,
     PollInfo,
     RunArtifact,
     RunResultCompleted,
@@ -76,6 +79,13 @@ _BUNDLE_FAULT_REPORT: dict[str, Any] = {
         }
     ],
 }
+
+
+# The status reads both SDKs must agree on. The file's source is `js/tests/fixtures/run-status-reads.json`,
+# which `@pipelex/sdk`'s suite answers to its own status read; this copy is written by `make shared-files`
+# at the repository's root and never edited.
+_STATUS_READS_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "run-status-reads.json"
+_STATUS_READS: list[dict[str, Any]] = json.loads(_STATUS_READS_PATH.read_text(encoding="utf-8"))["cases"]
 
 
 def _failed_results_problem(run_status: str, error: dict[str, Any] | None) -> dict[str, Any]:
@@ -265,6 +275,29 @@ class TestClientLifecycle:
 
         run = asyncio.run(client.get_run_status("run_1"))
         assert run.error is None
+
+    @pytest.mark.parametrize("status_read", _STATUS_READS, ids=[case["name"] for case in _STATUS_READS])
+    def test_get_run_status_reads_each_shared_status_read(self, mocker: MockerFixture, status_read: dict[str, Any]) -> None:
+        """Each shared status read yields what both SDKs agree on: `degraded`, `degradation`, `request_id`, the hint."""
+        client = self._client()
+        headers = {} if status_read["retry_after"] is None else {"Retry-After": status_read["retry_after"]}
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(200, json=status_read["body"], headers=headers)))
+
+        run = asyncio.run(client.get_run_status(status_read["body"]["pipeline_run_id"]))
+
+        expected = status_read["expected"]
+        assert run.degraded is expected["degraded"]
+        assert run.request_id == expected["request_id"]
+        assert run.retry_after_seconds == expected["retry_after_seconds"]
+        assert run.model_extra == {}
+        if expected["degradation"] is None:
+            assert run.degradation is None
+            return
+        assert run.degradation is not None
+        kept = {key: value for key, value in run.degradation.model_dump().items() if value is not None}
+        assert kept == {key: value for key, value in expected["degradation"].items() if value is not None}
+        known_reasons = {reason.value for reason in DegradationReason}
+        assert isinstance(run.degradation.reason, DegradationReason) is (expected["degradation"]["reason"] in known_reasons)
 
     def test_get_run_status_lifecycle_unavailable_on_missing_route(self, mocker: MockerFixture) -> None:
         """A bare-runner 404 on the status route becomes RunLifecycleUnavailableError."""
