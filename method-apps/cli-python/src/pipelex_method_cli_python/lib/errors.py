@@ -147,8 +147,11 @@ def report_lines(report: RunErrorReport | None) -> tuple[str, ...]:
     left unsaid when that is `None`, which means unknown rather than no. Empty when there is no report
     or it carries none of these, so the caller can tell a report worth reading from its absence.
 
-    The report is the runner's verbose one, so `message` can hold a provider's raw text. This is a
-    developer's tool, so it is printed as it came.
+    The platform serves the runner's STRICT projection of the report: `message` is the author's copy
+    when `caller_facing_message` is true and the placeholder `An internal error occurred.` otherwise,
+    and `user_action` comes only with caller-facing copy, so neither carries the worker's internal text
+    or a provider's raw answer. It is printed as it came; a platform run locally with
+    `ERROR_DISCLOSURE=verbose` serves the report whole, which this developer's tool prints whole too.
     """
     if report is None:
         return ()

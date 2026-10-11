@@ -918,7 +918,13 @@ export class ApiResponseError extends PipelexRequestError {
   public readonly model: string | undefined;
   /** The body's `provider`: the provider an inference failure reached. */
   public readonly provider: string | undefined;
-  /** The body's `provider_metadata`: what the provider's SDK said, raw text included. */
+  /**
+   * The body's `provider_metadata`: what the provider's SDK said. On the hosted API it comes
+   * from the runner's problem document, which the hosted runner renders under its STRICT
+   * disclosure, so it keeps only `status_code` and `retry_after_seconds`; a runner that
+   * discloses errors VERBOSE, as a self-hosted one does when `ERROR_DISCLOSURE` is unset, sends
+   * it whole, the provider's raw text included.
+   */
   public readonly providerMetadata: ProviderErrorMetadata | undefined;
   /** The body's `migration`: a pending configuration migration that explains the failure. */
   public readonly migration: MigrationErrorBlock | undefined;

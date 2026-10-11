@@ -124,7 +124,8 @@ def present_failed_run(*, run_id: str, status: RunStatus, report: RunErrorReport
     The SDK hands the same three things back wherever such a run surfaces — `RunFailedError` out of
     `wait_for_result`, `start_and_wait` or an artifact download, the failed arm of `get_run_result`, and
     the status read: the terminal `status`, the stored `report` (`None` when the run ended with none,
-    as a cancelled run does), and, on the first two, the platform's one sentence about the run.
+    as one whose start failed does, or one cancelled with no completion callback carrying a report),
+    and, on the first two, the platform's one sentence about the run.
 
     With a report, the lines under the message read it out and there is no hint: the report's next
     step is the advice, and a hint pointing at `widget detached status` would only print the same
@@ -151,9 +152,11 @@ def report_lines(report: RunErrorReport | None) -> tuple[str, ...]:
     left unsaid when that is `None`, which means unknown rather than no. Empty when there is no report
     or it carries none of these, so the caller can tell a report worth reading from its absence.
 
-    The report is the runner's verbose one, so `message` can hold a provider's raw text. This is a
-    developer's tool, so it is printed as it came; an application in front of end users decides what
-    of it they see.
+    The platform serves the runner's STRICT projection of the report: `message` is the author's copy
+    when `caller_facing_message` is true and the placeholder `An internal error occurred.` otherwise,
+    and `user_action` comes only with caller-facing copy, so neither carries the worker's internal text
+    or a provider's raw answer. It is printed as it came; a platform run locally with
+    `ERROR_DISCLOSURE=verbose` serves the report whole, which this developer's tool prints whole too.
     """
     if report is None:
         return ()
