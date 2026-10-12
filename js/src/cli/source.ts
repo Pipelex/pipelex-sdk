@@ -6,6 +6,7 @@
  * `method_ref` and a catalog id as `method_id`, both resolved by the server.
  */
 
+import type { FieldKind } from "mthds/protocol";
 import type {
   PipeInputFormDescriptor,
   PipeIORequest,
@@ -141,7 +142,19 @@ function templateReadableNode(node: Record<string, unknown>): boolean {
   ) {
     return false;
   }
-  switch (node.kind) {
+  // Every kind is listed, so a kind a newer `mthds` pin adds stops the build here until the
+  // template's reads of it are checked, as it does in the walk's own table.
+  const kind = node.kind as FieldKind;
+  switch (kind) {
+    case "text":
+    case "prose":
+    case "date":
+    case "number":
+    case "boolean":
+    case "document":
+    case "image":
+    case "unknown":
+      return true;
     case "object":
       return templateReadable(node);
     case "enum":
@@ -153,8 +166,11 @@ function templateReadableNode(node: Record<string, unknown>): boolean {
           (Number.isInteger(node.item_count) && (node.item_count as number) >= 2)) &&
         templateReadableNode(node.item as Record<string, unknown>)
       );
-    default:
-      return true;
+    default: {
+      // Unreachable: `inputFormFault` refused a kind outside the walk's table.
+      const unreachable: never = kind;
+      return unreachable;
+    }
   }
 }
 

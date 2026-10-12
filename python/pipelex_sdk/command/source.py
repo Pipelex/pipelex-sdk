@@ -114,15 +114,17 @@ async def describe_pipe(client: PipelexAPIClient, source: MethodSource, pipe: st
     except ApiResponseError as exc:
         # JSON the client cannot parse is raised as an answer it cannot read, pydantic's refusal as its
         # cause: it is worded here as what is wrong with the answer, in the sentences `@pipelex/sdk`'s
-        # command prints for the same answer. An `input_form` that is missing or not a mapping does
-        # not describe the pipe; an entry in it that does not parse is a malformed input form.
+        # command prints for the same answer. A `pipe_ref` that is missing or not a string, or an
+        # `input_form` that is missing or not a mapping, does not describe the pipe; an entry in it
+        # that does not parse is a malformed input form.
         cause = exc.__cause__
         if not isinstance(cause, ValidationError):
             raise
-        input_form_locs = [error["loc"] for error in cause.errors() if error["loc"][1:2] == ("input_form",)]
+        locs = [error["loc"] for error in cause.errors()]
+        input_form_locs = [loc for loc in locs if loc[1:2] == ("input_form",)]
         if any(len(loc) > 2 for loc in input_form_locs):
             msg = "the API's pipe I/O answer describes the pipe it selected with a malformed input form."
-        elif input_form_locs:
+        elif input_form_locs or any(loc[1:] == ("pipe_ref",) for loc in locs):
             msg = "the API's pipe I/O answer does not describe the pipe it selected."
         else:
             msg = "the API's pipe I/O answer says neither that the method loads nor why it does not."

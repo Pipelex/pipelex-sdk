@@ -385,10 +385,10 @@ async function resolveFilePosition(
   const fileContent = isFileContent(callerValue);
   const source = classifySource(fileContent ? callerValue.url : callerValue);
   if (source.kind === "unsupported") {
-    const described = describeUnsupported(source.value);
+    const unsupported = describeUnsupported(source.value);
     throw invalidValueAt(
       at,
-      `Input "${at.path}" holds ${fileContent ? `{url} content whose url is ${described}` : described}, ` +
+      `Input "${at.path}" holds ${fileContent ? `{url} content whose url is ${unsupported}` : unsupported}, ` +
         "which no file input takes" +
         (ctx.allowUploads ? FILE_FORMS_WITH_UPLOADS : FILE_FORMS_WITHOUT_UPLOADS),
     );

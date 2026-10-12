@@ -3422,6 +3422,61 @@
       }
     },
     {
+      "name": "template/pipe-ref-missing",
+      "summary": "A valid answer that names no pipe does not describe the pipe it selected, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_io_contracts": {},
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true,
+              "input_form": {
+                "receipts.review_receipt": {
+                  "fields": [
+                    {
+                      "name": "receipt",
+                      "kind": "document",
+                      "concept_ref": "native.Document",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    },
+                    {
+                      "kind": "prose",
+                      "concept_ref": "native.Text",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true,
+                      "name": "note"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer does not describe the pipe it selected.\n"
+        ]
+      }
+    },
+    {
       "name": "script/input-form-malformed",
       "summary": "script refuses a method whose input form is malformed where the template reads it, and writes nothing.",
       "argv": [

@@ -23,17 +23,16 @@ import pytest
 from pydantic import ValidationError
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.crate_models import MthdsFileItem, PipeIORequest, PipeIOValidReport
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
+from pipelex_sdk.crate_models import PipeIORequest, PipeIOValidReport
+from pipelex_sdk.error_verdicts import error_verdict_of
 from pipelex_sdk.errors import ApiResponseError
 from tests.unit.conftest import BASE_URL
+from tests.unit.test_data import MalformedInputFormData
 
 _CASE_FILE_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "malformed-input-forms.json"
 _CASE_FILE: dict[str, Any] = json.loads(_CASE_FILE_PATH.read_bytes())
 _PIPE_REF: str = _CASE_FILE["pipe_ref"]
 _CASES = [pytest.param(case["entry"], id=case["name"]) for case in _CASE_FILE["cases"]]
-_FILES = [MthdsFileItem(content='domain = "smoke"')]
-_UNREADABLE_VERDICT = ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
 
 
 def _answer() -> dict[str, Any]:
@@ -68,7 +67,7 @@ class TestPrepareInputsMalformedForm:
         seen: list[str] = []
         client = _client_answering(_answer(), seen)
 
-        report = asyncio.run(client.pipe_io(PipeIORequest(files=_FILES)))
+        report = asyncio.run(client.pipe_io(PipeIORequest(files=MalformedInputFormData.FILES)))
 
         assert isinstance(report, PipeIOValidReport)
         assert [field.name for field in report.input_form[_PIPE_REF].fields] == ["doc", "note", "dossier", "pages"]
@@ -82,11 +81,11 @@ class TestPrepareInputsMalformedForm:
         client = _client_answering(answer, seen)
 
         with pytest.raises(ApiResponseError) as exc_info:
-            asyncio.run(client.prepare_inputs(files=_FILES, inputs=_inputs_for_every_field(), allow_uploads=allow_uploads))
+            asyncio.run(client.prepare_inputs(files=MalformedInputFormData.FILES, inputs=_inputs_for_every_field(), allow_uploads=allow_uploads))
 
         refused = exc_info.value
         assert str(refused) == "API POST /v1/pipe-io answered 200 with a body that is not the answer the route returns"
         assert isinstance(refused.__cause__, ValidationError)
         # The route broke its own contract, which no change to the request fixes.
-        assert error_verdict_of(refused) == _UNREADABLE_VERDICT
+        assert error_verdict_of(refused) == MalformedInputFormData.UNREADABLE_VERDICT
         assert seen == ["/v1/pipe-io"]
