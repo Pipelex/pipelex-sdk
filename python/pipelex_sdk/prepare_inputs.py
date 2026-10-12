@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, assert_never, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, assert_never, cast
 from urllib.parse import unquote_to_bytes
 
 from mthds.protocol.input_form import (
@@ -153,100 +153,6 @@ def _is_explicit_envelope(value: Any) -> bool:
     return set(cast("dict[str, Any]", value)) == {"concept", "content"}
 
 
-def _decode_data_url(data_url: str) -> tuple[bytes, str]:
-    """Decode a `data:` URL into bytes plus its MIME type.
-
-    A base64 payload is decoded with `validate=True` so junk characters are rejected rather
-    than silently discarded (which would upload corrupted bytes), and a decode failure (bad
-    padding or non-alphabet input) surfaces as a typed `InvalidInputValueError` — never a raw
-    `binascii.Error` escaping the preparation contract. A non-base64 payload decodes straight
-    to bytes via `unquote_to_bytes`, so percent-encoded binary keeps its exact bytes (decoding
-    it as UTF-8 text first would corrupt any byte ≥ 0x80).
-    """
-    comma = data_url.find(",")
-    if comma < 0:
-        msg = f"Malformed data URL (no comma separator): {data_url[:32]}…"
-        raise InvalidInputValueError(msg)
-    header = data_url[5:comma]  # strip "data:"
-    payload = data_url[comma + 1 :]
-    content_type = header.split(";")[0] or "application/octet-stream"
-    if ";base64" in header.lower():
-        try:
-            decoded = base64.b64decode(payload, validate=True)
-        except binascii.Error as exc:
-            msg = f"Malformed data URL: the base64 payload is not valid ({exc})."
-            raise InvalidInputValueError(msg) from exc
-        return decoded, content_type
-    return unquote_to_bytes(payload), content_type
-
-
-class _NoUpload(StrEnum):
-    """A kind of source that needs no upload: a reference passes through as it is, and a value no file input
-    takes is refused as an `InvalidInputValueError` whether uploads are allowed or not.
-    """
-
-    REFERENCE = "reference"
-    UNSUPPORTED = "unsupported"
-
-
-def _classify_source(source: Any) -> UploadNotAllowedKind | _NoUpload:
-    """What a source at a file position is, read once from its type and prefix, never from the file a path
-    names.
-
-    The guard under `allow_uploads=False` and `_do_resolve_source` read this one answer, and the guard
-    refuses every kind that is not a `_NoUpload`, so a source the resolver would upload is a source the
-    guard refuses: a new kind of source is declared as needing no upload, or it is refused.
-    """
-    if isinstance(source, str):
-        if source.startswith(PIPELEX_STORAGE_SCHEME) or _HTTP_URL_RE.match(source):
-            return _NoUpload.REFERENCE
-        if source.startswith("data:"):
-            return UploadNotAllowedKind.DATA_URL
-        # Anything else is a local filesystem path.
-        return UploadNotAllowedKind.LOCAL_PATH
-    if isinstance(source, Path):
-        return UploadNotAllowedKind.LOCAL_PATH
-    if isinstance(source, bytes):
-        return UploadNotAllowedKind.BYTES
-    return _NoUpload.UNSUPPORTED
-
-
-async def _do_resolve_source(ctx: _PrepareContext, source: Any, kind: UploadNotAllowedKind | _NoUpload) -> str:
-    """Resolve one classified source to the URL/URI to write."""
-    match kind:
-        case _NoUpload.REFERENCE:
-            return cast("str", source)  # already prepared, or a reachable URL — pass through
-        case _NoUpload.UNSUPPORTED:
-            # An unrecognized value sits at a file-bearing position (neither a source string,
-            # bytes/Path, nor a canonical {url} content dict). Fail with a typed error rather than
-            # passing an unusable value through to a later run.
-            msg = (
-                "Unsupported value at a file input: expected a path (str/Path), bytes, a data URL, "
-                f"an http(s)/pipelex-storage:// URL, or canonical {{url}} content; got {type(source).__name__}."
-            )
-            raise InvalidInputValueError(msg)
-        case UploadNotAllowedKind.DATA_URL:
-            data, content_type = _decode_data_url(source)
-            record = await upload_file(ctx.client, data, content_type=content_type)
-        case UploadNotAllowedKind.LOCAL_PATH | UploadNotAllowedKind.BYTES:
-            record = await upload_file(ctx.client, source)
-        case _:
-            assert_never(kind)
-    ctx.uploads.append(record)
-    return record.uri
-
-
-async def _resolve_source(ctx: _PrepareContext, source: Any, kind: UploadNotAllowedKind | _NoUpload) -> str:
-    """Resolve a classified source, deduped by identity (same source uploads once)."""
-    hashable = isinstance(source, (str, bytes, Path))
-    if hashable and source in ctx.dedup:
-        return ctx.dedup[source]
-    resolved = await _do_resolve_source(ctx, source, kind)
-    if hashable:
-        ctx.dedup[source] = resolved
-    return resolved
-
-
 @dataclass(frozen=True)
 class _InputPosition:
     """Where a value sits in the caller's inputs: the input it belongs to, and its path inside that
@@ -264,18 +170,147 @@ class _InputPosition:
         return _InputPosition(name=self.name, path=f"{self.path}[{index}]")
 
 
+def _decode_data_url(data_url: str, at: _InputPosition) -> tuple[bytes, str]:
+    """Decode a `data:` URL into bytes plus its MIME type.
+
+    `at` is where the URL sits, for the error's wording only: the message never quotes the URL, which
+    is the caller's data. A base64 payload is decoded with `validate=True` so junk characters are rejected rather
+    than silently discarded (which would upload corrupted bytes), and a decode failure (bad
+    padding or non-alphabet input) surfaces as a typed `InvalidInputValueError` — never a raw
+    `binascii.Error` escaping the preparation contract. A non-base64 payload decodes straight
+    to bytes via `unquote_to_bytes`, so percent-encoded binary keeps its exact bytes (decoding
+    it as UTF-8 text first would corrupt any byte ≥ 0x80).
+    """
+    comma = data_url.find(",")
+    if comma < 0:
+        msg = f'Input "{at.path}" holds a malformed data URL (no comma separator).'
+        raise InvalidInputValueError(msg, input_name=at.name, input_path=at.path)
+    header = data_url[5:comma]  # strip "data:"
+    payload = data_url[comma + 1 :]
+    content_type = header.split(";")[0] or "application/octet-stream"
+    if ";base64" in header.lower():
+        try:
+            decoded = base64.b64decode(payload, validate=True)
+        except binascii.Error as exc:
+            msg = f'Input "{at.path}" holds a malformed data URL (invalid base64).'
+            raise InvalidInputValueError(msg, input_name=at.name, input_path=at.path) from exc
+        return decoded, content_type
+    return unquote_to_bytes(payload), content_type
+
+
+class _NoUpload(StrEnum):
+    """A kind of source that needs no upload: a reference passes through as it is, and a value no file input
+    takes is refused as an `InvalidInputValueError` whether uploads are allowed or not, before it reaches
+    `_resolve_source`.
+    """
+
+    REFERENCE = "reference"
+    UNSUPPORTED = "unsupported"
+
+
+def _classify_source(source: Any) -> UploadNotAllowedKind | _NoUpload:
+    """What a source at a file position is, read once from its type and prefix, never from the file a path
+    names.
+
+    `_resolve_file_position` reads this one answer: it refuses `_NoUpload.UNSUPPORTED` itself, and under
+    `allow_uploads=False` every kind that is not a `_NoUpload`, so a source the resolver would upload is a
+    source that guard refuses: a new kind of source is declared as needing no upload, or it is refused.
+    """
+    if isinstance(source, str):
+        if source.startswith(PIPELEX_STORAGE_SCHEME) or _HTTP_URL_RE.match(source):
+            return _NoUpload.REFERENCE
+        if source.startswith("data:"):
+            return UploadNotAllowedKind.DATA_URL
+        # Anything else is a local filesystem path.
+        return UploadNotAllowedKind.LOCAL_PATH
+    if isinstance(source, Path):
+        return UploadNotAllowedKind.LOCAL_PATH
+    if isinstance(source, bytes):
+        return UploadNotAllowedKind.BYTES
+    return _NoUpload.UNSUPPORTED
+
+
+# A kind of source the resolver takes: every kind but `_NoUpload.UNSUPPORTED`, which never reaches it.
+_ResolvableKind = UploadNotAllowedKind | Literal[_NoUpload.REFERENCE]
+
+
+async def _do_resolve_source(ctx: _PrepareContext, source: Any, kind: _ResolvableKind, at: _InputPosition) -> str:
+    """Resolve one classified source to the URL/URI to write. `at` words a malformed `data:` URL's error."""
+    match kind:
+        case _NoUpload.REFERENCE:
+            return cast("str", source)  # already prepared, or a reachable URL — pass through
+        case UploadNotAllowedKind.DATA_URL:
+            data, content_type = _decode_data_url(source, at)
+            record = await upload_file(ctx.client, data, content_type=content_type)
+        case UploadNotAllowedKind.LOCAL_PATH | UploadNotAllowedKind.BYTES:
+            record = await upload_file(ctx.client, source)
+        case _:
+            assert_never(kind)
+    ctx.uploads.append(record)
+    return record.uri
+
+
+async def _resolve_source(ctx: _PrepareContext, source: Any, kind: _ResolvableKind, at: _InputPosition) -> str:
+    """Resolve a classified source, deduped by identity (same source uploads once)."""
+    hashable = isinstance(source, (str, bytes, Path))
+    if hashable and source in ctx.dedup:
+        return ctx.dedup[source]
+    resolved = await _do_resolve_source(ctx, source, kind, at)
+    if hashable:
+        ctx.dedup[source] = resolved
+    return resolved
+
+
+def _describe_unsupported(value: Any) -> str:
+    """What a value no file input takes is, in words naming its kind and never its content, for the message
+    that refuses it: `a number`, `None`, `a dict with no "url" key`.
+    """
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, list):
+        return "a list"
+    if isinstance(value, dict):
+        return "{url} content" if "url" in value else 'a dict with no "url" key'
+    type_name = type(value).__name__
+    return f"{'an' if type_name[:1].lower() in 'aeiou' else 'a'} {type_name}"
+
+
+# The forms a file input takes, in the words of the refusal of a value it does not.
+_FILE_FORMS_WITH_UPLOADS = (
+    ": pass a local path (a str or a Path), bytes, a data: URL, an http(s) URL or a pipelex-storage:// reference, "
+    "bare or as the url of {url} content."
+)
+# The same under `allow_uploads=False`, word for word `UploadNotAllowedError`'s tail.
+_FILE_FORMS_WITHOUT_UPLOADS = ", and this preparation uploads nothing: pass an http(s) URL or a pipelex-storage:// reference instead."
+
+
 async def _resolve_file_position(ctx: _PrepareContext, caller_value: Any, at: _InputPosition) -> Any:
     """Resolve a value known to sit at a file position into canonical content with a rewritten `url`.
 
-    Under `allow_uploads=False`, a source that would need an upload is refused here, before
-    `_resolve_source` could read, decode or upload it.
+    A value no file input takes is refused here, where its position and the mode are known, and under
+    `allow_uploads=False` so is a source that would need an upload, before `_resolve_source` could read,
+    decode or upload it.
     """
     content = cast("dict[str, Any]", caller_value) if _is_file_content(caller_value) else None
     source = content["url"] if content is not None else caller_value
     kind = _classify_source(source)
-    if not ctx.allow_uploads and not isinstance(kind, _NoUpload):
-        raise UploadNotAllowedError(input_name=at.name, input_path=at.path, value_kind=kind)
-    resolved = await _resolve_source(ctx, source, kind)
+    match kind:
+        case _NoUpload.UNSUPPORTED:
+            described = _describe_unsupported(source)
+            held = f"{{url}} content whose url is {described}" if content is not None else described
+            forms = _FILE_FORMS_WITH_UPLOADS if ctx.allow_uploads else _FILE_FORMS_WITHOUT_UPLOADS
+            msg = f'Input "{at.path}" holds {held}, which no file input takes{forms}'
+            raise InvalidInputValueError(msg, input_name=at.name, input_path=at.path)
+        case _NoUpload.REFERENCE:
+            pass
+        case UploadNotAllowedKind.LOCAL_PATH | UploadNotAllowedKind.DATA_URL | UploadNotAllowedKind.BYTES:
+            if not ctx.allow_uploads:
+                raise UploadNotAllowedError(input_name=at.name, input_path=at.path, value_kind=kind)
+    resolved = await _resolve_source(ctx, source, kind, at)
     if content is not None:
         return {**content, "url": resolved}
     return {"url": resolved}
@@ -460,8 +495,10 @@ async def prepare_inputs(
     """Prepare a pipe's inputs: upload local/byte/data-URL assets at the signature's
     file-bearing positions and return copy-on-write rewritten inputs plus upload records.
 
-    With `allow_uploads=False`, nothing is read from disk or uploaded: a value that would need
-    either raises `UploadNotAllowedError`, naming the input and where inside it the value sits.
+    A value at a file input that cannot be a file — a value of a type no file input takes, or a
+    `data:` URL that does not decode — raises `InvalidInputValueError`, naming the input and where
+    inside it the value sits. With `allow_uploads=False`, nothing is read from disk or uploaded: a
+    value that would need either raises `UploadNotAllowedError`, naming them too.
 
     Args:
         client: The client supplying `upload` and `pipe_io`.

@@ -229,11 +229,25 @@ export class InvalidLocalSourceError extends InputPreparationError {
  * raises it while it reads the inputs, before anything is uploaded. As with
  * `InvalidLocalSourceError`, the inputs are what must change, which is how a consumer tells it
  * apart from `MethodLoadError`, a method that does not load, raised by the same preparation.
+ *
+ * As on `UploadNotAllowedError`, `inputName` is the input the value belongs to and `inputPath`
+ * where it sits inside that input (`report.attachments[1]`, or the name alone for a top-level
+ * file). The message names that path and describes the value by its kind, never by its content,
+ * since the value is the caller's data.
  */
 export class InvalidInputValueError extends InputPreparationError {
-  constructor(message: string, options?: { cause?: unknown }) {
+  public readonly inputName: string;
+  public readonly inputPath: string;
+
+  constructor(
+    message: string,
+    details: { inputName: string; inputPath: string },
+    options?: { cause?: unknown },
+  ) {
     super(message, options);
     this.name = "InvalidInputValueError";
+    this.inputName = details.inputName;
+    this.inputPath = details.inputPath;
   }
 }
 

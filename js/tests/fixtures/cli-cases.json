@@ -1440,9 +1440,10 @@
         "stdout": "",
         "stderr": [
           "Error: the inputs hold a value at a file input that cannot be read as a file.\n",
+          "Reason: Input \"receipt\" holds a malformed data URL (no comma separator).\n",
           "A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL"
         ],
-        "stderr_excludes": ["Run started"]
+        "stderr_excludes": ["Run started", "application/pdf"]
       }
     },
     {
@@ -1469,6 +1470,7 @@
         "stdout": "",
         "stderr": [
           "Error: the inputs hold a value at a file input that cannot be read as a file.\n",
+          "Reason: Input \"receipt\" holds a number, which no file input takes",
           "A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL"
         ],
         "stderr_excludes": ["Run started"]
