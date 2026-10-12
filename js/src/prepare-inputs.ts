@@ -596,13 +596,13 @@ function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor 
   const pipeRef = nonEmptyString(report.pipe_ref);
   const inputForm: unknown = report.input_form;
   if (pipeRef === undefined || !isPlainObject(inputForm) || !Object.hasOwn(inputForm, pipeRef)) {
-    const described = isPlainObject(inputForm)
+    const describedPipes = isPlainObject(inputForm)
       ? Object.keys(inputForm).join(", ") || "none"
       : "none";
     // The route broke its own contract, which no change to the request fixes.
     throw new InputPreparationError(
       `Cannot prepare inputs: the pipe I/O answer selected ${pipeRef === undefined ? "no pipe" : `"${pipeRef}"`}, ` +
-        `but its \`input_form\` does not describe it (it describes: ${described}).`,
+        `but its \`input_form\` does not describe it (it describes: ${describedPipes}).`,
       { verdict: { errorDomain: "runtime", retryable: false } },
     );
   }
@@ -622,11 +622,11 @@ function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor 
  * same reason, since it may be a file kind a newer standard defines.
  */
 function checkedDescriptor(pipeRef: string, entry: unknown): PipeInputFormDescriptor {
-  const fault = inputFormFault(entry);
-  if (fault !== undefined) {
+  const found = inputFormFault(entry);
+  if (found !== undefined) {
     throw new InputPreparationError(
       `Cannot prepare inputs: the pipe I/O answer's \`input_form\` for "${pipeRef}" ` +
-        `is ${fault.message}.`,
+        `is ${found.message}.`,
       { verdict: { errorDomain: "runtime", retryable: false } },
     );
   }
