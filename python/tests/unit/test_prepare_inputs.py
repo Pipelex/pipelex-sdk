@@ -371,20 +371,21 @@ class TestPrepareInputs:
         assert client.upload_calls[0].data == "AQIDBA=="
 
     @pytest.mark.parametrize(
-        "data_url",
+        ("data_url", "reason"),
         [
-            "data:image/png;base64,AQI",  # bad padding — binascii.Error
-            "data:image/png;base64,AQID!!!!",  # non-alphabet junk — rejected by validate=True
-            "data:image/png;base64",  # no comma, so no payload at all
+            ("data:image/png;base64,AQI", "invalid base64"),  # bad padding — binascii.Error
+            ("data:image/png;base64,AQID!!!!", "invalid base64"),  # non-alphabet junk — rejected by validate=True
+            ("data:image/png;base64", "no comma separator"),  # no comma, so no payload at all
         ],
     )
-    def test_malformed_data_url_raises_invalid_input_value(self, data_url: str) -> None:
+    def test_malformed_data_url_raises_invalid_input_value(self, data_url: str, reason: str) -> None:
         # A malformed data URL must surface as the typed `InvalidInputValueError`, the inputs' own
         # mistake (never a raw binascii.Error), and must never upload silently-corrupted bytes.
         client = _image_client()
 
-        with pytest.raises(InvalidInputValueError, match=r"^Malformed data URL"):
+        with pytest.raises(InvalidInputValueError) as exc_info:
             asyncio.run(prepare_inputs(client, files=_FILES, inputs={"photo": data_url}))
+        assert str(exc_info.value) == f'Input "photo" holds a malformed data URL ({reason}).'
         assert client.upload_calls == []
 
     def test_percent_encoded_binary_data_url_keeps_exact_bytes(self) -> None:
@@ -572,7 +573,7 @@ class TestPrepareInputs:
         # `content`. A third key means it is ordinary content, not an envelope.
         client = _image_client()
 
-        with pytest.raises(InvalidInputValueError, match="Unsupported value at a file input"):
+        with pytest.raises(InvalidInputValueError, match="which no file input takes"):
             asyncio.run(prepare_inputs(client, files=_FILES, inputs={"photo": {"concept": "x", "content": bytes([1]), "extra": 1}}))
 
     # ── Failures, all raised before any run exists ────────────────────────
@@ -582,14 +583,14 @@ class TestPrepareInputs:
 
         # A plain object that is neither a canonical {url} content nor bytes — a realistic
         # caller typo — must surface as a typed error, not pass through unresolved.
-        with pytest.raises(InvalidInputValueError, match="got dict"):
+        with pytest.raises(InvalidInputValueError, match=r'^Input "photo" holds a dict with no "url" key, '):
             asyncio.run(prepare_inputs(client, files=_FILES, inputs={"photo": {"mimeType": "image/png", "bytes": [1, 2, 3]}}))
         assert client.upload_calls == []
 
     def test_raises_invalid_input_value_for_a_number_at_a_file_position(self) -> None:
         client = _image_client()
 
-        with pytest.raises(InvalidInputValueError, match="got int"):
+        with pytest.raises(InvalidInputValueError, match=r'^Input "photo" holds a number, '):
             asyncio.run(prepare_inputs(client, files=_FILES, inputs={"photo": 42}))
         assert client.upload_calls == []
 
@@ -683,3 +684,97 @@ class TestPrepareInputs:
         cause = exc_info.value.__cause__
         assert isinstance(cause, ApiResponseError)
         assert cause.error_type == "EntryPipeNotFoundError"
+
+
+# ── An invalid value names its input (L-261012-a1ce83) ──────────────
+
+
+def _positions_client() -> _FakePrepareClient:
+    """A descriptor with a file at the top level, in a nested field and in a list."""
+    dossier = ObjectField(
+        name="dossier",
+        fields=[ImageField(name="cover", required=True), ListField(name="attachments", item=DocumentItem(required=True), required=True)],
+        **_required(),
+    )
+    return _FakePrepareClient(_report(_form(ImageField(name="photo", **_required()), dossier)))
+
+
+def _invalid_value(client: _FakePrepareClient, inputs: dict[str, Any]) -> InvalidInputValueError:
+    """Run a preparation that must fail with an `InvalidInputValueError`, and hand it back."""
+    with pytest.raises(InvalidInputValueError) as exc_info:
+        asyncio.run(prepare_inputs(client, files=_FILES, inputs=inputs))
+    return exc_info.value
+
+
+class TestAnInvalidValueNamesItsInput:
+    @pytest.mark.parametrize(
+        ("inputs", "input_name", "input_path"),
+        [
+            pytest.param({"photo": 42}, "photo", "photo", id="at the top level"),
+            pytest.param({"dossier": {"cover": 42}}, "dossier", "dossier.cover", id="in a nested field"),
+            pytest.param({"dossier": {"attachments": ["https://a/x.pdf", 42]}}, "dossier", "dossier.attachments[1]", id="in a list"),
+            pytest.param({"photo": {"concept": "native.Image", "content": 42}}, "photo", "photo", id="inside an explicit envelope"),
+        ],
+    )
+    def test_names_the_input_and_the_path_of_a_value_no_file_input_takes(self, inputs: dict[str, Any], input_name: str, input_path: str) -> None:
+        client = _positions_client()
+
+        error = _invalid_value(client, inputs)
+
+        assert (error.input_name, error.input_path) == (input_name, input_path)
+        assert str(error) == (
+            f'Input "{input_path}" holds a number, which no file input takes: pass a local path (a str or a Path), bytes, a data: URL, '
+            "an http(s) URL or a pipelex-storage:// reference, bare or as the url of {url} content."
+        )
+        assert client.upload_calls == []
+
+    @pytest.mark.parametrize(
+        ("value", "described"),
+        [
+            (42, "a number"),
+            (4.2, "a number"),
+            (True, "a boolean"),
+            (None, "None"),
+            ([1, 2], "a list"),
+            ({"mimeType": "image/png"}, 'a dict with no "url" key'),
+            ((1, 2), "a tuple"),
+            (bytearray(b"x"), "a bytearray"),
+            (object(), "an object"),
+            ({"url": 42}, "{url} content whose url is a number"),
+            ({"url": {"url": "https://a/x.png"}}, "{url} content whose url is {url} content"),
+        ],
+    )
+    def test_describes_the_value_by_its_kind(self, value: object, described: str) -> None:
+        error = _invalid_value(_positions_client(), {"photo": value})
+
+        assert str(error).startswith(f'Input "photo" holds {described}, ')
+
+    def test_leaves_the_callers_data_out_of_the_message(self) -> None:
+        error = _invalid_value(_positions_client(), {"photo": {"filename": "contract-acme.pdf", "token": "s3cr3t"}})
+
+        assert "contract-acme" not in str(error)
+        assert "s3cr3t" not in str(error)
+
+    @pytest.mark.parametrize(
+        ("reason", "data_url"),
+        [
+            ("no comma separator", "data:image/png;base64"),
+            ("invalid base64", "data:image/png;base64,%%%%"),
+        ],
+    )
+    def test_names_the_position_of_a_malformed_data_url_and_quotes_none_of_it(self, reason: str, data_url: str) -> None:
+        client = _positions_client()
+
+        error = _invalid_value(client, {"dossier": {"attachments": [data_url]}})
+
+        assert (error.input_name, error.input_path) == ("dossier", "dossier.attachments[0]")
+        assert str(error) == f'Input "dossier.attachments[0]" holds a malformed data URL ({reason}).'
+        assert "data:" not in str(error)
+        assert "image/png" not in str(error)
+        assert client.upload_calls == []
+
+    @pytest.mark.parametrize("value", [42, "data:image/png;base64"], ids=["a value no file input takes", "a malformed data URL"])
+    def test_reports_the_first_position_of_a_value_met_twice_in_one_list(self, value: object) -> None:
+        error = _invalid_value(_positions_client(), {"dossier": {"attachments": ["https://a/x.pdf", value, value]}})
+
+        assert error.input_path == "dossier.attachments[1]"

@@ -485,6 +485,129 @@ describe("prepareInputs", () => {
   });
 });
 
+// ── An invalid value names its input (L-261012-a1ce83) ──────────────
+
+describe("prepareInputs names the input holding a value that cannot be a file", () => {
+  /** A descriptor with a file at the top level, in a nested field and in a list. */
+  const positions = [
+    topLevel("photo", image()),
+    topLevel("dossier", object([named("cover", image()), named("attachments", list(document()))])),
+  ];
+
+  /** Run a preparation that must fail with an `InvalidInputValueError`, and hand it back. */
+  async function invalidValue(
+    client: FakeClient,
+    inputs: Record<string, unknown>,
+  ): Promise<InvalidInputValueError> {
+    const err = await prepareInputs(client, { files: FILES, inputs }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidInputValueError);
+    return err as InvalidInputValueError;
+  }
+
+  it.each([
+    ["at the top level", { photo: 42 }, "photo", "photo"],
+    ["in a nested field", { dossier: { cover: 42 } }, "dossier", "dossier.cover"],
+    [
+      "in a list",
+      { dossier: { attachments: ["https://a/x.pdf", 42] } },
+      "dossier",
+      "dossier.attachments[1]",
+    ],
+    [
+      "inside an explicit envelope",
+      { photo: { concept: "native.Image", content: 42 } },
+      "photo",
+      "photo",
+    ],
+  ])(
+    "names the input and the path of a value no file input takes %s",
+    async (_, inputs, inputName, inputPath) => {
+      const client = makeClient(positions);
+
+      const err = await invalidValue(client, inputs);
+
+      expect(err.inputName).toBe(inputName);
+      expect(err.inputPath).toBe(inputPath);
+      expect(err.message).toBe(
+        `Input "${inputPath}" holds a number, which no file input takes: pass a local path, bytes ` +
+          "(a Blob, File, ArrayBuffer or Uint8Array), a data: URL, an http(s) URL or a " +
+          "pipelex-storage:// reference, bare or as the url of {url} content.",
+      );
+      expect(client.uploadCalls).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["a number", 42],
+    ["a boolean", true],
+    ["null", null],
+    ["undefined", undefined],
+    ["an array", [1, 2]],
+    ['an object with no "url" key', { mimeType: "image/png" }],
+    ["an object that is neither bytes nor {url} content", new Date(0)],
+    ["{url} content whose url is a number", { url: 42 }],
+    ["{url} content whose url is {url} content", { url: { url: "https://a/x.png" } }],
+  ])("describes %s by its kind", async (described, value) => {
+    const client = makeClient(positions);
+
+    const err = await invalidValue(client, { photo: value });
+
+    expect(err.message).toMatch(new RegExp(`^Input "photo" holds ${escapeRegExp(described)}, `));
+  });
+
+  it("leaves the caller's data out of the message", async () => {
+    const client = makeClient(positions);
+
+    const err = await invalidValue(client, {
+      photo: { filename: "contract-acme.pdf", token: "s3cr3t" },
+    });
+
+    expect(err.message).not.toContain("contract-acme");
+    expect(err.message).not.toContain("s3cr3t");
+  });
+
+  it.each([
+    ["no comma separator", "data:image/png;base64"],
+    ["invalid base64", "data:image/png;base64,%%%%"],
+    ["invalid percent-encoding", "data:text/plain,%ZZ"],
+  ])(
+    "names the position of a malformed data URL (%s), and quotes none of it",
+    async (reason, dataUrl) => {
+      const client = makeClient(positions);
+
+      const err = await invalidValue(client, { dossier: { attachments: [dataUrl] } });
+
+      expect(err.inputName).toBe("dossier");
+      expect(err.inputPath).toBe("dossier.attachments[0]");
+      expect(err.message).toBe(
+        `Input "dossier.attachments[0]" holds a malformed data URL (${reason}).`,
+      );
+      expect(err.message).not.toContain("data:");
+      expect(err.message).not.toContain("image/png");
+      expect(err.message).not.toContain("text/plain");
+      expect(client.uploadCalls).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["a value no file input takes", 42],
+    ["a malformed data URL", "data:image/png;base64"],
+  ])("reports the first position of %s met twice in one list", async (_, value) => {
+    const client = makeClient(positions);
+
+    const err = await invalidValue(client, {
+      dossier: { attachments: ["https://a/x.pdf", value, value] },
+    });
+
+    expect(err.inputPath).toBe("dossier.attachments[1]");
+  });
+});
+
+/** `text` with every character a regular expression gives a meaning to escaped. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // ── The two misclassifications the descriptor fixes (L-260826-ddd843) ──
 
 describe("prepareInputs classifies from the descriptor, not the value's shape", () => {

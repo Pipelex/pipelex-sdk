@@ -230,7 +230,11 @@ const BUILDERS: Record<string, (given: Given) => Promise<Error> | Error> = {
     ),
   EmptyMethodSourceError: () => new EmptyMethodSourceError("mt_1"),
   InvalidLocalSourceError: () => new InvalidLocalSourceError("No such file.", "/nope.pdf"),
-  InvalidInputValueError: () => new InvalidInputValueError("Malformed data URL."),
+  InvalidInputValueError: () =>
+    new InvalidInputValueError('Input "photo" holds a malformed data URL (invalid base64).', {
+      inputName: "photo",
+      inputPath: "photo",
+    }),
   UploadNotAllowedError: () =>
     new UploadNotAllowedError({ inputName: "photo", inputPath: "photo", valueKind: "local_path" }),
   MethodLoadError: () => new MethodLoadError("The method does not load.", { validationErrors: [] }),

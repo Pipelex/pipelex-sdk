@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`InvalidInputValueError` names the input (Breaking)**: the error carries `input_name` and `input_path`, as `UploadNotAllowedError` does, and its constructor takes them as required keyword arguments, `InvalidInputValueError(message, input_name=…, input_path=…)`. Its message names the position and describes the value by its kind (`Input "dossier.attachments[1]" holds a number, which no file input takes: …`), a malformed `data:` URL's message no longer quotes the URL, and under `allow_uploads=False` the message offers only the two forms that pass, an `http(s)` URL or a `pipelex-storage://` reference.
+
 ## [v0.39.0] - 2026-10-12
 
 ### Added

@@ -175,13 +175,36 @@ function isExplicitEnvelope(value: unknown): value is { concept: unknown; conten
   return keys.length === 2 && "concept" in value && "content" in value;
 }
 
-/** Decode a `data:` URL into bytes plus its MIME type. */
-function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; contentType: string } {
+/**
+ * Where a value sits in the caller's inputs: the input it belongs to, and its path inside that
+ * input, `.field` for an object's declared field and `[index]` for a list's element. An explicit
+ * envelope adds nothing to the path, since its `content` is the input's value.
+ */
+interface InputPosition {
+  name: string;
+  path: string;
+}
+
+/** An `InvalidInputValueError` for the value at `at`, whose message the caller words. */
+function invalidValueAt(
+  at: InputPosition,
+  message: string,
+  options?: { cause?: unknown },
+): InvalidInputValueError {
+  return new InvalidInputValueError(message, { inputName: at.name, inputPath: at.path }, options);
+}
+
+/**
+ * Decode a `data:` URL into bytes plus its MIME type. `at` is where the URL sits, for the
+ * error's wording only; the message never quotes the URL, which is the caller's data.
+ */
+function decodeDataUrl(
+  dataUrl: string,
+  at: InputPosition,
+): { bytes: Uint8Array; contentType: string } {
   const comma = dataUrl.indexOf(",");
   if (comma < 0) {
-    throw new InvalidInputValueError(
-      `Malformed data URL (no comma separator): ${dataUrl.slice(0, 32)}…`,
-    );
+    throw invalidValueAt(at, `Input "${at.path}" holds a malformed data URL (no comma separator).`);
   }
   const header = dataUrl.slice(5, comma); // strip "data:"
   const payload = dataUrl.slice(comma + 1);
@@ -202,8 +225,10 @@ function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; contentType: strin
     const text = decodeURIComponent(payload);
     return { bytes: new TextEncoder().encode(text), contentType };
   } catch (cause) {
-    throw new InvalidInputValueError(
-      `Malformed data URL payload (${isBase64 ? "invalid base64" : "invalid percent-encoding"}): ${dataUrl.slice(0, 32)}…`,
+    throw invalidValueAt(
+      at,
+      `Input "${at.path}" holds a malformed data URL ` +
+        `(${isBase64 ? "invalid base64" : "invalid percent-encoding"}).`,
       { cause },
     );
   }
@@ -224,15 +249,15 @@ function base64ToBytes(base64: string): Uint8Array {
 
 /**
  * A source at a file position, classified once from its type and prefix, never from the file a
- * path names. The guard under `allowUploads: false` and `doResolveSource` read this one answer, and
- * the guard refuses every kind but the two that need no upload, so a source the resolver would
- * upload is a source the guard refuses: a new kind of source is an `UploadNotAllowedKind` or the
- * guard does not compile.
+ * path names. `resolveFilePosition` reads this one answer: it refuses `unsupported` itself, and
+ * under `allowUploads: false` every kind but `reference`, so a source the resolver would upload is
+ * a source that guard refuses: a new kind of source is an `UploadNotAllowedKind` or the guard does
+ * not compile.
  *
  * - `reference` — a `pipelex-storage://` reference or an http(s) URL, which passes through;
  * - `data_url`, `local_path`, `bytes` — what an upload is needed for;
  * - `unsupported` — a value no file input takes, refused as an `InvalidInputValueError` whether
- *   uploads are allowed or not.
+ *   uploads are allowed or not, before it reaches `resolveSource`.
  */
 type FileSource =
   | { kind: "reference"; value: string }
@@ -240,6 +265,9 @@ type FileSource =
   | { kind: "local_path"; value: string }
   | { kind: "bytes"; value: Blob | ArrayBuffer | Uint8Array }
   | { kind: "unsupported"; value: unknown };
+
+/** A source the resolver takes: every kind but `unsupported`, which never reaches it. */
+type ResolvableSource = Exclude<FileSource, { kind: "unsupported" }>;
 
 function classifySource(source: unknown): FileSource {
   if (typeof source === "string") {
@@ -256,21 +284,34 @@ function classifySource(source: unknown): FileSource {
   return { kind: "unsupported", value: source };
 }
 
-/** Resolve one classified source to the URL/URI to write, deduped by the caller's value's identity. */
-function resolveSource(ctx: PrepareContext, source: FileSource): Promise<string> {
+/**
+ * Resolve one classified source to the URL/URI to write, deduped by the caller's value's identity.
+ * `at` words a malformed `data:` URL's error; a decode rejected once is handed, cached, to a later
+ * position holding the same URL, and is never the one reported, since the walk reports the first
+ * failure it meets.
+ */
+function resolveSource(
+  ctx: PrepareContext,
+  source: ResolvableSource,
+  at: InputPosition,
+): Promise<string> {
   const cached = ctx.dedup.get(source.value);
   if (cached !== undefined) return cached;
-  const pending = doResolveSource(ctx, source);
+  const pending = doResolveSource(ctx, source, at);
   ctx.dedup.set(source.value, pending);
   return pending;
 }
 
-async function doResolveSource(ctx: PrepareContext, source: FileSource): Promise<string> {
+async function doResolveSource(
+  ctx: PrepareContext,
+  source: ResolvableSource,
+  at: InputPosition,
+): Promise<string> {
   switch (source.kind) {
     case "reference":
       return source.value; // already prepared, or a reachable URL — pass through
     case "data_url": {
-      const { bytes, contentType } = decodeDataUrl(source.value);
+      const { bytes, contentType } = decodeDataUrl(source.value, at);
       throwIfAborted(ctx.signal);
       const record = await uploadFile(ctx.client, bytes, { contentType, signal: ctx.signal });
       ctx.uploads.push(record);
@@ -283,31 +324,36 @@ async function doResolveSource(ctx: PrepareContext, source: FileSource): Promise
       ctx.uploads.push(record);
       return record.uri;
     }
-    case "unsupported":
-      // An unrecognized value sits at a file-bearing position (neither a source string,
-      // bytes, nor a canonical `{url}` content dict). Fail with a typed error rather than
-      // letting a raw TypeError escape from the byte-extraction path.
-      throw new InvalidInputValueError(
-        `Unsupported value at a file input: expected a path string, bytes (Blob/File/ArrayBuffer/Uint8Array), ` +
-          `a data URL, an http(s)/pipelex-storage:// URL, or canonical {url} content; got ${typeof source.value}.`,
-      );
   }
 }
 
 /**
- * Where a value sits in the caller's inputs: the input it belongs to, and its path inside that
- * input, `.field` for an object's declared field and `[index]` for a list's element. An explicit
- * envelope adds nothing to the path, since its `content` is the input's value.
+ * What a value no file input takes is, in words naming its kind and never its content, for the
+ * message that refuses it: `a number`, `null`, `an object with no "url" key`.
  */
-interface InputPosition {
-  name: string;
-  path: string;
+function describeUnsupported(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return "an array";
+  if (isPlainObject(value)) return "url" in value ? "{url} content" : 'an object with no "url" key';
+  if (typeof value === "object") return "an object that is neither bytes nor {url} content";
+  return `a ${typeof value}`;
 }
+
+/** The forms a file input takes, in the words of the refusal of a value it does not. */
+const FILE_FORMS_WITH_UPLOADS =
+  ": pass a local path, bytes (a Blob, File, ArrayBuffer or Uint8Array), a data: URL, an http(s) " +
+  "URL or a pipelex-storage:// reference, bare or as the url of {url} content.";
+/** The same under `allowUploads: false`, word for word `UploadNotAllowedError`'s tail. */
+const FILE_FORMS_WITHOUT_UPLOADS =
+  ", and this preparation uploads nothing: pass an http(s) URL or a pipelex-storage:// reference " +
+  "instead.";
 
 /**
  * Resolve a value known to sit at a file position into canonical content with a rewritten `url`.
- * Under `allowUploads: false`, a source that would need an upload is refused here, before
- * `resolveSource` could read, decode or upload it.
+ * A value no file input takes is refused here, where its position and the mode are known, and
+ * under `allowUploads: false` so is a source that would need an upload, before `resolveSource`
+ * could read, decode or upload it.
  */
 async function resolveFilePosition(
   ctx: PrepareContext,
@@ -316,14 +362,23 @@ async function resolveFilePosition(
 ): Promise<unknown> {
   const fileContent = isFileContent(callerValue);
   const source = classifySource(fileContent ? callerValue.url : callerValue);
-  if (!ctx.allowUploads && source.kind !== "reference" && source.kind !== "unsupported") {
+  if (source.kind === "unsupported") {
+    const described = describeUnsupported(source.value);
+    throw invalidValueAt(
+      at,
+      `Input "${at.path}" holds ${fileContent ? `{url} content whose url is ${described}` : described}, ` +
+        "which no file input takes" +
+        (ctx.allowUploads ? FILE_FORMS_WITH_UPLOADS : FILE_FORMS_WITHOUT_UPLOADS),
+    );
+  }
+  if (!ctx.allowUploads && source.kind !== "reference") {
     throw new UploadNotAllowedError({
       inputName: at.name,
       inputPath: at.path,
       valueKind: source.kind,
     });
   }
-  const resolved = await resolveSource(ctx, source);
+  const resolved = await resolveSource(ctx, source, at);
   return fileContent ? { ...callerValue, url: resolved } : { url: resolved };
 }
 
@@ -571,9 +626,11 @@ function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor 
  * records. HTTP(S) URLs and existing `pipelex-storage://` URIs pass through
  * unchanged. All failures are raised before any run is created.
  *
- * With `allowUploads: false`, nothing is read from disk or uploaded: a value that
- * would need either throws {@link UploadNotAllowedError}, naming the input and
- * where inside it the value sits.
+ * A value at a file input that cannot be a file — a value of a type no file input
+ * takes, or a `data:` URL that does not decode — throws
+ * {@link InvalidInputValueError}, naming the input and where inside it the value
+ * sits. With `allowUploads: false`, nothing is read from disk or uploaded: a value
+ * that would need either throws {@link UploadNotAllowedError}, naming them too.
  *
  * The pipe and its signature come from one `POST /v1/pipe-io`, whatever the
  * selector — inline `files`, a `method_ref` the runner resolves, or a

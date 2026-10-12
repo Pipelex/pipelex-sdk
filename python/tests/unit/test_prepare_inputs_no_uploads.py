@@ -186,6 +186,30 @@ class TestPrepareInputsWithoutUploads:
 
         assert not isinstance(exc_info.value, UploadNotAllowedError)
 
+    def test_names_the_input_of_a_value_no_file_input_takes_and_offers_only_the_two_forms_that_pass(self) -> None:
+        client = _FakeClient(
+            ObjectField(
+                name="dossier",
+                fields=[ListField(name="attachments", item=DocumentItem(required=True), required=True)],
+                **_required(),
+            )
+        )
+
+        with pytest.raises(InvalidInputValueError) as exc_info:
+            asyncio.run(
+                prepare_inputs(client, files=_FILES, inputs={"dossier": {"attachments": ["https://example.com/a.pdf", 42]}}, allow_uploads=False)
+            )
+
+        error = exc_info.value
+        assert (error.input_name, error.input_path) == ("dossier", "dossier.attachments[1]")
+        assert str(error) == (
+            'Input "dossier.attachments[1]" holds a number, which no file input takes, and this preparation uploads nothing: '
+            "pass an http(s) URL or a pipelex-storage:// reference instead."
+        )
+        for refused_form in ("local path", "bytes", "data:"):
+            assert refused_form not in str(error)
+        assert client.upload_calls == 0
+
     def test_uploads_as_before_when_allow_uploads_is_true(self, tmp_path: Path, read_spy: Any) -> None:
         path = tmp_path / "shot.png"
         path.write_bytes(b"\x01\x02\x03\x04")

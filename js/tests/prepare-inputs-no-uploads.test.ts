@@ -290,6 +290,30 @@ describe("prepareInputs with allowUploads: false passes references through", () 
     expect(error).toBeInstanceOf(InvalidInputValueError);
     expect(error).not.toBeInstanceOf(UploadNotAllowedError);
   });
+
+  it("names the input of a value no file input takes, and offers only the two forms that pass", async () => {
+    const client = makeClient([
+      topLevel("dossier", object([named("attachments", list(document()))])),
+    ]);
+
+    const error = await refusal(
+      prepareInputs(client, {
+        files: FILES,
+        inputs: { dossier: { attachments: ["https://example.com/a.pdf", 42] } },
+        allowUploads: false,
+      }),
+    );
+
+    expect(error).toBeInstanceOf(InvalidInputValueError);
+    expect(error).toMatchObject({ inputName: "dossier", inputPath: "dossier.attachments[1]" });
+    const message = (error as Error).message;
+    expect(message).toBe(
+      'Input "dossier.attachments[1]" holds a number, which no file input takes, and this ' +
+        "preparation uploads nothing: pass an http(s) URL or a pipelex-storage:// reference instead.",
+    );
+    expect(message).not.toMatch(/local path|bytes|data:/);
+    expect(client.uploadCalls).toBe(0);
+  });
 });
 
 describe("the allowUploads option itself", () => {
