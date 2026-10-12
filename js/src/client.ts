@@ -117,6 +117,8 @@ import { buildUserAgent } from "./user-agent.js";
 import type { AppInfo } from "./user-agent.js";
 import { uploadFile as uploadFileImpl } from "./upload.js";
 import type { UploadableAsset, UploadFileOptions, UploadRecord } from "./upload.js";
+import { encodeBundleResources, hasBundleResources } from "./bundle-resources.js";
+import type { BundleResources } from "./bundle-resources.js";
 import { prepareInputs as prepareInputsImpl } from "./prepare-inputs.js";
 import type { PrepareInputsRequest, PreparedInputs } from "./prepare-inputs.js";
 import {
@@ -158,10 +160,11 @@ export interface MthdsFile {
 }
 
 /**
- * The Pipelex API's own run-source extension — the layer-2 argument the RUNNER
- * itself resolves, beside the protocol's inline sources (`mthds_contents` and
- * the bundle encodings). Served by any pipelex-api >= 0.21.0 deployment, bare
- * or hosted (on `api.pipelex.com`, once the platform deploy carrying it lands).
+ * The Pipelex API's own run arguments — the layer-2 arguments the RUNNER itself
+ * reads, beside the protocol's inline sources (`mthds_contents` and the bundle
+ * encodings): the `method_ref` run source, served by any pipelex-api >= 0.21.0
+ * deployment, bare or hosted (on `api.pipelex.com`, once the platform deploy
+ * carrying it lands), and the `resources` the bundle's steps read.
  *
  * Named options rather than `extra` entries, for the same reason as the hosted
  * extensions below: `extra` remains the escape hatch for an extension this
@@ -187,6 +190,20 @@ export interface PipelexApiRunExtensions {
    * An empty string is treated as absent and is not sent.
    */
   method_ref?: string | null;
+  /**
+   * The files the bundle's steps read, such as a `PipeDocGen` step's `template_file`, keyed
+   * by the path the step names (`templates/invoice.docx`), each as its bytes (a `Uint8Array`,
+   * a Node `Buffer` included, an `ArrayBuffer` or a `Blob`). The client sends them as the
+   * wire's `resources`, each file in standard base64; see `docs/bundle-resources.md`.
+   *
+   * They accompany the bundle whose steps read them: inline `mthds_contents` or a method
+   * bundle (`files` / `bundle_b64`), or a hosted `method_id` the platform resolves. Beside a
+   * `method_ref` (whose files are its package's own), or with no source at all, they are
+   * rejected client-side, mirroring the server's `422`. A key that cannot name a file inside
+   * the bundle (absolute, a `..` segment, a backslash, a colon) is rejected client-side too.
+   * An absent, `null` or empty map is not sent.
+   */
+  resources?: BundleResources | null;
 }
 
 /**
@@ -255,6 +272,33 @@ export interface ValidateFilesOptions {
   render?: string[];
   /** Optional structured-view opt-in tokens, e.g. ["input_form", "output_form"]; sent only when given. */
   views?: string[];
+  /**
+   * The files the bundle's steps read, such as a `PipeDocGen` step's `template_file`, keyed by
+   * the path the step names, each as its bytes; sent as `resources` (see {@link ValidateOptions}).
+   */
+  resources?: BundleResources | null;
+  /**
+   * Per-call request ceiling; defaults to the 20-min execute ceiling. A positive number
+   * no larger than 2147483647, the longest delay a timer honours, else a `RangeError`.
+   */
+  timeoutMs?: number;
+  /** Caller-driven cancellation; the abort reason propagates untouched. */
+  signal?: AbortSignal;
+}
+
+/** `validate()`'s last argument: what rides beside the method, and the call's own transport. */
+export interface ValidateOptions {
+  /**
+   * The files the bundle's steps read, such as a `PipeDocGen` step's `template_file`, keyed by
+   * the path the step names (`templates/invoice.docx`), each as its bytes (a `Uint8Array`, a
+   * Node `Buffer` included, an `ArrayBuffer` or a `Blob`). Sent as the wire's `resources`, each
+   * file in standard base64; see `docs/bundle-resources.md`. They accompany inline contents, or
+   * a hosted `{ method_id }` the platform resolves; beside a `{ method_ref }` they are rejected
+   * client-side, mirroring the server's `422`. A step whose template file was not sent makes the
+   * verdict invalid, saying so; the dry run checks an office template file it was sent and adds
+   * its findings to the valid arm's `warnings` (`template_check_warning`).
+   */
+  resources?: BundleResources | null;
   /**
    * Per-call request ceiling; defaults to the 20-min execute ceiling. A positive number
    * no larger than 2147483647, the longest delay a timer honours, else a `RangeError`.
@@ -981,6 +1025,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     assertRunSourcesExclusive(options);
     assertMethodRefPairsWithNothing(options);
     assertLinkageMethodIdIsBare(options);
+    assertResourcesAccompanyABundle(options);
+    // No await when there are none: a request without them leaves on the tick it always did.
+    const resources =
+      options.resources == null ? undefined : await encodeBundleResources(options.resources);
 
     const request: RunRequest & Record<string, unknown> = {
       pipe_code: options.pipe_code,
@@ -991,6 +1039,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       dynamic_output_concept_ref: options.dynamic_output_concept_ref,
       files: nonEmptyFiles(options.files),
       bundle_b64: nonEmptyString(options.bundle_b64),
+      resources,
       ...api,
       ...hosted,
       ...extensions,
@@ -1071,6 +1120,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     assertRunSourcesExclusive(options);
     assertMethodRefPairsWithNothing(options);
     assertLinkageMethodIdIsBare(options);
+    assertResourcesAccompanyABundle(options);
+    // No await when there are none: a request without them leaves on the tick it always did.
+    const resources =
+      options.resources == null ? undefined : await encodeBundleResources(options.resources);
 
     // `?? undefined` so JSON.stringify drops absent fields from the wire body.
     const request: StartRequest & Record<string, unknown> = {
@@ -1082,6 +1135,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       dynamic_output_concept_ref: options.dynamic_output_concept_ref ?? undefined,
       files: nonEmptyFiles(options.files),
       bundle_b64: nonEmptyString(options.bundle_b64),
+      resources,
       ...api,
       ...hosted,
       ...extensions,
@@ -1090,17 +1144,18 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     const url = this.url("start");
     // `start` returns a 202 fast, so the poll timeout normally fits — with
     // exceptions that get the blocking-execute ceiling instead. A method bundle,
-    // inline as `mthds_contents` or in `files`/`bundle_b64`, can make the
-    // request *body* multi-megabyte, and the whole upload is
-    // charged against this budget — the same payload must not time out on the
-    // durable path yet succeed on the fallback. And a `method_ref` start makes
-    // the server FETCH the package before the ack (provenance rides the 202),
-    // whose clone timeout runs well past 30s on a cold cache — aborting it here
-    // would surface as `ApiUnreachableError`, blaming the network for a healthy
-    // server that is still cloning.
+    // inline as `mthds_contents` or in `files`/`bundle_b64`, or the files its
+    // steps read (`resources`), can make the request *body* multi-megabyte, and
+    // the whole upload is charged against this budget — the same payload must
+    // not time out on the durable path yet succeed on the fallback. And a
+    // `method_ref` start makes the server FETCH the package before the ack
+    // (provenance rides the 202), whose clone timeout runs well past 30s on a
+    // cold cache — aborting it here would surface as `ApiUnreachableError`,
+    // blaming the network for a healthy server that is still cloning.
     const needsLongCeiling =
       hasBundlePayload(options) ||
       (options.mthds_contents?.length ?? 0) > 0 ||
+      resources !== undefined ||
       nonEmptyString(options.method_ref) !== undefined;
     const res = await this.requestRaw("POST", url, {
       body: request,
@@ -1190,6 +1245,15 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * the field regardless — which is why `PipelexValidationReport.input_form` is typed
    * optional rather than required.
    *
+   * `options.resources` sends the files the bundle's steps read, such as a
+   * `PipeDocGen` step's `template_file`, keyed by the path the step names, each as
+   * its bytes (see {@link ValidateOptions}). A step whose template file was not sent
+   * is an `is_valid: false` verdict saying so, and a template check's findings in an
+   * office template file ride the valid arm's `warnings`. A key no step names, or
+   * files over the server's limits, are no-verdict refusals: a `422`
+   * `BundleResourceNotNamedError`, a `413` `PayloadTooLarge` or
+   * `BundleResourcesTooLargeError`.
+   *
    * A `{ method_ref }` source makes the server clone a repository before it
    * validates anything, and it needs no special budget here: this route already
    * defaults to the 20-minute execute ceiling, which clears the internal
@@ -1204,7 +1268,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     mthdsSources?: string[],
     render?: string[],
     views?: string[],
-    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+    options: ValidateOptions = {},
   ): Promise<PipelexValidationResult> {
     const body: Record<string, unknown> = {
       allow_signatures: allowSignatures,
@@ -1239,12 +1303,23 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
             "its source labels from the package's (or the stored method's) real file names.",
         );
       }
+      if (methodRef !== undefined && hasBundleResources(options.resources)) {
+        throw new RequestArgumentError(
+          "resources accompany inline mthds_contents; a method_ref's files are the package's own.",
+        );
+      }
       if (methodRef !== undefined) body.method_ref = methodRef;
       if (methodId !== undefined) body.method_id = methodId;
     }
     body.render = withValidateMarkdownRender(render);
     if (views !== undefined) {
       body.views = views;
+    }
+    // No await when there are none: a request without them leaves on the tick it always did.
+    const resources =
+      options.resources == null ? undefined : await encodeBundleResources(options.resources);
+    if (resources !== undefined) {
+      body.resources = resources;
     }
     const res = await this.requestRaw("POST", this.url("validate"), {
       body,
@@ -1288,6 +1363,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       options.render,
       options.views,
       {
+        resources: options.resources,
         timeoutMs: options.timeoutMs,
         signal: options.signal,
       },
@@ -1516,7 +1592,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * see {@link PipelexHostedToolingExtensions}).
    */
   async resolve(request: ResolveRequest): Promise<ResolveResponse> {
-    return this.requestExtension("resolve", request, {
+    return this.requestExtension("resolve", await wireCrateRequest(request), {
       timeoutMs: crateRequestTimeoutMs(request),
     });
   }
@@ -1537,7 +1613,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * a malformed selector is a 422; a registry-form `method_ref` is a `501`.
    */
   async codegen(request: CodegenRequest): Promise<CodegenResponse> {
-    return this.requestExtension("codegen", request, {
+    return this.requestExtension("codegen", await wireCrateRequest(request), {
       timeoutMs: crateRequestTimeoutMs(request),
     });
   }
@@ -1558,8 +1634,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * describes every pipe instead, and never refuses for want of an entry pipe.
    * `include_files: true` echoes the resolved closure's `.mthds` files as `files`.
    *
+   * Beside inline `files`, `resources` sends the files the closure's steps read, such as a
+   * `PipeDocGen` step's `template_file`, keyed by the path the step names, each as its bytes;
+   * a step whose template file was not sent makes the closure invalid. `resolve` and `codegen`
+   * take it too (see {@link CrateRequestBase}).
+   *
    * Same 200-verdict discipline and same three-form closure selector as {@link resolve}
-   * (the request is posted verbatim, and the selector XOR is the server's to enforce).
+   * (the request is posted as given, its `resources` encoded to base64, and the selector XOR
+   * and the `resources` pairing are the server's to enforce).
    * Only a no-verdict condition throws `ApiResponseError`: a malformed selector and an
    * over-limit file are `ValidationError` `422`s; a selection the route refuses is a
    * `422` whose `errorType` is `EntryPipeNotFoundError` (an unknown `pipe_ref`, no entry
@@ -1573,7 +1655,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * runner has cached the clone.
    */
   async pipeIo(request: PipeIORequest): Promise<PipeIOResponse> {
-    return this.requestExtension("pipe-io", request, {
+    return this.requestExtension("pipe-io", await wireCrateRequest(request), {
       timeoutMs: crateRequestTimeoutMs(request),
     });
   }
@@ -2338,7 +2420,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Name the method exactly one of three ways, all server-resolved through the
    * one `pipeIo` call this composes:
    *
-   * - `files` — the inline MTHDS closure;
+   * - `files` — the inline MTHDS closure, with the `resources` its steps read
+   *   (a `PipeDocGen` step's `template_file`), keyed by the path a step names;
    * - `method_ref` — a published method's address, fetched by the runner;
    * - `method_id` — a stored method's catalog id, resolved by the platform
    *   (hosted only; requires an API key).
@@ -2498,6 +2581,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       // this path runs the same method as the durable one, or it runs nothing.
       files: options.files ?? undefined,
       bundle_b64: options.bundle_b64 ?? undefined,
+      // And so must the files its steps read, or the same method fails to load here.
+      resources: options.resources ?? undefined,
       method_ref: options.method_ref ?? undefined,
       method_id: options.method_id ?? undefined,
       extra: options.extra ?? undefined,
@@ -2574,12 +2659,13 @@ const PROTOCOL_REQUEST_KEYS: readonly string[] = [
   "bundle_b64",
 ];
 
-// The PIPELEX API's own request fields — the layer-2 extension the runner
-// resolves itself (`method_ref`, a run source in its own right). Reserved on
-// `extra` for the same reason the protocol fields are: `extra` merges last, so
-// a smuggled copy would overwrite the validated named option and bypass the
-// selector-exclusivity checks.
-const PIPELEX_API_REQUEST_KEYS: readonly string[] = ["method_ref"];
+// The PIPELEX API's own request fields — the layer-2 extensions the runner
+// reads itself (`method_ref`, a run source in its own right, and `resources`,
+// the files the bundle's steps read). Reserved on `extra` for the same reason
+// the protocol fields are: `extra` merges last, so a smuggled copy would
+// overwrite the validated named option and bypass the selector-exclusivity and
+// path checks.
+const PIPELEX_API_REQUEST_KEYS: readonly string[] = ["method_ref", "resources"];
 
 // The HOSTED API's own request fields — the layer-3 extensions this client
 // names itself. Reserved on `extra` for the same reason the protocol fields
@@ -2770,6 +2856,51 @@ function assertLinkageMethodIdIsBare(options: PipelexHostedRunExtensions & RunRe
       "that did not. Send the bare id (parseMethodSelector(...).method_id), or drop the inline " +
       "source to run the version the selector names.",
   );
+}
+
+/**
+ * Enforce the run routes' `resources` pairing, mirroring the runner's own `422`s
+ * so an illegal pairing fails before anything is encoded or sent. The files a
+ * bundle's steps read accompany that bundle: inline `mthds_contents` or a method
+ * bundle. Beside a `method_ref` they are refused, a published package's files
+ * being its own, and so they are with no source at all, where no step could read
+ * them. A hosted `method_id` without an inline source is left to the server: the
+ * platform resolves it into the bundle the runner then reads them with.
+ *
+ * Presence follows the other pairing checks: `resources` counts when it carries a
+ * file, `mthds_contents` when non-empty, a bundle when `hasBundlePayload` says so.
+ */
+function assertResourcesAccompanyABundle(
+  options: PipelexApiRunExtensions & PipelexHostedRunExtensions & RunRequest,
+): void {
+  if (!hasBundleResources(options.resources)) return;
+  if (nonEmptyString(options.method_ref) !== undefined) {
+    throw new RequestArgumentError(
+      "resources accompany inline mthds_contents or a method bundle; a method_ref's files are the package's own.",
+    );
+  }
+  const hasInlineSource =
+    (options.mthds_contents != null && options.mthds_contents.length > 0) ||
+    hasBundlePayload(options);
+  if (!hasInlineSource && nonEmptyString(options.method_id) === undefined) {
+    throw new RequestArgumentError(
+      "resources accompany the bundle whose steps read them: send them with mthds_contents or a method bundle.",
+    );
+  }
+}
+
+/**
+ * A crate request as the wire takes it: the request as given, its `resources`
+ * encoded into the base64 map, the key left off when there is nothing to send.
+ * A request that carries no `resources` key is posted untouched.
+ */
+async function wireCrateRequest(request: CrateRequestBase): Promise<unknown> {
+  if (typeof request !== "object" || request === null || !("resources" in request)) {
+    return request;
+  }
+  const { resources, ...rest } = request;
+  const encoded = await encodeBundleResources(resources);
+  return encoded === undefined ? rest : { ...rest, resources: encoded };
 }
 
 /**
