@@ -102,8 +102,9 @@ async def describe_pipe(client: PipelexAPIClient, source: MethodSource, pipe: st
 
     Raises:
         CommandError: When the method does not load, or the answer does not describe the pipe it
-            selected or says neither that the method loads nor why it does not. A refusal of the
-            request itself, and an answer that is not JSON, propagate as the SDK's `ApiResponseError`.
+            selected, describes it with a malformed input form, or says neither that the method
+            loads nor why it does not. A refusal of the request itself, and an answer that is not
+            JSON, propagate as the SDK's `ApiResponseError`.
     """
     selector = crate_selector(source)
     request = PipeIORequest(files=selector.files, method_ref=selector.method_ref, method_id=selector.method_id, pipe_ref=pipe)
@@ -111,11 +112,16 @@ async def describe_pipe(client: PipelexAPIClient, source: MethodSource, pipe: st
     try:
         answer = await client.pipe_io(request)
     except ApiResponseError as exc:
-        # JSON that is no verdict is raised as an answer the client cannot read, pydantic's refusal as
-        # its cause: it is worded here as what the answer fails to say.
-        if not isinstance(exc.__cause__, ValidationError):
+        # JSON the client cannot parse is raised as an answer it cannot read, pydantic's refusal as its
+        # cause: it is worded here as what is wrong with the answer. A valid arm whose input form does not
+        # parse is the sentence `@pipelex/sdk`'s command prints for the input form its check refuses.
+        cause = exc.__cause__
+        if not isinstance(cause, ValidationError):
             raise
-        msg = "the API's pipe I/O answer says neither that the method loads nor why it does not."
+        if any(error["loc"][1:2] == ("input_form",) for error in cause.errors()):
+            msg = "the API's pipe I/O answer describes the pipe it selected with a malformed input form."
+        else:
+            msg = "the API's pipe I/O answer says neither that the method loads nor why it does not."
         raise CommandError(msg, exit_code=EXIT_FAILED) from exc
     match answer:
         case CrateInvalidReport():

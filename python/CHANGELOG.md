@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`pipelex-sdk run --inputs-template` and `pipelex-sdk script` name a malformed input form**: a pipe I/O answer whose input form for the selected pipe the client refuses prints `Error: the API's pipe I/O answer describes the pipe it selected with a malformed input form.`, as `@pipelex/sdk`'s command does, where it printed that the answer said neither that the method loads nor why it does not.
+
 ## [v0.39.0] - 2026-10-12
 
 ### Added

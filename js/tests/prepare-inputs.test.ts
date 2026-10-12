@@ -1281,8 +1281,9 @@ function malformedCase(name: string): MalformedFormCase {
 }
 
 /**
- * A value for every input of the shared answer, each needing an upload, so a check made lazily
- * during the walk would upload the inputs ahead of a malformed node before refusing it.
+ * A value for every input of the shared answer, those at a file position needing an upload (the
+ * `note` is prose and passes through), so a check made lazily during the walk would upload the
+ * files ahead of a malformed node before refusing it.
  */
 function inputsForEveryField(): Record<string, unknown> {
   return {

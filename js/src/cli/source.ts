@@ -13,6 +13,7 @@ import type {
   PipeIOValidReport,
   PipelexStartOptions,
 } from "../index.js";
+import { inputFormFault } from "../index.js";
 import type { BundleFile } from "./bundle.js";
 import { CommandError, EXIT_FAILED, untilInterrupted } from "./io.js";
 import { loadFailureLines, METHOD_DOES_NOT_LOAD_SENTENCE } from "./present.js";
@@ -64,7 +65,8 @@ export interface DescribedPipe {
  * the same selection the run's input preparation makes.
  *
  * @throws {CommandError} When the method does not load, or the answer does not describe the pipe
- *   it selected. A refusal of the request itself propagates as the SDK's `ApiResponseError`.
+ *   it selected or describes it with a malformed input form. A refusal of the request itself
+ *   propagates as the SDK's `ApiResponseError`.
  * @throws {Interrupted} When the person interrupts the wait.
  */
 export async function describePipe(
@@ -103,6 +105,16 @@ export async function describePipe(
     throw new CommandError("the API's pipe I/O answer does not describe the pipe it selected.", {
       exitCode: EXIT_FAILED,
     });
+  }
+  // The template is rendered from this entry, so it is checked as input preparation checks it: a
+  // malformed entry would otherwise crash the rendering or print a template under made-up keys.
+  // The sentence is the Python command's, which refuses the same answer when its client parses it
+  // and cannot say where, so neither command names the fault.
+  if (inputFormFault(inputForm[pipeRef]) !== undefined) {
+    throw new CommandError(
+      "the API's pipe I/O answer describes the pipe it selected with a malformed input form.",
+      { exitCode: EXIT_FAILED },
+    );
   }
   return { report, pipeRef, descriptor: inputForm[pipeRef] as unknown as PipeInputFormDescriptor };
 }
