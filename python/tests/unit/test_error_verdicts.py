@@ -330,7 +330,9 @@ _BUILDERS: dict[str, Callable[[_Given], BaseException]] = {
     "RequestArgumentError": lambda given: RequestArgumentError("Refused before sending.", verdict=given.verdict),
     "InputPreparationError": lambda given: InputPreparationError("Cannot prepare inputs.", verdict=given.verdict),
     "InvalidLocalSourceError": lambda _: InvalidLocalSourceError("No such file.", "/nope.pdf"),
-    "InvalidInputValueError": lambda _: InvalidInputValueError("Malformed data URL."),
+    "InvalidInputValueError": lambda _: InvalidInputValueError(
+        'Input "photo" holds a malformed data URL (invalid base64).', input_name="photo", input_path="photo"
+    ),
     "UploadNotAllowedError": lambda _: UploadNotAllowedError(input_name="photo", input_path="photo", value_kind=UploadNotAllowedKind.LOCAL_PATH),
     "MethodLoadError": lambda _: MethodLoadError("The method does not load.", validation_errors=[]),
     "RejectedAssetError": _rejected_asset,

@@ -2052,8 +2052,10 @@ class PipelexAPIClient(MthdsAPIClient):
         method's entry pipe. A refused selection raises `InputPreparationError` with the
         server's reason. See `docs/input-preparation.md`.
 
-        With `allow_uploads=False` it uploads nothing and reads no file: a value that would need
-        an upload raises `UploadNotAllowedError`, naming the input.
+        A value at a file input that cannot be a file, such as a number or a `data:` URL that does
+        not decode, raises `InvalidInputValueError`, naming the input. With `allow_uploads=False` it
+        uploads nothing and reads no file: a value that would need an upload raises
+        `UploadNotAllowedError`, naming the input too.
         """
         return await _prepare_inputs_impl(
             self,

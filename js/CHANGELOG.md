@@ -6,6 +6,10 @@
 
 - **`inputFormFault`**: returns the first fault of one pipe's input-form entry, as `{ path, problem, message }` with `path` in the descriptor's own terms (`fields[3].item`), or `undefined` when `prepareInputs` can walk it, for a caller that reads an entry itself to render a form or a template (`docs/input-preparation.md`).
 
+### Changed
+
+- **`InvalidInputValueError` names the input (Breaking)**: the error carries `inputName` and `inputPath`, as `UploadNotAllowedError` does, and its constructor takes them as a details argument, `new InvalidInputValueError(message, { inputName, inputPath }, options?)`. Its message names the position and describes the value by its kind (`Input "dossier.attachments[1]" holds a number, which no file input takes: …`), a malformed `data:` URL's message no longer quotes the URL, and under `allowUploads: false` the message offers only the two forms that pass, an `http(s)` URL or a `pipelex-storage://` reference.
+
 ### Fixed
 
 - **`prepareInputs` refuses a malformed input-form descriptor**: a pipe I/O answer whose descriptor for the selected pipe is malformed where preparation reads it (an entry that is not an object, a `fields` that is not a list, a field with no string `name`, a node with no string `kind`, an `object` node with no list of `fields`, a `list` node whose `item` is not a node) or names a `kind` outside the standard's vocabulary is an `InputPreparationError` with a `runtime` verdict, not retryable, naming the pipe and where in the descriptor the fault sits, checked whole before anything is uploaded, as the Python twin refuses it. It threw a bare `TypeError`, or, for a field with no name or an unknown kind, passed the caller's value through untouched, a local path at a file position included. The vocabulary is the walk's own, so a newer `mthds` installed beside the SDK cannot widen it.
