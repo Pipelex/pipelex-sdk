@@ -1,0 +1,1201 @@
+{
+  "about": "The input-form descriptors the two Pipelex SDKs must both refuse: what each makes of a pipe I/O answer (POST /v1/pipe-io) whose input_form entry for the selected pipe is malformed where preparation reads it. 'answer' is a well-formed valid answer selecting 'pipe_ref', whose entry declares a document, a prose, an object nesting an image, and a list of documents; both SDKs prepare against it. Each case replaces answer.input_form[pipe_ref] with 'entry', the base entry with one thing wrong, and 'path' is where in the entry the refusal points, the empty string for the entry itself. A malformation is the route breaking its contract, so both SDKs refuse every case with a runtime verdict that is not retryable, before anything is uploaded: @pipelex/sdk's prepareInputs throws an InputPreparationError naming the pipe_ref and the path, and pipelex-sdk's client raises an ApiResponseError when it parses the answer, before prepare_inputs walks anything. A shape only one SDK refuses, such as a member the standard does not define, stays out of this file. This file exists twice: js/tests/fixtures/malformed-input-forms.json is the source, and python/tests/fixtures/malformed-input-forms.json its copy, which must stay byte for byte identical. Change the source, then run make shared-files at the repository's root to write the copy; make check-shared-files fails on a stale one.",
+  "pipe_ref": "smoke.echo",
+  "answer": {
+    "is_valid": true,
+    "pipe_ref": "smoke.echo",
+    "pipe_io_contracts": {
+      "smoke.echo": {
+        "inputs": {
+          "doc": {
+            "concept_ref": "native.Document",
+            "presence": "plain",
+            "multiplicity": "single",
+            "item_count": null,
+            "json_schema": {
+              "properties": {
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "title": "native.Document",
+              "type": "object"
+            }
+          },
+          "note": {
+            "concept_ref": "native.Text",
+            "presence": "plain",
+            "multiplicity": "single",
+            "item_count": null,
+            "json_schema": {
+              "properties": {
+                "text": {
+                  "title": "Text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "title": "native.Text",
+              "type": "object"
+            }
+          },
+          "dossier": {
+            "concept_ref": "smoke.Dossier",
+            "presence": "plain",
+            "multiplicity": "single",
+            "item_count": null,
+            "json_schema": {
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "cover": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "title": "smoke.Dossier",
+              "type": "object"
+            }
+          },
+          "pages": {
+            "concept_ref": "native.Document",
+            "presence": "plain",
+            "multiplicity": "variable",
+            "item_count": null,
+            "json_schema": {
+              "properties": {
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "title": "native.Document",
+              "type": "object"
+            }
+          }
+        },
+        "output": {
+          "concept_ref": "native.Text",
+          "multiplicity": "single",
+          "item_count": null,
+          "optional": false,
+          "json_schema": {
+            "properties": {
+              "text": {
+                "title": "Text",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "title": "native.Text",
+            "type": "object"
+          }
+        }
+      }
+    },
+    "input_form": {
+      "smoke.echo": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      }
+    },
+    "output_form": {
+      "smoke.echo": {
+        "field": {
+          "kind": "prose",
+          "name": "output",
+          "concept_ref": "native.Text",
+          "required": true
+        }
+      }
+    },
+    "default_pipe_ref": "smoke.echo",
+    "pending_signatures": [],
+    "is_runnable": true
+  },
+  "cases": [
+    {
+      "name": "the entry is null",
+      "entry": null,
+      "path": ""
+    },
+    {
+      "name": "the entry is a string",
+      "entry": "smoke.echo",
+      "path": ""
+    },
+    {
+      "name": "the entry is a list",
+      "entry": [],
+      "path": ""
+    },
+    {
+      "name": "the entry has no fields",
+      "entry": {},
+      "path": "fields"
+    },
+    {
+      "name": "the entry's fields is null",
+      "entry": {
+        "fields": null
+      },
+      "path": "fields"
+    },
+    {
+      "name": "the entry's fields is a string",
+      "entry": {
+        "fields": "x"
+      },
+      "path": "fields"
+    },
+    {
+      "name": "a top-level field is null",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          null,
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[1]"
+    },
+    {
+      "name": "a top-level field is a string",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          "note",
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[1]"
+    },
+    {
+      "name": "a top-level field has no name",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[0].name"
+    },
+    {
+      "name": "a top-level field's name is a number",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": 3,
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[0].name"
+    },
+    {
+      "name": "a top-level field has no kind",
+      "entry": {
+        "fields": [
+          {
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[0].kind"
+    },
+    {
+      "name": "a top-level field's kind is null",
+      "entry": {
+        "fields": [
+          {
+            "kind": null,
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[0].kind"
+    },
+    {
+      "name": "a top-level field's kind is not in the vocabulary",
+      "entry": {
+        "fields": [
+          {
+            "kind": "audio",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[0].kind"
+    },
+    {
+      "name": "an object node has no fields",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[2].fields"
+    },
+    {
+      "name": "an object node's fields is a number",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": 3
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[2].fields"
+    },
+    {
+      "name": "an object node's field is null",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              null
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[2].fields[1]"
+    },
+    {
+      "name": "a nested field has no name",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[2].fields[1].name"
+    },
+    {
+      "name": "a nested field has no kind",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[2].fields[1].kind"
+    },
+    {
+      "name": "a nested field's kind is not in the vocabulary",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "audio",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "document",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[2].fields[1].kind"
+    },
+    {
+      "name": "a list node has no item",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false
+          }
+        ]
+      },
+      "path": "fields[3].item"
+    },
+    {
+      "name": "a list node's item is null",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": null
+          }
+        ]
+      },
+      "path": "fields[3].item"
+    },
+    {
+      "name": "a list node's item is a list",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": [
+              {
+                "kind": "document",
+                "required": true
+              }
+            ]
+          }
+        ]
+      },
+      "path": "fields[3].item"
+    },
+    {
+      "name": "a list node's item has no kind",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[3].item.kind"
+    },
+    {
+      "name": "a list node's item kind is not in the vocabulary",
+      "entry": {
+        "fields": [
+          {
+            "kind": "document",
+            "name": "doc",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "prose",
+            "name": "note",
+            "concept_ref": "native.Text",
+            "required": true,
+            "presence": "plain",
+            "gating": true
+          },
+          {
+            "kind": "object",
+            "name": "dossier",
+            "concept_ref": "smoke.Dossier",
+            "required": true,
+            "presence": "plain",
+            "gating": true,
+            "fields": [
+              {
+                "kind": "text",
+                "name": "title",
+                "required": true
+              },
+              {
+                "kind": "image",
+                "name": "cover",
+                "concept_ref": "native.Image",
+                "required": false
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "name": "pages",
+            "concept_ref": "native.Document",
+            "required": true,
+            "presence": "plain",
+            "gating": false,
+            "item": {
+              "kind": "audio",
+              "concept_ref": "native.Document",
+              "required": true
+            }
+          }
+        ]
+      },
+      "path": "fields[3].item.kind"
+    }
+  ]
+}

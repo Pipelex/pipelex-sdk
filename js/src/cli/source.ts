@@ -6,6 +6,7 @@
  * `method_ref` and a catalog id as `method_id`, both resolved by the server.
  */
 
+import type { FieldKind } from "mthds/protocol";
 import type {
   PipeInputFormDescriptor,
   PipeIORequest,
@@ -13,6 +14,7 @@ import type {
   PipeIOValidReport,
   PipelexStartOptions,
 } from "../index.js";
+import { inputFormFault } from "../index.js";
 import type { BundleFile } from "./bundle.js";
 import { CommandError, EXIT_FAILED, untilInterrupted } from "./io.js";
 import { loadFailureLines, METHOD_DOES_NOT_LOAD_SENTENCE } from "./present.js";
@@ -64,7 +66,8 @@ export interface DescribedPipe {
  * the same selection the run's input preparation makes.
  *
  * @throws {CommandError} When the method does not load, or the answer does not describe the pipe
- *   it selected. A refusal of the request itself propagates as the SDK's `ApiResponseError`.
+ *   it selected or describes it with an input form the walk or the template cannot read. A refusal
+ *   of the request itself propagates as the SDK's `ApiResponseError`.
  * @throws {Interrupted} When the person interrupts the wait.
  */
 export async function describePipe(
@@ -98,13 +101,77 @@ export async function describePipe(
   if (
     typeof pipeRef !== "string" ||
     !isPlainObject(inputForm) ||
-    !isPlainObject(inputForm[pipeRef])
+    !Object.hasOwn(inputForm, pipeRef)
   ) {
     throw new CommandError("the API's pipe I/O answer does not describe the pipe it selected.", {
       exitCode: EXIT_FAILED,
     });
   }
-  return { report, pipeRef, descriptor: inputForm[pipeRef] as unknown as PipeInputFormDescriptor };
+  // The template is rendered from this entry, so it is checked as input preparation checks it,
+  // and then for what the template reads beyond the walk: a malformed entry would otherwise crash
+  // the rendering or print a template under made-up keys. The sentence is the Python command's,
+  // printed when its client cannot parse an entry, which cannot say where, so neither command
+  // names the fault. Python's closed models refuse more than this, such as a member the standard
+  // does not define, which the template never reads.
+  const entry = inputForm[pipeRef];
+  if (inputFormFault(entry) !== undefined || !templateReadable(entry as Record<string, unknown>)) {
+    throw new CommandError(
+      "the API's pipe I/O answer describes the pipe it selected with a malformed input form.",
+      { exitCode: EXIT_FAILED },
+    );
+  }
+  return { report, pipeRef, descriptor: entry as unknown as PipeInputFormDescriptor };
+}
+
+/**
+ * Whether an entry `inputFormFault` passed also holds what the inputs template reads beyond the
+ * walk, in a shape it can render: every node's `concept_ref` a string, its `refines` a list of
+ * strings, an enum's `choices` a list and a list's `item_count` a whole number of at least two,
+ * the last three when present. Members the template only tests for truth are not checked.
+ */
+function templateReadable(entry: Record<string, unknown>): boolean {
+  return (entry.fields as Array<Record<string, unknown>>).every(templateReadableNode);
+}
+
+function templateReadableNode(node: Record<string, unknown>): boolean {
+  if (node.concept_ref !== undefined && typeof node.concept_ref !== "string") return false;
+  if (
+    node.refines !== undefined &&
+    node.refines !== null &&
+    !(Array.isArray(node.refines) && node.refines.every((ref) => typeof ref === "string"))
+  ) {
+    return false;
+  }
+  // Every kind is listed, so a kind a newer `mthds` pin adds stops the build here until the
+  // template's reads of it are checked, as it does in the walk's own table.
+  const kind = node.kind as FieldKind;
+  switch (kind) {
+    case "text":
+    case "prose":
+    case "date":
+    case "number":
+    case "boolean":
+    case "document":
+    case "image":
+    case "unknown":
+      return true;
+    case "object":
+      return templateReadable(node);
+    case "enum":
+      return Array.isArray(node.choices);
+    case "list":
+      return (
+        (node.item_count === undefined ||
+          node.item_count === null ||
+          (Number.isInteger(node.item_count) && (node.item_count as number) >= 2)) &&
+        templateReadableNode(node.item as Record<string, unknown>)
+      );
+    default: {
+      // Unreachable: `inputFormFault` refused a kind outside the walk's table.
+      const unreachable: never = kind;
+      return unreachable;
+    }
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

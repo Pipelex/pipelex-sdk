@@ -15,6 +15,7 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1366,6 +1367,154 @@ describe("prepareInputs verdicts and guards", () => {
     } as unknown as PrepareInputsRequest);
 
     expect(client.pipeIoCalls[0]).toEqual({ files: FILES });
+  });
+});
+
+// ── A malformed descriptor ───────────────────────────────────────────
+
+/**
+ * The descriptors both SDKs must refuse, `fixtures/malformed-input-forms.json`: this file is the
+ * source, `make shared-files` at the repository's root writes its copy to `python/tests/fixtures/`,
+ * and the Python suite feeds the same answers to its own client.
+ */
+interface MalformedFormCase {
+  name: string;
+  entry: unknown;
+  path: string;
+}
+
+const MALFORMED_FORMS = JSON.parse(
+  readFileSync(new URL("./fixtures/malformed-input-forms.json", import.meta.url), "utf8"),
+) as { pipe_ref: string; answer: PipeIOValidReport; cases: MalformedFormCase[] };
+
+/** The shared well-formed answer, its selected entry replaced by `entry` when one is given. */
+function malformedAnswer(entry?: unknown): PipeIOResponse {
+  const answer = structuredClone(MALFORMED_FORMS.answer);
+  if (entry !== undefined) {
+    answer.input_form = { [MALFORMED_FORMS.pipe_ref]: entry } as unknown as InputForm;
+  }
+  return answer;
+}
+
+/** The case of the shared file with this name. */
+function malformedCase(name: string): MalformedFormCase {
+  const found = MALFORMED_FORMS.cases.find((c) => c.name === name);
+  if (found === undefined) throw new Error(`no case named "${name}" in malformed-input-forms.json`);
+  return found;
+}
+
+/**
+ * A value for every input of the shared answer, those at a file position needing an upload (the
+ * `note` is prose and passes through), so a check made lazily during the walk would upload the
+ * files ahead of a malformed node before refusing it.
+ */
+function inputsForEveryField(): Record<string, unknown> {
+  return {
+    doc: new Uint8Array([1]),
+    note: "a note",
+    dossier: { title: "t", cover: new Uint8Array([2]) },
+    pages: [new Uint8Array([3]), new Uint8Array([4])],
+  };
+}
+
+describe("prepareInputs refuses a malformed descriptor before anything is uploaded", () => {
+  it("prepares the shared well-formed answer", async () => {
+    const client = makeClient([], { result: malformedAnswer() });
+
+    const prepared = await prepareInputs(client, { files: FILES, inputs: inputsForEveryField() });
+
+    expect(prepared.uploads).toHaveLength(4);
+    expect(prepared.inputs).toEqual({
+      doc: { url: "pipelex-storage://user/assets/1.bin" },
+      note: "a note",
+      dossier: { title: "t", cover: { url: "pipelex-storage://user/assets/2.bin" } },
+      pages: [
+        { url: "pipelex-storage://user/assets/3.bin" },
+        { url: "pipelex-storage://user/assets/4.bin" },
+      ],
+    });
+  });
+
+  describe.each([
+    ["by default", true],
+    ["under allowUploads: false", false],
+  ])("%s", (_mode, allowUploads) => {
+    it.each(MALFORMED_FORMS.cases.map((c) => [c.name, c] as const))(
+      "refuses the answer when %s",
+      async (_name, malformed) => {
+        const client = makeClient([], { result: malformedAnswer(malformed.entry) });
+
+        const err = await prepareInputs(client, {
+          files: FILES,
+          inputs: inputsForEveryField(),
+          allowUploads,
+        }).catch((e: unknown) => e);
+
+        expect(err).toBeInstanceOf(InputPreparationError);
+        const message = (err as Error).message;
+        const where = malformed.path === "" ? ": " : ` at ${malformed.path}: `;
+        expect(message).toContain(
+          `the pipe I/O answer's \`input_form\` for "${MALFORMED_FORMS.pipe_ref}" is malformed${where}`,
+        );
+        // The route broke its own contract, which no change to the request fixes.
+        expect((err as InputPreparationError).errorDomain).toBe("runtime");
+        expect((err as InputPreparationError).retryable).toBe(false);
+        expect(client.uploadCalls).toHaveLength(0);
+      },
+    );
+  });
+
+  it("refuses a malformed node under an input the caller left out", async () => {
+    const client = makeClient([], {
+      result: malformedAnswer(malformedCase("a list node's item is null").entry),
+    });
+
+    const err = await prepareInputs(client, {
+      files: FILES,
+      inputs: { doc: new Uint8Array([1]) },
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(InputPreparationError);
+    expect((err as Error).message).toContain("is malformed at fields[3].item: ");
+    expect(client.uploadCalls).toHaveLength(0);
+  });
+
+  it("names what it found and, for an unknown kind, the remedy", async () => {
+    const nullItem = malformedCase("a list node's item is null");
+    const audio = malformedCase("a top-level field's kind is not in the vocabulary");
+
+    await expect(
+      prepareInputs(makeClient([], { result: malformedAnswer(nullItem.entry) }), {
+        files: FILES,
+        inputs: {},
+      }),
+    ).rejects.toThrow(
+      'Cannot prepare inputs: the pipe I/O answer\'s `input_form` for "smoke.echo" is malformed ' +
+        "at fields[3].item: expected a node with a string kind, got null.",
+    );
+    await expect(
+      prepareInputs(makeClient([], { result: malformedAnswer(audio.entry) }), {
+        files: FILES,
+        inputs: {},
+      }),
+    ).rejects.toThrow(
+      'is malformed at fields[0].kind: "audio" is not a kind this version of @pipelex/sdk knows ' +
+        "(text, prose, date, number, boolean, enum, document, image, object, list, unknown); " +
+        "a newer API may need a newer SDK.",
+    );
+  });
+
+  it("refuses the first malformation in document order", async () => {
+    const entry = structuredClone(
+      MALFORMED_FORMS.answer.input_form[MALFORMED_FORMS.pipe_ref],
+    ) as unknown as { fields: Record<string, unknown>[] };
+    entry.fields[1] = { ...entry.fields[1], kind: "audio" };
+    entry.fields[3] = { ...entry.fields[3], item: null };
+    const client = makeClient([], { result: malformedAnswer(entry) });
+
+    await expect(prepareInputs(client, { files: FILES, inputs: {} })).rejects.toThrow(
+      "is malformed at fields[1].kind: ",
+    );
   });
 });
 

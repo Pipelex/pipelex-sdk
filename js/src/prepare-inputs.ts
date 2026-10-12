@@ -32,7 +32,7 @@
  */
 
 import type {
-  InputForm,
+  FieldKind,
   InputFormItem,
   InputFormTopLevelField,
   PipeInputFormDescriptor,
@@ -52,6 +52,28 @@ import { uploadFile } from "./upload.js";
 
 const PIPELEX_STORAGE_SCHEME = "pipelex-storage://";
 const HTTP_URL_RE = /^https?:\/\//i;
+
+/**
+ * Every `kind` the walk handles, in the standard's order, and the only kinds a descriptor may name:
+ * any other is refused. It is the walk's own table rather than the `FIELD_KINDS` of whichever
+ * `mthds` is installed beside the SDK, so a newer `mthds` defining a new kind, which may be a file
+ * kind, cannot reach the walk at run time. Moving the pin onto such an `mthds` stops the build
+ * here, where `satisfies` requires every `FieldKind`, and in `resolveNode`'s exhaustive switch.
+ */
+const WALKED_KINDS = {
+  text: true,
+  prose: true,
+  date: true,
+  number: true,
+  boolean: true,
+  enum: true,
+  document: true,
+  image: true,
+  object: true,
+  list: true,
+  unknown: true,
+} as const satisfies Record<FieldKind, true>;
+const KNOWN_KINDS: ReadonlySet<string> = new Set(Object.keys(WALKED_KINDS));
 
 /**
  * The `error_type`s of the route's pipe-selection refusals — the only `422`s
@@ -363,10 +385,10 @@ async function resolveFilePosition(
   const fileContent = isFileContent(callerValue);
   const source = classifySource(fileContent ? callerValue.url : callerValue);
   if (source.kind === "unsupported") {
-    const described = describeUnsupported(source.value);
+    const unsupported = describeUnsupported(source.value);
     throw invalidValueAt(
       at,
-      `Input "${at.path}" holds ${fileContent ? `{url} content whose url is ${described}` : described}, ` +
+      `Input "${at.path}" holds ${fileContent ? `{url} content whose url is ${unsupported}` : unsupported}, ` +
         "which no file input takes" +
         (ctx.allowUploads ? FILE_FORMS_WITH_UPLOADS : FILE_FORMS_WITHOUT_UPLOADS),
     );
@@ -399,6 +421,12 @@ async function resolveFilePosition(
  * A caller value whose shape disagrees with the node (a scalar at an `object`, a
  * non-array at a `list`) passes through for the run to reject — preparation never
  * second-guesses the signature.
+ *
+ * Every node it receives was checked by {@link inputFormFault}: an `object`
+ * carries a list of named fields, a `list` carries a node, and every `kind` is one
+ * of {@link WALKED_KINDS}, so the walk trusts the descriptor's types without a
+ * guard. The switch names every kind, so a kind the standard adds does not
+ * compile until the walk decides what it is.
  */
 async function resolveNode(
   ctx: PrepareContext,
@@ -431,8 +459,22 @@ async function resolveNode(
         ),
       );
     }
-    default:
+    case "text":
+    case "prose":
+    case "date":
+    case "number":
+    case "boolean":
+    case "enum":
+    case "unknown":
       return callerValue;
+    default: {
+      // Unreachable: the descriptor was checked against WALKED_KINDS before the walk began.
+      const unwalked: never = node;
+      throw new InputPreparationError(
+        `Cannot prepare inputs: the walk has no arm for the kind ${described((unwalked as { kind: unknown }).kind)}.`,
+        { verdict: { errorDomain: "runtime", retryable: false } },
+      );
+    }
   }
 }
 
@@ -537,7 +579,8 @@ function resolveAllowUploads(raw: unknown): boolean {
  * which it answers with a `422` typed by one of {@link PIPE_SELECTION_ERROR_TYPES};
  * every other failure is re-thrown unchanged. An answer with no boolean `is_valid`
  * is neither arm, so it fails the preparation with a `runtime` verdict, as an
- * `input_form` that does not describe the selected pipe does.
+ * `input_form` that does not describe the selected pipe does, and one whose
+ * descriptor is malformed where the walk reads it.
  */
 async function fetchSignature(
   client: PrepareCapableClient,
@@ -601,23 +644,143 @@ function invalidReason(answer: Record<string, unknown>): string {
  * The descriptor of the pipe the route selected. The route answers a
  * single-pipe request with `input_form` keyed by exactly the `pipe_ref` it
  * resolved, so a missing ref or a missing key is the answer contradicting itself
- * — preparing any other pipe would silently walk the wrong signature.
+ * — preparing any other pipe would silently walk the wrong signature. The entry
+ * found is then checked whole, by {@link checkedDescriptor}, before it is trusted.
  */
 function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor {
   const pipeRef = nonEmptyString(report.pipe_ref);
   const inputForm: unknown = report.input_form;
   if (pipeRef === undefined || !isPlainObject(inputForm) || !Object.hasOwn(inputForm, pipeRef)) {
-    const described = isPlainObject(inputForm)
+    const describedPipes = isPlainObject(inputForm)
       ? Object.keys(inputForm).join(", ") || "none"
       : "none";
     // The route broke its own contract, which no change to the request fixes.
     throw new InputPreparationError(
       `Cannot prepare inputs: the pipe I/O answer selected ${pipeRef === undefined ? "no pipe" : `"${pipeRef}"`}, ` +
-        `but its \`input_form\` does not describe it (it describes: ${described}).`,
+        `but its \`input_form\` does not describe it (it describes: ${describedPipes}).`,
       { verdict: { errorDomain: "runtime", retryable: false } },
     );
   }
-  return (inputForm as InputForm)[pipeRef] as PipeInputFormDescriptor;
+  return checkedDescriptor(pipeRef, inputForm[pipeRef]);
+}
+
+/**
+ * The selected entry of `input_form`, checked whole by {@link inputFormFault}
+ * before any caller value is read and before anything is uploaded, and refused at
+ * its first fault.
+ *
+ * A malformation is the route breaking its contract, at whatever depth and under
+ * whichever input, so it is refused with a `runtime` verdict, not retryable. It is
+ * never passed through: a node the SDK cannot read may be a file position, and
+ * under the default mode passing it through would send the caller's local path to
+ * the runner verbatim. A `kind` outside {@link WALKED_KINDS} is refused for the
+ * same reason, since it may be a file kind a newer standard defines.
+ */
+function checkedDescriptor(pipeRef: string, entry: unknown): PipeInputFormDescriptor {
+  const found = inputFormFault(entry);
+  if (found !== undefined) {
+    throw new InputPreparationError(
+      `Cannot prepare inputs: the pipe I/O answer's \`input_form\` for "${pipeRef}" ` +
+        `is ${found.message}.`,
+      { verdict: { errorDomain: "runtime", retryable: false } },
+    );
+  }
+  return entry as PipeInputFormDescriptor;
+}
+
+/**
+ * Where an input-form entry breaks the shape `prepareInputs` reads, and what was
+ * found there.
+ */
+export interface InputFormFault {
+  /** Where, in the entry's own terms (`fields[3].item`, `fields[2].fields[0].kind`); empty for the entry itself. */
+  path: string;
+  /** What was expected there and what was found. */
+  problem: string;
+  /** The two in one phrase: `malformed at fields[3].item: expected a node with a string kind, got null`. */
+  message: string;
+}
+
+/**
+ * The first fault of one pipe's input-form entry (`input_form[pipe_ref]`) in
+ * document order, or `undefined` when `prepareInputs` can walk it. It checks what
+ * the walk reads and only that: the entry is an object whose `fields` is a list;
+ * every field, at the top level or in an `object` node, is an object with a string
+ * `name`; every node, a field or a `list` node's `item`, has a string `kind` this
+ * SDK walks, the standard's vocabulary at the `mthds` it pins; an `object` node's
+ * `fields` is a list and a `list` node's `item` is a node. Members the walk does
+ * not read (`concept_ref`, `presence`, `hints`, …) are not checked. `prepareInputs`
+ * refuses an entry with a fault before it uploads anything; a caller that reads an
+ * entry itself, to render a form or a template, checks it here first.
+ */
+export function inputFormFault(entry: unknown): InputFormFault | undefined {
+  if (!isPlainObject(entry)) {
+    return fault("", `expected an object with a list of fields, got ${described(entry)}`);
+  }
+  return fieldsFault(entry.fields, "fields");
+}
+
+function fault(path: string, problem: string): InputFormFault {
+  return {
+    path,
+    problem,
+    message: `malformed${path === "" ? "" : ` at ${path}`}: ${problem}`,
+  };
+}
+
+function fieldsFault(fields: unknown, path: string): InputFormFault | undefined {
+  if (!Array.isArray(fields)) {
+    return fault(path, `expected a list of fields, got ${described(fields)}`);
+  }
+  for (const [index, field] of (fields as unknown[]).entries()) {
+    const at = `${path}[${index}]`;
+    if (!isPlainObject(field)) {
+      return fault(at, `expected a field with a string name and kind, got ${described(field)}`);
+    }
+    if (typeof field.name !== "string") {
+      return fault(`${at}.name`, `expected a string, got ${described(field.name)}`);
+    }
+    const found = nodeFault(field, at);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function nodeFault(node: unknown, path: string): InputFormFault | undefined {
+  if (!isPlainObject(node)) {
+    return fault(path, `expected a node with a string kind, got ${described(node)}`);
+  }
+  const kind = node.kind;
+  if (typeof kind !== "string") {
+    return fault(`${path}.kind`, `expected a string, got ${described(kind)}`);
+  }
+  if (!KNOWN_KINDS.has(kind)) {
+    return fault(
+      `${path}.kind`,
+      `${described(kind)} is not a kind this version of @pipelex/sdk knows ` +
+        `(${[...KNOWN_KINDS].join(", ")}); a newer API may need a newer SDK`,
+    );
+  }
+  if (kind === "object") return fieldsFault(node.fields, `${path}.fields`);
+  if (kind === "list") return nodeFault(node.item, `${path}.item`);
+  return undefined;
+}
+
+/**
+ * A value of the server's answer, described for a message: `null`, `nothing` for
+ * an absent member, a string quoted and cut at 40 characters, a number or a
+ * boolean as written, else what it is.
+ */
+function described(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "nothing";
+  if (typeof value === "string") {
+    return JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return "a list";
+  if (isPlainObject(value)) return "an object";
+  return typeof value;
 }
 
 /**
@@ -636,10 +799,14 @@ function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor 
  * selector — inline `files`, a `method_ref` the runner resolves, or a
  * `method_id` the platform resolves. A bare or alias-qualified `pipe_ref`, a
  * closure that does not load, and a selection the route refuses (an unknown
- * `pipe_ref`, no entry pipe, several) throw {@link InputPreparationError}; any
- * other failure from the route (a malformed selector, an unknown or foreign-org
- * id, no package at the address, auth, a server fault, a deployment that does not
- * serve the route) surfaces as `ApiResponseError`, unchanged.
+ * `pipe_ref`, no entry pipe, several) throw {@link InputPreparationError}. So
+ * does an answer that breaks the route's contract, with a `runtime` verdict that
+ * is not retryable: no boolean `is_valid`, an `input_form` that does not describe
+ * the selected pipe, or a descriptor that is malformed or names a kind this SDK
+ * does not know, which is checked whole before anything is uploaded. Any other
+ * failure from the route (a malformed selector, an unknown or foreign-org id, no
+ * package at the address, auth, a server fault, a deployment that does not serve
+ * the route) surfaces as `ApiResponseError`, unchanged.
  */
 export async function prepareInputs(
   client: PrepareCapableClient,
