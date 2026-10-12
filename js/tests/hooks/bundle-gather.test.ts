@@ -5,11 +5,11 @@
  * `unavailable` upstream (an under-supplied bundle risks a false block).
  */
 
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { gatherBundle } from "../../src/hooks/bundle-gather.js";
+import { gatherBundle, templateFilesNamedBy } from "../../src/hooks/bundle-gather.js";
 
 let root: string;
 
@@ -110,5 +110,222 @@ describe("gatherBundle", () => {
       // Restore perms so afterEach can remove the tree.
       chmodSync(locked, 0o700);
     }
+  });
+});
+
+/** A `.mthds` file whose one step fills the office template `templateFile` names. */
+const docGenBundle = (templateFile: string, domain = "invoicing"): string => `domain = "${domain}"
+
+[pipe.print_invoice]
+type          = "PipeDocGen"
+description   = "Print the invoice"
+inputs        = { invoice = "Text" }
+output        = "Document"
+format        = "docx"
+template_file = "${templateFile}"
+`;
+
+const putBytes = (relPath: string, bytes: Uint8Array): string => {
+  const full = join(root, relPath);
+  mkdirSync(join(full, ".."), { recursive: true });
+  writeFileSync(full, bytes);
+  return full;
+};
+
+const TEMPLATE = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xff, 0x00]);
+
+describe("templateFilesNamedBy", () => {
+  it("names each PipeDocGen step's template_file, and nothing else", () => {
+    const content = `${docGenBundle("templates/invoice.docx")}
+[pipe.summarize]
+type = "PipeLLM"
+description = "Summarize"
+template_file = "not/a/docgen.docx"
+
+[pipe.print_receipt]
+type = "PipeDocGen"
+description = "Print the receipt as a PDF"
+format = "pdf"
+`;
+    expect(templateFilesNamedBy(content)).toEqual(["templates/invoice.docx"]);
+  });
+
+  it("names none in a file that does not parse, or has no pipe table", () => {
+    expect(templateFilesNamedBy("domain = [unclosed")).toEqual([]);
+    expect(templateFilesNamedBy(`domain = "d"\npipe = 3\n`)).toEqual([]);
+  });
+});
+
+describe("gatherBundle — the template files the steps read", () => {
+  it("reads each beside the .mthds file whose step names it, keyed by the path the step names", () => {
+    const edited = put("main.mthds", docGenBundle("./templates/invoice.docx"));
+    put("sub/receipt.mthds", docGenBundle("receipt.docx", "receipts"));
+    putBytes("templates/invoice.docx", TEMPLATE);
+    putBytes("sub/receipt.docx", TEMPLATE);
+    // The runtime reads every file of the request as sitting in one directory, so the
+    // nested file's template is sent under the path its step names.
+    const result = gatherBundle(edited);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Object.keys(result.resources).sort()).toEqual([
+      "receipt.docx",
+      "templates/invoice.docx",
+    ]);
+    expect(Buffer.from(result.resources["templates/invoice.docx"]!)).toEqual(Buffer.from(TEMPLATE));
+  });
+
+  it("sends none for a bundle whose steps read no file", () => {
+    const edited = put("main.mthds");
+    const result = gatherBundle(edited);
+    expect(result).toEqual({ ok: true, files: expect.any(Array), resources: {} });
+  });
+
+  it("leaves out a file that is not there and a path the server would refuse", () => {
+    const edited = put("bundle/main.mthds", docGenBundle("templates/missing.docx"));
+    put("bundle/other.mthds", docGenBundle("../outside.docx", "other"));
+    putBytes("outside.docx", TEMPLATE);
+    const result = gatherBundle(edited);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.resources).toEqual({});
+  });
+
+  it("reads one file once when two steps name it", () => {
+    const edited = put("main.mthds", docGenBundle("t.docx"));
+    put("again.mthds", docGenBundle("./t.docx", "again"));
+    putBytes("t.docx", TEMPLATE);
+    const result = gatherBundle(edited);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Object.keys(result.resources)).toEqual(["t.docx"]);
+  });
+
+  it("accepts one path naming the same bytes beside two .mthds files", () => {
+    const edited = put("main.mthds", docGenBundle("t.docx"));
+    put("sub/other.mthds", docGenBundle("t.docx", "other"));
+    putBytes("t.docx", TEMPLATE);
+    putBytes("sub/t.docx", TEMPLATE);
+    const result = gatherBundle(edited);
+    expect(result.ok).toBe(true);
+  });
+
+  it("reports a conflict when one path names two different files", () => {
+    const edited = put("main.mthds", docGenBundle("t.docx"));
+    put("sub/other.mthds", docGenBundle("t.docx", "other"));
+    putBytes("t.docx", TEMPLATE);
+    putBytes("sub/t.docx", new Uint8Array([1, 2, 3]));
+    expect(gatherBundle(edited)).toEqual({ ok: false, reason: "conflict" });
+  });
+
+  it("never reads a template that leads out of the bundle's directory", ({ skip }) => {
+    skip(process.platform === "win32");
+    const outside = mkdtempSync(join(tmpdir(), "hook-outside-"));
+    try {
+      writeFileSync(join(outside, "secret.docx"), TEMPLATE);
+      const bundle = join(root, "bundle");
+      mkdirSync(bundle);
+      const edited = join(bundle, "main.mthds");
+      writeFileSync(edited, docGenBundle("t.docx"));
+      symlinkSync(join(outside, "secret.docx"), join(bundle, "t.docx"));
+      expect(gatherBundle(edited)).toEqual({ ok: false, reason: "unreadable" });
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("overflows past the template caps", () => {
+    const edited = put("main.mthds", docGenBundle("a.docx"));
+    put("b.mthds", docGenBundle("b.docx", "b"));
+    putBytes("a.docx", TEMPLATE);
+    putBytes("b.docx", TEMPLATE);
+    const caps = { maxFiles: 50, maxTotalBytes: 1024 * 1024 };
+    expect(gatherBundle(edited, { ...caps, maxResourceFiles: 1 })).toEqual({
+      ok: false,
+      reason: "overflow",
+    });
+    expect(gatherBundle(edited, { ...caps, maxResourceBytes: TEMPLATE.length })).toEqual({
+      ok: false,
+      reason: "overflow",
+    });
+    expect(gatherBundle(edited, caps).ok).toBe(true);
+  });
+
+  it("overflows on one template file over the per-file cap", () => {
+    const edited = put("main.mthds", docGenBundle("a.docx"));
+    putBytes("a.docx", TEMPLATE);
+    const caps = { maxFiles: 50, maxTotalBytes: 1024 * 1024 };
+    expect(gatherBundle(edited, { ...caps, maxResourceFileBytes: TEMPLATE.length - 1 })).toEqual({
+      ok: false,
+      reason: "overflow",
+    });
+    expect(gatherBundle(edited, { ...caps, maxResourceFileBytes: TEMPLATE.length }).ok).toBe(true);
+  });
+
+  it("holds two files under one path to the caps before reading either to compare them", ({
+    skip,
+  }) => {
+    // Root reads a 0-perm file, and Windows ignores chmod, so the unread file is readable there.
+    skip(
+      process.platform === "win32" ||
+        (typeof process.getuid === "function" && process.getuid() === 0),
+    );
+    const edited = put("main.mthds", docGenBundle("t.docx"));
+    put("sub/other.mthds", docGenBundle("t.docx", "other"));
+    putBytes("t.docx", TEMPLATE);
+    const nested = putBytes("sub/t.docx", TEMPLATE);
+    // Unreadable: a comparison that read it would answer `conflict`, so `overflow` shows its
+    // size was checked first.
+    chmodSync(nested, 0o000);
+    try {
+      const caps = { maxFiles: 50, maxTotalBytes: 1024 * 1024 };
+      expect(gatherBundle(edited, { ...caps, maxResourceFileBytes: TEMPLATE.length - 1 })).toEqual({
+        ok: false,
+        reason: "overflow",
+      });
+    } finally {
+      chmodSync(nested, 0o600);
+    }
+  });
+
+  it("tells two files of different sizes under one path apart without reading them", ({ skip }) => {
+    skip(
+      process.platform === "win32" ||
+        (typeof process.getuid === "function" && process.getuid() === 0),
+    );
+    const edited = put("main.mthds", docGenBundle("t.docx"));
+    put("sub/other.mthds", docGenBundle("t.docx", "other"));
+    putBytes("t.docx", TEMPLATE);
+    const nested = putBytes("sub/t.docx", new Uint8Array([1, 2, 3]));
+    chmodSync(nested, 0o000);
+    try {
+      expect(gatherBundle(edited)).toEqual({ ok: false, reason: "conflict" });
+    } finally {
+      chmodSync(nested, 0o600);
+    }
+  });
+
+  it("reports a conflict when a path names a file beside one .mthds file and none beside another", () => {
+    // Loading `sub/other.mthds` from disk finds no `sub/t.docx`, but a request keys the root's
+    // `t.docx` by the path alone, so it would hand that file to both steps.
+    const edited = put("main.mthds", docGenBundle("t.docx"));
+    put("sub/other.mthds", docGenBundle("t.docx", "other"));
+    putBytes("t.docx", TEMPLATE);
+    expect(gatherBundle(edited)).toEqual({ ok: false, reason: "conflict" });
+  });
+
+  it("reports the conflict whichever .mthds file the missing file was named by first", () => {
+    const edited = put("main.mthds", docGenBundle("t.docx"));
+    put("sub/other.mthds", docGenBundle("t.docx", "other"));
+    putBytes("sub/t.docx", TEMPLATE);
+    expect(gatherBundle(edited)).toEqual({ ok: false, reason: "conflict" });
+  });
+
+  it("sends nothing, and reports nothing, when a path names a file beside no .mthds file", () => {
+    const edited = put("main.mthds", docGenBundle("t.docx"));
+    put("sub/other.mthds", docGenBundle("t.docx", "other"));
+    const result = gatherBundle(edited);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.resources).toEqual({});
   });
 });

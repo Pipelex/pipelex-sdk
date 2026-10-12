@@ -46,6 +46,8 @@ import {
   MethodLoadError,
   UploadNotAllowedError,
 } from "./errors.js";
+import { hasBundleResources, isResourceMap } from "./bundle-resources.js";
+import type { BundleResources } from "./bundle-resources.js";
 import type { MthdsFileItem, PipeIORequest, PipeIOResponse, PipeIOValidReport } from "./models.js";
 import type { UploadCapableClient, UploadRecord } from "./upload.js";
 import { uploadFile } from "./upload.js";
@@ -127,11 +129,22 @@ export interface PrepareInputsBase {
  * `ValidateMethodSelector` states for `validate`). All three reach the
  * server as-is: `files` inline, `method_ref` resolved by the runner, `method_id`
  * resolved by the platform.
+ *
+ * Inline `files` may bring `resources`, the files the closure's steps read, such
+ * as a `PipeDocGen` step's `template_file`, keyed by the path the step names, each
+ * as its bytes: the pipe I/O route loads the closure, and a step whose template file
+ * was not sent makes it fail to load. A published or stored method's files are its
+ * own, so the other two selectors take none.
  */
 export type PrepareInputsClosure =
-  | { files: MthdsFileItem[]; method_ref?: never; method_id?: never }
-  | { method_ref: string; files?: never; method_id?: never }
-  | { method_id: string; files?: never; method_ref?: never };
+  | {
+      files: MthdsFileItem[];
+      resources?: BundleResources | null;
+      method_ref?: never;
+      method_id?: never;
+    }
+  | { method_ref: string; files?: never; method_id?: never; resources?: never }
+  | { method_id: string; files?: never; method_ref?: never; resources?: never };
 
 /** What `prepareInputs` takes: one method selector, the target pipe, the caller's inputs. */
 export type PrepareInputsRequest = PrepareInputsBase & PrepareInputsClosure;
@@ -478,16 +491,28 @@ async function resolveNode(
   }
 }
 
-/** The method selector, normalized: empty is absent, and exactly one must remain. */
-type ResolvedSelector = { files: MthdsFileItem[] } | { method_ref: string } | { method_id: string };
+/** Whether `resources` is a plain object with no file in it, which sends nothing. */
+function isEmptyResourceMap(resources: unknown): boolean {
+  return isResourceMap(resources) && !hasBundleResources(resources);
+}
+
+/**
+ * The method selector, normalized: empty is absent, and exactly one must remain. Inline
+ * `files` keep the `resources` sent with them, when there are any.
+ */
+type ResolvedSelector =
+  | { files: MthdsFileItem[]; resources?: BundleResources }
+  | { method_ref: string }
+  | { method_id: string };
 
 /**
  * Normalize and check the three selectors. Empty is absent (`files: []`,
  * `method_ref: ""`, `method_id: "  "`), mirroring the run options' rule and the
  * Python `CrateRequestBase` normalisers, and exactly one must remain — the check
  * lives here because this helper is the one that composes the `pipeIo` call.
- * The illegal shapes are compile errors for typed callers; this backs them up for
- * untyped (JS) ones with a typed `InputPreparationError`.
+ * `resources` that carry a file accompany inline `files` only. The illegal shapes
+ * are compile errors for typed callers; this backs them up for untyped (JS) ones
+ * with a typed `InputPreparationError`.
  */
 function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
   const raw = request as unknown as Record<string, unknown>;
@@ -497,6 +522,13 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
       : undefined;
   const methodRef = nonEmptyString(raw["method_ref"]);
   const methodId = nonEmptyString(raw["method_id"]);
+  // Any value goes on with inline `files`, so the client's encoder refuses one that is not a
+  // map of paths to bytes, as it does on every route; an empty map is not sent.
+  const rawResources = raw["resources"];
+  const resources =
+    rawResources === undefined || rawResources === null
+      ? undefined
+      : (rawResources as BundleResources);
 
   const given: string[] = [];
   if (files !== undefined) given.push("`files`");
@@ -517,7 +549,15 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
         "selector — `files`, `method_ref` or `method_id`.",
     );
   }
-  if (files !== undefined) return { files };
+  if (files !== undefined) return resources === undefined ? { files } : { files, resources };
+  // Beside the other selectors only an empty map passes, as it sends nothing.
+  if (resources !== undefined && !isEmptyResourceMap(resources)) {
+    throw new InputPreparationError(
+      `Cannot prepare inputs: \`resources\` accompany inline \`files\`; a ${
+        methodRef !== undefined ? "published" : "stored"
+      } method's files are its own.`,
+    );
+  }
   if (methodRef !== undefined) return { method_ref: methodRef };
   return { method_id: methodId as string };
 }

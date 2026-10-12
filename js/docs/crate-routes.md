@@ -18,6 +18,7 @@ All three take the same closure selector — inline `files`, a `method_ref`, or 
 interface CrateRequestBase {
   files?: MthdsFileItem[]; // [{ content, source? }] — `source` is the provenance label
   method_ref?: string; // address form server-resolved (pipelex-api >= 0.21.0); registry form reserved → 501
+  resources?: BundleResources | null; // beside `files`: the files the steps read, keyed by the path a step names
 }
 
 interface PipelexHostedToolingExtensions {
@@ -39,7 +40,9 @@ Supplying **no** selector or **more than one** is a request-shape `422` — the 
 
 The old advice to expand a stored method client-side (`resolve({ files: await client.getMethodClosure(methodId) })`) remains valid — `getMethodClosure` stays public as the local expansion utility, and it is what a caller uses against a bare runner, which has no catalog to resolve an id against.
 
-A `method_ref` makes the server fetch the repository before it answers, so the client gives a call carrying one a fetch-sized budget (three minutes) instead of the 30-second default. On the hosted API the gateway caps every request at about 30 seconds whatever the client allows, so a cold `method_ref` clone can answer a `502`; retrying clears it once the runner has cached the clone.
+Beside inline `files`, `resources` carries the files the closure's steps read, such as a `PipeDocGen` step's `template_file`, keyed by the path the step names, each as its bytes. It is the one member the client does not post as given: it encodes the bytes into the wire's base64 map, after refusing a key the runner's path rule refuses. A step whose template file was not sent makes the closure invalid, a `200` verdict saying so; `resources` beside a `method_ref` is the server's `422`. The rules, the limits and the refusals are in [`bundle-resources.md`](./bundle-resources.md).
+
+A `method_ref` makes the server fetch the repository before it answers, so the client gives a call carrying one a fetch-sized budget (three minutes) instead of the 30-second default. A call carrying `resources` gets the 20-minute execute ceiling that `start` and `validate` give the same files, because uploading them can take longer than the default on its own. On the hosted API the gateway caps every request at about 30 seconds whatever the client allows, so a cold `method_ref` clone can answer a `502`; retrying clears it once the runner has cached the clone.
 
 ## `resolve` — the normalized crate
 
@@ -135,6 +138,7 @@ Only a **no-verdict** condition, as the typed `ApiResponseError` — branch on i
 | Status        | Cause                                                                                                     |
 | ------------- | --------------------------------------------------------------------------------------------------------- |
 | `422`         | Request shape: no closure selector or more than one, an over-limit file, an unknown `kind`/`target`, a `pipe_ref` on `kind: "types"`, a fetched package with no `.mthds` file, a stored method with no MTHDS source, a `method_id` whose version suffix is malformed. |
+| `422` / `413` / `400` | On `resources`: `InvalidResourcePath`, `BundleResourceNotNamedError` (a file no step names), `ValidationError` (beside a `method_ref`), `PayloadTooLarge`, `BundleResourcesTooLargeError`, `InvalidBase64` — see [`bundle-resources.md`](./bundle-resources.md#what-the-server-refuses). |
 | `422`         | On `pipeIo`, a pipe selection the route refuses: `errorType` `EntryPipeNotFoundError` for a `pipe_ref` that names no pipe or a method with no entry pipe, `EntryPipeAmbiguousError` for a code that matches pipes in several domains or several `main_pipe` declarations. The `serverMessage` names the candidates where there are some. |
 | `404`         | Unknown or foreign-org `method_id` (indistinguishable by design); no package at a `method_ref` address.     |
 | `404`         | `code` `method_version_not_found`: a `mt_…@<n>` naming a version the method never published.               |

@@ -31,8 +31,10 @@ export type {
   PipelexStartOptions,
   ValidateMethodSelector,
   ValidateFilesOptions,
+  ValidateOptions,
   PipelexApiClientOptions,
 } from "./client.js";
+export type { BundleResourceBytes, BundleResources } from "./bundle-resources.js";
 
 // Canonical parser: a stored method's polymorphic `MethodData.mthds` source → bundle contents.
 export { methodSourceToContents } from "./method-source.js";

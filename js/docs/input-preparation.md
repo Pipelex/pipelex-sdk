@@ -117,6 +117,8 @@ Exactly one per call. The type pins the other two to `never`, so a second select
 | `method_ref` | a published method's address, `github.com/<owner>/<repo>[/<selector>][@<tag>]` | the runner, server-side (pipelex-api >= 0.21.0 fetches the repository at the tag) |
 | `method_id` | a stored method's catalog id (`mt_…`, `mt_…@<n>` or `mt_…@draft`) | the hosted platform, which injects the `.mthds` files of the version it names before the runner sees the request |
 
+Inline `files` may bring `resources`, the files the closure's steps read, such as a `PipeDocGen` step's `template_file`, keyed by the path the step names, each as its bytes ([`bundle-resources.md`](./bundle-resources.md)). They ride the one pipe I/O request, which loads the closure and fails to load it, as a `MethodLoadError`, when a step's template file was not sent. A published or stored method's files are its own, so `resources` beside `method_ref` or `method_id` is an `InputPreparationError` before any request.
+
 Nothing is expanded client-side: `method_id` here is a **pass-through**, the same rule every other id-taking operation follows. `getMethodClosure` stays available for callers that want the files in hand, but it is no longer a step on the way to preparing inputs.
 
 #### Where the signature comes from
@@ -124,12 +126,12 @@ Nothing is expanded client-side: `method_id` here is a **pass-through**, the sam
 One `POST /v1/pipe-io` per call, whatever the selector, through the client's own `pipeIo` (see [crate-routes.md](./crate-routes.md#pipeio--a-methods-io-artifacts-without-a-validation)):
 
 ```
-pipeIo({ <files | method_ref | method_id>, pipe_ref? })
+pipeIo({ <files [+ resources] | method_ref | method_id>, pipe_ref? })
 ```
 
 The route resolves the closure, **selects the pipe**, and answers with that pipe's **input-form descriptor** under the qualified ref it resolved. It runs no dry run, so preparing inputs costs one static load rather than a validation of the whole method. It also refuses nothing for a pending signature elsewhere in the method: preparation needs a pipe's *declared* inputs, and whether the method runs is the run's verdict, not preparation's. An `is_valid: false` verdict still means the closure does not load, which is a preparation failure.
 
-A `method_ref` makes the server clone a repository first, so the call gets the crate routes' fetch-sized budget. On the hosted API the gateway caps a request at about 30 seconds whatever the client allows, so a cold clone can answer a `502` `ApiResponseError`; a retry clears it once the runner has cached the clone.
+A `method_ref` makes the server clone a repository first, so the call gets the crate routes' fetch-sized budget, and `resources` beside inline `files` get the 20-minute execute ceiling, since uploading them can take longer than the default on its own. On the hosted API the gateway caps a request at about 30 seconds whatever the client allows, so a cold clone can answer a `502` `ApiResponseError`; a retry clears it once the runner has cached the clone.
 
 `prepareInputs` needs an API that serves `POST /v1/pipe-io`. Against one that does not, the route's `404` (a runner) or `403` (a hosted origin whose gateway does not list it yet) propagates as an `ApiResponseError`. It also needs the route's pipe-selection refusals typed, as step 3 of "Pipe selection" below describes, which `pipelex-api` does from v0.33.1: v0.33.0, the release that added the route, typed them as the generic `ValidationError`, so against it a refused selection reaches the caller as that `ApiResponseError` rather than an `InputPreparationError`.
 

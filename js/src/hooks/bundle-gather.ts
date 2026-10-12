@@ -8,10 +8,18 @@
  * Capped, because an under-supplied bundle can produce a FALSE invalid verdict
  * (missing cross-file refs) — on overflow the caller must treat validate as
  * unavailable rather than risk a wrong block.
+ *
+ * It also gathers the files the bundle's steps read, a `PipeDocGen` step's
+ * `template_file`, read beside the `.mthds` file whose step names it and sent as
+ * the request's `resources` under the path the step names, as the runtime reads
+ * a bundle loaded from disk: without them the server could only answer that the
+ * template file was not supplied, which would block every edit of such a bundle.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { parse as parseToml } from "smol-toml";
+import { bundleResourcePathRefusal, canonicalBundleResourcePath } from "../bundle-resources.js";
 import type { MthdsFile } from "../client.js";
 
 /** Mirror of pipelex's `scan_config.excluded_dirs` (dot-dirs are skipped wholesale). */
@@ -27,15 +35,38 @@ const EXCLUDED_DIRS = new Set([
 export interface GatherCaps {
   maxFiles: number;
   maxTotalBytes: number;
+  /** How many template files the gather sends at most; the server's default limit when omitted. */
+  maxResourceFiles?: number;
+  /** How large one template file may be; the server's default limit when omitted. */
+  maxResourceFileBytes?: number;
+  /** How many bytes of template files the gather sends at most; the server's default when omitted. */
+  maxResourceBytes?: number;
 }
+
+/** The server's default bounds on the files a request sends with its bundle. */
+const DEFAULT_MAX_RESOURCE_FILES = 32;
+const DEFAULT_MAX_RESOURCE_FILE_BYTES = 5 * 1024 * 1024;
+const DEFAULT_MAX_RESOURCE_BYTES = 10 * 1024 * 1024;
 
 export const DEFAULT_GATHER_CAPS: GatherCaps = {
   maxFiles: 50,
   maxTotalBytes: 2 * 1024 * 1024,
+  maxResourceFiles: DEFAULT_MAX_RESOURCE_FILES,
+  maxResourceFileBytes: DEFAULT_MAX_RESOURCE_FILE_BYTES,
+  maxResourceBytes: DEFAULT_MAX_RESOURCE_BYTES,
 };
 
+/**
+ * The gathered bundle, or why there is none to send. `resources` maps the path a
+ * step names to the template file's bytes. `conflict` is one path naming two
+ * different files beside two `.mthds` files of the bundle, or a file beside one
+ * and nothing beside the other: the request keys a file by its path alone, so it
+ * cannot say what loading each file from disk would find, and validate is
+ * unavailable rather than a wrong verdict.
+ */
 export type GatherResult =
-  { ok: true; files: MthdsFile[] } | { ok: false; reason: "overflow" | "unreadable" };
+  | { ok: true; files: MthdsFile[]; resources: Record<string, Uint8Array> }
+  | { ok: false; reason: "overflow" | "unreadable" | "conflict" };
 
 /**
  * Recursively collect `.mthds` paths under `dir`. Throws if any directory in
@@ -104,5 +135,154 @@ export function gatherBundle(
       return { ok: false, reason: "unreadable" };
     }
   }
-  return { ok: true, files };
+  const gathered = gatherTemplateFiles(parentDir, ordered, files, caps);
+  if (!gathered.ok) return gathered;
+  return { ok: true, files, resources: gathered.resources };
+}
+
+/**
+ * The paths of the template files the steps of one `.mthds` file name: each
+ * `PipeDocGen` pipe's `template_file`. A file that does not parse names none, the
+ * server giving its verdict on it.
+ */
+export function templateFilesNamedBy(mthdsContent: string): string[] {
+  let document: unknown;
+  try {
+    document = parseToml(mthdsContent);
+  } catch {
+    return [];
+  }
+  const pipes = isRecord(document) ? document["pipe"] : undefined;
+  if (!isRecord(pipes)) return [];
+  const named: string[] = [];
+  for (const pipe of Object.values(pipes)) {
+    if (
+      isRecord(pipe) &&
+      pipe["type"] === "PipeDocGen" &&
+      typeof pipe["template_file"] === "string"
+    ) {
+      named.push(pipe["template_file"]);
+    }
+  }
+  return named;
+}
+
+/** Why the template files could not be gathered, read as validate being unavailable. */
+type TemplateGatherFailure = { ok: false; reason: "overflow" | "unreadable" | "conflict" };
+
+/**
+ * Read the template files the gathered `.mthds` files name, each beside the file
+ * whose step names it, keyed by the path the step names, as the runtime reads a
+ * bundle loaded from disk. A path the server would refuse is left out, and so is a
+ * file that is not there beside any `.mthds` file naming it, for the server to say
+ * the step's file was not supplied.
+ *
+ * Validate is unavailable rather than a wrong verdict when the request cannot carry
+ * what loading the bundle from disk would find: a file that leads out of the
+ * bundle's directory through a link is never read (`unreadable`), and one path that
+ * names different files beside different `.mthds` files, or a file beside one and
+ * nothing beside another, is a `conflict`. Every size is checked against the caps
+ * before any file is read, the bytes compared to tell two files apart included, so
+ * the hook never holds more than the caps allow (`overflow`).
+ */
+function gatherTemplateFiles(
+  parentDir: string,
+  paths: string[],
+  files: MthdsFile[],
+  caps: GatherCaps,
+): { ok: true; resources: Record<string, Uint8Array> } | TemplateGatherFailure {
+  const maxFiles = caps.maxResourceFiles ?? DEFAULT_MAX_RESOURCE_FILES;
+  const maxFileBytes = caps.maxResourceFileBytes ?? DEFAULT_MAX_RESOURCE_FILE_BYTES;
+  const maxBytes = caps.maxResourceBytes ?? DEFAULT_MAX_RESOURCE_BYTES;
+  let root: string;
+  try {
+    root = realpathSync(parentDir);
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  }
+  // Each path a step names, once, with the file it names beside the first `.mthds` file
+  // naming it, or `null` when there is none there.
+  const located = new Map<string, LocatedFile | null>();
+  let fileCount = 0;
+  let totalBytes = 0;
+  for (const [index, mthdsPath] of paths.entries()) {
+    for (const named of templateFilesNamedBy(files[index]!.content)) {
+      if (bundleResourcePathRefusal(named) !== undefined) continue;
+      const key = canonicalBundleResourcePath(named);
+      const found = locateRegularFile(join(dirname(mthdsPath), key));
+      if (found !== null) {
+        if (!found.real.startsWith(root + sep)) return { ok: false, reason: "unreadable" };
+        if (found.size > maxFileBytes) return { ok: false, reason: "overflow" };
+      }
+      if (!located.has(key)) {
+        located.set(key, found);
+        if (found === null) continue;
+        fileCount += 1;
+        if (fileCount > maxFiles) return { ok: false, reason: "overflow" };
+        totalBytes += found.size;
+        if (totalBytes > maxBytes) return { ok: false, reason: "overflow" };
+        continue;
+      }
+      const known = located.get(key)!;
+      if (known === null || found === null) {
+        if (known !== found) return { ok: false, reason: "conflict" };
+        continue;
+      }
+      if (!sameFileContent(known, found)) return { ok: false, reason: "conflict" };
+    }
+  }
+
+  const resources = Object.create(null) as Record<string, Uint8Array>;
+  let readBytes = 0;
+  for (const [key, found] of located) {
+    if (found === null) continue;
+    try {
+      const bytes = readFileSync(found.real);
+      // A file that grew since it was measured is held to the caps as read.
+      readBytes += bytes.length;
+      if (bytes.length > maxFileBytes || readBytes > maxBytes) {
+        return { ok: false, reason: "overflow" };
+      }
+      resources[key] = bytes;
+    } catch {
+      return { ok: false, reason: "unreadable" };
+    }
+  }
+  return { ok: true, resources };
+}
+
+/** A regular file on disk: where it really is, and how large it was when measured. */
+interface LocatedFile {
+  real: string;
+  size: number;
+}
+
+/** The regular file at `path`, link resolved, or `null` when there is none there. */
+function locateRegularFile(path: string): LocatedFile | null {
+  try {
+    const real = realpathSync(path);
+    const stats = statSync(real);
+    return stats.isFile() ? { real, size: stats.size } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether two files hold the same bytes. Their sizes were measured and held to the
+ * per-file cap before this reads either, so a comparison reads at most two files of
+ * that size; files of different sizes differ unread, and an unreadable one holds none.
+ */
+function sameFileContent(left: LocatedFile, right: LocatedFile): boolean {
+  if (left.real === right.real) return true;
+  if (left.size !== right.size) return false;
+  try {
+    return Buffer.compare(readFileSync(left.real), readFileSync(right.real)) === 0;
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
