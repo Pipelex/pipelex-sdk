@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The methods list's publish state and `published` filter**: `MethodSummary` carries `latest_version`, `latest_published` (a `MethodVersionSummary`) and `draft_digest`, each optional and `null` when it does not apply, `draft_digest` being `null` on a row that never stored one until its next draft write, so a list tells a never-published method, one whose draft matches its latest version and one whose draft is ahead apart without reading each method. `listMethods` and `iterateMethods` take `published`, sent as `published=true` or `published=false` only when given.
+- **The run history's `createdBy` and `status` filters**: `listRuns` and `iterateRuns` take `createdBy: "me"`, sent as `created_by=me`, which keeps the caller's own runs, and `status`, a list of `RunStatus` sent as one repeated `status=` parameter per status in the platform's order, which keeps the runs in any of them; an empty `status` list or a name that is no `RunStatus` is a `RequestArgumentError` before any request. Under these filters, as under `q` and `published` on the methods list, a page can come back empty and still carry a `nextCursor`, and only a `null` cursor ends the list.
+
+### Changed
+
+- **`iterateRuns` follows the cursor through an empty page**: it stopped at the first empty page, which under the new filters is not the end of the history, and now runs the same loop as `iterateMethods`, following the cursor until it is `null` or stops advancing and throwing `PagingNotTerminatingError` past the same page ceiling.
+
 ## [v0.40.0] - 2026-10-12
 
 ### Added
