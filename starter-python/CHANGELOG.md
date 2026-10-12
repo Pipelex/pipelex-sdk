@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The starter runs on `pipelex-sdk` 0.39.0, with `mthds` 0.21.0**: bumped from 0.35.1 and `mthds` 0.19.0. A refused request's details now always end with a `Retry:` line, which the SDK reads from the status when the API sent no verdict of its own. A run start the API answers with a server error other than a `501` or a `503` saying starts are unavailable, or with a `408`, or that loses its connection once sent, no longer says that running it again may succeed, since the SDK now judges that such a start may have created a run and that a second attempt could pay for it twice. `mthds` 0.21.0 reports MTHDS standard 5.0.0, which nothing in the starter reads, and the SDK's other changes in between reach nothing it calls.
+
 ## [v0.39.0] - 2026-10-12
 
 ### Changed

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Both templates run on the SDK 0.39.0**: `@pipelex/sdk` in the web app and `pipelex-sdk` in the CLI, with `mthds` 0.21.0 in the CLI, bumped from 0.35.1 and `mthds` 0.19.0. In both, a run start the API answers with a server error other than a `501` or a `503` saying starts are unavailable, or with a `408`, or that loses its connection once sent, no longer offers a re-run, since the SDK now judges that such a start may have created a run and that a second attempt could pay for it twice. The CLI's details of a refused request now always end with a `Retry:` line, which the SDK reads from the status when the API sent no verdict of its own. `mthds` 0.21.0 reports MTHDS standard 5.0.0, which neither template reads, the SDK's other changes in between reach nothing either calls, and `npm ls mthds` still lists two copies in the web app, the form kernel's and the SDK's, as before this move.
+
 ## [v0.39.0] - 2026-10-12
 
 ### Changed
