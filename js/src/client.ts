@@ -42,6 +42,7 @@ import {
   assertArtifactSelection,
   assertWaitOptions,
   pollUntilResult,
+  readRunDegradation,
   selectionIncludesMainStuff,
   throwIfAborted,
   type GetRunResultOptions,
@@ -303,6 +304,17 @@ interface RawResponse {
 /** HTTP methods the client issues — the product routes add PUT/PATCH/DELETE. */
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
+/**
+ * Whether a request may create a run, which the transport hands to the errors it builds so that
+ * they say whether the run may have started (`runMayHaveStarted`). Only `start` and `execute` set
+ * it, with `STARTS_RUN`; every other request leaves it unset.
+ */
+interface RunCreation {
+  mayStartRun?: boolean;
+}
+
+const STARTS_RUN: RunCreation = Object.freeze({ mayStartRun: true });
+
 /** Hosted default — the client composes every endpoint as `{base}/v1/{endpoint}`. */
 export const DEFAULT_API_BASE_URL = "https://api.pipelex.com";
 
@@ -486,7 +498,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * DNS/connect/TLS/timeout failures as `ApiUnreachableError`; a caller-driven
    * abort (Ctrl-C / agent walk-away) propagates as-is so the poll loop can stop
    * cleanly. Non-2xx interpretation is left to the caller. `url` is a fully
-   * resolved absolute URL.
+   * resolved absolute URL. `mayStartRun` marks a request that may create a run,
+   * whose `ApiUnreachableError` then says whether it may have (see `RunCreation`).
    */
   private async requestRaw(
     method: HttpMethod,
@@ -495,7 +508,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       body?: unknown;
       timeoutMs?: number;
       signal?: AbortSignal;
-    } = {},
+    } & RunCreation = {},
   ): Promise<RawResponse> {
     const hasBody = options.body !== undefined;
     const headers = this.requestHeaders(hasBody);
@@ -551,7 +564,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         `Could not reach Pipelex API at ${this.baseUrl} (${code ?? "network error"})`,
         this.baseUrl,
         code,
-        { cause: err },
+        { cause: err, mayStartRun: options.mayStartRun === true },
       );
     } finally {
       clearTimeout(timer);
@@ -710,8 +723,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     return res;
   }
 
-  private throwApiResponseError(method: HttpMethod, endpoint: string, res: RawResponse): never {
-    this.throwApiResponseErrorAt(method, `/${API_PREFIX}/${endpoint}`, res);
+  private throwApiResponseError(
+    method: HttpMethod,
+    endpoint: string,
+    res: RawResponse,
+    run: RunCreation = {},
+  ): never {
+    this.throwApiResponseErrorAt(method, `/${API_PREFIX}/${endpoint}`, res, run);
   }
 
   /** The JSON body of a `/v1` route's 2xx answer; see `readAnswerAt`. */
@@ -724,8 +742,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     method: HttpMethod,
     endpoint: string,
     res: RawResponse,
+    run: RunCreation = {},
   ): T {
-    return this.readObjectAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res);
+    return this.readObjectAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res, run);
   }
 
   /**
@@ -735,8 +754,15 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * failure as `cause`.
    * The one place a success body is parsed.
    */
-  private readAnswerAt<T>(method: HttpMethod, path: string, res: RawResponse): T {
-    if (!res.utf8) throw this.unreadableAnswer(method, path, res, "a body that is not UTF-8");
+  private readAnswerAt<T>(
+    method: HttpMethod,
+    path: string,
+    res: RawResponse,
+    run: RunCreation = {},
+  ): T {
+    if (!res.utf8) {
+      throw this.unreadableAnswer(method, path, res, "a body that is not UTF-8", undefined, run);
+    }
     try {
       return JSON.parse(res.body) as T;
     } catch (err) {
@@ -746,6 +772,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         res,
         res.body ? "a body that is not JSON" : "an empty body where JSON was expected",
         err,
+        run,
       );
     }
   }
@@ -759,10 +786,18 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     method: HttpMethod,
     path: string,
     res: RawResponse,
+    run: RunCreation = {},
   ): T {
-    const answer = this.readAnswerAt<unknown>(method, path, res);
+    const answer = this.readAnswerAt<unknown>(method, path, res, run);
     if (!isPlainObject(answer)) {
-      throw this.unreadableAnswer(method, path, res, "a body that is not an object");
+      throw this.unreadableAnswer(
+        method,
+        path,
+        res,
+        "a body that is not an object",
+        undefined,
+        run,
+      );
     }
     return answer as T;
   }
@@ -772,6 +807,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `API <method> <path> answered <status> with <what>`: the answer's status, its raw text as
    * `responseBody`, no problem member but the `X-Request-ID` header, the failure that made it
    * unreadable as `cause`, and the verdict the fallback gives a 2xx, `runtime` and not retryable.
+   * On a request that may create a run, the run may have started: the server accepted it.
    */
   private unreadableAnswer(
     method: HttpMethod,
@@ -779,6 +815,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     res: RawResponse,
     what: string,
     cause?: unknown,
+    run: RunCreation = {},
   ): ApiResponseError {
     return new ApiResponseError(
       `API ${method} ${path} answered ${res.status} with ${what}`,
@@ -790,7 +827,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       undefined,
       undefined,
       undefined,
-      { cause, problem: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) } },
+      {
+        cause,
+        problem: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) },
+        mayStartRun: run.mayStartRun === true,
+      },
     );
   }
 
@@ -798,7 +839,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Throw the `ApiResponseError` of a non-2xx answer, naming the route by its `path` from the
    * origin (`/v1/...`, or `/health` for the liveness probe).
    */
-  private throwApiResponseErrorAt(method: HttpMethod, path: string, res: RawResponse): never {
+  private throwApiResponseErrorAt(
+    method: HttpMethod,
+    path: string,
+    res: RawResponse,
+    run: RunCreation = {},
+  ): never {
     const { errorType, serverMessage, validationErrors, code, problem, document } = parseErrorBody(
       res.body,
     );
@@ -815,7 +861,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       serverMessage,
       validationErrors,
       code,
-      { problem: { ...problem, requestId }, problemDocument: document },
+      {
+        problem: { ...problem, requestId },
+        problemDocument: document,
+        mayStartRun: run.mayStartRun === true,
+      },
     );
   }
 
@@ -841,21 +891,33 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * error. Hosted does not emit 202 today, but the protocol permits it;
    * raising a typed error (with the `pipeline_run_id` + `Location` + `Retry-After`
    * hints) beats a generic parse failure on an unexpected body shape.
+   *
+   * The 202 must name the run it accepted, as `start`'s acknowledgement must: one whose body is
+   * not JSON, or names no run (an empty id included), leaves the caller a run it cannot follow, so it is an answer the
+   * SDK cannot read, which may have started a run, never a `RunStillRunningError` without an id.
+   * The Python SDK reads the same answers the same way.
    */
   private throwIfExecuteDegraded(res: RawResponse): void {
     if (res.status !== 202) return;
-    let runId = "";
-    try {
-      const parsed: unknown = JSON.parse(res.body);
-      if (parsed && typeof parsed === "object") {
-        const candidate = (parsed as { pipeline_run_id?: unknown }).pipeline_run_id;
-        if (typeof candidate === "string") runId = candidate;
-      }
-    } catch {
-      // Non-JSON 202 body — keep runId empty; the error message covers it.
+    const ack = this.readObjectAnswer<{ pipeline_run_id?: unknown }>(
+      "POST",
+      "execute",
+      res,
+      STARTS_RUN,
+    );
+    const runId = ack.pipeline_run_id;
+    if (typeof runId !== "string" || runId === "") {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/execute`,
+        res,
+        "a body that is not the answer the route returns",
+        undefined,
+        STARTS_RUN,
+      );
     }
     throw new RunStillRunningError(
-      `execute() was accepted asynchronously (202): run ${runId || "<unknown>"} is still ` +
+      `execute() was accepted asynchronously (202): run ${runId} is still ` +
         "running server-side. Poll its results (hosted) or use start().",
       runId,
       parseRetryAfter(res.headers),
@@ -939,16 +1001,31 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     try {
       const res = await this.requestRaw("POST", this.url("execute"), {
         body: request,
+        ...STARTS_RUN,
       });
       this.throwIfExecuteDegraded(res);
       if (res.status < 200 || res.status >= 300) {
-        this.throwApiResponseError("POST", "execute", res);
+        this.throwApiResponseError("POST", "execute", res, STARTS_RUN);
       }
       // Wrap the base result in the enriched subtype (adds the `.main_stuff` accessor; the
       // `main_stuff_name` extension + working memory ride `pipe_output`).
-      return new PipelexExecuteResult(
-        this.readObjectAnswer<DictRunResultExecute>("POST", "execute", res),
+      const answer = this.readObjectAnswer<DictRunResultExecute>(
+        "POST",
+        "execute",
+        res,
+        STARTS_RUN,
       );
+      if (!isCompletedRunAnswer(answer)) {
+        throw this.unreadableAnswer(
+          "POST",
+          `/${API_PREFIX}/execute`,
+          res,
+          "a body that is not the answer the route returns",
+          undefined,
+          STARTS_RUN,
+        );
+      }
+      return new PipelexExecuteResult(answer);
     } catch (err) {
       if (err instanceof RunStillRunningError) throw err;
       // The hosted gateway terminates synchronous requests at ~30s. A run that
@@ -1028,15 +1105,30 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     const res = await this.requestRaw("POST", url, {
       body: request,
       timeoutMs: needsLongCeiling ? DEFAULT_REQUEST_TIMEOUT_MS : POLL_REQUEST_TIMEOUT_MS,
+      ...STARTS_RUN,
     });
     // A bare runner with no run store 404s here just as it does on the result
     // routes — surface the same clear `RunLifecycleUnavailableError` (and let
     // `startAndWaitForResult` fall back to the blocking `execute`).
     this.throwIfLifecycleUnavailable(res, url);
     if (res.status < 200 || res.status >= 300) {
-      this.throwApiResponseError("POST", "start", res);
+      this.throwApiResponseError("POST", "start", res, STARTS_RUN);
     }
-    return this.readObjectAnswer<PipelexRunResultStart>("POST", "start", res);
+    const ack = this.readObjectAnswer<PipelexRunResultStart>("POST", "start", res, STARTS_RUN);
+    // The acknowledgement's one job is to name the run: without its id, the run the server
+    // accepted is lost to the caller, as surely as behind a body that is not JSON, and an empty id
+    // names no run either. Worded as the Python SDK words an answer its model refuses.
+    if (typeof ack.pipeline_run_id !== "string" || ack.pipeline_run_id === "") {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/start`,
+        res,
+        "a body that is not the answer the route returns",
+        undefined,
+        STARTS_RUN,
+      );
+    }
+    return ack;
   }
 
   /**
@@ -1492,12 +1584,17 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Fetch a run's status by bare id — `GET /v1/runs/{pipeline_run_id}/status`.
    *
    * Self-healing: a finished-but-unrecorded run resolves to its true terminal
-   * status on read. `degraded: true` means Temporal was unreachable and
-   * `status` is the last-known value; `retry_after_seconds` carries the
-   * server's backoff hint when present. A failed run's stored report, `error`,
-   * is checked field by field (see `RunErrorReport`). Throws
-   * `RunLifecycleUnavailableError` when the lifecycle routes are absent (a bare
-   * runner).
+   * status on read. `degraded: true` means the read is not a plain fresh reading,
+   * and `degradation.reason` says why (see `DegradationReason`):
+   * `status_unavailable` when the platform could not reach the workflow engine
+   * and `status` is the last one recorded, `workflow_task_failing` when `status`
+   * is live and the run is stuck, its workflow task failing until the platform
+   * ends it at `degradation.ends_at`. `retry_after_seconds` carries the server's
+   * `Retry-After` hint when present, and `request_id` the id to quote to support.
+   * A failed run's stored report, `error`, and the `degradation` are each
+   * checked field by field (see `RunErrorReport` and `RunDegradation`), so
+   * neither ever fails the read. Throws `RunLifecycleUnavailableError` when the
+   * lifecycle routes are absent (a bare runner).
    */
   async getRunStatus(runId: string, options: { signal?: AbortSignal } = {}): Promise<RunRead> {
     const endpoint = `${RUNS}/${encodeURIComponent(runId)}/status`;
@@ -1510,7 +1607,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    const run = withCheckedReport(this.readObjectAnswer<RunRead>("GET", endpoint, res));
+    const run = withCheckedDegradation(
+      withCheckedReport(this.readObjectAnswer<RunRead>("GET", endpoint, res)),
+    );
     const retryAfter = parseRetryAfter(res.headers);
     return retryAfter !== null ? { ...run, retry_after_seconds: retryAfter } : run;
   }
@@ -1634,6 +1733,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `pollOptions.signal` is also read before the run is created: a caller that aborts while the
    * version handshake is in flight gets its abort, and neither the start nor the blocking execute
    * is sent. Once one of them is sent, the abort stops only the wait.
+   *
+   * An error from the start, or from the blocking execute, says whether that request may still
+   * have started a run whose id never reached the caller (`runMayHaveStarted`); when it may have,
+   * it is not retryable, since calling this method again could pay for the run twice: look the run
+   * up in the run history first. An error from the wait, once `onStarted` has named the run,
+   * started nothing, so its `runMayHaveStarted` is false, and its `retryable` is about waiting
+   * again on that id with `waitForResult`, never about calling this method again.
    */
   async startAndWaitForResult(
     options: PipelexStartOptions,
@@ -2242,6 +2348,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * answers with, which states the kind of every input at every depth, so a file
    * position is a fact of the method, never a guess from the value's shape. It
    * needs an API serving `POST /v1/pipe-io`. See `docs/input-preparation.md`.
+   *
+   * With `allowUploads: false` it uploads nothing and reads no file: a value that
+   * would need an upload throws `UploadNotAllowedError`, naming the input.
    */
   async prepareInputs(request: PrepareInputsRequest): Promise<PreparedInputs> {
     return prepareInputsImpl(this, request);
@@ -2702,9 +2811,10 @@ const GATEWAY_TIMEOUT_THRESHOLD_MS = 28_000;
  * `is_gateway_cut_off` reads the same failures, its `ABORT_TIMEOUT` being httpx's read or write
  * timeout.
  *
- * The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. A caller timing
- * a request that may create a run, such as `start` from `startAndWaitForResult`'s `onStarting`,
- * reads it to know the server may still be handling the request the gateway gave up on.
+ * The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. Whether a
+ * failed `start` or `execute` may have started a run needs no timing: the error says it as
+ * `runMayHaveStarted`, which reads every `503` but the platform's coded one as a run that may
+ * have started, however quickly it came back.
  */
 export function isGatewayCutOff(error: unknown, elapsedMs: number): boolean {
   if (elapsedMs < GATEWAY_TIMEOUT_THRESHOLD_MS) return false;
@@ -2760,6 +2870,30 @@ function isMissingRoute404(body: string): boolean {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
   return !("code" in parsed);
+}
+
+/**
+ * Whether a 2xx answer to `execute` is the completed run the route returns, as far as the SDK reads
+ * it: a string `pipeline_run_id`, and a `pipe_output` object whose `working_memory` carries its
+ * `root` and `aliases` objects and whose own `pipeline_run_id` is a string, the envelope the Python
+ * SDK's model of the answer requires. Anything less is an answer the SDK cannot read, rather than
+ * a result that fails with a bare `TypeError` once its output is lifted. The stuffs inside `root`,
+ * which the Python model also checks, are left to the read of the main stuff, whose
+ * `MissingMainStuffError` names the run.
+ */
+function isCompletedRunAnswer(answer: object): answer is DictRunResultExecute {
+  const { pipeline_run_id: runId, pipe_output: pipeOutput } = answer as {
+    pipeline_run_id?: unknown;
+    pipe_output?: unknown;
+  };
+  if (typeof runId !== "string" || !isPlainObject(pipeOutput)) return false;
+  const workingMemory = pipeOutput["working_memory"];
+  return (
+    typeof pipeOutput["pipeline_run_id"] === "string" &&
+    isPlainObject(workingMemory) &&
+    isPlainObject(workingMemory["root"]) &&
+    isPlainObject(workingMemory["aliases"])
+  );
 }
 
 /** Parse the `Retry-After` header (seconds form, which the platform uses). */
@@ -2819,6 +2953,15 @@ function runResultFailed(runId: string, body: string): RunResultState {
 function withCheckedReport<T>(record: T): T {
   if (!isPlainObject(record) || !Object.hasOwn(record, "error")) return record;
   return { ...record, error: readRunErrorReport(record.error) } as T;
+}
+
+/**
+ * A status read with its `degradation` checked by `readRunDegradation`. Only when the read carries
+ * the key, so a platform that predates it still leaves it absent; `degraded` is left as sent.
+ */
+function withCheckedDegradation(run: RunRead): RunRead {
+  if (!Object.hasOwn(run, "degradation")) return run;
+  return { ...run, degradation: readRunDegradation(run.degradation) };
 }
 
 function knownRunStatus(value: unknown): RunStatus | undefined {

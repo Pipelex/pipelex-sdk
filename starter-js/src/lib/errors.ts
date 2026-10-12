@@ -550,13 +550,20 @@ function classifyRunStillRunning(err: RunStillRunningError): PipelineError {
  * A run that ended without a result. Its stored error report, when it has one,
  * is the runtime's own account of the failure, and the classification is read
  * from it: the report's title in the headline, its message as what happened
- * (with the provider's raw text taken out, see `visibleReportMessage`), its
- * user action's detail as the next step, its `retryable` verdict as the retry
- * advice, and a support line naming the run, the error type and when it ended.
+ * (see `visibleReportMessage`), its user action's detail as the next step, its
+ * `retryable` verdict as the retry advice, and a support line naming the run,
+ * the error type and when it ended. The platform serves the runner's STRICT
+ * projection of the report, so its message is the author's copy only when
+ * `caller_facing_message` is true and `An internal error occurred.` otherwise,
+ * and a user action comes only with caller-facing copy.
  *
- * A run with no report keeps the SDK's sentence, which is all there is: a
- * cancelled, terminated or timed-out run, one the platform finalized itself,
- * and any failed run on a platform that does not serve the report.
+ * A run with no report keeps the SDK's sentence, which is all there is: one
+ * whose start failed, one cancelled, terminated or given its status by hand
+ * with no completion callback carrying a report, and any failed run on a
+ * platform that does not serve the report. A cancelled, terminated or timed-out
+ * run holds a report when a completion callback carried one, a timed-out run
+ * otherwise the platform's timeout report, and a run the platform ends or
+ * settles itself the report the platform wrote.
  */
 function classifyRunFailed(err: RunFailedError, finishedAt?: string | null): PipelineError {
   const report = err.error;
@@ -619,8 +626,14 @@ function nextStepOf(action: UserAction | null | undefined): string | undefined {
 }
 
 /**
- * The report's message as a person may read it. A failure that came back from
- * a model provider carries the provider SDK's own text inside the runtime's
+ * The report's message as a person may read it. The platform serves the
+ * runner's STRICT projection, so a hosted report's message is copy written for
+ * the caller or the placeholder, never the worker's internal text or a
+ * provider's raw answer, and its `provider_metadata` carries no `message`: the
+ * message passes through unchanged. The cut below stays as defence in depth,
+ * for a report served whole, as a platform run locally with
+ * `ERROR_DISCLOSURE=verbose` serves it. There a failure that came back from a
+ * model provider carries the provider SDK's own text inside the runtime's
  * message (`<provider> inference failed for model '<model>' (HTTP 412): <the
  * provider's text>`), and that text is raw: a repr of the provider's error
  * body, or a whole HTML page from an edge in front of it, naming the
@@ -642,7 +655,10 @@ function visibleReportMessage(report: RunErrorReport): string | undefined {
  * The report's classification for the "Technical details" section: every field
  * a developer reads to place the failure, and the validation items of a method
  * that failed validation. The provider's metadata is left out, for the reason
- * `visibleReportMessage` gives, and the message is the one shown above.
+ * `visibleReportMessage` gives, as defence in depth: a hosted report keeps only
+ * its `status_code` and `retry_after_seconds`. A line whose field the report
+ * does not carry is left out, as `model` is on a hosted report, which drops it.
+ * The message is the one shown above.
  */
 function reportDetails(err: RunFailedError, report: RunErrorReport, message: string): string {
   return [

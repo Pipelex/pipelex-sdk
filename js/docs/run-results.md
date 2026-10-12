@@ -76,6 +76,45 @@ It is never called on the blocking path, a bare runner's `POST /v1/execute` or t
 
 **Knowing whether a run may exist.** `onStarting`, the other callback `StartAndWaitForResultOptions` takes, is called right before each request that may create a run is sent: `POST /v1/start`, and the blocking `POST /v1/execute` of a bare runner or of the fallback to it, so it is called twice when a runner that looked hosted refuses the start. Until it is called no run exists, and once the `signal` has aborted it is not called and no such request is sent, so a caller that stops waiting before then can say that no run was started; from then until `onStarted`, a run may exist that the API has not yet named. It runs synchronously and its return value is ignored; an exception it throws propagates before the request is sent. The `pipelex-sdk` command words its interrupt message by it ([`cli.md`](cli.md)).
 
+**A failed start says whether a run may exist.** An error from the start, or from the blocking execute, carries `runMayHaveStarted`: `true` when the request may have created a run although the call failed, so a person looks the run up in the run history before starting it again, and then its `retryable` is `false` ([`errors.md`](errors.md#a-failed-run-start--runmayhavestarted)). Once `onStarted` has been called the run exists and the caller holds its id, so an error while the composite waits started nothing: its `runMayHaveStarted` is `false`, and its `retryable` is about waiting again on that id with `waitForResult`, never about calling `startAndWaitForResult` again, which would start a second run.
+
+## A degraded status — `degraded` and `degradation`
+
+`getRunStatus(runId)` reads a run's status row, which is how a caller shows a run while it runs. It returns a `RunRead` (`src/runs.ts`): the run record plus `degraded`, `degradation`, `request_id` and `retry_after_seconds`, the last parsed from the `Retry-After` header.
+
+**`degraded` means the read is not a plain fresh reading, and `degradation.reason` says why.** So `degraded` alone no longer means the run is fine; branch on the reason.
+
+| `reason` | What holds | `status` | What to tell the person |
+|---|---|---|---|
+| `status_unavailable` | The platform could not reach the workflow engine. | The last one recorded. | Nothing about the run, which may be fine: the status is not fresh, and the next read comes after `retry_after_seconds`. |
+| `workflow_task_failing` | The workflow task that drives the run has failed `failed_attempts` times in a row since `failing_since`, so the run is not making progress. | Live. | The run is stuck. The workflow engine keeps retrying, and if the task is still failing at `ends_at` the platform ends the run `FAILED`, with a `WorkflowTaskKeptFailingError` report ([errors.md](./errors.md#a-failed-run--runerrorreport)). |
+
+```ts
+const run = await client.getRunStatus(runId);
+if (run.degraded) {
+  // A platform older than the degradation sends none; `degraded` then meant only this.
+  const reason = run.degradation?.reason ?? "status_unavailable";
+  if (reason === "workflow_task_failing") {
+    const ends = run.degradation?.ends_at ?? "its time limit";
+    console.warn(`The run is stuck (${run.degradation?.failed_attempts} failures in a row); it ends at ${ends}.`);
+  } else if (reason === "status_unavailable") {
+    console.warn(`The status is not fresh; reading again in ${run.retry_after_seconds ?? 5}s.`);
+  } else {
+    console.warn(`The status read is degraded (${reason}).`); // a reason this SDK does not know yet
+  }
+}
+```
+
+- **`failing_since` and `ends_at` are `null` when the platform could not find the recorded failure** in the workflow's history. It then does not end the run itself, and the run's own time limit ends it `TIMED_OUT`, with a `RunTimedOutError` report. Both are always `null` for `status_unavailable`, and so is `failed_attempts`.
+- **`message` is the platform's sentence.** For `workflow_task_failing` it says how many attempts have failed in a row, that the run is not making progress and when the platform will end it. It does not quote the worker's own failure text, which only a platform run locally with `ERROR_DISCLOSURE=verbose` adds, so a product surface may show it; `failed_attempts` and `ends_at` carry the same facts as fields. Never branch on its wording.
+- **`reason` is read open**, typed `DegradationReason | (string & {})`: a reason a later platform adds arrives as its raw string rather than failing the read, and a consumer that does not know it should not tell the person the run is fine.
+- **The degradation is checked field by field, so it never fails the poll.** A `degradation` that is not an object, or whose `reason` is not a string, reads as `null`, since it cannot be branched on; `message`, `failing_since` and `ends_at` are kept when they are strings and `failed_attempts` when it is an integer, `null` kept for each, and absent otherwise; members this SDK does not name are relayed as sent. `degradation` is `null` whenever `degraded` is false, and absent on a platform that predates it. `degraded` is left as the server sent it.
+- **`request_id` is the id of the request that started the run**, the one to quote to support beside the run id. `getRunDetail` carries it too; it is `null` for a run saved before the platform recorded it.
+
+**The wait loops never see a degradation, and need not.** `waitForResult` and `startAndWaitForResult` poll the results route, whose in-flight answer is a `202` with no body. That route settles the run the same way the status read does, so a waiter receives a stuck run's end as a `RunFailedError` carrying the `WorkflowTaskKeptFailingError` report within one poll of `ends_at`. A caller that wants to show the degradation while it waits reads `getRunStatus` beside the wait.
+
+Both SDKs read a status body the same way, held to it by a case file they share, `tests/fixtures/run-status-reads.json`.
+
 ## `main_stuff` — the output
 
 `main_stuff` is the resolved content of the run's main output and is always present for a completed run, unless the read's `artifacts` selection left it out. On the hosted path it is the `main_stuff.json` artifact; on the blocking path the SDK resolves it out of the returned working memory through the response's `main_stuff_name`. Both deliver the same content shape, so there is no shape-guessing and no path-dependent branch to write. A completed run that cannot deliver one throws `MissingMainStuffError` rather than handing back a half-filled result.

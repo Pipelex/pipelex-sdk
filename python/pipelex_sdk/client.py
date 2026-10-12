@@ -30,10 +30,11 @@ from urllib.parse import quote, urlencode, urlparse, urlsplit
 
 import httpx
 from mthds.protocol.exceptions import PipelineRequestError
+from mthds.protocol.models import RunResultStart
 from mthds.runners.api.client import MthdsAPIClient
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
 from mthds.runners.api.problem import ProblemDocument
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import to_json
 from typing_extensions import override
 
@@ -178,6 +179,33 @@ _GATEWAY_TIMEOUT_THRESHOLD_SECONDS = 28.0
 # sends the request itself, through `_send`, which reads this; a context variable keeps the choice to
 # the task that made it, so two calls in flight on one client never see each other's.
 _REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEOUT_OVERRIDE", default=None)
+
+# Whether the request in flight may create a run: `start`, `execute` and the blocking path's lift of an
+# execute set it (`_creating_run`), and `_send`, `_api_response_error` and `_unreadable_answer` read it when
+# they build an error, so that the error says whether the run may have started (`run_may_have_started`).
+# The inherited routes build their requests and their errors deep inside the base, which is why the choice
+# travels as a context variable, kept to the task that made it as the time limit above is.
+_MAY_START_RUN: ContextVar[bool] = ContextVar("_MAY_START_RUN", default=False)
+
+
+@contextmanager
+def _creating_run() -> Generator[None, None, None]:
+    """Mark the requests sent in this block as ones that may create a run, for the errors they meet."""
+    token = _MAY_START_RUN.set(True)
+    try:
+        yield
+    finally:
+        _MAY_START_RUN.reset(token)
+
+
+class _ExecuteAcceptance(RunResultStart):
+    """What an `execute` `202` must carry to be a run the caller can follow: the protocol's acknowledgement
+    with a run id that is not empty. Its extensions are not read, since the `RunStillRunningError` it becomes
+    carries only the id, so a malformed one never turns a run that is going into an answer the SDK cannot
+    read; `@pipelex/sdk`'s `throwIfExecuteDegraded` checks the same member and no other.
+    """
+
+    pipeline_run_id: str = Field(min_length=1)
 
 
 class _AnswerSeen:
@@ -439,20 +467,21 @@ class PipelexAPIClient(MthdsAPIClient):
                 gzip stream, is `DecodingError`.
 
         Inside `_reading_inherited_answer` it also records the answer, which the inherited route then
-        parses, so that an answer that route cannot read is reported as every other route reports it.
+        parses, so that an answer that route cannot read is reported as every other route reports it. Inside
+        `_creating_run`, the error says whether the run the request may create may have started.
         """
         timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
         try:
             response = await super()._send(method, url, content=content, request_timeout=request_timeout if timeout is None else timeout)
         except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
             msg = f"Could not reach Pipelex API at {self.base_url} (timeout)"
-            raise ApiUnreachableError(msg, api_url=self.base_url, code=ABORT_TIMEOUT_CODE) from exc
+            raise ApiUnreachableError(msg, api_url=self.base_url, code=ABORT_TIMEOUT_CODE, may_start_run=_MAY_START_RUN.get(), failure=exc) from exc
         except (httpx.TransportError, httpx.DecodingError) as exc:
             # A body httpx cannot decode, a broken gzip stream for one, is lost on the way as surely as a
             # dropped connection, and `@pipelex/sdk` reports it the same way (`Z_DATA_ERROR`).
             code = type(exc).__name__
             msg = f"Could not reach Pipelex API at {self.base_url} ({code})"
-            raise ApiUnreachableError(msg, api_url=self.base_url, code=code) from exc
+            raise ApiUnreachableError(msg, api_url=self.base_url, code=code, may_start_run=_MAY_START_RUN.get(), failure=exc) from exc
         seen = _INHERITED_ANSWER.get()
         if seen is not None:
             seen.response = response
@@ -584,7 +613,8 @@ class PipelexAPIClient(MthdsAPIClient):
         status, its raw text as `response_body`, its headers, and the `X-Request-ID` header as
         `request_id`, but no problem member, since a success body is no problem document; its verdict is
         the fallback's for a status no refusal carries, `runtime` and not retryable, since no change to
-        the call fixes the answer. The caller raises it `from` the failure, which becomes its `__cause__`.
+        the call fixes the answer. Inside `_creating_run`, the run may have started: the server accepted
+        the request. The caller raises it `from` the failure, which becomes its `__cause__`.
         """
         what: str
         match failure:
@@ -604,7 +634,23 @@ class PipelexAPIClient(MthdsAPIClient):
             headers=dict(response.headers),
             request_url=request_url,
             request_id=request_id or None,
+            may_start_run=_MAY_START_RUN.get(),
         )
+
+    @override
+    def _raise_if_execute_degraded(self, response: httpx.Response) -> None:
+        """Map the protocol's optional `202` execute degrade to `RunStillRunningError`, once the answer names its run.
+
+        The base raises `RunStillRunningError` for any `202`, with an empty run id when the body names
+        none. Such an answer leaves the caller a run it cannot follow, as a start acknowledgement without
+        its id does, so it is read here against `_ExecuteAcceptance`: a body that is not JSON, or that names
+        no run or an empty one, fails the read, and the `_reading_inherited_answer` block around `execute`
+        raises it as an answer the SDK cannot read, which inside `_creating_run` may have started a run.
+        `@pipelex/sdk`'s `throwIfExecuteDegraded` reads the same answers the same way.
+        """
+        if response.status_code == 202:
+            _ExecuteAcceptance.model_validate(response.json())
+        super()._raise_if_execute_degraded(response)
 
     @override
     def _raise_api_response_error(self, *, method: str, endpoint: str, response: httpx.Response) -> NoReturn:
@@ -633,7 +679,8 @@ class PipelexAPIClient(MthdsAPIClient):
         they read the same from either client; this adds the Pipelex members the standard's client
         leaves out — the platform's `code`, the runner's `error_category` and the platform's field-level
         `errors[]` — and narrows `validation_errors` to `ValidationErrorItem`. The error decides its
-        verdict from what the server sent and the fallback table.
+        verdict from what the server sent and the fallback table, and, inside `_creating_run`, whether the
+        run the request may create may have started.
 
         Args:
             method: The HTTP method of the request, for the message (`POST`).
@@ -669,6 +716,7 @@ class PipelexAPIClient(MthdsAPIClient):
             code=_non_empty_string_member(members, "code"),
             error_category=_non_empty_string_member(members, "error_category"),
             errors=_field_errors_of(members.get("errors")),
+            may_start_run=_MAY_START_RUN.get(),
         )
 
     def _raise_if_lifecycle_unavailable(self, *, status: int, body: str, url: str) -> None:
@@ -778,7 +826,7 @@ class PipelexAPIClient(MthdsAPIClient):
         _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
         _assert_linkage_method_id_is_bare(mthds_contents=mthds_contents, merged_extra=merged_extra)
         started_at = monotonic()
-        with self._reading_inherited_answer(method="POST", endpoint="execute"):
+        with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="execute"):
             try:
                 result = await super().execute(
                     pipe_code=pipe_code,
@@ -854,7 +902,7 @@ class PipelexAPIClient(MthdsAPIClient):
         _assert_linkage_method_id_is_bare(mthds_contents=mthds_contents, merged_extra=merged_extra)
         token = _REQUEST_TIMEOUT_OVERRIDE.set(_start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, mthds_contents))
         try:
-            with self._reading_inherited_answer(method="POST", endpoint="start"):
+            with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="start"):
                 try:
                     result = await super().start(
                         pipe_code=pipe_code,
@@ -1059,8 +1107,13 @@ class PipelexAPIClient(MthdsAPIClient):
         """Fetch a run's status by bare id — `GET /v1/runs/{run_id}/status`.
 
         Self-healing: a finished-but-unrecorded run resolves to its true terminal status on read.
-        `degraded=True` means Temporal was unreachable and `status` is the last-known value;
-        `retry_after_seconds` carries the server's `Retry-After` hint when present.
+        `degraded=True` means the read is not a plain fresh reading, and `degradation.reason` says why
+        (see `DegradationReason`): `status_unavailable` when the platform could not reach the workflow
+        engine and `status` is the last one recorded, `workflow_task_failing` when `status` is live and
+        the run is stuck, its workflow task failing until the platform ends it at
+        `degradation.ends_at`. `retry_after_seconds` carries the server's `Retry-After` hint when
+        present, and `request_id` the id to quote to support. A failed run's stored report, `error`,
+        and the `degradation` are each read leniently, so neither ever fails the read.
 
         Raises:
             RunLifecycleUnavailableError: If the lifecycle routes are absent (a bare runner).
@@ -1332,6 +1385,13 @@ class PipelexAPIClient(MthdsAPIClient):
         may exist before the API says so. It runs synchronously and its return value is ignored; an
         exception it raises propagates before the request is sent.
 
+        An error from the start, or from the blocking execute, says whether that request may still have
+        started a run whose id never reached the caller (`run_may_have_started`); when it may have, it is
+        not retryable, since calling this method again could pay for the run twice: look the run up in the
+        run history first. An error from the wait, once `on_started` has named the run, started nothing,
+        so its `run_may_have_started` is `False`, and its `retryable` is about waiting again on that id
+        with `wait_for_result`, never about calling this method again.
+
         Raises:
             RunFailedError: If the run reaches a terminal status other than COMPLETED.
             RunTimeoutError: If the poll budget elapses (the run keeps executing — resume by id).
@@ -1419,7 +1479,7 @@ class PipelexAPIClient(MthdsAPIClient):
         can still be one this path cannot read; it raises the same `ApiResponseError` as an answer
         `execute` itself cannot read (`_reading_inherited_answer`).
         """
-        with self._reading_inherited_answer(method="POST", endpoint="execute"):
+        with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="execute"):
             result = await self.execute(
                 pipe_code=pipe_code,
                 mthds_contents=mthds_contents,
@@ -1973,6 +2033,7 @@ class PipelexAPIClient(MthdsAPIClient):
         method_id: str | None = None,
         pipe_ref: str | None = None,
         inputs: dict[str, Any],
+        allow_uploads: bool = True,
     ) -> PreparedInputs:
         """Prepare a pipe's inputs — resolve the declared signature, upload the file-bearing
         assets, and return copy-on-write rewritten inputs (canonical content carrying
@@ -1990,6 +2051,9 @@ class PipelexAPIClient(MthdsAPIClient):
         `pipe_ref` is qualified-only (`domain.pipe_code`); omit it and the server selects the
         method's entry pipe. A refused selection raises `InputPreparationError` with the
         server's reason. See `docs/input-preparation.md`.
+
+        With `allow_uploads=False` it uploads nothing and reads no file: a value that would need
+        an upload raises `UploadNotAllowedError`, naming the input.
         """
         return await _prepare_inputs_impl(
             self,
@@ -1998,6 +2062,7 @@ class PipelexAPIClient(MthdsAPIClient):
             method_id=method_id,
             pipe_ref=pipe_ref,
             inputs=inputs,
+            allow_uploads=allow_uploads,
         )
 
     async def list_runs(
@@ -2401,9 +2466,10 @@ def is_gateway_cut_off(exc: BaseException, elapsed_seconds: float) -> bool:
     request, so it is never the gateway's cut-off, however long it took. Any other exception is not either.
     `@pipelex/sdk`'s `isGatewayCutOff` reads the same failures.
 
-    The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. A caller timing a
-    request that may create a run, such as `start` from `start_and_wait`'s `on_starting`, reads it to know
-    the server may still be handling the request the gateway gave up on.
+    The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. Whether a failed
+    `start` or `execute` may have started a run needs no timing: the error says it as
+    `run_may_have_started`, which reads every `503` but the platform's coded one as a run that may have
+    started, however quickly it came back.
     """
     if elapsed_seconds < _GATEWAY_TIMEOUT_THRESHOLD_SECONDS:
         return False

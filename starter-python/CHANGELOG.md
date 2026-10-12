@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.39.0] - 2026-10-12
+
+### Changed
+
+- **A failed run's report is described as the platform serves it**: `docs/cli-architecture.md` and the docstrings of `present_failed_run` and `report_lines` say that the platform serves the runner's STRICT projection of a run's report, whose `message` is the author's copy only when `caller_facing_message` is true and `An internal error occurred.` otherwise, so a provider's raw text no longer reaches the terminal from a hosted run; the report is still printed as it came. They also say which runs hold no report, since a cancelled, terminated or timed-out run holds one when a completion callback carried one.
+
 ## [v0.37.0] - 2026-10-09
 
 ### Changed

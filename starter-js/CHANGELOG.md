@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.39.0] - 2026-10-12
+
+### Changed
+
+- **A failed run's report is described as the platform serves it**: `docs/errors.md`, `CLAUDE.md` and the comments of `classifyRunFailed`, `visibleReportMessage` and `reportDetails` say that the platform serves the runner's STRICT projection of a run's report, whose `message` is the author's copy only when `caller_facing_message` is true and `An internal error occurred.` otherwise, and whose `provider_metadata` keeps only `status_code` and `retry_after_seconds`, so a hosted report never carries a provider's raw text. The cut of that text and the omission of `provider_metadata` from the technical details stay as defence in depth for a report served whole, and the display is unchanged. They also say which runs hold no report, since a cancelled, terminated or timed-out run holds one when a completion callback carried one.
+
 ## [v0.37.0] - 2026-10-09
 
 ### Changed

@@ -554,9 +554,9 @@ export interface PipelineRun {
   pipe_statuses?: Record<string, PipeStatus> | null;
   created_at: string;
   finished_at?: string | null;
-  /** The runner's stored error report, typed whole — present only on a failed run
-   *  whose completion callback carried one. This is how a consumer tells the user
-   *  WHY a run failed rather than showing a generic message. */
+  /** The run's stored error report as the platform serves it, the runner's STRICT
+   *  projection, typed whole (see `RunErrorReport` for which runs hold one). This is how a
+   *  consumer tells the user WHY a run failed rather than showing a generic message. */
   error?: RunErrorReport | null;
   /**
    * Which version of its method the run ran: the version number for a run addressed by a
@@ -592,8 +592,9 @@ export interface RunHistoryItem {
   finished_at?: string | null;
   /** `null` when the runner resolved the pipe from the bundle's `main_pipe`. */
   pipe_code?: string | null;
-  /** The runner's stored error report — present only on a failed run that recorded one,
-   *  so opening it from history shows why without another read. */
+  /** The run's stored error report, served as on the run detail — present only on a run
+   *  that ended without completing and holds one, so opening it from history shows why
+   *  without another read. */
   error?: RunErrorReport | null;
   /**
    * Which version of the method the run ran — a number, `"draft"`, or `null` for an inline
@@ -623,6 +624,13 @@ export interface RunDetail extends PipelineRun {
   mthds_contents?: string[] | null;
   /** The inputs the run was started with, as sent. */
   inputs?: Record<string, unknown> | null;
+  /**
+   * The id of the request that started the run — the one to quote to support, and the one the
+   * platform and the runner logged it under. `null` for a run saved before the platform recorded
+   * it; absent on a server that does not serve it. The run history does not carry it; the status
+   * read does, as `RunRead.request_id`.
+   */
+  request_id?: string | null;
 }
 
 /** Query for one page of run history. */

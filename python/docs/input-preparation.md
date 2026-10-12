@@ -90,6 +90,21 @@ The route selects the pipe, and the helper keeps no selection chain of its own:
 
 The chain stops at the first link that is present. A method that declares no entry pipe, or several, needs an explicit `pipe_ref` — there is no fall-back to "the single pipe", and nothing reads the bundle blueprint. **A refused selection is an `InputPreparationError`** carrying the server's `detail`, which names the candidate refs where there are any, with the route's `ApiResponseError` as its `__cause__`. The route marks a refused selection by its `error_type`, the runner's entry-lookup error, since `pipelex-api` v0.33.1: `EntryPipeNotFoundError` for an unknown ref, a manifest `main_pipe` the closure lacks, or no ref and no `main_pipe`; `EntryPipeAmbiguousError` for an ambiguous bare code, or no ref and several `main_pipe`s; any other non-2xx — a `method_ref` that does not parse or fetch, an unknown `method_id`, a registry-form address, auth, a server fault — is left as the `ApiResponseError` it is. A runner older than `pipelex-api` v0.33.1 renders a refused selection as a generic `ValidationError`, so it is answered with `ApiResponseError` too: the SDK does not guess a selection from a message.
 
+#### Preparing without uploads
+
+```
+client.prepare_inputs(method_id=…, inputs=…, allow_uploads=False) → PreparedInputs
+```
+
+`allow_uploads=False` prepares the inputs without uploading anything, for a server that prepares inputs on a caller's behalf and holds no files of its own, such as a hosted MCP connector. Such a server must never read a file from its own disk because a caller named a path, and in the default mode the read happens inside the walk, where no seam the server controls could refuse it first. Under this option:
+
+- a value at a file position that would need an upload — a local path (`str` or `Path`), a `data:` URL, `bytes`, whether bare, inside canonical `{url}` content or inside an explicit envelope — raises `UploadNotAllowedError` **before** anything is read from disk, decoded or sent to the upload route. A `data:` URL is refused without being decoded, so a malformed one is refused the same way;
+- `http(s)` URLs and `pipelex-storage://` references pass through and are rewritten exactly as in the default mode, and `uploads` is always empty;
+- a value no file input takes (a number, a dict that is neither `{url}` content nor an explicit envelope) is still an `InvalidInputValueError`, as in the default mode, since it would need no upload, only a correction;
+- everything that is not a file position is untouched, as always: the walk is the same descriptor walk.
+
+The error names the input as `input_name` and where inside it the value sits as `input_path`: the input's name for a top-level file, then `.field` for each declared field and `[index]` for each list element (`dossier.attachments[1]`). An explicit envelope adds nothing to the path, since its `content` is the input's value. `value_kind` says what the value is, an `UploadNotAllowedKind` (`local_path`, `data_url` or `bytes`), so a consumer can tell its caller what to send instead; the value itself is never in the message or on the error, since it is the caller's data. The option is `True` by default, must be a `bool` when given — anything else is refused with an `InputPreparationError` before any request, since reading a stray `"false"` or `0` by its truthiness would decide unseen whether the caller's files are read — and is not sent to the server. The option covers `prepare_inputs` alone: `upload_file` is an upload by definition. `@pipelex/sdk` spells it `allowUploads`, with the same error and vocabulary.
+
 ## Compact or explicit-envelope inputs
 
 Each input may be submitted in **either** of two shapes, and preparation treats them equivalently:
@@ -137,6 +152,8 @@ The descriptor states the resolved kind at every depth and includes optional fie
 | Existing `pipelex-storage://` URI | Already prepared — pass through unchanged |
 | HTTP(S) URL | Pass through unchanged, **unless** the caller explicitly asks to ingest it into Pipelex storage |
 
+Under `allow_uploads=False`, the first row is refused with `UploadNotAllowedError` instead (see "[Preparing without uploads](#preparing-without-uploads)"), and the other two are unchanged.
+
 ## Rewritten-input shape: `url` carries the URI
 
 The runtime's canonical image/document content stores its reference in a **`url`** field. Preparation emits inputs the runtime interprets natively, so a rewritten input keeps the canonical content shape with `url` holding the `pipelex-storage://` value — exactly what the runtime's `input_normalizer` writes.
@@ -151,6 +168,7 @@ The contract distinguishes these semantic outcomes, each a typed subclass of `In
 
 - **invalid local source** (`InvalidLocalSourceError`, carries `source`) — a missing or unreadable path, its message naming the system's error code (`ENOENT`, `EACCES`, …) as `@pipelex/sdk`'s does;
 - **invalid input value** (`InvalidInputValueError`) — a value at a file input that cannot be turned into a file to upload: a `data:` URL that does not decode (no comma, bad base64), or a value of a type no file input takes, such as a number or a dict that is neither `{url}` content nor an explicit envelope. It is raised while the inputs are read, before anything is uploaded. With `InvalidLocalSourceError`, it is how a consumer tells the inputs' own mistakes from a method that does not load;
+- **upload not allowed** (`UploadNotAllowedError`, carries `input_name`, `input_path` and `value_kind`) — under `allow_uploads=False`, a value at a file input that would need an upload: a local path, a `data:` URL or `bytes`. It is raised before anything is read, decoded or uploaded (see "[Preparing without uploads](#preparing-without-uploads)");
 - **a method that does not load** (`MethodLoadError`) — the pipe I/O answer's `is_valid: false` arm. Its message names the first validation item's message, else the answer's own `message`; `validation_errors` holds every item of the answer and `server_message` the answer's own `message`, so a consumer lists every item rather than reading the first from a sentence. The method must change, not the inputs;
 - **rejected asset** (`RejectedAssetError`, carries `filename`, `status` and `code`) — the server refused it (e.g. a `413` past the service-defined size cap, code `too_large` — see "Storage policy" — surfaced as a clear rejection, not a raw transport error);
 - **unsupported server capability** (`UnsupportedUploadCapabilityError`, carries `filename`) — the configured deployment has no upload route;
@@ -161,7 +179,7 @@ The codes are closed vocabularies, `RejectedAssetCode` and `UploadTransportCode`
 
 Each upload failure's `filename` is the file `upload_file` was sending, so a consumer preparing several files says which one failed without parsing the message, as the `pipelex-sdk` command does; the fields are the twins of `@pipelex/sdk`'s. A task cancelled while `upload_file` reads and encodes a file raises `CancelledError` before the upload request, so nothing is uploaded once the caller has stopped.
 
-The rest of the signature's failures are the base `InputPreparationError` itself: a selector or `pipe_ref` refused before any request (see `prepare_inputs` above), a pipe selection the route refused, with the route's `ApiResponseError` as its `__cause__`, and a valid answer that does not describe the pipe it selected. Their verdict is `input` and not retryable, except the last, whose verdict is `runtime`: the API broke its own contract. The two new classes are the twins of `@pipelex/sdk`'s of the same names, which the `pipelex-sdk` command keys on to tell a usage error (exit code `2`) from a method that does not load (exit code `1`) ([`cli.md`](cli.md)).
+The rest of the signature's failures are the base `InputPreparationError` itself: a selector or `pipe_ref` refused before any request (see `prepare_inputs` above), a pipe selection the route refused, with the route's `ApiResponseError` as its `__cause__`, and a valid answer that does not describe the pipe it selected. Their verdict is `input` and not retryable, except the last, whose verdict is `runtime`: the API broke its own contract. `InvalidInputValueError` and `MethodLoadError` are the twins of `@pipelex/sdk`'s classes of the same names, which the `pipelex-sdk` command keys on to tell a usage error (exit code `2`) from a method that does not load (exit code `1`) ([`cli.md`](cli.md)).
 
 All preparation failures are raised **before any run is created**.
 

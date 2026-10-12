@@ -4,9 +4,11 @@ errors `pipelex-sdk` raises, each carrying a verdict.
 Every error class this module exports says what a program needs to know before anything else:
 `retryable`, whether asking again can plausibly succeed, and `error_domain`, who can fix the failure
 (`input`, `config` or `runtime`, `pipelex_sdk.error_verdicts.ErrorDomain`). Both are always decided,
-and `pipelex_sdk.error_verdicts.error_verdict_of` reads the pair off anything an `except` holds. The
-verdicts mirror `@pipelex/sdk`'s, class for class, and the case file
-`tests/fixtures/error-verdicts.json` the two packages share holds them.
+and `pipelex_sdk.error_verdicts.error_verdict_of` reads the pair off anything an `except` holds. A
+request error also says, as `run_may_have_started`, whether a failed start or execute may still have
+started a run, which `pipelex_sdk.error_verdicts.run_may_have_started_of` reads. The verdicts mirror
+`@pipelex/sdk`'s, class for class, and the case file `tests/fixtures/error-verdicts.json` the two
+packages share holds them.
 
 The errors raised over a request derive from `PipelexRequestError`, itself the protocol base
 `PipelineRequestError` (`mthds.protocol.exceptions`), mirroring `@pipelex/sdk`'s `errors.ts`:
@@ -58,6 +60,7 @@ from mthds.runners.api.exceptions import ApiResponseError as _MthdsApiResponseEr
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
 
 from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_domain_of, error_verdict_of, fallback_verdict
+from pipelex_sdk.run_may_have_started import answer_may_have_started_run, transport_may_have_started_run
 from pipelex_sdk.validation_models import ValidationErrorItem
 
 if TYPE_CHECKING:
@@ -82,14 +85,18 @@ def _verdict(error_domain: ErrorDomain, *, retryable: bool) -> ErrorVerdict:
 
 
 class PipelexRequestError(PipelineRequestError):
-    """The base of every error this SDK raises over a request, carrying the verdict as attributes:
-    `retryable` and `error_domain`.
+    """The base of every error this SDK raises over a request, carrying the verdict as attributes,
+    `retryable` and `error_domain`, and a third, `run_may_have_started`.
 
     Each subclass passes its verdict to this constructor, as the keyword `verdict`, so every class says
-    its verdict where it is defined. It refines the standard's `PipelineRequestError`, so
+    its verdict where it is defined. `run_may_have_started` is `False` unless the subclass passes it:
+    only `ApiUnreachableError` and `ApiResponseError` built for a request that may create a run, and
+    `PipelineExecuteTimeoutError`, ever carry it as `True`, and when they do, `retryable` is `False`
+    whatever the verdict passed. It refines the standard's `PipelineRequestError`, so
     `except PipelineRequestError` still catches every SDK request error. To read a verdict from anything
     an `except` holds, use `pipelex_sdk.error_verdicts.error_verdict_of`, which also reads it off an
-    error that is not one of these classes but carries both members.
+    error that is not one of these classes but carries both members, and
+    `pipelex_sdk.error_verdicts.run_may_have_started_of` for the third member.
 
     The keyword arguments the constructor does not name pass on to the next class in the method
     resolution order: that is how `ApiResponseError` and `RunStillRunningError`, which also refine one of
@@ -101,10 +108,18 @@ class PipelexRequestError(PipelineRequestError):
     retryable: bool
     #: Who can fix the failure: `input`, `config` or `runtime`. Always decided.
     error_domain: ErrorDomain
+    #: Whether the failed request may still have started a run whose id never reached the caller: a `start`
+    #: or an `execute` (and so `start_and_wait`'s start, or the blocking execute it falls back to) that
+    #: failed in a way that does not prove the server started nothing. When it is `True`, `retryable` is
+    #: `False`: look the run up in the run history before starting it again. `False` for every other
+    #: request, a wait on a run already named included. Always decided.
+    run_may_have_started: bool
 
-    def __init__(self, message: str, /, *, verdict: ErrorVerdict, **kwargs: Any) -> None:
+    def __init__(self, message: str, /, *, verdict: ErrorVerdict, run_may_have_started: bool = False, **kwargs: Any) -> None:
         super().__init__(message, **kwargs)
-        self.retryable = verdict.retryable
+        self.run_may_have_started = run_may_have_started
+        # Asking again could start a second run, so a run that may have started is never retryable.
+        self.retryable = False if run_may_have_started else verdict.retryable
         self.error_domain = verdict.error_domain
 
 
@@ -154,13 +169,31 @@ class ApiUnreachableError(PipelexRequestError):
     `runtime` and retryable instead: the API took the request and did not answer in time, which is no
     fault of the base URL.
 
+    On a request that may create a run (`may_start_run`, which the client sets on `start` and `execute`),
+    `run_may_have_started` is `True` unless `failure`, the httpx exception the request met, proves the
+    request never left: the connection or the TLS handshake failed, or no connection came. A read or
+    write timeout, a connection closed once the request had left or a body that could not be decoded
+    proves nothing, so the run may have started and the error is not retryable.
+
     It derives from the SDK's base directly because the `mthds` client has no unreachable error of its
     own; when it gains one, this class subclasses it.
     """
 
-    def __init__(self, message: str, api_url: str, code: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        api_url: str,
+        code: str | None = None,
+        *,
+        may_start_run: bool = False,
+        failure: BaseException | None = None,
+    ) -> None:
         error_domain = ErrorDomain.RUNTIME if code == ABORT_TIMEOUT_CODE else ErrorDomain.CONFIG
-        super().__init__(message, verdict=_verdict(error_domain, retryable=True))
+        super().__init__(
+            message,
+            verdict=_verdict(error_domain, retryable=True),
+            run_may_have_started=may_start_run and transport_may_have_started_run(failure),
+        )
         self.api_url = api_url
         self.code = code
 
@@ -217,6 +250,13 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
       retryable, as a stored report that says nothing is not, since the caller or the environment must
       change, while `runtime` takes the fallback's. Nothing on the error says which a value came from:
       `problem` keeps what the server sent.
+    - **A run that may have started.** On a `start` or an `execute`, `run_may_have_started` says whether
+      the answer leaves a run possibly started without its id reaching the caller: any `2xx` the SDK
+      could not read, a `408`, and every `5xx` but a `501` and the platform's `503` coded
+      `pipeline_start_unavailable`, which says the runner was never reached. Then `retryable` is
+      `False`, whatever the server sent: asking again could start a second run. A runner's own failure
+      of a blocking execute reads the same, since the SDK cannot tell a run that ended from one that
+      goes on, and its `retryable` stays readable on `problem`. On every other route it is `False`.
     - **What happened, for a person.** `str(exc)` names the request and the status, gives the reason
       (the problem's `detail`, else its `title`, else the raw body, else the status text) and, when
       the server advised one, the next step on its own line (`Next step: …`); for a 2xx it could not
@@ -279,6 +319,7 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
         code: str | None = None,
         error_category: str | None = None,
         errors: list[FieldError] | None = None,
+        may_start_run: bool = False,
     ) -> None:
         """Build the error: the verdict, the `mthds` members, then the Pipelex ones.
 
@@ -307,11 +348,16 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
             code: The platform's closed native code.
             error_category: The finer classification of an inference failure.
             errors: The platform's field-level failures.
+            may_start_run: The request was a `start` or an `execute`, so the answer is read for whether it
+                may have started a run (`run_may_have_started`). The client sets it on those two routes
+                alone; a caller building the error by hand sets it to get the verdict the client would give.
         """
+        run_may_have_started = may_start_run and answer_may_have_started_run(status=status, code=code)
         verdict = _response_verdict(status=status, error_type=error_type, code=code, sent_domain=error_domain, sent_retryable=retryable)
         super().__init__(
             message,
             verdict=verdict,
+            run_may_have_started=run_may_have_started,
             api_url=api_url,
             status=status,
             status_text=status_text,
@@ -367,11 +413,12 @@ class PipelineExecuteTimeoutError(PipelexRequestError):
     request ran before the gateway cut it off.
 
     Its verdict is `input`, not retryable: asking again meets the same limit, and the caller fixes it by
-    starting the run and polling.
+    starting the run and polling. `run_may_have_started` is always `True`: the gateway gave up on the
+    request, and the run it carried goes on without its id reaching the caller.
     """
 
     def __init__(self, message: str, elapsed_seconds: float) -> None:
-        super().__init__(message, verdict=_verdict(ErrorDomain.INPUT, retryable=False))
+        super().__init__(message, verdict=_verdict(ErrorDomain.INPUT, retryable=False), run_may_have_started=True)
         self.elapsed_seconds = elapsed_seconds
 
 
@@ -386,14 +433,21 @@ class RunFailedError(PipelexRequestError):
 
     - `status` is the run's terminal status, the typed `RunStatus` enum, read from the problem's
       `run_status` member — so callers can match/case on it.
-    - `error` is the run's stored error report, typed whole as `RunErrorReport`: the runner's
-      `error_type`, `message`, `title`, `type_uri`, `error_domain`, `error_category`, `retryable`,
-      `user_action`, `model`, `provider`, `provider_metadata`, `validation_errors` and anything newer
-      on `model_extra`. Branch on `error.error_domain`, `error.type_uri` and `error.retryable`; show
-      `error.user_action` as the next step. It is the runner's VERBOSE report, so `message` and
-      `provider_metadata` can hold a provider's raw text — deciding what a person sees is yours.
-      `None` when the run ended with no stored report (a cancelled, terminated or timed-out run, or
-      one the platform finalized itself).
+    - `error` is the run's stored error report as the platform serves it, typed whole as
+      `RunErrorReport`: the runner's `error_type`, `message`, `title`, `type_uri`, `error_domain`,
+      `error_category`, `retryable`, `user_action`, `provider_metadata`, `caller_facing_message`,
+      `validation_errors` and anything newer on `model_extra`. Branch on `error.error_domain`,
+      `error.type_uri` and `error.retryable`; show `error.user_action` as the next step. The platform
+      serves the runner's STRICT projection, so `message` is the author's copy only when
+      `caller_facing_message` is `True` and the placeholder `An internal error occurred.` otherwise,
+      `user_action` comes only with caller-facing copy, `provider_metadata` keeps only `status_code`
+      and `retry_after_seconds`, and `model`, `provider` and `migration` are `None`; deciding what a
+      person sees is still yours. A run the platform ended or settled itself carries the
+      caller-facing report the platform wrote, in the same shape. A cancelled, terminated or timed-out
+      run carries a report when a completion callback carried one, and a timed-out run otherwise the
+      platform's timeout report. `None` when the run ended with no stored report (one whose start
+      failed, or one cancelled, terminated or given its status by hand with no completion callback
+      carrying a report).
     - The exception's own message is the problem's `detail`, which names the status and then the
       report's message (`Run finished with status FAILED: <message>`), so printing the error already
       tells the reason.
@@ -551,6 +605,50 @@ class InvalidInputValueError(InputPreparationError):
     what must change, which is how a consumer tells it apart from `MethodLoadError`, a method that does
     not load, raised by the same preparation. The twin of `@pipelex/sdk`'s class of the same name.
     """
+
+
+class UploadNotAllowedKind(StrEnum):
+    """What a value refused under `allow_uploads=False` is, in a closed vocabulary a caller branches on
+    rather than on the message: `local_path` — a string or a `Path` that is neither an `http(s)` URL nor
+    a `pipelex-storage://` reference, which preparation would read from disk; `data_url` — a `data:`
+    URL, which it would decode and upload; `bytes` — inline `bytes`. The vocabulary is `@pipelex/sdk`'s
+    `UploadNotAllowedKind`, shared so a consumer of both SDKs branches on one set.
+    """
+
+    LOCAL_PATH = "local_path"
+    DATA_URL = "data_url"
+    BYTES = "bytes"
+
+
+_UPLOAD_NOT_ALLOWED_KIND_WORDS: dict[UploadNotAllowedKind, str] = {
+    UploadNotAllowedKind.LOCAL_PATH: "a local file path",
+    UploadNotAllowedKind.DATA_URL: "a data: URL",
+    UploadNotAllowedKind.BYTES: "inline bytes",
+}
+
+
+class UploadNotAllowedError(InputPreparationError):
+    """`prepare_inputs` was called with `allow_uploads=False`, and a value at a file input would need an
+    upload: a local path, a `data:` URL or bytes.
+
+    It is raised before anything is read from disk, decoded or sent to the upload route, so a server
+    preparing inputs on a caller's behalf never reads a file of its own because the caller named it.
+    `input_name` is the input the value belongs to, `input_path` where it sits inside that input
+    (`report.attachments[1]`, or the name alone for a top-level file), and `value_kind` what it is. The
+    value itself is neither in the message nor on the error, since it is the caller's data. Its verdict
+    is `input`, not retryable: the caller must pass an `http(s)` URL or a `pipelex-storage://` reference
+    instead. The twin of `@pipelex/sdk`'s class of the same name, whose `inputName`, `inputPath` and
+    `valueKind` these are.
+    """
+
+    def __init__(self, *, input_name: str, input_path: str, value_kind: UploadNotAllowedKind) -> None:
+        super().__init__(
+            f'Input "{input_path}" is {_UPLOAD_NOT_ALLOWED_KIND_WORDS[value_kind]}, which would need an upload, and this '
+            "preparation uploads nothing: pass an http(s) URL or a pipelex-storage:// reference instead."
+        )
+        self.input_name = input_name
+        self.input_path = input_path
+        self.value_kind = value_kind
 
 
 class MethodLoadError(InputPreparationError):

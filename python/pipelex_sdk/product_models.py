@@ -836,8 +836,9 @@ class RunHistoryItem(BaseModel):
     has none to report, so the platform serves this as null."""
 
     error: LenientRunErrorReport = None
-    """The run's stored report, kept on the row so opening a failed run from history shows why
-    without another read. `None` on every run that did not fail."""
+    """The run's stored report, served as on the run detail (the runner's STRICT projection), so
+    opening a failed run from history shows why without another read. `None` on a completed run and
+    on one that ended without a report (see `RunErrorReport`)."""
 
     method_version: int | Literal["draft"] | None = None
     """Which version of the method the run ran — a number, `"draft"`, or `None` for an inline
@@ -893,6 +894,11 @@ class RunDetail(PipelineRun):
 
     mthds_contents: list[str] | None = None
     inputs: dict[str, Any] | None = None
+    request_id: str | None = None
+    """The id of the request that started the run — the one to quote to support, and the one the
+    platform and the runner logged it under. `None` for a run saved before the platform recorded it,
+    and on a server that does not serve it. The run list does not carry it; the status read does, as
+    `RunRead.request_id`."""
 
 
 class RunPage(BaseModel):

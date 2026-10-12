@@ -2381,7 +2381,7 @@
     },
     {
       "name": "run/execute-unavailable",
-      "summary": "A bare runner's blocking execute refused with a 503 before the gateway's cut-off ran nothing, so the failure says nothing of a run.",
+      "summary": "A 503 to a bare runner's blocking execute, even one that comes back before the gateway's cut-off, does not say the method never ran, so the failure says a run may have started.",
       "argv": ["run", "--method", "mt_receipts01"],
       "routes": {
         "GET /v1/version": [{ "answer": "version/bare-runner" }],
@@ -2397,8 +2397,7 @@
       "expect": {
         "exit_code": 1,
         "stdout": "",
-        "stderr": ["Error: the API refused the request (status 503).\n"],
-        "stderr_excludes": ["may have started"]
+        "stderr": ["Error: the API refused the request (status 503).\n", "A run may have started on the server without the command learning of it, so check before starting it again.\n"]
       }
     },
     {
@@ -2432,6 +2431,24 @@
         "stdout": "",
         "stderr": [
           "Error: the API's answer could not be read (status 202).\nReason: API POST /v1/start answered 202 with a body that is not an object\n",
+          "A run may have started on the server without the command learning of it, so check before starting it again.\n"
+        ],
+        "stderr_excludes": ["Run started", "gives no reason"]
+      }
+    },
+    {
+      "name": "run/start-answer-without-run-id",
+      "summary": "A start accepted with an object that names no run is an answer the command cannot read: the run the server accepted was never named, so the failure says it may have started.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [{ "status": 202, "headers": { "Content-Type": "application/json" }, "body": { "state": "STARTED", "created_at": "2026-10-08T10:00:00Z" } }]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's answer could not be read (status 202).\nReason: API POST /v1/start answered 202 with a body that is not the answer the route returns\n",
           "A run may have started on the server without the command learning of it, so check before starting it again.\n"
         ],
         "stderr_excludes": ["Run started", "gives no reason"]
@@ -2479,7 +2496,7 @@
     },
     {
       "name": "run/start-unavailable",
-      "summary": "A 503 that comes back before the gateway's ~30-second cut-off says the start was not handled, so no run was created and the failure says nothing of one.",
+      "summary": "A 503 that comes back before the gateway's ~30-second cut-off, without the platform's code saying the runner was never reached, can follow a run the runner already started, when the platform fails to record it, so a run may have been created and the failure says so.",
       "argv": ["run", "--method", "mt_receipts01"],
       "routes": {
         "GET /v1/version": [{ "answer": "version/hosted" }],
@@ -2495,8 +2512,71 @@
       "expect": {
         "exit_code": 1,
         "stdout": "",
-        "stderr": ["Error: the API refused the request (status 503).\n"],
-        "stderr_excludes": ["may have started"]
+        "stderr": ["Error: the API refused the request (status 503).\n", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-runner-unreachable",
+      "summary": "The platform's 503 coded pipeline_start_unavailable says it never reached the runner and started nothing, so the failure says nothing of a run.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 503,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "type": "https://pipelex.com/errors/pipeline_start_unavailable", "title": "Pipeline start queue unavailable", "status": 503, "code": "pipeline_start_unavailable", "detail": "The runner could not be reached.", "error_domain": "runtime", "retryable": true }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 503).\n", "Reason: The runner could not be reached.\n"],
+        "stderr_excludes": ["may have started", "Run started"]
+      }
+    },
+    {
+      "name": "run/start-server-error",
+      "summary": "A 500 to a start is the server failing while it handled the request, which may have been after the run started, so the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 500,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 500, "title": "Internal Server Error", "detail": "The platform failed while starting the run." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 500).\n", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started"]
+      }
+    },
+    {
+      "name": "run/start-request-timeout",
+      "summary": "A 408 to a start can come from a proxy in front of the platform that had already forwarded the request, so a run may have been created and the failure says so.",
+      "argv": ["run", "--method", "mt_receipts01"],
+      "routes": {
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
+          {
+            "status": 408,
+            "headers": { "Content-Type": "application/problem+json" },
+            "body": { "status": 408, "title": "Request Timeout", "detail": "The proxy stopped waiting for the platform." }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": ["Error: the API refused the request (status 408).\n", "A run may have started on the server without the command learning of it, so check before starting it again.\n"],
+        "stderr_excludes": ["Run started"]
       }
     },
     {

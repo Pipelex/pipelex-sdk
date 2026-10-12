@@ -229,7 +229,9 @@ export type {
 // ── Run lifecycle (hosted extension — NOT part of the protocol) ──────
 export { isTerminalRunStatus, isSuccessRunStatus, RUN_RESULT_ARTIFACTS } from "./runs.js";
 export type {
+  DegradationReason,
   GetRunResultOptions,
+  RunDegradation,
   RunResultArtifact,
   RunStatus,
   RunPublic,
@@ -252,10 +254,12 @@ export type {
 } from "./usage.js";
 
 // ── Typed errors (PipelineRequestError rides the protocol re-export above) ──
-// Every one carries a verdict — `retryable` and `errorDomain` — read with `errorVerdictOf`.
+// Every one carries a verdict — `retryable` and `errorDomain` — read with `errorVerdictOf`, and
+// `runMayHaveStarted`, read with `runMayHaveStartedOf`.
 export {
   PipelexRequestError,
   errorVerdictOf,
+  runMayHaveStartedOf,
   RequestArgumentError,
   ApiResponseError,
   ApiUnreachableError,
@@ -270,6 +274,7 @@ export {
   EmptyMethodSourceError,
   InvalidLocalSourceError,
   InvalidInputValueError,
+  UploadNotAllowedError,
   MethodLoadError,
   RejectedAssetError,
   UnsupportedUploadCapabilityError,
@@ -286,6 +291,7 @@ export type {
   ErrorVerdict,
   MethodErrorCode,
   RejectedAssetCode,
+  UploadNotAllowedKind,
   UploadTransportCode,
 } from "./errors.js";
 

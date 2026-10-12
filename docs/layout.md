@@ -33,7 +33,7 @@ Everything that serves only the maintainers lives at the root instead:
 - `.github/workflows/`, the pull-request checks, which [`ci.md`](ci.md) describes, with the rendered twins of each template's own workflows, and the release workflow and the mirrors' scheduled comparison, which [`release-model.md`](release-model.md) and [`export.md`](export.md) describe;
 - `scripts/`, which checks every manifest against `VERSION`, renders the twins, selects the packages a release ships, takes the release workflow's decisions and exports the starters;
 - `.worktree.toml`, which tells the workspace's `wt` how to publish a sprint prerelease of `@pipelex/sdk`;
-- `.claude/skills/`, the maintainers' skills: `release` cuts a release of the repository, and `bump-sdk` and `bump-mthds-form` move every template onto a newer published SDK or form kernel in one change;
+- `.claude/skills/`, the maintainers' skills: `release` cuts a release of the repository, `bump-sdk` and `bump-mthds-form` move every template onto a newer published SDK or form kernel in one change, and `bump-tools-wasm` moves `js/` onto a newer `@pipelex/tools-wasm`, the engine the `.mthds` edit hook bundles, and sweeps the rebuilt hook over the MTHDS Test Corpus;
 - `docs/`, this documentation.
 
 The release skills that each source repository carried, the templates' own included, were removed from the package directories: the repository's release is cut from the root, and a person's project has no use for Pipelex's release procedure. The root `/release` skill replaces them, and the release workflow, `.github/workflows/release.yml`, publishes from the root (see [`release-model.md`](release-model.md)).
@@ -65,7 +65,7 @@ The root's `make install` points git at `.githooks/`. A JavaScript template carr
 
 ## Local files
 
-Each directory keeps its own local env files (`.env`, `.env.local`) and Claude Code settings, all gitignored. The root's `.worktreeinclude` names them at any depth, so `wt` and Claude Code copy them from the main checkout into a new worktree.
+Each directory keeps its own local env files (`.env`, `.env.local`) and Claude Code settings, all gitignored. The root's `.worktreeinclude` names them at any depth, so `wt` and Claude Code copy them from the main checkout into a new worktree. It leaves out everything under a `node_modules`, since a dependency can ship a settings file of its own, and copying it would create a `node_modules` that stops a directory's first gate run from installing it.
 
 ## Where the code came from
 

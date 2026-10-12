@@ -143,6 +143,21 @@ The route selects the pipe, and the ref it answers with is the one prepared — 
 
 There is no single-pipe fallback: a method that declares one pipe and no `main_pipe` is refused a selector-less run, and a selector-less preparation with it.
 
+#### Preparing without uploads
+
+```
+client.prepareInputs({ method_id, inputs, allowUploads: false }) → PreparedInputs
+```
+
+`allowUploads: false` prepares the inputs without uploading anything, for a server that prepares inputs on a caller's behalf and holds no files of its own, such as a hosted MCP connector. Such a server must never read a file from its own disk because a caller named a path, and in the default mode the read happens inside the walk, where no seam the server controls could refuse it first. Under this option:
+
+- a value at a file position that would need an upload — a local path, a `data:` URL, bytes (`Blob`, `File`, `ArrayBuffer`, `Uint8Array`), whether bare, inside canonical `{ url }` content or inside an explicit envelope — throws `UploadNotAllowedError` **before** anything is read from disk, decoded or sent to the upload route. A `data:` URL is refused without being decoded, so a malformed one is refused the same way;
+- `http(s)` URLs and `pipelex-storage://` references pass through and are rewritten exactly as in the default mode, and `uploads` is always empty;
+- a value no file input takes (a number, an object that is neither bytes nor `{ url }` content) is still an `InvalidInputValueError`, as in the default mode, since it would need no upload, only a correction;
+- everything that is not a file position is untouched, as always: the walk is the same descriptor walk.
+
+The error names the input as `inputName` and where inside it the value sits as `inputPath`: the input's name for a top-level file, then `.field` for each declared field and `[index]` for each list element (`dossier.attachments[1]`). An explicit envelope adds nothing to the path, since its `content` is the input's value. `valueKind` says what the value is, `local_path`, `data_url` or `bytes`, so a consumer can tell its caller what to send instead; the value itself is never in the message or on the error, since it is the caller's data. The option is `true` when omitted, must be a boolean when given — anything else is refused with an `InputPreparationError` before any request, since reading a stray `"false"` as permission would upload exactly what the caller meant to keep — and is not sent to the server. The option covers `prepareInputs` alone: `uploadFile` is an upload by definition.
+
 ## `getMethodClosure` — the explicit expansion utility
 
 ```
@@ -214,6 +229,8 @@ A repeated reference to the **same source** within one preparation is uploaded o
 | Existing `pipelex-storage://` URI | Already prepared — pass through unchanged |
 | HTTP(S) URL | Pass through unchanged, **unless** the caller explicitly asks to ingest it into Pipelex storage |
 
+Under `allowUploads: false`, the first row is refused with `UploadNotAllowedError` instead (see "[Preparing without uploads](#preparing-without-uploads)"), and the other two are unchanged.
+
 ## Rewritten-input shape: `url` carries the URI
 
 The runtime's canonical image/document content stores its reference in a **`url`** field. Preparation emits inputs the runtime interprets natively, so a rewritten input keeps the canonical content shape with `url` holding the `pipelex-storage://` value — exactly what the runtime's `input_normalizer` writes.
@@ -231,6 +248,7 @@ The contract distinguishes these semantic outcomes, each a typed subclass of `In
 - **a method that does not load** (`MethodLoadError`) — the pipe I/O answer's `is_valid: false` arm. Its message names the first validation item's message, else the answer's own `message`; `validationErrors` holds the answer's items, each kept when it carries a string `category` and `message`, and `serverMessage` the answer's own `message` when it is a string, so a consumer lists every item rather than reading the first from a sentence. The method must change, not the inputs;
 - **invalid local source** (`InvalidLocalSourceError`) — missing, unreadable, or a path string outside Node;
 - **invalid input value** (`InvalidInputValueError`) — a value at a file input that cannot be turned into a file to upload: a `data:` URL that does not decode (no comma, bad base64, bad percent-encoding), or a value of a type no file input takes, such as a number or an object that is neither bytes nor `{url}` content. It is raised while the inputs are read, before anything is uploaded. With `InvalidLocalSourceError`, it is how a consumer tells the inputs' own mistakes from a method that does not load, though all three are `InputPreparationError`s with the same verdict;
+- **upload not allowed** (`UploadNotAllowedError`, carries `inputName`, `inputPath` and `valueKind`) — under `allowUploads: false`, a value at a file input that would need an upload: a local path, a `data:` URL or bytes. It is raised before anything is read, decoded or uploaded (see "[Preparing without uploads](#preparing-without-uploads)");
 - **rejected asset** (`RejectedAssetError`) — the server refused it (e.g. a `413` past the service-defined size cap — see "Storage policy" — surfaced as a clear rejection with `code` `too_large`, not a raw transport error), or storage refused an upload with a grant (a used or expired grant, or a file that differs from what the grant signed — see the table above for each `code`);
 - **unsupported server capability** (`UnsupportedUploadCapabilityError`) — the configured deployment has no upload route;
 - **authentication / authorization failure** (`UploadAuthenticationError`) — `401` / `403`;

@@ -506,6 +506,7 @@ class TestClientProduct:
             "created_at": "t",
             "mthds_contents": ["domain = 'x'"],
             "inputs": {"topic": "quantum"},
+            "request_id": "req_r1",
         }
         send = self._mock_send(mocker, client, _response(200, json_body=body))
 
@@ -514,7 +515,9 @@ class TestClientProduct:
         assert self._sent(send).url == f"{_BASE_URL}/v1/runs/r%2F1"
         assert detail.mthds_contents == ["domain = 'x'"]
         assert detail.inputs == {"topic": "quantum"}
+        assert detail.request_id == "req_r1"
         assert detail.status is RunStatus.COMPLETED
+        assert detail.model_extra == {}
 
     def test_update_run_drops_absent_finished_at_and_tolerates_empty_body(self, mocker: MockerFixture) -> None:
         client = self._client()

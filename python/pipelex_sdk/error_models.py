@@ -2,8 +2,9 @@
 
 **The runner owns these shapes; this SDK follows them.** A run that fails reports why as the runner's
 `ErrorReport` (`pipelex.base_exceptions`), which the hosted platform stores whole on the run row as
-`error` and serves as it was stored: on the status read (`RunRead.error`), on the run records
-(`PipelineRun.error`), and inside the problem document of the results read's `409`, where the
+`error` and serves through the runner's STRICT disclosure: on the status read (`RunRead.error`), on
+the run records (`PipelineRun.error`, `RunHistoryItem.error`), and inside the problem document of
+the results read's `409`, where the
 client lifts it onto `RunResultFailed.error` and `RunFailedError.error`. The same classification
 fields (`error_domain`, `user_action`, …) ride a runner-rendered problem document as extension
 members, but a refused request's `ApiResponseError` reads them through `mthds`'s own problem parse,
@@ -28,26 +29,28 @@ number, a `user_action` that is not an object — reads as `None`, and the rest 
 `LenientRunErrorReport` extends that to the report as a whole: an `error` that is not an object at
 all reads as `None`, so a status read, a run list page or a results read still answers.
 
-**Nothing is stripped.** The platform serves the runner's VERBOSE report, so `message` and
-`provider_metadata` can hold the provider's raw text. Deciding what of it a person should see is
-each consumer's presentation, not this SDK's; the report arrives here whole.
+**The platform serves the STRICT projection; this SDK strips nothing further.** The run row keeps
+the runner's VERBOSE report as the operators' record, and every read that hands it to a caller
+serves the rule the hosted runner applies to an error on `execute`: `error_type`, `title`,
+`type_uri`, `error_domain`, `error_category`, `retryable` and `validation_errors` pass through;
+`message` and `user_action` pass through only when `caller_facing_message` is `True`, which the
+served report then keeps, and otherwise `message` is the placeholder `An internal error occurred.`
+while `user_action` and the flag are absent; `provider_metadata` keeps only `status_code` and
+`retry_after_seconds`; `model`, `provider` and `migration` are absent. The reports the platform
+writes itself are caller-facing copy, so they keep their message and their next step. A platform run
+locally with `ERROR_DISCLOSURE=verbose` serves the report whole, which is why the models still name
+every member the runner writes. Deciding what a person should see is each consumer's presentation;
+the report arrives here as served.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Any, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, ValidationError, ValidatorFunctionWrapHandler, WrapValidator, field_validator
+from pydantic import BaseModel, ConfigDict, ValidatorFunctionWrapHandler, WrapValidator, field_validator
 
+from pipelex_sdk._pydantic_utils import none_when_it_does_not_fit
 from pipelex_sdk.validation_models import ValidationErrorItem
-
-
-def _none_when_it_does_not_fit(value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
-    """Validate `value`, or read it as `None` when it does not fit its declared type."""
-    try:
-        return handler(value)
-    except ValidationError:
-        return None
 
 
 class _LenientReportPart(BaseModel):
@@ -58,7 +61,7 @@ class _LenientReportPart(BaseModel):
     @field_validator("*", mode="wrap")
     @classmethod
     def _read_a_field_that_does_not_fit_as_none(cls, value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
-        return _none_when_it_does_not_fit(value, handler)
+        return none_when_it_does_not_fit(value, handler)
 
 
 class UserAction(_LenientReportPart):
@@ -79,7 +82,9 @@ class ProviderErrorMetadata(_LenientReportPart):
 
     Present on a report whose failure came back from a model provider. `message` is the provider
     SDK's own text, relayed raw. The provider's response body never crosses the wire: the runner
-    excludes it from every serialization.
+    excludes it from every serialization. A hosted run read keeps only `status_code` and
+    `retry_after_seconds`, the client hints; the other members reach a caller only from a server that
+    discloses errors VERBOSE, such as a platform run locally with `ERROR_DISCLOSURE=verbose`.
     """
 
     provider: str | None = None
@@ -122,15 +127,26 @@ class RunErrorReport(_LenientReportPart):
     `error_type` is the runner's open-ended exception class name: finer than `error_domain`, useful in
     a support line, but not a closed set to match against.
 
-    A report is `None` where the run has none — a cancelled, terminated or timed-out run, or one the
-    platform finalized itself — so the absence of a report says nothing about why.
+    The runner writes the report of a run that fails while it runs. A run the platform ends or settles
+    itself carries one the platform wrote in the same shape, as caller-facing copy:
+    `WorkflowTaskKeptFailingError` for a workflow task that kept failing (the run ends `FAILED`, not
+    `TERMINATED`), `RunTimedOutError` for a timeout and `RunWorkflowNotFoundError` for a workflow that
+    vanished. A `CANCELLED`, `TERMINATED` or `TIMED_OUT` run holds a report when a completion callback
+    carried one, and a `TIMED_OUT` run otherwise holds the platform's timeout report. A report is
+    `None` on a completed run and where a run has none — one whose start failed, a blocking `execute`
+    run, whose answer carried its reason, one cancelled, terminated or given its status by hand with no
+    completion callback carrying a report, one that ended before the platform wrote reports of its own
+    — so the absence of a report says nothing about why.
+
+    What the platform serves of a report is the runner's STRICT projection (see the module docstring),
+    so the members the projection drops are `None` on a hosted read.
     """
 
     #: The runner's exception class name (`LLMCompletionError`, `SandboxProvisioningError`, …) — an
     #: open set, for display and support, not for branching.
     error_type: str | None = None
-    #: What went wrong, as the runner wrote it. On the VERBOSE report the platform serves, it can
-    #: carry a provider's raw text.
+    #: What went wrong. The platform serves the author's copy only when `caller_facing_message` is
+    #: `True`, and the placeholder `An internal error occurred.` otherwise.
     message: str | None = None
     #: A stable human label for the error class (`LLM completion`).
     title: str | None = None
@@ -144,17 +160,26 @@ class RunErrorReport(_LenientReportPart):
     error_category: str | None = None
     #: Whether retrying the same run can succeed. `None` means unknown, never "no".
     retryable: bool | None = None
+    #: The next step the runner advises. The platform serves it only beside caller-facing copy.
     user_action: UserAction | None = None
-    #: The model the failing call used, when the failure is an inference failure.
+    #: The model the failing call used, when the failure is an inference failure. `None` on a hosted
+    #: read, whose STRICT projection drops it.
     model: str | None = None
-    #: The provider the failing call reached, when the failure is an inference failure.
+    #: The provider the failing call reached, when the failure is an inference failure. `None` on a
+    #: hosted read, whose STRICT projection drops it.
     provider: str | None = None
+    #: What the provider's SDK said, when the failure came back from a provider. A hosted read keeps
+    #: only its `status_code` and `retry_after_seconds`.
     provider_metadata: ProviderErrorMetadata | None = None
-    #: True when `message` was written as caller-facing copy. The runner emits it only when true.
+    #: True when `message` was written as caller-facing copy. The runner emits it only when true, and
+    #: the platform keeps it on a caller-facing report and leaves it out otherwise, so it is how a
+    #: consumer tells the author's copy from the placeholder.
     caller_facing_message: bool | None = None
     #: The structured diagnostics of a bundle that failed validation — the same items the validate
     #: report and a `422`'s `ApiResponseError.validation_errors` carry.
     validation_errors: list[ValidationErrorItem] | None = None
+    #: A pending configuration migration that explains the failure. `None` on a hosted read, whose
+    #: STRICT projection drops it.
     migration: MigrationErrorBlock | None = None
 
 
@@ -173,4 +198,4 @@ class FieldError(_LenientReportPart):
 #: The type of every `error` field that holds a run's report: `RunPublic.error`, `PipelineRun.error`
 #: and `RunResultFailed.error`. A report is read field by field as `RunErrorReport` says, and a value
 #: that is not a report at all reads as `None`, so the read carrying it always answers.
-LenientRunErrorReport: TypeAlias = Annotated[RunErrorReport | None, WrapValidator(_none_when_it_does_not_fit)]
+LenientRunErrorReport: TypeAlias = Annotated[RunErrorReport | None, WrapValidator(none_when_it_does_not_fit)]

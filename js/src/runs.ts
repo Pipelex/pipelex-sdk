@@ -2,6 +2,7 @@ import type { InputForm, OutputForm, PipeIOContracts } from "mthds/protocol";
 
 import { RequestArgumentError, RunFailedError, RunTimeoutError } from "./errors.js";
 import { MAX_TIMER_DELAY_MS } from "./timers.js";
+import { dropUnfit, isPlainObject } from "./error-models.js";
 import type { RunErrorReport } from "./error-models.js";
 import type { DictPipeOutput, DictWorkingMemory, PipelexRunResultStart } from "./models.js";
 
@@ -78,9 +79,16 @@ export interface RunPublic {
   created_at: string;
   finished_at?: string | null;
   /**
-   * Why the run failed: the runner's stored error report, typed whole (see `RunErrorReport`).
-   * `null` on a completed run and on a run that ended without a report — a cancelled,
-   * terminated or timed-out run, or one the platform finalized itself; absent on a server that
+   * Why the run failed: the stored error report as the platform serves it, the runner's STRICT
+   * projection, typed whole (see `RunErrorReport`). The runner writes it for a run that fails
+   * while it runs; the platform writes one in the runner's shape for a run it ends or settles
+   * itself — a workflow task that kept failing (`WorkflowTaskKeptFailingError`), a timeout
+   * (`RunTimedOutError`), a workflow that vanished (`RunWorkflowNotFoundError`). A cancelled,
+   * terminated or timed-out run holds a report when a completion callback carried one, and a
+   * timed-out run otherwise the platform's timeout report. `null` on a completed run and on a
+   * run that ended without a report — one whose start failed, a blocking `execute` run, one
+   * cancelled, terminated or given its status by hand with no completion callback carrying a
+   * report, one that ended before the platform wrote reports of its own; absent on a server that
    * does not serve it. The results read of the same run carries the same object in its `409`,
    * which is where `getRunResult`'s failed arm and `RunFailedError` take it from.
    */
@@ -103,14 +111,108 @@ export interface RunPublic {
 }
 
 /**
- * A run read through the self-healing path (`RunPublic` + `degraded`).
- * When `degraded` is true, Temporal was unreachable and `status` is the
- * last-known DB value, not a freshly-derived one — pair with
- * `retry_after_seconds` (parsed from the `Retry-After` header).
+ * Why a status read is `degraded` — `RunDegradation.reason`:
+ *
+ * - `status_unavailable`: the platform could not reach the workflow engine, so `status` is the
+ *   last one recorded. It says nothing about the run itself, which may be fine; read again after
+ *   `retry_after_seconds`.
+ * - `workflow_task_failing`: `status` is live, and the run is not making progress. The workflow
+ *   task that drives it has failed `failed_attempts` times in a row since `failing_since`; the
+ *   workflow engine keeps retrying it, and if it is still failing at `ends_at` the platform ends
+ *   the run `FAILED` with a `WorkflowTaskKeptFailingError` report.
+ *
+ * Read open, as `RunDegradation.reason` types it: a reason a later platform adds arrives as its
+ * raw string rather than failing the read, and a consumer that does not know it should not tell
+ * the person the run is fine.
+ */
+export type DegradationReason = "status_unavailable" | "workflow_task_failing";
+
+/**
+ * What a `degraded` status read means for this run — `RunRead.degradation`.
+ *
+ * Branch on `reason` (see `DegradationReason`), never on the wording of `message`. Each field is
+ * checked by the read: a known field whose value does not have its type is absent, and members
+ * this SDK does not name are relayed as sent.
+ */
+export interface RunDegradation {
+  /** Why the read is degraded: a `DegradationReason`, or the raw string of one this SDK does not know. */
+  reason: DegradationReason | (string & {});
+  /**
+   * What the platform says about it, in a sentence. For `workflow_task_failing` it says how many
+   * attempts have failed in a row, that the run is not making progress and when the platform will
+   * end it. It does not quote the worker's own failure text, which only a platform run locally
+   * with `ERROR_DISCLOSURE=verbose` adds. `failed_attempts` and `ends_at` carry the same facts as
+   * fields.
+   */
+  message?: string | null;
+  /** How many times in a row the run's workflow task has failed; `null` for `status_unavailable`. */
+  failed_attempts?: number | null;
+  /**
+   * ISO-8601 instant of the first failure in the current run of failures. `null` when the
+   * platform could not find the recorded failure in the workflow's history, and always for
+   * `status_unavailable`.
+   */
+  failing_since?: string | null;
+  /**
+   * ISO-8601 instant at which the platform ends the run `FAILED` if its workflow task is still
+   * failing. `null` when the platform could not find the recorded failure: it then does not end
+   * the run itself, and the run's own time limit ends it `TIMED_OUT`. Always `null` for
+   * `status_unavailable`.
+   */
+  ends_at?: string | null;
+  /** Members a later platform adds. */
+  [extension: string]: unknown;
+}
+
+/**
+ * A run read through the self-healing status path (`RunPublic` + `degraded`, `degradation`,
+ * `request_id` and the `Retry-After` hint).
+ *
+ * `degraded` is true when the read is not a plain fresh reading of a healthy run, and
+ * `degradation.reason` says which of two things holds (see `DegradationReason`): the platform
+ * could not reach the workflow engine and `status` is the last one recorded
+ * (`status_unavailable`, paired with `retry_after_seconds`), or `status` is live and the run is
+ * stuck, its workflow task failing until the platform ends it (`workflow_task_failing`). So
+ * `degraded` alone no longer means the run is fine. A platform older than the degradation sends
+ * `degraded` with no `degradation`; read that as `status_unavailable`, the only meaning `degraded`
+ * had then.
  */
 export interface RunRead extends RunPublic {
   degraded: boolean;
+  /**
+   * What `degraded` means for this run; `null` whenever `degraded` is false, and absent on a
+   * platform that predates it. Checked field by field, and `null` when it is not an object or its
+   * `reason` is not a string (see `RunDegradation`).
+   */
+  degradation?: RunDegradation | null;
+  /**
+   * The id of the request that started the run — the one to quote to support. `null` for a run
+   * saved before the platform recorded it; absent on a server that does not serve it.
+   */
+  request_id?: string | null;
+  /** The `Retry-After` header's delay, in seconds; set when the platform sent one. */
   retry_after_seconds?: number | null;
+}
+
+/**
+ * A status read's `degradation`, checked field by field so that it never fails the poll carrying
+ * it: a value that is not an object, or whose `reason` is not a string, reads as `null`, since a
+ * degradation without a reason cannot be branched on; `message`, `failing_since` and `ends_at` are
+ * kept when they are strings and `failed_attempts` when it is an integer, `null` kept for each;
+ * members this SDK does not name are relayed as sent.
+ *
+ * Internal: `getRunStatus` applies it.
+ */
+export function readRunDegradation(value: unknown): RunDegradation | null {
+  if (!isPlainObject(value) || typeof value.reason !== "string") return null;
+  const degradation: Record<string, unknown> = { ...value };
+  dropUnfit(
+    degradation,
+    ["message", "failing_since", "ends_at"],
+    (field) => typeof field === "string",
+  );
+  dropUnfit(degradation, ["failed_attempts"], Number.isInteger);
+  return degradation as RunDegradation;
 }
 
 /**

@@ -2,12 +2,14 @@
  * Pipelex SDK errors — the argument, transport, run-lifecycle, input-preparation and artifact
  * errors `PipelexApiClient` raises. Every one derives from `PipelexRequestError`, itself a
  * `PipelineRequestError` (the protocol base, re-exported from `mthds/protocol`), and so carries
- * a verdict: `retryable` and `errorDomain`, always decided. The one exported error outside the
- * family, `CodegenLockError`, declares the same two members itself.
+ * a verdict: `retryable` and `errorDomain`, always decided, and `runMayHaveStarted`, which says
+ * whether a failed start or execute may still have started a run. The one exported error outside
+ * the family, `CodegenLockError`, declares the verdict's two members itself.
  */
 
 import { PipelineRequestError } from "mthds/protocol";
 import { fallbackVerdict } from "./error-verdicts.js";
+import { answerMayHaveStartedRun, transportMayHaveStartedRun } from "./run-may-have-started.js";
 import type { ValidationErrorItem } from "./models.js";
 import type { ArtifactScope, DownloadArtifactsResult } from "./artifacts.js";
 import type {
@@ -49,9 +51,11 @@ export function isErrorDomain(value: unknown): value is ErrorDomain {
  * The verdict an error carries: whether asking again can plausibly succeed (`retryable`), and who
  * can fix the failure (`errorDomain`). Both are always decided.
  *
- * "Retryable" says a retry can succeed, never that it is safe: it says nothing about whether the
- * first attempt had an effect. A start answered with a `500` may already have created a run, so a
- * caller that must not start a run twice decides that for itself.
+ * "Retryable" says a retry can succeed, and on a request that may create a run, that it cannot
+ * start a second one: a failed `start` or `execute` that may still have started a run (an error
+ * whose `runMayHaveStarted` is true) is never retryable, whatever the server or the fallback table
+ * says, since asking again could pay for the run twice. Everywhere else it says nothing about
+ * whether the first attempt had an effect.
  */
 export interface ErrorVerdict {
   readonly retryable: boolean;
@@ -65,24 +69,43 @@ function makeVerdict(errorDomain: ErrorDomain, retryable: boolean): ErrorVerdict
 
 /**
  * The base of every error this SDK raises over a request, carrying the verdict as two readonly
- * own properties: `retryable` and `errorDomain`. Each subclass passes its verdict to this
- * constructor, so a class that forgets one does not compile, and every class says its verdict
- * where it is defined.
+ * own properties, `retryable` and `errorDomain`, and a third, `runMayHaveStarted`. Each subclass
+ * passes its verdict to this constructor, so a class that forgets one does not compile, and every
+ * class says its verdict where it is defined.
+ *
+ * `runMayHaveStarted` is false unless the subclass passes it: only `ApiUnreachableError` and
+ * `ApiResponseError` built for a request that may create a run, and `PipelineExecuteTimeoutError`,
+ * ever carry it as true, and when they do, `retryable` is false whatever the verdict passed.
  *
  * It refines the standard's `PipelineRequestError`, so `instanceof PipelineRequestError` still
  * matches every SDK error. To read a verdict from anything a `catch` holds, use
- * `errorVerdictOf`, which also reads it off an error raised by another copy of this SDK.
+ * `errorVerdictOf`, which also reads it off an error raised by another copy of this SDK, and
+ * `runMayHaveStartedOf` for the third member.
  */
 export abstract class PipelexRequestError extends PipelineRequestError implements ErrorVerdict {
   /** Whether asking again can plausibly succeed. Always decided. */
   public readonly retryable: boolean;
   /** Who can fix the failure: `input`, `config` or `runtime`. Always decided. */
   public readonly errorDomain: ErrorDomain;
+  /**
+   * Whether the failed request may still have started a run whose id never reached the caller:
+   * a `start` or an `execute` (and so `startAndWaitForResult`'s start, or the blocking execute it
+   * falls back to) that failed in a way that does not prove the server started nothing. When it
+   * is true, `retryable` is false: look the run up in the run history before starting it again.
+   * False for every other request, a wait on a run already named included. Always decided.
+   */
+  public readonly runMayHaveStarted: boolean;
 
-  constructor(message: string, verdict: ErrorVerdict, options?: { cause?: unknown }) {
+  constructor(
+    message: string,
+    verdict: ErrorVerdict,
+    options?: { cause?: unknown; runMayHaveStarted?: boolean },
+  ) {
     super(message, options);
     this.name = "PipelexRequestError";
-    this.retryable = verdict.retryable;
+    this.runMayHaveStarted = options?.runMayHaveStarted === true;
+    // Asking again could start a second run, so a run that may have started is never retryable.
+    this.retryable = this.runMayHaveStarted ? false : verdict.retryable;
     this.errorDomain = verdict.errorDomain;
   }
 }
@@ -104,6 +127,20 @@ export function errorVerdictOf(err: unknown): ErrorVerdict | undefined {
   const { retryable, errorDomain } = err as { retryable?: unknown; errorDomain?: unknown };
   if (typeof retryable !== "boolean" || !isErrorDomain(errorDomain)) return undefined;
   return { retryable, errorDomain };
+}
+
+/**
+ * Whether anything a `catch` holds is a failed run start that may still have started a run: true
+ * only for an `Error` carrying `runMayHaveStarted` as `true`.
+ *
+ * The check is structural, as `errorVerdictOf`'s is, so it reads an error raised by another copy
+ * of this SDK installed beside this one. Anything else is false: an error of a request that
+ * cannot start a run, an `mthds` error, which the standard's client never raises over a start of
+ * this SDK, and a value that is not an `Error`.
+ */
+export function runMayHaveStartedOf(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return (err as { runMayHaveStarted?: unknown }).runMayHaveStarted === true;
 }
 
 // ── Argument refusals ────────────────────────────────────────────────
@@ -197,6 +234,52 @@ export class InvalidInputValueError extends InputPreparationError {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "InvalidInputValueError";
+  }
+}
+
+/**
+ * What a value refused under `allowUploads: false` is, in a closed vocabulary a caller branches on
+ * rather than on the message: `local_path` — a string that is neither an `http(s)` URL nor a
+ * `pipelex-storage://` reference, which preparation would read from disk; `data_url` — a `data:`
+ * URL, which it would decode and upload; `bytes` — a `Blob`, `File`, `ArrayBuffer` or `Uint8Array`.
+ */
+export type UploadNotAllowedKind = "local_path" | "data_url" | "bytes";
+
+const UPLOAD_NOT_ALLOWED_KIND_WORDS: Record<UploadNotAllowedKind, string> = {
+  local_path: "a local file path",
+  data_url: "a data: URL",
+  bytes: "inline bytes",
+};
+
+/**
+ * `prepareInputs` was called with `allowUploads: false`, and a value at a file input would need an
+ * upload: a local path, a `data:` URL or bytes. It is raised before anything is read from disk,
+ * decoded or sent to the upload route, so a server preparing inputs on a caller's behalf never
+ * reads a file of its own because the caller named it. `inputName` is the input the value belongs
+ * to, `inputPath` where it sits inside that input (`report.attachments[1]`, or the name alone for a
+ * top-level file), and `valueKind` what it is. The value itself is neither in the message nor on
+ * the error, since it is the caller's data. Its verdict is `input`, not retryable: the caller must
+ * pass an `http(s)` URL or a `pipelex-storage://` reference instead.
+ */
+export class UploadNotAllowedError extends InputPreparationError {
+  public readonly inputName: string;
+  public readonly inputPath: string;
+  public readonly valueKind: UploadNotAllowedKind;
+
+  constructor(
+    details: { inputName: string; inputPath: string; valueKind: UploadNotAllowedKind },
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `Input "${details.inputPath}" is ${UPLOAD_NOT_ALLOWED_KIND_WORDS[details.valueKind]}, which ` +
+        "would need an upload, and this preparation uploads nothing: pass an http(s) URL or a " +
+        "pipelex-storage:// reference instead.",
+      options,
+    );
+    this.name = "UploadNotAllowedError";
+    this.inputName = details.inputName;
+    this.inputPath = details.inputPath;
+    this.valueKind = details.valueKind;
   }
 }
 
@@ -570,6 +653,12 @@ export class ArtifactAuthenticationError extends ArtifactOperationError {
  * attempt can get through. With the code `ABORT_TIMEOUT`, the SDK's own request timeout, it is
  * `runtime` and retryable instead: the API took the request and did not answer in time, which is
  * no fault of the base URL.
+ *
+ * On a request that may create a run (`options.mayStartRun`, which the client sets on `start` and
+ * `execute`), `runMayHaveStarted` is true unless `cause`, the failure fetch threw, proves the
+ * request never left: the name lookup, the connection or the TLS handshake failed. A reset, a time
+ * limit or a body that could not be decoded proves nothing, so the run may have started and the
+ * error is not retryable.
  */
 export class ApiUnreachableError extends PipelexRequestError {
   public readonly apiUrl: string;
@@ -579,9 +668,12 @@ export class ApiUnreachableError extends PipelexRequestError {
     message: string,
     apiUrl: string,
     code: string | undefined,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; mayStartRun?: boolean },
   ) {
-    super(message, makeVerdict(code === "ABORT_TIMEOUT" ? "runtime" : "config", true), options);
+    super(message, makeVerdict(code === "ABORT_TIMEOUT" ? "runtime" : "config", true), {
+      ...options,
+      runMayHaveStarted: options?.mayStartRun === true && transportMayHaveStartedRun(options.cause),
+    });
     this.name = "ApiUnreachableError";
     this.apiUrl = apiUrl;
     this.code = code;
@@ -595,7 +687,8 @@ export class ApiUnreachableError extends PipelexRequestError {
  * lifecycle (start + poll) instead.
  *
  * Its verdict is `input`, not retryable: asking again meets the same limit, and the caller fixes
- * it by starting the run and polling.
+ * it by starting the run and polling. `runMayHaveStarted` is always true: the gateway gave up on
+ * the request, and the run it carried goes on without its id reaching the caller.
  */
 export class PipelineExecuteTimeoutError extends PipelexRequestError {
   public readonly elapsedMs: number;
@@ -607,7 +700,7 @@ export class PipelineExecuteTimeoutError extends PipelexRequestError {
         "The blocking execute path can't run methods longer than 30s behind the gateway. " +
         "Start the run and poll for its result instead: `start()` then `waitForResult(runId)`.",
       makeVerdict("input", false),
-      options,
+      { ...options, runMayHaveStarted: true },
     );
     this.name = "PipelineExecuteTimeoutError";
     this.elapsedMs = elapsedMs;
@@ -622,15 +715,21 @@ export class PipelineExecuteTimeoutError extends PipelexRequestError {
  *
  * - `status` is the run's terminal status, read from the problem's `run_status` member, or from
  *   its `detail` sentence on a platform that predates the member.
- * - `error` is the run's stored error report, typed whole as `RunErrorReport`: the runner's
- *   `error_type`, `message`, `title`, `type_uri`, `error_domain`, `error_category`,
- *   `retryable`, `user_action`, `model`, `provider`, `provider_metadata`, `validation_errors`
- *   and anything newer through its index signature. Branch on `error.error_domain`,
- *   `error.type_uri` and `error.retryable`; show `error.user_action` as the next step. It is
- *   the runner's VERBOSE report, so `message` and `provider_metadata` can hold a provider's raw
- *   text — deciding what a person sees is the consumer's. `null` when the run ended with no
- *   stored report (a cancelled, terminated or timed-out run, or one the platform finalized
- *   itself).
+ * - `error` is the run's stored error report as the platform serves it, typed whole as
+ *   `RunErrorReport`: the runner's `error_type`, `message`, `title`, `type_uri`, `error_domain`,
+ *   `error_category`, `retryable`, `user_action`, `provider_metadata`, `caller_facing_message`,
+ *   `validation_errors` and anything newer through its index signature. Branch on
+ *   `error.error_domain`, `error.type_uri` and `error.retryable`; show `error.user_action` as the
+ *   next step. The platform serves the runner's STRICT projection, so `message` is the author's
+ *   copy only when `caller_facing_message` is `true` and the placeholder
+ *   `An internal error occurred.` otherwise, `user_action` comes only with caller-facing copy,
+ *   `provider_metadata` keeps only `status_code` and `retry_after_seconds`, and `model`,
+ *   `provider` and `migration` are absent; deciding what a person sees is still the consumer's.
+ *   A run the platform ended or settled itself carries the caller-facing report the platform
+ *   wrote, in the same shape. A cancelled, terminated or timed-out run carries a report when a
+ *   completion callback carried one, and a timed-out run otherwise the platform's timeout report.
+ *   `null` when the run ended with no stored report (one whose start failed, or one cancelled,
+ *   terminated or given its status by hand with no completion callback carrying a report).
  * - The error's own `message` is the problem's `detail`, which names the status and then the
  *   report's message (`Run finished with status FAILED: <message>`), so printing the error
  *   already tells the reason.
@@ -810,13 +909,21 @@ export type MethodErrorCode =
 
 /**
  * The last constructor argument of `ApiResponseError`: the error's `cause`, the problem
- * document's typed members, and the decoded document whole. The same shape as `mthds`'s
- * `ApiResponseErrorOptions`, plus `problemDocument`.
+ * document's typed members, the decoded document whole, and whether the request that met the
+ * answer may create a run. The same shape as `mthds`'s `ApiResponseErrorOptions`, plus
+ * `problemDocument` and `mayStartRun`.
  */
 export interface ApiResponseErrorOptions {
   cause?: unknown;
   problem?: ProblemDetails;
   problemDocument?: Record<string, unknown>;
+  /**
+   * The request was a `start` or an `execute`, so the answer is read for whether it may have
+   * started a run (see `ApiResponseError.runMayHaveStarted`). The client sets it on those two
+   * routes alone; a consumer building the error by hand sets it to get the verdict the client
+   * would give.
+   */
+  mayStartRun?: boolean;
 }
 
 /**
@@ -844,6 +951,14 @@ export interface ApiResponseErrorOptions {
  *   stored report that says nothing is not, since the caller or the environment must change,
  *   while `runtime` takes the fallback's. Nothing on the error says which a value came from:
  *   `problemDocument` keeps what the server sent.
+ * - **A run that may have started.** On a `start` or an `execute`, `runMayHaveStarted` says
+ *   whether the answer leaves a run possibly started without its id reaching the caller: any
+ *   `2xx` the SDK could not read, a `408`, and every `5xx` but a `501` and the platform's `503`
+ *   coded `pipeline_start_unavailable`, which says the runner was never reached. Then
+ *   `retryable` is false, whatever the server sent: asking again could start a second run. A
+ *   runner's own failure of a blocking execute reads the same, since the SDK cannot tell a run
+ *   that ended from one that goes on, and its `retryable` stays readable on `problemDocument`.
+ *   On every other route it is false.
  * - **The branch fields.** `errorDomain`, and `type`, the stable URI naming the error class.
  *   Branch on these, never on the HTTP status or on the wording of a message; they are the
  *   fields that mean the same on both surfaces.
@@ -912,7 +1027,13 @@ export class ApiResponseError extends PipelexRequestError {
   public readonly model: string | undefined;
   /** The body's `provider`: the provider an inference failure reached. */
   public readonly provider: string | undefined;
-  /** The body's `provider_metadata`: what the provider's SDK said, raw text included. */
+  /**
+   * The body's `provider_metadata`: what the provider's SDK said. On the hosted API it comes
+   * from the runner's problem document, which the hosted runner renders under its STRICT
+   * disclosure, so it keeps only `status_code` and `retry_after_seconds`; a runner that
+   * discloses errors VERBOSE, as a self-hosted one does when `ERROR_DISCLOSURE` is unset, sends
+   * it whole, the provider's raw text included.
+   */
   public readonly providerMetadata: ProviderErrorMetadata | undefined;
   /** The body's `migration`: a pending configuration migration that explains the failure. */
   public readonly migration: MigrationErrorBlock | undefined;
@@ -951,11 +1072,10 @@ export class ApiResponseError extends PipelexRequestError {
     code: string | undefined,
     options?: ApiResponseErrorOptions,
   ) {
-    super(
-      message,
-      responseVerdict(status, errorType, code, options?.problem),
-      options?.cause === undefined ? undefined : { cause: options.cause },
-    );
+    super(message, responseVerdict(status, errorType, code, options?.problem), {
+      ...(options?.cause === undefined ? {} : { cause: options.cause }),
+      runMayHaveStarted: options?.mayStartRun === true && answerMayHaveStartedRun(status, code),
+    });
     this.name = "ApiResponseError";
     this.apiUrl = apiUrl;
     this.status = status;
