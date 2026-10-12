@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from time import monotonic
@@ -186,6 +187,24 @@ _REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEO
 # The inherited routes build their requests and their errors deep inside the base, which is why the choice
 # travels as a context variable, kept to the task that made it as the time limit above is.
 _MAY_START_RUN: ContextVar[bool] = ContextVar("_MAY_START_RUN", default=False)
+
+# The idempotency key of the `start` in flight, which `_send` sends as the `Idempotency-Key` header. The base
+# builds the start's request deep inside its own `start`, so the key travels as a context variable, kept to
+# the task that set it as the time limit above is, and set only around the one request `start` sends.
+_IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar("_IDEMPOTENCY_KEY", default=None)
+
+# The request header the hosted API reads a run start's idempotency key from.
+_IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+
+# The longest idempotency key a start sends. It is room for any generated key, and keeps the hosted API's
+# stored record of the key far inside its store's limit, which a longer key could exceed, so that the start
+# would run without the protection the key was sent for. `@pipelex/sdk` holds keys to the same limit.
+_MAX_IDEMPOTENCY_KEY_LENGTH = 255
+
+# Visible ASCII, `!` to `~`: what a header value carries unchanged through every proxy and both SDKs'
+# transports, where httpx refuses a character outside ASCII, fetch a line break, and a space at either end is
+# trimmed on the way.
+_VISIBLE_ASCII = re.compile(r"[\x21-\x7e]+")
 
 
 @contextmanager
@@ -468,11 +487,20 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Inside `_reading_inherited_answer` it also records the answer, which the inherited route then
         parses, so that an answer that route cannot read is reported as every other route reports it. Inside
-        `_creating_run`, the error says whether the run the request may create may have started.
+        `_creating_run`, the error says whether the run the request may create may have started. While `start`
+        holds an idempotency key (`_IDEMPOTENCY_KEY`), the request carries it as the `Idempotency-Key` header
+        (`_send_with_idempotency_key`).
         """
         timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
+        effective_timeout = request_timeout if timeout is None else timeout
+        idempotency_key = _IDEMPOTENCY_KEY.get()
         try:
-            response = await super()._send(method, url, content=content, request_timeout=request_timeout if timeout is None else timeout)
+            if idempotency_key is None:
+                response = await super()._send(method, url, content=content, request_timeout=effective_timeout)
+            else:
+                response = await self._send_with_idempotency_key(
+                    method, url, content=content, request_timeout=effective_timeout, idempotency_key=idempotency_key
+                )
         except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
             msg = f"Could not reach Pipelex API at {self.base_url} (timeout)"
             raise ApiUnreachableError(msg, api_url=self.base_url, code=ABORT_TIMEOUT_CODE, may_start_run=_MAY_START_RUN.get(), failure=exc) from exc
@@ -486,6 +514,27 @@ class PipelexAPIClient(MthdsAPIClient):
         if seen is not None:
             seen.response = response
         return response
+
+    async def _send_with_idempotency_key(
+        self, method: str, url: str, *, content: bytes | None, request_timeout: float, idempotency_key: str
+    ) -> httpx.Response:
+        """Send one request as the base's `_send` sends it, plus the `Idempotency-Key` header.
+
+        The base's `_send` builds its headers itself and takes none from its caller, so the one request that
+        carries a key, `start`'s, is sent here with the headers the base sets (`Accept`, `User-Agent`, and
+        `Content-Type` beside a body) and the key, through the same client. A unit test holds a keyed start to
+        the headers of an unkeyed one plus the key, so a header the base adds later fails that test rather than
+        going missing from a keyed start. The `_send` override maps this request's failures as it maps the
+        base's.
+        """
+        if self.client is None:
+            self.start_client()
+        # `start_client` opens the client, as the base's `_send` relies on.
+        http_client = cast("httpx.AsyncClient", self.client)
+        headers = {"Accept": "application/json", "User-Agent": self.user_agent, _IDEMPOTENCY_KEY_HEADER: idempotency_key}
+        if content is not None:
+            headers["Content-Type"] = "application/json"
+        return await http_client.request(method, url, content=content, headers=headers, timeout=request_timeout)
 
     async def _request_product(
         self,
@@ -869,17 +918,44 @@ class PipelexAPIClient(MthdsAPIClient):
         *,
         method_ref: str | None = None,
         method_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> PipelexRunResultStart:
         """Start a method asynchronously — `POST /v1/start` (202: `pipeline_run_id` only).
 
         Identical to the inherited protocol `start`, except for the two method selectors —
         `method_ref` (the Pipelex API's own run source, resolved by the runner) and
         `method_id` (the hosted platform's own run arg), both documented on `execute` and
-        carrying the same semantics and exclusivity here — and that a bare-runner
+        carrying the same semantics and exclusivity here — the `idempotency_key` the request
+        carries as a header, and that a bare-runner
         missing-route 404 (no run store) is translated into a clear
         `RunLifecycleUnavailableError`, matching the JS SDK and letting `start_and_wait`
         self-heal to the blocking-execute fallback. Every other non-2xx — the platform's
         structured 404s included — raises `ApiResponseError`.
+
+        Args:
+            pipe_code: The code identifying the pipe to run, as on `execute`.
+            mthds_contents: List of MTHDS bundle contents to load.
+            inputs: Inputs passed to the method.
+            output_name: Name of the output slot to write to.
+            output_multiplicity: Output multiplicity setting.
+            dynamic_output_concept_ref: Override for the dynamic output concept ref.
+            extra: Server-specific extension args this client does not know about, as on `execute`.
+            method_ref: A published method's address, as on `execute`.
+            method_id: A stored method's hosted catalog id, as on `execute`.
+            idempotency_key: The start's idempotency key, sent as the `Idempotency-Key` header, and not
+                sent at all when `None`. Generate one per run the caller means to start (a
+                `str(uuid.uuid4())` is a good key), and keep it, with every other argument unchanged,
+                across that start's retries. The hosted API binds the key to the run the first request
+                starts, before it dispatches it, so the same start sent again under the same key is
+                answered with that run's acknowledgement and starts nothing, whatever became of the first
+                attempt, for 24 hours: a failed start whose `run_may_have_started` is `True` can be sent
+                again unchanged, and recovers the run instead of paying for a second one. The same key with
+                a different body is refused (`409` `conflict`), as is a key whose earlier request is still
+                being handled (`409` `idempotency_key_in_use`, retryable: send it again under the same key
+                in a few seconds); see `docs/errors.md`. A bare runner ignores the header. A key is 1 to
+                255 visible ASCII characters (`!` to `~`, so no space); anything else, an empty string
+                included, is refused before any request is sent, since a start sent without the key the
+                caller asked for would lose the protection silently.
 
         Returns:
             The 202 ack as `PipelexRunResultStart` — the authoritative `pipeline_run_id`,
@@ -890,17 +966,21 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: Nothing to run was named, `extra` carries a protocol arg or a
                 reserved named arg, a selector is present and is not a string, `method_ref` is
-                combined with inline `mthds_contents` or with `method_id`, or a suffixed
-                `method_id` is combined with inline `mthds_contents`.
+                combined with inline `mthds_contents` or with `method_id`, a suffixed
+                `method_id` is combined with inline `mthds_contents`, or `idempotency_key` is not 1
+                to 255 visible ASCII characters.
             RunLifecycleUnavailableError: The configured server has no run store.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
-                `422`, its diagnostics on `validation_errors`), auth, a server fault.
+                `422`, its diagnostics on `validation_errors`), auth, a server fault, a key an earlier
+                start still holds (`idempotency_key_in_use`) or one used with another body (`conflict`).
             ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
         """
+        checked_idempotency_key = _idempotency_key_of(idempotency_key)
         merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
         _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
         _assert_linkage_method_id_is_bare(mthds_contents=mthds_contents, merged_extra=merged_extra)
         token = _REQUEST_TIMEOUT_OVERRIDE.set(_start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, mthds_contents))
+        key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
         try:
             with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="start"):
                 try:
@@ -928,6 +1008,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 # answer the subtype cannot read is reported as one the base cannot.
                 return PipelexRunResultStart.model_validate(result.model_dump())
         finally:
+            _IDEMPOTENCY_KEY.reset(key_token)
             _REQUEST_TIMEOUT_OVERRIDE.reset(token)
 
     @override
@@ -1345,6 +1426,7 @@ class PipelexAPIClient(MthdsAPIClient):
         artifacts: Sequence[RunArtifact] | None = None,
         on_started: Callable[[PipelexRunResultStart], None] | None = None,
         on_starting: Callable[[], None] | None = None,
+        idempotency_key: str | None = None,
     ) -> RunResults:
         """Start a run and wait for its result — the whole lifecycle in one call, self-healing
         across hosted and bare runners.
@@ -1392,6 +1474,12 @@ class PipelexAPIClient(MthdsAPIClient):
         so its `run_may_have_started` is `False`, and its `retryable` is about waiting again on that id
         with `wait_for_result`, never about calling this method again.
 
+        `idempotency_key` rides the durable start, as on `start`, so a call that failed while its start may
+        have created a run can be made again with the same arguments and the same key: the hosted API
+        answers the start with the run the first call started, and the wait follows it. The blocking execute
+        of a bare runner carries no key, a bare runner having no idempotency to honour it. A malformed key is
+        refused before the version handshake.
+
         Raises:
             RunFailedError: If the run reaches a terminal status other than COMPLETED.
             RunTimeoutError: If the poll budget elapses (the run keeps executing — resume by id).
@@ -1400,6 +1488,8 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         # Refused before anything starts, so an empty selection never costs a run.
         _artifact_selection(artifacts)
+        # Before the handshake too: a key the start would refuse is the caller's to fix, whatever runs.
+        _idempotency_key_of(idempotency_key)
         if await self._supports_run_lifecycle():
             # A cancellation that landed while the handshake's answer was read stops here, before
             # the start is sent, rather than at the start's own first wait.
@@ -1417,6 +1507,7 @@ class PipelexAPIClient(MthdsAPIClient):
                     extra=extra,
                     method_ref=method_ref,
                     method_id=method_id,
+                    idempotency_key=idempotency_key,
                 )
             except RunLifecycleUnavailableError:
                 self._lifecycle_available = False
@@ -2307,6 +2398,45 @@ def _merge_run_extensions(extra: dict[str, Any] | None, *, method_ref: object, m
     if selected_method_id is not None:
         extensions["method_id"] = selected_method_id
     return extensions or None
+
+
+def _idempotency_key_of(value: object) -> str | None:
+    """The idempotency key a start sends, or `None` when the caller gave none.
+
+    A key that is not a string of 1 to 255 visible ASCII characters is refused rather than dropped, an empty
+    one included, since a start sent without the key its caller gave would lose the protection the caller
+    asked for without a word. Typed `object`, as `_normalized_selector` is, because this is the runtime
+    boundary an untyped caller reaches. The characters are checked before the length, which then counts ASCII
+    characters alone, so this message and `@pipelex/sdk`'s, which counts a character outside ASCII
+    differently, read alike for every key; neither quotes the key, which a caller may derive from something
+    private.
+
+    Raises:
+        RequestArgumentError: The key is present and is not 1 to 255 visible ASCII characters.
+    """
+    if value is None:
+        return None
+    fault = _idempotency_key_fault(value)
+    if fault is None and isinstance(value, str):
+        return value
+    msg = (
+        f"The idempotency key must be 1 to {_MAX_IDEMPOTENCY_KEY_LENGTH} visible ASCII characters (`!` to `~`), "
+        f"and this one {fault or 'is not a string'}. Leave it out to start the run without one."
+    )
+    raise RequestArgumentError(msg)
+
+
+def _idempotency_key_fault(value: object) -> str | None:
+    """What is wrong with an idempotency key, or `None` when it is a valid one."""
+    if not isinstance(value, str):
+        return "is not a string"
+    if not value:
+        return "is empty"
+    if not _VISIBLE_ASCII.fullmatch(value):
+        return "holds a character outside visible ASCII"
+    if len(value) > _MAX_IDEMPOTENCY_KEY_LENGTH:
+        return f"is {len(value)} characters long"
+    return None
 
 
 def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, merged_extra: dict[str, Any] | None) -> None:

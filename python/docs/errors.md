@@ -49,7 +49,7 @@ On an error from a request that may have started a run, `retryable` is `False` w
 | Class | `error_domain` | `retryable` | Why |
 |---|---|---|---|
 | `ApiResponseError` | the server's, else the fallback | the server's, else no for a sent `input` or `config` domain, else the fallback | See [below](#a-refused-requests-verdict). |
-| `RequestArgumentError` | `input` | no | The client refused a call's arguments before sending any request: no run source given to `execute` or `start`, a protocol or reserved arg in `extra`, run sources or method selectors that exclude each other, a selector that is not a string, a suffixed `method_id` beside inline `mthds_contents`, a selector rule of `validate`, an empty `validate_files`, an artifact selection that is empty or names an unknown artifact, a suffixed id given to a method route, a `publish_method` token that is not a string, a `get_method_version` version that is not a positive integer, a value `parse_method_selector` refuses. It takes an optional `verdict`, and the client declares `config` for a base URL that is not host-only, since it typically comes from `PIPELEX_BASE_URL`. |
+| `RequestArgumentError` | `input` | no | The client refused a call's arguments before sending any request: no run source given to `execute` or `start`, a protocol or reserved arg in `extra`, run sources or method selectors that exclude each other, a selector that is not a string, a suffixed `method_id` beside inline `mthds_contents`, a selector rule of `validate`, an empty `validate_files`, an artifact selection that is empty or names an unknown artifact, a suffixed id given to a method route, a `publish_method` token that is not a string, a `get_method_version` version that is not a positive integer, a value `parse_method_selector` refuses, a start's `idempotency_key` that is not 1 to 255 visible ASCII characters ([below](#a-starts-idempotency-key--idempotency_key)). It takes an optional `verdict`, and the client declares `config` for a base URL that is not host-only, since it typically comes from `PIPELEX_BASE_URL`. |
 | `ApiUnreachableError` | `config` | yes | The address or the network must be checked, and a later attempt can get through. With the code `ABORT_TIMEOUT`, the SDK's own request timeout, it is `runtime`: the API took the request and did not answer in time. |
 | `PipelineExecuteTimeoutError` | `input` | no | The blocking `execute` cannot outlast the gateway's limit; start the run and poll instead. The run goes on, so its `run_may_have_started` is always `True`. |
 | `RunFailedError` | the report's | the report's | The report's `error_domain` when it is a known domain, else `runtime`; retryable only when the report's `retryable` is `True`, so a report that says nothing, and a run with no report, are not retryable: starting the run again spends credit and nothing says it would succeed. The report keeps its own members as written. |
@@ -84,6 +84,7 @@ The fallback, `fallback_verdict` in `pipelex_sdk.error_verdicts`, reads the HTTP
 | `408`, `429` | `runtime` | yes | Refused for its timing, not its content. |
 | `409` | `input` | no | The request conflicts with the stored state: a method being deleted, a stale update, a taken label. |
 | `409` with code `pipelex_api_key_limit_reached` | `config` | no | The organization holds as many keys as it may; someone removes one. |
+| `409` with code `idempotency_key_in_use` | `runtime` | yes | An earlier request under the same idempotency key is still being handled, and the same request sent again under that key is answered with its outcome. |
 | `501` | `config` | no | The deployment does not implement it, and asking again will not change that. |
 | `500`, `502`, `503`, `504`, and any `5xx` not listed here | `runtime` | yes | A fault in the service, which may pass. |
 | Anything else | `runtime` | no | A status no refusal carries, such as the `2xx` of an answer the SDK could not read; nothing says a retry helps. |
@@ -133,9 +134,48 @@ except PipelineRequestError as exc:
     raise
 ```
 
-**What lifts the rule** is a start that is safe to retry. Once the platform replays a start sent again under the same `Idempotency-Key`, the SDK can send one on every start and report such a failure as retryable under the same key. The SDK sends no key today.
+**An idempotency key makes the retry safe, and leaves the verdict as it is.** `start`, and so `start_and_wait`, takes an optional `idempotency_key`, which the SDK sends as the `Idempotency-Key` header of `POST /v1/start`; without one it sends no header. The hosted API binds the key to the run before it dispatches it, so the same start sent again under the same key is answered with that run and starts nothing, however the first attempt ended. A caller that sent a key therefore answers a failure whose `run_may_have_started` is `True` by sending the same start again, with the same key and the same arguments, and gets the run back instead of paying for a second one ([below](#a-starts-idempotency-key--idempotency_key)). The error does not say so itself: `run_may_have_started` stays `True` and `retryable` stays `False` with a key, since the SDK cannot know that the server honours the key (a bare runner ignores it), and a retry under a new key, or with other arguments, would start a second run. The platform reads its own answer the same way: the `502` with the code `bad_gateway` it answers for a start whose acknowledgement it lost is not retryable whether or not a key was sent, and it names the run that may be running in `problem["pipeline_run_id"]`.
 
 `@pipelex/sdk` carries the same member as `runMayHaveStarted`, with the reader `runMayHaveStartedOf`, and reads every failure the same way; the `run_start` rows of the shared case file hold the two to the same answer for every status.
+
+### A start's idempotency key — `idempotency_key`
+
+Generate one key per run you mean to start (a `str(uuid.uuid4())` is a good one), and keep it with the arguments across that start's retries. A key is 1 to 255 visible ASCII characters, `!` to `~`; anything else, an empty string included, is a `RequestArgumentError` before anything is sent, since a start sent without the key its caller gave would lose the protection without a word.
+
+```python
+import uuid
+
+from mthds.protocol.exceptions import PipelineRequestError
+
+from pipelex_sdk.error_verdicts import error_verdict_of, run_may_have_started_of
+
+# One key per run, kept with the arguments, unchanged, across the start's retries.
+idempotency_key = str(uuid.uuid4())
+try:
+    started = await client.start(method_id="mt_abc123", inputs=inputs, idempotency_key=idempotency_key)
+except PipelineRequestError as exc:
+    verdict = error_verdict_of(exc)
+    if not run_may_have_started_of(exc) and not (verdict is not None and verdict.retryable):
+        raise
+    # Under the same key, a start that may have started a run is answered with that run.
+    started = await client.start(method_id="mt_abc123", inputs=inputs, idempotency_key=idempotency_key)
+```
+
+What the hosted API answers a start sent under a key:
+
+| The start | The answer |
+|---|---|
+| The first under the key | The run starts, the key bound to it before it is dispatched. |
+| The same arguments under the same key, once the first was answered or bound to its run | The first start's acknowledgement, the run's state as it stands, and nothing starts. A first start refused for its content is refused again; one refused for its timing, such as a `429` in front of the runner, freed the key, and the retry is handled afresh. |
+| The same arguments under the same key, while the first is still being handled | After a short wait, the first start's answer; failing that, a `409` with the code `idempotency_key_in_use`, `runtime` and retryable, with a `Retry-After` the error keeps in `headers["retry-after"]`. Nothing ran for it, so its `run_may_have_started` is `False`: send it again under the same key in a few seconds, never under a new one, which would start a second run. |
+| Other arguments under the same key | A `409` with the generic code `conflict`, `input` and not retryable: a key reused for another request is a bug in the caller. Send the new request under a new key. |
+| The same arguments under a key bound to a run since deleted | A `409` `conflict` too: send it under a new key to start a new run. |
+
+`IdempotencyErrorCode` in `pipelex_sdk.errors` names the code a caller branches on, `idempotency_key_in_use`; the key's other refusals carry the generic `conflict`. The hosted API keeps a key for 24 hours, scoped to the caller and the organization, so a start sent again after that starts a new run.
+
+**Keep the body identical.** The hosted API compares the request's bytes, so the retry must carry the same arguments in the same form. The SDK builds the same body from the same arguments, but inputs prepared twice are not the same arguments: `prepare_inputs` uploads a local file again and returns a new storage reference each time, so prepare the inputs once and reuse what it returned for every attempt.
+
+**A bare runner ignores the key.** It has no idempotency to honour, so a key sent to one protects nothing, and `start_and_wait`'s blocking execute against one sends none.
 
 ## The case file both SDKs run
 

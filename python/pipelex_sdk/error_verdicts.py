@@ -65,6 +65,11 @@ _FAULT = ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
 # The platform code a `409` carries when the organization holds as many API keys as it may.
 _API_KEY_LIMIT_CODE = "pipelex_api_key_limit_reached"
 
+# The platform code a `409` carries when an earlier request under the same `Idempotency-Key` is still being
+# handled: nothing ran for this one, and the same request under the same key is answered with the earlier
+# one's outcome once it is stored.
+_IDEMPOTENCY_KEY_IN_USE_CODE = "idempotency_key_in_use"
+
 
 def error_domain_of(value: object) -> ErrorDomain | None:
     """The domain `value` names when it is a known one, else `None`: any other string, an empty
@@ -108,10 +113,15 @@ def fallback_verdict(*, status: int, code: str | None, named: bool) -> ErrorVerd
         case 408 | 429:
             # Refused for its timing, not its content.
             return _TRANSIENT
+        case 409 if code == _API_KEY_LIMIT_CODE:
+            # The organization holds as many API keys as it may: someone lifts it by removing a key.
+            return _CONFIG
+        case 409 if code == _IDEMPOTENCY_KEY_IN_USE_CODE:
+            # An earlier request still holds the idempotency key, and releases it by finishing.
+            return _TRANSIENT
         case 409:
-            # A conflict with the stored state is the caller's, except the key limit, which someone lifts
-            # by removing a key.
-            return _CONFIG if code == _API_KEY_LIMIT_CODE else _INPUT
+            # Any other conflict with the stored state is the caller's.
+            return _INPUT
         case 501:
             # The deployment does not implement it, and asking again will not change that.
             return _CONFIG

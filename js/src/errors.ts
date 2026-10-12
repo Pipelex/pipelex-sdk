@@ -151,7 +151,9 @@ export function runMayHaveStartedOf(err: unknown): boolean {
  * rule of `validate()`, an empty `validateFiles()`, a reserved key in `extra`, a `publishMethod()`
  * without its draft token, a `getMethodVersion()` version that is not a positive integer, a
  * selector `parseMethodSelector()` refuses, a method route given a suffixed id, an artifact
- * selection that is empty or names an unknown artifact, or a base URL that is not host-only. Nothing reached the API, so the message says what to change.
+ * selection that is empty or names an unknown artifact, a start's `idempotencyKey` that is not 1
+ * to 255 visible ASCII characters, or a base URL that is not host-only. Nothing reached the API,
+ * so the message says what to change.
  *
  * Its verdict is `input`, not retryable — the caller must change the arguments — unless
  * `options.verdict` declares another: the client declares `config` for a base URL that is not
@@ -923,6 +925,23 @@ export type MethodErrorCode =
   | "method_version_not_found";
 
 /**
+ * The platform code a refusal about a request's `Idempotency-Key` carries in
+ * `ApiResponseError.code`, beside the generic `conflict`:
+ *
+ * - `idempotency_key_in_use` (`409`): an earlier request under the same key and the same body is
+ *   still being handled, or this one lost the key while it was handled, so nothing ran for this
+ *   one. `runtime` and retryable: wait a few seconds (the answer's `Retry-After`) and send the
+ *   same request again under the **same** key, which is answered with the earlier request's
+ *   outcome once it is stored. A new key would run it a second time. On a `start`, its
+ *   `runMayHaveStarted` is false: this request started nothing.
+ *
+ * The key's other refusal carries the generic `conflict` (`409`, `input`, not retryable): the
+ * key was used before with a different body, or is bound to a run that has since been deleted.
+ * Either way the request is sent again under a new key, with the original body for the first.
+ */
+export type IdempotencyErrorCode = "idempotency_key_in_use";
+
+/**
  * The last constructor argument of `ApiResponseError`: the error's `cause`, the problem
  * document's typed members, the decoded document whole, and whether the request that met the
  * answer may create a run. The same shape as `mthds`'s `ApiResponseErrorOptions`, plus
@@ -978,8 +997,9 @@ export interface ApiResponseErrorOptions {
  *   Branch on these, never on the HTTP status or on the wording of a message; they are the
  *   fields that mean the same on both surfaces.
  * - **The native codes.** `code` is the platform's own closed code (`conflict`, `not_found`,
- *   `pipelex_api_key_limit_reached`, …; `MethodErrorCode` names the method ones) and
- *   `errorType` the runner's open exception class name. Each is finer than `errorDomain` and
+ *   `pipelex_api_key_limit_reached`, …; `MethodErrorCode` names the method ones and
+ *   `IdempotencyErrorCode` the idempotency key's) and `errorType` the runner's open exception
+ *   class name. Each is finer than `errorDomain` and
  *   specific to the surface that emits it, and a client of that surface may branch on it: the
  *   platform's `type` is derived from its `code` one to one
  *   (`https://pipelex.com/errors/<code>`), so the two read the same answer. A problem the
@@ -1011,7 +1031,8 @@ export class ApiResponseError extends PipelexRequestError {
   /**
    * The platform's native code — a closed set (`conflict`, `not_found`, `run_not_found`,
    * `pipelex_api_key_limit_reached`, …), one-to-one with `type`; `MethodErrorCode` names the
-   * ones about a stored method and its versions. Finer than `errorDomain` and specific to the
+   * ones about a stored method and its versions, and `IdempotencyErrorCode` the one about a
+   * request's idempotency key. Finer than `errorDomain` and specific to the
    * platform: a runner's problem carries `errorType` instead. `undefined` for a body that
    * carries no `code`.
    */

@@ -133,8 +133,9 @@ class RequestArgumentError(PipelexRequestError):
     inline `mthds_contents`, a selector rule of `validate()`, an empty `validate_files()`, an artifact
     selection that is empty or names an unknown artifact, a suffixed id given to a method route, a `publish_method()` token that is not a
     string, a `get_method_version()` version that is not a positive integer, a value
-    `parse_method_selector()` refuses, or a base URL that is not host-only. Nothing reached the API, so
-    the message says what to change.
+    `parse_method_selector()` refuses, a start's `idempotency_key` that is not 1 to 255 visible ASCII
+    characters, or a base URL that is not host-only. Nothing reached the API, so the message says what
+    to change.
 
     Its verdict is `input`, not retryable — the caller must change the arguments — unless `verdict`
     declares another: the client declares `config` for a base URL that is not host-only, since it
@@ -222,6 +223,24 @@ class MethodErrorCode(StrEnum):
     METHOD_VERSION_NOT_FOUND = "method_version_not_found"
     """`404`: `mt_…@<n>`, or `get_method_version`, names a version the method never published. An
     unknown method is `not_found` instead."""
+
+
+class IdempotencyErrorCode(StrEnum):
+    """The platform code a refusal about a request's `Idempotency-Key` carries in `ApiResponseError.code`.
+
+    `code` stays a `str`, since the platform adds codes; this enum names the one a caller sending an
+    idempotency key branches on, and being a `StrEnum` its member equals its string. The key's other
+    refusal carries the generic `conflict` (`409`, `input`, not retryable): the key was used before with
+    a different body, or is bound to a run that has since been deleted. Either way the request is sent
+    again under a new key, with the original body for the first.
+    """
+
+    IDEMPOTENCY_KEY_IN_USE = "idempotency_key_in_use"
+    """`409`: an earlier request under the same key and the same body is still being handled, or this
+    one lost the key while it was handled, so nothing ran for this one. `runtime` and retryable: wait a
+    few seconds (the answer's `Retry-After`) and send the same request again under the **same** key,
+    which is answered with the earlier request's outcome once it is stored. A new key would run it a
+    second time. On a `start`, its `run_may_have_started` is `False`: this request started nothing."""
 
 
 class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErrorItem]):
