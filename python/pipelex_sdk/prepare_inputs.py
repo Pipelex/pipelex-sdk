@@ -509,7 +509,9 @@ async def prepare_inputs(
             foreign-org `method_id` or no package at a `method_ref` address (`404`), a
             `method_ref` that does not parse or fetch or a stored method with no source
             (`422`), a registry-form `method_ref` (`501`), auth, a server fault, or an API that
-            does not serve the route at all.
+            does not serve the route at all; and a 2xx answer the client cannot parse, an input-form
+            descriptor that is malformed or names a kind the pinned `mthds` does not define
+            included, with a `runtime` verdict, before anything is walked or uploaded.
     """
     selected_files, selected_method_ref, selected_method_id = _resolve_selector(files=files, method_ref=method_ref, method_id=method_id)
     # Checked here rather than after the round-trip, so a mistyped or bare `pipe_ref` is refused
