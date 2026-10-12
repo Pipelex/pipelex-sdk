@@ -162,13 +162,29 @@ describe("an unknown model's refusal reaches the caller whole", () => {
  */
 type WithoutNull<T> = { [K in keyof T]: Exclude<T[K], null> };
 
+/**
+ * The members this SDK declares ahead of `mthds`: the template-check locators the runner's
+ * item carries since its template check reports into the verdict. The pin below sets them
+ * aside, and the test after it fails the day `mthds` declares them, when they leave this list.
+ */
+type AheadOfMthds = "template_file" | "template_location";
+
 describe("the validation vocabulary is the standard client's", () => {
   it("declares the item under mthds's members, names and types, widened to null", () => {
-    expectTypeOf<Omit<WithoutNull<ValidationErrorItem>, "suggested_fix">>().toEqualTypeOf<
-      Omit<MthdsValidationErrorItem, "suggested_fix">
-    >();
+    expectTypeOf<
+      Omit<WithoutNull<ValidationErrorItem>, "suggested_fix" | AheadOfMthds>
+    >().toEqualTypeOf<Omit<MthdsValidationErrorItem, "suggested_fix">>();
     expectTypeOf<NonNullable<ValidationErrorItem["suggested_fix"]>>().toEqualTypeOf<SuggestedFix>();
     expectTypeOf<ValidationErrorCategory>().toEqualTypeOf<MthdsValidationErrorCategory>();
+  });
+
+  it("is ahead of mthds by the template-check locators alone, and only until mthds declares them", () => {
+    // Fails once `mthds` declares either locator: drop it from `AheadOfMthds` then.
+    expectTypeOf<Extract<AheadOfMthds, keyof MthdsValidationErrorItem>>().toEqualTypeOf<never>();
+    expectTypeOf<Pick<ValidationErrorItem, AheadOfMthds>>().toEqualTypeOf<{
+      template_file?: string | null;
+      template_location?: string | null;
+    }>();
   });
 
   it("declares the suggested fix and its ops as mthds does", () => {

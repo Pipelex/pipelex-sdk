@@ -32,7 +32,7 @@
  */
 
 import type {
-  InputForm,
+  FieldKind,
   InputFormItem,
   InputFormTopLevelField,
   PipeInputFormDescriptor,
@@ -46,12 +46,36 @@ import {
   MethodLoadError,
   UploadNotAllowedError,
 } from "./errors.js";
+import { hasBundleResources, isResourceMap } from "./bundle-resources.js";
+import type { BundleResources } from "./bundle-resources.js";
 import type { MthdsFileItem, PipeIORequest, PipeIOResponse, PipeIOValidReport } from "./models.js";
 import type { UploadCapableClient, UploadRecord } from "./upload.js";
 import { uploadFile } from "./upload.js";
 
 const PIPELEX_STORAGE_SCHEME = "pipelex-storage://";
 const HTTP_URL_RE = /^https?:\/\//i;
+
+/**
+ * Every `kind` the walk handles, in the standard's order, and the only kinds a descriptor may name:
+ * any other is refused. It is the walk's own table rather than the `FIELD_KINDS` of whichever
+ * `mthds` is installed beside the SDK, so a newer `mthds` defining a new kind, which may be a file
+ * kind, cannot reach the walk at run time. Moving the pin onto such an `mthds` stops the build
+ * here, where `satisfies` requires every `FieldKind`, and in `resolveNode`'s exhaustive switch.
+ */
+const WALKED_KINDS = {
+  text: true,
+  prose: true,
+  date: true,
+  number: true,
+  boolean: true,
+  enum: true,
+  document: true,
+  image: true,
+  object: true,
+  list: true,
+  unknown: true,
+} as const satisfies Record<FieldKind, true>;
+const KNOWN_KINDS: ReadonlySet<string> = new Set(Object.keys(WALKED_KINDS));
 
 /**
  * The `error_type`s of the route's pipe-selection refusals — the only `422`s
@@ -105,11 +129,22 @@ export interface PrepareInputsBase {
  * `ValidateMethodSelector` states for `validate`). All three reach the
  * server as-is: `files` inline, `method_ref` resolved by the runner, `method_id`
  * resolved by the platform.
+ *
+ * Inline `files` may bring `resources`, the files the closure's steps read, such
+ * as a `PipeDocGen` step's `template_file`, keyed by the path the step names, each
+ * as its bytes: the pipe I/O route loads the closure, and a step whose template file
+ * was not sent makes it fail to load. A published or stored method's files are its
+ * own, so the other two selectors take none.
  */
 export type PrepareInputsClosure =
-  | { files: MthdsFileItem[]; method_ref?: never; method_id?: never }
-  | { method_ref: string; files?: never; method_id?: never }
-  | { method_id: string; files?: never; method_ref?: never };
+  | {
+      files: MthdsFileItem[];
+      resources?: BundleResources | null;
+      method_ref?: never;
+      method_id?: never;
+    }
+  | { method_ref: string; files?: never; method_id?: never; resources?: never }
+  | { method_id: string; files?: never; method_ref?: never; resources?: never };
 
 /** What `prepareInputs` takes: one method selector, the target pipe, the caller's inputs. */
 export type PrepareInputsRequest = PrepareInputsBase & PrepareInputsClosure;
@@ -175,13 +210,36 @@ function isExplicitEnvelope(value: unknown): value is { concept: unknown; conten
   return keys.length === 2 && "concept" in value && "content" in value;
 }
 
-/** Decode a `data:` URL into bytes plus its MIME type. */
-function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; contentType: string } {
+/**
+ * Where a value sits in the caller's inputs: the input it belongs to, and its path inside that
+ * input, `.field` for an object's declared field and `[index]` for a list's element. An explicit
+ * envelope adds nothing to the path, since its `content` is the input's value.
+ */
+interface InputPosition {
+  name: string;
+  path: string;
+}
+
+/** An `InvalidInputValueError` for the value at `at`, whose message the caller words. */
+function invalidValueAt(
+  at: InputPosition,
+  message: string,
+  options?: { cause?: unknown },
+): InvalidInputValueError {
+  return new InvalidInputValueError(message, { inputName: at.name, inputPath: at.path }, options);
+}
+
+/**
+ * Decode a `data:` URL into bytes plus its MIME type. `at` is where the URL sits, for the
+ * error's wording only; the message never quotes the URL, which is the caller's data.
+ */
+function decodeDataUrl(
+  dataUrl: string,
+  at: InputPosition,
+): { bytes: Uint8Array; contentType: string } {
   const comma = dataUrl.indexOf(",");
   if (comma < 0) {
-    throw new InvalidInputValueError(
-      `Malformed data URL (no comma separator): ${dataUrl.slice(0, 32)}…`,
-    );
+    throw invalidValueAt(at, `Input "${at.path}" holds a malformed data URL (no comma separator).`);
   }
   const header = dataUrl.slice(5, comma); // strip "data:"
   const payload = dataUrl.slice(comma + 1);
@@ -202,8 +260,10 @@ function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; contentType: strin
     const text = decodeURIComponent(payload);
     return { bytes: new TextEncoder().encode(text), contentType };
   } catch (cause) {
-    throw new InvalidInputValueError(
-      `Malformed data URL payload (${isBase64 ? "invalid base64" : "invalid percent-encoding"}): ${dataUrl.slice(0, 32)}…`,
+    throw invalidValueAt(
+      at,
+      `Input "${at.path}" holds a malformed data URL ` +
+        `(${isBase64 ? "invalid base64" : "invalid percent-encoding"}).`,
       { cause },
     );
   }
@@ -224,15 +284,15 @@ function base64ToBytes(base64: string): Uint8Array {
 
 /**
  * A source at a file position, classified once from its type and prefix, never from the file a
- * path names. The guard under `allowUploads: false` and `doResolveSource` read this one answer, and
- * the guard refuses every kind but the two that need no upload, so a source the resolver would
- * upload is a source the guard refuses: a new kind of source is an `UploadNotAllowedKind` or the
- * guard does not compile.
+ * path names. `resolveFilePosition` reads this one answer: it refuses `unsupported` itself, and
+ * under `allowUploads: false` every kind but `reference`, so a source the resolver would upload is
+ * a source that guard refuses: a new kind of source is an `UploadNotAllowedKind` or the guard does
+ * not compile.
  *
  * - `reference` — a `pipelex-storage://` reference or an http(s) URL, which passes through;
  * - `data_url`, `local_path`, `bytes` — what an upload is needed for;
  * - `unsupported` — a value no file input takes, refused as an `InvalidInputValueError` whether
- *   uploads are allowed or not.
+ *   uploads are allowed or not, before it reaches `resolveSource`.
  */
 type FileSource =
   | { kind: "reference"; value: string }
@@ -240,6 +300,9 @@ type FileSource =
   | { kind: "local_path"; value: string }
   | { kind: "bytes"; value: Blob | ArrayBuffer | Uint8Array }
   | { kind: "unsupported"; value: unknown };
+
+/** A source the resolver takes: every kind but `unsupported`, which never reaches it. */
+type ResolvableSource = Exclude<FileSource, { kind: "unsupported" }>;
 
 function classifySource(source: unknown): FileSource {
   if (typeof source === "string") {
@@ -256,21 +319,34 @@ function classifySource(source: unknown): FileSource {
   return { kind: "unsupported", value: source };
 }
 
-/** Resolve one classified source to the URL/URI to write, deduped by the caller's value's identity. */
-function resolveSource(ctx: PrepareContext, source: FileSource): Promise<string> {
+/**
+ * Resolve one classified source to the URL/URI to write, deduped by the caller's value's identity.
+ * `at` words a malformed `data:` URL's error; a decode rejected once is handed, cached, to a later
+ * position holding the same URL, and is never the one reported, since the walk reports the first
+ * failure it meets.
+ */
+function resolveSource(
+  ctx: PrepareContext,
+  source: ResolvableSource,
+  at: InputPosition,
+): Promise<string> {
   const cached = ctx.dedup.get(source.value);
   if (cached !== undefined) return cached;
-  const pending = doResolveSource(ctx, source);
+  const pending = doResolveSource(ctx, source, at);
   ctx.dedup.set(source.value, pending);
   return pending;
 }
 
-async function doResolveSource(ctx: PrepareContext, source: FileSource): Promise<string> {
+async function doResolveSource(
+  ctx: PrepareContext,
+  source: ResolvableSource,
+  at: InputPosition,
+): Promise<string> {
   switch (source.kind) {
     case "reference":
       return source.value; // already prepared, or a reachable URL — pass through
     case "data_url": {
-      const { bytes, contentType } = decodeDataUrl(source.value);
+      const { bytes, contentType } = decodeDataUrl(source.value, at);
       throwIfAborted(ctx.signal);
       const record = await uploadFile(ctx.client, bytes, { contentType, signal: ctx.signal });
       ctx.uploads.push(record);
@@ -283,31 +359,36 @@ async function doResolveSource(ctx: PrepareContext, source: FileSource): Promise
       ctx.uploads.push(record);
       return record.uri;
     }
-    case "unsupported":
-      // An unrecognized value sits at a file-bearing position (neither a source string,
-      // bytes, nor a canonical `{url}` content dict). Fail with a typed error rather than
-      // letting a raw TypeError escape from the byte-extraction path.
-      throw new InvalidInputValueError(
-        `Unsupported value at a file input: expected a path string, bytes (Blob/File/ArrayBuffer/Uint8Array), ` +
-          `a data URL, an http(s)/pipelex-storage:// URL, or canonical {url} content; got ${typeof source.value}.`,
-      );
   }
 }
 
 /**
- * Where a value sits in the caller's inputs: the input it belongs to, and its path inside that
- * input, `.field` for an object's declared field and `[index]` for a list's element. An explicit
- * envelope adds nothing to the path, since its `content` is the input's value.
+ * What a value no file input takes is, in words naming its kind and never its content, for the
+ * message that refuses it: `a number`, `null`, `an object with no "url" key`.
  */
-interface InputPosition {
-  name: string;
-  path: string;
+function describeUnsupported(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return "an array";
+  if (isPlainObject(value)) return "url" in value ? "{url} content" : 'an object with no "url" key';
+  if (typeof value === "object") return "an object that is neither bytes nor {url} content";
+  return `a ${typeof value}`;
 }
+
+/** The forms a file input takes, in the words of the refusal of a value it does not. */
+const FILE_FORMS_WITH_UPLOADS =
+  ": pass a local path, bytes (a Blob, File, ArrayBuffer or Uint8Array), a data: URL, an http(s) " +
+  "URL or a pipelex-storage:// reference, bare or as the url of {url} content.";
+/** The same under `allowUploads: false`, word for word `UploadNotAllowedError`'s tail. */
+const FILE_FORMS_WITHOUT_UPLOADS =
+  ", and this preparation uploads nothing: pass an http(s) URL or a pipelex-storage:// reference " +
+  "instead.";
 
 /**
  * Resolve a value known to sit at a file position into canonical content with a rewritten `url`.
- * Under `allowUploads: false`, a source that would need an upload is refused here, before
- * `resolveSource` could read, decode or upload it.
+ * A value no file input takes is refused here, where its position and the mode are known, and
+ * under `allowUploads: false` so is a source that would need an upload, before `resolveSource`
+ * could read, decode or upload it.
  */
 async function resolveFilePosition(
   ctx: PrepareContext,
@@ -316,14 +397,23 @@ async function resolveFilePosition(
 ): Promise<unknown> {
   const fileContent = isFileContent(callerValue);
   const source = classifySource(fileContent ? callerValue.url : callerValue);
-  if (!ctx.allowUploads && source.kind !== "reference" && source.kind !== "unsupported") {
+  if (source.kind === "unsupported") {
+    const unsupported = describeUnsupported(source.value);
+    throw invalidValueAt(
+      at,
+      `Input "${at.path}" holds ${fileContent ? `{url} content whose url is ${unsupported}` : unsupported}, ` +
+        "which no file input takes" +
+        (ctx.allowUploads ? FILE_FORMS_WITH_UPLOADS : FILE_FORMS_WITHOUT_UPLOADS),
+    );
+  }
+  if (!ctx.allowUploads && source.kind !== "reference") {
     throw new UploadNotAllowedError({
       inputName: at.name,
       inputPath: at.path,
       valueKind: source.kind,
     });
   }
-  const resolved = await resolveSource(ctx, source);
+  const resolved = await resolveSource(ctx, source, at);
   return fileContent ? { ...callerValue, url: resolved } : { url: resolved };
 }
 
@@ -344,6 +434,12 @@ async function resolveFilePosition(
  * A caller value whose shape disagrees with the node (a scalar at an `object`, a
  * non-array at a `list`) passes through for the run to reject — preparation never
  * second-guesses the signature.
+ *
+ * Every node it receives was checked by {@link inputFormFault}: an `object`
+ * carries a list of named fields, a `list` carries a node, and every `kind` is one
+ * of {@link WALKED_KINDS}, so the walk trusts the descriptor's types without a
+ * guard. The switch names every kind, so a kind the standard adds does not
+ * compile until the walk decides what it is.
  */
 async function resolveNode(
   ctx: PrepareContext,
@@ -376,21 +472,47 @@ async function resolveNode(
         ),
       );
     }
-    default:
+    case "text":
+    case "prose":
+    case "date":
+    case "number":
+    case "boolean":
+    case "enum":
+    case "unknown":
       return callerValue;
+    default: {
+      // Unreachable: the descriptor was checked against WALKED_KINDS before the walk began.
+      const unwalked: never = node;
+      throw new InputPreparationError(
+        `Cannot prepare inputs: the walk has no arm for the kind ${described((unwalked as { kind: unknown }).kind)}.`,
+        { verdict: { errorDomain: "runtime", retryable: false } },
+      );
+    }
   }
 }
 
-/** The method selector, normalized: empty is absent, and exactly one must remain. */
-type ResolvedSelector = { files: MthdsFileItem[] } | { method_ref: string } | { method_id: string };
+/** Whether `resources` is a plain object with no file in it, which sends nothing. */
+function isEmptyResourceMap(resources: unknown): boolean {
+  return isResourceMap(resources) && !hasBundleResources(resources);
+}
+
+/**
+ * The method selector, normalized: empty is absent, and exactly one must remain. Inline
+ * `files` keep the `resources` sent with them, when there are any.
+ */
+type ResolvedSelector =
+  | { files: MthdsFileItem[]; resources?: BundleResources }
+  | { method_ref: string }
+  | { method_id: string };
 
 /**
  * Normalize and check the three selectors. Empty is absent (`files: []`,
  * `method_ref: ""`, `method_id: "  "`), mirroring the run options' rule and the
  * Python `CrateRequestBase` normalisers, and exactly one must remain — the check
  * lives here because this helper is the one that composes the `pipeIo` call.
- * The illegal shapes are compile errors for typed callers; this backs them up for
- * untyped (JS) ones with a typed `InputPreparationError`.
+ * `resources` that carry a file accompany inline `files` only. The illegal shapes
+ * are compile errors for typed callers; this backs them up for untyped (JS) ones
+ * with a typed `InputPreparationError`.
  */
 function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
   const raw = request as unknown as Record<string, unknown>;
@@ -400,6 +522,13 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
       : undefined;
   const methodRef = nonEmptyString(raw["method_ref"]);
   const methodId = nonEmptyString(raw["method_id"]);
+  // Any value goes on with inline `files`, so the client's encoder refuses one that is not a
+  // map of paths to bytes, as it does on every route; an empty map is not sent.
+  const rawResources = raw["resources"];
+  const resources =
+    rawResources === undefined || rawResources === null
+      ? undefined
+      : (rawResources as BundleResources);
 
   const given: string[] = [];
   if (files !== undefined) given.push("`files`");
@@ -420,7 +549,15 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
         "selector — `files`, `method_ref` or `method_id`.",
     );
   }
-  if (files !== undefined) return { files };
+  if (files !== undefined) return resources === undefined ? { files } : { files, resources };
+  // Beside the other selectors only an empty map passes, as it sends nothing.
+  if (resources !== undefined && !isEmptyResourceMap(resources)) {
+    throw new InputPreparationError(
+      `Cannot prepare inputs: \`resources\` accompany inline \`files\`; a ${
+        methodRef !== undefined ? "published" : "stored"
+      } method's files are its own.`,
+    );
+  }
   if (methodRef !== undefined) return { method_ref: methodRef };
   return { method_id: methodId as string };
 }
@@ -482,7 +619,8 @@ function resolveAllowUploads(raw: unknown): boolean {
  * which it answers with a `422` typed by one of {@link PIPE_SELECTION_ERROR_TYPES};
  * every other failure is re-thrown unchanged. An answer with no boolean `is_valid`
  * is neither arm, so it fails the preparation with a `runtime` verdict, as an
- * `input_form` that does not describe the selected pipe does.
+ * `input_form` that does not describe the selected pipe does, and one whose
+ * descriptor is malformed where the walk reads it.
  */
 async function fetchSignature(
   client: PrepareCapableClient,
@@ -546,23 +684,143 @@ function invalidReason(answer: Record<string, unknown>): string {
  * The descriptor of the pipe the route selected. The route answers a
  * single-pipe request with `input_form` keyed by exactly the `pipe_ref` it
  * resolved, so a missing ref or a missing key is the answer contradicting itself
- * — preparing any other pipe would silently walk the wrong signature.
+ * — preparing any other pipe would silently walk the wrong signature. The entry
+ * found is then checked whole, by {@link checkedDescriptor}, before it is trusted.
  */
 function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor {
   const pipeRef = nonEmptyString(report.pipe_ref);
   const inputForm: unknown = report.input_form;
   if (pipeRef === undefined || !isPlainObject(inputForm) || !Object.hasOwn(inputForm, pipeRef)) {
-    const described = isPlainObject(inputForm)
+    const describedPipes = isPlainObject(inputForm)
       ? Object.keys(inputForm).join(", ") || "none"
       : "none";
     // The route broke its own contract, which no change to the request fixes.
     throw new InputPreparationError(
       `Cannot prepare inputs: the pipe I/O answer selected ${pipeRef === undefined ? "no pipe" : `"${pipeRef}"`}, ` +
-        `but its \`input_form\` does not describe it (it describes: ${described}).`,
+        `but its \`input_form\` does not describe it (it describes: ${describedPipes}).`,
       { verdict: { errorDomain: "runtime", retryable: false } },
     );
   }
-  return (inputForm as InputForm)[pipeRef] as PipeInputFormDescriptor;
+  return checkedDescriptor(pipeRef, inputForm[pipeRef]);
+}
+
+/**
+ * The selected entry of `input_form`, checked whole by {@link inputFormFault}
+ * before any caller value is read and before anything is uploaded, and refused at
+ * its first fault.
+ *
+ * A malformation is the route breaking its contract, at whatever depth and under
+ * whichever input, so it is refused with a `runtime` verdict, not retryable. It is
+ * never passed through: a node the SDK cannot read may be a file position, and
+ * under the default mode passing it through would send the caller's local path to
+ * the runner verbatim. A `kind` outside {@link WALKED_KINDS} is refused for the
+ * same reason, since it may be a file kind a newer standard defines.
+ */
+function checkedDescriptor(pipeRef: string, entry: unknown): PipeInputFormDescriptor {
+  const found = inputFormFault(entry);
+  if (found !== undefined) {
+    throw new InputPreparationError(
+      `Cannot prepare inputs: the pipe I/O answer's \`input_form\` for "${pipeRef}" ` +
+        `is ${found.message}.`,
+      { verdict: { errorDomain: "runtime", retryable: false } },
+    );
+  }
+  return entry as PipeInputFormDescriptor;
+}
+
+/**
+ * Where an input-form entry breaks the shape `prepareInputs` reads, and what was
+ * found there.
+ */
+export interface InputFormFault {
+  /** Where, in the entry's own terms (`fields[3].item`, `fields[2].fields[0].kind`); empty for the entry itself. */
+  path: string;
+  /** What was expected there and what was found. */
+  problem: string;
+  /** The two in one phrase: `malformed at fields[3].item: expected a node with a string kind, got null`. */
+  message: string;
+}
+
+/**
+ * The first fault of one pipe's input-form entry (`input_form[pipe_ref]`) in
+ * document order, or `undefined` when `prepareInputs` can walk it. It checks what
+ * the walk reads and only that: the entry is an object whose `fields` is a list;
+ * every field, at the top level or in an `object` node, is an object with a string
+ * `name`; every node, a field or a `list` node's `item`, has a string `kind` this
+ * SDK walks, the standard's vocabulary at the `mthds` it pins; an `object` node's
+ * `fields` is a list and a `list` node's `item` is a node. Members the walk does
+ * not read (`concept_ref`, `presence`, `hints`, …) are not checked. `prepareInputs`
+ * refuses an entry with a fault before it uploads anything; a caller that reads an
+ * entry itself, to render a form or a template, checks it here first.
+ */
+export function inputFormFault(entry: unknown): InputFormFault | undefined {
+  if (!isPlainObject(entry)) {
+    return fault("", `expected an object with a list of fields, got ${described(entry)}`);
+  }
+  return fieldsFault(entry.fields, "fields");
+}
+
+function fault(path: string, problem: string): InputFormFault {
+  return {
+    path,
+    problem,
+    message: `malformed${path === "" ? "" : ` at ${path}`}: ${problem}`,
+  };
+}
+
+function fieldsFault(fields: unknown, path: string): InputFormFault | undefined {
+  if (!Array.isArray(fields)) {
+    return fault(path, `expected a list of fields, got ${described(fields)}`);
+  }
+  for (const [index, field] of (fields as unknown[]).entries()) {
+    const at = `${path}[${index}]`;
+    if (!isPlainObject(field)) {
+      return fault(at, `expected a field with a string name and kind, got ${described(field)}`);
+    }
+    if (typeof field.name !== "string") {
+      return fault(`${at}.name`, `expected a string, got ${described(field.name)}`);
+    }
+    const found = nodeFault(field, at);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function nodeFault(node: unknown, path: string): InputFormFault | undefined {
+  if (!isPlainObject(node)) {
+    return fault(path, `expected a node with a string kind, got ${described(node)}`);
+  }
+  const kind = node.kind;
+  if (typeof kind !== "string") {
+    return fault(`${path}.kind`, `expected a string, got ${described(kind)}`);
+  }
+  if (!KNOWN_KINDS.has(kind)) {
+    return fault(
+      `${path}.kind`,
+      `${described(kind)} is not a kind this version of @pipelex/sdk knows ` +
+        `(${[...KNOWN_KINDS].join(", ")}); a newer API may need a newer SDK`,
+    );
+  }
+  if (kind === "object") return fieldsFault(node.fields, `${path}.fields`);
+  if (kind === "list") return nodeFault(node.item, `${path}.item`);
+  return undefined;
+}
+
+/**
+ * A value of the server's answer, described for a message: `null`, `nothing` for
+ * an absent member, a string quoted and cut at 40 characters, a number or a
+ * boolean as written, else what it is.
+ */
+function described(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "nothing";
+  if (typeof value === "string") {
+    return JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return "a list";
+  if (isPlainObject(value)) return "an object";
+  return typeof value;
 }
 
 /**
@@ -571,18 +829,24 @@ function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor 
  * records. HTTP(S) URLs and existing `pipelex-storage://` URIs pass through
  * unchanged. All failures are raised before any run is created.
  *
- * With `allowUploads: false`, nothing is read from disk or uploaded: a value that
- * would need either throws {@link UploadNotAllowedError}, naming the input and
- * where inside it the value sits.
+ * A value at a file input that cannot be a file — a value of a type no file input
+ * takes, or a `data:` URL that does not decode — throws
+ * {@link InvalidInputValueError}, naming the input and where inside it the value
+ * sits. With `allowUploads: false`, nothing is read from disk or uploaded: a value
+ * that would need either throws {@link UploadNotAllowedError}, naming them too.
  *
  * The pipe and its signature come from one `POST /v1/pipe-io`, whatever the
  * selector — inline `files`, a `method_ref` the runner resolves, or a
  * `method_id` the platform resolves. A bare or alias-qualified `pipe_ref`, a
  * closure that does not load, and a selection the route refuses (an unknown
- * `pipe_ref`, no entry pipe, several) throw {@link InputPreparationError}; any
- * other failure from the route (a malformed selector, an unknown or foreign-org
- * id, no package at the address, auth, a server fault, a deployment that does not
- * serve the route) surfaces as `ApiResponseError`, unchanged.
+ * `pipe_ref`, no entry pipe, several) throw {@link InputPreparationError}. So
+ * does an answer that breaks the route's contract, with a `runtime` verdict that
+ * is not retryable: no boolean `is_valid`, an `input_form` that does not describe
+ * the selected pipe, or a descriptor that is malformed or names a kind this SDK
+ * does not know, which is checked whole before anything is uploaded. Any other
+ * failure from the route (a malformed selector, an unknown or foreign-org id, no
+ * package at the address, auth, a server fault, a deployment that does not serve
+ * the route) surfaces as `ApiResponseError`, unchanged.
  */
 export async function prepareInputs(
   client: PrepareCapableClient,

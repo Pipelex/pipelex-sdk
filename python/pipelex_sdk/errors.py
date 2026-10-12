@@ -603,8 +603,19 @@ class InvalidInputValueError(InputPreparationError):
     path or URL string, nor `bytes` or a `Path`, nor `{url}` content. `prepare_inputs` raises it while
     it reads the inputs, before anything is uploaded. As with `InvalidLocalSourceError`, the inputs are
     what must change, which is how a consumer tells it apart from `MethodLoadError`, a method that does
-    not load, raised by the same preparation. The twin of `@pipelex/sdk`'s class of the same name.
+    not load, raised by the same preparation.
+
+    As on `UploadNotAllowedError`, `input_name` is the input the value belongs to and `input_path` where
+    it sits inside that input (`report.attachments[1]`, or the name alone for a top-level file). The
+    message names that path and describes the value by its kind, never by its content, since the value
+    is the caller's data. The twin of `@pipelex/sdk`'s class of the same name, whose `inputName` and
+    `inputPath` these are.
     """
+
+    def __init__(self, message: str, *, input_name: str, input_path: str) -> None:
+        super().__init__(message)
+        self.input_name = input_name
+        self.input_path = input_path
 
 
 class UploadNotAllowedKind(StrEnum):

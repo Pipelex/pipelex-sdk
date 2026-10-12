@@ -18,6 +18,7 @@ import type {
   RunResultStart,
   ValidationReport,
 } from "mthds/protocol";
+import type { BundleResources } from "./bundle-resources.js";
 
 export interface DictStuff {
   concept: string;
@@ -268,9 +269,15 @@ export interface PipelexValidationReport extends ValidationReport {
   /** Per-pipe dry-run sweep outcomes. */
   validated_pipes: ValidatedPipeEntry[];
   /**
-   * Advisory lints on a VALID bundle — same item shape as `validation_errors[]`, so one
-   * parser serves both channels, but these never flip `is_valid`. Empty when the bundle
-   * is lint-free. Carries the advisory `hint_*` error types, which ride here exclusively.
+   * Advisory findings on a VALID bundle — same item shape as `validation_errors[]`, so one
+   * parser serves both channels, but these never flip `is_valid`. Empty when there is
+   * nothing to report. Their `error_type`s come in families, always in this order: the
+   * useless-`!` lint (`optional_force_redundant`), the entry pipe's vacuous-presence lint
+   * (`input_presence_vacuous`), the intent-hint lints (`hint_unknown_key`,
+   * `hint_unknown_intent`, `hint_inapplicable_intent`, which ride here exclusively), then the
+   * findings a `PipeDocGen` step's template check made in its office template file during
+   * the dry run (`template_check_warning`, a `dry_run` item carrying `pipe_code`,
+   * `domain_code`, `template_file` and `template_location`).
    */
   warnings: ValidationErrorItem[];
   /** Qualified refs of pipes still declared as `PipeSignature`. */
@@ -340,7 +347,11 @@ export type ValidationErrorCategory =
  * only from its package root, which this SDK does not import (it takes `mthds` through
  * `mthds/protocol` alone, the rule `.dependency-cruiser.cjs` enforces); a type-level test
  * (`tests/validation-items.test.ts`) pins this declaration and `SuggestedFix`'s to the
- * standard's, so a member added on one side and not the other fails the typecheck.
+ * standard's, so a member added on one side and not the other fails the typecheck. The
+ * one difference it allows is the pair of template-check locators, `template_file` and
+ * `template_location`, which the runner's item carries and the `mthds` this SDK depends on
+ * does not declare yet; the test pins that difference too, so it fails the day `mthds`
+ * declares them.
  *
  * Only `category` and `message` are always present; the rest are populated per
  * `category`. Every other member is `?: T | null` — the one way this declaration
@@ -358,6 +369,12 @@ export type ValidationErrorCategory =
  * carries the reference as written, the kind of model the field takes and the close
  * matches, and, when there is exactly one close match, a `suggested_fix` that remaps
  * the reference to it.
+ *
+ * A `template_check_warning` item, on the valid arm's `warnings[]` only, is a finding of a
+ * `PipeDocGen` step's template check in its office template file during the dry run, such
+ * as a field of the template that matches no input: a `dry_run` item carrying the step's
+ * `pipe_code` and `domain_code`, the template file as the step names it and the place in
+ * it the engine's finding names.
  */
 export interface ValidationErrorItem {
   category: ValidationErrorCategory;
@@ -386,6 +403,18 @@ export interface ValidationErrorItem {
    * reference the field accepts.
    */
   suggestions?: string[] | null;
+  /**
+   * On a `template_check_warning` item: the template file as the `PipeDocGen` step names it
+   * (`templates/invoice.xlsx`); `null` for a step of the server's own library, whose path is
+   * the server's and is never shown.
+   */
+  template_file?: string | null;
+  /**
+   * On a `template_check_warning` item: the place in the template file the finding names, in
+   * the engine's own words (a defined name, a table, a cell, a shape, a tag); `null` when the
+   * finding names none.
+   */
+  template_location?: string | null;
   /** The server's deterministic repair proposal for this error, when it has one. */
   suggested_fix?: SuggestedFix | null;
 }
@@ -602,10 +631,19 @@ export interface MthdsFileItem {
  * The XOR is a server-side invariant, not a type-level one: expressing it as a union
  * here would make the common `{ files }` call site pick a branch for no gain, and the
  * server rejects the illegal shapes with a typed `ApiResponseError` either way.
+ *
+ * `resources` accompanies inline `files`: the files the closure's steps read, such as a
+ * `PipeDocGen` step's `template_file`, keyed by the path the step names, each as its bytes,
+ * which the client encodes into the wire's base64 map before posting (see
+ * `docs/bundle-resources.md`). It is the one member the client does not post verbatim. Beside
+ * a `method_ref` it is the server's `422`, a published method's files being its package's
+ * own; a step whose template file was not sent makes the closure invalid.
  */
 export interface CrateRequestBase {
   files?: MthdsFileItem[];
   method_ref?: string;
+  /** The files the closure's steps read, keyed by the path a step names, each as its bytes. */
+  resources?: BundleResources | null;
 }
 
 /**

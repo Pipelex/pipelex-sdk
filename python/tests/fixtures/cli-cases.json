@@ -1440,9 +1440,10 @@
         "stdout": "",
         "stderr": [
           "Error: the inputs hold a value at a file input that cannot be read as a file.\n",
+          "Reason: Input \"receipt\" holds a malformed data URL (no comma separator).\n",
           "A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL"
         ],
-        "stderr_excludes": ["Run started"]
+        "stderr_excludes": ["Run started", "application/pdf"]
       }
     },
     {
@@ -1469,6 +1470,7 @@
         "stdout": "",
         "stderr": [
           "Error: the inputs hold a value at a file input that cannot be read as a file.\n",
+          "Reason: Input \"receipt\" holds a number, which no file input takes",
           "A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL"
         ],
         "stderr_excludes": ["Run started"]
@@ -3004,6 +3006,532 @@
           "Error: the method does not load.\n",
           "  - receipt-review.mthds: Unknown concept 'Receipt'.\n"
         ]
+      }
+    },
+    {
+      "name": "template/input-form-unknown-kind",
+      "summary": "An input form naming a kind the command does not know is refused rather than rendered, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_ref": "receipts.review_receipt",
+              "pipe_io_contracts": {},
+              "input_form": {
+                "receipts.review_receipt": {
+                  "fields": [
+                    {
+                      "name": "receipt",
+                      "kind": "document",
+                      "concept_ref": "native.Document",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    },
+                    {
+                      "name": "note",
+                      "kind": "audio",
+                      "concept_ref": "native.Text",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    }
+                  ]
+                }
+              },
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer describes the pipe it selected with a malformed input form.\n"
+        ]
+      }
+    },
+    {
+      "name": "template/input-form-field-without-name",
+      "summary": "An input form with a field that has no name is refused rather than rendered under a made-up key, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_ref": "receipts.review_receipt",
+              "pipe_io_contracts": {},
+              "input_form": {
+                "receipts.review_receipt": {
+                  "fields": [
+                    {
+                      "name": "receipt",
+                      "kind": "document",
+                      "concept_ref": "native.Document",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    },
+                    {
+                      "kind": "prose",
+                      "concept_ref": "native.Text",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    }
+                  ]
+                }
+              },
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer describes the pipe it selected with a malformed input form.\n"
+        ]
+      }
+    },
+    {
+      "name": "template/input-form-enum-without-choices",
+      "summary": "An input form whose enum field lists no choices is refused rather than crashing the template's rendering, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_ref": "receipts.review_receipt",
+              "pipe_io_contracts": {},
+              "input_form": {
+                "receipts.review_receipt": {
+                  "fields": [
+                    {
+                      "name": "receipt",
+                      "kind": "document",
+                      "concept_ref": "native.Document",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    },
+                    {
+                      "name": "tone",
+                      "kind": "enum",
+                      "concept_ref": "native.Text",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    }
+                  ]
+                }
+              },
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer describes the pipe it selected with a malformed input form.\n"
+        ]
+      }
+    },
+    {
+      "name": "template/input-form-concept-not-a-string",
+      "summary": "An input form whose field names its concept with something other than a string is refused rather than crashing the template's rendering, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_ref": "receipts.review_receipt",
+              "pipe_io_contracts": {},
+              "input_form": {
+                "receipts.review_receipt": {
+                  "fields": [
+                    {
+                      "name": "receipt",
+                      "kind": "document",
+                      "concept_ref": "native.Document",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    },
+                    {
+                      "name": "note",
+                      "kind": "prose",
+                      "concept_ref": 5,
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    }
+                  ]
+                }
+              },
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer describes the pipe it selected with a malformed input form.\n"
+        ]
+      }
+    },
+    {
+      "name": "template/input-form-refines-not-strings",
+      "summary": "An input form whose field lists something other than strings as the concepts it refines is refused rather than crashing the template's rendering, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_ref": "receipts.review_receipt",
+              "pipe_io_contracts": {},
+              "input_form": {
+                "receipts.review_receipt": {
+                  "fields": [
+                    {
+                      "name": "receipt",
+                      "kind": "document",
+                      "concept_ref": "native.Document",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    },
+                    {
+                      "name": "note",
+                      "kind": "prose",
+                      "concept_ref": "receipts.Note",
+                      "refines": [5],
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    }
+                  ]
+                }
+              },
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer describes the pipe it selected with a malformed input form.\n"
+        ]
+      }
+    },
+    {
+      "name": "template/input-form-list-count-of-one",
+      "summary": "An input form whose fixed list states a count below two is refused rather than rendered with the wrong number of elements, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_ref": "receipts.review_receipt",
+              "pipe_io_contracts": {},
+              "input_form": {
+                "receipts.review_receipt": {
+                  "fields": [
+                    {
+                      "name": "receipt",
+                      "kind": "document",
+                      "concept_ref": "native.Document",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    },
+                    {
+                      "name": "pages",
+                      "kind": "list",
+                      "concept_ref": "native.Document",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": false,
+                      "item_count": 1,
+                      "item": {
+                        "kind": "document",
+                        "concept_ref": "native.Document",
+                        "required": true
+                      }
+                    }
+                  ]
+                }
+              },
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer describes the pipe it selected with a malformed input form.\n"
+        ]
+      }
+    },
+    {
+      "name": "template/input-form-entry-null",
+      "summary": "An input form whose entry for the selected pipe is null is refused as malformed, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_ref": "receipts.review_receipt",
+              "pipe_io_contracts": {},
+              "input_form": {
+                "receipts.review_receipt": null
+              },
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer describes the pipe it selected with a malformed input form.\n"
+        ]
+      }
+    },
+    {
+      "name": "template/input-form-missing",
+      "summary": "A valid answer with no input form at all does not describe the pipe it selected, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_ref": "receipts.review_receipt",
+              "pipe_io_contracts": {},
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer does not describe the pipe it selected.\n"
+        ]
+      }
+    },
+    {
+      "name": "template/pipe-ref-missing",
+      "summary": "A valid answer that names no pipe does not describe the pipe it selected, and exits 1.",
+      "argv": ["run", "--method", "receipt-review.mthds", "--inputs-template"],
+      "files": [
+        {
+          "path": "receipt-review.mthds",
+          "text": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+        }
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_io_contracts": {},
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true,
+              "input_form": {
+                "receipts.review_receipt": {
+                  "fields": [
+                    {
+                      "name": "receipt",
+                      "kind": "document",
+                      "concept_ref": "native.Document",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    },
+                    {
+                      "kind": "prose",
+                      "concept_ref": "native.Text",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true,
+                      "name": "note"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer does not describe the pipe it selected.\n"
+        ]
+      }
+    },
+    {
+      "name": "script/input-form-malformed",
+      "summary": "script refuses a method whose input form is malformed where the template reads it, and writes nothing.",
+      "argv": [
+        "script",
+        "--method",
+        "github.com/acme/methods/receipt-review@v1.0.0"
+      ],
+      "routes": {
+        "POST /v1/pipe-io": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0"
+            },
+            "status": 200,
+            "body": {
+              "is_valid": true,
+              "pipe_ref": "receipts.review_receipt",
+              "pipe_io_contracts": {},
+              "input_form": {
+                "receipts.review_receipt": {
+                  "fields": [
+                    {
+                      "name": "receipt",
+                      "kind": "document",
+                      "concept_ref": "native.Document",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    },
+                    {
+                      "name": "tone",
+                      "kind": "enum",
+                      "concept_ref": "native.Text",
+                      "required": true,
+                      "presence": "plain",
+                      "gating": true
+                    }
+                  ]
+                }
+              },
+              "output_form": {},
+              "default_pipe_ref": "receipts.review_receipt",
+              "pending_signatures": [],
+              "is_runnable": true
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": [
+          "Error: the API's pipe I/O answer describes the pipe it selected with a malformed input form.\n"
+        ],
+        "absent_files": ["receipt-review"]
       }
     },
     {

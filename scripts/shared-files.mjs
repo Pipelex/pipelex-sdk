@@ -46,6 +46,11 @@ export const SETS = [
     source: "js/tests/fixtures/run-status-reads.json",
     copies: ["python/tests/fixtures/run-status-reads.json"],
   },
+  {
+    // The input-form descriptors both SDKs refuse (js/docs/input-preparation.md, python/docs/input-preparation.md).
+    source: "js/tests/fixtures/malformed-input-forms.json",
+    copies: ["python/tests/fixtures/malformed-input-forms.json"],
+  },
 ];
 
 export class SharedFileError extends Error {

@@ -31,8 +31,10 @@ export type {
   PipelexStartOptions,
   ValidateMethodSelector,
   ValidateFilesOptions,
+  ValidateOptions,
   PipelexApiClientOptions,
 } from "./client.js";
+export type { BundleResourceBytes, BundleResources } from "./bundle-resources.js";
 
 // Canonical parser: a stored method's polymorphic `MethodData.mthds` source → bundle contents.
 export { methodSourceToContents } from "./method-source.js";
@@ -52,11 +54,15 @@ export type { UploadableAsset, UploadFileOptions, UploadRecord } from "./upload.
 export { uploadWithGrant } from "./upload-grant.js";
 export type { GrantedUpload, UploadWithGrantOptions } from "./upload-grant.js";
 export type {
+  InputFormFault,
   PrepareInputsBase,
   PrepareInputsClosure,
   PrepareInputsRequest,
   PreparedInputs,
 } from "./prepare-inputs.js";
+// The check `prepareInputs` makes of a pipe's input-form entry before walking it, for a caller
+// that reads the entry itself, as the command's `--inputs-template` does.
+export { inputFormFault } from "./prepare-inputs.js";
 
 // ── Artifacts (the download twin of input preparation) ──────────────
 // `locateArtifacts`, `collectArtifacts` and `artifactFilename` are pure and standalone;

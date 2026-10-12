@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.40.0] - 2026-10-12
+
+### Changed
+
+- **`InvalidInputValueError` names the input (Breaking)**: the error carries `input_name` and `input_path`, as `UploadNotAllowedError` does, and its constructor takes them as required keyword arguments, `InvalidInputValueError(message, input_name=…, input_path=…)`. Its message names the position and describes the value by its kind (`Input "dossier.attachments[1]" holds a number, which no file input takes: …`), a malformed `data:` URL's message no longer quotes the URL, and under `allow_uploads=False` the message offers only the two forms that pass, an `http(s)` URL or a `pipelex-storage://` reference.
+
+### Fixed
+
+- **`pipelex-sdk run --inputs-template` and `pipelex-sdk script` name a malformed input form**: a pipe I/O answer with an input-form entry the client refuses prints `Error: the API's pipe I/O answer describes the pipe it selected with a malformed input form.`, and one that names no pipe or carries no input form prints `Error: the API's pipe I/O answer does not describe the pipe it selected.`, as `@pipelex/sdk`'s command does, where both printed that the answer said neither that the method loads nor why it does not.
+
 ## [v0.39.0] - 2026-10-12
 
 ### Added

@@ -28,8 +28,10 @@
  * - no `.mthds` in the payload / unparseable stdin → pass silently
  * - WASM engine fails to load → no file is checked; the note above is still sent
  * - validate unavailable (no `PIPELEX_API_KEY`, network error, timeout, any
- *   non-2xx, bundle-gather overflow) → the local lint/format verdicts already
- *   applied; the validate stage passes silently
+ *   non-2xx, bundle-gather overflow, a template file leading out of the bundle's
+ *   directory, or one path naming two different template files, or a file beside
+ *   one `.mthds` file and nothing beside another) → the local lint/format
+ *   verdicts already applied; the validate stage passes silently
  *
  * The hook always exits 0; a block/deny is expressed on stdout, never via the
  * exit code.
@@ -160,6 +162,7 @@ async function runValidateStage(filePath: string): Promise<ValidateStage> {
     // request does not keep running after the hook has given up on it.
     const result = await client.validateFiles(gathered.files, {
       allowSignatures: true,
+      resources: gathered.resources,
       timeoutMs: VALIDATE_TIMEOUT_MS,
     });
     if (result.is_valid === true) {
