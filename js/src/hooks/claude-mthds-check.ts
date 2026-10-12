@@ -29,8 +29,9 @@
  * - WASM engine fails to load → no file is checked; the note above is still sent
  * - validate unavailable (no `PIPELEX_API_KEY`, network error, timeout, any
  *   non-2xx, bundle-gather overflow, a template file leading out of the bundle's
- *   directory or one path naming two different template files) → the local
- *   lint/format verdicts already applied; the validate stage passes silently
+ *   directory, or one path naming two different template files, or a file beside
+ *   one `.mthds` file and nothing beside another) → the local lint/format
+ *   verdicts already applied; the validate stage passes silently
  *
  * The hook always exits 0; a block/deny is expressed on stdout, never via the
  * exit code.

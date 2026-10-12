@@ -34,16 +34,42 @@ export type BundleResourceBytes = Uint8Array | ArrayBuffer | Blob;
 export type BundleResources = Readonly<Record<string, BundleResourceBytes>>;
 
 /**
+ * Whether `resources` is a plain object, the one shape a map of paths to bytes takes: its
+ * prototype is `Object.prototype` or `null`. A `Map`, an array or a class instance is not one,
+ * and the encoder refuses it rather than reading it as a map with no file in it.
+ */
+export function isResourceMap(resources: unknown): resources is Record<string, unknown> {
+  if (typeof resources !== "object" || resources === null) return false;
+  const prototype: unknown = Object.getPrototypeOf(resources);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
  * Whether `resources` carries at least one file. An absent, `null` or empty map carries none, so
- * it is not sent, as an empty bundle encoding is not.
+ * it is not sent, as an empty bundle encoding is not. A value that is not a plain object carries
+ * none either; the encoder refuses it.
  */
 export function hasBundleResources(resources: unknown): boolean {
-  return (
-    typeof resources === "object" &&
-    resources !== null &&
-    !Array.isArray(resources) &&
-    Object.keys(resources).length > 0
-  );
+  return isResourceMap(resources) && Object.keys(resources).length > 0;
+}
+
+/**
+ * Python's whitespace, the set `str.strip()` removes and `str.isspace()` accepts, which the
+ * runner's rule tests a path against. It differs from JavaScript's `trim()`: it holds the
+ * separators U+001C to U+001F and U+0085, and not the byte-order mark U+FEFF.
+ */
+const PYTHON_WHITESPACE: ReadonlySet<number> = new Set([
+  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680, 0x2000, 0x2001,
+  0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f,
+  0x205f, 0x3000,
+]);
+
+/** Whether `path` holds nothing but Python's whitespace: `not path.strip()`, the runner's test. */
+function isBlankForPython(path: string): boolean {
+  for (const character of path) {
+    if (!PYTHON_WHITESPACE.has(character.codePointAt(0)!)) return false;
+  }
+  return true;
 }
 
 /**
@@ -51,7 +77,7 @@ export function hasBundleResources(resources: unknown): boolean {
  * held by the key of a file sent with a bundle and by the path a step names.
  */
 export function bundleResourcePathRefusal(path: string): string | undefined {
-  if (path.trim() === "") return "it is empty";
+  if (isBlankForPython(path)) return "it is empty";
   if (path.includes("\\")) return "it holds a backslash; write the path with forward slashes";
   if (path.includes(":")) return "it holds a colon";
   if (path.includes("\0")) return "it holds a NUL character";
@@ -88,10 +114,10 @@ export async function encodeBundleResources(
   resources: BundleResources | null | undefined,
 ): Promise<Record<string, string> | undefined> {
   if (resources === undefined || resources === null) return undefined;
-  if (typeof resources !== "object" || Array.isArray(resources)) {
+  if (!isResourceMap(resources)) {
     throw new RequestArgumentError(
-      "resources must map each file's path, as the step names it, to the file's bytes; " +
-        `got ${describeValue(resources)}.`,
+      "resources must be a plain object mapping each file's path, as the step names it, to the " +
+        `file's bytes; got ${describeValue(resources)}.`,
     );
   }
   // Read once: a second read of a proxy or a getter could differ from the one checked.
@@ -143,6 +169,12 @@ async function resourceBytes(path: string, value: unknown): Promise<Uint8Array> 
 function describeValue(value: unknown): string {
   if (value === null) return "null";
   if (Array.isArray(value)) return "an array";
+  if (value instanceof Map) return "a Map; pass Object.fromEntries(map)";
   if (typeof value === "string") return "a string";
+  if (typeof value === "object") {
+    const name = (Object.getPrototypeOf(value) as { constructor?: { name?: unknown } } | null)
+      ?.constructor?.name;
+    return typeof name === "string" && name !== "" ? `an instance of ${name}` : "an object";
+  }
   return `a value of type ${typeof value}`;
 }

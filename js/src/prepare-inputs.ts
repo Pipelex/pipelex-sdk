@@ -46,7 +46,7 @@ import {
   MethodLoadError,
   UploadNotAllowedError,
 } from "./errors.js";
-import { hasBundleResources } from "./bundle-resources.js";
+import { hasBundleResources, isResourceMap } from "./bundle-resources.js";
 import type { BundleResources } from "./bundle-resources.js";
 import type { MthdsFileItem, PipeIORequest, PipeIOResponse, PipeIOValidReport } from "./models.js";
 import type { UploadCapableClient, UploadRecord } from "./upload.js";
@@ -491,14 +491,9 @@ async function resolveNode(
   }
 }
 
-/** Whether `resources` is a map with no file in it, which sends nothing. */
+/** Whether `resources` is a plain object with no file in it, which sends nothing. */
 function isEmptyResourceMap(resources: unknown): boolean {
-  return (
-    typeof resources === "object" &&
-    resources !== null &&
-    !Array.isArray(resources) &&
-    !hasBundleResources(resources)
-  );
+  return isResourceMap(resources) && !hasBundleResources(resources);
 }
 
 /**

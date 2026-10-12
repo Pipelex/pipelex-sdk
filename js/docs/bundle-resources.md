@@ -28,6 +28,8 @@ const result = await client.startAndWaitForResult({ mthds_contents: [mthds], res
 
 An absent, `null` or empty map is not sent.
 
+A request carrying `resources` can be large, so every route gives it the 20-minute execute ceiling: `validate` and `validateFiles` have it by default (a caller's `timeoutMs` still overrides it), and `start` and the crate routes raise their shorter default to it for a request that carries a file. On the hosted API the gateway caps a request at about 30 seconds whatever the client allows.
+
 ## The key is the path the step names
 
 Each key is the file's path relative to the bundle, written with forward slashes, exactly as the step's `template_file` writes it: `templates/invoice.docx`. The runner collapses `.` segments and repeated slashes, so `./templates/invoice.docx` names the same file, and the SDK sends the key as you gave it. Every bundle of a request is read as sitting in one directory, so a step in `steps/print.mthds` that names `templates/invoice.docx` reads the file sent under `templates/invoice.docx`, wherever it sat on your disk.
@@ -40,9 +42,9 @@ A value is a `Uint8Array` (a Node `Buffer` is one), an `ArrayBuffer` or a `Blob`
 
 Each of these is a `RequestArgumentError`, `input` and not retryable, thrown before anything is encoded or sent:
 
-- **A key that cannot name a file inside the bundle**: an empty path, a backslash, a colon, a NUL character, an absolute path, a `..` segment, or a path that names no file (`./`). It is the runner's own rule, which it answers with a `422` `InvalidResourcePath`.
+- **A key that cannot name a file inside the bundle**: an empty path or one of nothing but whitespace, as Python counts it, a backslash, a colon, a NUL character, an absolute path, a `..` segment, or a path that names no file (`./`). It is the runner's own rule, which it answers with a `422` `InvalidResourcePath`.
 - **Two keys that name one file** once `.` segments and repeated slashes collapse, such as `a.docx` and `./a.docx`.
-- **A value that is not bytes**, and a `resources` that is not a map of paths to bytes.
+- **A value that is not bytes**, and a `resources` that is not a plain object mapping paths to bytes: a `Map`, an array or a class instance is refused rather than read as carrying no file (pass `Object.fromEntries(map)`).
 - **`resources` in `extra`**: it is a named option, so the passthrough cannot carry it past these checks.
 - **A pairing the runner refuses**, on the routes where the SDK already mirrors the runner's pairings. On `execute` and `start`, `resources` beside a `method_ref`, whose files are its package's own, or with no source at all for them to accompany. On `validate`, `resources` beside a `{ method_ref }`. A hosted `method_id` without inline source is left to the server, since the platform resolves it into the bundle the runner reads the files with. `prepareInputs` takes `resources` beside inline `files` only, and refuses them beside a `method_ref` or a `method_id` with an `InputPreparationError`.
 

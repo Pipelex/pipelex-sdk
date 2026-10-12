@@ -37,26 +37,32 @@ export interface GatherCaps {
   maxTotalBytes: number;
   /** How many template files the gather sends at most; the server's default limit when omitted. */
   maxResourceFiles?: number;
+  /** How large one template file may be; the server's default limit when omitted. */
+  maxResourceFileBytes?: number;
   /** How many bytes of template files the gather sends at most; the server's default when omitted. */
   maxResourceBytes?: number;
 }
 
 /** The server's default bounds on the files a request sends with its bundle. */
 const DEFAULT_MAX_RESOURCE_FILES = 32;
+const DEFAULT_MAX_RESOURCE_FILE_BYTES = 5 * 1024 * 1024;
 const DEFAULT_MAX_RESOURCE_BYTES = 10 * 1024 * 1024;
 
 export const DEFAULT_GATHER_CAPS: GatherCaps = {
   maxFiles: 50,
   maxTotalBytes: 2 * 1024 * 1024,
   maxResourceFiles: DEFAULT_MAX_RESOURCE_FILES,
+  maxResourceFileBytes: DEFAULT_MAX_RESOURCE_FILE_BYTES,
   maxResourceBytes: DEFAULT_MAX_RESOURCE_BYTES,
 };
 
 /**
  * The gathered bundle, or why there is none to send. `resources` maps the path a
  * step names to the template file's bytes. `conflict` is one path naming two
- * different files, beside two `.mthds` files of the bundle, which the server
- * would refuse, so validate is unavailable rather than a wrong verdict.
+ * different files beside two `.mthds` files of the bundle, or a file beside one
+ * and nothing beside the other: the request keys a file by its path alone, so it
+ * cannot say what loading each file from disk would find, and validate is
+ * unavailable rather than a wrong verdict.
  */
 export type GatherResult =
   | { ok: true; files: MthdsFile[]; resources: Record<string, Uint8Array> }
@@ -167,11 +173,17 @@ type TemplateGatherFailure = { ok: false; reason: "overflow" | "unreadable" | "c
 /**
  * Read the template files the gathered `.mthds` files name, each beside the file
  * whose step names it, keyed by the path the step names, as the runtime reads a
- * bundle loaded from disk. A path the server would refuse, and a file that is not
- * there, are left out, for the server to say the step's file was not supplied. A
- * file that leads out of the bundle's directory through a link is never read, and
- * makes validate unavailable, as an unreadable scan does; so does one path naming
- * two different files, and template files past the caps.
+ * bundle loaded from disk. A path the server would refuse is left out, and so is a
+ * file that is not there beside any `.mthds` file naming it, for the server to say
+ * the step's file was not supplied.
+ *
+ * Validate is unavailable rather than a wrong verdict when the request cannot carry
+ * what loading the bundle from disk would find: a file that leads out of the
+ * bundle's directory through a link is never read (`unreadable`), and one path that
+ * names different files beside different `.mthds` files, or a file beside one and
+ * nothing beside another, is a `conflict`. Every size is checked against the caps
+ * before any file is read, the bytes compared to tell two files apart included, so
+ * the hook never holds more than the caps allow (`overflow`).
  */
 function gatherTemplateFiles(
   parentDir: string,
@@ -180,6 +192,7 @@ function gatherTemplateFiles(
   caps: GatherCaps,
 ): { ok: true; resources: Record<string, Uint8Array> } | TemplateGatherFailure {
   const maxFiles = caps.maxResourceFiles ?? DEFAULT_MAX_RESOURCE_FILES;
+  const maxFileBytes = caps.maxResourceFileBytes ?? DEFAULT_MAX_RESOURCE_FILE_BYTES;
   const maxBytes = caps.maxResourceBytes ?? DEFAULT_MAX_RESOURCE_BYTES;
   let root: string;
   try {
@@ -187,32 +200,50 @@ function gatherTemplateFiles(
   } catch {
     return { ok: false, reason: "unreadable" };
   }
-  // Each path a step names, once, with the real file it names on disk.
-  const located = new Map<string, string>();
+  // Each path a step names, once, with the file it names beside the first `.mthds` file
+  // naming it, or `null` when there is none there.
+  const located = new Map<string, LocatedFile | null>();
+  let fileCount = 0;
+  let totalBytes = 0;
   for (const [index, mthdsPath] of paths.entries()) {
     for (const named of templateFilesNamedBy(files[index]!.content)) {
       if (bundleResourcePathRefusal(named) !== undefined) continue;
       const key = canonicalBundleResourcePath(named);
-      const real = realFileOrUndefined(join(dirname(mthdsPath), key));
-      if (real === undefined) continue;
-      if (!real.startsWith(root + sep)) return { ok: false, reason: "unreadable" };
-      const known = located.get(key);
-      if (known === undefined) {
-        located.set(key, real);
-      } else if (known !== real && !sameBytes(known, real)) {
-        return { ok: false, reason: "conflict" };
+      const found = locateRegularFile(join(dirname(mthdsPath), key));
+      if (found !== null) {
+        if (!found.real.startsWith(root + sep)) return { ok: false, reason: "unreadable" };
+        if (found.size > maxFileBytes) return { ok: false, reason: "overflow" };
       }
+      if (!located.has(key)) {
+        located.set(key, found);
+        if (found === null) continue;
+        fileCount += 1;
+        if (fileCount > maxFiles) return { ok: false, reason: "overflow" };
+        totalBytes += found.size;
+        if (totalBytes > maxBytes) return { ok: false, reason: "overflow" };
+        continue;
+      }
+      const known = located.get(key)!;
+      if (known === null || found === null) {
+        if (known !== found) return { ok: false, reason: "conflict" };
+        continue;
+      }
+      if (!sameFileContent(known, found)) return { ok: false, reason: "conflict" };
     }
   }
-  if (located.size > maxFiles) return { ok: false, reason: "overflow" };
 
   const resources = Object.create(null) as Record<string, Uint8Array>;
-  let totalBytes = 0;
-  for (const [key, real] of located) {
+  let readBytes = 0;
+  for (const [key, found] of located) {
+    if (found === null) continue;
     try {
-      totalBytes += statSync(real).size;
-      if (totalBytes > maxBytes) return { ok: false, reason: "overflow" };
-      resources[key] = readFileSync(real);
+      const bytes = readFileSync(found.real);
+      // A file that grew since it was measured is held to the caps as read.
+      readBytes += bytes.length;
+      if (bytes.length > maxFileBytes || readBytes > maxBytes) {
+        return { ok: false, reason: "overflow" };
+      }
+      resources[key] = bytes;
     } catch {
       return { ok: false, reason: "unreadable" };
     }
@@ -220,21 +251,33 @@ function gatherTemplateFiles(
   return { ok: true, resources };
 }
 
-/** The real path of a regular file, or `undefined` when there is none at `path`. */
-function realFileOrUndefined(path: string): string | undefined {
+/** A regular file on disk: where it really is, and how large it was when measured. */
+interface LocatedFile {
+  real: string;
+  size: number;
+}
+
+/** The regular file at `path`, link resolved, or `null` when there is none there. */
+function locateRegularFile(path: string): LocatedFile | null {
   try {
     const real = realpathSync(path);
-    return statSync(real).isFile() ? real : undefined;
+    const stats = statSync(real);
+    return stats.isFile() ? { real, size: stats.size } : null;
   } catch {
-    return undefined;
+    return null;
   }
 }
 
-/** Whether two files hold the same bytes; an unreadable one holds none. */
-function sameBytes(left: string, right: string): boolean {
+/**
+ * Whether two files hold the same bytes. Their sizes were measured and held to the
+ * per-file cap before this reads either, so a comparison reads at most two files of
+ * that size; files of different sizes differ unread, and an unreadable one holds none.
+ */
+function sameFileContent(left: LocatedFile, right: LocatedFile): boolean {
+  if (left.real === right.real) return true;
+  if (left.size !== right.size) return false;
   try {
-    if (statSync(left).size !== statSync(right).size) return false;
-    return Buffer.compare(readFileSync(left), readFileSync(right)) === 0;
+    return Buffer.compare(readFileSync(left.real), readFileSync(right.real)) === 0;
   } catch {
     return false;
   }

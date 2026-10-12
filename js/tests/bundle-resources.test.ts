@@ -13,7 +13,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
-import { ApiResponseError, InputPreparationError, RequestArgumentError } from "../src/errors.js";
+import {
+  ApiResponseError,
+  ApiUnreachableError,
+  InputPreparationError,
+  RequestArgumentError,
+} from "../src/errors.js";
 import type { BundleResources } from "../src/index.js";
 
 const BASE_URL = "http://localhost:8081";
@@ -82,6 +87,23 @@ function completedRun(): Response {
   });
 }
 
+/** A completed blocking run that delivers its main stuff, as `startAndWaitForResult` reads it. */
+function completedRunWithResult(): Response {
+  return jsonResponse(200, {
+    pipeline_run_id: "run-t",
+    created_at: "t0",
+    state: "COMPLETED",
+    main_stuff_name: "invoice_file",
+    pipe_output: {
+      pipeline_run_id: "run-t",
+      working_memory: {
+        root: { invoice_file: { concept: "native.Text", content: { text: "printed" } } },
+        aliases: { main_stuff: "invoice_file" },
+      },
+    },
+  });
+}
+
 const VALID_VERDICT = {
   is_valid: true,
   bundle_blueprint: {},
@@ -128,6 +150,20 @@ describe("the bytes reach the wire as base64 under the caller's key", () => {
       "c.docx": TEMPLATE_B64,
       "d.docx": TEMPLATE_B64,
     });
+  });
+
+  it("encodes a view's own bytes, not the buffer behind it", async () => {
+    const client = makeClient();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(startAck());
+    // The template sits in the middle of a larger buffer, as a file read into a pool does.
+    const padded = new Uint8Array([0x41, 0x42, ...TEMPLATE_BYTES, 0x43]);
+    const view = new Uint8Array(padded.buffer, 2, TEMPLATE_BYTES.length);
+    expect(view.byteOffset).toBe(2);
+    await client.start({
+      mthds_contents: [INVOICE_MTHDS],
+      resources: { "a.docx": view, "b.docx": Buffer.from(padded).subarray(2, -1) },
+    });
+    expect(bodyOf(fetchSpy).resources).toEqual({ "a.docx": TEMPLATE_B64, "b.docx": TEMPLATE_B64 });
   });
 
   it("sends the key as given, the runner collapsing `./` itself", async () => {
@@ -199,6 +235,30 @@ describe("the bytes reach the wire as base64 under the caller's key", () => {
       .catch(() => undefined);
     expect(String(fetchSpy.mock.calls[1]![0])).toBe(`${BASE_URL}/v1/execute`);
     expect(bodyOf(fetchSpy, 1).resources).toEqual({ [TEMPLATE_PATH]: TEMPLATE_B64 });
+  });
+
+  it("keeps them when a runner that looked hosted has no start route and the call falls back", async () => {
+    const client = makeClient();
+    // The version handshake names no implementation, so the runner looks hosted; its `start`
+    // answers the missing-route 404 (`RunLifecycleUnavailableError`, no run created), and the
+    // call falls back to the blocking `execute`, which must carry the same files.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, { protocol_version: "1" }))
+      .mockResolvedValueOnce(jsonResponse(404, { detail: "Not Found" }))
+      .mockResolvedValueOnce(completedRunWithResult());
+    const result = await client.startAndWaitForResult({
+      mthds_contents: [INVOICE_MTHDS],
+      resources: { [TEMPLATE_PATH]: TEMPLATE_BYTES },
+    });
+    expect(result.pipeline_run_id).toBe("run-t");
+    expect(fetchSpy.mock.calls.map((call) => String(call[0]))).toEqual([
+      `${BASE_URL}/v1/version`,
+      `${BASE_URL}/v1/start`,
+      `${BASE_URL}/v1/execute`,
+    ]);
+    expect(bodyOf(fetchSpy, 1).resources).toEqual({ [TEMPLATE_PATH]: TEMPLATE_B64 });
+    expect(bodyOf(fetchSpy, 2).resources).toEqual({ [TEMPLATE_PATH]: TEMPLATE_B64 });
   });
 
   it("sends them beside inline contents on validate and validateFiles", async () => {
@@ -314,6 +374,10 @@ describe("what the runner refuses for certain is refused before any request", ()
   it.each([
     ["", /it is empty/],
     ["   ", /it is empty/],
+    // Python's whitespace, which the runner's `not path.strip()` reads, is not JavaScript's.
+    ["\x1c\x1d\x1e\x1f", /it is empty/],
+    ["\x85", /it is empty/],
+    ["\u3000\t", /it is empty/],
     ["/etc/invoice.docx", /it is absolute/],
     ["../invoice.docx", /'\.\.' segment/],
     ["templates/../../invoice.docx", /'\.\.' segment/],
@@ -332,6 +396,18 @@ describe("what the runner refuses for certain is refused before any request", ()
     expect((error as RequestArgumentError).errorDomain).toBe("input");
     expect((error as RequestArgumentError).retryable).toBe(false);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("sends a key of nothing but a byte-order mark, which the runner's rule accepts", async () => {
+    // JavaScript's `trim()` strips U+FEFF; Python's `strip()` does not, so the runner reads
+    // this key as a file name, and the SDK must not refuse what the runner takes.
+    const client = makeClient();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(startAck());
+    await client.start({
+      mthds_contents: [INVOICE_MTHDS],
+      resources: { "\ufeff": TEMPLATE_BYTES },
+    });
+    expect(bodyOf(fetchSpy).resources).toEqual({ "\ufeff": TEMPLATE_B64 });
   });
 
   it("refuses two keys naming one file once `.` segments and repeated slashes collapse", async () => {
@@ -363,6 +439,54 @@ describe("what the runner refuses for certain is refused before any request", ()
         resources: [TEMPLATE_BYTES] as unknown as BundleResources,
       }),
     ).rejects.toBeInstanceOf(RequestArgumentError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a Map or a class instance, rather than send no file", async () => {
+    const client = makeClient();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const asMap = new Map([[TEMPLATE_PATH, TEMPLATE_BYTES]]) as unknown as BundleResources;
+    class Templates {
+      [TEMPLATE_PATH] = TEMPLATE_BYTES;
+    }
+    const asInstance = new Templates() as unknown as BundleResources;
+
+    await expect(
+      client.start({ mthds_contents: [INVOICE_MTHDS], resources: asMap }),
+    ).rejects.toThrow(/must be a plain object.*got a Map; pass Object\.fromEntries\(map\)/);
+    await expect(
+      client.execute({ mthds_contents: [INVOICE_MTHDS], resources: asInstance }),
+    ).rejects.toThrow(/got an instance of Templates/);
+    await expect(
+      client.validate([INVOICE_MTHDS], false, undefined, undefined, undefined, {
+        resources: asMap,
+      }),
+    ).rejects.toBeInstanceOf(RequestArgumentError);
+    await expect(
+      client.validate(
+        { method_ref: "github.com/acme/methods" },
+        false,
+        undefined,
+        undefined,
+        undefined,
+        {
+          resources: asMap,
+        },
+      ),
+    ).rejects.toBeInstanceOf(RequestArgumentError);
+    await expect(
+      client.pipeIo({ files: [{ content: INVOICE_MTHDS }], resources: asMap }),
+    ).rejects.toBeInstanceOf(RequestArgumentError);
+    await expect(
+      client.prepareInputs({ files: [{ content: INVOICE_MTHDS }], resources: asMap, inputs: {} }),
+    ).rejects.toBeInstanceOf(RequestArgumentError);
+    await expect(
+      client.prepareInputs({
+        method_ref: "github.com/acme/methods",
+        resources: asMap,
+        inputs: {},
+      } as never),
+    ).rejects.toBeInstanceOf(InputPreparationError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -471,7 +595,7 @@ describe("prepareInputs sends them with inline files", () => {
         resources: "templates/invoice.docx",
         inputs: {},
       } as never),
-    ).rejects.toThrow(/resources must map each file's path/);
+    ).rejects.toThrow(/resources must be a plain object mapping each file's path/);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -594,5 +718,85 @@ describe("a template check's warning reaches the caller with its locators", () =
     if (report.is_valid !== true) throw new Error("expected the valid arm");
     expect(report.warnings[0]?.template_file).toBeNull();
     expect(report.warnings[0]?.template_location).toBeNull();
+  });
+});
+
+describe("a request carrying them gets a budget their upload fits in", () => {
+  /** A fetch that never resolves; it only rejects when its abort signal fires. */
+  function hangingFetch(): typeof fetch {
+    return ((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+          once: true,
+        });
+      })) as typeof fetch;
+  }
+
+  /** Observe settlement without awaiting, to assert "still pending". */
+  function track<T>(promise: Promise<T>): { settled: boolean; error: unknown } {
+    const state: { settled: boolean; error: unknown } = { settled: false, error: undefined };
+    promise.then(
+      () => {
+        state.settled = true;
+      },
+      (error: unknown) => {
+        state.settled = true;
+        state.error = error;
+      },
+    );
+    return state;
+  }
+
+  const files = [{ content: INVOICE_MTHDS, source: "invoice.mthds" }];
+  const resources = { [TEMPLATE_PATH]: TEMPLATE_BYTES };
+  const MINUTE = 60_000;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("raises the crate routes and prepareInputs to the execute ceiling, as start is", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation(hangingFetch());
+    const client = makeClient();
+
+    const bare = track(client.pipeIo({ files }));
+    const carrying = [
+      track(client.pipeIo({ files, resources })),
+      track(client.resolve({ files, resources })),
+      track(client.codegen({ files, resources, kind: "types", target: "ts-zod" })),
+      track(client.prepareInputs({ files, resources, inputs: { invoice: "INV-1" } })),
+    ];
+
+    // The static default cuts the bare request; the method_ref budget would cut the rest at 3 min.
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(bare.settled).toBe(true);
+    expect(bare.error).toBeInstanceOf(ApiUnreachableError);
+    await vi.advanceTimersByTimeAsync(4 * MINUTE);
+    expect(carrying.map((call) => call.settled)).toEqual([false, false, false, false]);
+
+    await vi.advanceTimersByTimeAsync(16 * MINUTE);
+    for (const call of carrying) {
+      expect(call.settled).toBe(true);
+      expect(call.error).toBeInstanceOf(ApiUnreachableError);
+      expect((call.error as ApiUnreachableError).code).toBe("ABORT_TIMEOUT");
+    }
+  });
+
+  it("leaves validate and validateFiles on the execute ceiling they default to", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation(hangingFetch());
+    const client = makeClient();
+
+    const viaValidate = track(
+      client.validate([INVOICE_MTHDS], false, undefined, undefined, undefined, { resources }),
+    );
+    const viaFiles = track(client.validateFiles([{ content: INVOICE_MTHDS }], { resources }));
+
+    await vi.advanceTimersByTimeAsync(19 * MINUTE);
+    expect([viaValidate.settled, viaFiles.settled]).toEqual([false, false]);
+    await vi.advanceTimersByTimeAsync(2 * MINUTE);
+    expect(viaValidate.error).toBeInstanceOf(ApiUnreachableError);
+    expect(viaFiles.error).toBeInstanceOf(ApiUnreachableError);
   });
 });

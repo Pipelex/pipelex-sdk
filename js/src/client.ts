@@ -1443,10 +1443,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * never on a message.
    *
    * All of these are static and inference-free, so they default to the management-call
-   * timeout. The one internal raise is the fetch-sized budget `crateRequestTimeoutMs`
-   * gives a crate route whose closure is a `method_ref`, because the server may clone a
-   * repository before it answers; it is matched to what the server does, not a
-   * caller-facing parameter.
+   * timeout. The internal raises are `crateRequestTimeoutMs`'s: the fetch-sized budget a
+   * crate route gets when its closure is a `method_ref`, because the server may clone a
+   * repository before it answers, and the execute ceiling it gets when the request
+   * carries `resources`, whose upload alone can outlast the default. Each is matched to
+   * what the request costs, not a caller-facing parameter.
    *
    * **These routes deliberately expose no `timeoutMs` / `signal`, and that is not an
    * oversight to be "fixed" per route.** Automated reviewers have proposed adding them
@@ -1457,8 +1458,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *    ceiling and takes caller transport options; every extension route rides the
    *    static core. Giving one static route an override while its siblings lack one is
    *    the inconsistency.
-   * 2. The input is **bounded server-side** — the runner's `pipelex_api/limits.py` caps a request
-   *    at 16 `.mthds` files of 1 MiB each — and none of these routes runs inference.
+   * 2. The input is **bounded server-side** — the runner's `pipelex_api/limits.py` caps the
+   *    `.mthds` files of a request and the files sent with them in `resources`, each by a
+   *    count, a size per file and, for `resources`, a total, all configurable per
+   *    deployment — and none of these routes runs inference. The upload those limits allow
+   *    is what `crateRequestTimeoutMs` budgets for, not the server's work.
    * 3. On the hosted path an override would be **inert**: the gateway caps responses at
    *    ~30s (see `POLL_REQUEST_TIMEOUT_MS` above), so raising `timeoutMs` would still be
    *    cut off upstream, just with a less honest error.
@@ -1649,10 +1653,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * candidates in its `serverMessage`; a registry-form `method_ref` is a `501`; a pipe
    * whose artifacts cannot be derived is a `500`.
    *
-   * A `method_ref` gets the fetch-sized budget, as on the other crate routes. On the
-   * hosted API the gateway caps a request at about 30 seconds whatever the client
-   * allows, so a cold `method_ref` clone can answer a `502` that a retry clears once the
-   * runner has cached the clone.
+   * A `method_ref` gets the fetch-sized budget, as on the other crate routes, and a
+   * request carrying `resources` the execute ceiling, since their upload alone can
+   * outlast the default. On the hosted API the gateway caps a request at about 30
+   * seconds whatever the client allows, so a cold `method_ref` clone can answer a `502`
+   * that a retry clears once the runner has cached the clone.
    */
   async pipeIo(request: PipeIORequest): Promise<PipeIOResponse> {
     return this.requestExtension("pipe-io", await wireCrateRequest(request), {
@@ -2736,10 +2741,19 @@ const METHOD_REF_FETCH_TIMEOUT_MS = 180_000; // 3 min — covers the server's cl
 
 /**
  * The internal request budget for a crate route's `CrateRequestBase` closure
- * (`resolve`, `codegen`, `pipeIo`): the static-route default, unless the closure
- * is a `method_ref` the server may have to fetch first.
+ * (`resolve`, `codegen`, `pipeIo`): the static-route default, unless the request
+ * is one the default would cut short through no fault of the server's.
+ *
+ * - **`resources`** make the request *body* as large as the runner's limits allow,
+ *   about 13 MiB of base64 by default, and the whole upload is charged against
+ *   this budget. They get the execute ceiling `start` gives a request carrying
+ *   them, and `validate` carries them under by default, so the same bundle and
+ *   files never time out on one route yet go through on another.
+ * - **A `method_ref`** may make the server clone a repository first, which gets
+ *   the fetch-sized budget.
  */
 function crateRequestTimeoutMs(request: CrateRequestBase): number | undefined {
+  if (hasBundleResources(request.resources)) return DEFAULT_REQUEST_TIMEOUT_MS;
   return nonEmptyString(request.method_ref) !== undefined ? METHOD_REF_FETCH_TIMEOUT_MS : undefined;
 }
 
