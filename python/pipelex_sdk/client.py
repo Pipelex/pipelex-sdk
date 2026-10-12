@@ -25,7 +25,7 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from time import monotonic
-from typing import TYPE_CHECKING, Any, NoReturn, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, TypeVar, cast
 from urllib.parse import quote, urlencode, urlparse, urlsplit
 
 import httpx
@@ -124,7 +124,7 @@ from pipelex_sdk.user_agent import AppInfo, build_user_agent
 from pipelex_sdk.validation_models import PipelexValidationResultAdapter, ValidationErrorItem
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Generator, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Sequence
     from contextlib import AbstractAsyncContextManager
     from pathlib import Path
 
@@ -1504,54 +1504,62 @@ class PipelexAPIClient(MthdsAPIClient):
         """The authenticated user's profile — `GET /v1/me`."""
         return await self._request_product("GET", "me", read=UserProfile.model_validate)
 
-    async def list_methods(self, *, q: str | None = None, limit: int | None = None, cursor: str | None = None) -> MethodPage:
+    async def list_methods(
+        self,
+        *,
+        q: str | None = None,
+        published: bool | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> MethodPage:
         """List one page of the caller's saved methods — `GET /v1/methods`.
 
         Args:
             q: Server-side case-insensitive substring match over name and description,
                 applied across the whole catalog rather than within the returned page.
+            published: `True` lists only the methods with a published version, `False` only those
+                never published, sent as `published=true` or `published=false`; `None` lists both.
+                It combines with `q`.
             limit: Page size. The API supplies the default and caps the maximum.
             cursor: The `next_cursor` of the previous page, passed back opaquely.
 
         Returns:
-            A `MethodPage` of `MethodSummary` rows, ordered by creation, newest first.
-            `next_cursor` is `None` on the last page. For the whole catalog, prefer
-            `iterate_methods`, which follows the cursors and cannot truncate.
+            A `MethodPage` of `MethodSummary` rows, ordered by creation, newest first, each carrying
+            the method's publish state (`latest_version`, `latest_published`, `draft_digest`).
+            `next_cursor` is `None` on the last page. `q` and `published` filter after the index
+            read, so a page can come back empty and still carry a `next_cursor`: keep following it.
+            For the whole catalog, prefer `iterate_methods`, which follows the cursors and cannot
+            truncate.
         """
-        query = _product_query({"q": q, "limit": limit, "cursor": cursor})
+        query = _product_query({"q": q, "published": _query_flag(published), "limit": limit, "cursor": cursor})
         return await self._request_product("GET", f"methods{query}", read=MethodPage.model_validate)
 
-    async def iterate_methods(self, *, q: str | None = None, limit: int | None = None) -> AsyncIterator[MethodSummary]:
+    async def iterate_methods(
+        self,
+        *,
+        q: str | None = None,
+        published: bool | None = None,
+        limit: int | None = None,
+    ) -> AsyncIterator[MethodSummary]:
         """Yield every saved method, following the cursors — `GET /v1/methods`.
 
         There is deliberately no `list_all_methods()`: an all-at-once helper needs a cap, and
         a cap is the silent truncation paging was introduced to remove.
 
         The loop keeps going **through an empty page that carries a live cursor**, because `q`
-        is a post-read filter over a bounded index slice per request, so `{items: [], next_cursor: "…"}`
-        means "keep going", not "done". It stops when `next_cursor` is `None`, and also when the
-        server hands back the cursor it was just sent — checked *before* yielding, so a stuck
-        cursor never double-counts a page.
+        and `published` are post-read filters over a bounded index slice per request, so
+        `{items: [], next_cursor: "…"}` means "keep going", not "done". It stops when `next_cursor`
+        is `None`, and also when the server hands back the cursor it was just sent — checked
+        *before* yielding, so a stuck cursor never double-counts a page.
 
         Raises:
             PagingNotTerminatingError: If the server never stops handing out cursors.
         """
-        cursor: str | None = None
-        pages_seen = 0
-        while True:
-            page = await self.list_methods(q=q, limit=limit, cursor=cursor)
-            if cursor is not None and page.next_cursor == cursor:
-                # The server did not advance. Stop before yielding, or this page is counted twice.
-                return
-            for method_summary in page.items:
-                yield method_summary
-            if page.next_cursor is None:
-                return
-            pages_seen += 1
-            if pages_seen >= _MAX_LIST_PAGES:
-                msg = f"Method paging did not terminate after {_MAX_LIST_PAGES} pages; this is a server-side fault, not a coverage limit."
-                raise PagingNotTerminatingError(msg, _MAX_LIST_PAGES)
-            cursor = page.next_cursor
+        async for method_summary in _follow_cursor(
+            "Method",
+            lambda cursor: self.list_methods(q=q, published=published, limit=limit, cursor=cursor),
+        ):
+            yield method_summary
 
     async def get_method(self, method_id: str) -> MethodData:
         """Read one method — `GET /v1/methods/{id}`.
@@ -2073,6 +2081,8 @@ class PipelexAPIClient(MthdsAPIClient):
         *,
         created_from: str | None = None,
         created_to: str | None = None,
+        created_by: Literal["me"] | None = None,
+        status: Sequence[RunStatus] | None = None,
         limit: int | None = None,
         cursor: str | None = None,
     ) -> RunPage:
@@ -2087,21 +2097,43 @@ class PipelexAPIClient(MthdsAPIClient):
                 UTC offset. These are index key conditions rather than filters, so a bare date
                 or a naive timestamp is a platform `400` surfaced as `ApiResponseError`.
             created_to: Inclusive upper bound, same instant-only rule.
+            created_by: `"me"` lists only the runs the caller started, resolved by the platform from
+                the authenticated identity, sent as `created_by=me`; `None` lists every member's
+                runs. It takes no other value: the list never narrows to another member.
+            status: Only runs in one of these statuses, sent as one repeated `status=` parameter per
+                status, deduplicated into `RunStatus` order; `None` lists every status. The caller's
+                own latest unfinished run is `created_by="me"`, `status=[RunStatus.PENDING,
+                RunStatus.STARTED, RunStatus.RUNNING]`, `limit=1`.
             limit: Page size. The API supplies the default and caps the maximum.
             cursor: The `next_cursor` of the previous page, passed back opaquely.
 
         Returns:
             A `RunPage` of `RunHistoryItem` rows — what a history row shows, nothing more. Open
-            one run with `get_run_detail` for the whole record. For the whole history, prefer
-            `iterate_runs`.
+            one run with `get_run_detail` for the whole record. `created_by` and `status` filter
+            after the index read, so a filtered page can hold fewer runs than `limit`, or none, and
+            still carry a `next_cursor`: an empty page is not the end, a `None` cursor is. For the
+            whole history, prefer `iterate_runs`.
 
         Raises:
+            TypeError: `status` is a bare `str`, which read as a sequence would name its characters.
+            RequestArgumentError: `status` is empty or names a status that is no `RunStatus`, raised
+                before any request rather than sent as a query that lists every status.
             ApiResponseError: On any non-2xx. Note that every `/v1/runs*` product route sits
                 behind the platform's surface-access gate, which for API-key auth demands the
                 `ff_api_keys` feature flag and fails closed — so a `403` here means "flag", not
                 "wrong key".
         """
-        query = _product_query({"method_id": method_id, "created_from": created_from, "created_to": created_to, "limit": limit, "cursor": cursor})
+        query = _product_query(
+            {
+                "method_id": method_id,
+                "created_from": created_from,
+                "created_to": created_to,
+                "created_by": created_by,
+                "status": _status_filter(status),
+                "limit": limit,
+                "cursor": cursor,
+            }
+        )
         return await self._request_product("GET", f"{_RUNS}{query}", read=RunPage.model_validate)
 
     async def iterate_runs(
@@ -2110,44 +2142,41 @@ class PipelexAPIClient(MthdsAPIClient):
         *,
         created_from: str | None = None,
         created_to: str | None = None,
+        created_by: Literal["me"] | None = None,
+        status: Sequence[RunStatus] | None = None,
         limit: int | None = None,
     ) -> AsyncIterator[RunHistoryItem]:
         """Yield every run of a method, following the cursors — `GET /v1/runs`.
 
-        The same loop as `iterate_methods` with one deliberate difference: an **empty page ends
-        it**. The date bounds are index key conditions rather than a post-read filter, so a run
-        page is never empty-with-a-cursor. The difference is in the server, not in the client.
+        The same loop as `iterate_methods`: it keeps going **through an empty page that carries a
+        live cursor**, because `created_by` and `status` are post-read filters, so a filtered page
+        can hold no run and still not be the end. It stops when `next_cursor` is `None`, and when
+        the server hands back the cursor it was just sent — checked *before* yielding, so a stuck
+        cursor never double-counts a page.
 
-        The page ceiling applies here too. The empty-page stop only catches a server minting
-        fresh cursors while returning *nothing*; a cursor that cycles across two or more values
-        while every page is non-empty (`c1 → c2 → c1`) trips neither that check nor the
-        adjacent-cursor one, and would loop forever re-yielding the same runs. The ceiling is
-        the cheap guard against the whole family — tracking every cursor seen would cost
-        unbounded memory for the same protection.
+        The page ceiling bounds the rest: a server minting fresh cursors forever, and a cursor
+        that cycles across two or more values (`c1 → c2 → c1`), which the adjacent-cursor check
+        does not see. Tracking every cursor seen would cost unbounded memory for the same
+        protection.
 
         Takes a bare catalog id, as `list_runs` does.
 
         Raises:
             PagingNotTerminatingError: If the server never stops handing out cursors.
         """
-        cursor: str | None = None
-        pages_seen = 0
-        while True:
-            page = await self.list_runs(method_id, created_from=created_from, created_to=created_to, limit=limit, cursor=cursor)
-            if cursor is not None and page.next_cursor == cursor:
-                # The server did not advance. Stop before yielding, or this page is counted twice.
-                return
-            if not page.items:
-                return
-            for pipeline_run in page.items:
-                yield pipeline_run
-            if page.next_cursor is None:
-                return
-            pages_seen += 1
-            if pages_seen >= _MAX_LIST_PAGES:
-                msg = f"Run paging did not terminate after {_MAX_LIST_PAGES} pages; this is a server-side fault, not a coverage limit."
-                raise PagingNotTerminatingError(msg, _MAX_LIST_PAGES)
-            cursor = page.next_cursor
+        async for pipeline_run in _follow_cursor(
+            "Run",
+            lambda cursor: self.list_runs(
+                method_id,
+                created_from=created_from,
+                created_to=created_to,
+                created_by=created_by,
+                status=status,
+                limit=limit,
+                cursor=cursor,
+            ),
+        ):
+            yield pipeline_run
 
     async def get_run_detail(self, run_id: str) -> RunDetail:
         """Fetch one run record with what it executed — `GET /v1/runs/{id}`.
@@ -2192,6 +2221,9 @@ _KNOWN_RUN_STATUS_NAMES: frozenset[str] = frozenset(RunStatus.__members__)
 
 # The artifacts a results read can be narrowed to; a plain string equal to one's value is in it too.
 _RUN_ARTIFACTS: frozenset[RunArtifact] = frozenset(RunArtifact)
+
+# The statuses a run-history filter can name; a plain string equal to one's value is in it too.
+_RUN_STATUSES: frozenset[RunStatus] = frozenset(RunStatus)
 
 
 def _with_verdict(exc: PipelineRequestError) -> PipelineRequestError:
@@ -2388,17 +2420,104 @@ def _timeout_message(run_id: str, timeout_seconds: float) -> str:
     return f"Run {run_id} did not reach a terminal state within {timeout_seconds}s; it is still executing server-side and can be resumed by id."
 
 
-def _product_query(params: dict[str, str | int | None]) -> str:
+def _product_query(params: dict[str, str | int | Sequence[str] | None]) -> str:
     """Build the query string of a product list route, keeping entries on **presence**.
 
     Presence (`is not None`), never truthiness: an explicit empty `q` or cursor is bad input
     the API should reject, not something to silently drop into an unfiltered query that reads
-    as working. Returns `""` for no parameters, otherwise a leading `?`.
+    as working. A sequence of strings, such as the run list's statuses, is sent as one repeated
+    parameter per value. A boolean goes through `_query_flag` first, since `str(True)` is not the
+    wire's `true`. Returns `""` for no parameters, otherwise a leading `?`.
     """
     kept = {key: value for key, value in params.items() if value is not None}
     if not kept:
         return ""
-    return "?" + urlencode(kept)
+    return "?" + urlencode(kept, doseq=True)
+
+
+def _query_flag(value: bool | None) -> str | None:
+    """A boolean query parameter as the wire spells it, `true` or `false`; `None` stays absent."""
+    if value is None:
+        return None
+    return "true" if value else "false"
+
+
+_PageItemT = TypeVar("_PageItemT")
+_PageItemT_co = TypeVar("_PageItemT_co", covariant=True)
+
+
+class _CursorPage(Protocol[_PageItemT_co]):
+    """What `_follow_cursor` reads of a page: its rows and its opaque cursor."""
+
+    @property
+    def items(self) -> Sequence[_PageItemT_co]: ...
+
+    @property
+    def next_cursor(self) -> str | None: ...
+
+
+async def _follow_cursor(noun: str, read_page: Callable[[str | None], Awaitable[_CursorPage[_PageItemT]]]) -> AsyncIterator[_PageItemT]:
+    """Follow a paged list's cursor until the server says there is no more, yielding every row.
+
+    The one loop behind `iterate_methods` and `iterate_runs`, so the two cannot drift apart. It
+    keeps going through an empty page that carries a cursor, since a filtered page can hold no
+    row and still not be the end. It stops when `next_cursor` is `None`, and when the server hands
+    back the cursor it was just sent, checked before yielding so a stuck cursor never re-yields a
+    page. Past `_MAX_LIST_PAGES` pages it raises rather than return a truncated list.
+
+    Raises:
+        PagingNotTerminatingError: If the server never stops handing out cursors.
+    """
+    cursor: str | None = None
+    pages_seen = 0
+    while True:
+        page = await read_page(cursor)
+        if cursor is not None and page.next_cursor == cursor:
+            # The server did not advance. Stop before yielding, or this page is counted twice.
+            return
+        for item in page.items:
+            yield item
+        if page.next_cursor is None:
+            return
+        pages_seen += 1
+        if pages_seen >= _MAX_LIST_PAGES:
+            msg = f"{noun} paging did not terminate after {_MAX_LIST_PAGES} pages; this is a server-side fault, not a coverage limit."
+            raise PagingNotTerminatingError(msg, _MAX_LIST_PAGES)
+        cursor = page.next_cursor
+
+
+def _status_filter(status: Sequence[RunStatus] | None) -> tuple[RunStatus, ...] | None:
+    """Normalise a run-history status filter: `None` lists every status, anything else is
+    deduplicated into the enum's declaration order, so the same filter always builds the same
+    query, as `@pipelex/sdk` builds it.
+
+    An empty filter names no status, and sending it as no `status=` parameter at all would list
+    every status, a different question from the one asked. A name that is no `RunStatus`, which a
+    caller passing plain strings can send, is one the platform refuses with a `422`. Both are
+    refused here first, before any request, with `RequestArgumentError`.
+
+    A bare `str`, a single `RunStatus` member included since a `StrEnum` member is one, is no
+    filter: read as a sequence it would name its characters. It raises `TypeError`, a bug in the
+    calling code that carries no verdict.
+
+    Raises:
+        TypeError: `status` is a bare `str`.
+        RequestArgumentError: The filter is empty or names a status that is no `RunStatus`.
+    """
+    if status is None:
+        return None
+    if isinstance(status, str):
+        msg = f'"status" must be a list or tuple naming one or more of {", ".join(RunStatus)}.'
+        raise TypeError(msg)
+    requested = set(status)
+    if not requested:
+        msg = f'"status" must name one or more of {", ".join(RunStatus)}; pass status=None to list every status.'
+        raise RequestArgumentError(msg)
+    unknown = sorted(f"{name}" for name in requested if name not in _RUN_STATUSES)
+    if unknown:
+        msg = f"Unknown run status(es) {', '.join(unknown)}; valid statuses are: {', '.join(RunStatus)}."
+        raise RequestArgumentError(msg)
+    return tuple(run_status for run_status in RunStatus if run_status in requested)
 
 
 def _method_path(method_id: str) -> str:

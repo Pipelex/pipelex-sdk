@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.41.0] - 2026-10-13
+
+### Changed
+
+- **The starter runs on `@pipelex/sdk` 0.39.0**: bumped from 0.35.1. A run start the API answers with a server error other than a `501` or a `503` saying starts are unavailable, or with a `408`, or that loses its connection once sent, no longer offers a re-run, since the SDK now judges that such a start may have created a run and that a second attempt could pay for it twice. The SDK's other changes in between reach nothing the starter calls, and `npm ls mthds` still lists two copies, the form kernel's and the SDK's, as before this move.
+
 ## [v0.39.0] - 2026-10-12
 
 ### Changed

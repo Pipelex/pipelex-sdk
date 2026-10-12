@@ -13,11 +13,12 @@ import pytest
 from pytest_mock import MockerFixture, MockType
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.errors import ApiResponseError
+from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.product_models import (
     MethodDeletionState,
     MethodDraftInput,
     MethodFile,
+    MethodSummary,
     MethodWriteInput,
     OnboardingCurrentTool,
     OnboardingHeardFrom,
@@ -138,6 +139,80 @@ class TestClientProduct:
         asyncio.run(client.list_methods(limit=5))
 
         assert self._sent(send).url == f"{_BASE_URL}/v1/methods?limit=5"
+
+    @pytest.mark.parametrize(("published", "expected"), [(True, "published=true"), (False, "published=false")])
+    def test_list_methods_sends_published_as_the_wire_spells_it(self, mocker: MockerFixture, published: bool, expected: str) -> None:
+        """`False` is a filter of its own (the methods never published), never omission, and never `False`."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        asyncio.run(client.list_methods(q="invoice", published=published, limit=10))
+
+        assert self._sent(send).url == f"{_BASE_URL}/v1/methods?q=invoice&{expected}&limit=10"
+
+    def test_list_methods_parses_each_rows_publish_state(self, mocker: MockerFixture) -> None:
+        """The three states a list tells apart from the row alone, `draft_digest` null on one of them."""
+        client = self._client()
+        latest_published = {
+            "version": 3,
+            "source_digest": "a" * 64,
+            "crate_fingerprint": None,
+            "runner_version": "0.73.0",
+            "description": "Reads invoices",
+            "published_at": "2026-10-12T09:00:00Z",
+            "published_by": "user_1",
+        }
+        never_published = {
+            "method_id": "m1",
+            "name": "Draft only",
+            "description": None,
+            "created_at": "2026-10-12T10:00:00Z",
+            "deletion_state": None,
+            "latest_version": None,
+            "latest_published": None,
+            "draft_digest": "b" * 64,
+        }
+        no_stored_digest = {
+            **never_published,
+            "method_id": "m2",
+            "latest_version": 3,
+            "latest_published": latest_published,
+            "draft_digest": None,
+        }
+        draft_ahead = {**no_stored_digest, "method_id": "m3", "draft_digest": "c" * 64}
+        page = {"items": [never_published, no_stored_digest, draft_ahead], "next_cursor": None}
+        self._mock_send(mocker, client, _response(200, json_body=page))
+
+        result = asyncio.run(client.list_methods(published=True))
+
+        first, second, third = result.items
+        assert first.latest_version is None
+        assert first.latest_published is None
+        assert first.draft_digest == "b" * 64
+        assert second.latest_version == 3
+        assert second.latest_published is not None
+        assert second.latest_published.version == 3
+        assert second.latest_published.source_digest == "a" * 64
+        assert second.latest_published.crate_fingerprint is None
+        assert second.draft_digest is None
+        assert third.latest_published is not None
+        assert third.draft_digest != third.latest_published.source_digest
+        # Declared fields, so none of them lands in the extension-open overflow.
+        assert second.model_extra == {}
+
+    def test_list_methods_reads_a_row_without_the_publish_state_as_none(self, mocker: MockerFixture) -> None:
+        """A platform that serves no publish state still answers a row the SDK reads."""
+        client = self._client()
+        page = {"items": [{"method_id": "m1", "name": "M", "created_at": "t"}], "next_cursor": None}
+        self._mock_send(mocker, client, _response(200, json_body=page))
+
+        result = asyncio.run(client.list_methods())
+
+        row = result.items[0]
+        assert isinstance(row, MethodSummary)
+        assert row.latest_version is None
+        assert row.latest_published is None
+        assert row.draft_digest is None
 
     def test_method_data_parses_the_new_fields_and_the_python_wire_string(self, mocker: MockerFixture) -> None:
         """`python` is one wire string; the boundary converts it so callers never see it."""
@@ -457,6 +532,69 @@ class TestClientProduct:
         assert self._sent(send).url == (
             f"{_BASE_URL}/v1/runs?method_id=m1&created_from=2026-08-01T00%3A00%3A00%2B00%3A00&created_to=&limit=10&cursor=c1"
         )
+
+    def test_list_runs_sends_created_by_and_each_status_as_a_repeated_parameter(self, mocker: MockerFixture) -> None:
+        """The method screen's read: the caller's own latest unfinished run."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        asyncio.run(
+            client.list_runs(
+                "m1",
+                created_by="me",
+                status=[RunStatus.PENDING, RunStatus.STARTED, RunStatus.RUNNING],
+                limit=1,
+            )
+        )
+
+        assert self._sent(send).url == f"{_BASE_URL}/v1/runs?method_id=m1&created_by=me&status=PENDING&status=STARTED&status=RUNNING&limit=1"
+
+    def test_list_runs_sends_the_statuses_deduplicated_in_the_enum_order(self, mocker: MockerFixture) -> None:
+        """The same filter always builds the same query, the one `@pipelex/sdk` builds; a plain string is a status too."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        asyncio.run(client.list_runs("m1", status=[RunStatus.FAILED, cast("RunStatus", "PENDING"), RunStatus.FAILED]))
+
+        assert self._sent(send).url == f"{_BASE_URL}/v1/runs?method_id=m1&status=PENDING&status=FAILED"
+
+    def test_list_runs_omits_the_filters_when_absent(self, mocker: MockerFixture) -> None:
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        asyncio.run(client.list_runs("m1"))
+
+        assert self._sent(send).url == f"{_BASE_URL}/v1/runs?method_id=m1"
+
+    @pytest.mark.parametrize(
+        ("status", "message"),
+        [
+            ([], "must name one or more"),
+            ((), "must name one or more"),
+            ([RunStatus.RUNNING, cast("RunStatus", "running")], "Unknown run status"),
+        ],
+    )
+    def test_list_runs_refuses_an_empty_or_unknown_status_before_any_request(
+        self, mocker: MockerFixture, status: list[RunStatus] | tuple[RunStatus, ...], message: str
+    ) -> None:
+        """Sending no `status=` at all would list every status, and an unknown one is the platform's `422`."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        with pytest.raises(RequestArgumentError, match=message):
+            asyncio.run(client.list_runs("m1", status=status))
+
+        send.assert_not_called()
+
+    def test_list_runs_refuses_a_bare_string_status(self, mocker: MockerFixture) -> None:
+        """Read as a sequence, `"RUNNING"` would name its characters."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        with pytest.raises(TypeError, match="list or tuple"):
+            asyncio.run(client.list_runs("m1", status=cast("list[RunStatus]", RunStatus.RUNNING)))
+
+        send.assert_not_called()
 
     def test_run_row_parses_the_history_fields_with_a_null_pipe_code(self, mocker: MockerFixture) -> None:
         """A history row is exactly the history fields; a `main_pipe` run names no pipe."""

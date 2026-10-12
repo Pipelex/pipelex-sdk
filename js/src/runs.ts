@@ -43,6 +43,50 @@ export type RunStatus =
   | "TERMINATED"
   | "TIMED_OUT";
 
+/** Every `RunStatus`, in the platform's declaration order. */
+export const RUN_STATUSES: readonly RunStatus[] = [
+  "PENDING",
+  "STARTED",
+  "RUNNING",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "TERMINATED",
+  "TIMED_OUT",
+];
+
+/**
+ * The statuses a run-history filter sends, deduplicated into `RUN_STATUSES` order so the same
+ * filter always builds the same query, as the Python twin builds it. `undefined` is no filter,
+ * which lists every status. An empty list names no status, and a name that is no `RunStatus`
+ * names one the platform refuses with a `422`; each is a `RequestArgumentError`, `input` and not
+ * retryable, before any request, rather than a query that lists every status or fails late. A
+ * value that is not an array at all is a `TypeError`, a bug in the calling code.
+ */
+export function runStatusFilter(
+  status: readonly RunStatus[] | undefined,
+): readonly RunStatus[] | undefined {
+  if (status === undefined) return undefined;
+  if (!Array.isArray(status)) {
+    throw new TypeError(
+      `"status" must be an array naming one or more of ${RUN_STATUSES.join(", ")}.`,
+    );
+  }
+  if (status.length === 0) {
+    throw new RequestArgumentError(
+      `"status" must name one or more of ${RUN_STATUSES.join(", ")}; omit it to list every status.`,
+    );
+  }
+  const known: readonly string[] = RUN_STATUSES;
+  const unknown = status.filter((name) => !known.includes(name));
+  if (unknown.length > 0) {
+    throw new RequestArgumentError(
+      `Unknown run status(es) ${unknown.join(", ")}; valid statuses are: ${RUN_STATUSES.join(", ")}.`,
+    );
+  }
+  return RUN_STATUSES.filter((name) => status.includes(name));
+}
+
 const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
   "COMPLETED",
   "FAILED",

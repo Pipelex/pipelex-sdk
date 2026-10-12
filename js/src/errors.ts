@@ -881,11 +881,12 @@ export class RunLifecycleUnavailableError extends PipelexRequestError {
 }
 
 /**
- * Thrown when a paged-list iterator (`iterateMethods`) refuses to keep following cursors.
+ * Thrown when a paged-list iterator (`iterateMethods`, `iterateRuns`) refuses to keep following
+ * cursors.
  *
- * The ceiling, `pageLimit` pages, sits far beyond any real catalog, so reaching it is a
- * server-side fault — an endpoint minting a fresh cursor forever — not a coverage limit the caller
- * can raise. Throwing beats returning, because a silently truncated list is exactly the bug
+ * The ceiling, `pageLimit` pages, sits far beyond any real catalog or run history, so reaching it
+ * is a server-side fault — an endpoint minting a fresh cursor forever — not a coverage limit the
+ * caller can raise. Throwing beats returning, because a silently truncated list is exactly the bug
  * paging was introduced to remove. Its verdict is `runtime`, not retryable.
  */
 export class PagingNotTerminatingError extends PipelexRequestError {

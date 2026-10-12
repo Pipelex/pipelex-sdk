@@ -105,13 +105,16 @@ class TestPresentError:
         for status, status_text in ((401, "Unauthorized"), (403, "Forbidden")):
             presentation = present_error(_api_response_error(status, status_text, detail="This key may not use the route."))
             assert presentation.message == f"The API rejected the request ({status} {status_text})."
-            assert presentation.details == ("Reason: This key may not use the route.",)
+            assert presentation.details == (
+                "Reason: This key may not use the route.",
+                "Retry: running it again will fail the same way until the cause is fixed.",
+            )
             assert presentation.hint is not None
             assert "PIPELEX_API_KEY" in presentation.hint
 
     def test_a_server_error_has_no_hint(self):
         presentation = present_error(_api_response_error(500, "Internal Server Error", title="Internal error"))
-        assert presentation.details == ("Reason: Internal error",)
+        assert presentation.details == ("Reason: Internal error", "Retry: running it again may succeed.")
         assert presentation.hint is None
 
     def test_start_without_async_orchestration_hints_blocking(self):
@@ -124,10 +127,11 @@ class TestPresentError:
         assert "widget blocking" in presentation.hint
 
     def test_an_answer_without_a_problem_document_names_the_status(self):
-        # A body that was not a problem document — a proxy's page, say — leaves every member `None`.
+        # A body that was not a problem document — a proxy's page, say — leaves every problem member `None`,
+        # and the retry advice is the SDK's reading of the status, which it always decides.
         presentation = present_error(_api_response_error(502, "Bad Gateway"))
         assert presentation.message == "The API answered 502 Bad Gateway."
-        assert presentation.details == ()
+        assert presentation.details == ("Retry: running it again may succeed.",)
         assert presentation.hint is None
 
     def test_unreachable_hints_base_url(self):
@@ -246,13 +250,19 @@ class TestPresentError:
         [
             pytest.param(
                 _api_response_error(400, "Bad Request", title="Bad input", detail="Missing required input 'text'."),
-                ("Reason: Bad input — Missing required input 'text'.",),
+                ("Reason: Bad input — Missing required input 'text'.", "Retry: running it again will fail the same way until the cause is fixed."),
                 id="title and detail",
             ),
             pytest.param(
-                _api_response_error(404, "Not Found", error_type="PackageNotFoundError"), ("Reason: PackageNotFoundError",), id="runner class"
+                _api_response_error(404, "Not Found", error_type="PackageNotFoundError"),
+                ("Reason: PackageNotFoundError", "Retry: running it again will fail the same way until the cause is fixed."),
+                id="runner class",
             ),
-            pytest.param(_api_response_error(409, "Conflict", code="conflict"), ("Reason: conflict",), id="platform code"),
+            pytest.param(
+                _api_response_error(409, "Conflict", code="conflict"),
+                ("Reason: conflict", "Retry: running it again will fail the same way until the cause is fixed."),
+                id="platform code",
+            ),
             pytest.param(
                 _api_response_error(
                     422,
@@ -270,6 +280,7 @@ class TestPresentError:
                     "In pipe draft_pitch: Model handle 'gpt-5.1' was not found.",
                     "In concept TopicReview: Field 'ideas' is not a list.",
                     "Problem: The bundle declares no domain.",
+                    "Retry: running it again will fail the same way until the cause is fixed.",
                 ),
                 id="items saying more than the reason",
             ),
@@ -280,7 +291,11 @@ class TestPresentError:
                     validation_errors=[_item("Model handle 'gpt-5.1' was not found.", pipe_code="draft_pitch")],
                     user_action=ProblemUserAction(kind="change_input", detail="Fix the bundle."),
                 ),
-                ("In pipe draft_pitch: Model handle 'gpt-5.1' was not found.", "Next step: Fix the bundle."),
+                (
+                    "In pipe draft_pitch: Model handle 'gpt-5.1' was not found.",
+                    "Next step: Fix the bundle.",
+                    "Retry: running it again will fail the same way until the cause is fixed.",
+                ),
                 id="items without a reason",
             ),
             pytest.param(
@@ -290,7 +305,7 @@ class TestPresentError:
                     detail="First. Second.",
                     validation_errors=[_item("First.", pipe_code="a"), _item("Second.", concept_code="B"), _item("Second.")],
                 ),
-                ("Reason: First. Second.", "Pipe: a", "Concept: B"),
+                ("Reason: First. Second.", "Pipe: a", "Concept: B", "Retry: running it again will fail the same way until the cause is fixed."),
                 id="items the reason already says",
             ),
             pytest.param(

@@ -102,6 +102,8 @@ const client = new PipelexApiClient({ apiKey: process.env.PIPELEX_API_KEY });
 
 const me = await client.getMe(); // GET /v1/me
 const page = await client.listMethods(); // GET /v1/methods — one page: { items, nextCursor }
+// Only the methods never published. A filtered page can be empty and still carry a nextCursor.
+const drafts = await client.listMethods({ published: false });
 for await (const method of client.iterateMethods()) {
   // follows the cursor for callers that genuinely want the whole catalog
 }

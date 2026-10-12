@@ -1,8 +1,18 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
-import { ApiResponseError, PagingNotTerminatingError } from "../src/errors.js";
+import {
+  ApiResponseError,
+  PagingNotTerminatingError,
+  RequestArgumentError,
+} from "../src/errors.js";
 import type { RunErrorReport } from "../src/error-models.js";
-import type { PipelineRun, RunHistoryItem, RunPage } from "../src/product-models.js";
+import type {
+  MethodSummary,
+  MethodVersionSummary,
+  PipelineRun,
+  RunHistoryItem,
+  RunPage,
+} from "../src/product-models.js";
 import type { RunStatus } from "../src/runs.js";
 
 const BASE_URL = "http://localhost:8081";
@@ -124,6 +134,107 @@ describe("methods catalog", () => {
     expect(new URL(lastRequest(spy).url).searchParams.has("q")).toBe(true);
   });
 
+  it.each([
+    [true, "published=true"],
+    [false, "published=false"],
+  ])("forwards published: %s as %s, beside q", async (published, expected) => {
+    // `false` is a filter of its own (the methods never published), never omission.
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
+
+    await client.listMethods({ q: "invoice", published, limit: 10 });
+
+    expect(lastRequest(spy).url).toBe(
+      `http://localhost:8081/v1/methods?q=invoice&${expected}&limit=10`,
+    );
+  });
+
+  it("omits published entirely when unset", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
+
+    await client.listMethods({ q: "invoice" });
+
+    expect(new URL(lastRequest(spy).url).searchParams.has("published")).toBe(false);
+  });
+
+  it("types the publish state on a row as optional and nullable", () => {
+    expectTypeOf<MethodSummary["latest_version"]>().toEqualTypeOf<number | null | undefined>();
+    expectTypeOf<MethodSummary["latest_published"]>().toEqualTypeOf<
+      MethodVersionSummary | null | undefined
+    >();
+    expectTypeOf<MethodSummary["draft_digest"]>().toEqualTypeOf<string | null | undefined>();
+  });
+
+  it("hands back each row's publish state as the platform serves it", async () => {
+    // Three rows, the three states a list tells apart from the row alone: never published,
+    // published with a digest the list has not stored yet (`draft_digest: null`), and published
+    // with the draft ahead.
+    const latestPublished: MethodVersionSummary = {
+      version: 3,
+      source_digest: "a".repeat(64),
+      crate_fingerprint: null,
+      runner_version: "0.73.0",
+      description: "Reads invoices",
+      published_at: "2026-10-12T09:00:00Z",
+      published_by: "user_1",
+    };
+    const neverPublished: MethodSummary = {
+      method_id: "m1",
+      name: "Draft only",
+      description: null,
+      created_at: "2026-10-12T10:00:00Z",
+      deletion_state: null,
+      latest_version: null,
+      latest_published: null,
+      draft_digest: "b".repeat(64),
+    };
+    const noStoredDigest: MethodSummary = {
+      method_id: "m2",
+      name: "Published long ago",
+      description: "Reads invoices",
+      created_at: "2026-10-11T10:00:00Z",
+      deletion_state: null,
+      latest_version: 3,
+      latest_published: latestPublished,
+      draft_digest: null,
+    };
+    const draftAhead: MethodSummary = {
+      ...noStoredDigest,
+      method_id: "m3",
+      draft_digest: "c".repeat(64),
+    };
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { items: [neverPublished, noStoredDigest, draftAhead], next_cursor: null }),
+    );
+
+    const page = await client.listMethods({ published: true });
+
+    expect(page.items).toEqual([neverPublished, noStoredDigest, draftAhead]);
+    expect(page.items[0]!.latest_version).toBeNull();
+    expect(page.items[1]!.latest_published?.version).toBe(3);
+    expect(page.items[1]!.draft_digest).toBeNull();
+    expect(page.items[2]!.draft_digest).not.toBe(page.items[2]!.latest_published?.source_digest);
+  });
+
+  it("hands back a row from a platform that serves no publish state, the fields absent", async () => {
+    const client = makeClient();
+    const row = { method_id: "m1", name: "M", description: null, created_at: "t" };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { items: [row], next_cursor: null }),
+    );
+
+    const page = await client.listMethods();
+
+    expect(page.items[0]).toEqual(row);
+    expect(page.items[0]!.latest_version).toBeUndefined();
+  });
+
   it("iterateMethods follows the cursor across pages", async () => {
     const client = makeClient();
     const page1 = { items: [{ method_id: "m1", name: "A", created_at: "t" }], next_cursor: "c1" };
@@ -160,6 +271,29 @@ describe("methods catalog", () => {
     for await (const method of client.iterateMethods({ q: "needle" })) seen.push(method.method_id);
 
     expect(seen).toEqual(["m1"]);
+  });
+
+  it("iterateMethods sends published on every page it follows", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, { items: [], next_cursor: "c1" }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          items: [{ method_id: "m1", name: "A", created_at: "t", latest_version: 1 }],
+          next_cursor: null,
+        }),
+      );
+
+    const seen: string[] = [];
+    for await (const method of client.iterateMethods({ published: false })) {
+      seen.push(method.method_id);
+    }
+
+    expect(seen).toEqual(["m1"]);
+    const urls = spy.mock.calls.map((call) => new URL((call as [string, RequestInit])[0]));
+    expect(urls.map((url) => url.searchParams.get("published"))).toEqual(["false", "false"]);
+    expect(urls.map((url) => url.searchParams.get("cursor"))).toEqual([null, "c1"]);
   });
 
   it("iterateMethods refuses to page forever against a server that never finishes", async () => {
@@ -828,6 +962,65 @@ describe("runs list / update", () => {
     // An empty `created_from=` is a 400 from the API's instant parse.
     expect(url.searchParams.has("created_from")).toBe(false);
     expect(url.searchParams.has("cursor")).toBe(false);
+    expect(url.searchParams.has("created_by")).toBe(false);
+    expect(url.searchParams.has("status")).toBe(false);
+  });
+
+  it("sends createdBy as created_by=me and each status as a repeated status parameter", async () => {
+    // The method screen's read: the caller's own latest unfinished run.
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [RUN_ROW], next_cursor: null }));
+
+    await client.listRuns("m1", {
+      createdBy: "me",
+      status: ["PENDING", "STARTED", "RUNNING"],
+      limit: 1,
+    });
+
+    expect(lastRequest(spy).url).toBe(
+      "http://localhost:8081/v1/runs?method_id=m1&created_by=me" +
+        "&status=PENDING&status=STARTED&status=RUNNING&limit=1",
+    );
+  });
+
+  it("sends the statuses deduplicated, in the platform's order, as the Python twin does", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
+
+    await client.listRuns("m1", { status: ["FAILED", "PENDING", "FAILED"] });
+
+    const url = new URL(lastRequest(spy).url);
+    expect(url.searchParams.getAll("status")).toEqual(["PENDING", "FAILED"]);
+  });
+
+  it("refuses an empty status list before any request, rather than list every status", async () => {
+    // No `status=` parameter at all means "every status": sending an empty filter that way
+    // would answer a different question than the one asked, and read as working.
+    const client = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    await expect(client.listRuns("m1", { status: [] })).rejects.toBeInstanceOf(
+      RequestArgumentError,
+    );
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a status that is no RunStatus before any request", async () => {
+    const client = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const error = await client.listRuns("m1", { status: ["RUNNING", "running" as RunStatus] }).then(
+      () => expect.fail("expected listRuns to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(error).toBeInstanceOf(RequestArgumentError);
+    expect((error as RequestArgumentError).message).toContain("running");
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("iterateRuns follows the cursor to exhaustion", async () => {
@@ -893,22 +1086,53 @@ describe("runs list / update", () => {
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
-  it("iterateRuns terminates on a cursor that yields nothing", async () => {
+  it("iterateRuns follows a cursor past an EMPTY page, sending the filters on every page", async () => {
+    // `createdBy` and `status` filter after the index read, so a page can hold no run and still
+    // carry a cursor: "nothing matched in the slice just read, keep going". Stopping there
+    // would drop every later match, the caller's unfinished run among them.
     const client = makeClient();
-    // A server claiming another page but returning no rows would spin forever
-    // producing nothing. This is a liveness guard, NOT a page cap: it can only
-    // fire on an empty page, so it can never truncate a live stream.
     const spy = vi
       .spyOn(globalThis, "fetch")
-      .mockImplementation(() =>
-        Promise.resolve(jsonResponse(200, { items: [], next_cursor: "always" })),
-      );
+      .mockResolvedValueOnce(jsonResponse(200, { items: [], next_cursor: "c1" }))
+      .mockResolvedValueOnce(jsonResponse(200, { items: [], next_cursor: "c2" }))
+      .mockResolvedValueOnce(jsonResponse(200, { items: [RUN_ROW], next_cursor: null }));
 
-    const seen: RunHistoryItem[] = [];
-    for await (const run of client.iterateRuns("m1")) seen.push(run);
+    const seen: string[] = [];
+    for await (const run of client.iterateRuns("m1", { createdBy: "me", status: ["RUNNING"] })) {
+      seen.push(run.pipeline_run_id);
+    }
 
-    expect(seen).toEqual([]);
-    expect(spy).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual(["r1"]);
+    const urls = spy.mock.calls.map((call) => new URL((call as [string, RequestInit])[0]));
+    expect(urls.map((url) => url.searchParams.get("cursor"))).toEqual([null, "c1", "c2"]);
+    for (const url of urls) {
+      expect(url.searchParams.get("created_by")).toBe("me");
+      expect(url.searchParams.getAll("status")).toEqual(["RUNNING"]);
+    }
+  });
+
+  it("iterateRuns refuses to page forever against a server that never finishes", async () => {
+    // Empty pages with a FRESH cursor each time: neither the null cursor nor the repeated one
+    // ends this, so the page ceiling must, and it throws rather than return a truncated stream.
+    const client = makeClient();
+    let n = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      n += 1;
+      return Promise.resolve(jsonResponse(200, { items: [], next_cursor: `c${n}` }));
+    });
+
+    const err = await (async () => {
+      for await (const _ of client.iterateRuns("m1")) {
+        // no-op
+      }
+    })().then(
+      () => expect.fail("expected iterateRuns to throw"),
+      (thrown: unknown) => thrown,
+    );
+
+    expect(err).toBeInstanceOf(PagingNotTerminatingError);
+    expect((err as PagingNotTerminatingError).message).toMatch(/listRuns did not terminate/);
+    expect((err as PagingNotTerminatingError).pageLimit).toBe(10_000);
   });
 
   it("GETs /v1/runs/{id} for the whole record, bundle included", async () => {

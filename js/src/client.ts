@@ -43,6 +43,8 @@ import {
   assertWaitOptions,
   pollUntilResult,
   readRunDegradation,
+  RUN_STATUSES,
+  runStatusFilter,
   selectionIncludesMainStuff,
   throwIfAborted,
   type GetRunResultOptions,
@@ -137,20 +139,77 @@ import type {
 import { PipelexExecuteResult, resultsFromExecute } from "./execute-result.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
-// A pure RUNAWAY guard on `iterateMethods`, deliberately not a coverage limit.
+// A pure RUNAWAY guard on the paged-list iterators (`iterateMethods`,
+// `iterateRuns`), deliberately not a coverage limit.
 //
 // It counts TOTAL pages, not empty ones. An earlier version capped consecutive
 // empty pages, which is the wrong axis: an empty page whose cursor ADVANCED is
-// real progress through the index — the platform applies `q` as a post-read
-// filter over a bounded slice per request, so a sparse match legitimately
-// yields runs of empty pages — and capping them turns a valid sparse search
-// into a thrown error. The stuck case is already caught by the no-progress
-// check (the server handing back the cursor we sent).
+// real progress through the index — the platform applies the list filters
+// (`q` and `published` on methods, `createdBy` and `status` on runs) after a
+// bounded read per request, so a sparse match legitimately yields runs of
+// empty pages — and capping them turns a valid sparse search into a thrown
+// error. The stuck case is already caught by the no-progress check (the
+// server handing back the cursor we sent).
 //
-// At the platform's 200-row maximum page size this is 2,000,000 methods, so it
+// At the platform's 200-row maximum page size this is 2,000,000 rows, so it
 // cannot fire on real data; it exists only so a server minting fresh cursors
 // forever cannot hang a caller indefinitely.
 const MAX_PAGES = 10_000;
+
+/**
+ * Follow a paged list's cursor until the server says there is no more, yielding every row —
+ * the one loop behind `iterateMethods` and `iterateRuns`, so the two cannot drift apart.
+ *
+ * It yields lazily: a caller that breaks early stops the requests. It stops when `nextCursor`
+ * is `null`, the normal end, and when the server hands back the cursor it was just sent, which
+ * is no progress and would repeat rows already yielded. It keeps going through an EMPTY page
+ * that carries a cursor, since a filtered page can hold no row and still not be the end; past
+ * `MAX_PAGES` pages it throws `PagingNotTerminatingError` rather than return a truncated list.
+ */
+async function* followCursor<T>(
+  route: string,
+  readPage: (cursor: string | undefined) => Promise<{ items: T[]; nextCursor: string | null }>,
+): AsyncGenerator<T, void, undefined> {
+  let cursor: string | undefined;
+  let pages = 0;
+  for (;;) {
+    const page = await readPage(cursor);
+
+    // Checked BEFORE yielding: a server handing back the very cursor we sent
+    // has not advanced, so this page repeats rows already emitted — yielding
+    // first and stopping after would silently double-count them for anyone
+    // aggregating the stream (summing cost, counting runs). Cannot fire on the
+    // first request, where `cursor` is undefined.
+    if (cursor !== undefined && page.nextCursor === cursor) return;
+
+    for (const item of page.items) yield item;
+
+    // `nextCursor === null` is the NORMAL end of the list, and that page is
+    // real data, so it has to be emitted before this fires.
+    if (page.nextCursor === null) return;
+
+    // An EMPTY page is NOT the end, and treating it as one was a bug. The
+    // platform filters after a bounded index read per request, so a sparse
+    // match legitimately returns `{items: [], nextCursor: "…"}` — "nothing
+    // matched in the slice I just read, keep going". Returning here dropped
+    // every later match silently, which is the exact truncation this
+    // pagination work exists to remove.
+    pages += 1;
+    if (pages >= MAX_PAGES) {
+      // THROW, do not return. A caller that asked for every row and got a
+      // partial answer with no error is back to the original bug one layer
+      // up; an error is the only honest response to a server that will not
+      // finish. Unreachable on real data — see MAX_PAGES. It also bounds a
+      // cursor that CYCLES (`c1 → c2 → c1`), which the adjacent check misses.
+      throw new PagingNotTerminatingError(
+        `${route} did not terminate after ${MAX_PAGES} pages; refusing to keep paging. ` +
+          `This is a server-side fault, not a coverage limit.`,
+        MAX_PAGES,
+      );
+    }
+    cursor = page.nextCursor;
+  }
+}
 
 export interface MthdsFile {
   /** File contents to validate. */
@@ -1891,15 +1950,21 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Rows are `MethodSummary`: no `mthds`, no `python`, no `updated_at`. Reach
    * for `getMethod(id)` when you need a method's source.
    *
-   * `q` is applied server-side over the whole catalog, not over the page.
+   * `q` is applied server-side over the whole catalog, not over the page, and so is
+   * `published` (`true` for the methods with a published version, `false` for those never
+   * published). Each row carries the method's publish state (`latest_version`,
+   * `latest_published`, `draft_digest`). Both filters run after the index read, so a page can
+   * come back empty and still carry a `nextCursor`: keep following it until it is `null`.
    */
   async listMethods(query: ListMethodsQuery = {}): Promise<MethodPage> {
     const params = new URLSearchParams();
     // `!== undefined`, not truthiness — mirroring `listRuns`. Omission means
     // "the caller did not ask"; an explicit empty string is bad input and the
     // API should say so, rather than being silently dropped into an unfiltered
-    // query that returns everything and reads as working.
+    // query that returns everything and reads as working. `published: false`
+    // is a filter of its own, never omission.
     if (query.q !== undefined) params.set("q", query.q);
+    if (query.published !== undefined) params.set("published", String(query.published));
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.cursor !== undefined) params.set("cursor", query.cursor);
     const suffix = params.toString();
@@ -1924,49 +1989,16 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * TRUNCATED list with no error — precisely the bug paging was introduced to
    * remove. If you truly want an array, `Array.fromAsync` makes that your
    * explicit choice.
+   *
+   * It keeps going **through an empty page that carries a cursor**: under `q` or `published`
+   * such a page means "nothing matched in the slice just read", not "done". It stops on a
+   * `null` cursor or on a cursor the server failed to advance, and throws
+   * `PagingNotTerminatingError` past a page ceiling no real catalog reaches.
    */
   async *iterateMethods(
     query: Omit<ListMethodsQuery, "cursor"> = {},
   ): AsyncGenerator<MethodSummary, void, undefined> {
-    let cursor: string | undefined;
-    let pages = 0;
-    for (;;) {
-      const page: MethodPage = await this.listMethods({ ...query, cursor });
-
-      // Checked BEFORE yielding: a server handing back the very cursor we sent
-      // has not advanced, so this page repeats rows already emitted. Cannot
-      // fire on the first request, where `cursor` is undefined.
-      if (cursor !== undefined && page.nextCursor === cursor) return;
-
-      for (const method of page.items) yield method;
-
-      // `nextCursor === null` is the NORMAL end of the catalog, and that page
-      // is real data, so it has to be emitted before this fires.
-      if (page.nextCursor === null) return;
-
-      // An EMPTY page is NOT the end, and treating it as one was a bug. The
-      // platform applies `q` as a post-read filter over a bounded number of
-      // index pages per request, so a sparse match legitimately returns
-      // `{items: [], nextCursor: "…"}` — "nothing matched in the slice I just
-      // read, keep going". Returning here dropped every later match silently,
-      // which is the exact truncation this pagination work exists to remove.
-      // (`iterateRuns` can stop on an empty page because its date bounds are
-      // index KEY conditions, so a run page is never empty-with-a-cursor. The
-      // difference is the server, not the client.)
-      pages += 1;
-      if (pages >= MAX_PAGES) {
-        // THROW, do not return. A caller that asked for every method and got a
-        // partial answer with no error is back to the original bug one layer
-        // up; an error is the only honest response to a server that will not
-        // finish. Unreachable on real data — see MAX_PAGES.
-        throw new PagingNotTerminatingError(
-          `listMethods did not terminate after ${MAX_PAGES} pages; refusing to keep paging. ` +
-            `This is a server-side fault, not a coverage limit.`,
-          MAX_PAGES,
-        );
-      }
-      cursor = page.nextCursor;
-    }
+    yield* followCursor("listMethods", (cursor) => this.listMethods({ ...query, cursor }));
   }
 
   /**
@@ -2469,6 +2501,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * conditions, so a bounded page genuinely reads less. They are INSTANTS,
    * not days — see `ListRunsQuery`.
    *
+   * `createdBy: "me"` keeps the caller's own runs and `status` the runs in any of the given
+   * statuses, sent as `created_by=me` and one repeated `status=` parameter per status. Both are
+   * filters applied after the index read, so a filtered page can hold fewer runs than `limit`,
+   * or none, and still carry a `nextCursor`: an empty page is not the end, a `null` cursor is.
+   * An empty `status` list, or a name that is no `RunStatus`, is a `RequestArgumentError`
+   * before any request.
+   *
    * Takes a bare catalog id: the history files the runs of every version and
    * of the draft together under it, so `mt_…@3` names no history of its own
    * and the platform refuses it with a `400`. Strip a suffix with
@@ -2484,6 +2523,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     // it reaches the API's instant parse and comes back a 400 saying so.
     if (query.createdFrom !== undefined) params.set("created_from", query.createdFrom);
     if (query.createdTo !== undefined) params.set("created_to", query.createdTo);
+    if (query.createdBy !== undefined) params.set("created_by", query.createdBy);
+    for (const status of runStatusFilter(query.status) ?? []) params.append("status", status);
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.cursor !== undefined) params.set("cursor", query.cursor);
     const page = await this.requestPage<RunHistoryItem>(`runs?${params.toString()}`);
@@ -2512,36 +2553,18 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * when to stop, and only one page is ever in memory. If you truly want an
    * array, `Array.fromAsync` makes that your explicit choice.
    *
+   * It keeps going **through an empty page that carries a cursor**: under `createdBy` or
+   * `status` such a page means "nothing matched in the slice just read", not "done". It stops on
+   * a `null` cursor or on a cursor the server failed to advance, and throws
+   * `PagingNotTerminatingError` past a page ceiling no real history reaches.
+   *
    * Takes a bare catalog id, as `listRuns` does.
    */
   async *iterateRuns(
     methodId: string,
     query: Omit<ListRunsQuery, "cursor"> = {},
   ): AsyncGenerator<RunHistoryItem, void, undefined> {
-    let cursor: string | undefined;
-    for (;;) {
-      const page: RunPage = await this.listRuns(methodId, { ...query, cursor });
-
-      // Checked BEFORE yielding. A server handing back the very cursor we sent
-      // has not advanced, so this page repeats rows already emitted — yielding
-      // first and stopping after would silently double-count them for anyone
-      // aggregating the stream (summing cost, counting runs). Cannot fire on
-      // the first request, where `cursor` is undefined.
-      if (cursor !== undefined && page.nextCursor === cursor) return;
-
-      for (const run of page.items) yield run;
-
-      // Checked AFTER: `nextCursor === null` is the NORMAL end of the history
-      // and that page is real data, so it has to be emitted first. The empty
-      // page catches a server that keeps minting fresh cursors while returning
-      // nothing, which would otherwise spin forever yielding nothing.
-      //
-      // Neither of these is a page cap. Both fire only on a server that is not
-      // making progress, so neither can truncate a healthy stream the way a
-      // `maxPages` limit silently did.
-      if (page.nextCursor === null || page.items.length === 0) return;
-      cursor = page.nextCursor;
-    }
+    yield* followCursor("listRuns", (cursor) => this.listRuns(methodId, { ...query, cursor }));
   }
 
   /**
@@ -3052,17 +3075,6 @@ function parseRetryAfter(headers: Headers): number | null {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
 }
 
-const KNOWN_RUN_STATUSES: readonly RunStatus[] = [
-  "PENDING",
-  "STARTED",
-  "RUNNING",
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
-  "TERMINATED",
-  "TIMED_OUT",
-];
-
 /** The response header the platform and the runner stamp the request's correlation id on. */
 const REQUEST_ID_HEADER = "x-request-id";
 
@@ -3113,7 +3125,7 @@ function withCheckedDegradation(run: RunRead): RunRead {
 }
 
 function knownRunStatus(value: unknown): RunStatus | undefined {
-  return typeof value === "string" && (KNOWN_RUN_STATUSES as readonly string[]).includes(value)
+  return typeof value === "string" && (RUN_STATUSES as readonly string[]).includes(value)
     ? (value as RunStatus)
     : undefined;
 }

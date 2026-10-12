@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.41.0] - 2026-10-13
+
+### Added
+
+- **The methods list's publish state and `published` filter**: `MethodSummary` carries `latest_version`, `latest_published` (a `MethodVersionSummary`) and `draft_digest`, each defaulting to `None`, `draft_digest` being `None` on a row that never stored one until its next draft write, so a list tells a never-published method, one whose draft matches its latest version and one whose draft is ahead apart without reading each method. `list_methods` and `iterate_methods` take `published: bool | None`, sent as `published=true` or `published=false` only when given.
+- **The run history's `created_by` and `status` filters**: `list_runs` and `iterate_runs` take `created_by: Literal["me"] | None`, sent as `created_by=me`, which keeps the caller's own runs, and `status: Sequence[RunStatus] | None`, sent as one repeated `status=` parameter per status in the enum's order, which keeps the runs in any of them; an empty `status` or a name that is no `RunStatus` raises `RequestArgumentError` before any request, and a bare `str` raises `TypeError`. Under these filters, as under `q` and `published` on the methods list, a page can come back empty and still carry a `next_cursor`, and only a `None` cursor ends the list.
+
+### Changed
+
+- **`iterate_runs` follows the cursor through an empty page**: it stopped at the first empty page, which under the new filters is not the end of the history, and now runs the same loop as `iterate_methods`, following the cursor until it is `None` or stops advancing and raising `PagingNotTerminatingError` past the same page ceiling.
+
 ## [v0.40.0] - 2026-10-12
 
 ### Changed
