@@ -178,6 +178,11 @@ export interface MethodDeletionAccepted {
  * (immutable — over a mutable sort key a cursor duplicates and skips rows), and
  * displaying a different timestamp from the one it sorts by makes "newest
  * first" unreadable.
+ *
+ * The row carries the method's publish state, so a list tells its methods apart without
+ * reading each one: never published (`latest_version` is `null`), published with the draft
+ * unchanged (`draft_digest === latest_published.source_digest`), or published with the draft
+ * ahead (they differ). The three fields are absent from a platform that does not serve them.
  */
 export interface MethodSummary {
   method_id: string;
@@ -190,6 +195,17 @@ export interface MethodSummary {
    * it with a 409.
    */
   deletion_state?: MethodDeletionState | null;
+  /** The number of the latest published version; `null` when the method was never published. */
+  latest_version?: number | null;
+  /** The latest published version's summary; `null` when the method was never published. */
+  latest_published?: MethodVersionSummary | null;
+  /**
+   * The digest the last draft write stored, in the form of `MethodData.draft_digest`. Unlike on
+   * `MethodData` it can be `null` here: the list reads an index that holds no bundle to digest,
+   * so a row that never stored a digest carries `null` until its next draft write stores one.
+   * Compare it with `latest_published.source_digest` only when both are strings.
+   */
+  draft_digest?: string | null;
 }
 
 export interface ListMethodsQuery {
@@ -199,6 +215,12 @@ export interface ListMethodsQuery {
    * client-side would be searching 50 of 10,000 and calling it a search.
    */
   q?: string;
+  /**
+   * `true` lists only the methods with a published version, `false` only those never
+   * published; omitted, both. It combines with `q`, and like `q` it filters after the index
+   * read, so a page can come back empty and still carry a `nextCursor`.
+   */
+  published?: boolean;
   /** Page size. The API defaults to 50 and caps at 200. */
   limit?: number;
   /** Opaque `nextCursor` from the previous page. */
@@ -212,6 +234,11 @@ export interface ListMethodsQuery {
  * `null` means this was the last page. There is deliberately no total:
  * counting would mean reading the whole catalog, which is the cost paging
  * exists to avoid.
+ *
+ * Under `q` or `published` a page can hold fewer rows than `limit`, or none, and still carry
+ * a `nextCursor`: the filters run after the index read, so an empty page is not the end of
+ * the list, and only a `null` cursor is. `iterateMethods` keeps following the cursor through
+ * such a page.
  */
 export interface MethodPage {
   items: MethodSummary[];
@@ -644,6 +671,20 @@ export interface ListRunsQuery {
   createdFrom?: string;
   /** Only runs created at or before this instant. Same rules as `createdFrom`. */
   createdTo?: string;
+  /**
+   * `"me"` lists only the runs the caller started, resolved by the platform from the
+   * authenticated identity; omitted, every member's runs. It takes no other value: the list
+   * never narrows to another member. Sent as `created_by=me`.
+   */
+  createdBy?: "me";
+  /**
+   * Only runs in one of these statuses, sent as one repeated `status=` parameter per status;
+   * omitted, every status. The caller's own latest unfinished run is
+   * `{ createdBy: "me", status: ["PENDING", "STARTED", "RUNNING"], limit: 1 }`. An empty list
+   * names no status and is a `RequestArgumentError` before any request, as is a name that is no
+   * `RunStatus`.
+   */
+  status?: readonly RunStatus[];
   /** Page size. The API defaults to 50 and caps at 200. */
   limit?: number;
   /** Opaque `nextCursor` from the previous page. */
@@ -657,6 +698,11 @@ export interface ListRunsQuery {
  * `null` means this was the last page. There is deliberately no total: counting
  * would mean reading the whole history, which is the cost paging exists to
  * avoid.
+ *
+ * Under `createdBy` or `status` a page can hold fewer rows than `limit`, or none, and still
+ * carry a `nextCursor`: the platform applies them after the index read, so an empty page is
+ * not the end of the history, and only a `null` cursor is. `iterateRuns` keeps following the
+ * cursor through such a page.
  */
 export interface RunPage {
   items: RunHistoryItem[];

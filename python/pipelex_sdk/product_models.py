@@ -530,6 +530,11 @@ class MethodSummary(BaseModel):
     none of them is in the index projection. Putting `mthds` back is exactly what restored
     the truncation bug paging was introduced to fix. A method mid-deletion still appears
     here — so a UI can render "Deleting…" — while `get_method` refuses it with a `409`.
+
+    The row carries the method's publish state, so a list tells its methods apart without
+    reading each one: never published (`latest_version` is `None`), published with the draft
+    unchanged (`draft_digest == latest_published.source_digest`), or published with the draft
+    ahead (they differ). The three fields read as `None` from a platform that does not serve them.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -540,6 +545,18 @@ class MethodSummary(BaseModel):
     created_at: str
     deletion_state: MethodDeletionState | None = None
 
+    latest_version: int | None = None
+    """The number of the latest published version; `None` when the method was never published."""
+
+    latest_published: MethodVersionSummary | None = None
+    """The latest published version's summary; `None` when the method was never published."""
+
+    draft_digest: str | None = None
+    """The digest the last draft write stored, in the form of `MethodData.draft_digest`. Unlike on
+    `MethodData` it can be `None` here: the list reads an index that holds no bundle to digest, so a
+    row that never stored a digest carries `None` until its next draft write stores one. Compare it
+    with `latest_published.source_digest` only when both are strings."""
+
 
 class MethodPage(BaseModel):
     """One page of the method index — `{items, next_cursor}`.
@@ -547,6 +564,11 @@ class MethodPage(BaseModel):
     The cursor is opaque: pass it straight back as `cursor` to get the next page, and treat
     a `None` as the last page. There is no total by design — counting a catalog costs a full
     scan, and no caller needs one.
+
+    Under `q` or `published` a page can hold fewer rows than `limit`, or none, and still carry a
+    `next_cursor`: the filters run after the index read, so an empty page is not the end of the
+    list, and only a `None` cursor is. `iterate_methods` keeps following the cursor through such
+    a page.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -906,6 +928,11 @@ class RunPage(BaseModel):
 
     Same opaque-cursor contract as `MethodPage`: pass `next_cursor` straight back, and a
     `None` means the last page.
+
+    Under `created_by` or `status` a page can hold fewer rows than `limit`, or none, and still
+    carry a `next_cursor`: the platform applies them after the index read, so an empty page is not
+    the end of the history, and only a `None` cursor is. `iterate_runs` keeps following the cursor
+    through such a page.
     """
 
     model_config = ConfigDict(extra="allow")

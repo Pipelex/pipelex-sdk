@@ -1,10 +1,9 @@
 """Tests for the paged-list iterators — `iterate_methods` and `iterate_runs`.
 
-Both follow `next_cursor` until the server says stop, but they stop on *different* signals,
-and the difference is in the server rather than the client: `q` is a post-read filter over a
-bounded index slice, so a method page can be empty with a live cursor; the run date bounds are
-index key conditions, so a run page never is. These pin both rules, the stuck-cursor guard, and
-the runaway backstop.
+Both follow `next_cursor` until the server says stop, through one shared loop. Both lists filter
+after the index read (`q` and `published` on methods, `created_by` and `status` on runs), so a
+page can be empty with a live cursor, which is not the end. These pin that rule, the filters sent
+on every page, the stuck-cursor guard, and the runaway backstop.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from pipelex_sdk.errors import PagingNotTerminatingError
+from pipelex_sdk.runs import RunStatus
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture, MockType
@@ -48,8 +48,13 @@ async def _drain_methods(client: PipelexAPIClient, **kwargs: Any) -> list[Method
     return [summary async for summary in client.iterate_methods(**kwargs)]
 
 
-async def _drain_runs(client: PipelexAPIClient, method_id: str) -> list[RunHistoryItem]:
-    return [pipeline_run async for pipeline_run in client.iterate_runs(method_id)]
+async def _drain_runs(client: PipelexAPIClient, method_id: str, **kwargs: Any) -> list[RunHistoryItem]:
+    return [pipeline_run async for pipeline_run in client.iterate_runs(method_id, **kwargs)]
+
+
+def _queries_sent(send: MockType) -> list[dict[str, list[str]]]:
+    """The parsed query of every request the spy recorded, in order."""
+    return [parse_qs(urlparse(cast("str", call.args[1])).query) for call in send.call_args_list]
 
 
 class TestClientPaging:
@@ -126,23 +131,63 @@ class TestClientPaging:
         # comparison would still satisfy `page_limit`, which only echoes the constant.
         assert send.call_count == 2
 
-    def test_iterate_runs_stops_on_an_empty_page(
+    def test_iterate_methods_sends_published_on_every_page(
         self,
         api_client: PipelexAPIClient,
         wire_response: ResponseBuilder,
         patch_send: SendPatcher,
     ) -> None:
-        """Run date bounds are index key conditions, so an empty page really is the end."""
-        patch_send(
+        send = patch_send(
+            api_client,
+            wire_response(200, json_body={"items": [], "next_cursor": "c1"}),
+            wire_response(200, json_body={"items": [_method("m1")], "next_cursor": None}),
+        )
+
+        summaries = asyncio.run(_drain_methods(api_client, published=False))
+
+        assert [summary.method_id for summary in summaries] == ["m1"]
+        assert [query.get("published") for query in _queries_sent(send)] == [["false"], ["false"]]
+        assert _cursors_sent(send) == [None, "c1"]
+
+    def test_iterate_runs_continues_through_an_empty_page_with_a_live_cursor(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+    ) -> None:
+        """`created_by` and `status` filter after the index read, so an empty page means "keep going"."""
+        send = patch_send(
             api_client,
             wire_response(200, json_body={"items": [_run("r1")], "next_cursor": "c1"}),
             wire_response(200, json_body={"items": [], "next_cursor": "c2"}),
             wire_response(200, json_body={"items": [_run("r99")], "next_cursor": None}),
         )
 
-        runs = asyncio.run(_drain_runs(api_client, "m1"))
+        runs = asyncio.run(_drain_runs(api_client, "m1", created_by="me", status=[RunStatus.RUNNING]))
 
-        assert [pipeline_run.pipeline_run_id for pipeline_run in runs] == ["r1"]
+        assert [pipeline_run.pipeline_run_id for pipeline_run in runs] == ["r1", "r99"]
+        assert _cursors_sent(send) == [None, "c1", "c2"]
+        for query in _queries_sent(send):
+            assert query.get("created_by") == ["me"]
+            assert query.get("status") == ["RUNNING"]
+
+    def test_iterate_runs_raises_past_the_page_ceiling_on_empty_pages(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+        mocker: MockerFixture,
+    ) -> None:
+        """Empty pages with a fresh cursor each time are ended by the ceiling, which raises rather than truncates."""
+        mocker.patch("pipelex_sdk.client._MAX_LIST_PAGES", 3)
+        pages = [wire_response(200, json_body={"items": [], "next_cursor": f"c{index}"}) for index in range(5)]
+        send = patch_send(api_client, *pages)
+
+        with pytest.raises(PagingNotTerminatingError, match="Run paging did not terminate") as exc_info:
+            asyncio.run(_drain_runs(api_client, "m1"))
+
+        assert exc_info.value.page_limit == 3
+        assert send.call_count == 3
 
     def test_iterate_runs_follows_the_cursor_and_stops_on_none(
         self,
@@ -168,7 +213,7 @@ class TestClientPaging:
         patch_send: SendPatcher,
         mocker: MockerFixture,
     ) -> None:
-        """A cursor cycling across two values trips neither the empty-page nor the adjacent check.
+        """A cursor cycling across two values trips no check but the page ceiling.
 
         `c1 → c2 → c1 → …` with every page non-empty would loop forever re-yielding the same
         runs; the shared page ceiling is what bounds it.
