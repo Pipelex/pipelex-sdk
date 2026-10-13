@@ -930,8 +930,9 @@ export type MethodErrorCode =
  *
  * - `idempotency_key_in_use` (`409`): an earlier request under the same key and the same body is
  *   still being handled, or this one lost the key while it was handled, so nothing ran for this
- *   one. `runtime` and retryable: wait a few seconds (the answer's `Retry-After`) and send the
- *   same request again under the **same** key, which is answered with the earlier request's
+ *   one. `runtime` and retryable: wait a few seconds (the answer carries a `Retry-After` header,
+ *   which `ApiResponseError` does not expose) and send the same request again under the **same**
+ *   key, which is answered with the earlier request's
  *   outcome once it is stored. A new key would run it a second time. On a `start`, its
  *   `runMayHaveStarted` is false: this request started nothing.
  *
