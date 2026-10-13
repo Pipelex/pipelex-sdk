@@ -1,5 +1,20 @@
 # Changelog
 
+## [v0.43.0] - 2026-10-13
+
+### Added
+
+- **A method's saved examples**: `create_method_example`, `list_method_examples`, `iterate_method_examples`, `get_method_example`, `update_method_example`, `record_method_example_latest_run` and `delete_method_example` read and write the named sets of inputs saved on a method, on the hosted API's `/v1/methods/{id}/examples` routes, with the `MethodExample` and `MethodExamplePage` models; the fields of the writes are keyword-only arguments. An edit of the inputs raises `input_revision` and clears `latest_run_id`; the list is paged oldest first, and `iterate_method_examples` follows its cursor through the loop the other iterators share. An example id that is empty, `.` or `..`, a create whose `name` or `inputs` is `None` or whose `run_id` is given but empty, an edit naming neither `name` nor `inputs`, and a latest-run write without a run id or a positive integer revision raise `RequestArgumentError` before any request, and a method id `iterate_method_examples` cannot take raises it at the call itself. `MethodExample` reads its fields strictly, as `@pipelex/sdk` checks them: `latest_run_id` is required, `None` when there is no latest run, no field is coerced from another type (an `input_revision` of `"2"`, `True` or `2.0` is no revision), and `input_revision` lies within 2^53 - 1 either way, so an example breaking a field raises the `ApiResponseError` of an answer the SDK cannot read, as `@pipelex/sdk` refuses it.
+- **The latest-run verdict**: `record_method_example_latest_run` records a run against the revision whose inputs it used and answers a `MethodExampleLatestRunResult` discriminated on `outcome` (`MethodExampleLatestRunOutcome`), `MethodExampleLatestRunRecorded` or `MethodExampleLatestRunStale`, each carrying the `example` as it stands, so a run that outlasted an edit of the inputs is a verdict to branch on rather than a raised error; an answer off the union raises the `ApiResponseError` of an answer the SDK cannot read.
+
+### Changed
+
+- **`next_cursor` is required on every page model (Breaking)**: `MethodPage`, `MethodVersionPage` and `RunPage` declared `next_cursor: str | None = None`, so a page answer without the key read as the last page and `iterate_methods` and `iterate_runs` stopped early without a word, where `@pipelex/sdk` refuses such a page. The field is now `str | None` with no default, on the new `MethodExamplePage` too: the platform always sends it, and a page without it raises the `ApiResponseError` of an answer the SDK cannot read. Code that builds a page model by hand passes `next_cursor` explicitly.
+
+### Fixed
+
+- **An id a route puts in its path is refused when the URL would resolve it**: a method id given to `get_method`, `write_draft`, `rename_method`, `publish_method`, `list_method_versions`, `get_method_version` or `delete_method`, a run id given to `get_run_status`, `get_run_result`, `get_run_detail` or `update_run`, an organization id given to `rename_organization` and an API key id given to `revoke_pipelex_api_key` or `rotate_pipelex_api_key` that is empty, `.` or `..` now raises `RequestArgumentError` before any request, as does one that is not a `str` and one holding a lone surrogate, for which `quote` raised a bare `UnicodeEncodeError`. `quote` leaves the dot alone, so `.` and `..` reached the URL as dot segments, which httpx resolves before the request leaves: `get_run_detail("..")` sent `GET /v1`, `delete_method(".")` sent `DELETE /v1/methods`, and an empty id addressed the route above it, `get_run_detail("")` sending `GET /v1/runs/`. Every one of these ids now goes through one guard, whose refusal names what it got: `got None.` for a `None` id, and the type's name for any other value that is not a `str`.
+
 ## [v0.42.0] - 2026-10-13
 
 ### Added

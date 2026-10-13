@@ -27,6 +27,7 @@ import * as protocol from "mthds/protocol";
 
 import { PipelexApiClient } from "../src/client.js";
 import { CodegenLockError } from "../src/codegen-check.js";
+import { ExactJsonUnsupportedError } from "../src/exact-json.js";
 import type { RunErrorReport } from "../src/error-models.js";
 import { fallbackVerdict } from "../src/error-verdicts.js";
 import {
@@ -272,6 +273,8 @@ const BUILDERS: Record<string, (given: Given) => Promise<Error> | Error> = {
       given.status ?? undefined,
     ),
   CodegenLockError: () => new CodegenLockError("Malformed codegen lock."),
+  ExactJsonUnsupportedError: () =>
+    new ExactJsonUnsupportedError("This runtime cannot read 12345678901234567891 exactly."),
 };
 
 /** The exported class a file entry names, looked up on the package entry. */
@@ -403,6 +406,16 @@ function isErrorDomainValue(value: unknown): value is ErrorDomain {
   return value === "input" || value === "config" || value === "runtime";
 }
 
+/**
+ * The errors of the standalone helpers, which request nothing and so sit outside the
+ * `PipelexRequestError` family, each declaring its verdict itself: the offline codegen check's
+ * and the exact JSON reader's.
+ */
+const STANDALONE_ERRORS: ReadonlySet<string> = new Set([
+  "CodegenLockError",
+  "ExactJsonUnsupportedError",
+]);
+
 describe("each exported class's verdict", () => {
   describe.each(OUR_CLASSES.map((c) => [c.class, c] as const))("%s", (name, classEntry) => {
     if (classEntry.abstract === true) {
@@ -411,7 +424,7 @@ describe("each exported class's verdict", () => {
         expect(base).toBe(PipelexRequestError);
         expect(PipelexRequestError.prototype).toBeInstanceOf(PipelineRequestError);
         for (const other of OUR_CLASSES) {
-          if (other.abstract === true || other.class === "CodegenLockError") continue;
+          if (other.abstract === true || STANDALONE_ERRORS.has(other.class)) continue;
           expect(exportedClass(other.class).prototype, other.class).toBeInstanceOf(base);
         }
       });

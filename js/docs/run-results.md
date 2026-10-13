@@ -123,6 +123,8 @@ It is typed `unknown` because the content is polymorphic: a structured output ar
 
 For a multiple output that means reading `items` off the object and mapping the generated per-concept parser over its members, because codegen emits a parser per concept and no wrapper type for the envelope. **Do not rely on the parser to catch the mistake for you.** The generated schemas are not strict, so a concept with a required field rejects the envelope loudly, while one whose fields are all optional parses it to `{}` and discards the output in silence.
 
+**An integer past `Number.MAX_SAFE_INTEGER` reads as a `bigint`.** The results are read with `parseExactJson`, on both paths, so such an integer anywhere in them, in `main_stuff`, `working_memory` or `graph_spec`, holds its exact digits, and an output passed back to `start` goes back as the run produced it. `JSON.stringify` throws on a `bigint`, so code showing the results as JSON text writes them with `stringifyExactJson` ([exact-integers.md](./exact-integers.md)).
+
 ```ts
 const state = await client.getRunResult(runId);
 

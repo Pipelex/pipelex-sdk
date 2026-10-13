@@ -300,6 +300,13 @@
       ]
     },
     {
+      "class": "ExactJsonUnsupportedError",
+      "only_in": "js",
+      "variants": [
+        { "variant": "an integer past the safe range on a runtime without JSON source text", "given": {}, "expected": { "error_domain": "config", "retryable": false } }
+      ]
+    },
+    {
       "class": "CodegenError",
       "only_in": "python",
       "variants": [
