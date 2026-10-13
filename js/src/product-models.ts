@@ -705,9 +705,6 @@ export interface UploadGrant {
 // The run-lifecycle status/results/start routes already live on the client
 // (`runs.ts`); these are the remaining catalog-style list + admin-update routes.
 
-/** Per-pipe progress marker surfaced in a run's `pipe_statuses` map. */
-export type PipeStatus = "scheduled" | "running" | "succeeded" | "failed" | "skipped";
-
 /**
  * A run's record — the base of `RunDetail`, which `getRunDetail` returns. The run-history list
  * does not return it: its rows are the slimmer `RunHistoryItem`.
@@ -727,7 +724,6 @@ export interface PipelineRun {
   workflow_id?: string | null;
   status: RunStatus;
   result_url?: string | null;
-  pipe_statuses?: Record<string, PipeStatus> | null;
   created_at: string;
   finished_at?: string | null;
   /** The run's stored error report as the platform serves it, the runner's STRICT

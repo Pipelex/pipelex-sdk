@@ -1,6 +1,11 @@
 import type { InputForm, OutputForm, PipeIOContracts } from "mthds/protocol";
 
-import { RequestArgumentError, RunFailedError, RunTimeoutError } from "./errors.js";
+import {
+  RequestArgumentError,
+  RunFailedError,
+  RunLifecycleUnavailableError,
+  RunTimeoutError,
+} from "./errors.js";
 import { MAX_TIMER_DELAY_MS } from "./timers.js";
 import { dropUnfit, isPlainObject } from "./error-models.js";
 import type { RunErrorReport } from "./error-models.js";
@@ -22,6 +27,7 @@ import type { DictPipeOutput, DictWorkingMemory, PipelexRunResultStart } from ".
  * Wire contract mirrors the Pipelex Hosted API:
  *   POST /v1/start                           → RunResultStart   (start, 202)
  *   GET  /v1/runs/{pipeline_run_id}/status   → RunRead          (status, self-healing)
+ *   GET  /v1/runs/{pipeline_run_id}/progress → RunProgress      (the progress snapshot, self-healing)
  *   GET  /v1/runs/{pipeline_run_id}/results  → 202 / 200 / 409  (results; `?artifacts=` narrows it)
  */
 
@@ -172,7 +178,9 @@ export interface RunPublic {
 export type DegradationReason = "status_unavailable" | "workflow_task_failing";
 
 /**
- * What a `degraded` status read means for this run — `RunRead.degradation`.
+ * What a `degraded` status read means for this run — `RunRead.degradation`. A progress snapshot
+ * carries the same object, whole, as `RunProgress.degradation`, and places a
+ * `workflow_task_failing` one on the invocation it concerns as `ProgressInvocation.degradation`.
  *
  * Branch on `reason` (see `DegradationReason`), never on the wording of `message`. Each field is
  * checked by the read: a known field whose value does not have its type is absent, and members
@@ -257,6 +265,294 @@ export function readRunDegradation(value: unknown): RunDegradation | null {
   );
   dropUnfit(degradation, ["failed_attempts"], Number.isInteger);
   return degradation as RunDegradation;
+}
+
+// ── Progress ────────────────────────────────────────────────────────
+
+/**
+ * Where a run stands in its progress snapshot — `RunProgress.status`: accepted and not yet started
+ * (`pending`), going (`running`), ended with its result (`succeeded`), ended in failure (`failed`),
+ * or stopped before its end (`canceled`). The platform maps its `RunStatus` into these words:
+ * `PENDING` is `pending`; `RUNNING` and `STARTED` are `running`; `COMPLETED` is `succeeded`;
+ * `FAILED` and `TIMED_OUT` are `failed`; `CANCELLED` and `TERMINATED` are `canceled`.
+ */
+export type RunProgressStatus = "pending" | "running" | "succeeded" | "failed" | "canceled";
+
+/**
+ * Where one invocation stands — `ProgressInvocation.status`, the words a run graph uses for its
+ * nodes: an item of a batch that has fanned out and not started (`scheduled`), started and not
+ * ended (`running`), ended with its output (`succeeded`), ended in failure (`failed`), skipped,
+ * which is a successful end with no output of its own (`skipped`), or not ended when the run
+ * ended (`canceled`). Each is about the invocation's latest attempt.
+ */
+export type ProgressInvocationStatus =
+  "scheduled" | "running" | "succeeded" | "failed" | "skipped" | "canceled";
+
+/**
+ * A batch's items — `ProgressInvocation.batch`, on a `PipeBatch` that has fanned out. `total` is
+ * the number it fanned out over; `done` counts the items `succeeded` or `skipped`, `running` those
+ * running and `failed` those failed. An item `scheduled` or `canceled` is in none of the three.
+ */
+export interface ProgressBatch {
+  total: number;
+  done: number;
+  running: number;
+  failed: number;
+}
+
+/**
+ * A resolved condition's outcome — `ProgressInvocation.condition`: the key of the outcome map its
+ * value matched, or `null` when it matched none and the condition took its default outcome.
+ */
+export interface ProgressCondition {
+  selected_outcome: string | null;
+}
+
+/**
+ * The latest failure of an invocation's work — `ProgressInvocation.last_failure`, a health
+ * annotation. `message` keeps the disclosure of a run's error report: under the hosted plane's
+ * strict disclosure it is the failure's own message only when that message was written for the
+ * caller, and `An internal error occurred.` otherwise.
+ */
+export interface ProgressFailure {
+  message: string;
+  /** When it failed, an RFC 3339 timestamp in UTC; absent when not recorded. */
+  at?: string;
+}
+
+/**
+ * One attempt of one execution of a run — an entry of `RunProgress.chain`. An execution is a part
+ * of a run its engine runs, and may run again, as a whole; `execution` is opaque.
+ */
+export interface ProgressAttempt {
+  execution: string;
+  attempt: number;
+}
+
+/**
+ * One invocation in a progress snapshot: one run of one pipe inside the run, named by its `path`.
+ *
+ * Timestamps are RFC 3339 in UTC written with `Z`, with fractional seconds when recorded. An
+ * optional field is absent when it does not apply, never `null`. The health annotations —
+ * `attempts`, `last_failure` and `degradation` — are what the workflow engine reports; an absent
+ * one means nothing was observed, never that all is well.
+ */
+export interface ProgressInvocation {
+  /**
+   * The invocation's path: the run's entry pipe's `pipe_ref`, then one segment per controller
+   * level (`step_<n>`, `branch_<n>`, `item_<n>`, `outcome_<key>`, `default`), joined by `/`, such
+   * as `filings.review_filings/step_3/item_2/step_1`. It names one invocation in every view of a
+   * run, every attempt of it included, and nests a timeline's rows.
+   */
+  path: string;
+  /** The bare code of the pipe it runs, which a timeline labels its row with. */
+  pipe_code: string;
+  /** The same pipe's `pipe_ref`, `<domain>.<pipe_code>`. */
+  pipe_ref: string;
+  /** The pipe's type as the method declares it, such as `PipeSequence` or `PipeLLM`; an open string. */
+  pipe_type: string;
+  status: ProgressInvocationStatus;
+  /** The start of its latest attempt; `null` while `scheduled`, and when no start was recorded. */
+  started_at: string | null;
+  /** The end of its latest attempt; `null` while `scheduled` or `running`, and when `canceled`. */
+  ended_at: string | null;
+  /** On a `PipeSequence`, the number of steps its author wrote. */
+  step_count?: number;
+  /** On a `PipeParallel`, the number of its branches. */
+  branch_count?: number;
+  /** On a `skipped` invocation, why it was skipped. */
+  skip_reason?: string;
+  /** On a `PipeBatch` that has fanned out, its items' counts. */
+  batch?: ProgressBatch;
+  /** On a `PipeCondition` that has resolved, the outcome it took. */
+  condition?: ProgressCondition;
+  /** Health: how many times its work has been tried, present only when more than once. */
+  attempts?: number;
+  /** Health: the latest failure of its work. */
+  last_failure?: ProgressFailure;
+  /**
+   * Health: the run is stuck at this invocation — the run status's own `degradation`, with the
+   * same members and meanings, placed on the invocation it concerns (the run's root, or the batch
+   * item whose execution keeps failing to advance). Its `reason` is `workflow_task_failing`.
+   */
+  degradation?: RunDegradation;
+  /** Members a later platform adds. */
+  [extension: string]: unknown;
+}
+
+/**
+ * A run's progress snapshot — `GET /v1/runs/{pipeline_run_id}/progress`, which `getRunProgress`
+ * reads and `waitForResult`'s `onProgress` receives.
+ *
+ * The state of a run's progress at one moment, projected by the platform at each read from the
+ * run's live progress events, its status and what its workflow engine reports of its health.
+ * Progress is a hosted-plane extension, part of neither the MTHDS Protocol nor the runner's API,
+ * and its names are neutral. Timestamps are RFC 3339 in UTC written with `Z`; an optional field is
+ * absent when it does not apply, never `null`. Two reads can answer out of order, so a reader
+ * keeps the fresher of the snapshot it holds and the one it reads, by `isFresherRunProgress`.
+ * See `docs/run-results.md`.
+ */
+export interface RunProgress {
+  pipeline_run_id: string;
+  /** The mode of the events it was projected from; always `live` on the hosted progress route. */
+  mode: "live" | "dry";
+  status: RunProgressStatus;
+  /**
+   * The number of distinct progress events the snapshot was projected from, superseded attempts'
+   * included, so it never decreases while the run's events are kept. What a reader compares two
+   * snapshots by — see `isFresherRunProgress`.
+   */
+  version: number;
+  /** When the snapshot was projected: what a running invocation's elapsed time is measured against. */
+  assembled_at: string;
+  /**
+   * One line of English saying how far the run has got, such as `Running summarize_filing_batch
+   * (step 3 of 4): 1 of 3 items done, 2 running`. Show it as it is; never parse it.
+   */
+  summary: string;
+  /** Absent on a snapshot of the whole run, which is every snapshot the hosted plane serves. */
+  root_path?: string;
+  /** Absent on a snapshot of the whole run, like `root_path`. */
+  chain?: ProgressAttempt[];
+  /**
+   * The run status's `degradation`, whole, present when the run reads degraded: `status_unavailable`
+   * when the platform could not read the workflow engine, so `status` is the last one recorded
+   * and no invocation carries a health annotation, or `workflow_task_failing` when the run is not
+   * making progress.
+   */
+  degradation?: RunDegradation;
+  /** Every invocation the snapshot knows, each before its descendants, children in their order. */
+  invocations: ProgressInvocation[];
+  /** Members a later platform adds. */
+  [extension: string]: unknown;
+}
+
+const GOING_PROGRESS_STATUSES: ReadonlySet<string> = new Set(["pending", "running"]);
+const ENDED_PROGRESS_STATUSES: ReadonlySet<string> = new Set(["succeeded", "failed", "canceled"]);
+
+/**
+ * Whether the snapshot just `read` is fresher than the one `held`, and should replace it — the
+ * contract's rule, its first clause before the other two:
+ *
+ * 1. a snapshot of a run still going (`pending` or `running`) never replaces one of the run ended
+ *    (`succeeded`, `failed` or `canceled`), whatever their versions and their `assembled_at`, and
+ *    one of the run ended always replaces one of the run going, since an ended run does not resume
+ *    and a read lagging behind the writes can project it from fewer events;
+ * 2. otherwise, of two different versions, the higher is fresher;
+ * 3. at the same version, the later `assembled_at` is, compared as instants rather than as text.
+ *
+ * Nothing held means anything read is fresher. Two snapshots equally fresh, or whose times cannot
+ * be compared, keep the one held. Pure: a reader holding snapshots from more than one source, the
+ * progress route and a `run_progress_update` frame's re-read, keeps the fresher by it.
+ */
+export function isFresherRunProgress(read: RunProgress, held: RunProgress | undefined): boolean {
+  if (held === undefined) return true;
+  if (GOING_PROGRESS_STATUSES.has(read.status) && ENDED_PROGRESS_STATUSES.has(held.status)) {
+    return false;
+  }
+  if (ENDED_PROGRESS_STATUSES.has(read.status) && GOING_PROGRESS_STATUSES.has(held.status)) {
+    return true;
+  }
+  if (read.version !== held.version) return read.version > held.version;
+  return instantMicros(read.assembled_at) > instantMicros(held.assembled_at);
+}
+
+/**
+ * An RFC 3339 timestamp as microseconds since the epoch, so that two of them compare as instants:
+ * as text, `06.870Z` sorts after `06.870123Z`, and `Date.parse` alone drops the microseconds the
+ * platform writes when it has them. `NaN` for a value that is not such a timestamp.
+ */
+function instantMicros(timestamp: string): number {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/i.exec(
+    timestamp,
+  );
+  if (match === null) return Number.NaN;
+  const [, seconds = "", fraction = "", zone = ""] = match;
+  const milliseconds = Date.parse(`${seconds.toUpperCase()}${zone.toUpperCase()}`);
+  return milliseconds * 1000 + Number(fraction.padEnd(6, "0").slice(0, 6));
+}
+
+const isString = (value: unknown): boolean => typeof value === "string";
+const isStringOrNull = (value: unknown): boolean => value === null || typeof value === "string";
+
+/** The members of a snapshot a reader leans on, each with what it must be. */
+const RUN_PROGRESS_FIELDS: ReadonlyArray<
+  readonly [field: keyof RunProgress & string, expected: string, fits: (value: unknown) => boolean]
+> = [
+  ["pipeline_run_id", "a string", isString],
+  ["mode", "a string", isString],
+  ["status", "a string", isString],
+  [
+    "version",
+    "a non-negative integer",
+    (value) => Number.isSafeInteger(value) && (value as number) >= 0,
+  ],
+  ["assembled_at", "a string", isString],
+  ["summary", "a string", isString],
+  ["invocations", "a list", Array.isArray],
+];
+
+/** The members of an invocation a timeline leans on, each with what it must be. */
+const PROGRESS_INVOCATION_FIELDS: ReadonlyArray<
+  readonly [
+    field: keyof ProgressInvocation & string,
+    expected: string,
+    fits: (value: unknown) => boolean,
+  ]
+> = [
+  ["path", "a string", isString],
+  ["pipe_code", "a string", isString],
+  ["pipe_ref", "a string", isString],
+  ["pipe_type", "a string", isString],
+  ["status", "a string", isString],
+  ["started_at", "a string or null", isStringOrNull],
+  ["ended_at", "a string or null", isStringOrNull],
+];
+
+/**
+ * What makes a progress answer unreadable, worded to follow `a snapshot whose`, or `undefined`
+ * when it can be read: a member the freshness rule or a timeline leans on that is missing or of
+ * another type — `version` a non-negative integer, the other required members strings, and each
+ * invocation an object whose path, pipe identity and status are strings and whose times are
+ * strings or `null`. The other members are relayed as sent.
+ *
+ * Internal: `getRunProgress` throws the `ApiResponseError` of an unreadable answer with it.
+ */
+export function runProgressFault(snapshot: Record<string, unknown>): string | undefined {
+  for (const [field, expected, fits] of RUN_PROGRESS_FIELDS) {
+    if (!fits(snapshot[field])) return `\`${field}\` is not ${expected}`;
+  }
+  const invocations = snapshot.invocations as unknown[];
+  for (const [index, invocation] of invocations.entries()) {
+    if (!isPlainObject(invocation)) return `\`invocations[${index}]\` is not an object`;
+    for (const [field, expected, fits] of PROGRESS_INVOCATION_FIELDS) {
+      if (!fits(invocation[field])) {
+        return `\`invocations[${index}].${field}\` is not ${expected}`;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * A readable snapshot with its degradations checked by `readRunDegradation`, the snapshot's own
+ * and each invocation's, so that neither ever fails the read: one that cannot be read, its
+ * `reason` not a string, is dropped, since an optional member is absent rather than `null`.
+ *
+ * Internal: `getRunProgress` applies it to an answer `runProgressFault` passed.
+ */
+export function withCheckedProgressDegradations(snapshot: RunProgress): RunProgress {
+  return {
+    ...withCheckedDegradationMember(snapshot),
+    invocations: snapshot.invocations.map(withCheckedDegradationMember),
+  };
+}
+
+function withCheckedDegradationMember<T extends { degradation?: RunDegradation }>(record: T): T {
+  if (!Object.hasOwn(record, "degradation")) return record;
+  const { degradation, ...rest } = record;
+  const checked = readRunDegradation(degradation);
+  return (checked === null ? rest : { ...rest, degradation: checked }) as T;
 }
 
 /**
@@ -553,6 +849,19 @@ export interface WaitForResultOptions {
   /** Invoked before each sleep so callers can drive a spinner / progress line. */
   onPoll?: (info: { attempt: number; elapsedMs: number }) => void;
   /**
+   * Called with the run's progress snapshot (`RunProgress`) each time the wait reads one fresher
+   * than the last it delivered, by `isFresherRunProgress`, so a caller can show the run advancing.
+   * Given, the wait reads `GET /v1/runs/{id}/progress` on each poll that finds the run still
+   * running, after the results read and before `onPoll`; omitted, it never reads the progress.
+   * A progress read that fails skips that poll's snapshot and never fails the wait, whose truth is
+   * the results read; a server answering that it has no progress route is not asked again during
+   * the wait. It is not called once the results read finds the run ended, nor on
+   * `startAndWaitForResult`'s blocking path, which has no run to read. The callback runs
+   * synchronously and its return value is ignored; an exception it throws propagates out of the
+   * wait, and the run keeps going on the server.
+   */
+  onProgress?: (progress: RunProgress) => void;
+  /**
    * Read only these result artifacts on each poll — `getRunResult`'s `artifacts`. The 202 a
    * running run answers carries nothing, so the selection only shapes the completed result.
    * `startAndWaitForResult`'s blocking fallback on a bare runner ignores it and returns every
@@ -598,6 +907,12 @@ export type FetchResultOnce = (
   options?: GetRunResultOptions,
 ) => Promise<RunResultState>;
 
+/** A single progress read — what the poll loop calls on each poll for `onProgress`. */
+export type FetchProgressOnce = (
+  runId: string,
+  options?: { signal?: AbortSignal },
+) => Promise<RunProgress>;
+
 /**
  * Refuse wait options no poll loop can honour. A NaN would reach the sleep's timer as a
  * 1 ms delay and poll in a tight loop. `startAndWaitForResult` calls this before it starts
@@ -621,6 +936,12 @@ export function assertWaitOptions(options: WaitForResultOptions = {}): void {
  * report — and throws `RunTimeoutError` if `timeoutMs` elapses first (the run
  * keeps executing server-side — re-poll by id later).
  *
+ * With `options.onProgress` and a `fetchProgress`, each poll that finds the run still running also
+ * reads its progress and hands `onProgress` the snapshot when it is fresher than the last one
+ * delivered (`isFresherRunProgress`). A progress read that fails only skips that poll's snapshot;
+ * a route-absent `404` (`RunLifecycleUnavailableError`) stops the progress reads for the rest of
+ * the wait; the caller's abort still ends the wait.
+ *
  * The single owner of the wait/poll/Retry-After/abort logic — `PipelexApiClient.waitForResult`
  * delegates here, so the behavior can never drift.
  */
@@ -628,12 +949,17 @@ export async function pollUntilResult(
   fetchOnce: FetchResultOnce,
   runId: string,
   options: WaitForResultOptions = {},
+  fetchProgress?: FetchProgressOnce,
 ): Promise<RunResults> {
   assertWaitOptions(options);
   const intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
   const startedAt = Date.now();
   let attempt = 0;
+  const { onProgress } = options;
+  // No progress request at all unless the caller asked for progress.
+  let readsProgress = onProgress !== undefined && fetchProgress !== undefined;
+  let delivered: RunProgress | undefined;
 
   for (;;) {
     throwIfAborted(options.signal);
@@ -662,6 +988,23 @@ export async function pollUntilResult(
     }
     if (state.state === "failed") {
       throw new RunFailedError(state.message, runId, state.status, { error: state.error });
+    }
+
+    if (readsProgress && onProgress !== undefined && fetchProgress !== undefined) {
+      let progress: RunProgress | undefined;
+      try {
+        progress = await fetchProgress(runId, { signal: options.signal });
+      } catch (error) {
+        // The caller's abort ends the wait. Any other failure skips this poll's snapshot, since
+        // the results read, not the progress, is the truth about the run.
+        throwIfAborted(options.signal);
+        // A server without the route answers every read with the same 404: stop asking.
+        if (error instanceof RunLifecycleUnavailableError) readsProgress = false;
+      }
+      if (progress !== undefined && isFresherRunProgress(progress, delivered)) {
+        delivered = progress;
+        onProgress(progress);
+      }
     }
 
     attempt += 1;
