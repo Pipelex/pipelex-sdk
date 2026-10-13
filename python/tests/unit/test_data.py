@@ -362,3 +362,45 @@ class MalformedInputFormData:
     FILES: ClassVar[list[MthdsFileItem]] = [MthdsFileItem(content='domain = "smoke"')]
     # The verdict the client gives a 2xx it cannot read, and `@pipelex/sdk` its `InputPreparationError`.
     UNREADABLE_VERDICT: ClassVar[ErrorVerdict] = ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+
+
+class IdempotencyKeyData:
+    """A run start's idempotency key, and what the hosted API answers about one.
+
+    The two refusals are the platform's problem documents for a key: one an earlier start under the same
+    key and body still holds (`idempotency_key_in_use`, sent with `Retry-After`), and one used before with
+    another body (the generic `conflict`). `@pipelex/sdk`'s `tests/start-idempotency-key.test.ts` answers
+    its client with the same documents.
+    """
+
+    KEY: ClassVar[str] = "5f0c6a52-2d3e-4c8b-9a51-7e1f0b6c2d44"
+    ACK: ClassVar[dict[str, Any]] = {"pipeline_run_id": "run-1", "state": "STARTED", "created_at": "t0"}
+    KEY_IN_USE: ClassVar[dict[str, Any]] = {
+        "type": "https://pipelex.com/errors/idempotency_key_in_use",
+        "title": "Idempotency key in use",
+        "status": 409,
+        "code": "idempotency_key_in_use",
+        "detail": "An earlier request with idempotency key 'k' and the same body is still being processed.",
+        "error_domain": "runtime",
+        "retryable": True,
+    }
+    KEY_USED_WITH_ANOTHER_BODY: ClassVar[dict[str, Any]] = {
+        "type": "https://pipelex.com/errors/conflict",
+        "title": "Conflict",
+        "status": 409,
+        "code": "conflict",
+        "detail": "The idempotency key 'k' was already used with a different request body.",
+        "error_domain": "input",
+        "retryable": False,
+    }
+    # Keys a start refuses before sending anything, each with the words that say what is wrong with it.
+    MALFORMED_KEYS: ClassVar[list[tuple[str, object, str]]] = [
+        ("empty", "", "this one is empty"),
+        ("a space", "run 42", "this one holds a character outside visible ASCII"),
+        ("a line break", "k\r\nX-Injected: 1", "this one holds a character outside visible ASCII"),
+        ("a character outside ASCII", "clé-42", "this one holds a character outside visible ASCII"),
+        ("too long", "k" * 256, "this one is 256 characters long"),
+        ("not a string", 42, "this one is not a string"),
+    ]
+    # Keys a start sends as they are: the longest, every visible ASCII character, and the shortest.
+    VALID_KEYS: ClassVar[list[str]] = ["k" * 255, "!\"#$%&'()*+,-./0123456789:;<=>?@AZ[\\]^_`az{|}~", "k"]

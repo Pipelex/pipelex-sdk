@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **An idempotency key on a run start**: `start` and `start_and_wait` take the keyword argument `idempotency_key: str | None`, sent as the `Idempotency-Key` header of `POST /v1/start` and never in the body, and with no key there is no header. The hosted API binds the key to the run it starts and answers the same start sent again under it with that run, so a caller whose start failed with `run_may_have_started` recovers the run by sending the same start again under the same key instead of risking a second run. A key that is not 1 to 255 visible ASCII characters raises `RequestArgumentError` before anything is sent, the blocking `execute` fallback of `start_and_wait` sends none, and a bare runner ignores it (`docs/errors.md`).
+- **`IdempotencyErrorCode`**: the enum naming the code `idempotency_key_in_use`, which the hosted API sends on a `409` when an earlier start under the same key is still being handled.
+
+### Changed
+
+- **The fallback verdict of a `409` with the code `idempotency_key_in_use`**: it is `runtime` and retryable, since the earlier request releases the key by finishing; every other `409` the table does not name stays `input` and not retryable.
+
 ## [v0.41.0] - 2026-10-13
 
 ### Added

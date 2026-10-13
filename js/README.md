@@ -72,6 +72,23 @@ const saved = await client.start({ method_id: "mt_abc123@3", inputs: {} });
 console.log(saved.method_version); // 3
 ```
 
+### A start you can retry: `idempotencyKey`
+
+`start` and `startAndWaitForResult` take an optional `idempotencyKey`, sent as the `Idempotency-Key` header of `POST /v1/start`. The hosted API binds the key to the run the first request starts, so the same start sent again under the same key is answered with that run and starts nothing: a start whose answer was lost can be sent again without paying for a second run. Generate one key per run, and keep it with the options, unchanged, across that start's retries:
+
+```ts
+import { runMayHaveStartedOf } from "@pipelex/sdk";
+
+const options = { method_id: "mt_abc123", inputs, idempotencyKey: crypto.randomUUID() };
+const ack = await client.start(options).catch((err: unknown) => {
+  // The run may exist: under the same key, the same start is answered with it.
+  if (runMayHaveStartedOf(err)) return client.start(options);
+  throw err;
+});
+```
+
+A key is 1 to 255 visible ASCII characters; a key reused with other options is refused with a `409` `conflict`, and one whose earlier start is still being handled with a retryable `409` `idempotency_key_in_use` ([`docs/errors.md`](./docs/errors.md#a-starts-idempotency-key--idempotencykey)). A bare runner ignores the header.
+
 ### Checking a model reference
 
 `checkModelReference` asks the runner whether a reference a method's `model` field could name resolves, as what kind and to which model (`GET /v1/models/check`, served by `pipelex-api` from pipelex 0.78.0). A reference that resolves nowhere is a verdict, not an error, and narrowing on `kind` types its `matches`:
@@ -136,7 +153,7 @@ try {
 
 ### Errors
 
-Every error the SDK throws carries a verdict: `retryable`, whether asking again can succeed, and `errorDomain`, who can fix the failure (`input` for the caller, `config` for a change to the environment such as the credential, the plan or the base URL, `runtime` for nobody beforehand). Both are always decided, and `errorVerdictOf` reads them from anything a `catch` holds, returning `undefined` for what is not an SDK error, such as a bug in the calling code or your own abort. A failed `start` or blocking `execute` also says whether it may have created a run anyway, as `runMayHaveStarted`, read with `runMayHaveStartedOf`: when it is `true`, `retryable` is `false`, since asking again could start a second paid run, and the person should look the run up in the run history first ([`docs/errors.md`](./docs/errors.md#a-failed-run-start--runmayhavestarted)).
+Every error the SDK throws carries a verdict: `retryable`, whether asking again can succeed, and `errorDomain`, who can fix the failure (`input` for the caller, `config` for a change to the environment such as the credential, the plan or the base URL, `runtime` for nobody beforehand). Both are always decided, and `errorVerdictOf` reads them from anything a `catch` holds, returning `undefined` for what is not an SDK error, such as a bug in the calling code or your own abort. A failed `start` or blocking `execute` also says whether it may have created a run anyway, as `runMayHaveStarted`, read with `runMayHaveStartedOf`: when it is `true`, `retryable` is `false`, since asking again could start a second paid run, and the person should look the run up in the run history first ([`docs/errors.md`](./docs/errors.md#a-failed-run-start--runmayhavestarted)), unless the start carried an `idempotencyKey`, in which case sending it again unchanged recovers the run ([above](#a-start-you-can-retry-idempotencykey)).
 
 ```ts
 import { errorVerdictOf } from "@pipelex/sdk";

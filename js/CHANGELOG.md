@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **An idempotency key on a run start**: `start` and `startAndWaitForResult` take `idempotencyKey` (declared by the new `PipelexStartRequestOptions`, part of `PipelexStartOptions`), sent as the `Idempotency-Key` header of `POST /v1/start` and never in the body, and with no key there is no header. The hosted API binds the key to the run it starts and answers the same start sent again under it with that run, so a caller whose start failed with `runMayHaveStarted` recovers the run by sending the same start again under the same key instead of risking a second run. A key that is not 1 to 255 visible ASCII characters is a `RequestArgumentError` before any request, the blocking `execute` fallback of `startAndWaitForResult` sends none, and a bare runner ignores it (`docs/errors.md`).
+- **`IdempotencyErrorCode`**: the type naming the code `idempotency_key_in_use`, which the hosted API sends on a `409` when an earlier start under the same key is still being handled.
+
+### Changed
+
+- **The fallback verdict of a `409` with the code `idempotency_key_in_use`**: it is `runtime` and retryable, since the earlier request releases the key by finishing; every other `409` the table does not name stays `input` and not retryable.
+
 ## [v0.41.0] - 2026-10-13
 
 ### Added
