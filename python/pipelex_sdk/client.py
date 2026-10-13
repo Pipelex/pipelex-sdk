@@ -114,6 +114,7 @@ from pipelex_sdk.runs import (
     PipelexRunResultStart,
     PollInfo,
     RunArtifact,
+    RunProgress,
     RunRead,
     RunResultCompleted,
     RunResultFailed,
@@ -121,6 +122,7 @@ from pipelex_sdk.runs import (
     RunResults,
     RunStatus,
     WaitForResultOptions,
+    is_fresher_run_progress,
 )
 from pipelex_sdk.upload import UploadRecord, UploadSource
 from pipelex_sdk.upload import upload_file as _upload_file_impl
@@ -347,8 +349,8 @@ class PipelexAPIClient(MthdsAPIClient):
     One base URL (`PIPELEX_BASE_URL`); every endpoint is `<base>/v1/<endpoint>`:
     - **protocol** (`execute` / `start` / `validate` / `models` / `version`) — inherited
       from `MthdsAPIClient`; works against any MTHDS-compliant runner, hosted or bare.
-    - **run lifecycle** (`get_run_status` / `get_run_result` / `wait_for_result`) — the
-      durable polling extension (added in Phase 2).
+    - **run lifecycle** (`get_run_status` / `get_run_progress` / `get_run_result` /
+      `wait_for_result`) — the durable polling extension (added in Phase 2).
     - **product** (`/v1/me`, `/v1/methods`, `/v1/billing/*`, …) — the hosted product
       surface (added in Phase 3), reached through `_request_product` so callers branch
       on the structured `ApiResponseError.code`, not the HTTP status. The two list routes
@@ -772,11 +774,14 @@ class PipelexAPIClient(MthdsAPIClient):
             may_start_run=_MAY_START_RUN.get(),
         )
 
-    def _raise_if_lifecycle_unavailable(self, *, status: int, body: str, url: str) -> None:
+    def _raise_if_lifecycle_unavailable(
+        self, *, status: int, body: str, url: str, explanation: str = "PIPELEX_BASE_URL points at a bare runner that does not serve it."
+    ) -> None:
         """Translate a "route absent" 404 (a bare pipelex-api with no platform block) into a clear
         `RunLifecycleUnavailableError`. A 404 the platform or the runner answered on purpose — a run not
         found, a `method_ref` with no package — carries a problem document (`code` or `error_type`) and is
-        left for normal handling as `ApiResponseError`.
+        left for normal handling as `ApiResponseError`. `explanation` replaces the sentence saying why the
+        route is missing, for a route a hosted API may also lack.
         """
         if status != 404:
             return
@@ -784,7 +789,7 @@ class PipelexAPIClient(MthdsAPIClient):
             msg = (
                 f"The durable run lifecycle is not available: {url} returned 404. Run polling is a "
                 f"hosted-API extension (/{_API_PREFIX}/{_RUNS}/*), not part of the MTHDS Protocol; "
-                "PIPELEX_BASE_URL points at a bare runner that does not serve it."
+                f"{explanation}"
             )
             raise RunLifecycleUnavailableError(msg, api_url=self.base_url)
 
@@ -1183,7 +1188,7 @@ class PipelexAPIClient(MthdsAPIClient):
 
     # ── Hosted extension: durable run lifecycle (NOT part of the protocol) ──
     #
-    # These four methods are OWNED by this SDK and return this package's own `runs`
+    # These methods are OWNED by this SDK and return this package's own `runs`
     # types (a Pipelex-branded surface). The protocol base `MthdsAPIClient` is
     # protocol-only — it declares no run lifecycle — so these are plain methods, not
     # overrides (no `@override`, no override suppressions).
@@ -1217,6 +1222,43 @@ class PipelexAPIClient(MthdsAPIClient):
         if retry_after is not None:
             run = run.model_copy(update={"retry_after_seconds": retry_after})
         return run
+
+    async def get_run_progress(self, run_id: str) -> RunProgress:
+        """Read a run's progress snapshot by bare id — `GET /v1/runs/{run_id}/progress`.
+
+        The platform projects the snapshot at each read from the run's live progress events, through the
+        status read's self-healing path: which invocations of which pipes have started, ended or been
+        skipped, how far each batch has got, which outcome each condition took, where the run is retrying
+        or stuck, and a one-line `summary`. A pending run, and a run that has written no progress event,
+        answer with no invocation. When the workflow engine cannot be reached the read still answers, its
+        `degradation` reading `status_unavailable` and its `status` the last one recorded. Two reads can
+        answer out of order: keep the fresher by `is_fresher_run_progress`, as
+        `WaitForResultOptions.on_progress` does.
+
+        The members the freshness rule and a timeline lean on are read strictly (see `RunProgress`), and
+        the snapshot's `degradation` and each invocation's are read leniently, as the status read's, so
+        neither fails the read.
+
+        Raises:
+            RequestArgumentError: If `run_id` is not a non-empty string, or is one the URL would resolve.
+            RunLifecycleUnavailableError: If the route is absent: a bare runner, or a hosted API older
+                than the progress route.
+            ApiUnreachableError: If the host cannot be reached (DNS / connect / TLS / timeout).
+            ApiResponseError: For the platform's `404` of a run that does not exist or is another
+                organization's, any other non-2xx response, or a 2xx that is not a snapshot.
+        """
+        endpoint = f"{_RUNS}/{_id_path_segment(run_id, call='get_run_progress', what=_RUN_ID_ARGUMENT)}/progress"
+        url = self._url(endpoint)
+        response = await self._send("GET", url, content=None, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
+        self._raise_if_lifecycle_unavailable(
+            status=response.status_code,
+            body=response.text,
+            url=url,
+            explanation="the server is a bare runner, or a hosted API older than the progress route.",
+        )
+        if not response.is_success:
+            self._raise_api_response_error(method="GET", endpoint=endpoint, response=response)
+        return self._read_v1_answer(RunProgress.model_validate, method="GET", endpoint=endpoint, response=response)
 
     async def get_run_result(self, run_id: str, *, artifacts: Sequence[RunArtifact] | None = None) -> RunResultState:
         """Single-shot result lookup — `GET /v1/runs/{run_id}/results`.
@@ -1300,12 +1342,23 @@ class PipelexAPIClient(MthdsAPIClient):
         awaiting task raises `asyncio.CancelledError` out of this loop, leaving the run resumable,
         on every supported Python version, even when the cancellation lands in the step a poll answers.
         `artifacts` narrows every results read of the loop, exactly as on `get_run_result`.
+
+        With `options.on_progress`, each poll that finds the run still running also reads
+        `get_run_progress` and hands the callback every snapshot fresher than the last it delivered
+        (`is_fresher_run_progress`). That read is bounded by the time the wait has left, so it never holds
+        the wait past `timeout_seconds`; a progress read that fails otherwise only skips that poll's
+        snapshot, and a server answering that it has no progress route is not asked again during the wait
+        (see `WaitForResultOptions.on_progress`).
         """
         # Refused before the first poll, so an empty selection never waits out a timeout to fail.
         _artifact_selection(artifacts)
         opts = options or WaitForResultOptions()
         started_at = monotonic()
         attempt = 0
+        # No progress request at all unless the caller asked for progress; `None` again once the server has
+        # answered that it serves no progress route.
+        on_progress = opts.on_progress
+        delivered: RunProgress | None = None
 
         while True:
             elapsed = monotonic() - started_at
@@ -1327,7 +1380,27 @@ class PipelexAPIClient(MthdsAPIClient):
                 msg = state.message
                 raise RunFailedError(msg, run_id=run_id, status=state.status, error=state.error)
 
-            # state is RunResultRunning — decide whether to keep waiting.
+            # state is RunResultRunning — report its progress when asked, then decide whether to keep waiting.
+            if on_progress is not None:
+                # The deadline is checked again before the progress read and bounds it, and the elapsed time
+                # below is taken after it, so a slow progress read never holds the wait past its timeout.
+                remaining = opts.timeout_seconds - (monotonic() - started_at)
+                if remaining <= 0:
+                    raise RunTimeoutError(_timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds)
+                try:
+                    progress = await self._read_progress_while_waiting(run_id, time_left_seconds=remaining)
+                except TimeoutError as exc:
+                    raise RunTimeoutError(
+                        _timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds
+                    ) from exc
+                except RunLifecycleUnavailableError:
+                    # A server without the route answers every read with the same 404: stop asking.
+                    on_progress = None
+                else:
+                    if progress is not None and is_fresher_run_progress(progress, delivered):
+                        delivered = progress
+                        on_progress(progress)
+
             attempt += 1
             elapsed = monotonic() - started_at
             if elapsed >= opts.timeout_seconds:
@@ -1338,6 +1411,24 @@ class PipelexAPIClient(MthdsAPIClient):
             retry_seconds = state.retry_after_seconds if state.retry_after_seconds is not None else 0
             wait_seconds = min(max(opts.interval_seconds, retry_seconds), opts.timeout_seconds - elapsed)
             await asyncio.sleep(wait_seconds)
+
+    async def _read_progress_while_waiting(self, run_id: str, *, time_left_seconds: float) -> RunProgress | None:
+        """One progress read of `wait_for_result`'s loop, best effort: the snapshot, or `None` when the read failed.
+
+        The results read, not the progress, is the truth about the run, so a read that got no answer
+        (`ApiUnreachableError`) or an answer that is no snapshot (`ApiResponseError`: a `503` while the
+        platform cannot read the run's events, a body the SDK cannot read) skips that poll's snapshot.
+        `asyncio.timeout`, as around the results read, bounds the read by the time the wait has left.
+
+        Raises:
+            TimeoutError: The wait's time ran out during the read, which the loop raises as its `RunTimeoutError`.
+            RunLifecycleUnavailableError: The server serves no progress route, which the loop stops asking.
+        """
+        try:
+            async with asyncio.timeout(time_left_seconds):
+                return await self.get_run_progress(run_id)
+        except (ApiUnreachableError, ApiResponseError):
+            return None
 
     @override
     async def version(self) -> VersionInfo:
@@ -1452,7 +1543,9 @@ class PipelexAPIClient(MthdsAPIClient):
 
         `artifacts` narrows the hosted results read, as on `get_run_result`. The blocking path
         ignores it: the execute response already holds every artifact, so there is nothing to save
-        by narrowing it, and the result it returns answers for every field.
+        by narrowing it, and the result it returns answers for every field. `wait_options` tunes the
+        hosted wait, its `on_progress` included, which the blocking path, having no run to read,
+        never calls.
 
         `on_started` is called once with the start acknowledgement as soon as the durable run
         exists and before the first poll, so a caller that waits through this method holds the

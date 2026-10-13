@@ -121,6 +121,7 @@ _ROUTES: list[tuple[str, str, IdRouteCall, IdRouteUrl]] = [
         lambda seg: f"{_EXAMPLES_URL}/{seg}",
     ),
     (_A_RUN_ID, "get_run_status", lambda client, id_: client.get_run_status(id_), lambda seg: f"{BASE_URL}/v1/runs/{seg}/status"),
+    (_A_RUN_ID, "get_run_progress", lambda client, id_: client.get_run_progress(id_), lambda seg: f"{BASE_URL}/v1/runs/{seg}/progress"),
     (_A_RUN_ID, "get_run_result", lambda client, id_: client.get_run_result(id_), lambda seg: f"{BASE_URL}/v1/runs/{seg}/results"),
     (_A_RUN_ID, "get_run_detail", lambda client, id_: client.get_run_detail(id_), lambda seg: f"{BASE_URL}/v1/runs/{seg}"),
     (

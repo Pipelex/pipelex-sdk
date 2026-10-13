@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A run's progress, `get_run_progress`**: reads the run's progress snapshot on the hosted API's `GET /v1/runs/{id}/progress` and returns it as `RunProgress` (`pipelex_sdk.runs`): the run's `status` (`RunProgressStatus`), a `version` and an `assembled_at` to compare snapshots by, a one-line `summary`, the status read's `degradation` when the run reads degraded, and every invocation of a pipe in the run as a `ProgressInvocation`, named by its path, with its status (`ProgressInvocationStatus`), its times, a batch's counts (`ProgressBatch`), a condition's outcome (`ProgressCondition`) and the health annotations `attempts`, `last_failure` (`ProgressFailure`) and `degradation`, the last reusing `RunDegradation`. Both statuses are read open, a snapshot missing a member the freshness rule or a timeline leans on raises the `ApiResponseError` of an answer the SDK cannot read, any other member that does not fit its type reads `None`, and a server without the route raises `RunLifecycleUnavailableError` (`docs/run-results.md`).
+- **`on_progress` on `WaitForResultOptions`**: given, each poll of `wait_for_result`, and of `start_and_wait` on the hosted path, that finds the run still running also reads the progress route and calls `on_progress` with the snapshot when it is fresher than the last one delivered, so a caller can show the run advancing while it waits. A failed progress read skips that poll's snapshot and never fails the wait, a server without the route is not asked again during the wait, the read is bounded by the time the wait has left so it never holds the wait past `timeout_seconds`, and without `on_progress` no progress request is made.
+- **`is_fresher_run_progress`**: says whether a snapshot just read should replace the one held, by the platform's rule: a snapshot of the run still going never replaces one of the run ended, then the higher `version`, then at the same version the later `assembled_at`, compared as instants. `on_progress` delivers by it, and a caller reading the route itself keeps the fresher by it.
+
 ## [v0.43.0] - 2026-10-13
 
 ### Added
