@@ -1,7 +1,7 @@
 """Pipelex-product wire models — the snake_case JSON shapes the hosted-product routes speak.
 
 These mirror `pipelex-sdk-js/src/product-models.ts`. They are the management surface
-the hosted product (`/v1/me`, `/v1/methods`, `/v1/organizations`, `/v1/billing/*`,
+the hosted product (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/billing/*`,
 `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
 `/v1/resolve-storage-url`, `/v1/upload`, `/v1/runs`) drives.
 
@@ -591,6 +591,114 @@ class MethodDeletionAccepted(BaseModel):
     method_id: str
     deletion_state: MethodDeletionState
     deletion_job_id: str
+
+
+# ── Method examples (`/v1/methods/{id}/examples`) ────────────────────────
+#
+# An example is a named set of inputs saved on a method, so the method can be run on them again in
+# one gesture, with the latest run of exactly those inputs. Like the method, it is shared across the
+# organization: any member reads, edits, runs and deletes any example. `input_revision` starts at 1
+# and rises each time the inputs change, which clears `latest_run_id`; a run is recorded as the
+# latest only against the revision whose inputs it used (`record_method_example_latest_run`).
+
+
+class MethodExample(BaseModel):
+    """One saved example of a method.
+
+    What `create_method_example`, `get_method_example`, `update_method_example` and both arms of
+    `record_method_example_latest_run` answer, and a row of `list_method_examples`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    example_id: str
+    """The example's id, `ex_…`, minted by the platform."""
+
+    method_id: str
+    """The bare id of the method the example belongs to."""
+
+    name: str
+    """The example's name, 1 to 200 characters and not blank."""
+
+    inputs: dict[str, Any]
+    """The inputs a run of the example sends, a JSON object returned exactly as it was saved: an integer
+    stays an `int` and `3.0` a `float`."""
+
+    input_revision: int
+    """Starts at 1 and rises by one each time the inputs change. Send it, as read when the run was
+    started, to `record_method_example_latest_run`."""
+
+    latest_run_id: str | None = None
+    """The latest run of the current inputs, `None` when none was recorded since they last changed. It
+    may name a run deleted since, which then reads as not found."""
+
+    created_by_user_id: str
+    """The canonical id of the member who saved the example; it confers nothing."""
+
+    created_at: str
+    """ISO-8601 UTC instant of the example's creation."""
+
+    updated_at: str
+    """ISO-8601 UTC instant of its last change: its name, its inputs or its latest run."""
+
+
+class MethodExamplePage(BaseModel):
+    """One page of a method's examples, oldest first, inputs included — `{items, next_cursor}`.
+
+    Same opaque-cursor contract as `MethodPage`: pass `next_cursor` straight back, and a `None` means
+    the last page. Examples are read whole on the server, and a read stops at 1 MB, so a page may be
+    short while `next_cursor` is set; `iterate_method_examples` follows it.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    items: list[MethodExample]
+    next_cursor: str | None = None
+
+
+class MethodExampleLatestRunOutcome(StrEnum):
+    """What a latest-run write did — the discriminant of `MethodExampleLatestRunResult`."""
+
+    RECORDED = "recorded"
+    """The run is now the example's latest."""
+
+    STALE = "stale"
+    """The example's inputs are no longer the ones the run used, and nothing was written."""
+
+
+class MethodExampleLatestRunRecorded(BaseModel):
+    """The run is now the example's latest; `example` is the example as it now stands."""
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodExampleLatestRunOutcome.RECORDED]
+    example: MethodExample
+
+
+class MethodExampleLatestRunStale(BaseModel):
+    """The run used inputs the example no longer holds, and nothing was written.
+
+    `example` is the example as it stands, with its current revision and latest run.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodExampleLatestRunOutcome.STALE]
+    example: MethodExample
+
+
+MethodExampleLatestRunResult: TypeAlias = Annotated[
+    MethodExampleLatestRunRecorded | MethodExampleLatestRunStale,
+    Field(discriminator="outcome"),
+]
+"""The answer of `record_method_example_latest_run`, a `200` discriminated on `outcome`. A stale run is the
+expected end of a run that outlasted an edit of the example's inputs, a verdict about the run rather than
+a failed request, so it is answered rather than raised. Branch on `outcome` (`match result:` over its
+classes), never on the status: an unknown example, a run that is not the method's or a method being
+deleted raise `ApiResponseError` instead."""
+
+MethodExampleLatestRunResultAdapter: TypeAdapter[MethodExampleLatestRunResult] = TypeAdapter(MethodExampleLatestRunResult)  # pylint: disable=invalid-name
+"""The single parse path for a latest-run answer — built once at import (TypeAdapter construction is expensive)."""
 
 
 # ── Organizations (`/v1/organizations`) ──────────────────────────────────

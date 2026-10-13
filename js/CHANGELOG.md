@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A method's saved examples**: `createMethodExample`, `listMethodExamples`, `iterateMethodExamples`, `getMethodExample`, `updateMethodExample`, `recordMethodExampleLatestRun` and `deleteMethodExample` read and write the named sets of inputs saved on a method, on the hosted API's `/v1/methods/{id}/examples` routes, with the `MethodExample` type and its input types, `MethodExamplePage` and `ListMethodExamplesQuery`. An edit of the inputs raises `input_revision` and clears `latest_run_id`; the list is paged oldest first, and `iterateMethodExamples` follows its cursor through the loop the other iterators share. An empty example id, an edit naming neither `name` nor `inputs`, and a latest-run write without a run id or a positive integer revision are a `RequestArgumentError` before any request.
+- **The latest-run verdict**: `recordMethodExampleLatestRun` records a run against the revision whose inputs it used and answers a `MethodExampleLatestRunResult` discriminated on `outcome` (`MethodExampleLatestRunOutcome`), `recorded` or `stale`, each arm carrying the `example` as it stands, so a run that outlasted an edit of the inputs is a verdict to branch on rather than a thrown error.
+
 ## [v0.42.0] - 2026-10-13
 
 ### Added

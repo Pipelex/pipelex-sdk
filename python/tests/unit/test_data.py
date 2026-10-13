@@ -241,6 +241,33 @@ class MethodVersionBodies:
     }
 
 
+class MethodExampleBodies:
+    """A method's saved examples, as the platform serializes them (`MethodExample`, `MethodExamplePage`).
+
+    The inputs hold an integer and a float, which an example returns exactly as they were saved.
+    """
+
+    METHOD_ID: ClassVar[str] = "mt_receipts01"
+    EXAMPLE_ID: ClassVar[str] = "ex_0192b3c4-d5e6-7f80-9a1b-2c3d4e5f6a7b"
+
+    INPUTS: ClassVar[dict[str, Any]] = {"receipt": {"url": "pipelex-storage://org_1/receipt.pdf"}, "total": 3, "rate": 3.5}
+
+    EXAMPLE: ClassVar[dict[str, Any]] = {
+        "example_id": EXAMPLE_ID,
+        "method_id": METHOD_ID,
+        "name": "March receipt",
+        "inputs": INPUTS,
+        "input_revision": 2,
+        "latest_run_id": "run_1",
+        "created_by_user_id": "user_1",
+        "created_at": "2026-10-12T09:00:00+00:00",
+        "updated_at": "2026-10-12T10:00:00+00:00",
+    }
+
+    #: The same example after an edit of its inputs: the next revision, with no latest run.
+    REVISED: ClassVar[dict[str, Any]] = {**EXAMPLE, "inputs": {"total": 4}, "input_revision": 3, "latest_run_id": None}
+
+
 class ModelCheckBodies:
     """Bodies of `GET /v1/models/check`, shaped as pipelex 0.78.0's own `ModelReferenceVerdict` writes them.
 

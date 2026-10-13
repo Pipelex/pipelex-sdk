@@ -1,6 +1,6 @@
 /**
  * Pipelex-product wire models — the snake_case JSON shapes the hosted-product
- * routes (`/v1/me`, `/v1/methods`, `/v1/organizations`, `/v1/billing/*`,
+ * routes (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/billing/*`,
  * `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
  * `/v1/resolve-storage-url`, `/v1/upload`, `/v1/upload/grant`, `/v1/runs`) speak.
  *
@@ -375,6 +375,140 @@ export interface ListMethodVersionsQuery {
  */
 export interface MethodVersionPage {
   items: MethodVersionSummary[];
+  nextCursor: string | null;
+}
+
+// ── Method examples (`/v1/methods/{id}/examples`) ────────────────────────
+//
+// An example is a named set of inputs saved on a method, so the method can be run on them
+// again in one gesture, with the latest run of exactly those inputs. Like the method, it is
+// shared across the organization: any member reads, edits, runs and deletes any example.
+// `input_revision` starts at 1 and rises each time the inputs change, which clears
+// `latest_run_id`; a run is recorded as the latest only against the revision whose inputs it
+// used (`recordMethodExampleLatestRun`).
+
+/**
+ * One saved example of a method — what `createMethodExample`, `getMethodExample`,
+ * `updateMethodExample` and both arms of `recordMethodExampleLatestRun` answer, and a row of
+ * `listMethodExamples`.
+ */
+export interface MethodExample {
+  /** The example's id, `ex_…`, minted by the platform. */
+  example_id: string;
+  /** The bare id of the method the example belongs to. */
+  method_id: string;
+  /** The example's name, 1 to 200 characters and not blank. */
+  name: string;
+  /**
+   * The inputs a run of the example sends, a JSON object returned exactly as it was saved: an
+   * integer stays an integer and `3.0` a float.
+   */
+  inputs: Record<string, unknown>;
+  /**
+   * Starts at 1 and rises by one each time the inputs change. Send it, as read when the run
+   * was started, to `recordMethodExampleLatestRun`.
+   */
+  input_revision: number;
+  /**
+   * The latest run of the current inputs, `null` when none was recorded since they last
+   * changed. It may name a run deleted since, which then reads as not found.
+   */
+  latest_run_id: string | null;
+  /** The canonical id of the member who saved the example; it confers nothing. */
+  created_by_user_id: string;
+  /** ISO-8601 UTC instant of the example's creation. */
+  created_at: string;
+  /** ISO-8601 UTC instant of its last change: its name, its inputs or its latest run. */
+  updated_at: string;
+}
+
+/** The create — `createMethodExample`, `POST /v1/methods/{id}/examples`. */
+export interface MethodExampleCreateInput {
+  /** The example's name, 1 to 200 characters and not blank. */
+  name: string;
+  /** The inputs a run of the example sends, a JSON object. */
+  inputs: Record<string, unknown>;
+  /**
+   * A run of this method that used exactly these inputs, recorded as the example's latest run
+   * at revision 1 — the run a person saves as an example. Omitted, the example has no latest run.
+   */
+  run_id?: string;
+}
+
+/**
+ * The edit — `updateMethodExample`, `PATCH /v1/methods/{id}/examples/{example_id}`: a new name,
+ * new inputs, or both, and at least one of them. An omitted field keeps the stored value.
+ */
+export interface MethodExampleUpdateInput {
+  /** The example's new name, 1 to 200 characters and not blank. */
+  name?: string;
+  /**
+   * The example's new inputs. Inputs that differ from the stored ones raise `input_revision`
+   * by one and clear `latest_run_id`; the same inputs, their keys in another order included,
+   * change nothing.
+   */
+  inputs?: Record<string, unknown>;
+}
+
+/** The latest-run write — `recordMethodExampleLatestRun`. */
+export interface MethodExampleLatestRunInput {
+  /** A run of this method that used the example's inputs. */
+  run_id: string;
+  /**
+   * The example's `input_revision` whose inputs the run used, as the caller read it when it
+   * started the run. The run is recorded only while the example still holds that revision.
+   */
+  input_revision: number;
+}
+
+/** What a latest-run write did — the discriminant of `MethodExampleLatestRunResult`. */
+export type MethodExampleLatestRunOutcome = "recorded" | "stale";
+
+/** The run is now the example's latest; `example` is the example as it now stands. */
+export interface MethodExampleLatestRunRecorded {
+  outcome: "recorded";
+  example: MethodExample;
+}
+
+/**
+ * The run used inputs the example no longer holds, and nothing was written; `example` is the
+ * example as it stands, with its current revision and latest run.
+ */
+export interface MethodExampleLatestRunStale {
+  outcome: "stale";
+  example: MethodExample;
+}
+
+/**
+ * The answer of `recordMethodExampleLatestRun`, a `200` discriminated on `outcome`. A stale run
+ * is the expected end of a run that outlasted an edit of the example's inputs, a verdict about
+ * the run rather than a failed request, so it is answered rather than thrown. Branch on
+ * `outcome`, never on the status: an unknown example, a run that is not the method's or a
+ * method being deleted are thrown as `ApiResponseError` instead.
+ */
+export type MethodExampleLatestRunResult =
+  MethodExampleLatestRunRecorded | MethodExampleLatestRunStale;
+
+/** Query for one page of a method's examples. */
+export interface ListMethodExamplesQuery {
+  /**
+   * Page size, from 1 to 100; the API defaults to 50 and refuses a `limit` outside that range
+   * with a `422`.
+   */
+  limit?: number;
+  /** Opaque `nextCursor` from the previous page. */
+  cursor?: string;
+}
+
+/**
+ * One page of a method's examples, oldest first, inputs included.
+ *
+ * `nextCursor` is opaque — pass it straight back to `listMethodExamples` to continue; `null`
+ * means this was the last page. Examples are read whole on the server, and a read stops at
+ * 1 MB, so a page may be short while `nextCursor` is set; `iterateMethodExamples` follows it.
+ */
+export interface MethodExamplePage {
+  items: MethodExample[];
   nextCursor: string | null;
 }
 

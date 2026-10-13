@@ -62,11 +62,18 @@ import type {
   InvoiceView,
   Membership,
   MembershipsResponse,
+  ListMethodExamplesQuery,
   ListMethodsQuery,
   ListMethodVersionsQuery,
   MethodData,
   MethodDeletionAccepted,
   MethodDraftInput,
+  MethodExample,
+  MethodExampleCreateInput,
+  MethodExampleLatestRunInput,
+  MethodExampleLatestRunResult,
+  MethodExamplePage,
+  MethodExampleUpdateInput,
   MethodPage,
   MethodPublishInput,
   MethodPublishResult,
@@ -140,7 +147,7 @@ import { PipelexExecuteResult, resultsFromExecute } from "./execute-result.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // A pure RUNAWAY guard on the paged-list iterators (`iterateMethods`,
-// `iterateRuns`), deliberately not a coverage limit.
+// `iterateRuns`, `iterateMethodExamples`), deliberately not a coverage limit.
 //
 // It counts TOTAL pages, not empty ones. An earlier version capped consecutive
 // empty pages, which is the wrong axis: an empty page whose cursor ADVANCED is
@@ -158,7 +165,8 @@ const MAX_PAGES = 10_000;
 
 /**
  * Follow a paged list's cursor until the server says there is no more, yielding every row —
- * the one loop behind `iterateMethods` and `iterateRuns`, so the two cannot drift apart.
+ * the one loop behind `iterateMethods`, `iterateRuns` and `iterateMethodExamples`, so they cannot
+ * drift apart.
  *
  * It yields lazily: a caller that breaks early stops the requests. It stops when `nextCursor`
  * is `null`, the normal end, and when the server hands back the cursor it was just sent, which
@@ -555,6 +563,24 @@ function methodPath(methodId: string): string {
     );
   }
   return `methods/${encodeURIComponent(methodId)}`;
+}
+
+/**
+ * The path of one saved example, `methods/{id}/examples/{example_id}`, for a bare catalog id and
+ * an example id, refused as `methodPath` refuses a suffixed id. An empty example id would address
+ * the examples list rather than an example, so it is refused before anything is sent, as is a
+ * value that is not a string; `call` names the method in the message.
+ */
+function methodExamplePath(methodId: string, exampleId: string, call: string): string {
+  const path = methodPath(methodId);
+  const candidate: unknown = exampleId;
+  if (typeof candidate !== "string" || candidate.length === 0) {
+    const got = typeof candidate === "string" ? "an empty string" : typeof candidate;
+    throw new RequestArgumentError(
+      `${call}() takes an example id, the example's non-empty \`example_id\`; got ${got}.`,
+    );
+  }
+  return `${path}/examples/${encodeURIComponent(candidate)}`;
 }
 
 export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
@@ -2299,6 +2325,219 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    */
   async deleteMethod(methodId: string): Promise<MethodDeletionAccepted> {
     return this.requestProduct("DELETE", methodPath(methodId));
+  }
+
+  // ── Method examples (`/v1/methods/{id}/examples`) ──────────────────────
+  //
+  // Every example route takes a bare catalog id, as `getMethod` does, and answers `404`
+  // `not_found` for an unknown method or example and `409` `method_being_deleted` while the
+  // method's erasure runs. The writes are `403` to a read-only key, which may still read.
+
+  /**
+   * Save an example on a method — `POST /v1/methods/{id}/examples`: a named set of inputs, and
+   * with `run_id`, a run of this method that used exactly those inputs, recorded as its latest
+   * run. Answers the example as stored, at `input_revision` 1.
+   *
+   * Sends `name`, `inputs` and, when given, `run_id`, and nothing else: the route's body is
+   * closed. Throws `ApiResponseError`: `404` `run_not_found` for a `run_id` that is not one of
+   * this method's runs in the caller's organization, with nothing written; `413`
+   * `payload_too_large` for an example larger than one stored item holds; `422` for a name that
+   * is empty, blank or over 200 characters, or inputs that are not a JSON object; and the codes
+   * every example route answers.
+   */
+  async createMethodExample(
+    methodId: string,
+    input: MethodExampleCreateInput,
+  ): Promise<MethodExample> {
+    const endpoint = `${methodPath(methodId)}/examples`;
+    const body: Record<string, unknown> = { name: input.name, inputs: input.inputs };
+    if (input.run_id !== undefined) body.run_id = input.run_id;
+    return this.requestProductObject("POST", endpoint, body);
+  }
+
+  /**
+   * One page of a method's examples, oldest first, inputs included —
+   * `GET /v1/methods/{id}/examples`.
+   *
+   * Pass the page's `nextCursor` back as `cursor` to continue; `null` is the last page. A page
+   * may be short while `nextCursor` is set, because the platform reads examples whole and stops
+   * a read at 1 MB; `iterateMethodExamples` follows the cursor for a caller that wants them all.
+   *
+   * Throws `ApiResponseError`: `400` `malformed_request` for a cursor the listing did not issue
+   * for this method, `422` for a `limit` outside 1 to 100, and the codes every example route
+   * answers. A page whose `items` is not an array or whose `next_cursor` is neither a string
+   * nor `null` is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   */
+  async listMethodExamples(
+    methodId: string,
+    query: ListMethodExamplesQuery = {},
+  ): Promise<MethodExamplePage> {
+    const params = new URLSearchParams();
+    // `!== undefined`, not truthiness — mirroring `listMethodVersions`: an explicit empty cursor
+    // is bad input the API should refuse, not an omission.
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.cursor !== undefined) params.set("cursor", query.cursor);
+    const suffix = params.toString();
+    const endpoint = `${methodPath(methodId)}/examples`;
+    return this.requestPage<MethodExample>(suffix ? `${endpoint}?${suffix}` : endpoint);
+  }
+
+  /**
+   * Every example of a method, oldest first, streamed — follows the cursor of
+   * `listMethodExamples` for you.
+   *
+   * ```ts
+   * for await (const example of client.iterateMethodExamples(methodId)) {
+   *   rerun(example); // stop whenever you like
+   * }
+   * ```
+   *
+   * An iterator rather than an all-at-once list, for the reason `iterateMethods` is one: a
+   * helper returning an array needs a page cap, and a cap returns a truncated list with no
+   * error. It runs the same loop as `iterateMethods` and `iterateRuns`, so it keeps going through
+   * a short or empty page that carries a cursor, stops on a `null` cursor or on a cursor the
+   * server failed to advance, and throws `PagingNotTerminatingError` past the same page ceiling.
+   */
+  async *iterateMethodExamples(
+    methodId: string,
+    query: Omit<ListMethodExamplesQuery, "cursor"> = {},
+  ): AsyncGenerator<MethodExample, void, undefined> {
+    yield* followCursor("listMethodExamples", (cursor) =>
+      this.listMethodExamples(methodId, { ...query, cursor }),
+    );
+  }
+
+  /**
+   * One example of a method — `GET /v1/methods/{id}/examples/{example_id}`, read consistently,
+   * so an example saved a moment ago is found.
+   *
+   * Throws `RequestArgumentError` for an empty example id, before any request. Throws
+   * `ApiResponseError`: `422` for an example id longer than one can be (64 characters), and the
+   * codes every example route answers.
+   */
+  async getMethodExample(methodId: string, exampleId: string): Promise<MethodExample> {
+    const endpoint = methodExamplePath(methodId, exampleId, "getMethodExample");
+    return this.requestProductObject("GET", endpoint);
+  }
+
+  /**
+   * Rename an example, give it new inputs, or both —
+   * `PATCH /v1/methods/{id}/examples/{example_id}` — and return it as it now stands.
+   *
+   * **New inputs raise `input_revision` by one and clear `latest_run_id`**, since the run no
+   * longer shows what the inputs produce; inputs that are the same as the stored ones, their
+   * keys in another order included, change nothing, while `3` becoming `3.0` is a change. A
+   * rename alone keeps both. The edit takes no revision or token: the latest-run write is what
+   * the revision guards. Sends `name` and `inputs` when given, and nothing else; `null` reads as
+   * not given, as the platform reads it.
+   *
+   * Throws `RequestArgumentError` before any request for an empty example id, or when neither
+   * `name` nor `inputs` is given. Throws `ApiResponseError`: `413` `payload_too_large` for inputs
+   * larger than one stored item holds, `422` for a name that is empty, blank or over 200
+   * characters, or inputs that are not a JSON object, a `503` that wrote nothing, safe to retry,
+   * when concurrent edits kept landing under the write, and the codes every example route
+   * answers.
+   */
+  async updateMethodExample(
+    methodId: string,
+    exampleId: string,
+    input: MethodExampleUpdateInput,
+  ): Promise<MethodExample> {
+    const endpoint = methodExamplePath(methodId, exampleId, "updateMethodExample");
+    const { name, inputs } = (input as Partial<MethodExampleUpdateInput> | undefined) ?? {};
+    const body: Record<string, unknown> = {};
+    if (name != null) body.name = name;
+    if (inputs != null) body.inputs = inputs;
+    if (Object.keys(body).length === 0) {
+      throw new RequestArgumentError(
+        "updateMethodExample() needs a new name, new inputs, or both; got neither.",
+      );
+    }
+    return this.requestProductObject("PATCH", endpoint, body);
+  }
+
+  /**
+   * Record a run as an example's latest —
+   * `PUT /v1/methods/{id}/examples/{example_id}/latest-run` — **only while the example still
+   * holds the revision whose inputs the run used**.
+   *
+   * `input_revision` is the example's `input_revision` the caller read when it started the run
+   * with the example's inputs; the platform trusts it and does not compare the run's own inputs.
+   * The answer is a `MethodExampleLatestRunResult` discriminated on `outcome` — branch on it:
+   * `recorded`, the run is now the example's latest; `stale`, the example's inputs were edited
+   * since and nothing was written. A stale run is the expected end of a run that outlasted an
+   * edit, so it is answered, never thrown. Both arms carry the `example` as it stands.
+   *
+   * Throws `RequestArgumentError` before any request for an empty example id, a `run_id` that is
+   * not a non-empty string, or an `input_revision` that is not a positive integer. Throws
+   * `ApiResponseError` when no verdict was produced: `404` `not_found` for an example deleted
+   * since, `404` `run_not_found` for a run that is not one of this method's, with nothing
+   * written, and the codes every example route answers. An answer whose `outcome` is neither
+   * arm's, or that carries no `example` object, is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too.
+   */
+  async recordMethodExampleLatestRun(
+    methodId: string,
+    exampleId: string,
+    input: MethodExampleLatestRunInput,
+  ): Promise<MethodExampleLatestRunResult> {
+    const endpoint = `${methodExamplePath(methodId, exampleId, "recordMethodExampleLatestRun")}/latest-run`;
+    const { run_id: runId, input_revision: revision } =
+      (input as Partial<MethodExampleLatestRunInput> | undefined) ?? {};
+    if (typeof runId !== "string" || runId.length === 0) {
+      throw new RequestArgumentError(
+        "recordMethodExampleLatestRun() needs run_id, the id of a run of this method that used " +
+          "the example's inputs.",
+      );
+    }
+    if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1) {
+      throw new RequestArgumentError(
+        "recordMethodExampleLatestRun() needs input_revision, the example's revision whose " +
+          `inputs the run used, a positive integer; got ${String(revision)}.`,
+      );
+    }
+    const res = await this.requestProductAnswer("PUT", endpoint, {
+      run_id: runId,
+      input_revision: revision,
+    });
+    const answer = this.readObjectAnswer<Record<string, unknown>>("PUT", endpoint, res);
+    const { outcome, example } = answer;
+    if (outcome !== "recorded" && outcome !== "stale") {
+      throw this.unreadableAnswer(
+        "PUT",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a latest-run result whose `outcome` is not `recorded` or `stale`",
+      );
+    }
+    if (!isPlainObject(example)) {
+      throw this.unreadableAnswer(
+        "PUT",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a latest-run result whose `example` is not an object",
+      );
+    }
+    return {
+      ...answer,
+      outcome,
+      example: example as unknown as MethodExample,
+    } as MethodExampleLatestRunResult;
+  }
+
+  /**
+   * Delete an example — `DELETE /v1/methods/{id}/examples/{example_id}`. The platform answers
+   * `204`. Deleting the example leaves its latest run in the method's history.
+   *
+   * Throws `RequestArgumentError` for an empty example id, before any request. Throws
+   * `ApiResponseError`: `404` `not_found` when there is no such example, one already deleted
+   * included, and the codes every example route answers.
+   */
+  async deleteMethodExample(methodId: string, exampleId: string): Promise<void> {
+    await this.requestProduct(
+      "DELETE",
+      methodExamplePath(methodId, exampleId, "deleteMethodExample"),
+    );
   }
 
   /** The caller's org memberships + active-org feature flags — `GET /v1/organizations/memberships`. */
