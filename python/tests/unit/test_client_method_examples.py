@@ -155,6 +155,33 @@ class TestClientMethodExamples:
         assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
         send.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("name", "inputs", "got"),
+        [
+            pytest.param(None, {"total": 3}, "no name", id="no-name"),
+            pytest.param("March receipt", None, "no inputs", id="no-inputs"),
+            pytest.param(None, None, "neither", id="neither"),
+        ],
+    )
+    def test_create_refuses_a_call_without_its_name_or_its_inputs_before_any_request(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+        name: str | None,
+        inputs: dict[str, Any] | None,
+        got: str,
+    ) -> None:
+        """A `None` name or inputs would be sent as `null`, which the platform refuses; `@pipelex/sdk` refuses both before sending."""
+        send = patch_send(api_client, wire_response(201, json_body=MethodExampleBodies.EXAMPLE))
+
+        with pytest.raises(RequestArgumentError) as exc_info:
+            asyncio.run(api_client.create_method_example(_METHOD_ID, name=cast("str", name), inputs=cast("dict[str, Any]", inputs)))
+
+        assert str(exc_info.value) == f"create_method_example() needs the example's name and its inputs; got {got}."
+        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        send.assert_not_called()
+
     def test_create_reads_the_inputs_exactly_as_saved(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
@@ -270,6 +297,27 @@ class TestClientMethodExamples:
             f"{_EXAMPLES_URL}?limit=2&cursor=c2",
             f"{_EXAMPLES_URL}?limit=2&cursor=c3",
         ]
+
+    @pytest.mark.parametrize(
+        ("method_id", "got"),
+        [
+            pytest.param("", "got an empty string.", id="empty"),
+            pytest.param("..", 'got "..", a dot segment', id="dot-segment"),
+            pytest.param("mt_x@3", '"mt_x@3" carries a version suffix', id="suffixed"),
+        ],
+    )
+    def test_iterate_refuses_a_method_id_at_the_call_before_it_is_iterated(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, method_id: str, got: str
+    ) -> None:
+        """Refused by the call itself, not at the first `__anext__`: an async generator's body runs only once it is iterated."""
+        send = patch_send(api_client, wire_response(200, json_body={"items": [], "next_cursor": None}))
+
+        with pytest.raises(RequestArgumentError) as exc_info:
+            api_client.iterate_method_examples(method_id)
+
+        assert got in str(exc_info.value)
+        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        send.assert_not_called()
 
     def test_iterate_stops_on_a_cursor_the_server_did_not_advance(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -586,6 +634,43 @@ class TestClientMethodExamples:
         """
         example = {key: value for key, value in MethodExampleBodies.EXAMPLE.items() if key != "latest_run_id"}
         patch_send(api_client, wire_response(status, json_body=answer(example)))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(call(api_client))
+
+        unreadable = exc_info.value
+        assert str(unreadable).endswith(f"answered {status} with a body that is not the answer the route returns")
+        assert isinstance(unreadable.__cause__, ValidationError)
+        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            pytest.param("input_revision", "2", id="revision-as-a-string"),
+            pytest.param("input_revision", 2.0, id="revision-as-a-float"),
+            pytest.param("input_revision", True, id="revision-as-a-boolean"),
+            pytest.param("input_revision", 2**53, id="revision-past-the-safe-range"),
+            pytest.param("example_id", 7, id="numeric-example-id"),
+            pytest.param("latest_run_id", 1, id="numeric-latest-run-id"),
+            pytest.param("inputs", [3], id="inputs-as-a-list"),
+        ],
+    )
+    @pytest.mark.parametrize(("status", "answer", "call"), _EXAMPLE_READ_PARAMS)
+    def test_an_example_holding_a_field_of_another_type_is_an_answer_the_sdk_cannot_read(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+        status: int,
+        answer: Callable[[dict[str, Any]], object],
+        call: MethodRouteCall,
+        field: str,
+        value: object,
+    ) -> None:
+        """Read strictly, as `@pipelex/sdk` reads it, so both SDKs refuse the same answers: a revision `"2"` is never coerced to `2`,
+        and one past 2^53 - 1, which a JavaScript number cannot hold, is refused here too.
+        """
+        patch_send(api_client, wire_response(status, json_body=answer({**MethodExampleBodies.EXAMPLE, field: value})))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(call(api_client))

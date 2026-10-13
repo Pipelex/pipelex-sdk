@@ -29,7 +29,7 @@ import json
 from enum import StrEnum
 from typing import Annotated, Any, Literal, TypeAlias, cast
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, TypeAdapter, ValidationError, field_serializer, field_validator
 
 from pipelex_sdk._pydantic_utils import empty_list_factory_of
 from pipelex_sdk.error_models import LenientRunErrorReport
@@ -603,46 +603,57 @@ class MethodDeletionAccepted(BaseModel):
 # and rises each time the inputs change, which clears `latest_run_id`; a run is recorded as the
 # latest only against the revision whose inputs it used (`record_method_example_latest_run`).
 
+#: The largest integer a JavaScript number holds exactly, `Number.MAX_SAFE_INTEGER`: `@pipelex/sdk` refuses an
+#: example whose `input_revision` lies past it in either direction, and so does `MethodExample`.
+_LARGEST_EXACT_REVISION = 2**53 - 1
+
 
 class MethodExample(BaseModel):
     """One saved example of a method.
 
     What `create_method_example`, `get_method_example`, `update_method_example` and both arms of
     `record_method_example_latest_run` answer, and a row of `list_method_examples`.
+
+    Its fields are read strictly, as `@pipelex/sdk` reads them, so both SDKs refuse the same answers: a
+    field of another type is never coerced, so a revision of `"2"`, `True` or `2.0` is no revision, and
+    an example breaking a field raises the `ApiResponseError` of an answer the SDK cannot read. The one
+    answer the two read apart is a revision spelled `2.0`, which JavaScript reads as the number `2` and
+    cannot tell from it.
     """
 
     model_config = ConfigDict(extra="allow")
 
-    example_id: str
+    example_id: StrictStr
     """The example's id, `ex_…`, minted by the platform."""
 
-    method_id: str
+    method_id: StrictStr
     """The bare id of the method the example belongs to."""
 
-    name: str
+    name: StrictStr
     """The example's name, 1 to 200 characters and not blank."""
 
-    inputs: dict[str, Any]
+    inputs: dict[str, Any] = Field(strict=True)
     """The inputs a run of the example sends, a JSON object returned exactly as it was saved: an integer
     stays an `int` and `3.0` a `float`."""
 
-    input_revision: int
+    input_revision: StrictInt = Field(ge=-_LARGEST_EXACT_REVISION, le=_LARGEST_EXACT_REVISION)
     """Starts at 1 and rises by one each time the inputs change. Send it, as read when the run was
-    started, to `record_method_example_latest_run`."""
+    started, to `record_method_example_latest_run`. An integer a JavaScript number holds exactly, as
+    `@pipelex/sdk` requires."""
 
-    latest_run_id: str | None
+    latest_run_id: StrictStr | None
     """The latest run of the current inputs, `None` when none was recorded since they last changed. It
     may name a run deleted since, which then reads as not found. Required, as on every example the
     platform answers: an example without it is an answer the SDK cannot read, never one with no latest
     run."""
 
-    created_by_user_id: str
+    created_by_user_id: StrictStr
     """The canonical id of the member who saved the example; it confers nothing."""
 
-    created_at: str
+    created_at: StrictStr
     """ISO-8601 UTC instant of the example's creation."""
 
-    updated_at: str
+    updated_at: StrictStr
     """ISO-8601 UTC instant of its last change: its name, its inputs or its latest run."""
 
 

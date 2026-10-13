@@ -411,7 +411,9 @@ export interface RunResults {
    * a multiple output the envelope `{ items: [...] }` the runtime's `ListContent` serialises to,
    * and a native is wrapped too (`{ text }`, `{ number }`). It may be a valid empty value — an
    * empty `items`, an empty `text` — but it is never null. It is absent only from a read whose
-   * `artifacts` selection left it out. See `docs/run-results.md`.
+   * `artifacts` selection left it out. An integer past `Number.MAX_SAFE_INTEGER` in it, as anywhere
+   * in the results, is a `bigint` holding its exact digits (`docs/exact-integers.md`). See
+   * `docs/run-results.md`.
    */
   main_stuff?: unknown;
   /**

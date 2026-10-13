@@ -1892,7 +1892,8 @@ class PipelexAPIClient(MthdsAPIClient):
             The example as stored, at `input_revision` 1.
 
         Raises:
-            RequestArgumentError: `run_id` is given but is empty or not a `str`; nothing is sent.
+            RequestArgumentError: `name` or `inputs` is `None`, or `run_id` is given but is empty or not a
+                `str`; nothing is sent.
             ApiResponseError: `404` `run_not_found` for a `run_id` that is not one of this method's runs
                 in the caller's organization, with nothing written; `413` `payload_too_large` for an
                 example larger than one stored item holds; `422` for a name that is empty, blank or over
@@ -1900,6 +1901,20 @@ class PipelexAPIClient(MthdsAPIClient):
                 answers.
         """
         endpoint = f"{_method_path(method_id, call='create_method_example')}/examples"
+        # Checked as `object`s: the annotations are promises to the type checker, not to a caller forwarding
+        # an optional value, which would be sent as `null` for the platform to refuse.
+        name_missing = cast("object", name) is None
+        inputs_missing = cast("object", inputs) is None
+        got: str | None = None
+        if name_missing and inputs_missing:
+            got = "neither"
+        elif name_missing:
+            got = "no name"
+        elif inputs_missing:
+            got = "no inputs"
+        if got is not None:
+            msg = f"create_method_example() needs the example's name and its inputs; got {got}."
+            raise RequestArgumentError(msg)
         body: dict[str, Any] = {"name": name, "inputs": inputs}
         if run_id is not None:
             # Checked as an `object`, as the latest-run write checks its run id: the annotation is a
@@ -1929,7 +1944,7 @@ class PipelexAPIClient(MthdsAPIClient):
         endpoint = f"{_method_path(method_id, call='list_method_examples')}/examples{query}"
         return await self._request_product("GET", endpoint, read=MethodExamplePage.model_validate)
 
-    async def iterate_method_examples(self, method_id: str, *, limit: int | None = None) -> AsyncIterator[MethodExample]:
+    def iterate_method_examples(self, method_id: str, *, limit: int | None = None) -> AsyncIterator[MethodExample]:
         """Yield every example of a method, oldest first, following the cursors — `GET /v1/methods/{id}/examples`.
 
         An iterator rather than an all-at-once list, for the reason `iterate_methods` is one: a helper
@@ -1939,10 +1954,15 @@ class PipelexAPIClient(MthdsAPIClient):
         ceiling.
 
         Raises:
+            RequestArgumentError: At the call, before the iterator is iterated or anything is sent, for a
+                `method_id` that `list_method_examples` refuses: a suffixed one, or one that is not a `str`,
+                is empty, `.` or `..`, or holds a lone surrogate.
             PagingNotTerminatingError: If the server never stops handing out cursors.
         """
-        async for example in _follow_cursor("Method example", lambda cursor: self.list_method_examples(method_id, limit=limit, cursor=cursor)):
-            yield example
+        # Checked here rather than in an async generator's body, which runs only once it is iterated and
+        # would refuse the id at the first `__anext__`, away from the call that passed it.
+        _method_path(method_id, call="iterate_method_examples")
+        return _follow_cursor("Method example", lambda cursor: self.list_method_examples(method_id, limit=limit, cursor=cursor))
 
     async def get_method_example(self, method_id: str, example_id: str) -> MethodExample:
         """Read one example of a method — `GET /v1/methods/{id}/examples/{example_id}`.

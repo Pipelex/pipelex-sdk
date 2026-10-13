@@ -798,7 +798,12 @@ export interface RunDetail extends PipelineRun {
    *  the protocol's validate call takes and echoes back. A single-file method
    *  is an array of one. */
   mthds_contents?: string[] | null;
-  /** The inputs the run was started with, as sent. */
+  /**
+   * The inputs the run was started with, as sent, an integer past `Number.MAX_SAFE_INTEGER` read
+   * as a `bigint` holding its exact digits, so the inputs passed back to `start` run what the run
+   * ran. Show them as JSON text with `stringifyExactJson`, since `JSON.stringify` throws on a
+   * `bigint`.
+   */
   inputs?: Record<string, unknown> | null;
   /**
    * The id of the request that started the run — the one to quote to support, and the one the

@@ -406,6 +406,24 @@ describe("getMethodVersion", () => {
     },
   );
 
+  it.each([
+    ["a zero", 0, "0"],
+    ["a numeric string", "3", "string"],
+    ["an object with no prototype", Object.create(null) as unknown, "object"],
+  ])("refuses %s in the wording every argument refusal has", async (_label, version, got) => {
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const err = await makeClient()
+      .getMethodVersion("mt_receipts01", version as number)
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).message).toBe(
+      `getMethodVersion() takes a version number, a positive integer; got ${got}.`,
+    );
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it("surfaces an unknown version as a 404 method_version_not_found", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(

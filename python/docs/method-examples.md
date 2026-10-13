@@ -16,6 +16,8 @@ An **example** is a named set of inputs saved on a stored method, so the method 
 | `latest_run_id` | The latest run of the current inputs, or `None`. It may name a run deleted since, whose read then answers `404`. The platform always sends it, so an example without it is an answer the SDK cannot read, never one with no latest run, as `@pipelex/sdk` reads it. |
 | `created_by_user_id`, `created_at`, `updated_at` | Who saved it, when, and when it last changed. |
 
+**The fields are read strictly, as `@pipelex/sdk` reads them**, so both SDKs refuse the same answers: a field of another type is never coerced, so an `input_revision` of `"2"`, `True` or `2.0` is no revision, and neither is one past 2^53 - 1 in either direction, the largest integer a JavaScript number holds exactly. An example breaking a field is an answer the SDK cannot read, raised as an `ApiResponseError` (`runtime`, not retryable) with pydantic's refusal as its cause. The one answer the two SDKs read apart is a revision spelled `2.0`, which JavaScript reads as the number `2` and cannot tell from it.
+
 An example holds no output and no baseline: its result is its latest run's, read by the run's id (`get_run_result`).
 
 ## The methods
@@ -24,7 +26,7 @@ An example holds no output and no baseline: its result is its latest run's, read
 |---|---|---|
 | `create_method_example(method_id, *, name, inputs, run_id=None)` | `POST /v1/methods/{id}/examples` | The `MethodExample` as stored, at revision 1. With `run_id`, a run of this method that used exactly these inputs, that run is its latest. |
 | `list_method_examples(method_id, *, limit=None, cursor=None)` | `GET /v1/methods/{id}/examples` | One `MethodExamplePage`, `items` and `next_cursor`, oldest first, inputs included. `limit` is 1 to 100, 50 by default. |
-| `iterate_method_examples(method_id, *, limit=None)` | the same, page after page | Every example, oldest first, as an async iterator. |
+| `iterate_method_examples(method_id, *, limit=None)` | the same, page after page | Every example, oldest first, as an async iterator. A method id it cannot take is refused at the call, before the iterator is iterated. |
 | `get_method_example(method_id, example_id)` | `GET /v1/methods/{id}/examples/{example_id}` | The `MethodExample`. |
 | `update_method_example(method_id, example_id, *, name=None, inputs=None)` | `PATCH /v1/methods/{id}/examples/{example_id}` | The `MethodExample` as it now stands. |
 | `record_method_example_latest_run(method_id, example_id, *, run_id, input_revision)` | `PUT /v1/methods/{id}/examples/{example_id}/latest-run` | A `MethodExampleLatestRunResult`: `MethodExampleLatestRunRecorded` or `MethodExampleLatestRunStale`, each with the `example`. |
@@ -59,7 +61,8 @@ The client refuses before sending, with `RequestArgumentError` (`input`, not ret
 - a suffixed method id, on every method;
 - a method id or an example id that is empty, `.` or `..`, or that is not a `str`: httpx resolves a dot segment before the request leaves, so an example id `..` would address the method itself, and deleting it would erase the method, while an empty example id would address the examples list;
 - a method id or an example id holding a lone surrogate, which has no UTF-8 spelling and so cannot enter a URL;
-- a `create_method_example` whose `run_id` is given but is empty or not a `str`;
+- a `create_method_example` whose `name` or `inputs` is `None`, which would be sent as `null`, or whose `run_id` is given but is empty or not a `str`;
+- an `iterate_method_examples` whose method id any method above refuses, at the call itself rather than when the iterator is first iterated;
 - an `update_method_example` naming neither `name` nor `inputs`;
 - a `record_method_example_latest_run` whose `run_id` is not a non-empty `str` or whose `input_revision` is not a positive integer (a `bool`, a `float` and a numeric string included), the example id checked first, then the run id, then the revision.
 

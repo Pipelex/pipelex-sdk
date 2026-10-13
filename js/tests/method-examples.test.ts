@@ -378,7 +378,40 @@ describe("iterateMethodExamples", () => {
     // ceiling `product.test.ts` covers.
     expect(seen).toEqual([EXAMPLE]);
   });
+
+  it.each([
+    ["an empty method id", "", "got an empty string."],
+    ["a dot segment", "..", 'got "..", a dot segment'],
+  ])(
+    "refuses %s at the call, before the iterator is pulled or anything is sent",
+    (_label, methodId, got) => {
+      const spy = vi.spyOn(globalThis, "fetch");
+
+      let err: unknown;
+      try {
+        startIteratingExamples(methodId);
+      } catch (thrown) {
+        err = thrown;
+      }
+
+      expect(err).toBeInstanceOf(RequestArgumentError);
+      expect((err as Error).message).toMatch(
+        /^iterateMethodExamples\(\) takes a method id, the method's non-empty bare catalog id; /,
+      );
+      expect((err as Error).message).toContain(got);
+      expect(spy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a suffixed method id at the call", () => {
+    expect(() => startIteratingExamples("mt_x@3")).toThrow('"mt_x@3" carries a version suffix');
+  });
 });
+
+/** Call `iterateMethodExamples` without pulling the iterator it returns. */
+function startIteratingExamples(methodId: string): void {
+  void makeClient().iterateMethodExamples(methodId);
+}
 
 describe("getMethodExample", () => {
   it("GETs /v1/methods/{id}/examples/{example_id} and returns the example as served", async () => {
@@ -548,12 +581,21 @@ describe("recordMethodExampleLatestRun", () => {
     >().toEqualTypeOf<MethodExample>();
   });
 
+  const OUTCOMES = "is not `recorded` or `stale`";
+  const NOT_AN_EXAMPLE = "'s `example` that is not an object";
+
   it.each([
-    ["an outcome it does not know", { outcome: "refused", example: EXAMPLE }, "outcome"],
-    ["no outcome", { example: EXAMPLE }, "outcome"],
-    ["no example", { outcome: "recorded" }, "example"],
-    ["an example that is not an object", { outcome: "stale", example: "ex_1" }, "example"],
-  ])("throws a typed ApiResponseError for a verdict with %s", async (_label, body, member) => {
+    [
+      "an outcome it does not know",
+      { outcome: "refused", example: EXAMPLE },
+      ` whose \`outcome\` ${OUTCOMES}`,
+    ],
+    ["no outcome", { example: EXAMPLE }, ` whose \`outcome\` ${OUTCOMES}`],
+    // The example is checked once, by the check every example goes through, so its refusals
+    // read alike whatever is wrong with it.
+    ["no example", { outcome: "recorded" }, NOT_AN_EXAMPLE],
+    ["an example that is not an object", { outcome: "stale", example: "ex_1" }, NOT_AN_EXAMPLE],
+  ])("throws a typed ApiResponseError for a verdict with %s", async (_label, body, what) => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
 
@@ -562,9 +604,9 @@ describe("recordMethodExampleLatestRun", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).message).toContain(
+    expect((err as ApiResponseError).message).toBe(
       `API PUT /v1/methods/${METHOD_ID}/examples/${EXAMPLE_ID}/latest-run answered 200 with a ` +
-        `latest-run result whose \`${member}\``,
+        `latest-run result${what}`,
     );
     expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
   });
@@ -576,6 +618,11 @@ describe("recordMethodExampleLatestRun", () => {
     ["a zero revision", { run_id: "run_2", input_revision: 0 }, "input_revision"],
     ["a fractional revision", { run_id: "run_2", input_revision: 1.5 }, "input_revision"],
     ["a revision as a string", { run_id: "run_2", input_revision: "2" }, "input_revision"],
+    [
+      "a revision that is an object with no prototype",
+      { run_id: "run_2", input_revision: Object.create(null) as unknown },
+      "input_revision",
+    ],
   ])("refuses %s before sending anything", async (_label, input, field) => {
     const client = makeClient();
     const spy = vi.spyOn(globalThis, "fetch");
@@ -593,6 +640,24 @@ describe("recordMethodExampleLatestRun", () => {
       new RegExp(`^recordMethodExampleLatestRun\\(\\) takes an? ${field}[ ,].*; got .+\\.$`),
     );
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a number by its value", 0, "0"],
+    ["anything else by its type", "2", "string"],
+    ["an object with no prototype by its type", Object.create(null) as unknown, "object"],
+  ])("describes a revision it refuses, %s", async (_label, revision, got) => {
+    const err = await makeClient()
+      .recordMethodExampleLatestRun(METHOD_ID, EXAMPLE_ID, {
+        run_id: "run_2",
+        input_revision: revision as number,
+      })
+      .catch((thrown: unknown) => thrown);
+
+    expect((err as Error).message).toBe(
+      "recordMethodExampleLatestRun() takes an input_revision, the example's revision whose " +
+        `inputs the run used, a positive integer; got ${got}.`,
+    );
   });
 
   it("surfaces an example deleted since as a 404, not as a verdict", async () => {

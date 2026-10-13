@@ -7,8 +7,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
-import { RequestArgumentError, runMayHaveStartedOf } from "../src/errors.js";
-import { parseExactJson, stringifyExactJson } from "../src/exact-json.js";
+import { ApiResponseError, RequestArgumentError, runMayHaveStartedOf } from "../src/errors.js";
+import {
+  ExactJsonUnsupportedError,
+  parseExactJson,
+  stringifyExactJson,
+} from "../src/exact-json.js";
 
 /** `JSON`, with the `rawJSON` the TypeScript library this package compiles against does not declare. */
 const JSON_WITH_RAW = JSON as unknown as { rawJSON?: (text: string) => unknown };
@@ -73,6 +77,86 @@ describe("parseExactJson", () => {
   ])("throws the SyntaxError JSON.parse throws for %s", (_label, text) => {
     expect(() => parseExactJson(text)).toThrow(SyntaxError);
   });
+
+  it("reads an integer too long for a double, which JSON.parse reads as Infinity, exactly", () => {
+    const digits = `1${"0".repeat(400)}`;
+
+    expect(parseExactJson(`[${digits},1e400]`)).toEqual([BigInt(digits), Infinity]);
+  });
+
+  it("reads with one JSON.parse and no second reader, a long digit run in a string included", () => {
+    const spy = vi.spyOn(JSON, "parse");
+
+    const value = parseExactJson(
+      '{"id":"run_12345678901234567890","big":12345678901234567891,"names":["a","b","c"]}',
+    );
+    const calls = spy.mock.calls.length;
+    spy.mockRestore();
+
+    expect(calls).toBe(1);
+    expect(value).toEqual({
+      id: "run_12345678901234567890",
+      big: 12345678901234567891n,
+      names: ["a", "b", "c"],
+    });
+  });
+});
+
+describe("parseExactJson on a runtime whose JSON.parse hands a reviver no source text", () => {
+  type Reviver = (this: unknown, key: string, value: unknown) => unknown;
+
+  /** Make `JSON.parse` call a reviver as a runtime before the source-text proposal does: no context. */
+  function withoutSourceText(): void {
+    const parse = JSON.parse.bind(JSON);
+    vi.spyOn(JSON, "parse").mockImplementation((text: string, reviver?: Reviver): unknown => {
+      if (reviver === undefined) return parse(text);
+      return parse(text, function (this: unknown, key: string, value: unknown): unknown {
+        return reviver.call(this, key, value);
+      });
+    });
+  }
+
+  it.each([
+    ["an integer past the safe range", '{"big":12345678901234567891}'],
+    ["a negative one", "[-98765432109876543210]"],
+    ["one too long for a double", `[1${"0".repeat(400)}]`],
+  ])("refuses %s with ExactJsonUnsupportedError rather than round it", (_label, text) => {
+    withoutSourceText();
+
+    expect(() => parseExactJson(text)).toThrow(ExactJsonUnsupportedError);
+  });
+
+  it("reads a text holding no number past the safe range as JSON.parse reads it", () => {
+    withoutSourceText();
+    const text = '{"id":"run_12345678901234567890","max":9007199254740991,"rate":3.5}';
+
+    expect(parseExactJson(text)).toEqual({
+      id: "run_12345678901234567890",
+      max: 9007199254740991,
+      rate: 3.5,
+    });
+  });
+
+  it("makes the client's answer one the SDK cannot read, saying why", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        '{"pipeline_run_id":"run_7","status":"COMPLETED","inputs":{"big":12345678901234567891}}',
+        { status: 200 },
+      ),
+    );
+    withoutSourceText();
+
+    const err = await new PipelexApiClient({ baseUrl: "http://localhost:8081", apiKey: "t" })
+      .getRunDetail("run_7")
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as Error).message).toBe(
+      "API GET /v1/runs/run_7 answered 200 with a body holding a number past " +
+        "Number.MAX_SAFE_INTEGER, which this runtime cannot read exactly",
+    );
+    expect((err as Error).cause).toBeInstanceOf(ExactJsonUnsupportedError);
+  });
 });
 
 describe("stringifyExactJson", () => {
@@ -92,6 +176,17 @@ describe("stringifyExactJson", () => {
 
     expect(stringifyExactJson(value)).toBe(JSON.stringify(value));
     expect(stringifyExactJson(value, 2)).toBe(JSON.stringify(value, null, 2));
+  });
+
+  it("writes a value holding no bigint with one plain JSON.stringify, no replacer called", () => {
+    const spy = vi.spyOn(JSON, "stringify");
+
+    const text = stringifyExactJson({ total: 3, list: [1.5, "a"] }, 2);
+    const replacers = spy.mock.calls.map((call) => call[1]);
+    spy.mockRestore();
+
+    expect(replacers).toEqual([undefined]);
+    expect(text).toBe(JSON.stringify({ total: 3, list: [1.5, "a"] }, null, 2));
   });
 
   it("hands back what parseExactJson read, digit for digit", () => {
