@@ -204,7 +204,7 @@ class TestStartIdempotencyKey:
             asyncio.run(server.client().start(method_id="mt_abc123", idempotency_key=IdempotencyKeyData.KEY))
 
         refused = exc_info.value
-        assert refused.code == IdempotencyErrorCode.IDEMPOTENCY_KEY_IN_USE
+        assert refused.code == "idempotency_key_in_use"
         assert refused.status == 409
         assert (refused.error_domain, refused.retryable, refused.run_may_have_started) == (ErrorDomain.RUNTIME, True, False)
 

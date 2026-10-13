@@ -42,6 +42,12 @@ export { methodSourceToContents } from "./method-source.js";
 // A method selector (`mt_…`, `mt_…@<n>`, `mt_…@draft`) → its bare id and the version it names.
 export { parseMethodSelector } from "./method-selector.js";
 export type { ParsedMethodSelector } from "./method-selector.js";
+// JSON whose integers stay exact: the reader of the answers carrying a person's data (a method
+// example's inputs, a run's inputs, outputs and working memory), which keeps an integer past
+// `Number.MAX_SAFE_INTEGER` as a `bigint`, and the writer of every request body, which writes it
+// back as its digits — for a caller showing such data as JSON text. The error is the reader's
+// refusal on a runtime that cannot read such an integer exactly.
+export { ExactJsonUnsupportedError, parseExactJson, stringifyExactJson } from "./exact-json.js";
 
 // The blocking `execute()` result — a `DictRunResultExecute` with a resolved `.main_stuff` — and
 // the lift from it onto `RunResults`, for a caller who drives `execute()` itself.
@@ -183,12 +189,22 @@ export type {
 // ── Pipelex product surface (hosted management routes) ───────────────
 export type {
   UserProfile,
+  ListMethodExamplesQuery,
   ListMethodsQuery,
   ListMethodVersionsQuery,
   MethodData,
   MethodDeletionAccepted,
   MethodDeletionState,
   MethodDraftInput,
+  MethodExample,
+  MethodExampleCreateInput,
+  MethodExampleLatestRunInput,
+  MethodExampleLatestRunOutcome,
+  MethodExampleLatestRunRecorded,
+  MethodExampleLatestRunResult,
+  MethodExampleLatestRunStale,
+  MethodExamplePage,
+  MethodExampleUpdateInput,
   MethodPage,
   MethodPublished,
   MethodPublishInput,

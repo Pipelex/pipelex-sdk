@@ -1,5 +1,5 @@
-"""Shared fixtures for the unit suite — a client, a wire-response builder, the `_send` spy, and a
-client whose transport fails.
+"""Shared fixtures for the unit suite — a client, a wire-response builder, the `_send` spy, a client
+whose transport fails, and one whose transport records the requests it sends.
 
 House rule: fixtures live in `conftest.py`. `test_client_product.py` predates these and keeps
 its own equivalent private helpers; migrating it is deliberately not part of this change.
@@ -51,6 +51,32 @@ def unreachable_client() -> UnreachableClientBuilder:
 
         client = PipelexAPIClient(api_key="test-token", base_url=BASE_URL)
         client.client = httpx.AsyncClient(transport=httpx.MockTransport(_fail))
+        return client
+
+    return _build
+
+
+class RecordingClientBuilder(Protocol):
+    """Builds a client whose transport appends every request to `sent`, as httpx resolved its URL, and answers it."""
+
+    def __call__(self, sent: list[httpx.Request], status_code: int, *, json_body: object | None = None) -> PipelexAPIClient: ...
+
+
+@pytest.fixture
+def recording_client() -> RecordingClientBuilder:
+    """The requests are recorded by an `httpx.MockTransport` below the client's `_send`, after httpx has built
+    each one, so what is recorded is the URL the request would leave with, dot segments already resolved.
+    """
+
+    def _build(sent: list[httpx.Request], status_code: int, *, json_body: object | None = None) -> PipelexAPIClient:
+        def _answer(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            if json_body is None:
+                return httpx.Response(status_code, request=request)
+            return httpx.Response(status_code, json=json_body, request=request)
+
+        client = PipelexAPIClient(api_key="test-token", base_url=BASE_URL)
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(_answer))
         return client
 
     return _build

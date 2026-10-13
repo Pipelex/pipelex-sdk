@@ -883,8 +883,8 @@ export class RunLifecycleUnavailableError extends PipelexRequestError {
 }
 
 /**
- * Thrown when a paged-list iterator (`iterateMethods`, `iterateRuns`) refuses to keep following
- * cursors.
+ * Thrown when a paged-list iterator (`iterateMethods`, `iterateRuns`, `iterateMethodExamples`)
+ * refuses to keep following cursors.
  *
  * The ceiling, `pageLimit` pages, sits far beyond any real catalog or run history, so reaching it
  * is a server-side fault — an endpoint minting a fresh cursor forever — not a coverage limit the

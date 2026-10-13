@@ -62,11 +62,18 @@ import type {
   InvoiceView,
   Membership,
   MembershipsResponse,
+  ListMethodExamplesQuery,
   ListMethodsQuery,
   ListMethodVersionsQuery,
   MethodData,
   MethodDeletionAccepted,
   MethodDraftInput,
+  MethodExample,
+  MethodExampleCreateInput,
+  MethodExampleLatestRunInput,
+  MethodExampleLatestRunResult,
+  MethodExamplePage,
+  MethodExampleUpdateInput,
   MethodPage,
   MethodPublishInput,
   MethodPublishResult,
@@ -137,10 +144,11 @@ import type {
   ResolvedArtifact,
 } from "./artifacts.js";
 import { PipelexExecuteResult, resultsFromExecute } from "./execute-result.js";
+import { ExactJsonUnsupportedError, parseExactJson, stringifyExactJson } from "./exact-json.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // A pure RUNAWAY guard on the paged-list iterators (`iterateMethods`,
-// `iterateRuns`), deliberately not a coverage limit.
+// `iterateRuns`, `iterateMethodExamples`), deliberately not a coverage limit.
 //
 // It counts TOTAL pages, not empty ones. An earlier version capped consecutive
 // empty pages, which is the wrong axis: an empty page whose cursor ADVANCED is
@@ -158,7 +166,8 @@ const MAX_PAGES = 10_000;
 
 /**
  * Follow a paged list's cursor until the server says there is no more, yielding every row —
- * the one loop behind `iterateMethods` and `iterateRuns`, so the two cannot drift apart.
+ * the one loop behind `iterateMethods`, `iterateRuns` and `iterateMethodExamples`, so they cannot
+ * drift apart.
  *
  * It yields lazily: a caller that breaks early stops the requests. It stops when `nextCursor`
  * is `null`, the normal end, and when the server hands back the cursor it was just sent, which
@@ -435,6 +444,17 @@ interface RawResponse {
   utf8: boolean;
 }
 
+/**
+ * How a 2xx answer's JSON text becomes a value: `readJson` for every answer but one carrying a
+ * person's data, which is read with `parseExactJson`, since an integer in it may be one a double
+ * cannot hold: a method example (its inputs), a run's record (its inputs), a run's results and the
+ * blocking execute's answer (its outputs and working memory).
+ */
+type JsonReader = (text: string) => unknown;
+
+/** `JSON.parse`, the `JsonReader` an answer is read with unless its route names another. */
+const readJson: JsonReader = (text) => JSON.parse(text) as unknown;
+
 /** HTTP methods the client issues — the product routes add PUT/PATCH/DELETE. */
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -539,23 +559,196 @@ function withWirePython<T extends { python?: MethodFile[] }>(input: T): WithWire
 }
 
 /**
- * The path of a method route, `methods/{id}`, for a bare catalog id. The method routes address
+ * A request's body as the JSON text it is sent as, written by `stringifyExactJson` in one pass,
+ * so a `bigint` read from an answer carrying a person's data goes back as its exact digits, and
+ * every getter and `toJSON` in the body runs once. A body JSON cannot carry, one holding a cycle
+ * or whose own `toJSON` throws for instance, is the caller's argument: it is refused with
+ * `RequestArgumentError`, the failure as its `cause`, before anything is sent, and `method` and
+ * `url` name the request in the message.
+ */
+function requestBodyText(method: HttpMethod, url: string, body: unknown): string {
+  try {
+    return stringifyExactJson(body);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new RequestArgumentError(
+      `The body of ${method} ${new URL(url).pathname} cannot be written as JSON, so nothing was ` +
+        `sent: ${reason}`,
+      { cause: err },
+    );
+  }
+}
+
+/** A query parameter of a product list route; an array is sent as one repeated parameter per value. */
+type ProductQueryValue = string | number | boolean | readonly string[] | undefined;
+
+/**
+ * The query string of a product list route, `?` and its parameters in the order given, or `""`
+ * when none is kept, as the Python SDK's `_product_query` builds it. Each entry is kept on
+ * presence (`!== undefined`), never truthiness: omission means the caller did not ask, while an
+ * explicit empty `q`, cursor or date is bad input the API should refuse, not something to drop
+ * into an unfiltered query that returns everything and reads as working. `false` is a filter of
+ * its own, sent as `false`, and an array is sent as one repeated parameter per value.
+ */
+function productQuery(params: Readonly<Record<string, ProductQueryValue>>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    if (typeof value === "object") for (const item of value) search.append(key, item);
+    else search.set(key, String(value));
+  }
+  const text = search.toString();
+  return text ? `?${text}` : "";
+}
+
+/** `items` joined as a sentence names them, the last after `conjunction`: `a`, `a or b`, `a, b or c`. */
+function inWords(items: readonly string[], conjunction: "and" | "or"): string {
+  if (items.length < 2) return items.join("");
+  return `${items.slice(0, -1).join(", ")} ${conjunction} ${items[items.length - 1]}`;
+}
+
+/** What each id a route puts in its path is, as a refusal of it names it. */
+const METHOD_ID_ARGUMENT = "a method id, the method's non-empty bare catalog id";
+const EXAMPLE_ID_ARGUMENT = "an example id, the example's non-empty `example_id`";
+const RUN_ID_ARGUMENT = "a run id, the run's non-empty `pipeline_run_id`";
+const ORG_ID_ARGUMENT = "an organization id, the organization's non-empty `org_id`";
+const API_KEY_ID_ARGUMENT = "an API key id, the key's non-empty `id`";
+
+/** What the run id of each example write is, as a refusal of it names it. */
+const CREATE_RUN_ID_ARGUMENT =
+  "a run_id naming a run of this method that used these inputs, a non-empty string, or none";
+const RECORD_RUN_ID_ARGUMENT =
+  "a run_id naming a run of this method that used the example's inputs, a non-empty string";
+
+/**
+ * The refusal of an argument a call cannot take, worded as every such refusal is:
+ * `<call>() takes <what>; got <got>.`, with what made it unusable as `cause` when there is one.
+ */
+function argumentRefusal(
+  call: string,
+  what: string,
+  got: string,
+  cause?: unknown,
+): RequestArgumentError {
+  const message = `${call}() takes ${what}; got ${got}.`;
+  return new RequestArgumentError(message, cause === undefined ? undefined : { cause });
+}
+
+/**
+ * A caller's id, checked to be a non-empty string: the one check every id a call takes goes
+ * through, whether it enters a path (`idPathSegment`) or a body (a run id an example write
+ * records). Anything else is refused with `RequestArgumentError` before anything is sent, `call`
+ * naming the method in the message and `what` the id it takes.
+ */
+function requireNonEmptyId(value: unknown, call: string, what: string): string {
+  if (typeof value === "string" && value !== "") return value;
+  let got: string;
+  if (typeof value === "string") got = "an empty string";
+  else got = value === null ? "null" : typeof value;
+  throw argumentRefusal(call, what, got);
+}
+
+/**
+ * A caller's value as the refusal of a number argument names it: a number by its value, anything
+ * else by its type, as `requireNonEmptyId` names a value, and `null` as itself. Never by `String`,
+ * which throws for an object with no prototype and would replace the refusal with a `TypeError`.
+ */
+function describeNumberArgument(value: unknown): string {
+  if (typeof value === "number") return String(value);
+  return value === null ? "null" : typeof value;
+}
+
+/**
+ * A caller's id as one segment of a route's path, percent-encoded: the one place an id enters a
+ * path. `encodeURIComponent` escapes every character a path gives meaning to but the dot, so an id
+ * of `.` or `..` would reach the URL as a dot segment, which the URL resolves before the request
+ * leaves: `methods/mt_x/examples/..` is sent as `methods/mt_x/`, and deleting that "example"
+ * would erase the method. An empty id addresses the route above it the same way, `runs/` for a
+ * run. So a value that is not a non-empty string (`requireNonEmptyId`) and a dot segment are each
+ * refused before anything is sent, and so is a string holding a lone surrogate, which has no
+ * UTF-8 spelling and so no percent-encoding: `encodeURIComponent` throws a `URIError` for it.
+ * `call` names the method in the message and `what` the id it takes. An id spelling a dot in
+ * percent-encoding (`%2e`) is no dot segment once its `%` is escaped.
+ */
+function idPathSegment(value: unknown, call: string, what: string): string {
+  const id = requireNonEmptyId(value, call, what);
+  if (id === "." || id === "..") {
+    throw argumentRefusal(
+      call,
+      what,
+      `"${id}", a dot segment, which the URL would resolve into another route's path`,
+    );
+  }
+  try {
+    return encodeURIComponent(id);
+  } catch (err) {
+    const got = "a string holding a lone surrogate, which a URL cannot carry";
+    throw argumentRefusal(call, what, got, err);
+  }
+}
+
+/**
+ * The path of a method route, `methods/{id}`, for a bare catalog id, its segment refused as
+ * `idPathSegment` refuses one; `call` names the method in the message. The method routes address
  * the method itself, never one of its versions, and the platform does not parse a suffix there:
  * `mt_x@3` would be looked up as an id of its own and answer `404 not_found`, which reads as a
  * method that does not exist. So a suffixed id is refused before anything is sent, saying how to
  * read what it names. Stripping it instead would answer the draft for a caller that named a
  * version.
  */
-function methodPath(methodId: string): string {
-  if (typeof methodId === "string" && methodId.includes("@")) {
+function methodPath(methodId: string, call: string): string {
+  const segment = idPathSegment(methodId, call, METHOD_ID_ARGUMENT);
+  if (methodId.includes("@")) {
     throw new RequestArgumentError(
       `"${methodId}" carries a version suffix, and the method routes take a bare catalog id: ` +
         "they address the method itself, never one of its versions. Strip the suffix with " +
         "parseMethodSelector, and read a published version with getMethodVersion.",
     );
   }
-  return `methods/${encodeURIComponent(methodId)}`;
+  return `methods/${segment}`;
 }
+
+/**
+ * The path of one saved example, `methods/{id}/examples/{example_id}`, for a bare catalog id and
+ * an example id, each refused as `methodPath` and `idPathSegment` refuse one: an empty example id
+ * would address the examples list rather than an example, and `..` the method itself. `call`
+ * names the method in the message.
+ */
+function methodExamplePath(methodId: string, exampleId: string, call: string): string {
+  const path = methodPath(methodId, call);
+  return `${path}/examples/${idPathSegment(exampleId, call, EXAMPLE_ID_ARGUMENT)}`;
+}
+
+const isString = (value: unknown): boolean => typeof value === "string";
+
+/**
+ * Each field of a `MethodExample`, what it must be, and the check it must pass: every field the
+ * Python SDK's model requires, held to the same strict types it holds them to, so both SDKs refuse
+ * the same answers, the ones a caller acts on (`example_id`, `inputs`, `input_revision`,
+ * `latest_run_id`) among them. `latest_run_id` must be present, `null` saying there is no latest
+ * run, and `input_revision` must be a safe integer, so a string, a boolean, a fraction and an
+ * integer past the safe range, which `parseExactJson` reads as a `bigint`, are each refused by
+ * both. The one spelling they read apart is a revision of `2.0`: JavaScript reads it as the number
+ * `2` and cannot tell it from `2`, while the Python SDK refuses the float.
+ *
+ * Keyed by the fields of `MethodExample` and checked against them by `satisfies`, so a field
+ * added to the interface without its row here, or a row naming no field of it, fails to compile.
+ * The rows are checked in the order written.
+ */
+const METHOD_EXAMPLE_FIELDS = {
+  example_id: ["a string", isString],
+  method_id: ["a string", isString],
+  name: ["a string", isString],
+  inputs: ["an object", isPlainObject],
+  input_revision: ["an integer", (value) => Number.isSafeInteger(value)],
+  latest_run_id: ["a string or null", (value) => value === null || isString(value)],
+  created_by_user_id: ["a string", isString],
+  created_at: ["a string", isString],
+  updated_at: ["a string", isString],
+} satisfies Record<
+  keyof MethodExample,
+  readonly [expected: string, fits: (value: unknown) => boolean]
+>;
 
 export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   private readonly apiKey: string | undefined;
@@ -651,6 +844,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     } & RunCreation = {},
   ): Promise<RawResponse> {
     const hasBody = options.body !== undefined;
+    // Written before the request is made, so a body JSON cannot carry is refused as the caller's
+    // argument rather than caught below and reported as a network failure.
+    const bodyText = hasBody ? requestBodyText(method, url, options.body) : undefined;
     const headers = this.requestHeaders(hasBody, options.idempotencyKey);
 
     const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -679,7 +875,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       response = await fetch(url, {
         method,
         headers,
-        body: hasBody ? JSON.stringify(options.body) : undefined,
+        body: bodyText,
         signal: controller.signal,
       });
       // The body streams after the headers; keep the timer/abort armed until it
@@ -813,18 +1009,86 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
-   * One page of a cursor-paged product route (`listMethods`, `listMethodVersions`, `listRuns`),
-   * read as the platform always serializes it: `items` an array, `next_cursor` a string or
-   * `null`. A page breaking either is an answer the SDK cannot read, so it throws the
-   * `ApiResponseError` `unreadableAnswer` builds, `runtime` and not retryable, rather than
-   * handing the iterators a page they cannot walk: `items` that is not iterable, or a missing
-   * cursor that is neither the end nor a next page, which `iterateRuns` would follow forever.
+   * A verdict, the `200` a route answers discriminated on `outcome` with the object the verdict
+   * is about as one `member`: `publishMethod`'s `method`, `recordMethodExampleLatestRun`'s
+   * `example`. The answer is read as `readObjectAnswer` reads it, then an `outcome` that is none
+   * of `outcomes` is an answer the SDK cannot read, and so is a `member` that is not an object,
+   * the check `readObjectAnswerAt` holds a route's whole answer to: each throws the
+   * `ApiResponseError` `unreadableAnswer` builds, `verdict` naming the answer in the message.
+   * A route whose member has a reader of its own passes it as `readMember`, which then checks the
+   * member in place of that object check, so the member is checked once. `parse` reads the
+   * answer's text, `readJson` unless the route names another. Returns the answer, its `outcome`
+   * and the member as `subject`, for the route to read further.
+   */
+  private readVerdict<O extends string, S = Record<string, unknown>>(
+    method: HttpMethod,
+    endpoint: string,
+    res: RawResponse,
+    shape: {
+      verdict: string;
+      outcomes: readonly O[];
+      member: string;
+      parse?: JsonReader;
+      readMember?: (value: unknown) => S;
+    },
+  ): { answer: Record<string, unknown>; outcome: O; subject: S } {
+    const answer = this.readObjectAnswer<Record<string, unknown>>(
+      method,
+      endpoint,
+      res,
+      {},
+      shape.parse,
+    );
+    const outcome = answer.outcome as O;
+    const subject = answer[shape.member];
+    if (!shape.outcomes.includes(outcome)) {
+      const expected = inWords(
+        shape.outcomes.map((name) => `\`${name}\``),
+        "or",
+      );
+      throw this.unreadableAnswer(
+        method,
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `${shape.verdict} whose \`outcome\` is not ${expected}`,
+      );
+    }
+    if (shape.readMember !== undefined) {
+      return { answer, outcome, subject: shape.readMember(subject) };
+    }
+    if (!isPlainObject(subject)) {
+      throw this.unreadableAnswer(
+        method,
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `${shape.verdict} whose \`${shape.member}\` is not an object`,
+      );
+    }
+    return { answer, outcome, subject: subject as S };
+  }
+
+  /**
+   * One page of a cursor-paged product route (`listMethods`, `listMethodVersions`,
+   * `listMethodExamples`, `listRuns`), read as the platform always serializes it: `items` an
+   * array, `next_cursor` a string or `null`. A page breaking either is an answer the SDK cannot
+   * read, so it throws the `ApiResponseError` `unreadableAnswer` builds, `runtime` and not
+   * retryable, rather than handing the iterators a page they cannot walk: `items` that is not
+   * iterable, or a missing cursor that is neither the end nor a next page, which `iterateRuns`
+   * would follow forever. A route reading its rows itself passes `rows`: `parse` reads the page's
+   * text, and `item` reads each row, throwing as `unreadableAnswer` does for one it cannot read.
    */
   private async requestPage<T>(
     endpoint: string,
+    rows?: { parse: JsonReader; item: (row: unknown, res: RawResponse) => T },
   ): Promise<{ items: T[]; nextCursor: string | null }> {
     const res = await this.requestProductAnswer("GET", endpoint, undefined);
-    const page = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const page = this.readObjectAnswer<Record<string, unknown>>(
+      "GET",
+      endpoint,
+      res,
+      {},
+      rows?.parse,
+    );
     const { items, next_cursor: nextCursor } = page;
     if (!Array.isArray(items)) {
       throw this.unreadableAnswer(
@@ -842,7 +1106,62 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         "a page whose `next_cursor` is neither a string nor null",
       );
     }
-    return { items: items as T[], nextCursor };
+    if (rows === undefined) return { items: items as T[], nextCursor };
+    return { items: items.map((row: unknown) => rows.item(row, res)), nextCursor };
+  }
+
+  /**
+   * A route answering one method example (`createMethodExample`, `getMethodExample`,
+   * `updateMethodExample`), its answer read with `parseExactJson`, so an integer past the safe
+   * range in the inputs is a `bigint` holding its exact digits, and checked by
+   * `readMethodExample`.
+   */
+  private async requestMethodExample(
+    method: HttpMethod,
+    endpoint: string,
+    body?: unknown,
+  ): Promise<MethodExample> {
+    const res = await this.requestProductAnswer(method, endpoint, body);
+    const answer = this.readObjectAnswer<Record<string, unknown>>(
+      method,
+      endpoint,
+      res,
+      {},
+      parseExactJson,
+    );
+    return this.readMethodExample(method, endpoint, res, answer, "an example");
+  }
+
+  /**
+   * A method example as `res` carried it, checked against `METHOD_EXAMPLE_FIELDS`: a value that
+   * is not an object, or that misses a field the Python SDK's model requires or holds one of
+   * another type, is an answer the SDK cannot read, thrown as the `ApiResponseError`
+   * `unreadableAnswer` builds, `where` naming the example's place in the answer in the message.
+   * Every route answering an example reads it here, the page rows and the latest-run verdict's
+   * member included.
+   */
+  private readMethodExample(
+    method: HttpMethod,
+    endpoint: string,
+    res: RawResponse,
+    value: unknown,
+    where: string,
+  ): MethodExample {
+    const path = `/${API_PREFIX}/${endpoint}`;
+    if (!isPlainObject(value)) {
+      throw this.unreadableAnswer(method, path, res, `${where} that is not an object`);
+    }
+    for (const [field, [expected, fits]] of Object.entries(METHOD_EXAMPLE_FIELDS)) {
+      if (!fits(value[field])) {
+        throw this.unreadableAnswer(
+          method,
+          path,
+          res,
+          `${where} whose \`${field}\` is not ${expected}`,
+        );
+      }
+    }
+    return value as unknown as MethodExample;
   }
 
   /** Issue a product request and return its 2xx answer, a non-2xx thrown as `ApiResponseError`. */
@@ -883,15 +1202,18 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     endpoint: string,
     res: RawResponse,
     run: RunCreation = {},
+    parse: JsonReader = readJson,
   ): T {
-    return this.readObjectAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res, run);
+    return this.readObjectAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res, run, parse);
   }
 
   /**
    * The JSON body of a 2xx answer, naming the route by its `path` from the origin as a refusal
-   * does. A body that is not UTF-8, or not JSON, an empty one included, is an answer the SDK
-   * cannot read, so it throws the `ApiResponseError` `unreadableAnswer` builds, with the parse
-   * failure as `cause`.
+   * does, its text read by `parse`: `JSON.parse`, or `parseExactJson` for an answer carrying a
+   * person's data. A body that is not UTF-8, or not JSON, an empty one included, is an answer the
+   * SDK cannot read, so it throws the `ApiResponseError` `unreadableAnswer` builds, with the parse
+   * failure as `cause`; so is a body holding a number `parseExactJson` cannot read exactly on this
+   * runtime (`ExactJsonUnsupportedError`), rather than read rounded.
    * The one place a success body is parsed.
    */
   private readAnswerAt<T>(
@@ -899,21 +1221,21 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     path: string,
     res: RawResponse,
     run: RunCreation = {},
+    parse: JsonReader = readJson,
   ): T {
     if (!res.utf8) {
       throw this.unreadableAnswer(method, path, res, "a body that is not UTF-8", undefined, run);
     }
     try {
-      return JSON.parse(res.body) as T;
+      return parse(res.body) as T;
     } catch (err) {
-      throw this.unreadableAnswer(
-        method,
-        path,
-        res,
-        res.body ? "a body that is not JSON" : "an empty body where JSON was expected",
-        err,
-        run,
-      );
+      let what: string;
+      if (err instanceof ExactJsonUnsupportedError) {
+        what =
+          "a body holding a number past Number.MAX_SAFE_INTEGER, which this runtime cannot read " +
+          "exactly";
+      } else what = res.body ? "a body that is not JSON" : "an empty body where JSON was expected";
+      throw this.unreadableAnswer(method, path, res, what, err, run);
     }
   }
 
@@ -927,8 +1249,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     path: string,
     res: RawResponse,
     run: RunCreation = {},
+    parse: JsonReader = readJson,
   ): T {
-    const answer = this.readAnswerAt<unknown>(method, path, res, run);
+    const answer = this.readAnswerAt<unknown>(method, path, res, run, parse);
     if (!isPlainObject(answer)) {
       throw this.unreadableAnswer(
         method,
@@ -1101,6 +1424,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * that exceeds that surfaces as `PipelineExecuteTimeoutError` pointing at the
    * durable start+poll path. Throws `RunStillRunningError` on the protocol's
    * optional 202 degrade.
+   *
+   * The answer is read with `parseExactJson`, so an integer past `Number.MAX_SAFE_INTEGER` in the
+   * working memory, the main output included, is a `bigint` holding its exact digits.
    */
   async execute(options: PipelexRunOptions): Promise<PipelexExecuteResult> {
     const extensions = buildExtensions(options.extra);
@@ -1153,12 +1479,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         this.throwApiResponseError("POST", "execute", res, STARTS_RUN);
       }
       // Wrap the base result in the enriched subtype (adds the `.main_stuff` accessor; the
-      // `main_stuff_name` extension + working memory ride `pipe_output`).
+      // `main_stuff_name` extension + working memory ride `pipe_output`). Read exactly: the working
+      // memory holds the run's inputs and outputs.
       const answer = this.readObjectAnswer<DictRunResultExecute>(
         "POST",
         "execute",
         res,
         STARTS_RUN,
+        parseExactJson,
       );
       if (!isCompletedRunAnswer(answer)) {
         throw this.unreadableAnswer(
@@ -1789,7 +2117,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * lifecycle routes are absent (a bare runner).
    */
   async getRunStatus(runId: string, options: { signal?: AbortSignal } = {}): Promise<RunRead> {
-    const endpoint = `${RUNS}/${encodeURIComponent(runId)}/status`;
+    const endpoint = `${RUNS}/${idPathSegment(runId, "getRunStatus", RUN_ID_ARGUMENT)}/status`;
     const url = this.url(endpoint);
     const res = await this.requestRaw("GET", url, {
       timeoutMs: POLL_REQUEST_TIMEOUT_MS,
@@ -1825,12 +2153,17 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * before any request. `MissingMainStuffError` is thrown only for a read that asked
    * for `main_stuff` — no selection, or one naming it.
    *
+   * A completed result is read with `parseExactJson`, so an integer past
+   * `Number.MAX_SAFE_INTEGER` anywhere in it, the main output, the working memory and the graph
+   * included, is a `bigint` holding its exact digits, and an output passed back to `start` goes
+   * back as the run produced it.
+   *
    * Throws `RunLifecycleUnavailableError` when the lifecycle routes are absent
    * (a bare runner).
    */
   async getRunResult(runId: string, options: GetRunResultOptions = {}): Promise<RunResultState> {
     assertArtifactSelection(options.artifacts);
-    const base = `${RUNS}/${encodeURIComponent(runId)}/results`;
+    const base = `${RUNS}/${idPathSegment(runId, "getRunResult", RUN_ID_ARGUMENT)}/results`;
     // Deduplicated, in the caller's order; the platform reads `a,b` as the set {a, b}. The names
     // are the validated vocabulary above, so they need no escaping and the comma stays literal.
     const endpoint =
@@ -1857,7 +2190,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", endpoint, res);
     }
-    const result = this.readObjectAnswer<RunResults>("GET", endpoint, res);
+    // Read exactly: the output, the working memory and the graph hold the run's data.
+    const result = this.readObjectAnswer<RunResults>("GET", endpoint, res, {}, parseExactJson);
     if (selectionIncludesMainStuff(options.artifacts) && result.main_stuff == null) {
       throw new MissingMainStuffError(
         `Completed run '${runId}' returned no main stuff — a completed run always delivers a main stuff.`,
@@ -2011,18 +2345,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * come back empty and still carry a `nextCursor`: keep following it until it is `null`.
    */
   async listMethods(query: ListMethodsQuery = {}): Promise<MethodPage> {
-    const params = new URLSearchParams();
-    // `!== undefined`, not truthiness — mirroring `listRuns`. Omission means
-    // "the caller did not ask"; an explicit empty string is bad input and the
-    // API should say so, rather than being silently dropped into an unfiltered
-    // query that returns everything and reads as working. `published: false`
-    // is a filter of its own, never omission.
-    if (query.q !== undefined) params.set("q", query.q);
-    if (query.published !== undefined) params.set("published", String(query.published));
-    if (query.limit !== undefined) params.set("limit", String(query.limit));
-    if (query.cursor !== undefined) params.set("cursor", query.cursor);
-    const suffix = params.toString();
-    return this.requestPage<MethodSummary>(suffix ? `methods?${suffix}` : "methods");
+    const search = productQuery({
+      q: query.q,
+      published: query.published,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    return this.requestPage<MethodSummary>(`methods${search}`);
   }
 
   /**
@@ -2064,10 +2393,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Takes a bare catalog id: the method routes address the method itself, never a version of
    * it. A caller holding `mt_…@3` strips the suffix with `parseMethodSelector` and reads that
    * version with `getMethodVersion`. Every method route throws `RequestArgumentError` for a
-   * suffixed id, before any request, rather than read back the `404` the platform would answer.
+   * suffixed id, before any request, rather than read back the `404` the platform would answer,
+   * and for an id that is empty, `.` or `..`, which the URL would resolve into another route's
+   * path.
    */
   async getMethod(methodId: string): Promise<MethodData> {
-    return this.requestMethodData("GET", methodPath(methodId));
+    return this.requestMethodData("GET", methodPath(methodId, "getMethod"));
   }
 
   /**
@@ -2137,7 +2468,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * write.
    */
   async writeDraft(methodId: string, input: MethodDraftInput): Promise<MethodData> {
-    return this.requestMethodData("PUT", `${methodPath(methodId)}/draft`, withWirePython(input));
+    return this.requestMethodData(
+      "PUT",
+      `${methodPath(methodId, "writeDraft")}/draft`,
+      withWirePython(input),
+    );
   }
 
   /**
@@ -2153,7 +2488,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * writes kept landing under the rename.
    */
   async renameMethod(methodId: string, input: MethodRenameInput): Promise<MethodData> {
-    return this.requestMethodData("PATCH", methodPath(methodId), {
+    return this.requestMethodData("PATCH", methodPath(methodId, "renameMethod"), {
       name: input.name,
     });
   }
@@ -2198,33 +2533,20 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
           "updated_at) the caller last saw, so a publish never takes a draft it has not seen.",
       );
     }
-    const endpoint = `${methodPath(methodId)}/publish`;
+    const endpoint = `${methodPath(methodId, "publishMethod")}/publish`;
     const res = await this.requestProductAnswer("POST", endpoint, {
       expected_draft_updated_at: token,
     });
-    const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
-    const { outcome, method: stored } = answer;
-    if (outcome !== "published" && outcome !== "unchanged" && outcome !== "refused") {
-      throw this.unreadableAnswer(
-        "POST",
-        `/${API_PREFIX}/${endpoint}`,
-        res,
-        "a publish result whose `outcome` is not `published`, `unchanged` or `refused`",
-      );
-    }
-    if (!isPlainObject(stored)) {
-      throw this.unreadableAnswer(
-        "POST",
-        `/${API_PREFIX}/${endpoint}`,
-        res,
-        "a publish result whose `method` is not an object",
-      );
-    }
+    const { answer, outcome, subject } = this.readVerdict("POST", endpoint, res, {
+      verdict: "a publish result",
+      outcomes: ["published", "unchanged", "refused"],
+      member: "method",
+    });
     const method = this.readStoredSources<MethodData>(
       "POST",
       endpoint,
       res,
-      stored as MethodDataWire,
+      subject as MethodDataWire,
       "a stored method",
     );
     return { ...answer, outcome, method } as MethodPublishResult;
@@ -2247,14 +2569,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     methodId: string,
     query: ListMethodVersionsQuery = {},
   ): Promise<MethodVersionPage> {
-    const params = new URLSearchParams();
-    // `!== undefined`, not truthiness — mirroring `listMethods`: an explicit empty cursor is bad
-    // input the API should refuse, not an omission.
-    if (query.limit !== undefined) params.set("limit", String(query.limit));
-    if (query.cursor !== undefined) params.set("cursor", query.cursor);
-    const suffix = params.toString();
-    const endpoint = `${methodPath(methodId)}/versions`;
-    return this.requestPage<MethodVersionSummary>(suffix ? `${endpoint}?${suffix}` : endpoint);
+    const search = productQuery({ limit: query.limit, cursor: query.cursor });
+    const endpoint = `${methodPath(methodId, "listMethodVersions")}/versions`;
+    return this.requestPage<MethodVersionSummary>(`${endpoint}${search}`);
   }
 
   /**
@@ -2269,11 +2586,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    */
   async getMethodVersion(methodId: string, version: number): Promise<MethodVersion> {
     if (!Number.isSafeInteger(version) || version < 1) {
-      throw new RequestArgumentError(
-        `getMethodVersion() takes a version number, a positive integer; got ${String(version)}.`,
+      throw argumentRefusal(
+        "getMethodVersion",
+        "a version number, a positive integer",
+        describeNumberArgument(version),
       );
     }
-    const endpoint = `${methodPath(methodId)}/versions/${version}`;
+    const endpoint = `${methodPath(methodId, "getMethodVersion")}/versions/${version}`;
     const res = await this.requestProductAnswer("GET", endpoint, undefined);
     const wire = this.readObjectAnswer<MethodVersionWire>("GET", endpoint, res);
     return this.readStoredSources<MethodVersion>("GET", endpoint, res, wire, "a published version");
@@ -2298,7 +2617,243 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * as `getMethod` does: the whole method is erased, never one of its versions.
    */
   async deleteMethod(methodId: string): Promise<MethodDeletionAccepted> {
-    return this.requestProduct("DELETE", methodPath(methodId));
+    return this.requestProduct("DELETE", methodPath(methodId, "deleteMethod"));
+  }
+
+  // ── Method examples (`/v1/methods/{id}/examples`) ──────────────────────
+  //
+  // Every example route takes a bare catalog id, as `getMethod` does, and answers `404`
+  // `not_found` for an unknown method or example and `409` `method_being_deleted` while the
+  // method's erasure runs. The writes are `403` to a read-only key, which may still read.
+  //
+  // Every answer carrying an example is read with `parseExactJson`, so an integer past
+  // `Number.MAX_SAFE_INTEGER` in its inputs, which another client may have saved, is a `bigint`
+  // holding its exact digits, and every request body is written with `stringifyExactJson`, so
+  // such inputs go back digit for digit, to `updateMethodExample` or as a run's inputs. Each
+  // example is checked by `readMethodExample`: one missing a field the Python SDK's model
+  // requires, or holding one of another type, is an answer the SDK cannot read.
+
+  /**
+   * Save an example on a method — `POST /v1/methods/{id}/examples`: a named set of inputs, and
+   * with `run_id`, a run of this method that used exactly those inputs, recorded as its latest
+   * run. Answers the example as stored, at `input_revision` 1.
+   *
+   * Sends `name`, `inputs` and, when given, `run_id`, and nothing else: the route's body is
+   * closed, and a `null` `run_id` reads as not given. Throws `RequestArgumentError` before any
+   * request when `name` or `inputs` is not given (`null` counting as not given), and for a
+   * `run_id` that is given but is not a non-empty string. Throws `ApiResponseError`: `404`
+   * `run_not_found` for a `run_id` that is not one of this method's runs in the caller's
+   * organization, with nothing written; `413` `payload_too_large` for an example larger than one
+   * stored item holds; `422` for a name that is empty, blank or over 200 characters, or inputs
+   * that are not a JSON object; and the codes every example route answers.
+   */
+  async createMethodExample(
+    methodId: string,
+    input: MethodExampleCreateInput,
+  ): Promise<MethodExample> {
+    const endpoint = `${methodPath(methodId, "createMethodExample")}/examples`;
+    const {
+      name,
+      inputs,
+      run_id: runId,
+    } = (input as Partial<MethodExampleCreateInput> | undefined) ?? {};
+    if (name == null || inputs == null) {
+      let got: string;
+      if (name == null && inputs == null) got = "neither";
+      else got = name == null ? "no name" : "no inputs";
+      throw new RequestArgumentError(
+        `createMethodExample() needs the example's name and its inputs; got ${got}.`,
+      );
+    }
+    const body: Record<string, unknown> = { name, inputs };
+    if (runId != null) {
+      body.run_id = requireNonEmptyId(runId, "createMethodExample", CREATE_RUN_ID_ARGUMENT);
+    }
+    return this.requestMethodExample("POST", endpoint, body);
+  }
+
+  /**
+   * One page of a method's examples, oldest first, inputs included —
+   * `GET /v1/methods/{id}/examples`.
+   *
+   * Pass the page's `nextCursor` back as `cursor` to continue; `null` is the last page. A page
+   * may be short while `nextCursor` is set, because the platform reads examples whole and stops
+   * a read at 1 MB; `iterateMethodExamples` follows the cursor for a caller that wants them all.
+   *
+   * Throws `ApiResponseError`: `400` `malformed_request` for a cursor the listing did not issue
+   * for this method, `422` for a `limit` outside 1 to 100, and the codes every example route
+   * answers. A page whose `items` is not an array, whose `next_cursor` is neither a string nor
+   * `null`, or one of whose items is not an example `readMethodExample` can read, is an answer
+   * the SDK cannot read, thrown as an `ApiResponseError` too. An example whose inputs hold an
+   * integer past the safe range is read like any other, that integer as a `bigint`.
+   */
+  async listMethodExamples(
+    methodId: string,
+    query: ListMethodExamplesQuery = {},
+  ): Promise<MethodExamplePage> {
+    const search = productQuery({ limit: query.limit, cursor: query.cursor });
+    const endpoint = `${methodPath(methodId, "listMethodExamples")}/examples${search}`;
+    return this.requestPage<MethodExample>(endpoint, {
+      parse: parseExactJson,
+      item: (row, res) => this.readMethodExample("GET", endpoint, res, row, "a page item"),
+    });
+  }
+
+  /**
+   * Every example of a method, oldest first, streamed — follows the cursor of
+   * `listMethodExamples` for you.
+   *
+   * ```ts
+   * for await (const example of client.iterateMethodExamples(methodId)) {
+   *   rerun(example); // stop whenever you like
+   * }
+   * ```
+   *
+   * An iterator rather than an all-at-once list, for the reason `iterateMethods` is one: a
+   * helper returning an array needs a page cap, and a cap returns a truncated list with no
+   * error. It runs the same loop as `iterateMethods` and `iterateRuns`, so it keeps going through
+   * a short or empty page that carries a cursor, stops on a `null` cursor or on a cursor the
+   * server failed to advance, and throws `PagingNotTerminatingError` past the same page ceiling.
+   *
+   * Throws `RequestArgumentError` at the call, before the iterator is pulled or anything is sent,
+   * for a method id `listMethodExamples` refuses: a suffixed one, or one that is empty, `.` or `..`
+   * or holds a lone surrogate.
+   */
+  iterateMethodExamples(
+    methodId: string,
+    query: Omit<ListMethodExamplesQuery, "cursor"> = {},
+  ): AsyncGenerator<MethodExample, void, undefined> {
+    // Checked here rather than in a generator's body, which runs only once the iterator is pulled
+    // and would refuse the id at the first pull, away from the call that passed it.
+    methodPath(methodId, "iterateMethodExamples");
+    return followCursor("listMethodExamples", (cursor) =>
+      this.listMethodExamples(methodId, { ...query, cursor }),
+    );
+  }
+
+  /**
+   * One example of a method — `GET /v1/methods/{id}/examples/{example_id}`, read consistently,
+   * so an example saved a moment ago is found.
+   *
+   * Throws `RequestArgumentError` for an example id that is empty, `.` or `..`, or holds a lone
+   * surrogate, before any request. Throws `ApiResponseError`: `422` for an example id longer
+   * than one can be (64 characters), and the codes every example route answers.
+   */
+  async getMethodExample(methodId: string, exampleId: string): Promise<MethodExample> {
+    const endpoint = methodExamplePath(methodId, exampleId, "getMethodExample");
+    return this.requestMethodExample("GET", endpoint);
+  }
+
+  /**
+   * Rename an example, give it new inputs, or both —
+   * `PATCH /v1/methods/{id}/examples/{example_id}` — and return it as it now stands.
+   *
+   * **New inputs raise `input_revision` by one and clear `latest_run_id`**, since the run no
+   * longer shows what the inputs produce; inputs that are the same as the stored ones, their
+   * keys in another order included, change nothing, while `3` becoming `3.0` is a change. A
+   * rename alone keeps both. The edit takes no revision or token: the latest-run write is what
+   * the revision guards. Sends `name` and `inputs` when given, and nothing else; `null` reads as
+   * not given, as the platform reads it.
+   *
+   * **Send `inputs` only when they changed.** Inputs read from an example and sent back unchanged
+   * are a change for the platform when they hold a float with no fractional part, `3.0`, which
+   * JavaScript reads as `3` (see `MethodExample.inputs`): they raise the revision and clear the
+   * latest run. A rename sent alone never does. An integer past `Number.MAX_SAFE_INTEGER` is no
+   * such case: it reads as a `bigint` and is sent back as its exact digits.
+   *
+   * Throws `RequestArgumentError` before any request for an example id that is empty, `.` or
+   * `..`, or when neither `name` nor `inputs` is given. Throws `ApiResponseError`: `413`
+   * `payload_too_large` for inputs larger than one stored item holds, `422` for a name that is
+   * empty, blank or over 200 characters, or inputs that are not a JSON object, a `503` that wrote
+   * nothing, safe to retry, when concurrent edits kept landing under the write, and the codes
+   * every example route answers.
+   */
+  async updateMethodExample(
+    methodId: string,
+    exampleId: string,
+    input: MethodExampleUpdateInput,
+  ): Promise<MethodExample> {
+    const endpoint = methodExamplePath(methodId, exampleId, "updateMethodExample");
+    const { name, inputs } = (input as Partial<MethodExampleUpdateInput> | undefined) ?? {};
+    const body: Record<string, unknown> = {};
+    if (name != null) body.name = name;
+    if (inputs != null) body.inputs = inputs;
+    if (Object.keys(body).length === 0) {
+      throw new RequestArgumentError(
+        "updateMethodExample() needs a new name, new inputs, or both; got neither.",
+      );
+    }
+    return this.requestMethodExample("PATCH", endpoint, body);
+  }
+
+  /**
+   * Record a run as an example's latest —
+   * `PUT /v1/methods/{id}/examples/{example_id}/latest-run` — **only while the example still
+   * holds the revision whose inputs the run used**.
+   *
+   * `input_revision` is the example's `input_revision` the caller read when it started the run
+   * with the example's inputs; the platform trusts it and does not compare the run's own inputs.
+   * The answer is a `MethodExampleLatestRunResult` discriminated on `outcome` — branch on it:
+   * `recorded`, the run is now the example's latest; `stale`, the example's inputs were edited
+   * since and nothing was written. A stale run is the expected end of a run that outlasted an
+   * edit, so it is answered, never thrown. Both arms carry the `example` as it stands.
+   *
+   * Throws `RequestArgumentError` before any request, checking in this order: an example id that
+   * is empty, `.` or `..`, or holds a lone surrogate, a `run_id` that is not a non-empty string,
+   * and an `input_revision` that is not a positive integer. Throws `ApiResponseError` when no
+   * verdict was produced: `404` `not_found` for an example deleted since, `404` `run_not_found`
+   * for a run that is not one of this method's, with nothing written, and the codes every example
+   * route answers. An answer whose `outcome` is neither arm's, or whose `example` is not an
+   * example `readMethodExample` can read, is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too, read as `publishMethod` reads its verdict.
+   */
+  async recordMethodExampleLatestRun(
+    methodId: string,
+    exampleId: string,
+    input: MethodExampleLatestRunInput,
+  ): Promise<MethodExampleLatestRunResult> {
+    const call = "recordMethodExampleLatestRun";
+    const endpoint = `${methodExamplePath(methodId, exampleId, call)}/latest-run`;
+    const { run_id: runId, input_revision: revision } =
+      (input as Partial<MethodExampleLatestRunInput> | undefined) ?? {};
+    const run = requireNonEmptyId(runId, call, RECORD_RUN_ID_ARGUMENT);
+    if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1) {
+      throw argumentRefusal(
+        call,
+        "an input_revision, the example's revision whose inputs the run used, a positive integer",
+        describeNumberArgument(revision),
+      );
+    }
+    const res = await this.requestProductAnswer("PUT", endpoint, {
+      run_id: run,
+      input_revision: revision,
+    });
+    const { answer, outcome, subject } = this.readVerdict("PUT", endpoint, res, {
+      verdict: "a latest-run result",
+      outcomes: ["recorded", "stale"],
+      member: "example",
+      parse: parseExactJson,
+      // Checked once, by the check every example the client hands back goes through.
+      readMember: (value) =>
+        this.readMethodExample("PUT", endpoint, res, value, "a latest-run result's `example`"),
+    });
+    return { ...answer, outcome, example: subject } as MethodExampleLatestRunResult;
+  }
+
+  /**
+   * Delete an example — `DELETE /v1/methods/{id}/examples/{example_id}`. The platform answers
+   * `204`. Deleting the example leaves its latest run in the method's history.
+   *
+   * Throws `RequestArgumentError` for an example id that is empty, `.` or `..`, before any
+   * request: `..` would address the method, and its erasure would answer the delete. Throws
+   * `ApiResponseError`: `404` `not_found` when there is no such example, one already deleted
+   * included, and the codes every example route answers.
+   */
+  async deleteMethodExample(methodId: string, exampleId: string): Promise<void> {
+    await this.requestProduct(
+      "DELETE",
+      methodExamplePath(methodId, exampleId, "deleteMethodExample"),
+    );
   }
 
   /** The caller's org memberships + active-org feature flags — `GET /v1/organizations/memberships`. */
@@ -2313,7 +2868,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /** Rename an organization — `PATCH /v1/organizations/{org_id}`. */
   async renameOrganization(orgId: string, input: { name: string }): Promise<Membership> {
-    return this.requestProduct("PATCH", `organizations/${encodeURIComponent(orgId)}`, input);
+    const segment = idPathSegment(orgId, "renameOrganization", ORG_ID_ARGUMENT);
+    return this.requestProduct("PATCH", `organizations/${segment}`, input);
   }
 
   /** The active org's subscription state — `GET /v1/billing/subscription`. */
@@ -2369,7 +2925,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
 
   /** Revoke a Pipelex API key — `DELETE /v1/pipelex-api-keys/{id}`. */
   async revokePipelexApiKey(id: string): Promise<void> {
-    await this.requestProduct("DELETE", `pipelex-api-keys/${encodeURIComponent(id)}`);
+    const segment = idPathSegment(id, "revokePipelexApiKey", API_KEY_ID_ARGUMENT);
+    await this.requestProduct("DELETE", `pipelex-api-keys/${segment}`);
   }
 
   /**
@@ -2377,7 +2934,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * body). Returns the new plaintext `api_key` once; the old key stops working.
    */
   async rotatePipelexApiKey(id: string): Promise<PipelexApiKeyCreated> {
-    return this.requestProduct("POST", `pipelex-api-keys/${encodeURIComponent(id)}/rotate`);
+    const segment = idPathSegment(id, "rotatePipelexApiKey", API_KEY_ID_ARGUMENT);
+    return this.requestProduct("POST", `pipelex-api-keys/${segment}/rotate`);
   }
 
   /** Submit the onboarding questionnaire — `POST /v1/onboarding/submit`. */
@@ -2569,19 +3127,18 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `method_version`.
    */
   async listRuns(methodId: string, query: ListRunsQuery = {}): Promise<RunPage> {
-    const params = new URLSearchParams({ method_id: methodId });
-    // `!== undefined`, not truthiness: omission means "the caller did not ask
-    // for this bound". An explicitly supplied empty string is not omission, it
-    // is bad input — dropping it turned a broken date into a silently
-    // UNFILTERED query returning every run, which reads as working. Forwarded,
-    // it reaches the API's instant parse and comes back a 400 saying so.
-    if (query.createdFrom !== undefined) params.set("created_from", query.createdFrom);
-    if (query.createdTo !== undefined) params.set("created_to", query.createdTo);
-    if (query.createdBy !== undefined) params.set("created_by", query.createdBy);
-    for (const status of runStatusFilter(query.status) ?? []) params.append("status", status);
-    if (query.limit !== undefined) params.set("limit", String(query.limit));
-    if (query.cursor !== undefined) params.set("cursor", query.cursor);
-    const page = await this.requestPage<RunHistoryItem>(`runs?${params.toString()}`);
+    // An empty date is sent, not dropped: it reaches the API's instant parse and comes back a
+    // `400` saying so, where dropping it would return every run (`productQuery`).
+    const search = productQuery({
+      method_id: methodId,
+      created_from: query.createdFrom,
+      created_to: query.createdTo,
+      created_by: query.createdBy,
+      status: runStatusFilter(query.status),
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    const page = await this.requestPage<RunHistoryItem>(`runs${search}`);
     return { items: page.items.map(withCheckedReport), nextCursor: page.nextCursor };
   }
 
@@ -2628,16 +3185,23 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * executed) and `inputs`. Kept off the status read, which pollers hit every
    * few seconds. A failed run's stored report, `error`, is checked field by
    * field (see `RunErrorReport`).
+   *
+   * Read with `parseExactJson`, so an integer past `Number.MAX_SAFE_INTEGER` in the inputs is a
+   * `bigint` holding its exact digits, and the inputs passed back to `start` or saved as an
+   * example's go back as the run used them.
    */
   async getRunDetail(runId: string): Promise<RunDetail> {
+    const endpoint = `runs/${idPathSegment(runId, "getRunDetail", RUN_ID_ARGUMENT)}`;
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
     return withCheckedReport(
-      await this.requestProductObject<RunDetail>("GET", `runs/${encodeURIComponent(runId)}`),
+      this.readObjectAnswer<RunDetail>("GET", endpoint, res, {}, parseExactJson),
     );
   }
 
   /** Patch a run's status (admin/manual) — `PUT /v1/runs/{id}`. */
   async updateRun(runId: string, input: UpdateRunInput): Promise<void> {
-    await this.requestProduct("PUT", `runs/${encodeURIComponent(runId)}`, input);
+    const segment = idPathSegment(runId, "updateRun", RUN_ID_ARGUMENT);
+    await this.requestProduct("PUT", `runs/${segment}`, input);
   }
 
   /**
@@ -2719,11 +3283,7 @@ function describeRefusedBaseUrl(value: string): string {
   if (parsed.hash) parts.push("a fragment");
   const shown = `"${parsed.protocol}//${parsed.host}"`;
   if (parts.length === 0) return shown;
-  const named =
-    parts.length === 1
-      ? parts[0]
-      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-  return `${shown} with ${named} (not shown)`;
+  return `${shown} with ${inWords(parts, "and")} (not shown)`;
 }
 
 // The protocol's own request fields — `extra` is for extension args only.

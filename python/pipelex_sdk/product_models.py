@@ -1,7 +1,7 @@
 """Pipelex-product wire models — the snake_case JSON shapes the hosted-product routes speak.
 
 These mirror `pipelex-sdk-js/src/product-models.ts`. They are the management surface
-the hosted product (`/v1/me`, `/v1/methods`, `/v1/organizations`, `/v1/billing/*`,
+the hosted product (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/billing/*`,
 `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
 `/v1/resolve-storage-url`, `/v1/upload`, `/v1/runs`) drives.
 
@@ -29,7 +29,7 @@ import json
 from enum import StrEnum
 from typing import Annotated, Any, Literal, TypeAlias, cast
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, TypeAdapter, ValidationError, field_serializer, field_validator
 
 from pipelex_sdk._pydantic_utils import empty_list_factory_of
 from pipelex_sdk.error_models import LenientRunErrorReport
@@ -332,7 +332,7 @@ class MethodVersionPage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     items: list[MethodVersionSummary]
-    next_cursor: str | None = None
+    next_cursor: str | None
 
 
 class MethodData(BaseModel):
@@ -563,7 +563,9 @@ class MethodPage(BaseModel):
 
     The cursor is opaque: pass it straight back as `cursor` to get the next page, and treat
     a `None` as the last page. There is no total by design — counting a catalog costs a full
-    scan, and no caller needs one.
+    scan, and no caller needs one. `next_cursor` is required, as on every page model: the platform
+    always sends it, so a page without it is an answer the SDK cannot read, never the last page,
+    which would end an iterator early without a word.
 
     Under `q` or `published` a page can hold fewer rows than `limit`, or none, and still carry a
     `next_cursor`: the filters run after the index read, so an empty page is not the end of the
@@ -574,7 +576,7 @@ class MethodPage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     items: list[MethodSummary]
-    next_cursor: str | None = None
+    next_cursor: str | None
 
 
 class MethodDeletionAccepted(BaseModel):
@@ -591,6 +593,127 @@ class MethodDeletionAccepted(BaseModel):
     method_id: str
     deletion_state: MethodDeletionState
     deletion_job_id: str
+
+
+# ── Method examples (`/v1/methods/{id}/examples`) ────────────────────────
+#
+# An example is a named set of inputs saved on a method, so the method can be run on them again in
+# one gesture, with the latest run of exactly those inputs. Like the method, it is shared across the
+# organization: any member reads, edits, runs and deletes any example. `input_revision` starts at 1
+# and rises each time the inputs change, which clears `latest_run_id`; a run is recorded as the
+# latest only against the revision whose inputs it used (`record_method_example_latest_run`).
+
+#: The largest integer a JavaScript number holds exactly, `Number.MAX_SAFE_INTEGER`: `@pipelex/sdk` refuses an
+#: example whose `input_revision` lies past it in either direction, and so does `MethodExample`.
+_LARGEST_EXACT_REVISION = 2**53 - 1
+
+
+class MethodExample(BaseModel):
+    """One saved example of a method.
+
+    What `create_method_example`, `get_method_example`, `update_method_example` and both arms of
+    `record_method_example_latest_run` answer, and a row of `list_method_examples`.
+
+    Its fields are read strictly, as `@pipelex/sdk` reads them, so both SDKs refuse the same answers: a
+    field of another type is never coerced, so a revision of `"2"`, `True` or `2.0` is no revision, and
+    an example breaking a field raises the `ApiResponseError` of an answer the SDK cannot read. The one
+    answer the two read apart is a revision spelled `2.0`, which JavaScript reads as the number `2` and
+    cannot tell from it.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    example_id: StrictStr
+    """The example's id, `ex_…`, minted by the platform."""
+
+    method_id: StrictStr
+    """The bare id of the method the example belongs to."""
+
+    name: StrictStr
+    """The example's name, 1 to 200 characters and not blank."""
+
+    inputs: dict[str, Any] = Field(strict=True)
+    """The inputs a run of the example sends, a JSON object returned exactly as it was saved: an integer
+    stays an `int` and `3.0` a `float`."""
+
+    input_revision: StrictInt = Field(ge=-_LARGEST_EXACT_REVISION, le=_LARGEST_EXACT_REVISION)
+    """Starts at 1 and rises by one each time the inputs change. Send it, as read when the run was
+    started, to `record_method_example_latest_run`. An integer a JavaScript number holds exactly, as
+    `@pipelex/sdk` requires."""
+
+    latest_run_id: StrictStr | None
+    """The latest run of the current inputs, `None` when none was recorded since they last changed. It
+    may name a run deleted since, which then reads as not found. Required, as on every example the
+    platform answers: an example without it is an answer the SDK cannot read, never one with no latest
+    run."""
+
+    created_by_user_id: StrictStr
+    """The canonical id of the member who saved the example; it confers nothing."""
+
+    created_at: StrictStr
+    """ISO-8601 UTC instant of the example's creation."""
+
+    updated_at: StrictStr
+    """ISO-8601 UTC instant of its last change: its name, its inputs or its latest run."""
+
+
+class MethodExamplePage(BaseModel):
+    """One page of a method's examples, oldest first, inputs included — `{items, next_cursor}`.
+
+    Same opaque-cursor contract as `MethodPage`: pass `next_cursor` straight back, and a `None` means
+    the last page. Examples are read whole on the server, and a read stops at 1 MB, so a page may be
+    short while `next_cursor` is set; `iterate_method_examples` follows it.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    items: list[MethodExample]
+    next_cursor: str | None
+
+
+class MethodExampleLatestRunOutcome(StrEnum):
+    """What a latest-run write did — the discriminant of `MethodExampleLatestRunResult`."""
+
+    RECORDED = "recorded"
+    """The run is now the example's latest."""
+
+    STALE = "stale"
+    """The example's inputs are no longer the ones the run used, and nothing was written."""
+
+
+class MethodExampleLatestRunRecorded(BaseModel):
+    """The run is now the example's latest; `example` is the example as it now stands."""
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodExampleLatestRunOutcome.RECORDED]
+    example: MethodExample
+
+
+class MethodExampleLatestRunStale(BaseModel):
+    """The run used inputs the example no longer holds, and nothing was written.
+
+    `example` is the example as it stands, with its current revision and latest run.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodExampleLatestRunOutcome.STALE]
+    example: MethodExample
+
+
+MethodExampleLatestRunResult: TypeAlias = Annotated[
+    MethodExampleLatestRunRecorded | MethodExampleLatestRunStale,
+    Field(discriminator="outcome"),
+]
+"""The answer of `record_method_example_latest_run`, a `200` discriminated on `outcome`. A stale run is the
+expected end of a run that outlasted an edit of the example's inputs, a verdict about the run rather than
+a failed request, so it is answered rather than raised. Branch on `outcome` (`match result:` over its
+classes), never on the status: an unknown example, a run that is not the method's or a method being
+deleted raise `ApiResponseError` instead."""
+
+MethodExampleLatestRunResultAdapter: TypeAdapter[MethodExampleLatestRunResult] = TypeAdapter(MethodExampleLatestRunResult)  # pylint: disable=invalid-name
+"""The single parse path for a latest-run answer — built once at import (TypeAdapter construction is expensive)."""
 
 
 # ── Organizations (`/v1/organizations`) ──────────────────────────────────
@@ -938,7 +1061,7 @@ class RunPage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     items: list[RunHistoryItem]
-    next_cursor: str | None = None
+    next_cursor: str | None
 
 
 class UpdateRunInput(BaseModel):

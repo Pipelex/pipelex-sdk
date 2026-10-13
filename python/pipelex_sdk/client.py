@@ -91,6 +91,9 @@ from pipelex_sdk.product_models import (
     MembershipsResponse,
     MethodData,
     MethodDeletionAccepted,
+    MethodExample,
+    MethodExampleLatestRunResultAdapter,
+    MethodExamplePage,
     MethodPage,
     MethodPublishResultAdapter,
     MethodSummary,
@@ -137,6 +140,7 @@ if TYPE_CHECKING:
 
     from pipelex_sdk.product_models import (
         MethodDraftInput,
+        MethodExampleLatestRunResult,
         MethodPublishResult,
         MethodWriteInput,
         OnboardingSubmission,
@@ -158,10 +162,10 @@ DEFAULT_API_BASE_URL = "https://api.pipelex.com"
 
 _POLL_REQUEST_TIMEOUT_SECONDS = 30.0  # single status/result/product GETs; the hosted gateway caps responses at ~30s.
 
-# A runaway backstop for both paged-list iterators, set far beyond any real catalog — never a
+# A runaway backstop for every paged-list iterator, set far beyond any real catalog — never a
 # coverage cap. Reaching it means the server kept minting cursors, which is a fault to raise on,
 # not a limit to truncate at. It is what bounds a cursor that CYCLES (`c1 -> c2 -> c1`) over
-# non-empty pages: neither iterator's adjacent-cursor check sees a non-adjacent repeat.
+# non-empty pages: no iterator's adjacent-cursor check sees a non-adjacent repeat.
 _MAX_LIST_PAGES: int = 10_000
 _DEFAULT_DEGRADED_RETRY_SECONDS = 5  # matches the platform's `_DEGRADE_RETRY_AFTER_SECONDS`.
 
@@ -1202,7 +1206,7 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiResponseError: For a genuine run-not-found 404 or any other non-2xx response, or a 2xx
                 that is not a run.
         """
-        endpoint = f"{_RUNS}/{quote(run_id, safe='')}/status"
+        endpoint = f"{_RUNS}/{_id_path_segment(run_id, call='get_run_status', what=_RUN_ID_ARGUMENT)}/status"
         url = self._url(endpoint)
         response = await self._send("GET", url, content=None, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
         self._raise_if_lifecycle_unavailable(status=response.status_code, body=response.text, url=url)
@@ -1244,7 +1248,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 `200` that is not the run's results.
         """
         selection = _artifact_selection(artifacts)
-        endpoint = f"{_RUNS}/{quote(run_id, safe='')}/results"
+        endpoint = f"{_RUNS}/{_id_path_segment(run_id, call='get_run_result', what=_RUN_ID_ARGUMENT)}/results"
         if selection is not None:
             endpoint = f"{endpoint}?{urlencode({'artifacts': ','.join(selection)}, safe=',')}"
         url = self._url(endpoint)
@@ -1664,9 +1668,11 @@ class PipelexAPIClient(MthdsAPIClient):
         it. A caller holding `mt_…@3` strips the suffix with
         `pipelex_sdk.method_selector.parse_method_selector` and reads that version with
         `get_method_version`. Every method route raises `RequestArgumentError` for a suffixed id,
-        before any request, rather than read back the `404` the platform would answer.
+        before any request, rather than read back the `404` the platform would answer, and for an
+        id that is empty, `.` or `..`, which the URL would resolve into another route's path, or
+        that holds a lone surrogate, which a URL cannot carry.
         """
-        return await self._request_product("GET", _method_path(method_id), read=MethodData.model_validate)
+        return await self._request_product("GET", _method_path(method_id, call="get_method"), read=MethodData.model_validate)
 
     async def create_method(self, write_input: MethodWriteInput) -> MethodData:
         """Create a method — `POST /v1/methods`.
@@ -1710,7 +1716,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 when the method kept changing under the write.
         """
         body = draft.model_dump(mode="json", exclude_unset=True)
-        return await self._request_product("PUT", f"{_method_path(method_id)}/draft", body=body, read=MethodData.model_validate)
+        endpoint = f"{_method_path(method_id, call='write_draft')}/draft"
+        return await self._request_product("PUT", endpoint, body=body, read=MethodData.model_validate)
 
     async def rename_method(self, method_id: str, name: str) -> MethodData:
         """Rename a method — `PATCH /v1/methods/{id}`.
@@ -1730,7 +1737,9 @@ class PipelexAPIClient(MthdsAPIClient):
                 publish; a `503` that wrote nothing, safe to retry, when draft writes kept landing
                 under the rename.
         """
-        return await self._request_product("PATCH", _method_path(method_id), body={"name": name}, read=MethodData.model_validate)
+        return await self._request_product(
+            "PATCH", _method_path(method_id, call="rename_method"), body={"name": name}, read=MethodData.model_validate
+        )
 
     async def publish_method(self, method_id: str, *, expected_draft_updated_at: str) -> MethodPublishResult:
         """Publish a method's draft as its next version — `POST /v1/methods/{id}/publish`.
@@ -1777,7 +1786,8 @@ class PipelexAPIClient(MthdsAPIClient):
             )
             raise RequestArgumentError(msg)
         body = {"expected_draft_updated_at": token}
-        return await self._request_product("POST", f"{_method_path(method_id)}/publish", body=body, read=MethodPublishResultAdapter.validate_python)
+        endpoint = f"{_method_path(method_id, call='publish_method')}/publish"
+        return await self._request_product("POST", endpoint, body=body, read=MethodPublishResultAdapter.validate_python)
 
     async def list_method_versions(self, method_id: str, *, limit: int | None = None, cursor: str | None = None) -> MethodVersionPage:
         """List one page of a method's published versions, newest first — `GET /v1/methods/{id}/versions`.
@@ -1799,7 +1809,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 `422` for a `limit` outside 1 to 100.
         """
         query = _product_query({"limit": limit, "cursor": cursor})
-        return await self._request_product("GET", f"{_method_path(method_id)}/versions{query}", read=MethodVersionPage.model_validate)
+        endpoint = f"{_method_path(method_id, call='list_method_versions')}/versions{query}"
+        return await self._request_product("GET", endpoint, read=MethodVersionPage.model_validate)
 
     async def get_method_version(self, method_id: str, version: int) -> MethodVersion:
         """Read one published version of a method, with its sources — `GET /v1/methods/{id}/versions/{n}`.
@@ -1822,7 +1833,8 @@ class PipelexAPIClient(MthdsAPIClient):
         if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 1:
             msg = f"get_method_version() takes a version number, a positive integer; got {version!r}."
             raise RequestArgumentError(msg)
-        return await self._request_product("GET", f"{_method_path(method_id)}/versions/{version}", read=MethodVersion.model_validate)
+        endpoint = f"{_method_path(method_id, call='get_method_version')}/versions/{version}"
+        return await self._request_product("GET", endpoint, read=MethodVersion.model_validate)
 
     async def delete_method(self, method_id: str) -> MethodDeletionAccepted:
         """Erase a method and everything it produced — `DELETE /v1/methods/{id}`.
@@ -1848,7 +1860,237 @@ class PipelexAPIClient(MthdsAPIClient):
             The platform's acceptance — `method_id`, the `deletion_state` the cascade started
             in, and the `deletion_job_id` a caller can log or correlate.
         """
-        return await self._request_product("DELETE", _method_path(method_id), read=MethodDeletionAccepted.model_validate)
+        return await self._request_product("DELETE", _method_path(method_id, call="delete_method"), read=MethodDeletionAccepted.model_validate)
+
+    # ----- method examples (`/v1/methods/{id}/examples`) -----------------------------------------
+    #
+    # Every example route takes a bare catalog id, as `get_method` does, and answers `404` `not_found`
+    # for an unknown method or example and `409` `method_being_deleted` while the method's erasure runs.
+    # The writes are `403` to a read-only key, which may still read.
+
+    async def create_method_example(
+        self,
+        method_id: str,
+        *,
+        name: str,
+        inputs: dict[str, Any],
+        run_id: str | None = None,
+    ) -> MethodExample:
+        """Save an example on a method — `POST /v1/methods/{id}/examples`.
+
+        An example is a named set of inputs, and with `run_id`, a run of this method that used exactly
+        those inputs, recorded as its latest run. The body is `name`, `inputs` and, when given, `run_id`.
+
+        Args:
+            method_id: The method's bare catalog id.
+            name: The example's name, 1 to 200 characters and not blank.
+            inputs: The inputs a run of the example sends, a JSON object.
+            run_id: A run of this method that used exactly these inputs, recorded as the example's
+                latest run at revision 1; `None` sends no run.
+
+        Returns:
+            The example as stored, at `input_revision` 1.
+
+        Raises:
+            RequestArgumentError: `name` or `inputs` is `None`, or `run_id` is given but is empty or not a
+                `str`; nothing is sent.
+            ApiResponseError: `404` `run_not_found` for a `run_id` that is not one of this method's runs
+                in the caller's organization, with nothing written; `413` `payload_too_large` for an
+                example larger than one stored item holds; `422` for a name that is empty, blank or over
+                200 characters, or inputs that are not a JSON object; and the codes every example route
+                answers.
+        """
+        endpoint = f"{_method_path(method_id, call='create_method_example')}/examples"
+        # Checked as `object`s: the annotations are promises to the type checker, not to a caller forwarding
+        # an optional value, which would be sent as `null` for the platform to refuse.
+        name_missing = cast("object", name) is None
+        inputs_missing = cast("object", inputs) is None
+        got: str | None = None
+        if name_missing and inputs_missing:
+            got = "neither"
+        elif name_missing:
+            got = "no name"
+        elif inputs_missing:
+            got = "no inputs"
+        if got is not None:
+            msg = f"create_method_example() needs the example's name and its inputs; got {got}."
+            raise RequestArgumentError(msg)
+        body: dict[str, Any] = {"name": name, "inputs": inputs}
+        if run_id is not None:
+            # Checked as an `object`, as the latest-run write checks its run id: the annotation is a
+            # promise to the type checker, not to a caller forwarding an id it read elsewhere.
+            body["run_id"] = _require_non_empty_id(run_id, call="create_method_example", what=_CREATE_RUN_ID_ARGUMENT)
+        return await self._request_product("POST", endpoint, body=body, read=MethodExample.model_validate)
+
+    async def list_method_examples(self, method_id: str, *, limit: int | None = None, cursor: str | None = None) -> MethodExamplePage:
+        """List one page of a method's examples, oldest first, inputs included — `GET /v1/methods/{id}/examples`.
+
+        Args:
+            method_id: The method's bare catalog id.
+            limit: Page size, from 1 to 100; the API defaults to 50 and refuses a `limit` outside that
+                range with a `422`.
+            cursor: The `next_cursor` of the previous page, passed back opaquely.
+
+        Returns:
+            A `MethodExamplePage` of `MethodExample` rows. `next_cursor` is `None` on the last page; a page
+            may be short while it is set, because the platform reads examples whole and stops a read at
+            1 MB. For every example, prefer `iterate_method_examples`, which follows the cursors.
+
+        Raises:
+            ApiResponseError: `400` `malformed_request` for a cursor the listing did not issue for this
+                method; `422` for a `limit` outside 1 to 100; and the codes every example route answers.
+        """
+        query = _product_query({"limit": limit, "cursor": cursor})
+        endpoint = f"{_method_path(method_id, call='list_method_examples')}/examples{query}"
+        return await self._request_product("GET", endpoint, read=MethodExamplePage.model_validate)
+
+    def iterate_method_examples(self, method_id: str, *, limit: int | None = None) -> AsyncIterator[MethodExample]:
+        """Yield every example of a method, oldest first, following the cursors — `GET /v1/methods/{id}/examples`.
+
+        An iterator rather than an all-at-once list, for the reason `iterate_methods` is one: a helper
+        returning a list needs a cap, and a cap is a silent truncation. It runs the loop `iterate_methods`
+        and `iterate_runs` share, so it keeps going through a short or empty page that carries a cursor,
+        stops on a `None` cursor or on a cursor the server failed to advance, and raises at the same page
+        ceiling.
+
+        Raises:
+            RequestArgumentError: At the call, before the iterator is iterated or anything is sent, for a
+                `method_id` that `list_method_examples` refuses: a suffixed one, or one that is not a `str`,
+                is empty, `.` or `..`, or holds a lone surrogate.
+            PagingNotTerminatingError: If the server never stops handing out cursors.
+        """
+        # Checked here rather than in an async generator's body, which runs only once it is iterated and
+        # would refuse the id at the first `__anext__`, away from the call that passed it.
+        _method_path(method_id, call="iterate_method_examples")
+        return _follow_cursor("Method example", lambda cursor: self.list_method_examples(method_id, limit=limit, cursor=cursor))
+
+    async def get_method_example(self, method_id: str, example_id: str) -> MethodExample:
+        """Read one example of a method — `GET /v1/methods/{id}/examples/{example_id}`.
+
+        The read is consistent, so an example saved a moment ago is found.
+
+        Args:
+            method_id: The method's bare catalog id.
+            example_id: The example's `example_id`.
+
+        Raises:
+            RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`; nothing is sent.
+            ApiResponseError: `422` for an example id longer than one can be (64 characters), and the
+                codes every example route answers.
+        """
+        endpoint = _method_example_path(method_id, example_id, call="get_method_example")
+        return await self._request_product("GET", endpoint, read=MethodExample.model_validate)
+
+    async def update_method_example(
+        self,
+        method_id: str,
+        example_id: str,
+        *,
+        name: str | None = None,
+        inputs: dict[str, Any] | None = None,
+    ) -> MethodExample:
+        """Rename an example, give it new inputs, or both — `PATCH /v1/methods/{id}/examples/{example_id}`.
+
+        **New inputs raise `input_revision` by one and clear `latest_run_id`**, since the run no longer
+        shows what the inputs produce; inputs that are the same as the stored ones, their keys in another
+        order included, change nothing, while `3` becoming `3.0` is a change. A rename alone keeps both.
+        The edit takes no revision or token: the latest-run write is what the revision guards. The body
+        is the fields given; `None` sends nothing and keeps the stored value.
+
+        Args:
+            method_id: The method's bare catalog id.
+            example_id: The example's `example_id`.
+            name: The example's new name, 1 to 200 characters and not blank.
+            inputs: The example's new inputs, a JSON object.
+
+        Returns:
+            The example as it now stands.
+
+        Raises:
+            RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`, or neither `name` nor
+                `inputs` is given; nothing is sent.
+            ApiResponseError: `413` `payload_too_large` for inputs larger than one stored item holds;
+                `422` for a name that is empty, blank or over 200 characters, or inputs that are not a JSON
+                object; a `503` that wrote nothing, safe to retry, when concurrent edits kept landing under
+                the write; and the codes every example route answers.
+        """
+        endpoint = _method_example_path(method_id, example_id, call="update_method_example")
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if inputs is not None:
+            body["inputs"] = inputs
+        if not body:
+            msg = "update_method_example() needs a new name, new inputs, or both; got neither."
+            raise RequestArgumentError(msg)
+        return await self._request_product("PATCH", endpoint, body=body, read=MethodExample.model_validate)
+
+    async def record_method_example_latest_run(
+        self,
+        method_id: str,
+        example_id: str,
+        *,
+        run_id: str,
+        input_revision: int,
+    ) -> MethodExampleLatestRunResult:
+        """Record a run as an example's latest — `PUT /v1/methods/{id}/examples/{example_id}/latest-run`.
+
+        **The run is recorded only while the example still holds the revision whose inputs it used.**
+        `input_revision` is the example's `input_revision` the caller read when it started the run with
+        the example's inputs; the platform trusts it and does not compare the run's own inputs.
+
+        Args:
+            method_id: The method's bare catalog id.
+            example_id: The example's `example_id`.
+            run_id: A run of this method that used the example's inputs.
+            input_revision: The example's revision whose inputs the run used, a positive integer.
+
+        Returns:
+            A `MethodExampleLatestRunResult` discriminated on `outcome` — branch on it:
+            `MethodExampleLatestRunRecorded`, the run is now the example's latest;
+            `MethodExampleLatestRunStale`, the example's inputs were edited since and nothing was written.
+            A stale run is the expected end of a run that outlasted an edit, so it is answered, never
+            raised. Both arms carry the `example` as it stands.
+
+        Raises:
+            RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`, `run_id` is not a
+                non-empty `str`, or `input_revision` is not a positive integer (a `bool`, a `float` and a numeric string
+                included); nothing is sent.
+            ApiResponseError: When no verdict was produced: `404` `not_found` for an example deleted since;
+                `404` `run_not_found` for a run that is not one of this method's, with nothing written; and
+                the codes every example route answers. An answer off the union is one the SDK cannot read,
+                raised as an `ApiResponseError` too.
+        """
+        call = "record_method_example_latest_run"
+        # The arguments are checked in the order the Raises section names them, each before anything is sent.
+        endpoint = f"{_method_example_path(method_id, example_id, call=call)}/latest-run"
+        # Checked as `object`s, as `get_method_version` checks its version: the annotations are promises
+        # to the type checker, not to a caller forwarding an optional id or a CLI argument.
+        checked_run_id = _require_non_empty_id(run_id, call=call, what=_RECORD_RUN_ID_ARGUMENT)
+        candidate_revision = cast("object", input_revision)
+        if isinstance(candidate_revision, bool) or not isinstance(candidate_revision, int) or candidate_revision < 1:
+            what = "an input_revision, the example's revision whose inputs the run used, a positive integer"
+            raise _argument_refusal(call, what, repr(input_revision))
+        body = {"run_id": checked_run_id, "input_revision": candidate_revision}
+        return await self._request_product("PUT", endpoint, body=body, read=MethodExampleLatestRunResultAdapter.validate_python)
+
+    async def delete_method_example(self, method_id: str, example_id: str) -> None:
+        """Delete an example — `DELETE /v1/methods/{id}/examples/{example_id}`.
+
+        The platform answers `204`. Deleting the example leaves its latest run in the method's history.
+
+        Args:
+            method_id: The method's bare catalog id.
+            example_id: The example's `example_id`.
+
+        Raises:
+            RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`; nothing is sent: `..`
+                would address the method, and its erasure would answer the delete.
+            ApiResponseError: `404` `not_found` when there is no such example, one already deleted
+                included, and the codes every example route answers.
+        """
+        endpoint = _method_example_path(method_id, example_id, call="delete_method_example")
+        await self._request_product_without_answer("DELETE", endpoint)
 
     async def list_memberships(self) -> MembershipsResponse:
         """The caller's org memberships + active-org feature flags — `GET /v1/organizations/memberships`."""
@@ -1860,7 +2102,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
     async def rename_organization(self, org_id: str, name: str) -> Membership:
         """Rename an organization — `PATCH /v1/organizations/{org_id}`."""
-        return await self._request_product("PATCH", f"organizations/{quote(org_id, safe='')}", body={"name": name}, read=Membership.model_validate)
+        endpoint = f"organizations/{_id_path_segment(org_id, call='rename_organization', what=_ORG_ID_ARGUMENT)}"
+        return await self._request_product("PATCH", endpoint, body={"name": name}, read=Membership.model_validate)
 
     async def get_subscription(self) -> SubscriptionResponse:
         """The active org's subscription state — `GET /v1/billing/subscription`."""
@@ -1907,14 +2150,16 @@ class PipelexAPIClient(MthdsAPIClient):
 
     async def revoke_pipelex_api_key(self, key_id: str) -> None:
         """Revoke a Pipelex API key — `DELETE /v1/pipelex-api-keys/{id}` (empty body)."""
-        await self._request_product_without_answer("DELETE", f"pipelex-api-keys/{quote(key_id, safe='')}")
+        segment = _id_path_segment(key_id, call="revoke_pipelex_api_key", what=_API_KEY_ID_ARGUMENT)
+        await self._request_product_without_answer("DELETE", f"pipelex-api-keys/{segment}")
 
     async def rotate_pipelex_api_key(self, key_id: str) -> PipelexApiKeyCreated:
         """Rotate a Pipelex API key — `POST /v1/pipelex-api-keys/{id}/rotate` (no body).
 
         Returns the new plaintext `api_key` once; the old key stops working.
         """
-        return await self._request_product("POST", f"pipelex-api-keys/{quote(key_id, safe='')}/rotate", read=PipelexApiKeyCreated.model_validate)
+        segment = _id_path_segment(key_id, call="rotate_pipelex_api_key", what=_API_KEY_ID_ARGUMENT)
+        return await self._request_product("POST", f"pipelex-api-keys/{segment}/rotate", read=PipelexApiKeyCreated.model_validate)
 
     async def submit_onboarding(self, submission: OnboardingSubmission) -> None:
         """Submit the onboarding questionnaire — `POST /v1/onboarding/submit` (empty body)."""
@@ -2276,12 +2521,14 @@ class PipelexAPIClient(MthdsAPIClient):
         fetches `/results`. This is the catalog-style record, and the only read that carries
         `mthds_contents` and `inputs`.
         """
-        return await self._request_product("GET", f"{_RUNS}/{quote(run_id, safe='')}", read=RunDetail.model_validate)
+        endpoint = f"{_RUNS}/{_id_path_segment(run_id, call='get_run_detail', what=_RUN_ID_ARGUMENT)}"
+        return await self._request_product("GET", endpoint, read=RunDetail.model_validate)
 
     async def update_run(self, run_id: str, update_input: UpdateRunInput) -> None:
         """Patch a run's status (admin/manual) — `PUT /v1/runs/{id}` (empty body)."""
         body = update_input.model_dump(mode="json", exclude_none=True)
-        await self._request_product_without_answer("PUT", f"{_RUNS}/{quote(run_id, safe='')}", body=body)
+        endpoint = f"{_RUNS}/{_id_path_segment(run_id, call='update_run', what=_RUN_ID_ARGUMENT)}"
+        await self._request_product_without_answer("PUT", endpoint, body=body)
 
     # ── Health ─────────────────────────────────────────────────────────────
     #
@@ -2589,7 +2836,7 @@ class _CursorPage(Protocol[_PageItemT_co]):
 async def _follow_cursor(noun: str, read_page: Callable[[str | None], Awaitable[_CursorPage[_PageItemT]]]) -> AsyncIterator[_PageItemT]:
     """Follow a paged list's cursor until the server says there is no more, yielding every row.
 
-    The one loop behind `iterate_methods` and `iterate_runs`, so the two cannot drift apart. It
+    The one loop behind `iterate_methods`, `iterate_runs` and `iterate_method_examples`, so they cannot drift apart. It
     keeps going through an empty page that carries a cursor, since a filtered page can hold no
     row and still not be the end. It stops when `next_cursor` is `None`, and when the server hands
     back the cursor it was just sent, checked before yielding so a stuck cursor never re-yields a
@@ -2650,18 +2897,87 @@ def _status_filter(status: Sequence[RunStatus] | None) -> tuple[RunStatus, ...] 
     return tuple(run_status for run_status in RunStatus if run_status in requested)
 
 
-def _method_path(method_id: str) -> str:
-    """The path of a method route, `methods/{id}`, for a bare catalog id.
+#: What each id a route puts in its path is, as a refusal of it names it.
+_METHOD_ID_ARGUMENT = "a method id, the method's non-empty bare catalog id"
+_EXAMPLE_ID_ARGUMENT = "an example id, the example's non-empty `example_id`"
+_RUN_ID_ARGUMENT = "a run id, the run's non-empty `pipeline_run_id`"
+_ORG_ID_ARGUMENT = "an organization id, the organization's non-empty `org_id`"
+_API_KEY_ID_ARGUMENT = "an API key id, the key's non-empty `id`"
+
+#: What the run id of each example write is, as a refusal of it names it.
+_CREATE_RUN_ID_ARGUMENT = "a run_id naming a run of this method that used these inputs, a non-empty string, or none"
+_RECORD_RUN_ID_ARGUMENT = "a run_id naming a run of this method that used the example's inputs, a non-empty string"
+
+#: The ids that are dot segments, which the URL resolves before the request leaves.
+_DOT_SEGMENTS = frozenset({".", ".."})
+
+
+def _argument_refusal(call: str, what: str, got: str) -> RequestArgumentError:
+    """The refusal of an argument a call cannot take, worded as every such refusal is: `<call>() takes <what>; got <got>.`"""
+    msg = f"{call}() takes {what}; got {got}."
+    return RequestArgumentError(msg)
+
+
+def _require_non_empty_id(value: object, *, call: str, what: str) -> str:
+    """A caller's id, checked to be a non-empty `str`: the one check every id a call takes goes through.
+
+    Whether the id enters a path (`_id_path_segment`) or a body (a run id an example write records),
+    anything else is refused before anything is sent, `call` naming the method in the message and `what`
+    the id it takes. The refusal names what it got: an empty string, `None`, or the type of any other value.
+
+    Raises:
+        RequestArgumentError: `value` is not a `str`, or is empty.
+    """
+    if isinstance(value, str) and value:
+        return value
+    got: str
+    if isinstance(value, str):
+        got = "an empty string"
+    elif value is None:
+        got = "None"
+    else:
+        got = type(value).__name__
+    raise _argument_refusal(call, what, got)
+
+
+def _id_path_segment(value: object, *, call: str, what: str) -> str:
+    """A caller's id as one segment of a route's path, percent-encoded: the one place an id enters a path.
+
+    `quote(safe='')` escapes every character a path gives meaning to but the dot, so an id of `.` or `..`
+    would reach the URL as a dot segment, which httpx resolves before the request leaves:
+    `methods/mt_x/examples/..` is sent as `methods/mt_x`, and deleting that "example" would erase the
+    method. An empty id addresses the route above it the same way, `runs/` for a run. So a value that is
+    not a non-empty `str` (`_require_non_empty_id`) and a dot segment are each refused before anything is
+    sent, and so is a string holding a lone surrogate, which has no UTF-8 spelling and so no
+    percent-encoding: `quote` raises a `UnicodeEncodeError` for it. `call` names the method in the message
+    and `what` the id it takes. An id spelling a dot in percent-encoding (`%2e`) is no dot segment once its
+    `%` is escaped.
+
+    Raises:
+        RequestArgumentError: `value` is not a `str`, is empty, `.` or `..`, or holds a lone surrogate.
+    """
+    id_value = _require_non_empty_id(value, call=call, what=what)
+    if id_value in _DOT_SEGMENTS:
+        raise _argument_refusal(call, what, f'"{id_value}", a dot segment, which the URL would resolve into another route\'s path')
+    try:
+        return quote(id_value, safe="")
+    except UnicodeEncodeError as exc:
+        raise _argument_refusal(call, what, "a string holding a lone surrogate, which a URL cannot carry") from exc
+
+
+def _method_path(method_id: str, *, call: str) -> str:
+    """The path of a method route, `methods/{id}`, for a bare catalog id, its segment refused as `_id_path_segment` refuses one.
 
     The method routes address the method itself, never one of its versions, and the platform does
     not parse a suffix there: `mt_x@3` would be looked up as an id of its own and answer
     `404 not_found`, which reads as a method that does not exist. So a suffixed id is refused
     before anything is sent, saying how to read what it names. Stripping it instead would answer
-    the draft for a caller that named a version.
+    the draft for a caller that named a version. `call` names the method in the message.
 
     Raises:
-        RequestArgumentError: `method_id` carries a version suffix.
+        RequestArgumentError: `method_id` is not a `str`, is empty, `.` or `..`, holds a lone surrogate, or carries a version suffix.
     """
+    segment = _id_path_segment(method_id, call=call, what=_METHOD_ID_ARGUMENT)
     if "@" in method_id:
         msg = (
             f'"{method_id}" carries a version suffix, and the method routes take a bare catalog id: they address the method '
@@ -2669,7 +2985,22 @@ def _method_path(method_id: str) -> str:
             "with get_method_version."
         )
         raise RequestArgumentError(msg)
-    return f"methods/{quote(method_id, safe='')}"
+    return f"methods/{segment}"
+
+
+def _method_example_path(method_id: str, example_id: str, *, call: str) -> str:
+    """The path of one saved example, `methods/{id}/examples/{example_id}`, for a bare catalog id and an example id.
+
+    Each is refused as `_method_path` and `_id_path_segment` refuse one: an empty example id would address
+    the examples list rather than an example, and `..` the method itself. `call` names the method in the
+    message.
+
+    Raises:
+        RequestArgumentError: `method_id` is refused as `_method_path` refuses it, or `example_id` is not a
+            `str`, or is empty, `.` or `..`, or holds a lone surrogate.
+    """
+    path = _method_path(method_id, call=call)
+    return f"{path}/examples/{_id_path_segment(example_id, call=call, what=_EXAMPLE_ID_ARGUMENT)}"
 
 
 def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArtifact, ...] | None:

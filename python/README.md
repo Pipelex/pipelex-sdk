@@ -111,6 +111,24 @@ versions = await client.list_method_versions("mt_123")  # newest first
 parsed = parse_method_selector("mt_123@3")  # ParsedMethodSelector(method_id="mt_123", version=3)
 ```
 
+### Save examples and rerun them
+
+An example is a named set of inputs saved on a method, with the latest run of exactly those inputs. A run is recorded against the revision whose inputs it used, so an edit of the inputs while it ran answers `stale`, a verdict rather than an error ([`docs/method-examples.md`](docs/method-examples.md)):
+
+```python
+from pipelex_sdk.product_models import MethodExampleLatestRunStale
+
+example = await client.create_method_example("mt_123", name="March receipt", inputs={"total": 3})
+started = await client.start(method_id="mt_123", inputs=example.inputs)
+verdict = await client.record_method_example_latest_run(
+    "mt_123", example.example_id, run_id=started.pipeline_run_id, input_revision=example.input_revision
+)
+if isinstance(verdict, MethodExampleLatestRunStale):
+    print("edited since", verdict.example.input_revision)
+async for saved in client.iterate_method_examples("mt_123"):  # every example, oldest first
+    print(saved.name, saved.latest_run_id)
+```
+
 ### Read a method's inputs and outputs
 
 `pipe_io()` returns a method's pipe I/O contracts, input form and output form in one call, without validating it (no dry run). The server selects the pipe — your `pipe_ref`, else the package manifest's `main_pipe`, else the closure's single `main_pipe` declaration — and the three artifacts are the standard's own models from `mthds.protocol`:

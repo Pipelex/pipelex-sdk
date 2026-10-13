@@ -27,6 +27,7 @@ import {
   UnsupportedUploadCapabilityError,
   UploadAuthenticationError,
   UploadTransportError,
+  stringifyExactJson,
 } from "../index.js";
 import type { ValidationErrorItem } from "../index.js";
 import { CommandError, EXIT_FAILED, EXIT_USAGE } from "./io.js";
@@ -232,8 +233,9 @@ export function isAbsence(mainStuff: unknown): boolean {
 
 /**
  * Print a finished run's main output on stdout, as the method produced it: indented JSON,
- * unvalidated and unrepaired, a list included whichever shape it arrived in. An output the method
- * left absent prints `null`, and a line on stderr says so.
+ * unvalidated and unrepaired, a list included whichever shape it arrived in, an integer past
+ * `Number.MAX_SAFE_INTEGER`, which the client reads as a `bigint`, printed with its exact digits.
+ * An output the method left absent prints `null`, and a line on stderr says so.
  */
 export function printResult(mainStuff: unknown, io: CommandIO): void {
   if (isAbsence(mainStuff)) {
@@ -247,5 +249,5 @@ export function printResult(mainStuff: unknown, io: CommandIO): void {
     }
     return;
   }
-  io.writeStdout(`${JSON.stringify(mainStuff, null, 2)}\n`);
+  io.writeStdout(`${stringifyExactJson(mainStuff, 2)}\n`);
 }
