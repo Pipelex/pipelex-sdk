@@ -37,11 +37,12 @@
 #
 # A manual dispatch publishes a sprint prerelease of @pipelex/sdk from a chosen commit as
 # X.Y.Z-sprint.g<full sha> on the dist-tag `sprint` (design DB6), which is what `wt pin` asks
-# for through the `prerelease` command of .worktree.toml. It is dispatched from dev alone: the
-# `npm` environment its publish job holds allows main and dev, and `ledger land` verifies a
-# release from the newest run of this file at the release's merge commit, so a dispatch is
-# refused from main, from any other branch, from a tag and while dev stands on a release tag,
-# where its run would stand beside the release's.
+# for through the `prerelease` command of .worktree.toml. It is dispatched from dev alone, the
+# one branch beside main that the `npm` environment its publish job holds allows, and is refused
+# from main, from any other branch and from a tag. It is taken whatever commit dev stands on, a
+# release's merge commit included once a landing's back-merge fast-forwards dev onto it:
+# `ledger land` verifies a release from the push run its merge started and passes over a
+# dispatch at the same commit, so a sprint run is never read as the release's.
 name: Release
 
 on:
@@ -534,7 +535,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: >-
           node scripts/publish.mjs sprint --sha "$SHA" --package "$PACKAGE" --version "$VERSION"
-          --ref "$GITHUB_REF" --head "$GITHUB_SHA"
+          --ref "$GITHUB_REF"
 
   sprint-build:
     name: Build the sprint prerelease
@@ -615,7 +616,7 @@ jobs:
           SHA: ${{ needs.sprint-plan.outputs.commit }}
         run: >-
           node scripts/publish.mjs sprint --sha "$SHA" --version "$VERSION"
-          --ref "$GITHUB_REF" --head "$GITHUB_SHA"
+          --ref "$GITHUB_REF"
 
       - name: Upgrade npm
         if: steps.check.outputs.publish == 'true'

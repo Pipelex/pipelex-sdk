@@ -277,24 +277,34 @@ describe("the sprint prerelease", () => {
   });
 
   it("is dispatched only from dev, the branch the npm environment allows beside main", () => {
-    const { origin, ws, sprint, first } = sprintRepo();
-    assert.equal(checkDispatch({ repo: ws, ref: "refs/heads/dev", head: sprint }), "dev");
+    assert.equal(checkDispatch({ ref: "refs/heads/dev" }), "dev");
     assert.throws(
-      () => checkDispatch({ repo: ws, ref: "refs/heads/feature/Sprint-work", head: sprint }),
+      () => checkDispatch({ ref: "refs/heads/feature/Sprint-work" }),
       /from dev alone, not feature\/Sprint-work: the npm environment/,
     );
-    assert.throws(() => checkDispatch({ repo: ws, ref: "refs/heads/main", head: sprint }), /never dispatched from main/);
-    assert.throws(() => checkDispatch({ repo: ws, ref: "refs/heads/release/v0.29.0", head: sprint }), /never dispatched from release\/v0\.29\.0/);
-    assert.throws(() => checkDispatch({ repo: ws, ref: "refs/tags/v0.28.1", head: first }), /is not a branch/);
+    assert.throws(() => checkDispatch({ ref: "refs/heads/main" }), /never dispatched from main/);
+    assert.throws(() => checkDispatch({ ref: "refs/heads/release/v0.29.0" }), /never dispatched from release\/v0\.29\.0/);
+    assert.throws(() => checkDispatch({ ref: "refs/tags/v0.28.1" }), /is not a branch/);
+  });
+
+  it("is taken while dev stands on a release's merge commit, whose landing reads only the run the merge started", async () => {
     // dev fast-forwarded onto a release's merge commit by the landing's back-merge.
-    applyTag({ repo: ws, plan: planTag({ repo: ws, sha: first }) });
-    const tagged = checkout(origin, "main");
-    assert.throws(() => checkDispatch({ repo: tagged, ref: "refs/heads/dev", head: first }), /the release v0\.28\.1/);
+    const { origin, work, sprint, first } = sprintRepo();
+    git(work, ["push", "--quiet", "origin", `${first}:refs/heads/dev`]);
+    applyTag({ repo: work, plan: planTag({ repo: work, sha: first }) });
+    const dev = checkout(origin, "origin/dev");
+    assert.equal(git(dev, ["tag", "--points-at", "HEAD", "--list", "v*"]).trim(), "v0.28.1");
+    assert.equal(checkDispatch({ ref: "refs/heads/dev" }), "dev");
+    const result = await cli(["sprint", "--sha", sprint, "--ref", "refs/heads/dev"], { repo: dev, registry: registry() });
+    assert.deepEqual(result, {
+      code: 0,
+      outputs: { publish: "true", version: `0.28.2-sprint.g${sprint}`, commit: sprint },
+    });
   });
 
   it("writes the version, the commit and whether to publish", async () => {
     const { ws, sprint } = sprintRepo();
-    const dispatch = ["--ref", "refs/heads/dev", "--head", sprint];
+    const dispatch = ["--ref", "refs/heads/dev"];
     const result = await cli(["sprint", "--sha", sprint, "--package", "@pipelex/sdk", "--version", "", ...dispatch], {
       repo: ws,
       registry: registry(),
@@ -303,7 +313,7 @@ describe("the sprint prerelease", () => {
       code: 0,
       outputs: { publish: "true", version: `0.28.2-sprint.g${sprint}`, commit: sprint },
     });
-    const refused = await cli(["sprint", "--sha", sprint, "--ref", "refs/heads/main", "--head", sprint], {
+    const refused = await cli(["sprint", "--sha", sprint, "--ref", "refs/heads/main"], {
       repo: ws,
       registry: registry(),
     });
