@@ -8,6 +8,7 @@ import { PipelexApiClient } from "../src/client.js";
 import { ApiResponseError, RequestArgumentError, errorVerdictOf } from "../src/errors.js";
 import type {
   MethodExample,
+  MethodExampleCreateInput,
   MethodExampleLatestRunInput,
   MethodExampleLatestRunResult,
   MethodExampleUpdateInput,
@@ -104,6 +105,45 @@ describe("createMethodExample", () => {
     } as unknown as { name: string; inputs: Record<string, unknown> });
 
     expect(onlyRequest(spy).body).toEqual({ name: "March receipt", inputs: { total: 3 } });
+  });
+
+  it("reads a null run as no run, sending none to the closed body", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(201, { ...EXAMPLE, latest_run_id: null }));
+
+    await client.createMethodExample(METHOD_ID, {
+      name: "March receipt",
+      inputs: { total: 3 },
+      run_id: null,
+    } as unknown as MethodExampleCreateInput);
+
+    expect(onlyRequest(spy).body).toEqual({ name: "March receipt", inputs: { total: 3 } });
+  });
+
+  it.each([
+    ["an empty run id", "", "an empty string"],
+    ["a run id that is not a string", 7, "number"],
+  ])("refuses %s before sending anything", async (_label, runId, got) => {
+    const client = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const err = await client
+      .createMethodExample(METHOD_ID, {
+        name: "n",
+        inputs: {},
+        run_id: runId,
+      } as unknown as MethodExampleCreateInput)
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).message).toBe(
+      "createMethodExample() takes run_id as the id of a run of this method that used these " +
+        `inputs, a non-empty string, or leaves it out; got ${got}.`,
+    );
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("surfaces a run that is not the method's as a 404 run_not_found", async () => {
@@ -247,8 +287,32 @@ describe("getMethodExample", () => {
     expect(req.method).toBe("GET");
     expect(req.url).toBe(EXAMPLE_PATH);
     expect(example).toEqual(EXAMPLE);
-    // The inputs come back exactly as saved: an integer stays an integer.
     expect(Number.isInteger(example.inputs.total)).toBe(true);
+  });
+
+  it("reads the inputs' numbers as JavaScript reads JSON, which the docs say", async () => {
+    // A float with no fractional part and an integer past Number.MAX_SAFE_INTEGER are what a
+    // double cannot hold as saved, so sent back they are a change for the platform.
+    const client = makeClient();
+    const body = JSON.stringify(EXAMPLE).replace(
+      '"total":3,',
+      '"total":3.0,"big":12345678901234567891,',
+    );
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() =>
+        Promise.resolve(
+          new Response(body, { status: 200, headers: { "Content-Type": "application/json" } }),
+        ),
+      );
+
+    const example = await client.getMethodExample(METHOD_ID, EXAMPLE_ID);
+    spy.mockClear();
+    await client.updateMethodExample(METHOD_ID, EXAMPLE_ID, { inputs: example.inputs });
+
+    const [, init] = spy.mock.calls[0] as [string, RequestInit];
+    expect(init.body).toContain('"total":3,');
+    expect(init.body).toContain('"big":12345678901234567000');
   });
 
   it("encodes the example id into the path", async () => {

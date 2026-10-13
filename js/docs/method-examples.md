@@ -9,7 +9,7 @@ An **example** is a named set of inputs saved on a stored method, so the method 
 | `example_id` | `ex_…`, minted by the platform. |
 | `method_id` | The bare id of the method it belongs to. |
 | `name` | 1 to 200 characters, not blank. |
-| `inputs` | A JSON object: the inputs as a run of the method takes them, returned exactly as they were saved, an integer as an integer and `3.0` as a float. |
+| `inputs` | A JSON object: the inputs as a run of the method takes them. The platform answers them exactly as they were saved, and JavaScript reads them as it reads any JSON, its numbers as doubles, so `3.0` reads as `3` and an integer past `Number.MAX_SAFE_INTEGER` reads rounded ([below](#numbers-javascript-cannot-carry)). |
 | `input_revision` | Starts at 1 and rises by one each time the inputs change. |
 | `latest_run_id` | The latest run of the current inputs, or `null`. It may name a run deleted since, whose read then answers `404`. |
 | `created_by_user_id`, `created_at`, `updated_at` | Who saved it, when, and when it last changed. |
@@ -28,7 +28,7 @@ An example holds no output and no baseline: its result is its latest run's, read
 | `recordMethodExampleLatestRun(methodId, exampleId, { run_id, input_revision })` | `PUT /v1/methods/{id}/examples/{example_id}/latest-run` | A `MethodExampleLatestRunResult`: `{ outcome: "recorded" \| "stale", example }`. |
 | `deleteMethodExample(methodId, exampleId)` | `DELETE /v1/methods/{id}/examples/{example_id}` | Nothing; the platform answers `204`. |
 
-Every method takes a bare catalog id and refuses a suffixed one (`mt_x@3`) with `RequestArgumentError` before sending, as the other method routes do. The bodies are closed on the platform, so the client sends the fields the route takes and nothing else an untyped caller adds.
+Every method takes a bare catalog id and refuses a suffixed one (`mt_x@3`) with `RequestArgumentError` before sending, as the other method routes do, and refuses a method id or an example id that is empty, `.` or `..` the same way, as every route that puts an id in its path does ([What is refused](#what-is-refused-and-where)). The bodies are closed on the platform, so the client sends the fields the route takes and nothing else an untyped caller adds.
 
 **The list is paged by an opaque cursor.** Pass `nextCursor` back as `cursor`; `null` is the last page. The platform reads examples whole and stops a read at 1 MB, so a page may be short while `nextCursor` is set: a caller that wants every example follows the cursor, which `iterateMethodExamples` does through the loop `iterateMethods` and `iterateRuns` share, stopping on a `null` cursor or one the server failed to advance and throwing `PagingNotTerminatingError` past the same page ceiling.
 
@@ -50,14 +50,21 @@ if (verdict.outcome === "stale") {
 }
 ```
 
-The write is conditioned on the example still holding that revision. **A stale run is a verdict, not an error**: a run outlasting an edit is the expected course of events whenever someone edits an example while one of its runs is in flight, so the platform answers a `200` discriminated on `outcome`, as it does for a publish, and both arms carry the example as it stands. Branch on `outcome`; an answer whose `outcome` is neither, or that carries no `example` object, is an answer the SDK cannot read, thrown as an `ApiResponseError` (`runtime`, not retryable). The platform trusts the revision and does not compare the run's own inputs with the example's, so record a run only against the revision whose inputs it was started with. A run recorded when the example is created goes in `createMethodExample`'s `run_id` instead.
+A run started this way sends the inputs as JavaScript read them, which is what was saved unless they hold a number JavaScript cannot carry ([below](#numbers-javascript-cannot-carry)). The write is conditioned on the example still holding that revision. **A stale run is a verdict, not an error**: a run outlasting an edit is the expected course of events whenever someone edits an example while one of its runs is in flight, so the platform answers a `200` discriminated on `outcome`, as it does for a publish, and both arms carry the example as it stands. Branch on `outcome`; an answer whose `outcome` is neither, or that carries no `example` object, is an answer the SDK cannot read, thrown as an `ApiResponseError` (`runtime`, not retryable). The platform trusts the revision and does not compare the run's own inputs with the example's, so record a run only against the revision whose inputs it was started with. A run recorded when the example is created goes in `createMethodExample`'s `run_id` instead.
+
+## Numbers JavaScript cannot carry
+
+The platform stores an example's inputs as JSON text and answers them exactly as they were saved, but JavaScript reads every JSON number as a double. Two kinds of number do not survive that read: a float with no fractional part, `3.0`, reads as the integer `3`, and an integer past `Number.MAX_SAFE_INTEGER` (2^53 - 1) reads rounded to the nearest double. Whatever is sent back, to `updateMethodExample` or as a run's inputs, goes as `3` and as the rounded integer. Inputs saved from JavaScript never hold either, since JavaScript cannot write them, so they read and send back exactly; inputs saved by another client, the Python SDK or a raw request, can.
+
+**Resending such inputs unchanged is an edit.** The platform compares inputs as canonical JSON, where `3` and `3.0` differ, so `updateMethodExample` given inputs read from an example that held one of these numbers raises `input_revision` and clears `latest_run_id`, though the caller changed nothing. Send `inputs` only when the person changed them; a rename sent alone keeps the revision and the latest run. A run started with such inputs runs on `3` rather than `3.0`, and on the rounded integer.
 
 ## What is refused, and where
 
 The client refuses before sending, with `RequestArgumentError` (`input`, not retryable):
 
 - a suffixed method id, on every method;
-- an empty example id, which would address the examples list rather than an example, or one that is not a string;
+- a method id or an example id that is empty, `.` or `..`, or that is not a string: the URL resolves a dot segment before the request leaves, so an example id `..` would address the method itself, and deleting it would erase the method, while an empty example id would address the examples list;
+- a `createMethodExample` whose `run_id` is given but is not a non-empty string, a `null` reading as not given;
 - an `updateMethodExample` naming neither `name` nor `inputs` (a `null` field counts as not given, as the platform reads it);
 - a `recordMethodExampleLatestRun` whose `run_id` is not a non-empty string or whose `input_revision` is not a positive integer.
 

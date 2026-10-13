@@ -15,10 +15,9 @@ import pytest
 from pydantic import ValidationError
 
 from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
-from pipelex_sdk.errors import ApiResponseError, MethodErrorCode, RequestArgumentError
+from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.product_models import (
     MethodExample,
-    MethodExampleLatestRunOutcome,
     MethodExampleLatestRunRecorded,
     MethodExampleLatestRunStale,
 )
@@ -112,6 +111,29 @@ class TestClientMethodExamples:
         assert _sent_body(send) == {"name": "March receipt", "inputs": {"total": 3}}
         assert example.latest_run_id is None
 
+    @pytest.mark.parametrize(
+        ("run_id", "got"),
+        [
+            pytest.param("", "an empty string", id="empty"),
+            pytest.param(7, "int", id="not-a-string"),
+        ],
+    )
+    def test_create_refuses_a_run_id_that_names_no_run_before_any_request(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, run_id: object, got: str
+    ) -> None:
+        """The platform refuses an empty run id with a `422`, as the latest-run write refuses it before sending."""
+        send = patch_send(api_client, wire_response(201, json_body=MethodExampleBodies.EXAMPLE))
+
+        with pytest.raises(RequestArgumentError) as exc_info:
+            asyncio.run(api_client.create_method_example(_METHOD_ID, name="n", inputs={}, run_id=cast("str", run_id)))
+
+        assert str(exc_info.value) == (
+            "create_method_example() takes run_id as the id of a run of this method that used these inputs, "
+            f"a non-empty string, or leaves it out; got {got}."
+        )
+        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        send.assert_not_called()
+
     def test_create_reads_the_inputs_exactly_as_saved(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
@@ -192,6 +214,20 @@ class TestClientMethodExamples:
         asyncio.run(api_client.list_method_examples(_METHOD_ID, cursor=""))
 
         assert _sent_url(send) == f"{_EXAMPLES_URL}?cursor="
+
+    def test_list_refuses_a_page_without_its_cursor(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        """A page missing `next_cursor` is unreadable, never the last page: read as one, the iterator would stop early without a word."""
+        patch_send(api_client, wire_response(200, json_body={"items": [MethodExampleBodies.EXAMPLE]}))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(_collect_examples(api_client))
+
+        unreadable = exc_info.value
+        assert str(unreadable) == f"API GET /v1/methods/{_METHOD_ID}/examples answered 200 with a body that is not the answer the route returns"
+        assert isinstance(unreadable.__cause__, ValidationError)
+        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
 
     def test_iterate_follows_the_cursor_through_a_short_and_an_empty_page(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -333,9 +369,11 @@ class TestClientMethodExamples:
         assert _sent_method(send) == "PUT"
         assert _sent_url(send) == f"{_EXAMPLE_URL}/latest-run"
         assert _sent_body(send) == {"run_id": "run_2", "input_revision": 2}
-        assert isinstance(result, MethodExampleLatestRunRecorded)
-        assert result.outcome == MethodExampleLatestRunOutcome.RECORDED
-        assert result.example.latest_run_id == "run_2"
+        match result:
+            case MethodExampleLatestRunRecorded():
+                assert result.example.latest_run_id == "run_2"
+            case MethodExampleLatestRunStale():
+                pytest.fail("A recorded verdict read as stale.")
 
     def test_record_reads_a_stale_verdict_rather_than_raising(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -345,10 +383,12 @@ class TestClientMethodExamples:
 
         result = asyncio.run(api_client.record_method_example_latest_run(_METHOD_ID, _EXAMPLE_ID, run_id="run_2", input_revision=2))
 
-        assert isinstance(result, MethodExampleLatestRunStale)
-        assert result.outcome == MethodExampleLatestRunOutcome.STALE
-        assert result.example.input_revision == 3
-        assert result.example.latest_run_id is None
+        match result:
+            case MethodExampleLatestRunStale():
+                assert result.example.input_revision == 3
+                assert result.example.latest_run_id is None
+            case MethodExampleLatestRunRecorded():
+                pytest.fail("A stale verdict read as recorded.")
 
     @pytest.mark.parametrize(
         "body",
@@ -490,4 +530,4 @@ class TestClientMethodExamples:
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.list_method_examples(_METHOD_ID))
 
-        assert exc_info.value.code == MethodErrorCode.METHOD_BEING_DELETED
+        assert exc_info.value.code == "method_being_deleted"

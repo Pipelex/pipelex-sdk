@@ -332,7 +332,7 @@ class MethodVersionPage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     items: list[MethodVersionSummary]
-    next_cursor: str | None = None
+    next_cursor: str | None
 
 
 class MethodData(BaseModel):
@@ -563,7 +563,9 @@ class MethodPage(BaseModel):
 
     The cursor is opaque: pass it straight back as `cursor` to get the next page, and treat
     a `None` as the last page. There is no total by design — counting a catalog costs a full
-    scan, and no caller needs one.
+    scan, and no caller needs one. `next_cursor` is required, as on every page model: the platform
+    always sends it, so a page without it is an answer the SDK cannot read, never the last page,
+    which would end an iterator early without a word.
 
     Under `q` or `published` a page can hold fewer rows than `limit`, or none, and still carry a
     `next_cursor`: the filters run after the index read, so an empty page is not the end of the
@@ -574,7 +576,7 @@ class MethodPage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     items: list[MethodSummary]
-    next_cursor: str | None = None
+    next_cursor: str | None
 
 
 class MethodDeletionAccepted(BaseModel):
@@ -653,7 +655,7 @@ class MethodExamplePage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     items: list[MethodExample]
-    next_cursor: str | None = None
+    next_cursor: str | None
 
 
 class MethodExampleLatestRunOutcome(StrEnum):
@@ -1046,7 +1048,7 @@ class RunPage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     items: list[RunHistoryItem]
-    next_cursor: str | None = None
+    next_cursor: str | None
 
 
 class UpdateRunInput(BaseModel):

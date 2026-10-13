@@ -30,13 +30,13 @@ An example holds no output and no baseline: its result is its latest run's, read
 | `record_method_example_latest_run(method_id, example_id, *, run_id, input_revision)` | `PUT /v1/methods/{id}/examples/{example_id}/latest-run` | A `MethodExampleLatestRunResult`: `MethodExampleLatestRunRecorded` or `MethodExampleLatestRunStale`, each with the `example`. |
 | `delete_method_example(method_id, example_id)` | `DELETE /v1/methods/{id}/examples/{example_id}` | `None`; the platform answers `204`. |
 
-Every method takes a bare catalog id and refuses a suffixed one (`mt_x@3`) with `RequestArgumentError` before sending, as the other method routes do. The bodies are closed on the platform, so the client sends the fields the route takes: a keyword left at `None` is not sent.
+Every method takes a bare catalog id and refuses a suffixed one (`mt_x@3`) with `RequestArgumentError` before sending, as the other method routes do, and refuses a method id or an example id that is empty, `.` or `..` the same way, as every route that puts an id in its path does ([What is refused](#what-is-refused-and-where)). The bodies are closed on the platform, so the client sends the fields the route takes: a keyword left at `None` is not sent.
 
 **The list is paged by an opaque cursor.** Pass `next_cursor` back as `cursor`; `None` is the last page. The platform reads examples whole and stops a read at 1 MB, so a page may be short while `next_cursor` is set: a caller that wants every example follows the cursor, which `iterate_method_examples` does through the loop `iterate_methods` and `iterate_runs` share, stopping on a `None` cursor or one the server failed to advance and raising `PagingNotTerminatingError` past the same page ceiling.
 
 ## Revisions and the latest run
 
-**New inputs raise the revision and clear the latest run.** An edit whose `inputs` differ from the stored ones sets `input_revision` to the next number and `latest_run_id` to `None`, since the run no longer shows what the inputs produce. The platform compares the inputs as canonical JSON with sorted keys, so the same inputs sent again, in another key order included, change nothing, while `3` becoming `3.0` is a change. A rename alone keeps both. The edit takes no revision or token of its own: concurrent edits are serialized on the platform, which answers a retryable `503` with nothing written when they kept landing under one.
+**New inputs raise the revision and clear the latest run.** An edit whose `inputs` differ from the stored ones sets `input_revision` to the next number and `latest_run_id` to `None`, since the run no longer shows what the inputs produce. The platform compares the inputs as canonical JSON with sorted keys, so the same inputs sent again, in another key order included, change nothing, while `3` becoming `3.0` is a change. Python reads and sends JSON numbers as they are spelled, an `int` as an `int` and `3.0` as a `float`, so inputs read from an example and sent back unchanged change nothing; `@pipelex/sdk` cannot say the same, since JavaScript reads `3.0` as `3` (its `docs/method-examples.md`). A rename alone keeps both. The edit takes no revision or token of its own: concurrent edits are serialized on the platform, which answers a retryable `503` with nothing written when they kept landing under one.
 
 **A run is recorded against the revision the client names.** To run an example and keep its result, read the example, start a run with its `inputs`, and record that run with the `input_revision` you read:
 
@@ -57,7 +57,8 @@ The write is conditioned on the example still holding that revision. **A stale r
 The client refuses before sending, with `RequestArgumentError` (`input`, not retryable):
 
 - a suffixed method id, on every method;
-- an empty example id, which would address the examples list rather than an example, or one that is not a `str`;
+- a method id or an example id that is empty, `.` or `..`, or that is not a `str`: httpx resolves a dot segment before the request leaves, so an example id `..` would address the method itself, and deleting it would erase the method, while an empty example id would address the examples list;
+- a `create_method_example` whose `run_id` is given but is empty or not a `str`;
 - an `update_method_example` naming neither `name` nor `inputs`;
 - a `record_method_example_latest_run` whose `run_id` is not a non-empty `str` or whose `input_revision` is not a positive integer (a `bool`, a `float` and a numeric string included).
 
