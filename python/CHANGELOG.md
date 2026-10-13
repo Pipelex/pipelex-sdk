@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.43.0] - 2026-10-13
 
 ### Added
 
@@ -9,7 +9,7 @@
 
 ### Changed
 
-- **`next_cursor` is required on every page model (Breaking)**: `MethodPage`, `MethodVersionPage`, `MethodExamplePage` and `RunPage` declared `next_cursor: str | None = None`, so a page answer without the key read as the last page and `iterate_methods`, `iterate_runs` and the other iterators stopped early without a word, where `@pipelex/sdk` refuses such a page. The field is now `str | None` with no default: the platform always sends it, and a page without it raises the `ApiResponseError` of an answer the SDK cannot read. Code that builds a page model by hand passes `next_cursor` explicitly.
+- **`next_cursor` is required on every page model (Breaking)**: `MethodPage`, `MethodVersionPage` and `RunPage` declared `next_cursor: str | None = None`, so a page answer without the key read as the last page and `iterate_methods` and `iterate_runs` stopped early without a word, where `@pipelex/sdk` refuses such a page. The field is now `str | None` with no default, on the new `MethodExamplePage` too: the platform always sends it, and a page without it raises the `ApiResponseError` of an answer the SDK cannot read. Code that builds a page model by hand passes `next_cursor` explicitly.
 
 ### Fixed
 
