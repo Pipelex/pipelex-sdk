@@ -178,15 +178,104 @@ describe("stringifyExactJson", () => {
     expect(stringifyExactJson(value, 2)).toBe(JSON.stringify(value, null, 2));
   });
 
-  it("writes a value holding no bigint with one plain JSON.stringify, no replacer called", () => {
+  it.each([
+    ["no bigint", { total: 3, list: [1.5, "a"] }, '{"total":3,"list":[1.5,"a"]}'],
+    [
+      "a bigint",
+      { big: 12345678901234567891n, list: [1.5] },
+      '{"big":12345678901234567891,"list":[1.5]}',
+    ],
+  ])("writes a value holding %s with one JSON.stringify call", (_label, value, expected) => {
     const spy = vi.spyOn(JSON, "stringify");
 
-    const text = stringifyExactJson({ total: 3, list: [1.5, "a"] }, 2);
-    const replacers = spy.mock.calls.map((call) => call[1]);
+    const text = stringifyExactJson(value);
+    const calls = spy.mock.calls.length;
     spy.mockRestore();
 
-    expect(replacers).toEqual([undefined]);
-    expect(text).toBe(JSON.stringify({ total: 3, list: [1.5, "a"] }, null, 2));
+    expect(calls).toBe(1);
+    expect(text).toBe(expected);
+  });
+
+  /**
+   * `fields` in the order given, then a `bigint` after them when `withBigInt`: the round that
+   * first wrote a value without a replacer reached the `bigint` only after them, so a value it
+   * wrote again ran each of them twice.
+   */
+  function withBigIntLast(fields: PropertyDescriptorMap, withBigInt: boolean): object {
+    const value = Object.defineProperties({}, fields);
+    return withBigInt ? Object.assign(value, { big: 12345678901234567891n }) : value;
+  }
+
+  it.each([
+    ["no bigint", false],
+    ["a bigint after them", true],
+  ])("runs a getter and a toJSON exactly once, with %s in the value", (_label, withBigInt) => {
+    let reads = 0;
+    let calls = 0;
+    const value = withBigIntLast(
+      {
+        counter: {
+          enumerable: true,
+          get: (): number => {
+            reads += 1;
+            return reads;
+          },
+        },
+        nested: {
+          enumerable: true,
+          value: {
+            toJSON: (): string => {
+              calls += 1;
+              return `call ${calls}`;
+            },
+          },
+        },
+      },
+      withBigInt,
+    );
+
+    const text = stringifyExactJson(value);
+
+    expect(reads).toBe(1);
+    expect(calls).toBe(1);
+    expect(text).toBe(
+      withBigInt
+        ? '{"counter":1,"nested":"call 1","big":12345678901234567891}'
+        : '{"counter":1,"nested":"call 1"}',
+    );
+  });
+
+  it.each([
+    ["no bigint", false],
+    ["a bigint after it", true],
+  ])("lets a TypeError a toJSON throws propagate, never retried, with %s", (_label, withBigInt) => {
+    const failure = new TypeError("This value cannot be written.");
+    let calls = 0;
+    const value = withBigIntLast(
+      {
+        item: {
+          enumerable: true,
+          value: {
+            toJSON: (): never => {
+              calls += 1;
+              throw failure;
+            },
+          },
+        },
+      },
+      withBigInt,
+    );
+
+    const thrown = ((): unknown => {
+      try {
+        return stringifyExactJson(value);
+      } catch (err) {
+        return err;
+      }
+    })();
+
+    expect(thrown).toBe(failure);
+    expect(calls).toBe(1);
   });
 
   it("hands back what parseExactJson read, digit for digit", () => {
@@ -206,6 +295,74 @@ describe("stringifyExactJson", () => {
     } finally {
       JSON_WITH_RAW.rawJSON = rawJson;
     }
+  });
+});
+
+describe("stringifyExactJson under a BigInt.prototype.toJSON polyfill", () => {
+  /** `BigInt.prototype`, with the `toJSON` the common polyfill defines on it. */
+  const BIGINT_PROTOTYPE = BigInt.prototype as unknown as { toJSON?: (this: bigint) => unknown };
+  let previous: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    previous = Object.getOwnPropertyDescriptor(BIGINT_PROTOTYPE, "toJSON");
+    // The polyfill as it is commonly written: a bigint becomes the string of its digits.
+    BIGINT_PROTOTYPE.toJSON = function (this: bigint): string {
+      return this.toString();
+    };
+  });
+
+  afterEach(() => {
+    if (previous === undefined) delete BIGINT_PROTOTYPE.toJSON;
+    else Object.defineProperty(BIGINT_PROTOTYPE, "toJSON", previous);
+  });
+
+  it("writes a bigint as a bare number, not the string the polyfill makes of it", () => {
+    expect(JSON.stringify({ big: 12345678901234567891n })).toBe('{"big":"12345678901234567891"}');
+
+    expect(
+      stringifyExactJson({ big: 12345678901234567891n, list: [-98765432109876543210n, "1"] }),
+    ).toBe('{"big":12345678901234567891,"list":[-98765432109876543210,"1"]}');
+    expect(stringifyExactJson(12345678901234567891n)).toBe("12345678901234567891");
+  });
+
+  it("still runs a getter once", () => {
+    let reads = 0;
+    const value = {
+      big: 12345678901234567891n,
+      get counter(): number {
+        reads += 1;
+        return reads;
+      },
+    };
+
+    expect(stringifyExactJson(value)).toBe('{"big":12345678901234567891,"counter":1}');
+    expect(reads).toBe(1);
+  });
+
+  it("refuses a bigint with a TypeError on a runtime without JSON.rawJSON", () => {
+    const rawJson = JSON_WITH_RAW.rawJSON;
+    delete JSON_WITH_RAW.rawJSON;
+    try {
+      expect(() => stringifyExactJson({ big: 12345678901234567891n })).toThrow(TypeError);
+    } finally {
+      JSON_WITH_RAW.rawJSON = rawJson;
+    }
+  });
+
+  it("is passed over by the client, which sends a bigint as its digits", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ pipeline_run_id: "run_1" }), { status: 202 }),
+      );
+
+    await new PipelexApiClient({ baseUrl: "http://localhost:8081", apiKey: "test-token" }).start({
+      method_id: "mt_x",
+      inputs: { big: 12345678901234567891n },
+    });
+
+    const [, init] = spy.mock.calls[0] as [string, RequestInit];
+    expect(init.body).toContain('"inputs":{"big":12345678901234567891}');
   });
 });
 
@@ -244,6 +401,29 @@ describe("a request body", () => {
     );
     expect((err as Error).cause).toBeInstanceOf(TypeError);
     expect(runMayHaveStartedOf(err)).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("whose own toJSON throws is refused with that very error as cause, the toJSON run once", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const failure = new TypeError("This value cannot be written.");
+    let calls = 0;
+    const inputs = {
+      item: {
+        toJSON: (): never => {
+          calls += 1;
+          throw failure;
+        },
+      },
+    };
+
+    const err = await makeClient()
+      .start({ method_id: "mt_x", inputs })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).cause).toBe(failure);
+    expect(calls).toBe(1);
     expect(spy).not.toHaveBeenCalled();
   });
 

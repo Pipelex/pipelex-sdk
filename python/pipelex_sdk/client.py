@@ -2923,14 +2923,20 @@ def _require_non_empty_id(value: object, *, call: str, what: str) -> str:
 
     Whether the id enters a path (`_id_path_segment`) or a body (a run id an example write records),
     anything else is refused before anything is sent, `call` naming the method in the message and `what`
-    the id it takes.
+    the id it takes. The refusal names what it got: an empty string, `None`, or the type of any other value.
 
     Raises:
         RequestArgumentError: `value` is not a `str`, or is empty.
     """
     if isinstance(value, str) and value:
         return value
-    got = "an empty string" if isinstance(value, str) else type(value).__name__
+    got: str
+    if isinstance(value, str):
+        got = "an empty string"
+    elif value is None:
+        got = "None"
+    else:
+        got = type(value).__name__
     raise _argument_refusal(call, what, got)
 
 

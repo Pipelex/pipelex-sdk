@@ -171,7 +171,8 @@ class TestClientPathSegments:
             pytest.param("", "an empty string", id="empty"),
             pytest.param(".", f'".", {_DOT_SEGMENT}', id="dot"),
             pytest.param("..", f'"..", {_DOT_SEGMENT}', id="dot-dot"),
-            pytest.param(None, "NoneType", id="not-a-string"),
+            pytest.param(None, "None", id="none"),
+            pytest.param(7, "int", id="not-a-string"),
             # A lone surrogate has no UTF-8 spelling, so `quote` raises a `UnicodeEncodeError` for it.
             pytest.param("ex_\ud800", _LONE_SURROGATE, id="lone-high-surrogate"),
             pytest.param("\udc00ex", _LONE_SURROGATE, id="lone-low-surrogate"),

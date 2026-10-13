@@ -559,11 +559,12 @@ function withWirePython<T extends { python?: MethodFile[] }>(input: T): WithWire
 }
 
 /**
- * A request's body as the JSON text it is sent as, written by `stringifyExactJson`, so a `bigint`
- * read from an answer carrying a person's data goes back as its exact digits, while a body holding
- * none is written by one plain `JSON.stringify`. A body JSON cannot carry, one holding a cycle for
- * instance, is the caller's argument: it is refused with `RequestArgumentError`, the failure as its
- * `cause`, before anything is sent, and `method` and `url` name the request in the message.
+ * A request's body as the JSON text it is sent as, written by `stringifyExactJson` in one pass,
+ * so a `bigint` read from an answer carrying a person's data goes back as its exact digits, and
+ * every getter and `toJSON` in the body runs once. A body JSON cannot carry, one holding a cycle
+ * or whose own `toJSON` throws for instance, is the caller's argument: it is refused with
+ * `RequestArgumentError`, the failure as its `cause`, before anything is sent, and `method` and
+ * `url` name the request in the message.
  */
 function requestBodyText(method: HttpMethod, url: string, body: unknown): string {
   try {
@@ -576,6 +577,28 @@ function requestBodyText(method: HttpMethod, url: string, body: unknown): string
       { cause: err },
     );
   }
+}
+
+/** A query parameter of a product list route; an array is sent as one repeated parameter per value. */
+type ProductQueryValue = string | number | boolean | readonly string[] | undefined;
+
+/**
+ * The query string of a product list route, `?` and its parameters in the order given, or `""`
+ * when none is kept, as the Python SDK's `_product_query` builds it. Each entry is kept on
+ * presence (`!== undefined`), never truthiness: omission means the caller did not ask, while an
+ * explicit empty `q`, cursor or date is bad input the API should refuse, not something to drop
+ * into an unfiltered query that returns everything and reads as working. `false` is a filter of
+ * its own, sent as `false`, and an array is sent as one repeated parameter per value.
+ */
+function productQuery(params: Readonly<Record<string, ProductQueryValue>>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    if (typeof value === "object") for (const item of value) search.append(key, item);
+    else search.set(key, String(value));
+  }
+  const text = search.toString();
+  return text ? `?${text}` : "";
 }
 
 /** `items` joined as a sentence names them, the last after `conjunction`: `a`, `a or b`, `a, b or c`. */
@@ -707,22 +730,25 @@ const isString = (value: unknown): boolean => typeof value === "string";
  * integer past the safe range, which `parseExactJson` reads as a `bigint`, are each refused by
  * both. The one spelling they read apart is a revision of `2.0`: JavaScript reads it as the number
  * `2` and cannot tell it from `2`, while the Python SDK refuses the float.
+ *
+ * Keyed by the fields of `MethodExample` and checked against them by `satisfies`, so a field
+ * added to the interface without its row here, or a row naming no field of it, fails to compile.
+ * The rows are checked in the order written.
  */
-const METHOD_EXAMPLE_FIELDS: readonly (readonly [
-  field: keyof MethodExample,
-  expected: string,
-  fits: (value: unknown) => boolean,
-])[] = [
-  ["example_id", "a string", isString],
-  ["method_id", "a string", isString],
-  ["name", "a string", isString],
-  ["inputs", "an object", isPlainObject],
-  ["input_revision", "an integer", (value) => Number.isSafeInteger(value)],
-  ["latest_run_id", "a string or null", (value) => value === null || isString(value)],
-  ["created_by_user_id", "a string", isString],
-  ["created_at", "a string", isString],
-  ["updated_at", "a string", isString],
-];
+const METHOD_EXAMPLE_FIELDS = {
+  example_id: ["a string", isString],
+  method_id: ["a string", isString],
+  name: ["a string", isString],
+  inputs: ["an object", isPlainObject],
+  input_revision: ["an integer", (value) => Number.isSafeInteger(value)],
+  latest_run_id: ["a string or null", (value) => value === null || isString(value)],
+  created_by_user_id: ["a string", isString],
+  created_at: ["a string", isString],
+  updated_at: ["a string", isString],
+} satisfies Record<
+  keyof MethodExample,
+  readonly [expected: string, fits: (value: unknown) => boolean]
+>;
 
 export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   private readonly apiKey: string | undefined;
@@ -1125,7 +1151,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (!isPlainObject(value)) {
       throw this.unreadableAnswer(method, path, res, `${where} that is not an object`);
     }
-    for (const [field, expected, fits] of METHOD_EXAMPLE_FIELDS) {
+    for (const [field, [expected, fits]] of Object.entries(METHOD_EXAMPLE_FIELDS)) {
       if (!fits(value[field])) {
         throw this.unreadableAnswer(
           method,
@@ -2319,18 +2345,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * come back empty and still carry a `nextCursor`: keep following it until it is `null`.
    */
   async listMethods(query: ListMethodsQuery = {}): Promise<MethodPage> {
-    const params = new URLSearchParams();
-    // `!== undefined`, not truthiness — mirroring `listRuns`. Omission means
-    // "the caller did not ask"; an explicit empty string is bad input and the
-    // API should say so, rather than being silently dropped into an unfiltered
-    // query that returns everything and reads as working. `published: false`
-    // is a filter of its own, never omission.
-    if (query.q !== undefined) params.set("q", query.q);
-    if (query.published !== undefined) params.set("published", String(query.published));
-    if (query.limit !== undefined) params.set("limit", String(query.limit));
-    if (query.cursor !== undefined) params.set("cursor", query.cursor);
-    const suffix = params.toString();
-    return this.requestPage<MethodSummary>(suffix ? `methods?${suffix}` : "methods");
+    const search = productQuery({
+      q: query.q,
+      published: query.published,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    return this.requestPage<MethodSummary>(`methods${search}`);
   }
 
   /**
@@ -2548,14 +2569,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     methodId: string,
     query: ListMethodVersionsQuery = {},
   ): Promise<MethodVersionPage> {
-    const params = new URLSearchParams();
-    // `!== undefined`, not truthiness — mirroring `listMethods`: an explicit empty cursor is bad
-    // input the API should refuse, not an omission.
-    if (query.limit !== undefined) params.set("limit", String(query.limit));
-    if (query.cursor !== undefined) params.set("cursor", query.cursor);
-    const suffix = params.toString();
+    const search = productQuery({ limit: query.limit, cursor: query.cursor });
     const endpoint = `${methodPath(methodId, "listMethodVersions")}/versions`;
-    return this.requestPage<MethodVersionSummary>(suffix ? `${endpoint}?${suffix}` : endpoint);
+    return this.requestPage<MethodVersionSummary>(`${endpoint}${search}`);
   }
 
   /**
@@ -2675,14 +2691,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     methodId: string,
     query: ListMethodExamplesQuery = {},
   ): Promise<MethodExamplePage> {
-    const params = new URLSearchParams();
-    // `!== undefined`, not truthiness — mirroring `listMethodVersions`: an explicit empty cursor
-    // is bad input the API should refuse, not an omission.
-    if (query.limit !== undefined) params.set("limit", String(query.limit));
-    if (query.cursor !== undefined) params.set("cursor", query.cursor);
-    const suffix = params.toString();
-    const path = `${methodPath(methodId, "listMethodExamples")}/examples`;
-    const endpoint = suffix ? `${path}?${suffix}` : path;
+    const search = productQuery({ limit: query.limit, cursor: query.cursor });
+    const endpoint = `${methodPath(methodId, "listMethodExamples")}/examples${search}`;
     return this.requestPage<MethodExample>(endpoint, {
       parse: parseExactJson,
       item: (row, res) => this.readMethodExample("GET", endpoint, res, row, "a page item"),
@@ -3117,19 +3127,18 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `method_version`.
    */
   async listRuns(methodId: string, query: ListRunsQuery = {}): Promise<RunPage> {
-    const params = new URLSearchParams({ method_id: methodId });
-    // `!== undefined`, not truthiness: omission means "the caller did not ask
-    // for this bound". An explicitly supplied empty string is not omission, it
-    // is bad input — dropping it turned a broken date into a silently
-    // UNFILTERED query returning every run, which reads as working. Forwarded,
-    // it reaches the API's instant parse and comes back a 400 saying so.
-    if (query.createdFrom !== undefined) params.set("created_from", query.createdFrom);
-    if (query.createdTo !== undefined) params.set("created_to", query.createdTo);
-    if (query.createdBy !== undefined) params.set("created_by", query.createdBy);
-    for (const status of runStatusFilter(query.status) ?? []) params.append("status", status);
-    if (query.limit !== undefined) params.set("limit", String(query.limit));
-    if (query.cursor !== undefined) params.set("cursor", query.cursor);
-    const page = await this.requestPage<RunHistoryItem>(`runs?${params.toString()}`);
+    // An empty date is sent, not dropped: it reaches the API's instant parse and comes back a
+    // `400` saying so, where dropping it would return every run (`productQuery`).
+    const search = productQuery({
+      method_id: methodId,
+      created_from: query.createdFrom,
+      created_to: query.createdTo,
+      created_by: query.createdBy,
+      status: runStatusFilter(query.status),
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    const page = await this.requestPage<RunHistoryItem>(`runs${search}`);
     return { items: page.items.map(withCheckedReport), nextCursor: page.nextCursor };
   }
 

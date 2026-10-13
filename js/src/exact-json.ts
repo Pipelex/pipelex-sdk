@@ -80,21 +80,30 @@ export function parseExactJson(text: string): unknown {
 
 /**
  * Write a value as `JSON.stringify` writes it, `space` indenting as its own does, except that a
- * `bigint` is written as its exact digits rather than refused. A value holding no `bigint` is
- * written by one plain `JSON.stringify`; one holding a `bigint`, which that call refuses with a
- * `TypeError`, is written again with the `bigint` as raw JSON text. That rests on `JSON.rawJSON`,
- * which every runtime this package supports provides; on one without it, a `bigint` is refused
- * with a `TypeError`, as `JSON.stringify` refuses it, and never written rounded. Any other
- * failure, a cycle for instance, is the `TypeError` `JSON.stringify` throws for it.
+ * `bigint` is written as its exact digits rather than refused. It is one `JSON.stringify` call,
+ * whose replacer writes each `bigint` as raw JSON text, so every getter and every `toJSON` in the
+ * value runs once, and whatever one of them throws propagates as thrown. A `toJSON` a `bigint`
+ * inherits, such as the common polyfill `BigInt.prototype.toJSON`, is passed over: the `bigint`
+ * is still written as its digits, not as what that `toJSON` makes of it, unless a getter returns
+ * it, since reading it again would run the getter twice. That rests on `JSON.rawJSON`, which
+ * every runtime this package supports provides; on one without it, a `bigint` is refused with a
+ * `TypeError`, as `JSON.stringify` refuses it, and never written rounded. Any other failure, a
+ * cycle for instance, is the `TypeError` `JSON.stringify` throws for it.
  */
 export function stringifyExactJson(value: unknown, space?: string | number): string {
-  try {
-    return JSON.stringify(value, undefined, space);
-  } catch (err) {
-    // A `bigint` is refused with a `TypeError`, as a cycle is; a cycle fails the second call too.
-    if (!(err instanceof TypeError)) throw err;
-    return JSON.stringify(value, writeBigIntExactly, space);
-  }
+  // `toJSON` runs before the replacer, so under such a `toJSON` the replacer is handed what it
+  // made of a `bigint`, a string most often, and finds the `bigint` in the holder instead.
+  const bigIntHasToJson = typeof (BigInt.prototype as { toJSON?: unknown }).toJSON === "function";
+  return JSON.stringify(
+    value,
+    function writeBigIntExactly(this: unknown, key: string, item: unknown): unknown {
+      if (typeof item === "bigint") return rawBigInt(item);
+      if (!bigIntHasToJson) return item;
+      const held = ownDataValue(this, key);
+      return typeof held === "bigint" ? rawBigInt(held) : item;
+    },
+    space,
+  );
 }
 
 /**
@@ -116,9 +125,8 @@ function readIntegerExactly(_key: string, value: unknown, context?: ReviverConte
   );
 }
 
-/** The replacer of `stringifyExactJson`: a `bigint` as raw JSON text, anything else unchanged. */
-function writeBigIntExactly(_key: string, value: unknown): unknown {
-  if (typeof value !== "bigint") return value;
+/** A `bigint` as the raw JSON text of its exact digits, refused on a runtime without `rawJSON`. */
+function rawBigInt(value: bigint): unknown {
   if (typeof JSON_WITH_RAW.rawJSON !== "function") {
     throw new TypeError(
       `This runtime has no JSON.rawJSON, so the bigint ${value.toString()} cannot be written ` +
@@ -126,4 +134,13 @@ function writeBigIntExactly(_key: string, value: unknown): unknown {
     );
   }
   return JSON_WITH_RAW.rawJSON(value.toString());
+}
+
+/**
+ * The value `holder` holds under `key` as an own data property, read from its descriptor so that
+ * no getter runs again, or `undefined` for an accessor or no such property.
+ */
+function ownDataValue(holder: unknown, key: string): unknown {
+  if (typeof holder !== "object" || holder === null) return undefined;
+  return Object.getOwnPropertyDescriptor(holder, key)?.value;
 }

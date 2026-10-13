@@ -593,7 +593,7 @@ class TestClientMethodExamples:
     ) -> None:
         send = patch_send(api_client, wire_response(200, json_body={}))
 
-        with pytest.raises(RequestArgumentError, match=r"^get_method_example\(\) takes an example id, .*; got NoneType\.$"):
+        with pytest.raises(RequestArgumentError, match=r"^get_method_example\(\) takes an example id, .*; got None\.$"):
             asyncio.run(api_client.get_method_example(_METHOD_ID, cast("str", None)))
 
         send.assert_not_called()
