@@ -161,6 +161,9 @@ const REFUSED: [id: string, got: string][] = [
   ["", "an empty string"],
   [".", `".", a dot segment, which the URL would resolve into another route's path`],
   ["..", `"..", a dot segment, which the URL would resolve into another route's path`],
+  // A lone surrogate has no UTF-8 spelling, so `encodeURIComponent` throws a `URIError` for it.
+  ["ex_\uD800", "a string holding a lone surrogate, which a URL cannot carry"],
+  ["\uDC00ex", "a string holding a lone surrogate, which a URL cannot carry"],
 ];
 
 /**

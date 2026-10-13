@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
 import { ApiResponseError, RequestArgumentError, errorVerdictOf } from "../src/errors.js";
+import { stringifyExactJson } from "../src/exact-json.js";
 import type {
   MethodExample,
   MethodExampleCreateInput,
@@ -65,6 +66,83 @@ const REVISED: MethodExample = {
   latest_run_id: null,
 };
 
+/**
+ * Inputs another client saved, holding integers past `Number.MAX_SAFE_INTEGER` beside the ones
+ * of `EXAMPLE`, as the platform serializes them: a double cannot hold them as saved.
+ */
+const BIG_INPUTS_TEXT =
+  '{"receipt":{"url":"pipelex-storage://org_1/receipt.pdf"},"total":3,' +
+  '"big":12345678901234567891,"nested":{"list":[-98765432109876543210]},"rate":3.5}';
+
+/** `EXAMPLE` holding `BIG_INPUTS_TEXT` as its inputs, as the platform serializes it. */
+const BIG_EXAMPLE_TEXT = JSON.stringify(EXAMPLE).replace(
+  JSON.stringify(EXAMPLE.inputs),
+  BIG_INPUTS_TEXT,
+);
+
+/** A JSON answer whose body is the text given, spelled as the platform spelled it. */
+function textResponse(status: number, body: string): Response {
+  return new Response(body, { status, headers: { "Content-Type": "application/json" } });
+}
+
+/**
+ * Each route answering an example: its name, how its route is named in a refusal, the answer
+ * carrying a given example's text, where in that answer the example sits as a refusal names it,
+ * and the call reading the example back.
+ */
+type ExampleRead = [
+  name: string,
+  route: string,
+  answer: (exampleText: string) => Response,
+  where: string,
+  read: (client: PipelexApiClient) => Promise<MethodExample>,
+];
+
+const EXAMPLE_READS: ExampleRead[] = [
+  [
+    "getMethodExample",
+    `GET /v1/methods/${METHOD_ID}/examples/${EXAMPLE_ID}`,
+    (text) => textResponse(200, text),
+    "an example",
+    (client) => client.getMethodExample(METHOD_ID, EXAMPLE_ID),
+  ],
+  [
+    "listMethodExamples",
+    `GET /v1/methods/${METHOD_ID}/examples`,
+    (text) =>
+      textResponse(200, `{"items":[${JSON.stringify(REVISED)},${text}],"next_cursor":null}`),
+    "a page item",
+    async (client) => (await client.listMethodExamples(METHOD_ID)).items[1] as MethodExample,
+  ],
+  [
+    "createMethodExample",
+    `POST /v1/methods/${METHOD_ID}/examples`,
+    (text) => textResponse(201, text),
+    "an example",
+    (client) => client.createMethodExample(METHOD_ID, { name: "March receipt", inputs: {} }),
+  ],
+  [
+    "updateMethodExample",
+    `PATCH /v1/methods/${METHOD_ID}/examples/${EXAMPLE_ID}`,
+    (text) => textResponse(200, text),
+    "an example",
+    (client) => client.updateMethodExample(METHOD_ID, EXAMPLE_ID, { name: "March receipt" }),
+  ],
+  [
+    "recordMethodExampleLatestRun",
+    `PUT /v1/methods/${METHOD_ID}/examples/${EXAMPLE_ID}/latest-run`,
+    (text) => textResponse(200, `{"outcome":"recorded","example":${text}}`),
+    "a latest-run result's `example`",
+    async (client) =>
+      (
+        await client.recordMethodExampleLatestRun(METHOD_ID, EXAMPLE_ID, {
+          run_id: "run_1",
+          input_revision: 2,
+        })
+      ).example,
+  ],
+];
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
@@ -117,9 +195,35 @@ describe("createMethodExample", () => {
       name: "March receipt",
       inputs: { total: 3 },
       run_id: null,
-    } as unknown as MethodExampleCreateInput);
+    });
 
     expect(onlyRequest(spy).body).toEqual({ name: "March receipt", inputs: { total: 3 } });
+  });
+
+  it("types the run as the docs describe it: a run id, null or left out", () => {
+    expectTypeOf<MethodExampleCreateInput["run_id"]>().toEqualTypeOf<string | null | undefined>();
+  });
+
+  it.each([
+    ["no input at all", undefined, "neither"],
+    ["an empty input", {}, "neither"],
+    ["no name", { inputs: { total: 3 } }, "no name"],
+    ["a null name", { name: null, inputs: { total: 3 } }, "no name"],
+    ["no inputs", { name: "March receipt" }, "no inputs"],
+  ])("refuses %s before sending anything", async (_label, input, got) => {
+    const client = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const err = await client
+      .createMethodExample(METHOD_ID, input as unknown as MethodExampleCreateInput)
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).message).toBe(
+      `createMethodExample() needs the example's name and its inputs; got ${got}.`,
+    );
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -139,8 +243,8 @@ describe("createMethodExample", () => {
 
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toBe(
-      "createMethodExample() takes run_id as the id of a run of this method that used these " +
-        `inputs, a non-empty string, or leaves it out; got ${got}.`,
+      "createMethodExample() takes a run_id naming a run of this method that used these " +
+        `inputs, a non-empty string, or none; got ${got}.`,
     );
     expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
     expect(spy).not.toHaveBeenCalled();
@@ -288,31 +392,6 @@ describe("getMethodExample", () => {
     expect(req.url).toBe(EXAMPLE_PATH);
     expect(example).toEqual(EXAMPLE);
     expect(Number.isInteger(example.inputs.total)).toBe(true);
-  });
-
-  it("reads the inputs' numbers as JavaScript reads JSON, which the docs say", async () => {
-    // A float with no fractional part and an integer past Number.MAX_SAFE_INTEGER are what a
-    // double cannot hold as saved, so sent back they are a change for the platform.
-    const client = makeClient();
-    const body = JSON.stringify(EXAMPLE).replace(
-      '"total":3,',
-      '"total":3.0,"big":12345678901234567891,',
-    );
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(() =>
-        Promise.resolve(
-          new Response(body, { status: 200, headers: { "Content-Type": "application/json" } }),
-        ),
-      );
-
-    const example = await client.getMethodExample(METHOD_ID, EXAMPLE_ID);
-    spy.mockClear();
-    await client.updateMethodExample(METHOD_ID, EXAMPLE_ID, { inputs: example.inputs });
-
-    const [, init] = spy.mock.calls[0] as [string, RequestInit];
-    expect(init.body).toContain('"total":3,');
-    expect(init.body).toContain('"big":12345678901234567000');
   });
 
   it("encodes the example id into the path", async () => {
@@ -510,7 +589,9 @@ describe("recordMethodExampleLatestRun", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(RequestArgumentError);
-    expect((err as Error).message).toContain(`needs ${field}`);
+    expect((err as Error).message).toMatch(
+      new RegExp(`^recordMethodExampleLatestRun\\(\\) takes an? ${field}[ ,].*; got .+\\.$`),
+    );
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -526,6 +607,198 @@ describe("recordMethodExampleLatestRun", () => {
 
     expect(err).toBeInstanceOf(ApiResponseError);
     expect((err as ApiResponseError).code).toBe("not_found");
+  });
+});
+
+describe.each(EXAMPLE_READS)(
+  "an integer past Number.MAX_SAFE_INTEGER read by %s",
+  (_name, _route, answer, _where, read) => {
+    it("reads as a bigint with its exact digits, the other numbers staying numbers", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(answer(BIG_EXAMPLE_TEXT));
+
+      const example = await read(makeClient());
+
+      expect(example.inputs.big).toBe(12345678901234567891n);
+      expect(example.inputs.nested).toEqual({ list: [-98765432109876543210n] });
+      expect(example.inputs.total).toBe(3);
+      expect(example.inputs.rate).toBe(3.5);
+      // Shown as JSON text with the SDK's writer, the inputs read as they were saved.
+      expect(stringifyExactJson(example.inputs)).toBe(BIG_INPUTS_TEXT);
+      expect(String(example.inputs.big)).toBe("12345678901234567891");
+    });
+
+    it("goes back to updateMethodExample digit for digit", async () => {
+      const spy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(answer(BIG_EXAMPLE_TEXT))
+        .mockResolvedValueOnce(jsonResponse(200, REVISED));
+      const client = makeClient();
+
+      const example = await read(client);
+      await client.updateMethodExample(METHOD_ID, EXAMPLE_ID, { inputs: example.inputs });
+
+      const [url, init] = spy.mock.calls[1] as [string, RequestInit];
+      expect(url).toBe(EXAMPLE_PATH);
+      expect(init.body).toBe(`{"inputs":${BIG_INPUTS_TEXT}}`);
+    });
+
+    it("runs digit for digit, and the run is recorded under the revision read", async () => {
+      const spy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(answer(BIG_EXAMPLE_TEXT))
+        .mockResolvedValueOnce(jsonResponse(202, { pipeline_run_id: "run_2" }))
+        .mockResolvedValueOnce(
+          jsonResponse(200, {
+            outcome: "recorded",
+            example: { ...EXAMPLE, latest_run_id: "run_2" },
+          }),
+        );
+      const client = makeClient();
+
+      const example = await read(client);
+      const started = await client.start({ method_id: METHOD_ID, inputs: example.inputs });
+      const verdict = await client.recordMethodExampleLatestRun(METHOD_ID, EXAMPLE_ID, {
+        run_id: started.pipeline_run_id,
+        input_revision: example.input_revision,
+      });
+
+      const [startUrl, startInit] = spy.mock.calls[1] as [string, RequestInit];
+      expect(startUrl).toBe(`${BASE_URL}/v1/start`);
+      expect(startInit.body).toContain(`"inputs":${BIG_INPUTS_TEXT}`);
+      const [recordUrl, recordInit] = spy.mock.calls[2] as [string, RequestInit];
+      expect(recordUrl).toBe(`${EXAMPLE_PATH}/latest-run`);
+      expect(recordInit.body).toBe('{"run_id":"run_2","input_revision":2}');
+      expect(verdict.outcome).toBe("recorded");
+    });
+  },
+);
+
+describe("a page holding an example with an integer past Number.MAX_SAFE_INTEGER", () => {
+  it("reads whole, every other example as it reads anyway", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      textResponse(
+        200,
+        `{"items":[${JSON.stringify(EXAMPLE)},${BIG_EXAMPLE_TEXT},${JSON.stringify(REVISED)}],` +
+          '"next_cursor":"c2"}',
+      ),
+    );
+
+    const page = await makeClient().listMethodExamples(METHOD_ID);
+
+    expect(page.items).toHaveLength(3);
+    expect(page.items[0]).toEqual(EXAMPLE);
+    expect(page.items[1]?.inputs.big).toBe(12345678901234567891n);
+    expect(page.items[2]).toEqual(REVISED);
+    expect(page.nextCursor).toBe("c2");
+  });
+});
+
+/** The example `EXAMPLE` is, with `field` removed or set to `value`. */
+function exampleWith(field: keyof MethodExample, value?: unknown): Record<string, unknown> {
+  const example: Record<string, unknown> = { ...EXAMPLE };
+  if (value === undefined) delete example[field];
+  else example[field] = value;
+  return example;
+}
+
+/** Examples missing a field the Python SDK's model requires, or holding one of another type. */
+const DEFECTIVE_EXAMPLES: [label: string, example: unknown, field: string, expected: string][] = [
+  ["no example_id", exampleWith("example_id"), "example_id", "a string"],
+  ["a numeric method_id", exampleWith("method_id", 7), "method_id", "a string"],
+  ["no name", exampleWith("name"), "name", "a string"],
+  ["inputs that are an array", exampleWith("inputs", [3]), "inputs", "an object"],
+  ["inputs that are null", exampleWith("inputs", null), "inputs", "an object"],
+  ["no input_revision", exampleWith("input_revision"), "input_revision", "an integer"],
+  ["a revision as a string", exampleWith("input_revision", "2"), "input_revision", "an integer"],
+  ["a fractional revision", exampleWith("input_revision", 2.5), "input_revision", "an integer"],
+  ["no latest_run_id", exampleWith("latest_run_id"), "latest_run_id", "a string or null"],
+  ["a numeric latest_run_id", exampleWith("latest_run_id", 1), "latest_run_id", "a string or null"],
+  ["no created_by_user_id", exampleWith("created_by_user_id"), "created_by_user_id", "a string"],
+  ["no created_at", exampleWith("created_at"), "created_at", "a string"],
+  ["no updated_at", exampleWith("updated_at"), "updated_at", "a string"],
+];
+
+describe.each(EXAMPLE_READS)("an example %s answers", (_name, route, answer, where, read) => {
+  it.each(DEFECTIVE_EXAMPLES)(
+    "with %s is an answer the SDK cannot read",
+    async (_label, example, field, expected) => {
+      const response = answer(JSON.stringify(example));
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
+
+      const err = await read(makeClient()).catch((thrown: unknown) => thrown);
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      expect((err as ApiResponseError).message).toBe(
+        `API ${route} answered ${response.status} with ${where} whose \`${field}\` is not ` +
+          `${expected}`,
+      );
+      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    },
+  );
+
+  it("with a revision past the safe range is an answer the SDK cannot read", async () => {
+    const text = JSON.stringify(EXAMPLE).replace(
+      '"input_revision":2',
+      '"input_revision":12345678901234567891',
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(answer(text));
+
+    const err = await read(makeClient()).catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toContain(
+      `${where} whose \`input_revision\` is not an integer`,
+    );
+  });
+});
+
+describe("a page item that is not an object", () => {
+  it("is an answer the SDK cannot read", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { items: [EXAMPLE, "ex_1"], next_cursor: null }),
+    );
+
+    const err = await makeClient()
+      .listMethodExamples(METHOD_ID)
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      `API GET /v1/methods/${METHOD_ID}/examples answered 200 with a page item that is not an ` +
+        "object",
+    );
+  });
+});
+
+describe("a verdict naming a single outcome it expects", () => {
+  it("says which, without a stray conjunction", () => {
+    // Both routes reading a verdict expect two or more outcomes; the wording of one is checked
+    // on the private reader they share.
+    type ReadVerdict = (
+      method: string,
+      endpoint: string,
+      res: { status: number; statusText: string; headers: Headers; body: string; utf8: boolean },
+      shape: { verdict: string; outcomes: readonly string[]; member: string },
+    ) => unknown;
+    const client = makeClient();
+    const readVerdict = Reflect.get(client, "readVerdict") as ReadVerdict;
+    const res = {
+      status: 200,
+      statusText: "OK",
+      headers: new Headers(),
+      body: '{"outcome":"other","subject":{}}',
+      utf8: true,
+    };
+
+    expect(() =>
+      readVerdict.call(client, "PUT", "things/1", res, {
+        verdict: "a thing result",
+        outcomes: ["done"],
+        member: "subject",
+      }),
+    ).toThrow(
+      "API PUT /v1/things/1 answered 200 with a thing result whose `outcome` is not `done`",
+    );
   });
 });
 

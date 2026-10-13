@@ -1669,7 +1669,8 @@ class PipelexAPIClient(MthdsAPIClient):
         `pipelex_sdk.method_selector.parse_method_selector` and reads that version with
         `get_method_version`. Every method route raises `RequestArgumentError` for a suffixed id,
         before any request, rather than read back the `404` the platform would answer, and for an
-        id that is empty, `.` or `..`, which the URL would resolve into another route's path.
+        id that is empty, `.` or `..`, which the URL would resolve into another route's path, or
+        that holds a lone surrogate, which a URL cannot carry.
         """
         return await self._request_product("GET", _method_path(method_id, call="get_method"), read=MethodData.model_validate)
 
@@ -1903,15 +1904,7 @@ class PipelexAPIClient(MthdsAPIClient):
         if run_id is not None:
             # Checked as an `object`, as the latest-run write checks its run id: the annotation is a
             # promise to the type checker, not to a caller forwarding an id it read elsewhere.
-            candidate_run_id = cast("object", run_id)
-            if not isinstance(candidate_run_id, str) or not candidate_run_id:
-                got = "an empty string" if isinstance(candidate_run_id, str) else type(candidate_run_id).__name__
-                msg = (
-                    "create_method_example() takes run_id as the id of a run of this method that used these inputs, "
-                    f"a non-empty string, or leaves it out; got {got}."
-                )
-                raise RequestArgumentError(msg)
-            body["run_id"] = candidate_run_id
+            body["run_id"] = _require_non_empty_id(run_id, call="create_method_example", what=_CREATE_RUN_ID_ARGUMENT)
         return await self._request_product("POST", endpoint, body=body, read=MethodExample.model_validate)
 
     async def list_method_examples(self, method_id: str, *, limit: int | None = None, cursor: str | None = None) -> MethodExamplePage:
@@ -1961,7 +1954,7 @@ class PipelexAPIClient(MthdsAPIClient):
             example_id: The example's `example_id`.
 
         Raises:
-            RequestArgumentError: `example_id` is empty, `.` or `..`, or not a `str`; nothing is sent.
+            RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`; nothing is sent.
             ApiResponseError: `422` for an example id longer than one can be (64 characters), and the
                 codes every example route answers.
         """
@@ -1994,7 +1987,7 @@ class PipelexAPIClient(MthdsAPIClient):
             The example as it now stands.
 
         Raises:
-            RequestArgumentError: `example_id` is empty, `.` or `..`, or not a `str`, or neither `name` nor
+            RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`, or neither `name` nor
                 `inputs` is given; nothing is sent.
             ApiResponseError: `413` `payload_too_large` for inputs larger than one stored item holds;
                 `422` for a name that is empty, blank or over 200 characters, or inputs that are not a JSON
@@ -2040,7 +2033,7 @@ class PipelexAPIClient(MthdsAPIClient):
             raised. Both arms carry the `example` as it stands.
 
         Raises:
-            RequestArgumentError: `example_id` is empty, `.` or `..`, or not a `str`, `run_id` is not a
+            RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`, `run_id` is not a
                 non-empty `str`, or `input_revision` is not a positive integer (a `bool`, a `float` and a numeric string
                 included); nothing is sent.
             ApiResponseError: When no verdict was produced: `404` `not_found` for an example deleted since;
@@ -2048,21 +2041,17 @@ class PipelexAPIClient(MthdsAPIClient):
                 the codes every example route answers. An answer off the union is one the SDK cannot read,
                 raised as an `ApiResponseError` too.
         """
-        endpoint = f"{_method_example_path(method_id, example_id, call='record_method_example_latest_run')}/latest-run"
+        call = "record_method_example_latest_run"
+        # The arguments are checked in the order the Raises section names them, each before anything is sent.
+        endpoint = f"{_method_example_path(method_id, example_id, call=call)}/latest-run"
         # Checked as `object`s, as `get_method_version` checks its version: the annotations are promises
         # to the type checker, not to a caller forwarding an optional id or a CLI argument.
-        candidate_run_id = cast("object", run_id)
-        if not isinstance(candidate_run_id, str) or not candidate_run_id:
-            msg = "record_method_example_latest_run() needs run_id, the id of a run of this method that used the example's inputs."
-            raise RequestArgumentError(msg)
+        checked_run_id = _require_non_empty_id(run_id, call=call, what=_RECORD_RUN_ID_ARGUMENT)
         candidate_revision = cast("object", input_revision)
         if isinstance(candidate_revision, bool) or not isinstance(candidate_revision, int) or candidate_revision < 1:
-            msg = (
-                "record_method_example_latest_run() needs input_revision, the example's revision whose inputs the run used, "
-                f"a positive integer; got {input_revision!r}."
-            )
-            raise RequestArgumentError(msg)
-        body = {"run_id": candidate_run_id, "input_revision": candidate_revision}
+            what = "an input_revision, the example's revision whose inputs the run used, a positive integer"
+            raise _argument_refusal(call, what, repr(input_revision))
+        body = {"run_id": checked_run_id, "input_revision": candidate_revision}
         return await self._request_product("PUT", endpoint, body=body, read=MethodExampleLatestRunResultAdapter.validate_python)
 
     async def delete_method_example(self, method_id: str, example_id: str) -> None:
@@ -2075,7 +2064,7 @@ class PipelexAPIClient(MthdsAPIClient):
             example_id: The example's `example_id`.
 
         Raises:
-            RequestArgumentError: `example_id` is empty, `.` or `..`, or not a `str`; nothing is sent: `..`
+            RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`; nothing is sent: `..`
                 would address the method, and its erasure would answer the delete.
             ApiResponseError: `404` `not_found` when there is no such example, one already deleted
                 included, and the codes every example route answers.
@@ -2895,9 +2884,34 @@ _RUN_ID_ARGUMENT = "a run id, the run's non-empty `pipeline_run_id`"
 _ORG_ID_ARGUMENT = "an organization id, the organization's non-empty `org_id`"
 _API_KEY_ID_ARGUMENT = "an API key id, the key's non-empty `id`"
 
-#: The ids a route cannot put in its path: the empty one addresses the route above it, and the URL
-#: resolves the dot segments before the request leaves.
-_UNADDRESSABLE_IDS = frozenset({"", ".", ".."})
+#: What the run id of each example write is, as a refusal of it names it.
+_CREATE_RUN_ID_ARGUMENT = "a run_id naming a run of this method that used these inputs, a non-empty string, or none"
+_RECORD_RUN_ID_ARGUMENT = "a run_id naming a run of this method that used the example's inputs, a non-empty string"
+
+#: The ids that are dot segments, which the URL resolves before the request leaves.
+_DOT_SEGMENTS = frozenset({".", ".."})
+
+
+def _argument_refusal(call: str, what: str, got: str) -> RequestArgumentError:
+    """The refusal of an argument a call cannot take, worded as every such refusal is: `<call>() takes <what>; got <got>.`"""
+    msg = f"{call}() takes {what}; got {got}."
+    return RequestArgumentError(msg)
+
+
+def _require_non_empty_id(value: object, *, call: str, what: str) -> str:
+    """A caller's id, checked to be a non-empty `str`: the one check every id a call takes goes through.
+
+    Whether the id enters a path (`_id_path_segment`) or a body (a run id an example write records),
+    anything else is refused before anything is sent, `call` naming the method in the message and `what`
+    the id it takes.
+
+    Raises:
+        RequestArgumentError: `value` is not a `str`, or is empty.
+    """
+    if isinstance(value, str) and value:
+        return value
+    got = "an empty string" if isinstance(value, str) else type(value).__name__
+    raise _argument_refusal(call, what, got)
 
 
 def _id_path_segment(value: object, *, call: str, what: str) -> str:
@@ -2907,24 +2921,22 @@ def _id_path_segment(value: object, *, call: str, what: str) -> str:
     would reach the URL as a dot segment, which httpx resolves before the request leaves:
     `methods/mt_x/examples/..` is sent as `methods/mt_x`, and deleting that "example" would erase the
     method. An empty id addresses the route above it the same way, `runs/` for a run. So a value that is
-    not a `str`, an empty one and a dot segment are each refused before anything is sent. `call` names
-    the method in the message and `what` the id it takes. An id spelling a dot in percent-encoding
-    (`%2e`) is no dot segment once its `%` is escaped.
+    not a non-empty `str` (`_require_non_empty_id`) and a dot segment are each refused before anything is
+    sent, and so is a string holding a lone surrogate, which has no UTF-8 spelling and so no
+    percent-encoding: `quote` raises a `UnicodeEncodeError` for it. `call` names the method in the message
+    and `what` the id it takes. An id spelling a dot in percent-encoding (`%2e`) is no dot segment once its
+    `%` is escaped.
 
     Raises:
-        RequestArgumentError: `value` is not a `str`, or is empty, `.` or `..`.
+        RequestArgumentError: `value` is not a `str`, is empty, `.` or `..`, or holds a lone surrogate.
     """
-    if isinstance(value, str) and value not in _UNADDRESSABLE_IDS:
-        return quote(value, safe="")
-    got: str
-    if not isinstance(value, str):
-        got = type(value).__name__
-    elif not value:
-        got = "an empty string"
-    else:
-        got = f'"{value}", a dot segment, which the URL would resolve into another route\'s path'
-    msg = f"{call}() takes {what}; got {got}."
-    raise RequestArgumentError(msg)
+    id_value = _require_non_empty_id(value, call=call, what=what)
+    if id_value in _DOT_SEGMENTS:
+        raise _argument_refusal(call, what, f'"{id_value}", a dot segment, which the URL would resolve into another route\'s path')
+    try:
+        return quote(id_value, safe="")
+    except UnicodeEncodeError as exc:
+        raise _argument_refusal(call, what, "a string holding a lone surrogate, which a URL cannot carry") from exc
 
 
 def _method_path(method_id: str, *, call: str) -> str:
@@ -2937,7 +2949,7 @@ def _method_path(method_id: str, *, call: str) -> str:
     the draft for a caller that named a version. `call` names the method in the message.
 
     Raises:
-        RequestArgumentError: `method_id` is not a `str`, is empty, `.` or `..`, or carries a version suffix.
+        RequestArgumentError: `method_id` is not a `str`, is empty, `.` or `..`, holds a lone surrogate, or carries a version suffix.
     """
     segment = _id_path_segment(method_id, call=call, what=_METHOD_ID_ARGUMENT)
     if "@" in method_id:
@@ -2959,7 +2971,7 @@ def _method_example_path(method_id: str, example_id: str, *, call: str) -> str:
 
     Raises:
         RequestArgumentError: `method_id` is refused as `_method_path` refuses it, or `example_id` is not a
-            `str`, or is empty, `.` or `..`.
+            `str`, or is empty, `.` or `..`, or holds a lone surrogate.
     """
     path = _method_path(method_id, call=call)
     return f"{path}/examples/{_id_path_segment(example_id, call=call, what=_EXAMPLE_ID_ARGUMENT)}"

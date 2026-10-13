@@ -630,9 +630,11 @@ class MethodExample(BaseModel):
     """Starts at 1 and rises by one each time the inputs change. Send it, as read when the run was
     started, to `record_method_example_latest_run`."""
 
-    latest_run_id: str | None = None
+    latest_run_id: str | None
     """The latest run of the current inputs, `None` when none was recorded since they last changed. It
-    may name a run deleted since, which then reads as not found."""
+    may name a run deleted since, which then reads as not found. Required, as on every example the
+    platform answers: an example without it is an answer the SDK cannot read, never one with no latest
+    run."""
 
     created_by_user_id: str
     """The canonical id of the member who saved the example; it confers nothing."""

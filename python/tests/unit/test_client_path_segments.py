@@ -153,6 +153,8 @@ _ROUTE_PARAMS = [pytest.param(what, name, call, url, id=f"{name}-{what.split(' '
 
 _DOT_SEGMENT = "a dot segment, which the URL would resolve into another route's path"
 
+_LONE_SURROGATE = "a string holding a lone surrogate, which a URL cannot carry"
+
 #: Ids that look like a dot segment or a path but are none once encoded: each must reach its route as one segment.
 _KEPT_IDS = ["...", ".x", "x.", "%2e%2e", ".%2E", "a/..", "a\\b", "?q", "#f"]
 
@@ -170,6 +172,9 @@ class TestClientPathSegments:
             pytest.param(".", f'".", {_DOT_SEGMENT}', id="dot"),
             pytest.param("..", f'"..", {_DOT_SEGMENT}', id="dot-dot"),
             pytest.param(None, "NoneType", id="not-a-string"),
+            # A lone surrogate has no UTF-8 spelling, so `quote` raises a `UnicodeEncodeError` for it.
+            pytest.param("ex_\ud800", _LONE_SURROGATE, id="lone-high-surrogate"),
+            pytest.param("\udc00ex", _LONE_SURROGATE, id="lone-low-surrogate"),
         ],
     )
     @pytest.mark.parametrize(("what", "name", "call", "url"), _ROUTE_PARAMS)

@@ -58,6 +58,28 @@ _EXAMPLE_ROUTES: list[tuple[str, ExampleRouteCall]] = [
     ("delete_method_example", lambda client, example_id: client.delete_method_example(_METHOD_ID, example_id)),
 ]
 
+#: Each route answering an example: its name, its status, the answer carrying a given example, and the call
+#: reading it.
+_EXAMPLE_READS: list[tuple[str, int, Callable[[dict[str, Any]], object], MethodRouteCall]] = [
+    ("get_method_example", 200, lambda example: example, lambda client: client.get_method_example(_METHOD_ID, _EXAMPLE_ID)),
+    (
+        "list_method_examples",
+        200,
+        lambda example: {"items": [example], "next_cursor": None},
+        lambda client: client.list_method_examples(_METHOD_ID),
+    ),
+    ("create_method_example", 201, lambda example: example, lambda client: client.create_method_example(_METHOD_ID, name="n", inputs={})),
+    ("update_method_example", 200, lambda example: example, lambda client: client.update_method_example(_METHOD_ID, _EXAMPLE_ID, name="n")),
+    (
+        "record_method_example_latest_run",
+        200,
+        lambda example: {"outcome": "recorded", "example": example},
+        lambda client: client.record_method_example_latest_run(_METHOD_ID, _EXAMPLE_ID, run_id="run_2", input_revision=2),
+    ),
+]
+
+_EXAMPLE_READ_PARAMS = [pytest.param(status, answer, call, id=name) for name, status, answer, call in _EXAMPLE_READS]
+
 #: One call of example routes addressed by a suffixed method id, which each refuses before sending.
 _SUFFIXED_METHOD_ROUTES: list[tuple[str, MethodRouteCall]] = [
     ("create_method_example", lambda client: client.create_method_example("mt_x@3", name="n", inputs={})),
@@ -128,8 +150,7 @@ class TestClientMethodExamples:
             asyncio.run(api_client.create_method_example(_METHOD_ID, name="n", inputs={}, run_id=cast("str", run_id)))
 
         assert str(exc_info.value) == (
-            "create_method_example() takes run_id as the id of a run of this method that used these inputs, "
-            f"a non-empty string, or leaves it out; got {got}."
+            f"create_method_example() takes a run_id naming a run of this method that used these inputs, a non-empty string, or none; got {got}."
         )
         assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
         send.assert_not_called()
@@ -342,6 +363,24 @@ class TestClientMethodExamples:
         assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
         send.assert_not_called()
 
+    def test_update_sends_back_inputs_read_from_an_example_as_they_were_saved(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        """Python reads an integer of any size as an `int` and `3.0` as a `float`, so inputs read and sent back
+        unchanged are the inputs the platform holds, which `@pipelex/sdk` matches for the integer alone.
+        """
+        saved = {**MethodExampleBodies.EXAMPLE, "inputs": {"big": 12345678901234567891, "float": 3.0, "nested": [-98765432109876543210]}}
+        send = patch_send(api_client, wire_response(200, json_body=saved), wire_response(200, json_body=saved))
+
+        example = asyncio.run(api_client.get_method_example(_METHOD_ID, _EXAMPLE_ID))
+        asyncio.run(api_client.update_method_example(_METHOD_ID, _EXAMPLE_ID, inputs=example.inputs))
+
+        content = send.call_args.kwargs["content"]
+        assert json.loads(content) == {"inputs": saved["inputs"]}
+        assert b"12345678901234567891" in content
+        assert b"3.0" in content
+        assert b"-98765432109876543210" in content
+
     def test_update_takes_its_fields_by_keyword_only(self, api_client: PipelexAPIClient) -> None:
         with pytest.raises(TypeError):
             asyncio.run(api_client.update_method_example(_METHOD_ID, _EXAMPLE_ID, "April receipt"))  # type: ignore[misc]  # pyright: ignore[reportCallIssue]
@@ -440,7 +479,7 @@ class TestClientMethodExamples:
     ) -> None:
         send = patch_send(api_client, wire_response(200, json_body={}))
 
-        with pytest.raises(RequestArgumentError, match=f"needs {field}") as exc_info:
+        with pytest.raises(RequestArgumentError, match=rf"^record_method_example_latest_run\(\) takes an? {field}[ ,].*; got .+\.$") as exc_info:
             asyncio.run(
                 api_client.record_method_example_latest_run(
                     _METHOD_ID, _EXAMPLE_ID, run_id=cast("str", run_id), input_revision=cast("int", input_revision)
@@ -531,3 +570,27 @@ class TestClientMethodExamples:
             asyncio.run(api_client.list_method_examples(_METHOD_ID))
 
         assert exc_info.value.code == "method_being_deleted"
+
+    @pytest.mark.parametrize(("status", "answer", "call"), _EXAMPLE_READ_PARAMS)
+    def test_an_example_without_its_latest_run_is_an_answer_the_sdk_cannot_read(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+        status: int,
+        answer: Callable[[dict[str, Any]], object],
+        call: MethodRouteCall,
+    ) -> None:
+        """The platform always sends `latest_run_id`, `None` when there is none, so an example without it is
+        never read as one with no latest run, as `@pipelex/sdk` refuses it.
+        """
+        example = {key: value for key, value in MethodExampleBodies.EXAMPLE.items() if key != "latest_run_id"}
+        patch_send(api_client, wire_response(status, json_body=answer(example)))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(call(api_client))
+
+        unreadable = exc_info.value
+        assert str(unreadable).endswith(f"answered {status} with a body that is not the answer the route returns")
+        assert isinstance(unreadable.__cause__, ValidationError)
+        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)

@@ -197,7 +197,7 @@ class TestClientMethodVersions:
             asyncio.run(api_client.write_draft("mt_receipts01", MethodDraftInput(mthds="src", expected_updated_at="old")))
 
         assert exc_info.value.status == 409
-        assert exc_info.value.code == MethodErrorCode.METHOD_UPDATE_CONFLICT
+        assert exc_info.value.code == "method_update_conflict"
         assert exc_info.value.errors is not None
         assert exc_info.value.errors[0].field == "expected_updated_at"
 
@@ -319,7 +319,7 @@ class TestClientMethodVersions:
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.publish_method("mt_receipts01", expected_draft_updated_at="old"))
 
-        assert exc_info.value.code == MethodErrorCode.METHOD_UPDATE_CONFLICT
+        assert exc_info.value.code == "method_update_conflict"
 
     @pytest.mark.parametrize(
         ("token", "type_name"),
@@ -410,7 +410,7 @@ class TestClientMethodVersions:
             asyncio.run(api_client.get_method_version("mt_receipts01", 9))
 
         assert exc_info.value.status == 404
-        assert exc_info.value.code == MethodErrorCode.METHOD_VERSION_NOT_FOUND
+        assert exc_info.value.code == "method_version_not_found"
 
     # ----- the method routes take a bare id ----------------------------------------------------
 
@@ -495,7 +495,7 @@ class TestClientMethodVersions:
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.start(method_id="mt_receipts01"))
 
-        assert exc_info.value.code == MethodErrorCode.METHOD_NOT_PUBLISHED
+        assert exc_info.value.code == "method_not_published"
 
     # ----- the version a run ran ---------------------------------------------------------------
 

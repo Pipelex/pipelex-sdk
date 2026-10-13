@@ -144,6 +144,7 @@ import type {
   ResolvedArtifact,
 } from "./artifacts.js";
 import { PipelexExecuteResult, resultsFromExecute } from "./execute-result.js";
+import { parseExactJson, stringifyExactJson } from "./exact-json.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // A pure RUNAWAY guard on the paged-list iterators (`iterateMethods`,
@@ -443,6 +444,16 @@ interface RawResponse {
   utf8: boolean;
 }
 
+/**
+ * How a 2xx answer's JSON text becomes a value: `readJson` for every answer but a method
+ * example's, which is read with `parseExactJson`, since another client may have saved its inputs
+ * with an integer a double cannot hold.
+ */
+type JsonReader = (text: string) => unknown;
+
+/** `JSON.parse`, the `JsonReader` an answer is read with unless its route names another. */
+const readJson: JsonReader = (text) => JSON.parse(text) as unknown;
+
 /** HTTP methods the client issues — the product routes add PUT/PATCH/DELETE. */
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -546,6 +557,32 @@ function withWirePython<T extends { python?: MethodFile[] }>(input: T): WithWire
   return python === undefined ? rest : { ...rest, python: serializeMethodFiles(python) };
 }
 
+/**
+ * A request's body as the JSON text it is sent as, written by `stringifyExactJson`, so a `bigint`
+ * read from a method example goes back as its exact digits. A body JSON cannot carry, one holding
+ * a cycle for instance, is the caller's argument: it is refused with `RequestArgumentError`, the
+ * failure as its `cause`, before anything is sent, and `method` and `url` name the request in the
+ * message.
+ */
+function requestBodyText(method: HttpMethod, url: string, body: unknown): string {
+  try {
+    return stringifyExactJson(body);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new RequestArgumentError(
+      `The body of ${method} ${new URL(url).pathname} cannot be written as JSON, so nothing was ` +
+        `sent: ${reason}`,
+      { cause: err },
+    );
+  }
+}
+
+/** `items` joined as a sentence names them, the last after `conjunction`: `a`, `a or b`, `a, b or c`. */
+function inWords(items: readonly string[], conjunction: "and" | "or"): string {
+  if (items.length < 2) return items.join("");
+  return `${items.slice(0, -1).join(", ")} ${conjunction} ${items[items.length - 1]}`;
+}
+
 /** What each id a route puts in its path is, as a refusal of it names it. */
 const METHOD_ID_ARGUMENT = "a method id, the method's non-empty bare catalog id";
 const EXAMPLE_ID_ARGUMENT = "an example id, the example's non-empty `example_id`";
@@ -553,25 +590,67 @@ const RUN_ID_ARGUMENT = "a run id, the run's non-empty `pipeline_run_id`";
 const ORG_ID_ARGUMENT = "an organization id, the organization's non-empty `org_id`";
 const API_KEY_ID_ARGUMENT = "an API key id, the key's non-empty `id`";
 
+/** What the run id of each example write is, as a refusal of it names it. */
+const CREATE_RUN_ID_ARGUMENT =
+  "a run_id naming a run of this method that used these inputs, a non-empty string, or none";
+const RECORD_RUN_ID_ARGUMENT =
+  "a run_id naming a run of this method that used the example's inputs, a non-empty string";
+
+/**
+ * The refusal of an argument a call cannot take, worded as every such refusal is:
+ * `<call>() takes <what>; got <got>.`, with what made it unusable as `cause` when there is one.
+ */
+function argumentRefusal(
+  call: string,
+  what: string,
+  got: string,
+  cause?: unknown,
+): RequestArgumentError {
+  const message = `${call}() takes ${what}; got ${got}.`;
+  return new RequestArgumentError(message, cause === undefined ? undefined : { cause });
+}
+
+/**
+ * A caller's id, checked to be a non-empty string: the one check every id a call takes goes
+ * through, whether it enters a path (`idPathSegment`) or a body (a run id an example write
+ * records). Anything else is refused with `RequestArgumentError` before anything is sent, `call`
+ * naming the method in the message and `what` the id it takes.
+ */
+function requireNonEmptyId(value: unknown, call: string, what: string): string {
+  if (typeof value === "string" && value !== "") return value;
+  let got: string;
+  if (typeof value === "string") got = "an empty string";
+  else got = value === null ? "null" : typeof value;
+  throw argumentRefusal(call, what, got);
+}
+
 /**
  * A caller's id as one segment of a route's path, percent-encoded: the one place an id enters a
  * path. `encodeURIComponent` escapes every character a path gives meaning to but the dot, so an id
  * of `.` or `..` would reach the URL as a dot segment, which the URL resolves before the request
  * leaves: `methods/mt_x/examples/..` is sent as `methods/mt_x/`, and deleting that "example"
  * would erase the method. An empty id addresses the route above it the same way, `runs/` for a
- * run. So a value that is not a string, an empty one and a dot segment are each refused before
- * anything is sent. `call` names the method in the message and `what` the id it takes. An id
- * spelling a dot in percent-encoding (`%2e`) is no dot segment once its `%` is escaped.
+ * run. So a value that is not a non-empty string (`requireNonEmptyId`) and a dot segment are each
+ * refused before anything is sent, and so is a string holding a lone surrogate, which has no
+ * UTF-8 spelling and so no percent-encoding: `encodeURIComponent` throws a `URIError` for it.
+ * `call` names the method in the message and `what` the id it takes. An id spelling a dot in
+ * percent-encoding (`%2e`) is no dot segment once its `%` is escaped.
  */
 function idPathSegment(value: unknown, call: string, what: string): string {
-  if (typeof value === "string" && value !== "" && value !== "." && value !== "..") {
-    return encodeURIComponent(value);
+  const id = requireNonEmptyId(value, call, what);
+  if (id === "." || id === "..") {
+    throw argumentRefusal(
+      call,
+      what,
+      `"${id}", a dot segment, which the URL would resolve into another route's path`,
+    );
   }
-  let got: string;
-  if (typeof value !== "string") got = value === null ? "null" : typeof value;
-  else if (value === "") got = "an empty string";
-  else got = `"${value}", a dot segment, which the URL would resolve into another route's path`;
-  throw new RequestArgumentError(`${call}() takes ${what}; got ${got}.`);
+  try {
+    return encodeURIComponent(id);
+  } catch (err) {
+    const got = "a string holding a lone surrogate, which a URL cannot carry";
+    throw argumentRefusal(call, what, got, err);
+  }
 }
 
 /**
@@ -605,6 +684,31 @@ function methodExamplePath(methodId: string, exampleId: string, call: string): s
   const path = methodPath(methodId, call);
   return `${path}/examples/${idPathSegment(exampleId, call, EXAMPLE_ID_ARGUMENT)}`;
 }
+
+const isString = (value: unknown): boolean => typeof value === "string";
+
+/**
+ * Each field of a `MethodExample`, what it must be, and the check it must pass: every field the
+ * Python SDK's model requires, so both SDKs refuse the same answer, the ones a caller acts on
+ * (`example_id`, `inputs`, `input_revision`, `latest_run_id`) among them. `latest_run_id` must be
+ * present, `null` saying there is no latest run, and `input_revision` must be a safe integer, so
+ * one past the safe range, which `parseExactJson` reads as a `bigint`, is refused.
+ */
+const METHOD_EXAMPLE_FIELDS: readonly (readonly [
+  field: keyof MethodExample,
+  expected: string,
+  fits: (value: unknown) => boolean,
+])[] = [
+  ["example_id", "a string", isString],
+  ["method_id", "a string", isString],
+  ["name", "a string", isString],
+  ["inputs", "an object", isPlainObject],
+  ["input_revision", "an integer", (value) => Number.isSafeInteger(value)],
+  ["latest_run_id", "a string or null", (value) => value === null || isString(value)],
+  ["created_by_user_id", "a string", isString],
+  ["created_at", "a string", isString],
+  ["updated_at", "a string", isString],
+];
 
 export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   private readonly apiKey: string | undefined;
@@ -700,6 +804,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     } & RunCreation = {},
   ): Promise<RawResponse> {
     const hasBody = options.body !== undefined;
+    // Written before the request is made, so a body JSON cannot carry is refused as the caller's
+    // argument rather than caught below and reported as a network failure.
+    const bodyText = hasBody ? requestBodyText(method, url, options.body) : undefined;
     const headers = this.requestHeaders(hasBody, options.idempotencyKey);
 
     const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -728,7 +835,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       response = await fetch(url, {
         method,
         headers,
-        body: hasBody ? JSON.stringify(options.body) : undefined,
+        body: bodyText,
         signal: controller.signal,
       });
       // The body streams after the headers; keep the timer/abort armed until it
@@ -868,20 +975,29 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * of `outcomes` is an answer the SDK cannot read, and so is a `member` that is not an object,
    * the check `readObjectAnswerAt` holds a route's whole answer to: each throws the
    * `ApiResponseError` `unreadableAnswer` builds, `verdict` naming the answer in the message.
-   * Returns the answer, its `outcome` and the member as `subject`, for the route to read further.
+   * `parse` reads the answer's text, `readJson` unless the route names another. Returns the
+   * answer, its `outcome` and the member as `subject`, for the route to read further.
    */
   private readVerdict<O extends string>(
     method: HttpMethod,
     endpoint: string,
     res: RawResponse,
-    shape: { verdict: string; outcomes: readonly O[]; member: string },
+    shape: { verdict: string; outcomes: readonly O[]; member: string; parse?: JsonReader },
   ): { answer: Record<string, unknown>; outcome: O; subject: Record<string, unknown> } {
-    const answer = this.readObjectAnswer<Record<string, unknown>>(method, endpoint, res);
+    const answer = this.readObjectAnswer<Record<string, unknown>>(
+      method,
+      endpoint,
+      res,
+      {},
+      shape.parse,
+    );
     const outcome = answer.outcome as O;
     const subject = answer[shape.member];
     if (!shape.outcomes.includes(outcome)) {
-      const names = shape.outcomes.map((name) => `\`${name}\``);
-      const expected = `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+      const expected = inWords(
+        shape.outcomes.map((name) => `\`${name}\``),
+        "or",
+      );
       throw this.unreadableAnswer(
         method,
         `/${API_PREFIX}/${endpoint}`,
@@ -901,18 +1017,27 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
-   * One page of a cursor-paged product route (`listMethods`, `listMethodVersions`, `listRuns`),
-   * read as the platform always serializes it: `items` an array, `next_cursor` a string or
-   * `null`. A page breaking either is an answer the SDK cannot read, so it throws the
-   * `ApiResponseError` `unreadableAnswer` builds, `runtime` and not retryable, rather than
-   * handing the iterators a page they cannot walk: `items` that is not iterable, or a missing
-   * cursor that is neither the end nor a next page, which `iterateRuns` would follow forever.
+   * One page of a cursor-paged product route (`listMethods`, `listMethodVersions`,
+   * `listMethodExamples`, `listRuns`), read as the platform always serializes it: `items` an
+   * array, `next_cursor` a string or `null`. A page breaking either is an answer the SDK cannot
+   * read, so it throws the `ApiResponseError` `unreadableAnswer` builds, `runtime` and not
+   * retryable, rather than handing the iterators a page they cannot walk: `items` that is not
+   * iterable, or a missing cursor that is neither the end nor a next page, which `iterateRuns`
+   * would follow forever. A route reading its rows itself passes `rows`: `parse` reads the page's
+   * text, and `item` reads each row, throwing as `unreadableAnswer` does for one it cannot read.
    */
   private async requestPage<T>(
     endpoint: string,
+    rows?: { parse: JsonReader; item: (row: unknown, res: RawResponse) => T },
   ): Promise<{ items: T[]; nextCursor: string | null }> {
     const res = await this.requestProductAnswer("GET", endpoint, undefined);
-    const page = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const page = this.readObjectAnswer<Record<string, unknown>>(
+      "GET",
+      endpoint,
+      res,
+      {},
+      rows?.parse,
+    );
     const { items, next_cursor: nextCursor } = page;
     if (!Array.isArray(items)) {
       throw this.unreadableAnswer(
@@ -930,7 +1055,62 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         "a page whose `next_cursor` is neither a string nor null",
       );
     }
-    return { items: items as T[], nextCursor };
+    if (rows === undefined) return { items: items as T[], nextCursor };
+    return { items: items.map((row: unknown) => rows.item(row, res)), nextCursor };
+  }
+
+  /**
+   * A route answering one method example (`createMethodExample`, `getMethodExample`,
+   * `updateMethodExample`), its answer read with `parseExactJson`, so an integer past the safe
+   * range in the inputs is a `bigint` holding its exact digits, and checked by
+   * `readMethodExample`.
+   */
+  private async requestMethodExample(
+    method: HttpMethod,
+    endpoint: string,
+    body?: unknown,
+  ): Promise<MethodExample> {
+    const res = await this.requestProductAnswer(method, endpoint, body);
+    const answer = this.readObjectAnswer<Record<string, unknown>>(
+      method,
+      endpoint,
+      res,
+      {},
+      parseExactJson,
+    );
+    return this.readMethodExample(method, endpoint, res, answer, "an example");
+  }
+
+  /**
+   * A method example as `res` carried it, checked against `METHOD_EXAMPLE_FIELDS`: a value that
+   * is not an object, or that misses a field the Python SDK's model requires or holds one of
+   * another type, is an answer the SDK cannot read, thrown as the `ApiResponseError`
+   * `unreadableAnswer` builds, `where` naming the example's place in the answer in the message.
+   * Every route answering an example reads it here, the page rows and the latest-run verdict's
+   * member included.
+   */
+  private readMethodExample(
+    method: HttpMethod,
+    endpoint: string,
+    res: RawResponse,
+    value: unknown,
+    where: string,
+  ): MethodExample {
+    const path = `/${API_PREFIX}/${endpoint}`;
+    if (!isPlainObject(value)) {
+      throw this.unreadableAnswer(method, path, res, `${where} that is not an object`);
+    }
+    for (const [field, expected, fits] of METHOD_EXAMPLE_FIELDS) {
+      if (!fits(value[field])) {
+        throw this.unreadableAnswer(
+          method,
+          path,
+          res,
+          `${where} whose \`${field}\` is not ${expected}`,
+        );
+      }
+    }
+    return value as unknown as MethodExample;
   }
 
   /** Issue a product request and return its 2xx answer, a non-2xx thrown as `ApiResponseError`. */
@@ -971,15 +1151,17 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     endpoint: string,
     res: RawResponse,
     run: RunCreation = {},
+    parse: JsonReader = readJson,
   ): T {
-    return this.readObjectAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res, run);
+    return this.readObjectAnswerAt<T>(method, `/${API_PREFIX}/${endpoint}`, res, run, parse);
   }
 
   /**
    * The JSON body of a 2xx answer, naming the route by its `path` from the origin as a refusal
-   * does. A body that is not UTF-8, or not JSON, an empty one included, is an answer the SDK
-   * cannot read, so it throws the `ApiResponseError` `unreadableAnswer` builds, with the parse
-   * failure as `cause`.
+   * does, its text read by `parse`: `JSON.parse`, or `parseExactJson` for an answer carrying a
+   * method example. A body that is not UTF-8, or not JSON, an empty one included, is an answer
+   * the SDK cannot read, so it throws the `ApiResponseError` `unreadableAnswer` builds, with the
+   * parse failure as `cause`.
    * The one place a success body is parsed.
    */
   private readAnswerAt<T>(
@@ -987,12 +1169,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     path: string,
     res: RawResponse,
     run: RunCreation = {},
+    parse: JsonReader = readJson,
   ): T {
     if (!res.utf8) {
       throw this.unreadableAnswer(method, path, res, "a body that is not UTF-8", undefined, run);
     }
     try {
-      return JSON.parse(res.body) as T;
+      return parse(res.body) as T;
     } catch (err) {
       throw this.unreadableAnswer(
         method,
@@ -1015,8 +1198,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     path: string,
     res: RawResponse,
     run: RunCreation = {},
+    parse: JsonReader = readJson,
   ): T {
-    const answer = this.readAnswerAt<unknown>(method, path, res, run);
+    const answer = this.readAnswerAt<unknown>(method, path, res, run, parse);
     if (!isPlainObject(answer)) {
       throw this.unreadableAnswer(
         method,
@@ -2386,9 +2570,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   //
   // Every example route takes a bare catalog id, as `getMethod` does, and answers `404`
   // `not_found` for an unknown method or example and `409` `method_being_deleted` while the
-  // method's erasure runs. The writes are `403` to a read-only key, which may still read. An
-  // example's `inputs` are read as JavaScript reads JSON, its numbers as doubles: see
-  // `MethodExample.inputs` for what that changes when they are sent back.
+  // method's erasure runs. The writes are `403` to a read-only key, which may still read.
+  //
+  // Every answer carrying an example is read with `parseExactJson`, so an integer past
+  // `Number.MAX_SAFE_INTEGER` in its inputs, which another client may have saved, is a `bigint`
+  // holding its exact digits, and every request body is written with `stringifyExactJson`, so
+  // such inputs go back digit for digit, to `updateMethodExample` or as a run's inputs. Each
+  // example is checked by `readMethodExample`: one missing a field the Python SDK's model
+  // requires, or holding one of another type, is an answer the SDK cannot read.
 
   /**
    * Save an example on a method — `POST /v1/methods/{id}/examples`: a named set of inputs, and
@@ -2396,31 +2585,37 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * run. Answers the example as stored, at `input_revision` 1.
    *
    * Sends `name`, `inputs` and, when given, `run_id`, and nothing else: the route's body is
-   * closed, and a `null` `run_id` reads as not given. Throws `RequestArgumentError` for a
-   * `run_id` that is given but is not a non-empty string, before any request. Throws
-   * `ApiResponseError`: `404` `run_not_found` for a `run_id` that is not one of this method's
-   * runs in the caller's organization, with nothing written; `413` `payload_too_large` for an
-   * example larger than one stored item holds; `422` for a name that is empty, blank or over 200
-   * characters, or inputs that are not a JSON object; and the codes every example route answers.
+   * closed, and a `null` `run_id` reads as not given. Throws `RequestArgumentError` before any
+   * request when `name` or `inputs` is not given (`null` counting as not given), and for a
+   * `run_id` that is given but is not a non-empty string. Throws `ApiResponseError`: `404`
+   * `run_not_found` for a `run_id` that is not one of this method's runs in the caller's
+   * organization, with nothing written; `413` `payload_too_large` for an example larger than one
+   * stored item holds; `422` for a name that is empty, blank or over 200 characters, or inputs
+   * that are not a JSON object; and the codes every example route answers.
    */
   async createMethodExample(
     methodId: string,
     input: MethodExampleCreateInput,
   ): Promise<MethodExample> {
     const endpoint = `${methodPath(methodId, "createMethodExample")}/examples`;
-    const body: Record<string, unknown> = { name: input.name, inputs: input.inputs };
-    const runId: unknown = input.run_id;
-    if (runId != null) {
-      if (typeof runId !== "string" || runId.length === 0) {
-        throw new RequestArgumentError(
-          "createMethodExample() takes run_id as the id of a run of this method that used " +
-            "these inputs, a non-empty string, or leaves it out; got " +
-            `${typeof runId === "string" ? "an empty string" : typeof runId}.`,
-        );
-      }
-      body.run_id = runId;
+    const {
+      name,
+      inputs,
+      run_id: runId,
+    } = (input as Partial<MethodExampleCreateInput> | undefined) ?? {};
+    if (name == null || inputs == null) {
+      let got: string;
+      if (name == null && inputs == null) got = "neither";
+      else got = name == null ? "no name" : "no inputs";
+      throw new RequestArgumentError(
+        `createMethodExample() needs the example's name and its inputs; got ${got}.`,
+      );
     }
-    return this.requestProductObject("POST", endpoint, body);
+    const body: Record<string, unknown> = { name, inputs };
+    if (runId != null) {
+      body.run_id = requireNonEmptyId(runId, "createMethodExample", CREATE_RUN_ID_ARGUMENT);
+    }
+    return this.requestMethodExample("POST", endpoint, body);
   }
 
   /**
@@ -2433,8 +2628,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *
    * Throws `ApiResponseError`: `400` `malformed_request` for a cursor the listing did not issue
    * for this method, `422` for a `limit` outside 1 to 100, and the codes every example route
-   * answers. A page whose `items` is not an array or whose `next_cursor` is neither a string
-   * nor `null` is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * answers. A page whose `items` is not an array, whose `next_cursor` is neither a string nor
+   * `null`, or one of whose items is not an example `readMethodExample` can read, is an answer
+   * the SDK cannot read, thrown as an `ApiResponseError` too. An example whose inputs hold an
+   * integer past the safe range is read like any other, that integer as a `bigint`.
    */
   async listMethodExamples(
     methodId: string,
@@ -2446,8 +2643,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.cursor !== undefined) params.set("cursor", query.cursor);
     const suffix = params.toString();
-    const endpoint = `${methodPath(methodId, "listMethodExamples")}/examples`;
-    return this.requestPage<MethodExample>(suffix ? `${endpoint}?${suffix}` : endpoint);
+    const path = `${methodPath(methodId, "listMethodExamples")}/examples`;
+    const endpoint = suffix ? `${path}?${suffix}` : path;
+    return this.requestPage<MethodExample>(endpoint, {
+      parse: parseExactJson,
+      item: (row, res) => this.readMethodExample("GET", endpoint, res, row, "a page item"),
+    });
   }
 
   /**
@@ -2479,13 +2680,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * One example of a method — `GET /v1/methods/{id}/examples/{example_id}`, read consistently,
    * so an example saved a moment ago is found.
    *
-   * Throws `RequestArgumentError` for an example id that is empty, `.` or `..`, before any
-   * request. Throws `ApiResponseError`: `422` for an example id longer than one can be (64
-   * characters), and the codes every example route answers.
+   * Throws `RequestArgumentError` for an example id that is empty, `.` or `..`, or holds a lone
+   * surrogate, before any request. Throws `ApiResponseError`: `422` for an example id longer
+   * than one can be (64 characters), and the codes every example route answers.
    */
   async getMethodExample(methodId: string, exampleId: string): Promise<MethodExample> {
     const endpoint = methodExamplePath(methodId, exampleId, "getMethodExample");
-    return this.requestProductObject("GET", endpoint);
+    return this.requestMethodExample("GET", endpoint);
   }
 
   /**
@@ -2500,9 +2701,10 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * not given, as the platform reads it.
    *
    * **Send `inputs` only when they changed.** Inputs read from an example and sent back unchanged
-   * are a change for the platform when they hold a number JavaScript cannot carry as it was
-   * saved, `3.0` or an integer past `Number.MAX_SAFE_INTEGER` (see `MethodExample.inputs`): they
-   * raise the revision and clear the latest run. A rename sent alone never does.
+   * are a change for the platform when they hold a float with no fractional part, `3.0`, which
+   * JavaScript reads as `3` (see `MethodExample.inputs`): they raise the revision and clear the
+   * latest run. A rename sent alone never does. An integer past `Number.MAX_SAFE_INTEGER` is no
+   * such case: it reads as a `bigint` and is sent back as its exact digits.
    *
    * Throws `RequestArgumentError` before any request for an example id that is empty, `.` or
    * `..`, or when neither `name` nor `inputs` is given. Throws `ApiResponseError`: `413`
@@ -2526,7 +2728,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         "updateMethodExample() needs a new name, new inputs, or both; got neither.",
       );
     }
-    return this.requestProductObject("PATCH", endpoint, body);
+    return this.requestMethodExample("PATCH", endpoint, body);
   }
 
   /**
@@ -2541,48 +2743,50 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * since and nothing was written. A stale run is the expected end of a run that outlasted an
    * edit, so it is answered, never thrown. Both arms carry the `example` as it stands.
    *
-   * Throws `RequestArgumentError` before any request for an example id that is empty, `.` or
-   * `..`, a `run_id` that is not a non-empty string, or an `input_revision` that is not a positive
-   * integer. Throws `ApiResponseError` when no verdict was produced: `404` `not_found` for an
-   * example deleted since, `404` `run_not_found` for a run that is not one of this method's, with
-   * nothing written, and the codes every example route answers. An answer whose `outcome` is
-   * neither arm's, or that carries no `example` object, is an answer the SDK cannot read, thrown
-   * as an `ApiResponseError` too, read as `publishMethod` reads its verdict.
+   * Throws `RequestArgumentError` before any request, checking in this order: an example id that
+   * is empty, `.` or `..`, or holds a lone surrogate, a `run_id` that is not a non-empty string,
+   * and an `input_revision` that is not a positive integer. Throws `ApiResponseError` when no
+   * verdict was produced: `404` `not_found` for an example deleted since, `404` `run_not_found`
+   * for a run that is not one of this method's, with nothing written, and the codes every example
+   * route answers. An answer whose `outcome` is neither arm's, or whose `example` is not an
+   * example `readMethodExample` can read, is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too, read as `publishMethod` reads its verdict.
    */
   async recordMethodExampleLatestRun(
     methodId: string,
     exampleId: string,
     input: MethodExampleLatestRunInput,
   ): Promise<MethodExampleLatestRunResult> {
-    const endpoint = `${methodExamplePath(methodId, exampleId, "recordMethodExampleLatestRun")}/latest-run`;
+    const call = "recordMethodExampleLatestRun";
+    const endpoint = `${methodExamplePath(methodId, exampleId, call)}/latest-run`;
     const { run_id: runId, input_revision: revision } =
       (input as Partial<MethodExampleLatestRunInput> | undefined) ?? {};
-    if (typeof runId !== "string" || runId.length === 0) {
-      throw new RequestArgumentError(
-        "recordMethodExampleLatestRun() needs run_id, the id of a run of this method that used " +
-          "the example's inputs.",
-      );
-    }
+    const run = requireNonEmptyId(runId, call, RECORD_RUN_ID_ARGUMENT);
     if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1) {
-      throw new RequestArgumentError(
-        "recordMethodExampleLatestRun() needs input_revision, the example's revision whose " +
-          `inputs the run used, a positive integer; got ${String(revision)}.`,
+      throw argumentRefusal(
+        call,
+        "an input_revision, the example's revision whose inputs the run used, a positive integer",
+        String(revision),
       );
     }
     const res = await this.requestProductAnswer("PUT", endpoint, {
-      run_id: runId,
+      run_id: run,
       input_revision: revision,
     });
     const { answer, outcome, subject } = this.readVerdict("PUT", endpoint, res, {
       verdict: "a latest-run result",
       outcomes: ["recorded", "stale"],
       member: "example",
+      parse: parseExactJson,
     });
-    return {
-      ...answer,
-      outcome,
-      example: subject as unknown as MethodExample,
-    } as MethodExampleLatestRunResult;
+    const example = this.readMethodExample(
+      "PUT",
+      endpoint,
+      res,
+      subject,
+      "a latest-run result's `example`",
+    );
+    return { ...answer, outcome, example } as MethodExampleLatestRunResult;
   }
 
   /**
@@ -3026,11 +3230,7 @@ function describeRefusedBaseUrl(value: string): string {
   if (parsed.hash) parts.push("a fragment");
   const shown = `"${parsed.protocol}//${parsed.host}"`;
   if (parts.length === 0) return shown;
-  const named =
-    parts.length === 1
-      ? parts[0]
-      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-  return `${shown} with ${named} (not shown)`;
+  return `${shown} with ${inWords(parts, "and")} (not shown)`;
 }
 
 // The protocol's own request fields — `extra` is for extension args only.

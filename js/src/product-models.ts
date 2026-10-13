@@ -400,14 +400,17 @@ export interface MethodExample {
   /** The example's name, 1 to 200 characters and not blank. */
   name: string;
   /**
-   * The inputs a run of the example sends, a JSON object. The platform stores and answers them
-   * exactly as they were saved, but JavaScript reads every JSON number as a double, so two kinds
-   * of number do not survive the read: a float with no fractional part, `3.0`, reads as `3`, and
-   * an integer past `Number.MAX_SAFE_INTEGER` reads rounded. Sent back, to `updateMethodExample`
-   * or to a run, they go as `3` and as the rounded integer. Inputs saved from JavaScript never
-   * hold either, since JavaScript cannot write them; inputs another client saved can. The
-   * platform compares inputs as canonical JSON, so such inputs sent back unchanged to
-   * `updateMethodExample` raise `input_revision` and clear `latest_run_id`.
+   * The inputs a run of the example sends, a JSON object, which the platform stores and answers
+   * exactly as they were saved. **An integer past `Number.MAX_SAFE_INTEGER`, in either
+   * direction and at any depth, reads as a `bigint`** holding its exact digits, since a double
+   * would round it; the client sends a `bigint` back as those digits, to `updateMethodExample` or
+   * as a run's inputs, so such inputs go back unchanged. `JSON.stringify` throws on a `bigint`:
+   * show the inputs as JSON text with `stringifyExactJson`, and read edited text back with
+   * `parseExactJson`. Every other number reads as a double, so a float with no fractional part,
+   * `3.0`, reads as `3` and goes back as `3`; the platform compares inputs as canonical JSON, so
+   * inputs holding one, sent back unchanged to `updateMethodExample`, raise `input_revision` and
+   * clear `latest_run_id`. Inputs saved from JavaScript never hold one, since JavaScript cannot
+   * write it; inputs another client saved can.
    */
   inputs: Record<string, unknown>;
   /**
@@ -432,14 +435,17 @@ export interface MethodExample {
 export interface MethodExampleCreateInput {
   /** The example's name, 1 to 200 characters and not blank. */
   name: string;
-  /** The inputs a run of the example sends, a JSON object. */
+  /**
+   * The inputs a run of the example sends, a JSON object; a `bigint` in them is sent as its
+   * exact digits.
+   */
   inputs: Record<string, unknown>;
   /**
    * A run of this method that used exactly these inputs, recorded as the example's latest run
    * at revision 1 — the run a person saves as an example. Omitted, or `null`, the example has no
    * latest run; an empty string is refused before anything is sent.
    */
-  run_id?: string;
+  run_id?: string | null;
 }
 
 /**
@@ -452,8 +458,8 @@ export interface MethodExampleUpdateInput {
   /**
    * The example's new inputs. Inputs that differ from the stored ones raise `input_revision`
    * by one and clear `latest_run_id`; the same inputs, their keys in another order included,
-   * change nothing. Send them only when they changed: inputs read back that held `3.0` or an
-   * integer past `Number.MAX_SAFE_INTEGER` differ once JavaScript has read them (see
+   * change nothing. A `bigint` in them is sent as its exact digits. Send them only when they
+   * changed: inputs read back that held `3.0` differ once JavaScript has read them, as `3` (see
    * `MethodExample.inputs`).
    */
   inputs?: Record<string, unknown>;
