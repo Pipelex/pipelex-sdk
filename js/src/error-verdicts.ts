@@ -30,6 +30,13 @@ const FAULT: ErrorVerdict = Object.freeze({ errorDomain: "runtime", retryable: f
 const API_KEY_LIMIT_CODE = "pipelex_api_key_limit_reached";
 
 /**
+ * The platform code a `409` carries when an earlier request under the same `Idempotency-Key` is
+ * still being handled: nothing ran for this one, and the same request under the same key is
+ * answered with the earlier one's outcome once it is stored.
+ */
+const IDEMPOTENCY_KEY_IN_USE_CODE = "idempotency_key_in_use";
+
+/**
  * The verdict of a refused request whose problem document carried no usable member.
  *
  * - `status` is the HTTP status of the answer.
@@ -64,9 +71,12 @@ export function fallbackVerdict(
       // Refused for its timing, not its content.
       return TRANSIENT;
     case 409:
-      // A conflict with the stored state is the caller's, except the key limit, which someone
-      // lifts by removing a key.
-      return code === API_KEY_LIMIT_CODE ? CONFIG : INPUT;
+      // The organization holds as many API keys as it may: someone lifts it by removing a key.
+      if (code === API_KEY_LIMIT_CODE) return CONFIG;
+      // An earlier request still holds the idempotency key, and releases it by finishing.
+      if (code === IDEMPOTENCY_KEY_IN_USE_CODE) return TRANSIENT;
+      // Any other conflict with the stored state is the caller's.
+      return INPUT;
     case 501:
       // The deployment does not implement it, and asking again will not change that.
       return CONFIG;

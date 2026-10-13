@@ -312,10 +312,41 @@ export interface PipelexHostedRunExtensions {
 /** `execute()` options — the protocol's run arguments plus the Pipelex API and hosted extensions. */
 export type PipelexRunOptions = RunOptions & PipelexApiRunExtensions & PipelexHostedRunExtensions;
 
-/** `start()` / `startAndWaitForResult()` options — the same, for the durable path. */
+/**
+ * What a run start sends beside its body: the request's own headers, which no run argument
+ * reaches. Each is camelCase, since none of them is a wire field of the run request.
+ */
+export interface PipelexStartRequestOptions {
+  /**
+   * The start's idempotency key, sent as the `Idempotency-Key` header of `POST /v1/start`, and
+   * not sent at all when absent or `null`. Generate one per run the caller means to start (a
+   * `crypto.randomUUID()` is a good key), and keep it, with every other option unchanged, across
+   * that start's retries.
+   *
+   * The hosted API binds the key to the run the first request starts, before it dispatches it, so
+   * the same start sent again under the same key is answered with that run's acknowledgement and
+   * starts nothing, whatever became of the first attempt, for 24 hours. A failed start whose
+   * `runMayHaveStarted` is true can therefore be sent again unchanged, and recovers the run instead
+   * of paying for a second one. The same key with a different body is refused (`409` `conflict`),
+   * as is a key whose earlier request is still being handled (`409` `idempotency_key_in_use`,
+   * retryable: send it again under the same key in a few seconds); see `docs/errors.md`. A bare
+   * runner ignores the header.
+   *
+   * A key is 1 to 255 visible ASCII characters (`!` to `~`, so no space); anything else, an empty
+   * string included, is a `RequestArgumentError` before any request is sent, since a start sent
+   * without the key the caller asked for would lose the protection silently.
+   */
+  idempotencyKey?: string | null;
+}
+
+/**
+ * `start()` / `startAndWaitForResult()` options — the same, for the durable path, plus the start
+ * request's own `idempotencyKey`.
+ */
 export type PipelexStartOptions = StartOptions &
   PipelexApiRunExtensions &
-  PipelexHostedRunExtensions;
+  PipelexHostedRunExtensions &
+  PipelexStartRequestOptions;
 
 /**
  * The method selector `validate()` takes in place of inline contents — declared
@@ -582,7 +613,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * no request path can miss the `User-Agent` or the bearer. Requests to third
    * parties (presigned object-store URLs) never go through here.
    */
-  private requestHeaders(hasBody: boolean): Record<string, string> {
+  private requestHeaders(hasBody: boolean, idempotencyKey?: string): Record<string, string> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (this.userAgent !== undefined) {
       headers["User-Agent"] = this.userAgent;
@@ -592,6 +623,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     if (hasBody) {
       headers["Content-Type"] = "application/json";
+    }
+    if (idempotencyKey !== undefined) {
+      headers[IDEMPOTENCY_KEY_HEADER] = idempotencyKey;
     }
     return headers;
   }
@@ -603,6 +637,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * cleanly. Non-2xx interpretation is left to the caller. `url` is a fully
    * resolved absolute URL. `mayStartRun` marks a request that may create a run,
    * whose `ApiUnreachableError` then says whether it may have (see `RunCreation`).
+   * `idempotencyKey`, already checked by `idempotencyKeyOf`, is sent as the
+   * `Idempotency-Key` header; only `start` passes one.
    */
   private async requestRaw(
     method: HttpMethod,
@@ -611,10 +647,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       body?: unknown;
       timeoutMs?: number;
       signal?: AbortSignal;
+      idempotencyKey?: string;
     } & RunCreation = {},
   ): Promise<RawResponse> {
     const hasBody = options.body !== undefined;
-    const headers = this.requestHeaders(hasBody);
+    const headers = this.requestHeaders(hasBody, options.idempotencyKey);
 
     const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     // A longer delay overflows the timer, which then fires at once as a false timeout.
@@ -1159,8 +1196,16 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * durable — poll `getRunStatus` / `getRunResult`. A `method_ref` run's ack
    * additionally carries `method_provenance` — the address, the tag, and the
    * commit SHA that was actually fetched.
+   *
+   * `options.idempotencyKey` is sent as the `Idempotency-Key` header, and nothing
+   * is sent without it: the hosted API answers the same start sent again under the
+   * same key with the run the first one started, so a failure whose
+   * `runMayHaveStarted` is true can be retried unchanged (see
+   * `PipelexStartRequestOptions`). A malformed key is a `RequestArgumentError`
+   * before anything is sent.
    */
   async start(options: PipelexStartOptions): Promise<PipelexRunResultStart> {
+    const idempotencyKey = idempotencyKeyOf(options);
     const extensions = buildExtensions(options.extra);
     const api = buildApiRunExtensions(options);
     const hosted = buildHostedRunExtensions(options);
@@ -1219,6 +1264,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     const res = await this.requestRaw("POST", url, {
       body: request,
       timeoutMs: needsLongCeiling ? DEFAULT_REQUEST_TIMEOUT_MS : POLL_REQUEST_TIMEOUT_MS,
+      idempotencyKey,
       ...STARTS_RUN,
     });
     // A bare runner with no run store 404s here just as it does on the result
@@ -1886,6 +1932,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * up in the run history first. An error from the wait, once `onStarted` has named the run,
    * started nothing, so its `runMayHaveStarted` is false, and its `retryable` is about waiting
    * again on that id with `waitForResult`, never about calling this method again.
+   *
+   * `options.idempotencyKey` rides the durable start, so a call that failed while its start may
+   * have created a run can be made again with the same options and the same key: the hosted API
+   * answers the start with the run the first call started, and the wait follows it. The blocking
+   * execute of a bare runner carries no key, a bare runner having no idempotency to honour it. A
+   * malformed key is refused before the version handshake.
    */
   async startAndWaitForResult(
     options: PipelexStartOptions,
@@ -1893,6 +1945,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   ): Promise<RunResults> {
     // Before the run starts: a refusal after it would carry no run id to re-poll by.
     assertWaitOptions(pollOptions);
+    // Before the handshake too: a key the start would refuse is the caller's to fix, whatever runs.
+    idempotencyKeyOf(options);
     const { onStarted, onStarting, ...waitOptions } = pollOptions ?? {};
     const hosted = await this.supportsRunLifecycle();
     // The handshake may have outlasted the caller's patience: an abort that landed during it
@@ -2954,6 +3008,57 @@ function nonEmptyFiles(
 
 function nonEmptyString(value: string | null | undefined): string | undefined {
   return value != null && value.length > 0 ? value : undefined;
+}
+
+/** The request header the hosted API reads a run start's idempotency key from. */
+const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
+
+/**
+ * The longest idempotency key a start sends. It is room for any generated key, and keeps the
+ * hosted API's stored record of the key far inside its store's limit, which a longer key could
+ * exceed, so that the start would run without the protection the key was sent for.
+ */
+const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+
+/**
+ * Visible ASCII, `!` to `~`: what a header value carries unchanged through every proxy and both
+ * SDKs' transports, where fetch refuses a line break, httpx a character outside ASCII, and a space
+ * at either end is trimmed on the way.
+ */
+const VISIBLE_ASCII = /^[\x21-\x7E]+$/;
+
+/**
+ * The idempotency key a start sends, or `undefined` when the options carry none (absent or
+ * `null`). A key that is not a string of 1 to 255 visible ASCII characters is refused with a
+ * `RequestArgumentError` rather than dropped, an empty one included, since a start sent without
+ * the key its caller gave would lose the protection the caller asked for without a word. The
+ * message never quotes the key, which a caller may derive from something private. The Python SDK
+ * holds a key to the same rule, in the same words.
+ */
+function idempotencyKeyOf(options: PipelexStartRequestOptions): string | undefined {
+  const key: unknown = options.idempotencyKey;
+  if (key == null) return undefined;
+  const fault = idempotencyKeyFault(key);
+  if (fault !== undefined) {
+    throw new RequestArgumentError(
+      `The idempotency key must be 1 to ${MAX_IDEMPOTENCY_KEY_LENGTH} visible ASCII characters ` +
+        `(\`!\` to \`~\`), and this one ${fault}. Leave it out to start the run without one.`,
+    );
+  }
+  return key as string;
+}
+
+/**
+ * What is wrong with an idempotency key, or `undefined` when it is a valid one. The characters are
+ * checked before the length, which then counts ASCII characters alone, so the two SDKs, which
+ * count a character outside ASCII differently, word every refusal alike.
+ */
+function idempotencyKeyFault(key: unknown): string | undefined {
+  if (typeof key !== "string") return "is not a string";
+  if (key.length === 0) return "is empty";
+  if (!VISIBLE_ASCII.test(key)) return "holds a character outside visible ASCII";
+  if (key.length > MAX_IDEMPOTENCY_KEY_LENGTH) return `is ${key.length} characters long`;
+  return undefined;
 }
 
 function withValidateMarkdownRender(render: string[] | undefined): string[] {

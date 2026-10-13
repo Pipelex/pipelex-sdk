@@ -192,6 +192,29 @@ ack = await client.start(pipe_code="long_pipe", inputs={...})
 result = await client.wait_for_result(ack.pipeline_run_id)
 ```
 
+### A start you can retry: `idempotency_key`
+
+`start` and `start_and_wait` take an optional `idempotency_key`, sent as the `Idempotency-Key` header of `POST /v1/start`. The hosted API binds the key to the run the first request starts, so the same start sent again under the same key is answered with that run and starts nothing: a start whose answer was lost can be sent again without paying for a second run. Generate one key per run, and keep it with the arguments, unchanged, across that start's retries:
+
+```python
+import uuid
+
+from mthds.protocol.exceptions import PipelineRequestError
+
+from pipelex_sdk.error_verdicts import run_may_have_started_of
+
+idempotency_key = str(uuid.uuid4())
+try:
+    ack = await client.start(method_id="mt_abc123", inputs=inputs, idempotency_key=idempotency_key)
+except PipelineRequestError as exc:
+    if not run_may_have_started_of(exc):
+        raise
+    # The run may exist: under the same key, the same start is answered with it.
+    ack = await client.start(method_id="mt_abc123", inputs=inputs, idempotency_key=idempotency_key)
+```
+
+A key is 1 to 255 visible ASCII characters; a key reused with other arguments is refused with a `409` `conflict`, and one whose earlier start is still being handled with a retryable `409` `idempotency_key_in_use` ([`docs/errors.md`](docs/errors.md#a-starts-idempotency-key--idempotency_key)). A bare runner ignores the header.
+
 ### When a run is refused: `ApiResponseError` says why and what to do next
 
 A method the plane will not run — a bundle naming a model the deck does not serve, a pipe whose output cannot be assembled — is refused before any result exists: `start`, `execute` and `start_and_wait` raise `ApiResponseError` on the `422`. Its message names the request, gives the reason and, on its own line, the next step the plane advises, so printing the error is already actionable:
@@ -244,7 +267,7 @@ Branch on `error_domain` (`input`, `config`, `runtime`), `type_uri` and `retryab
 
 ### API errors: branch on `type_uri` and `error_domain`, not the HTTP status
 
-Every `/v1` route raises a typed `ApiResponseError` on a non-2xx answer, carrying the members of the RFC 9457 problem document: the protocol routes (`execute`, `start`, `validate`, `models`, `version`), the run status and results reads, and the product routes — the account, methods, organization, billing, API-key, onboarding, storage and upload methods, `codegen`, `resolve`, `pipe_io` and `check_model_reference`, and the run records (`list_runs`, `iterate_runs`, `get_run_detail`, `update_run`). It is `mthds`'s own `ApiResponseError` narrowed, so `except mthds.runners.api.exceptions.ApiResponseError` catches it too; `health` raises one too, and `docs/architecture.md` lists the error regimes. A `2xx` the SDK cannot read — a body that is not JSON, such as a gateway's HTML page, or JSON that is not what the route answers — raises an `ApiResponseError` as well, carrying the `2xx` status and the parse failure as `__cause__`, `runtime` and not retryable ([`docs/errors.md`](docs/errors.md)). A failed `start` or blocking `execute` also says whether it may have created a run anyway, as `run_may_have_started`, read with `pipelex_sdk.error_verdicts.run_may_have_started_of`: when it is `True`, `retryable` is `False`, since asking again could start a second paid run, and the person should look the run up in the run history first ([`docs/errors.md`](docs/errors.md#a-failed-run-start--run_may_have_started)). The branch fields are `type_uri`, the problem's `type`, a stable URI naming the error class that every problem carries, and `error_domain`, the coarse class (`input` means the caller can fix it, `config` that a configuration change is needed, `runtime` that execution failed). `error_domain` and `retryable` are always decided: each is the member the server sent, which the runner sends on the problems it renders — a run route's refusal, and those of `codegen`, `resolve`, `pipe_io` and `check_model_reference`, which the hosted API relays from the runner — and the platform on the problems it renders itself once its deployment classifies them, and otherwise the SDK's fallback, read from the status, as on the platform's Lambda-backed routes today:
+Every `/v1` route raises a typed `ApiResponseError` on a non-2xx answer, carrying the members of the RFC 9457 problem document: the protocol routes (`execute`, `start`, `validate`, `models`, `version`), the run status and results reads, and the product routes — the account, methods, organization, billing, API-key, onboarding, storage and upload methods, `codegen`, `resolve`, `pipe_io` and `check_model_reference`, and the run records (`list_runs`, `iterate_runs`, `get_run_detail`, `update_run`). It is `mthds`'s own `ApiResponseError` narrowed, so `except mthds.runners.api.exceptions.ApiResponseError` catches it too; `health` raises one too, and `docs/architecture.md` lists the error regimes. A `2xx` the SDK cannot read — a body that is not JSON, such as a gateway's HTML page, or JSON that is not what the route answers — raises an `ApiResponseError` as well, carrying the `2xx` status and the parse failure as `__cause__`, `runtime` and not retryable ([`docs/errors.md`](docs/errors.md)). A failed `start` or blocking `execute` also says whether it may have created a run anyway, as `run_may_have_started`, read with `pipelex_sdk.error_verdicts.run_may_have_started_of`: when it is `True`, `retryable` is `False`, since asking again could start a second paid run, and the person should look the run up in the run history first ([`docs/errors.md`](docs/errors.md#a-failed-run-start--run_may_have_started)), unless the start carried an `idempotency_key`, in which case sending it again unchanged recovers the run ([above](#a-start-you-can-retry-idempotency_key)). The branch fields are `type_uri`, the problem's `type`, a stable URI naming the error class that every problem carries, and `error_domain`, the coarse class (`input` means the caller can fix it, `config` that a configuration change is needed, `runtime` that execution failed). `error_domain` and `retryable` are always decided: each is the member the server sent, which the runner sends on the problems it renders — a run route's refusal, and those of `codegen`, `resolve`, `pipe_io` and `check_model_reference`, which the hosted API relays from the runner — and the platform on the problems it renders itself once its deployment classifies them, and otherwise the SDK's fallback, read from the status, as on the platform's Lambda-backed routes today:
 
 ```python
 from pipelex_sdk.errors import ApiResponseError
