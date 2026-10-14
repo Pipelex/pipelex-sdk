@@ -44,10 +44,13 @@ import {
   pollUntilResult,
   readRunDegradation,
   RUN_STATUSES,
+  runProgressFault,
   runStatusFilter,
   selectionIncludesMainStuff,
   throwIfAborted,
+  withCheckedProgressDegradations,
   type GetRunResultOptions,
+  type RunProgress,
   type RunRead,
   type RunResults,
   type RunResultState,
@@ -503,11 +506,12 @@ const BARE_RUNNER_IMPLEMENTATION = "pipelex-api";
  *   I/O artifacts derived with no dry run.
  * - **tools extensions** (`lint` / `format`) — single-file static diagnostics and
  *   canonical formatting, served by any pipelex-api runner.
- * - **run lifecycle** (`getRunStatus` / `getRunResult` / `waitForResult`) — the
- *   durable polling extension that survives long runs and lets a caller resume by
- *   id. Served only by a deployment that includes the platform block (the Pipelex
- *   Hosted API); a bare `pipelex-api` runner 404s those routes, which the lifecycle
- *   methods translate into a clear `RunLifecycleUnavailableError`.
+ * - **run lifecycle** (`getRunStatus` / `getRunProgress` / `getRunResult` /
+ *   `waitForResult`) — the durable polling extension that survives long runs and
+ *   lets a caller resume by id. Served only by a deployment that includes the
+ *   platform block (the Pipelex Hosted API); a bare `pipelex-api` runner 404s those
+ *   routes, which the lifecycle methods translate into a clear
+ *   `RunLifecycleUnavailableError`.
  *
  * Implements `MTHDSProtocol<DictPipeOutput>` so the protocol-execution methods
  * stay shaped like the standard's wire surface (`mthds/protocol`). The Pipelex
@@ -1336,15 +1340,20 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * Translate a "route absent" 404 (a bare pipelex-api with no platform block)
    * into a clear `RunLifecycleUnavailableError`. The platform's own 404s (run
    * not found / cross-org) carry a structured error envelope (a `code` field)
-   * and are left for normal handling.
+   * and are left for normal handling. `explanation` replaces the sentence saying
+   * why the route is missing, for a route a hosted API may also lack.
    */
-  private throwIfLifecycleUnavailable(res: RawResponse, url: string): void {
+  private throwIfLifecycleUnavailable(
+    res: RawResponse,
+    url: string,
+    explanation = "PIPELEX_BASE_URL points at a bare runner that does not serve it.",
+  ): void {
     if (res.status !== 404) return;
     if (!isMissingRoute404(res.body)) return;
     throw new RunLifecycleUnavailableError(
       `The durable run lifecycle is not available: ${url} returned 404. Run polling is a ` +
         `hosted-API extension (/${API_PREFIX}/${RUNS}/*), not part of the MTHDS Protocol; ` +
-        "PIPELEX_BASE_URL points at a bare runner that does not serve it.",
+        explanation,
       this.baseUrl,
     );
   }
@@ -2135,6 +2144,57 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
+   * Read a run's progress snapshot by bare id — `GET /v1/runs/{pipeline_run_id}/progress`.
+   *
+   * The platform projects the snapshot at each read from the run's live progress events, through
+   * the status read's self-healing path: which invocations of which pipes have started, ended or
+   * been skipped, how far each batch has got, which outcome each condition took, where the run is
+   * retrying or stuck, and a one-line `summary`. A pending run, and a run that has written no
+   * progress event, answer with no invocation. When the workflow engine cannot be reached the read
+   * still answers, its `degradation` reading `status_unavailable` and its `status` the last one
+   * recorded. Two reads can answer out of order: keep the fresher by `isFresherRunProgress`, as
+   * `waitForResult`'s `onProgress` does.
+   *
+   * The members the freshness rule and a timeline lean on are checked, and an answer missing one
+   * or holding one of another type is an `ApiResponseError` for an answer the SDK cannot read; the
+   * snapshot's `degradation` and each invocation's are checked field by field, as the status
+   * read's, and dropped when unreadable, so neither fails the read. A run that does not exist or
+   * is another organization's is the platform's `404`, an `ApiResponseError`. Throws
+   * `RunLifecycleUnavailableError` when the route is absent: a bare runner, or a hosted API older
+   * than the route.
+   */
+  async getRunProgress(
+    runId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RunProgress> {
+    const endpoint = `${RUNS}/${idPathSegment(runId, "getRunProgress", RUN_ID_ARGUMENT)}/progress`;
+    const url = this.url(endpoint);
+    const res = await this.requestRaw("GET", url, {
+      timeoutMs: POLL_REQUEST_TIMEOUT_MS,
+      signal: options.signal,
+    });
+    this.throwIfLifecycleUnavailable(
+      res,
+      url,
+      "the server is a bare runner, or a hosted API older than the progress route.",
+    );
+    if (res.status < 200 || res.status >= 300) {
+      this.throwApiResponseError("GET", endpoint, res);
+    }
+    const answer = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const fault = runProgressFault(answer);
+    if (fault !== undefined) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `a snapshot whose ${fault}`,
+      );
+    }
+    return withCheckedProgressDegradations(answer as RunProgress);
+  }
+
+  /**
    * Single-shot result lookup — `GET /v1/runs/{pipeline_run_id}/results`.
    * Maps the server's poll semantics to a discriminated union:
    * - HTTP 202 → `running` (with the `Retry-After` hint)
@@ -2201,9 +2261,19 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     return { state: "completed", pipeline_run_id: runId, result };
   }
 
-  /** Poll an already-started run (by id) until it reaches a terminal state. */
+  /**
+   * Poll an already-started run (by id) until it reaches a terminal state. With `onProgress`,
+   * each poll that finds the run still running also reads `getRunProgress` and hands the callback
+   * every snapshot fresher than the last it delivered; a failed progress read never fails the wait
+   * (see `WaitForResultOptions.onProgress`).
+   */
   async waitForResult(runId: string, options?: WaitForResultOptions): Promise<RunResults> {
-    return pollUntilResult((id, opts) => this.getRunResult(id, opts), runId, options);
+    return pollUntilResult(
+      (id, opts) => this.getRunResult(id, opts),
+      runId,
+      options,
+      (id, opts) => this.getRunProgress(id, opts),
+    );
   }
 
   /**
