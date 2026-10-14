@@ -240,7 +240,6 @@ export type {
   UploadedFile,
   UploadGrantInput,
   UploadGrant,
-  PipeStatus,
   ListRunsQuery,
   PipelineRun,
   RunDetail,
@@ -250,11 +249,24 @@ export type {
 } from "./product-models.js";
 
 // ── Run lifecycle (hosted extension — NOT part of the protocol) ──────
-export { isTerminalRunStatus, isSuccessRunStatus, RUN_RESULT_ARTIFACTS } from "./runs.js";
+export {
+  isFresherRunProgress,
+  isTerminalRunStatus,
+  isSuccessRunStatus,
+  RUN_RESULT_ARTIFACTS,
+} from "./runs.js";
 export type {
   DegradationReason,
   GetRunResultOptions,
+  ProgressAttempt,
+  ProgressBatch,
+  ProgressCondition,
+  ProgressFailure,
+  ProgressInvocation,
+  ProgressInvocationStatus,
   RunDegradation,
+  RunProgress,
+  RunProgressStatus,
   RunResultArtifact,
   RunStatus,
   RunPublic,
