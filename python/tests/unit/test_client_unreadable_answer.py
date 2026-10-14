@@ -46,6 +46,7 @@ _ROUTES: list[tuple[str, _Call, str]] = [
     ("validate-inline", lambda client: client.validate(["x"]), "POST /v1/validate"),
     ("validate-selector", lambda client: client.validate(method_id="mt_x"), "POST /v1/validate"),
     ("get_run_status", lambda client: client.get_run_status("run-1"), "GET /v1/runs/run-1/status"),
+    ("get_run_progress", lambda client: client.get_run_progress("run-1"), "GET /v1/runs/run-1/progress"),
     ("get_run_result", lambda client: client.get_run_result("run-1"), "GET /v1/runs/run-1/results"),
     ("get_me", lambda client: client.get_me(), "GET /v1/me"),
     ("list_methods", lambda client: client.list_methods(), "GET /v1/methods"),
@@ -95,6 +96,7 @@ _WRONG_SHAPE_ROUTES: list[tuple[str, _Call, str]] = [
     ("start", lambda client: client.start(pipe_code="p", mthds_contents=["x"]), "POST /v1/start"),
     ("validate-inline", lambda client: client.validate(["x"]), "POST /v1/validate"),
     ("get_run_status", lambda client: client.get_run_status("run-1"), "GET /v1/runs/run-1/status"),
+    ("get_run_progress", lambda client: client.get_run_progress("run-1"), "GET /v1/runs/run-1/progress"),
     ("list_methods", lambda client: client.list_methods(), "GET /v1/methods"),
     ("get_me", lambda client: client.get_me(), "GET /v1/me"),
 ]

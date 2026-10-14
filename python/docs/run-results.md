@@ -65,7 +65,7 @@ if isinstance(state, RunResultCompleted):
 
 ## `pipeline_run_id` — the durable handle
 
-The run id is what makes a run readable after the process that started it has gone. `start` returns it in its acknowledgement before the run finishes, and every lifecycle read takes it: `get_run_status(run_id)` for the status row, `get_run_result(run_id)` for a single result lookup, `wait_for_result(run_id)` to resume polling a run an earlier session started. It is also what a `RunTimeoutError` leaves you with — the run keeps executing server-side, so the timeout is a reason to re-poll by id, not a reason to run the method again.
+The run id is what makes a run readable after the process that started it has gone. `start` returns it in its acknowledgement before the run finishes, and every lifecycle read takes it: `get_run_status(run_id)` for the status row, `get_run_progress(run_id)` for how far the run has got ([below](#following-a-run-while-it-runs--on_progress-and-get_run_progress)), `get_run_result(run_id)` for a single result lookup, `wait_for_result(run_id)` to resume polling a run an earlier session started. It is also what a `RunTimeoutError` leaves you with — the run keeps executing server-side, so the timeout is a reason to re-poll by id, not a reason to run the method again.
 
 ```python
 ack = await client.start(pipe_code="my_domain.summarize", inputs={"text": "..."})
@@ -134,9 +134,97 @@ if run.degraded:
 - **The degradation is read leniently, so it never fails the poll** (`LenientRunDegradation`). A `degradation` that is not an object, or whose `reason` is not a string, reads as `None`, since it cannot be branched on; `message`, `failing_since` and `ends_at` that are not strings read as `None`, and so does a `failed_attempts` that is not strictly an integer, a numeric string or a boolean included, as `@pipelex/sdk` reads it; members this SDK does not name ride `model_extra`. `degradation` is `None` whenever `degraded` is false, and on a platform that predates it.
 - **`request_id` is the id of the request that started the run**, the one to quote to support beside the run id. `get_run_detail` carries it too; it is `None` for a run saved before the platform recorded it.
 
-**The wait loops never see a degradation, and need not.** `wait_for_result` and `start_and_wait` poll the results route, whose in-flight answer is a `202` with no body. That route settles the run the same way the status read does, so a waiter receives a stuck run's end as a `RunFailedError` carrying the `WorkflowTaskKeptFailingError` report within one poll of `ends_at`. A caller that wants to show the degradation while it waits reads `get_run_status` beside the wait.
+**The results read carries no degradation, and the wait needs none.** `wait_for_result` and `start_and_wait` poll the results route, whose in-flight answer is a `202` with no body. That route settles the run the same way the status read does, so a waiter receives a stuck run's end as a `RunFailedError` carrying the `WorkflowTaskKeptFailingError` report within one poll of `ends_at`. A caller that wants to show the degradation while it waits passes `on_progress`, whose snapshot carries the status read's `degradation` and places it on the invocation it concerns (see the next section), or reads `get_run_status` beside the wait.
 
 Both SDKs read a status body the same way, held to it by a case file they share, `tests/fixtures/run-status-reads.json`, whose source is `@pipelex/sdk`'s.
+
+## Following a run while it runs — `on_progress` and `get_run_progress`
+
+A run's **progress snapshot** says how far the run has got while it goes on: which invocations of which pipes have started, ended or been skipped, how many items of each batch are done, which outcome each condition took, and where the run is retrying or stuck, with a one-line `summary` to show as it is. The hosted API serves it on `GET /v1/runs/{id}/progress`, projecting it at each read from the run's live progress events, its status and what its workflow engine reports of its health. Progress belongs to the hosted plane, part of neither the MTHDS Protocol nor the runner's API, so a bare runner serves none. The type is `RunProgress` (`pipelex_sdk.runs`), the twin of `@pipelex/sdk`'s, with the same members.
+
+**While waiting: `on_progress`.** `WaitForResultOptions` takes `on_progress` beside `on_poll`, a callable called with each snapshot the wait reads that is fresher than the last one it delivered. `wait_for_result` honours it, and so does `start_and_wait` through its `wait_options`:
+
+```python
+from pipelex_sdk.runs import RunProgress, WaitForResultOptions
+
+
+def show(progress: RunProgress) -> None:
+    print(progress.summary, file=sys.stderr)
+    # e.g. "Running summarize_filing_batch (step 3 of 4): 1 of 3 items done, 2 running"
+
+
+results = await client.wait_for_result(run_id, WaitForResultOptions(on_progress=show))
+```
+
+- **It reads on each poll that finds the run still running**, after the results read and before `on_poll`, at the wait's own cadence. Without `on_progress` the wait makes no progress request at all.
+- **It delivers only a fresher snapshot.** Two reads can answer out of order, so the wait keeps the last snapshot it delivered and calls `on_progress` only with one that is fresher by `is_fresher_run_progress` (below): a snapshot that repeats the last one, or that a lagging read projected from fewer events, is not delivered, and a snapshot of the run ended is never followed by one showing it still going.
+- **A progress read never fails the wait.** The results read is the truth about the run, so a progress read that fails, whatever the reason — no answer (`ApiUnreachableError`), a `503` from the platform while it cannot read the run's events, an answer the SDK cannot read — skips that poll's snapshot, and the next poll reads again. A server answering that it has no progress route at all, a hosted API older than it, is not asked again during that wait.
+- **It never holds the wait past its timeout.** The wait checks its deadline again before each progress read and bounds the read by the time it has left, as it bounds each results read, and it measures the time it has used after the read, so the sleep that follows is shortened by whatever the read took. A progress read still unanswered when the time runs out ends the wait with the same `RunTimeoutError` a results read would, and the run keeps going on the server. Cancelling the awaiting task during a progress read raises `asyncio.CancelledError` out of the wait, as it does anywhere else in the loop.
+- **It stops when the run ends.** Once the results read finds the run ended, the wait returns the results or raises `RunFailedError` without reading the progress again, so the last snapshot delivered may still show the run going. A caller that wants the final snapshot, to draw the finished timeline or to show where a failed run stopped, calls `get_run_progress(run_id)` once more.
+- **`start_and_wait` honours it on the durable path only.** Its blocking path, a bare runner's `POST /v1/execute` or the fallback to it, has no run to read, so `on_progress` is never called there.
+- **The callable runs synchronously** and its return value is ignored. An exception it raises propagates out of the wait, as one raised by `on_poll` does, and the run keeps going on the server.
+
+**Reading it yourself: `get_run_progress(run_id)`.** It returns the snapshot as the platform answered it, a `RunProgress`. A pending run, and a run that has written no progress event yet, answer with no invocation; a pending run's summary is `Waiting to start`. When the workflow engine cannot be reached the read still answers `200`: its `degradation` reads `STATUS_UNAVAILABLE`, its `status` is the last one recorded and no invocation carries a health annotation. A run that does not exist, or belongs to another organization, is the platform's `404`, an `ApiResponseError`, and a server without the route, a bare runner or a hosted API older than it, raises `RunLifecycleUnavailableError`. A run id that is not a non-empty string, or that the URL would resolve, such as `..`, raises `RequestArgumentError` before any request, as on every run read.
+
+**What the read checks.** The members the freshness rule and a timeline lean on are read strictly: an answer whose `version` is not a non-negative integer (a string, a boolean or a fraction included), whose `pipeline_run_id`, `mode`, `status`, `assembled_at` or `summary` is not a string, whose `invocations` is not a list, or one of whose invocations misses its path, its pipe identity, its status or its two times, raises the `ApiResponseError` of an answer the SDK cannot read, `runtime` and not retryable, with pydantic's `ValidationError` as its `__cause__` naming the member. Everything else is read leniently, so it never fails the read: the snapshot's `degradation` and each invocation's are read as the status read's are (`LenientRunDegradation`), and any other optional member whose value does not fit its type, such as a `batch` whose counts are strings, reads `None`. Members the SDK does not name ride `model_extra`. `status`, on the snapshot and on each invocation, is read open: a status this SDK knows reads as its `RunProgressStatus` or `ProgressInvocationStatus` member, and one a later platform adds keeps its raw string.
+
+### The snapshot
+
+Every timestamp is RFC 3339 in UTC written with `Z`, with fractional seconds when the source recorded them. A required member is always present, `None` where its row says so. An optional member is one the platform leaves out when it does not apply, never sending `null`, and it reads `None` here.
+
+| member | type | what it says |
+|---|---|---|
+| `pipeline_run_id` | `str` | The run. |
+| `mode` | `str` | The mode of the events it was projected from, `live` or `dry`; always `live` on the hosted route. |
+| `status` | `RunProgressStatus \| str` | `PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED` or `CANCELED`, on the wire `pending`, `running`, `succeeded`, `failed` and `canceled`. The platform maps `PENDING` to `pending`, `RUNNING` and `STARTED` to `running`, `COMPLETED` to `succeeded`, `FAILED` and `TIMED_OUT` to `failed`, and `CANCELLED` and `TERMINATED` to `canceled`. `status.is_ended` says whether the run has ended. |
+| `version` | `int` | The number of distinct progress events it was projected from, superseded attempts' included, so it never decreases while the run's events are kept; what two snapshots are compared by. |
+| `assembled_at` | `str` | When it was projected, which a running invocation's elapsed time is measured against when the reader cannot trust its own clock. |
+| `summary` | `str` | One line saying how far the run has got, such as `Running summarize_filing_batch (step 3 of 4): 1 of 3 items done, 2 running; not progressing at summarize_filing (step 3 of 4, item 3 of 3) after 4 failed attempts`. Show it as it is; never parse it. |
+| `degradation` | `RunDegradation \| None` | The run status's `degradation`, whole, present when the run reads degraded ([above](#a-degraded-status--degraded-and-degradation)). |
+| `invocations` | `list[ProgressInvocation]` | Every invocation the snapshot knows, each before its descendants, the children of one invocation in the order of their numbers. |
+| `root_path`, `chain` | optional | `None` on a snapshot of the whole run, which is every snapshot the hosted API serves. `chain` is a list of `ProgressAttempt`. |
+
+An **invocation** is one run of one pipe inside the run, named by its `path`: the entry pipe's `pipe_ref`, then one segment per controller level — `step_<n>`, `branch_<n>`, `item_<n>`, `outcome_<key>` or `default` — joined by `/`, so `filings.review_filings/step_3/item_2/step_1` is the first step of the sequence that the batch at step 3 runs for its second item. The path names one invocation in every view of a run, a retried one included, and is what nests a timeline's rows. The type is `ProgressInvocation`.
+
+| member | type | what it says |
+|---|---|---|
+| `path` | `str` | Its path. |
+| `pipe_code`, `pipe_ref`, `pipe_type` | `str` | The pipe it runs: its bare code, which a timeline labels its row with, its `pipe_ref`, and its type as the method declares it, such as `PipeLLM`, an open string. |
+| `status` | `ProgressInvocationStatus \| str` | `SCHEDULED` (an item of a batch that has fanned out and not started), `RUNNING`, `SUCCEEDED`, `FAILED`, `SKIPPED` (a successful end with no output of its own) or `CANCELED` (not ended when the run ended), each about its latest attempt. |
+| `started_at`, `ended_at` | `str \| None` | Its latest attempt's start and end; `None` while it has not started or not ended, and `ended_at` `None` when it is canceled. |
+| `step_count`, `branch_count` | `int \| None` | On a `PipeSequence`, the number of steps its author wrote; on a `PipeParallel`, the number of its branches. |
+| `skip_reason` | `str \| None` | On a skipped invocation, why. |
+| `batch` | `ProgressBatch \| None` | On a `PipeBatch` that has fanned out, `total`, `done`, `running` and `failed`: `done` counts the items succeeded or skipped, and an item scheduled or canceled is in none of the three. |
+| `condition` | `ProgressCondition \| None` | On a `PipeCondition` that has resolved, `selected_outcome`, the key its value matched, or `None` for its default outcome. |
+| `attempts` | `int \| None` | Health: how many times its work has been tried, present only when more than once. |
+| `last_failure` | `ProgressFailure \| None` | Health: `message` and `at` (`None` when not recorded), the latest failure of its work. `message` keeps the disclosure of a run's error report: the failure's own text only when it was written for the caller, `An internal error occurred.` otherwise. |
+| `degradation` | `RunDegradation \| None` | Health: the run is stuck here, in the run status's own words — the status read's `degradation`, `WORKFLOW_TASK_FAILING`, placed on the run's root or on the batch item whose execution keeps failing to advance. |
+
+The health annotations are what the workflow engine reports, so `None` means that nothing was observed, never that the engine looked and found all well. They reuse the run status's `RunDegradation` rather than a shape of their own, so the code that shows a degraded status shows a stuck invocation too.
+
+### Keeping the fresher of two — `is_fresher_run_progress`
+
+`is_fresher_run_progress(read, held)` (`pipelex_sdk.runs`) says whether a snapshot just read should replace the one held, by the platform's rule, its first clause before the other two:
+
+1. A snapshot of the run still going (`pending` or `running`) never replaces one of the run ended (`succeeded`, `failed` or `canceled`), whatever their versions, and one of the run ended always replaces one of it going: an ended run does not resume, and a read lagging behind the writes can project the ended run from fewer events than an earlier read projected it running from.
+2. Otherwise the higher `version` is fresher.
+3. At the same version the later `assembled_at` is, compared as instants rather than as text, since the platform writes microseconds only when it has them. A read projected before a timeout ended the run can arrive after one projected once it had, with no event between them.
+
+Nothing held (`held` is `None`) means anything read is fresher, and two snapshots equally fresh keep the one held, as do two whose times cannot be compared. A status this SDK does not know takes no part in the first clause, so the versions decide. `on_progress` delivers by it; a caller holding snapshots from more than one source keeps the fresher by it too. The platform also nudges a browser over its WebSocket with a `run_progress_update` frame carrying only the version the route has reached: a client reads `get_run_progress` when a frame's version is higher than the one it holds, keeps the fresher of the two by this rule, reads the route again whenever its socket opens since a frame sent while it was closed is lost, and reads it on a `run_status_update` too, since a run's end can change the snapshot with no new event. An API-key caller, whom the WebSocket does not accept, polls the route, which is what `on_progress` does.
+
+```python
+from pipelex_sdk.runs import RunProgress, is_fresher_run_progress
+
+held: RunProgress | None = None
+
+
+async def refresh(run_id: str) -> None:
+    global held
+    read = await client.get_run_progress(run_id)
+    if is_fresher_run_progress(read, held):
+        held = read
+        render(held)
+```
 
 ## `main_stuff` — the output
 

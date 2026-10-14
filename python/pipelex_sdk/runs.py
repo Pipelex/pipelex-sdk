@@ -29,14 +29,17 @@ Protocol does not model, so the hosted API is what pins that wire contract; this
 follows the shape, it does not define it.
 
 Wire contract mirrors `pipelex-platform`:
-    POST /v1/start                           -> RunResultStart   (start, 202)
-    GET  /v1/runs/{pipeline_run_id}/status   -> RunRead          (status, self-healing)
-    GET  /v1/runs/{pipeline_run_id}/results  -> 202 / 200 / 409  (results; `?artifacts=` narrows the 200)
+    POST /v1/start                            -> RunResultStart   (start, 202)
+    GET  /v1/runs/{pipeline_run_id}/status    -> RunRead          (status, self-healing)
+    GET  /v1/runs/{pipeline_run_id}/progress  -> RunProgress      (the progress snapshot, self-healing)
+    GET  /v1/runs/{pipeline_run_id}/results   -> 202 / 200 / 409  (results; `?artifacts=` narrows the 200)
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeAlias
 
@@ -239,7 +242,9 @@ class DegradationReason(StrEnum):
 
 
 class RunDegradation(BaseModel):
-    """What a `degraded` status read means for this run — `RunRead.degradation`.
+    """What a `degraded` status read means for this run — `RunRead.degradation`. A progress snapshot
+    carries the same object, whole, as `RunProgress.degradation`, and places a `workflow_task_failing`
+    one on the invocation it concerns as `ProgressInvocation.degradation`.
 
     Branch on `reason` (see `DegradationReason`), never on the wording of `message`. Extension-open
     (`extra="allow"`), so a member a later platform adds rides `model_extra`. Read leniently, so it
@@ -304,6 +309,285 @@ class RunRead(RunPublic):
     request_id: str | None = None
     #: The `Retry-After` header's delay, in seconds, lifted by the client when the platform sent one.
     retry_after_seconds: int | None = None
+
+
+# ── Progress ────────────────────────────────────────────────────────
+
+
+class RunProgressStatus(StrEnum):
+    """Where a run stands in its progress snapshot — `RunProgress.status`.
+
+    Accepted and not yet started (`PENDING`), going (`RUNNING`), ended with its result (`SUCCEEDED`),
+    ended in failure (`FAILED`), or stopped before its end (`CANCELED`). The platform maps its `RunStatus`
+    into these words: `PENDING` is `pending`; `RUNNING` and `STARTED` are `running`; `COMPLETED` is
+    `succeeded`; `FAILED` and `TIMED_OUT` are `failed`; `CANCELLED` and `TERMINATED` are `canceled`.
+
+    Read open, as `RunProgress.status` types it: a status a later platform adds arrives as its raw string
+    rather than failing the read.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+    @property
+    def is_ended(self) -> bool:
+        """True once the run has ended, whether with its result, in failure or stopped; an ended run does not resume."""
+        match self:
+            case RunProgressStatus.SUCCEEDED | RunProgressStatus.FAILED | RunProgressStatus.CANCELED:
+                return True
+            case RunProgressStatus.PENDING | RunProgressStatus.RUNNING:
+                return False
+
+
+class ProgressInvocationStatus(StrEnum):
+    """Where one invocation stands — `ProgressInvocation.status`, the words a run graph uses for its nodes.
+
+    An item of a batch that has fanned out and not started (`SCHEDULED`), started and not ended
+    (`RUNNING`), ended with its output (`SUCCEEDED`), ended in failure (`FAILED`), skipped, which is a
+    successful end with no output of its own (`SKIPPED`), or not ended when the run ended (`CANCELED`).
+    Each is about the invocation's latest attempt. Read open, like `RunProgressStatus`.
+    """
+
+    SCHEDULED = "scheduled"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    CANCELED = "canceled"
+
+
+class ProgressBatch(BaseModel):
+    """A batch's items — `ProgressInvocation.batch`, on a `PipeBatch` that has fanned out.
+
+    `total` is the number it fanned out over; `done` counts the items `succeeded` or `skipped`, `running`
+    those running and `failed` those failed. An item `scheduled` or `canceled` is in none of the three.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    total: StrictInt
+    done: StrictInt
+    running: StrictInt
+    failed: StrictInt
+
+
+class ProgressCondition(BaseModel):
+    """A resolved condition's outcome — `ProgressInvocation.condition`."""
+
+    model_config = ConfigDict(extra="allow")
+
+    #: The key of the outcome map its value matched, or `None` when it matched none and the condition took
+    #: its default outcome, since `"default"` is itself a key an outcome map may hold.
+    selected_outcome: str | None
+
+
+class ProgressFailure(BaseModel):
+    """The latest failure of an invocation's work — `ProgressInvocation.last_failure`, a health annotation.
+
+    `message` keeps the disclosure of a run's error report: under the hosted plane's strict disclosure it
+    is the failure's own message only when that message was written for the caller, and
+    `An internal error occurred.` otherwise.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    message: str
+    #: When it failed, an RFC 3339 timestamp in UTC; `None` when not recorded.
+    at: str | None = None
+
+
+class ProgressAttempt(BaseModel):
+    """One attempt of one execution of a run — an entry of `RunProgress.chain`.
+
+    An execution is a part of a run its engine runs, and may run again, as a whole; `execution` is opaque.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    execution: str
+    attempt: StrictInt
+
+
+class ProgressInvocation(BaseModel):
+    """One invocation in a progress snapshot: one run of one pipe inside the run, named by its `path`.
+
+    Timestamps are RFC 3339 in UTC written with `Z`, with fractional seconds when recorded. The platform
+    leaves an optional member out when it does not apply, never sending `null`, and such a member reads
+    `None` here. The health annotations — `attempts`, `last_failure` and `degradation` — are what the
+    workflow engine reports; `None` means nothing was observed, never that all is well.
+
+    The members a timeline leans on are read strictly, so an invocation missing one, or holding one of
+    another type, fails the read: `path`, `pipe_code`, `pipe_ref`, `pipe_type` and `status` are strings,
+    `started_at` and `ended_at` strings or `None`, each always sent. The optional members are read
+    leniently, so none of them ever fails the read: one whose value does not fit its type reads `None`,
+    and the degradation is read as the status read's is (`LenientRunDegradation`). Extension-open, so a
+    member a later platform adds rides `model_extra`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    #: The invocation's path: the run's entry pipe's `pipe_ref`, then one segment per controller level
+    #: (`step_<n>`, `branch_<n>`, `item_<n>`, `outcome_<key>`, `default`), joined by `/`, such as
+    #: `filings.review_filings/step_3/item_2/step_1`. It names one invocation in every view of a run,
+    #: every attempt of it included, and nests a timeline's rows.
+    path: str
+    #: The bare code of the pipe it runs, which a timeline labels its row with.
+    pipe_code: str
+    #: The same pipe's `pipe_ref`, `<domain>.<pipe_code>`.
+    pipe_ref: str
+    #: The pipe's type as the method declares it, such as `PipeSequence` or `PipeLLM`; an open string.
+    pipe_type: str
+    #: The `ProgressInvocationStatus` member when this SDK knows the status, its raw string otherwise.
+    status: Annotated[ProgressInvocationStatus | str, Field(union_mode="left_to_right")]
+    #: The start of its latest attempt; `None` while `scheduled`, and when no start was recorded.
+    started_at: str | None
+    #: The end of its latest attempt; `None` while `scheduled` or `running`, and when `canceled`.
+    ended_at: str | None
+    #: On a `PipeSequence`, the number of steps its author wrote.
+    step_count: StrictInt | None = None
+    #: On a `PipeParallel`, the number of its branches.
+    branch_count: StrictInt | None = None
+    #: On a `skipped` invocation, why it was skipped.
+    skip_reason: str | None = None
+    #: On a `PipeBatch` that has fanned out, its items' counts.
+    batch: ProgressBatch | None = None
+    #: On a `PipeCondition` that has resolved, the outcome it took.
+    condition: ProgressCondition | None = None
+    #: Health: how many times its work has been tried, present only when more than once.
+    attempts: StrictInt | None = None
+    #: Health: the latest failure of its work.
+    last_failure: ProgressFailure | None = None
+    #: Health: the run is stuck at this invocation — the run status's own `degradation`, with the same
+    #: members and meanings, placed on the invocation it concerns (the run's root, or the batch item whose
+    #: execution keeps failing to advance). Its `reason` is `workflow_task_failing`.
+    degradation: LenientRunDegradation = None
+
+    @field_validator("step_count", "branch_count", "skip_reason", "batch", "condition", "attempts", "last_failure", mode="wrap")
+    @classmethod
+    def _read_an_optional_member_that_does_not_fit_as_none(cls, value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
+        return none_when_it_does_not_fit(value, handler)
+
+
+class RunProgress(BaseModel):
+    """A run's progress snapshot — `GET /v1/runs/{pipeline_run_id}/progress`, which `get_run_progress`
+    reads and `WaitForResultOptions.on_progress` receives.
+
+    The state of a run's progress at one moment, projected by the platform at each read from the run's
+    live progress events, its status and what its workflow engine reports of its health. Progress is a
+    hosted-plane extension, part of neither the MTHDS Protocol nor the runner's API, and its names are
+    neutral. Timestamps are RFC 3339 in UTC written with `Z`. Two reads can answer out of order, so a
+    reader keeps the fresher of the snapshot it holds and the one it reads, by `is_fresher_run_progress`.
+
+    The members the freshness rule and a timeline lean on are read strictly, so a snapshot missing one, or
+    holding one of another type, fails the read: `version` is a non-negative integer, `pipeline_run_id`,
+    `mode`, `status`, `assembled_at` and `summary` are strings, and `invocations` is a list of
+    `ProgressInvocation`. The optional members are read leniently, as an invocation's are. Extension-open,
+    so a member a later platform adds rides `model_extra`. See `docs/run-results.md`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    pipeline_run_id: str
+    #: The mode of the events it was projected from, `live` or `dry`; always `live` on the hosted progress
+    #: route. An open string.
+    mode: str
+    #: The `RunProgressStatus` member when this SDK knows the status, its raw string otherwise.
+    status: Annotated[RunProgressStatus | str, Field(union_mode="left_to_right")]
+    #: The number of distinct progress events the snapshot was projected from, superseded attempts'
+    #: included, so it never decreases while the run's events are kept. What a reader compares two
+    #: snapshots by — see `is_fresher_run_progress`. Strictly an integer: a string, a boolean or a
+    #: fraction fails the read.
+    version: Annotated[StrictInt, Field(ge=0)]
+    #: When the snapshot was projected: what a running invocation's elapsed time is measured against when
+    #: the reader cannot trust its own clock.
+    assembled_at: str
+    #: One line of English saying how far the run has got, such as `Running summarize_filing_batch (step 3
+    #: of 4): 1 of 3 items done, 2 running`. Show it as it is; never parse it.
+    summary: str
+    #: `None` on a snapshot of the whole run, which is every snapshot the hosted plane serves.
+    root_path: str | None = None
+    #: `None` on a snapshot of the whole run, like `root_path`.
+    chain: list[ProgressAttempt] | None = None
+    #: The run status's `degradation`, whole, present when the run reads degraded: `status_unavailable` when
+    #: the platform could not read the workflow engine, so `status` is the last one recorded and no
+    #: invocation carries a health annotation, or `workflow_task_failing` when the run is not making
+    #: progress. Read leniently (`LenientRunDegradation`).
+    degradation: LenientRunDegradation = None
+    #: Every invocation the snapshot knows, each before its descendants, children in their order.
+    invocations: list[ProgressInvocation]
+
+    @field_validator("root_path", "chain", mode="wrap")
+    @classmethod
+    def _read_an_optional_member_that_does_not_fit_as_none(cls, value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
+        return none_when_it_does_not_fit(value, handler)
+
+
+def is_fresher_run_progress(read: RunProgress, held: RunProgress | None) -> bool:
+    """Whether the snapshot just `read` is fresher than the one `held`, and should replace it.
+
+    The contract's rule, its first clause before the other two:
+
+    1. a snapshot of a run still going (`pending` or `running`) never replaces one of the run ended
+       (`succeeded`, `failed` or `canceled`), whatever their versions and their `assembled_at`, and one of
+       the run ended always replaces one of the run going, since an ended run does not resume and a read
+       lagging behind the writes can project it from fewer events;
+    2. otherwise, of two different versions, the higher is fresher;
+    3. at the same version, the later `assembled_at` is, compared as instants rather than as text.
+
+    Nothing held means anything read is fresher. Two snapshots equally fresh, or whose times cannot be
+    compared, keep the one held. A status this SDK does not know takes no part in the first clause, so
+    the versions decide. Pure: a reader holding snapshots from more than one source, the progress route
+    and a `run_progress_update` frame's re-read, keeps the fresher by it.
+    `WaitForResultOptions.on_progress` delivers by it.
+    """
+    if held is None:
+        return True
+    read_has_ended = _has_ended(read.status)
+    held_has_ended = _has_ended(held.status)
+    if read_has_ended is not None and held_has_ended is not None and read_has_ended != held_has_ended:
+        return read_has_ended
+    if read.version != held.version:
+        return read.version > held.version
+    read_instant = _instant_microseconds(read.assembled_at)
+    held_instant = _instant_microseconds(held.assembled_at)
+    if read_instant is None or held_instant is None:
+        return False
+    return read_instant > held_instant
+
+
+def _has_ended(status: RunProgressStatus | str) -> bool | None:
+    """Whether a snapshot's status says the run has ended, or `None` for a status this SDK does not know."""
+    if isinstance(status, RunProgressStatus):
+        return status.is_ended
+    return None
+
+
+# An RFC 3339 timestamp: its date and time to the second, its fraction of a second, and its zone.
+_RFC_3339_INSTANT = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]+))?(Z|[+-][0-9]{2}:[0-9]{2})", re.IGNORECASE)
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_MICROSECONDS_DIGITS = 6
+
+
+def _instant_microseconds(timestamp: str) -> int | None:
+    """An RFC 3339 timestamp as microseconds since the epoch, so that two of them compare as instants.
+
+    As text, `06.870Z` sorts after `06.870123Z`; as instants, the second is later. Digits past the
+    microsecond are dropped, as `@pipelex/sdk` drops them. `None` for a value that is not such a timestamp.
+    """
+    matched = _RFC_3339_INSTANT.fullmatch(timestamp)
+    if matched is None:
+        return None
+    seconds, fraction, zone = matched.group(1), matched.group(2) or "", matched.group(3).upper()
+    offset = "+00:00" if zone == "Z" else zone
+    try:
+        whole_seconds = datetime.fromisoformat(f"{seconds.upper()}{offset}")
+    except ValueError:
+        return None
+    microseconds = int(fraction.ljust(_MICROSECONDS_DIGITS, "0")[:_MICROSECONDS_DIGITS])
+    return (whole_seconds - _EPOCH) // timedelta(microseconds=1) + microseconds
 
 
 class TokensUsageRecord(BaseModel):
@@ -541,4 +825,16 @@ class WaitForResultOptions:
 
     interval_seconds: float = 2.0
     timeout_seconds: float = 1200.0
+    #: Called before each sleep, so a caller can drive a spinner or a progress line.
     on_poll: Callable[[PollInfo], None] | None = None
+    #: Called with the run's progress snapshot (`RunProgress`) each time the wait reads one fresher than the
+    #: last it delivered, by `is_fresher_run_progress`, so a caller can show the run advancing. Given, the
+    #: wait reads `GET /v1/runs/{id}/progress` on each poll that finds the run still running, after the
+    #: results read and before `on_poll`, bounded by the time the wait has left; omitted, it never reads the
+    #: progress. A progress read that fails skips that poll's snapshot and never fails the wait, whose truth
+    #: is the results read; a server answering that it has no progress route is not asked again during the
+    #: wait. It is not called once the results read finds the run ended, so a caller wanting the final
+    #: snapshot calls `get_run_progress` once more, nor on `start_and_wait`'s blocking path, which has no
+    #: run to read. The callback runs synchronously and its return value is ignored; an exception it raises
+    #: propagates out of the wait, and the run keeps going on the server.
+    on_progress: Callable[[RunProgress], None] | None = None
