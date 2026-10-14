@@ -31,15 +31,16 @@
  *       Create the GitHub Release from the shipped packages' changelog
  *       entries, unless it exists already.
  *
- *   node scripts/publish.mjs sprint --sha <commit> --ref <GITHUB_REF> --head <GITHUB_SHA> [--package <name>] [--version <version>]
+ *   node scripts/publish.mjs sprint --sha <commit> --ref <GITHUB_REF> [--package <name>] [--version <version>]
  *       Whether to publish the sprint prerelease of `@pipelex/sdk` at a commit,
  *       and as which version: `X.Y.Z-sprint.g<full sha>`, `X.Y.Z` being the next
  *       patch above the version `js/package.json` carries at that commit
  *       (design DB6). `--version`, which `wt pin` passes, must be the same one.
- *       The dispatch's own ref and head are refused unless they are `dev`'s,
- *       the one branch beside `main` that the `npm` environment allows, and
- *       while `dev` stands on a release tag, where its run could be read as
- *       the release's.
+ *       The dispatch's own ref is refused unless it is `dev`, the one branch
+ *       beside `main` that the `npm` environment allows. It is taken whatever
+ *       commit `dev` stands on, a release's merge commit included, since
+ *       `ledger land` verifies a release from the run its merge started alone
+ *       and passes over a dispatch at the same commit.
  *
  *   node scripts/publish.mjs stamp --file <js/src/version.ts> --version <version>
  *       Write the prerelease's version into the SDK's `SDK_VERSION` constant.
@@ -395,18 +396,23 @@ export function sprintVersion(manifestVersion, sha) {
 }
 
 /**
- * Refuse a dispatch that could not publish, or whose run could be read as a
- * release's. The sprint publish job holds the `npm` environment, whose
- * deployment branch policy allows `main` and `dev` alone, and `ledger land`
- * verifies a release from the newest run of `release.yml` at the release's
- * merge commit or its release branch's head, so a sprint dispatch is taken
- * only from `dev` (`ref`, the run's `GITHUB_REF`), and only while its head
- * (`head`, the run's `GITHUB_SHA`) carries no release tag `v*`, as it does
- * right after a landing fast-forwards it onto a release. Refusing here, before
- * the build, says why; the environment would only fail the publish job after
- * the commit was built.
+ * Refuse a dispatch that could not publish. The sprint publish job holds the
+ * `npm` environment, whose deployment branch policy allows `main` and `dev`
+ * alone, so a sprint dispatch is taken only from `dev` (`ref`, the run's
+ * `GITHUB_REF`), never from a tag or another branch. `main` and a `release/`
+ * branch, where a release's runs stand, are refused by name, `main` although
+ * the environment allows it. Refusing here, before the build, says why; the
+ * environment would only fail the publish job after the commit was built.
+ *
+ * The commit `dev` stands on is not read. Right after a landing's back-merge
+ * fast-forwards `dev` onto a release's merge commit, a dispatch from `dev`
+ * runs at that commit, beside the release's own run, and is taken all the
+ * same: `ledger land` verifies a release from the run its merge started, the
+ * `push` run of `release.yml` on `main`, and passes over a `workflow_dispatch`
+ * run at the same commit whatever it concluded, so a sprint run is never read
+ * as the release's.
  */
-export function checkDispatch({ repo, ref, head }) {
+export function checkDispatch({ ref }) {
   if (!ref.startsWith("refs/heads/")) {
     throw new ReleaseError(`a sprint prerelease is dispatched from ${SPRINT_BRANCH}, and ${ref} is not a branch`);
   }
@@ -419,12 +425,6 @@ export function checkDispatch({ repo, ref, head }) {
   if (branch !== SPRINT_BRANCH) {
     throw new ReleaseError(
       `a sprint prerelease is dispatched from ${SPRINT_BRANCH} alone, not ${branch}: the ${SPRINT_ENVIRONMENT} environment its publish job holds allows main and ${SPRINT_BRANCH}, so a run from ${branch} could not publish`,
-    );
-  }
-  const tags = git(repo, ["tag", "--points-at", head, "--list", "v*"]).split("\n").filter(Boolean);
-  if (tags.length > 0) {
-    throw new ReleaseError(
-      `${branch} stands on ${head}, the release ${tags.join(", ")}, where a run of this workflow would be read as the release's: dispatch once ${branch} has moved on`,
     );
   }
   return branch;
@@ -578,7 +578,7 @@ const USAGE = `usage:
   node scripts/publish.mjs tarball --file <tgz> --package <name> --version <version>
   node scripts/publish.mjs distributions --dir <dist> --package <name> --version <version>
   node scripts/publish.mjs release --tag <vX.Y.Z>
-  node scripts/publish.mjs sprint --sha <commit> --ref <GITHUB_REF> --head <GITHUB_SHA> [--package <name>] [--version <version>]
+  node scripts/publish.mjs sprint --sha <commit> --ref <GITHUB_REF> [--package <name>] [--version <version>]
   node scripts/publish.mjs stamp --file <js/src/version.ts> --version <version>`;
 
 export async function main(argv, { repo = ROOT, registry = liveRegistry(), releases = null } = {}) {
@@ -619,9 +619,9 @@ export async function main(argv, { repo = ROOT, registry = liveRegistry(), relea
       return 0;
     }
     if (command === "sprint") {
-      const args = parseArgs(rest, ["sha", "package", "version", "ref", "head"]);
-      if (!args?.sha || !args.ref || !args.head) return usage();
-      checkDispatch({ repo, ref: args.ref, head: args.head });
+      const args = parseArgs(rest, ["sha", "package", "version", "ref"]);
+      if (!args?.sha || !args.ref) return usage();
+      checkDispatch({ ref: args.ref });
       const plan = await planSprint({
         repo,
         sha: args.sha,

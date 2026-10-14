@@ -49,6 +49,7 @@ _Call: TypeAlias = "Callable[[PipelexAPIClient], Coroutine[Any, Any, object]]"
 #: Requests that start nothing, each as the route it sends and a call that sends it.
 _STARTS_NOTHING: list[tuple[str, str, _Call]] = [
     ("get_run_status", "GET /v1/runs/run-1/status", lambda client: client.get_run_status("run-1")),
+    ("get_run_progress", "GET /v1/runs/run-1/progress", lambda client: client.get_run_progress("run-1")),
     ("get_me", "GET /v1/me", lambda client: client.get_me()),
     ("validate", "POST /v1/validate", lambda client: client.validate(mthds_contents=["domain = 'x'"])),
 ]

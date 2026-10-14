@@ -431,3 +431,191 @@ class IdempotencyKeyData:
     ]
     # Keys a start sends as they are: the longest, every visible ASCII character, and the shortest.
     VALID_KEYS: ClassVar[list[str]] = ["k" * 255, "!\"#$%&'()*+,-./0123456789:;<=>?@AZ[\\]^_`az{|}~", "k"]
+
+
+class RunProgressBodies:
+    """Progress snapshots as the hosted API's `GET /v1/runs/{id}/progress` answers them.
+
+    `WORKED_EXAMPLE` is the contract's own worked example, copied member for member from the section
+    "Run progress" of the platform API spec (`conformance/specs/pipelex-platform-api.md`): a run of
+    `filings.review_filings` over three filings, taken mid-run, with item 2's second step retried and item 3
+    stuck. `@pipelex/sdk`'s `tests/run-progress.test.ts` reads part of the same example.
+    """
+
+    STUCK_MESSAGE: ClassVar[str] = "One of this run's batch branches, …, has failed 4 times in a row, so the run is not making progress. …"
+    STUCK: ClassVar[dict[str, Any]] = {
+        "reason": "workflow_task_failing",
+        "message": STUCK_MESSAGE,
+        "failed_attempts": 4,
+        "failing_since": "2026-10-12T09:30:33.480Z",
+        "ends_at": "2026-10-12T09:45:33.480Z",
+    }
+    WORKED_EXAMPLE: ClassVar[dict[str, Any]] = {
+        "pipeline_run_id": "run_7Qd2kV",
+        "mode": "live",
+        "status": "running",
+        "version": 26,
+        "assembled_at": "2026-10-12T09:31:20.512Z",
+        "summary": (
+            "Running summarize_filing_batch (step 3 of 4): 1 of 3 items done, 2 running; "
+            "not progressing at summarize_filing (step 3 of 4, item 3 of 3) after 4 failed attempts"
+        ),
+        "degradation": STUCK,
+        "invocations": [
+            {
+                "path": "filings.review_filings",
+                "pipe_code": "review_filings",
+                "pipe_ref": "filings.review_filings",
+                "pipe_type": "PipeSequence",
+                "status": "running",
+                "started_at": "2026-10-12T09:30:00.104Z",
+                "ended_at": None,
+                "step_count": 4,
+            },
+            {
+                "path": "filings.review_filings/step_1",
+                "pipe_code": "extract_filings",
+                "pipe_ref": "filings.extract_filings",
+                "pipe_type": "PipeExtract",
+                "status": "succeeded",
+                "started_at": "2026-10-12T09:30:00.131Z",
+                "ended_at": "2026-10-12T09:30:06.870Z",
+            },
+            {
+                "path": "filings.review_filings/step_2",
+                "pipe_code": "choose_depth",
+                "pipe_ref": "filings.choose_depth",
+                "pipe_type": "PipeCondition",
+                "status": "succeeded",
+                "started_at": "2026-10-12T09:30:06.902Z",
+                "ended_at": "2026-10-12T09:30:19.415Z",
+                "condition": {"selected_outcome": "detailed"},
+            },
+            {
+                "path": "filings.review_filings/step_2/outcome_detailed",
+                "pipe_code": "deep_checks",
+                "pipe_ref": "filings.deep_checks",
+                "pipe_type": "PipeParallel",
+                "status": "succeeded",
+                "started_at": "2026-10-12T09:30:07.020Z",
+                "ended_at": "2026-10-12T09:30:19.401Z",
+                "branch_count": 2,
+            },
+            {
+                "path": "filings.review_filings/step_2/outcome_detailed/branch_1",
+                "pipe_code": "check_figures",
+                "pipe_ref": "filings.check_figures",
+                "pipe_type": "PipeLLM",
+                "status": "succeeded",
+                "started_at": "2026-10-12T09:30:07.034Z",
+                "ended_at": "2026-10-12T09:30:15.660Z",
+            },
+            {
+                "path": "filings.review_filings/step_2/outcome_detailed/branch_2",
+                "pipe_code": "check_wording",
+                "pipe_ref": "filings.check_wording",
+                "pipe_type": "PipeLLM",
+                "status": "succeeded",
+                "started_at": "2026-10-12T09:30:07.036Z",
+                "ended_at": "2026-10-12T09:30:19.388Z",
+            },
+            {
+                "path": "filings.review_filings/step_3",
+                "pipe_code": "summarize_filing_batch",
+                "pipe_ref": "filings.summarize_filing_batch",
+                "pipe_type": "PipeBatch",
+                "status": "running",
+                "started_at": "2026-10-12T09:30:19.440Z",
+                "ended_at": None,
+                "batch": {"total": 3, "done": 1, "running": 2, "failed": 0},
+            },
+            {
+                "path": "filings.review_filings/step_3/item_1",
+                "pipe_code": "summarize_filing",
+                "pipe_ref": "filings.summarize_filing",
+                "pipe_type": "PipeSequence",
+                "status": "succeeded",
+                "started_at": "2026-10-12T09:30:19.611Z",
+                "ended_at": "2026-10-12T09:30:41.022Z",
+                "step_count": 2,
+            },
+            {
+                "path": "filings.review_filings/step_3/item_1/step_1",
+                "pipe_code": "read_filing",
+                "pipe_ref": "filings.read_filing",
+                "pipe_type": "PipeLLM",
+                "status": "succeeded",
+                "started_at": "2026-10-12T09:30:19.630Z",
+                "ended_at": "2026-10-12T09:30:30.118Z",
+            },
+            {
+                "path": "filings.review_filings/step_3/item_1/step_2",
+                "pipe_code": "condense_filing",
+                "pipe_ref": "filings.condense_filing",
+                "pipe_type": "PipeLLM",
+                "status": "succeeded",
+                "started_at": "2026-10-12T09:30:30.140Z",
+                "ended_at": "2026-10-12T09:30:41.010Z",
+            },
+            {
+                "path": "filings.review_filings/step_3/item_2",
+                "pipe_code": "summarize_filing",
+                "pipe_ref": "filings.summarize_filing",
+                "pipe_type": "PipeSequence",
+                "status": "running",
+                "started_at": "2026-10-12T09:30:19.640Z",
+                "ended_at": None,
+                "step_count": 2,
+            },
+            {
+                "path": "filings.review_filings/step_3/item_2/step_1",
+                "pipe_code": "read_filing",
+                "pipe_ref": "filings.read_filing",
+                "pipe_type": "PipeLLM",
+                "status": "succeeded",
+                "started_at": "2026-10-12T09:30:19.655Z",
+                "ended_at": "2026-10-12T09:30:31.902Z",
+            },
+            {
+                "path": "filings.review_filings/step_3/item_2/step_2",
+                "pipe_code": "condense_filing",
+                "pipe_ref": "filings.condense_filing",
+                "pipe_type": "PipeLLM",
+                "status": "running",
+                "started_at": "2026-10-12T09:30:31.930Z",
+                "ended_at": None,
+                "attempts": 2,
+                "last_failure": {"message": "An internal error occurred.", "at": "2026-10-12T09:30:52.317Z"},
+            },
+            {
+                "path": "filings.review_filings/step_3/item_3",
+                "pipe_code": "summarize_filing",
+                "pipe_ref": "filings.summarize_filing",
+                "pipe_type": "PipeSequence",
+                "status": "running",
+                "started_at": "2026-10-12T09:30:19.702Z",
+                "ended_at": None,
+                "step_count": 2,
+                "degradation": STUCK,
+            },
+            {
+                "path": "filings.review_filings/step_3/item_3/step_1",
+                "pipe_code": "read_filing",
+                "pipe_ref": "filings.read_filing",
+                "pipe_type": "PipeLLM",
+                "status": "running",
+                "started_at": "2026-10-12T09:30:19.720Z",
+                "ended_at": None,
+            },
+        ],
+    }
+    # What a pending run answers: no invocation, and the summary the contract words for it.
+    PENDING: ClassVar[dict[str, Any]] = {
+        "pipeline_run_id": "run-1",
+        "mode": "live",
+        "status": "pending",
+        "version": 0,
+        "assembled_at": "2026-10-12T09:29:58.004Z",
+        "summary": "Waiting to start",
+        "invocations": [],
+    }

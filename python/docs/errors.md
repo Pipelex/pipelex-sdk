@@ -54,7 +54,7 @@ On an error from a request that may have started a run, `retryable` is `False` w
 | `PipelineExecuteTimeoutError` | `input` | no | The blocking `execute` cannot outlast the gateway's limit; start the run and poll instead. The run goes on, so its `run_may_have_started` is always `True`. |
 | `RunFailedError` | the report's | the report's | The report's `error_domain` when it is a known domain, else `runtime`; retryable only when the report's `retryable` is `True`, so a report that says nothing, and a run with no report, are not retryable: starting the run again spends credit and nothing says it would succeed. The report keeps its own members as written. |
 | `RunTimeoutError`, `RunStillRunningError` | `runtime` | yes | The run is still going; waiting again, by its id, can succeed. |
-| `RunLifecycleUnavailableError` | `config` | no | The base URL points at a bare runner without the run lifecycle. |
+| `RunLifecycleUnavailableError` | `config` | no | The base URL points at a bare runner without the run lifecycle, or, for `get_run_progress`, at a hosted API older than the progress route. |
 | `MissingMainStuffError` | `runtime` | no | The API broke its own contract on a completed run. |
 | `PagingNotTerminatingError` | `runtime` | no | A server minting cursors forever; `page_limit` is the ceiling the iterator stopped at. |
 | `InputPreparationError` and `InvalidLocalSourceError`, `InvalidInputValueError`, `UploadNotAllowedError`, `MethodLoadError`, `RejectedAssetError` | `input` | no | The asset, the inputs or the method selector must change. The family's base takes an optional `verdict`, so a subclass of your own can declare another; `prepare_inputs` declares `runtime` for an answer that does not describe the pipe it selected. |

@@ -36,6 +36,7 @@ def _routes() -> dict[str, Callable[[PipelexAPIClient], Coroutine[Any, Any, Any]
         "models": lambda client: client.models(),
         "version": lambda client: client.version(),
         "get_run_status": lambda client: client.get_run_status("run_1"),
+        "get_run_progress": lambda client: client.get_run_progress("run_1"),
         "get_run_result": lambda client: client.get_run_result("run_1"),
         "wait_for_result": lambda client: client.wait_for_result("run_1", WaitForResultOptions(timeout_seconds=5.0)),
         "start_and_wait": lambda client: client.start_and_wait(pipe_code="p"),

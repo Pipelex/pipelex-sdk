@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.44.0] - 2026-10-14
+
+### Added
+
+- **A run's progress, `getRunProgress`**: reads the run's progress snapshot on the hosted API's `GET /v1/runs/{id}/progress` and returns it as `RunProgress`: the run's `status`, a `version` and an `assembled_at` to compare snapshots by, a one-line `summary`, the status read's `degradation` when the run reads degraded, and every invocation of a pipe in the run as a `ProgressInvocation`, named by its path, with its status, its times, a batch's counts, a condition's outcome and the health annotations `attempts`, `last_failure` and `degradation`, the last reusing `RunDegradation`. A snapshot missing a member the freshness rule or a timeline leans on is an `ApiResponseError`, and a server without the route a `RunLifecycleUnavailableError` (`docs/run-results.md`).
+- **`onProgress` on `waitForResult` and `startAndWaitForResult`**: given, each poll that finds the run still running also reads the progress route and calls `onProgress` with the snapshot when it is fresher than the last one delivered, so a caller can show the run advancing while it waits. A failed progress read skips that poll's snapshot and never fails the wait, a server without the route is not asked again during the wait, and without `onProgress` no progress request is made.
+- **`isFresherRunProgress`**: says whether a snapshot just read should replace the one held, by the platform's rule: a snapshot of the run still going never replaces one of the run ended, then the higher `version`, then at the same version the later `assembled_at`, compared as instants. `onProgress` delivers by it, and a caller reading the route itself keeps the fresher by it.
+
+### Removed
+
+- **`PipeStatus` and `PipelineRun.pipe_statuses` (Breaking)**: the hosted API never sent a per-pipe status map on a run record, so the field and its type are gone; a run's per-invocation progress is the snapshot `getRunProgress` reads.
+
 ## [v0.43.0] - 2026-10-13
 
 ### Added

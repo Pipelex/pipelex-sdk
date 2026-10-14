@@ -111,9 +111,88 @@ if (run.degraded) {
 - **The degradation is checked field by field, so it never fails the poll.** A `degradation` that is not an object, or whose `reason` is not a string, reads as `null`, since it cannot be branched on; `message`, `failing_since` and `ends_at` are kept when they are strings and `failed_attempts` when it is an integer, `null` kept for each, and absent otherwise; members this SDK does not name are relayed as sent. `degradation` is `null` whenever `degraded` is false, and absent on a platform that predates it. `degraded` is left as the server sent it.
 - **`request_id` is the id of the request that started the run**, the one to quote to support beside the run id. `getRunDetail` carries it too; it is `null` for a run saved before the platform recorded it.
 
-**The wait loops never see a degradation, and need not.** `waitForResult` and `startAndWaitForResult` poll the results route, whose in-flight answer is a `202` with no body. That route settles the run the same way the status read does, so a waiter receives a stuck run's end as a `RunFailedError` carrying the `WorkflowTaskKeptFailingError` report within one poll of `ends_at`. A caller that wants to show the degradation while it waits reads `getRunStatus` beside the wait.
+**The results read carries no degradation, and the wait needs none.** `waitForResult` and `startAndWaitForResult` poll the results route, whose in-flight answer is a `202` with no body. That route settles the run the same way the status read does, so a waiter receives a stuck run's end as a `RunFailedError` carrying the `WorkflowTaskKeptFailingError` report within one poll of `ends_at`. A caller that wants to show the degradation while it waits passes `onProgress`, whose snapshot carries the status read's `degradation` and places it on the invocation it concerns (see the next section), or reads `getRunStatus` beside the wait.
 
 Both SDKs read a status body the same way, held to it by a case file they share, `tests/fixtures/run-status-reads.json`.
+
+## Following a run while it runs — `onProgress` and `getRunProgress`
+
+A run's **progress snapshot** says how far the run has got while it goes on: which invocations of which pipes have started, ended or been skipped, how many items of each batch are done, which outcome each condition took, and where the run is retrying or stuck, with a one-line `summary` to show as it is. The hosted API serves it on `GET /v1/runs/{id}/progress`, projecting it at each read from the run's live progress events, its status and what its workflow engine reports of its health. Progress belongs to the hosted plane, part of neither the MTHDS Protocol nor the runner's API, so a bare runner serves none. The type is `RunProgress` (`src/runs.ts`).
+
+**While waiting: `onProgress`.** `waitForResult` and `startAndWaitForResult` take `onProgress` beside `onPoll`, called with each snapshot the wait reads that is fresher than the last one it delivered:
+
+```ts
+const results = await client.waitForResult(runId, {
+  onProgress: (progress) => console.error(progress.summary),
+  // e.g. "Running summarize_filing_batch (step 3 of 4): 1 of 3 items done, 2 running"
+});
+```
+
+- **It reads on each poll that finds the run still running**, after the results read and before `onPoll`, at the wait's own cadence. Without `onProgress` the wait makes no progress request at all.
+- **It delivers only a fresher snapshot.** Two reads can answer out of order, so the wait keeps the last snapshot it delivered and calls `onProgress` only with one that is fresher by `isFresherRunProgress` (below): a snapshot that repeats the last one, or that a lagging read projected from fewer events, is not delivered, and a snapshot of the run ended is never followed by one showing it still going.
+- **A progress read never fails the wait.** The results read is the truth about the run, so a progress read that fails, whatever the reason — a network failure, a `503` from the platform while it cannot read the run's events, an answer the SDK cannot read — skips that poll's snapshot, and the next poll reads again. A server answering that it has no progress route at all, a hosted API older than it, is not asked again during that wait. The caller's `signal` still ends the wait with its abort.
+- **It stops when the run ends.** Once the results read finds the run ended, the wait returns the results or throws `RunFailedError` without reading the progress again, so the last snapshot delivered may still show the run going. A caller that wants the final snapshot, to draw the finished timeline or to show where a failed run stopped, reads `getRunProgress(runId)` once more.
+- **`startAndWaitForResult` honours it on the durable path only.** Its blocking fallback, a bare runner's `POST /v1/execute`, has no run to read, so `onProgress` is never called there.
+- **The callback runs synchronously** and its return value is ignored. An exception it throws propagates out of the wait, as one thrown by `onPoll` does, and the run keeps going on the server.
+
+**Reading it yourself: `getRunProgress(runId)`.** It returns the snapshot as the platform answered it, the `RunProgress`. A pending run, and a run that has written no progress event yet, answer with no invocation. When the workflow engine cannot be reached the read still answers `200`: its `degradation` reads `status_unavailable`, its `status` is the last one recorded and no invocation carries a health annotation. A run that does not exist, or belongs to another organization, is the platform's `404`, an `ApiResponseError`, and a server without the route, a bare runner or a hosted API older than it, is a `RunLifecycleUnavailableError`. The members the freshness rule and a timeline lean on are checked: an answer whose `version` is not a non-negative integer, whose `pipeline_run_id`, `mode`, `status`, `assembled_at` or `summary` is not a string, whose `invocations` is not a list, or one of whose invocations misses its path, pipe identity, status or times, is an `ApiResponseError` for an answer the SDK cannot read. The snapshot's `degradation` and each invocation's are checked field by field as the status read's are, and one whose `reason` is not a string is dropped, so neither fails the read. Members the SDK does not name are relayed as sent.
+
+### The snapshot
+
+Every timestamp is RFC 3339 in UTC written with `Z`, with fractional seconds when the source recorded them. A required member is always present, `null` where its row says so, and an optional one is absent when it does not apply, never `null`.
+
+| member | type | what it says |
+|---|---|---|
+| `pipeline_run_id` | `string` | The run. |
+| `mode` | `"live" \| "dry"` | The mode of the events it was projected from; always `live` on the hosted route. |
+| `status` | `RunProgressStatus` | `pending`, `running`, `succeeded`, `failed` or `canceled`. The platform maps `PENDING` to `pending`, `RUNNING` and `STARTED` to `running`, `COMPLETED` to `succeeded`, `FAILED` and `TIMED_OUT` to `failed`, and `CANCELLED` and `TERMINATED` to `canceled`. |
+| `version` | `number` | The number of distinct progress events it was projected from, superseded attempts' included, so it never decreases while the run's events are kept; what two snapshots are compared by. |
+| `assembled_at` | `string` | When it was projected, which a running invocation's elapsed time is measured against when the reader cannot trust its own clock. |
+| `summary` | `string` | One line saying how far the run has got, such as `Running summarize_filing_batch (step 3 of 4): 1 of 3 items done, 2 running; not progressing at summarize_filing (step 3 of 4, item 3 of 3) after 4 failed attempts`. Show it as it is; never parse it. |
+| `degradation` | `RunDegradation`, optional | The run status's `degradation`, whole, present when the run reads degraded ([above](#a-degraded-status--degraded-and-degradation)). |
+| `invocations` | `ProgressInvocation[]` | Every invocation the snapshot knows, each before its descendants, the children of one invocation in the order of their numbers. |
+| `root_path`, `chain` | optional | Absent on a snapshot of the whole run, which is every snapshot the hosted API serves. |
+
+An **invocation** is one run of one pipe inside the run, named by its `path`: the entry pipe's `pipe_ref`, then one segment per controller level — `step_<n>`, `branch_<n>`, `item_<n>`, `outcome_<key>` or `default` — joined by `/`, so `filings.review_filings/step_3/item_2/step_1` is the first step of the sequence that the batch at step 3 runs for its second item. The path names one invocation in every view of a run, a retried one included, and is what nests a timeline's rows.
+
+| member | type | what it says |
+|---|---|---|
+| `path` | `string` | Its path. |
+| `pipe_code`, `pipe_ref`, `pipe_type` | `string` | The pipe it runs: its bare code, which a timeline labels its row with, its `pipe_ref`, and its type as the method declares it, such as `PipeLLM`, an open string. |
+| `status` | `ProgressInvocationStatus` | `scheduled` (an item of a batch that has fanned out and not started), `running`, `succeeded`, `failed`, `skipped` (a successful end with no output of its own) or `canceled` (not ended when the run ended), each about its latest attempt. |
+| `started_at`, `ended_at` | `string \| null` | Its latest attempt's start and end; `null` while it has not started or not ended, and `ended_at` `null` when it is `canceled`. |
+| `step_count`, `branch_count` | `number`, optional | On a `PipeSequence`, the number of steps its author wrote; on a `PipeParallel`, the number of its branches. |
+| `skip_reason` | `string`, optional | On a `skipped` invocation, why. |
+| `batch` | `ProgressBatch`, optional | On a `PipeBatch` that has fanned out, `{ total, done, running, failed }`: `done` counts the items succeeded or skipped, and an item scheduled or canceled is in none of the three. |
+| `condition` | `ProgressCondition`, optional | On a `PipeCondition` that has resolved, `{ selected_outcome }`, the key its value matched, or `null` for its default outcome. |
+| `attempts` | `number`, optional | Health: how many times its work has been tried, present only when more than once. |
+| `last_failure` | `ProgressFailure`, optional | Health: `{ message, at? }`, the latest failure of its work. `message` keeps the disclosure of a run's error report: the failure's own text only when it was written for the caller, `An internal error occurred.` otherwise. |
+| `degradation` | `RunDegradation`, optional | Health: the run is stuck here, in the run status's own words — the status read's `degradation`, `workflow_task_failing`, placed on the run's root or on the batch item whose execution keeps failing to advance. |
+
+The health annotations are what the workflow engine reports, so an absent one means that nothing was observed, never that the engine looked and found all well. They reuse the run status's `RunDegradation` rather than a shape of their own, so the code that shows a degraded status shows a stuck invocation too.
+
+### Keeping the fresher of two — `isFresherRunProgress`
+
+`isFresherRunProgress(read, held)` says whether a snapshot just read should replace the one held, by the platform's rule, its first clause before the other two:
+
+1. A snapshot of the run still going (`pending` or `running`) never replaces one of the run ended (`succeeded`, `failed` or `canceled`), whatever their versions, and one of the run ended always replaces one of it going: an ended run does not resume, and a read lagging behind the writes can project the ended run from fewer events than an earlier read projected it running from.
+2. Otherwise the higher `version` is fresher.
+3. At the same version the later `assembled_at` is, compared as instants rather than as text, since the platform writes microseconds only when it has them. A read projected before a timeout ended the run can arrive after one projected once it had, with no event between them.
+
+Nothing held means anything read is fresher, and two snapshots equally fresh keep the one held. `onProgress` delivers by it; a caller holding snapshots from more than one source keeps the fresher by it too. The platform also nudges a browser over its WebSocket with a `run_progress_update` frame carrying only the version the route has reached: a client reads `getRunProgress` when a frame's version is higher than the one it holds, keeps the fresher of the two by this rule, reads the route again whenever its socket opens since a frame sent while it was closed is lost, and reads it on a `run_status_update` too, since a run's end can change the snapshot with no new event. An API-key caller, whom the WebSocket does not accept, polls the route, which is what `onProgress` does.
+
+```ts
+import { isFresherRunProgress, type RunProgress } from "@pipelex/sdk";
+
+let held: RunProgress | undefined;
+async function refresh(runId: string): Promise<void> {
+  const read = await client.getRunProgress(runId);
+  if (isFresherRunProgress(read, held)) {
+    held = read;
+    render(held);
+  }
+}
+```
 
 ## `main_stuff` — the output
 
