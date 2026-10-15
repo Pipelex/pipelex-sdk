@@ -1,5 +1,5 @@
 import type { ProgressSnapshot } from "@pipelex/mthds-ui/timeline";
-import { ApiResponseError, RunLifecycleUnavailableError, type RunProgress } from "@pipelex/sdk";
+import { ApiResponseError, errorVerdictOf, type RunProgress } from "@pipelex/sdk";
 import { getPipelexClient } from "@/lib/pipelexClient";
 import { toProgressSnapshot } from "@/lib/runProgress";
 
@@ -27,7 +27,10 @@ export type RunProgressAnswer =
   | { state: "snapshot"; snapshot: ProgressSnapshot }
   /** No progress for this run yet: the platform's index has not caught up with a run just started. */
   | { state: "none" }
-  /** The base URL serves no progress route: a bare runner, or a hosted API older than the route. */
+  /**
+   * Reading again cannot help, by the SDK's own verdict: the base URL serves no
+   * progress route, or refuses this key the read.
+   */
   | { state: "unavailable" };
 
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -37,9 +40,9 @@ function answer(body: RunProgressAnswer): Response {
 }
 
 /**
- * Any failure but the two above is an error status with no body: the browser
- * keeps the snapshot it holds and reads again, whatever the failure was. It is
- * not logged, following this app's rule against diagnostic console writes; the
+ * A failure reading again can fix, by the SDK's verdict, is an error status with
+ * no body: the browser keeps the snapshot it holds and reads again. It is not
+ * logged, following this app's rule against diagnostic console writes; the
  * status poll is where a failing API shows itself.
  */
 const READ_FAILED = 502;
@@ -53,10 +56,16 @@ export async function GET(
   try {
     progress = await getPipelexClient().getRunProgress(runId);
   } catch (caught) {
-    if (caught instanceof RunLifecycleUnavailableError) return answer({ state: "unavailable" });
+    // The platform's `404` for a run it does not know: an id just started.
     if (caught instanceof ApiResponseError && caught.status === 404) {
       return answer({ state: "none" });
     }
+    // A bare runner without the route is the SDK's `RunLifecycleUnavailableError`.
+    // A hosted gateway answers a path it does not route with `403 Forbidden`, as
+    // it answers a key it refuses, so the route being absent cannot be told from
+    // a refusal there; the SDK judges both final, and neither is worth reading
+    // again for this run.
+    if (errorVerdictOf(caught)?.retryable === false) return answer({ state: "unavailable" });
     return new Response(null, { status: READ_FAILED, headers: NO_STORE });
   }
   // Outside the `try`: a fault in the mapping is this app's bug, which Next

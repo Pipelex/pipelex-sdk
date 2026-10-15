@@ -16,7 +16,7 @@ export type ProgressRead =
   | { kind: "snapshot"; snapshot: ProgressSnapshot }
   /** No progress for this run yet: read again. */
   | { kind: "none" }
-  /** This source serves no progress at all: stop asking for this run. */
+  /** This source will not serve this run's progress, and asking again cannot change that: stop asking for this run. */
   | { kind: "unavailable" }
   /** This read failed: keep what is held, and read again. */
   | { kind: "failed" };

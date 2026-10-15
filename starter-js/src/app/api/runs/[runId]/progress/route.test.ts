@@ -94,19 +94,31 @@ describe("GET /api/runs/{runId}/progress", () => {
 
   it("answers unavailable when the base URL serves no progress route", async () => {
     getRunProgress.mockRejectedValueOnce(
-      new RunLifecycleUnavailableError("no progress route", "https://api.pipelex.com"),
+      new RunLifecycleUnavailableError("no progress route", "http://127.0.0.1:8081"),
     );
     const response = await call();
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual({ state: "unavailable" });
   });
 
-  it("answers an error status with no body for any other failure", async () => {
+  it("answers unavailable for any refusal the SDK judges final", async () => {
+    // A hosted gateway answers a path it does not route with 403 Forbidden, as
+    // it answers a key it refuses: reading again helps in neither case.
+    for (const failure of [apiError(403), apiError(401), apiError(400)]) {
+      getRunProgress.mockRejectedValueOnce(failure);
+      const response = await call();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ state: "unavailable" });
+    }
+  });
+
+  it("answers an error status with no body for a failure reading again can fix", async () => {
     for (const failure of [
       apiError(503),
-      apiError(401),
+      apiError(429),
       new ApiUnreachableError("connect ECONNREFUSED", "https://api.pipelex.com", "ECONNREFUSED"),
-      new Error("an answer the SDK could not read"),
+      new Error("a failure that carries no verdict"),
     ]) {
       getRunProgress.mockRejectedValueOnce(failure);
       const response = await call();
@@ -117,9 +129,9 @@ describe("GET /api/runs/{runId}/progress", () => {
     }
   });
 
-  it("answers an error status when the client cannot be built, before any read", async () => {
+  it("reads nothing when the client cannot be built, and still answers", async () => {
     buildClient.mockImplementationOnce(() => {
-      throw new Error("PIPELEX_API_KEY is not set");
+      throw new Error("the client could not be built");
     });
     const response = await call();
     expect(response.status).toBe(502);
