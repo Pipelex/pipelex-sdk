@@ -5,6 +5,7 @@
 ### Changed
 
 - **`Membership.role_in_org` reads the `runner` role, and any later role, open (Breaking)**: `OrgRole` gains `RUNNER`, and a role this SDK does not know reads as its raw `str` instead of failing the whole `list_memberships`, `create_organization` or `rename_organization` answer with `ApiResponseError`, so a `match` over a membership's role needs a branch for `OrgRole.RUNNER` and one for a plain string.
+- **Requires `mthds` 0.22.0, the release that carries the method tree and reports MTHDS standard 7.0.0 and Protocol 1.0.0 (Breaking)**: the exact pin moves from `mthds==0.21.0` to `mthds==0.22.0`, so every environment holding this `pipelex-sdk` installs exactly that `mthds`, and a project that also pins `mthds` itself has to move with it. Nothing in `pipelex-sdk`'s own surface changes, and a run or a validation still sends an inline bundle as `mthds_contents`: the release's breaking changes sit in parts of `mthds` this client never uses, so code of your own that reads a `methods.lock` (whose entries now carry `digest` instead of `hash`), uses the package cache (now in a versioned layout) or checks a manifest's `mthds_version` (now evaluated against `7.0.0`) follows `mthds`'s changelog.
 
 ## [v0.44.0] - 2026-10-14
 
