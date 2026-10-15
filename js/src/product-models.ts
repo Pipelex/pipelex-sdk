@@ -529,13 +529,29 @@ export interface MethodExamplePage {
 
 // ── Organizations (`/v1/organizations`) ──────────────────────────────────
 
+/**
+ * A member's role within an organization — `Membership.role_in_org`.
+ *
+ * - `admin` does what a member does, and manages the organization's members, their roles and
+ *   its invitations.
+ * - `member` builds, publishes and runs the organization's methods.
+ * - `runner` runs the versions the organization published, and changes no method.
+ *
+ * Read open, as `Membership.role_in_org` types it: a role a later platform adds arrives as its
+ * raw string, so a `switch` over a membership's role has to say what an unknown one does. What
+ * a role may do is the platform's to decide: a call it refuses to the caller's role throws
+ * `ApiResponseError`, whatever this type says.
+ */
+export type OrgRole = "admin" | "member" | "runner";
+
 export interface Membership {
   org_id: string;
   /** Null for the implicit personal org (no backing WorkOS organization). */
   workos_organization_id: string | null;
   name: string;
   is_personal: boolean;
-  role_in_org: "admin" | "member";
+  /** The caller's role in the organization: an `OrgRole`, or the raw string of one this SDK does not know. */
+  role_in_org: OrgRole | (string & {});
 }
 
 export interface MembershipsResponse {

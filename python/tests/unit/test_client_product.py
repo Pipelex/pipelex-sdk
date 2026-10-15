@@ -313,6 +313,70 @@ class TestClientProduct:
         assert result.active_org_feature_flags == ["flag"]
         assert result.memberships[0].role_in_org is OrgRole.ADMIN
 
+    @pytest.mark.parametrize(
+        ("slug", "expected"),
+        [
+            ("admin", OrgRole.ADMIN),
+            ("member", OrgRole.MEMBER),
+            ("runner", OrgRole.RUNNER),
+        ],
+    )
+    def test_list_memberships_reads_each_known_role_as_its_member(self, mocker: MockerFixture, slug: str, expected: OrgRole) -> None:
+        client = self._client()
+        membership = {"org_id": "o1", "workos_organization_id": "wo1", "name": "Acme", "is_personal": False, "role_in_org": slug}
+        self._mock_send(mocker, client, _response(200, json_body={"memberships": [membership], "active_org_feature_flags": []}))
+
+        result = asyncio.run(client.list_memberships())
+
+        assert result.memberships[0].role_in_org is expected
+
+    def test_list_memberships_keeps_an_unknown_role_as_its_string(self, mocker: MockerFixture) -> None:
+        """A role a later platform adds reads as its raw slug, and the rest of the response still reads."""
+        client = self._client()
+        runner = {"org_id": "o1", "workos_organization_id": "wo1", "name": "Acme", "is_personal": False, "role_in_org": "runner"}
+        unknown = {"org_id": "o2", "workos_organization_id": "wo2", "name": "Beta", "is_personal": False, "role_in_org": "auditor"}
+        body = {"memberships": [runner, unknown], "active_org_feature_flags": ["flag"]}
+        self._mock_send(mocker, client, _response(200, json_body=body))
+
+        result = asyncio.run(client.list_memberships())
+
+        assert result.memberships[0].role_in_org is OrgRole.RUNNER
+        unknown_role = result.memberships[1].role_in_org
+        assert type(unknown_role) is str
+        assert unknown_role == "auditor"
+        assert result.memberships[1].name == "Beta"
+        assert result.active_org_feature_flags == ["flag"]
+
+    def test_list_memberships_refuses_a_role_that_is_not_a_string(self, mocker: MockerFixture) -> None:
+        client = self._client()
+        membership = {"org_id": "o1", "workos_organization_id": None, "name": "Acme", "is_personal": True, "role_in_org": None}
+        self._mock_send(mocker, client, _response(200, json_body={"memberships": [membership], "active_org_feature_flags": []}))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(client.list_memberships())
+
+        assert exc_info.value.status == 200
+
+    @pytest.mark.parametrize(
+        ("slug", "expected"),
+        [
+            ("runner", OrgRole.RUNNER),
+            ("auditor", "auditor"),
+        ],
+    )
+    def test_create_and_rename_organization_read_any_role(self, mocker: MockerFixture, slug: str, expected: OrgRole | str) -> None:
+        client = self._client()
+        body = {"org_id": "o1", "workos_organization_id": "wo1", "name": "Acme", "is_personal": False, "role_in_org": slug}
+        self._mock_send(mocker, client, _response(200, json_body=body))
+
+        created = asyncio.run(client.create_organization("Acme"))
+        renamed = asyncio.run(client.rename_organization("o1", "Acme"))
+
+        assert created.role_in_org == expected
+        assert type(created.role_in_org) is type(expected)
+        assert renamed.role_in_org == expected
+        assert type(renamed.role_in_org) is type(expected)
+
     def test_create_organization(self, mocker: MockerFixture) -> None:
         client = self._client()
         body = {"org_id": "o1", "workos_organization_id": None, "name": "Acme", "is_personal": False, "role_in_org": "admin"}

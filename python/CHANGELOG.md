@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`Membership.role_in_org` reads the `runner` role, and any later role, open (Breaking)**: `OrgRole` gains `RUNNER`, and a role this SDK does not know reads as its raw `str` instead of failing the whole `list_memberships`, `create_organization` or `rename_organization` answer with `ApiResponseError`, so a `match` over a membership's role needs a branch for `OrgRole.RUNNER` and one for a plain string.
+
 ## [v0.44.0] - 2026-10-14
 
 ### Added

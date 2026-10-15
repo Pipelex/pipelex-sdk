@@ -221,6 +221,7 @@ export type {
   MethodWriteInput,
   Membership,
   MembershipsResponse,
+  OrgRole,
   SubscriptionResponse,
   PlanView,
   InvoiceView,
