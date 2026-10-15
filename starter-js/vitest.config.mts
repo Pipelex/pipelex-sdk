@@ -12,6 +12,10 @@ export default defineConfig({
     // not traverse dot-directories, so .claude/ must be listed explicitly.
     include: ["**/*.{test,spec}.?(c|m)[jt]s?(x)", ".claude/skills/bootstrap/scripts/*.test.mjs"],
     exclude: ["e2e/**", "node_modules/**", ".next/**"],
+    // The run timeline's entry imports its own stylesheet, which Node cannot
+    // load, so Vite transforms the package as it does this app's own files
+    // rather than handing it to Node as it does other dependencies.
+    server: { deps: { inline: ["@pipelex/mthds-ui"] } },
   },
   resolve: {
     alias: {
