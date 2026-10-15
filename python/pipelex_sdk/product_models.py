@@ -720,10 +720,22 @@ MethodExampleLatestRunResultAdapter: TypeAdapter[MethodExampleLatestRunResult] =
 
 
 class OrgRole(StrEnum):
-    """A member's role within an organization."""
+    """A member's role within an organization — `Membership.role_in_org`.
+
+    - `ADMIN`: does what a member does, and manages the organization's members, their roles and its
+      invitations.
+    - `MEMBER`: builds, publishes and runs the organization's methods.
+    - `RUNNER`: runs the versions the organization published, and changes no method.
+
+    Read open, as `Membership.role_in_org` types it: a role a later platform adds arrives as its raw
+    string rather than failing the whole response, so a `match` over a membership's role needs a branch
+    for a string this enum does not name. What a role may do is the platform's to decide: a call it
+    refuses to the caller's role raises `ApiResponseError`, whatever this enum says.
+    """
 
     ADMIN = "admin"
     MEMBER = "member"
+    RUNNER = "runner"
 
 
 class Membership(BaseModel):
@@ -736,7 +748,9 @@ class Membership(BaseModel):
     workos_organization_id: str | None
     name: str
     is_personal: bool
-    role_in_org: OrgRole
+    #: The caller's role in the organization: the `OrgRole` member when this SDK knows the role, its raw
+    #: string otherwise.
+    role_in_org: Annotated[OrgRole | str, Field(union_mode="left_to_right")]
 
 
 class MembershipsResponse(BaseModel):
