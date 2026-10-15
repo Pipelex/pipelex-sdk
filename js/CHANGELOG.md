@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.45.0] - 2026-10-16
+
+### Changed
+
+- **`Membership.role_in_org` reads the `runner` role, and any later role, open (Breaking)**: the role is the newly exported `OrgRole` (`admin`, `member` or `runner`), or the raw string of a role a later platform adds, so a `switch` over a membership's role that assumed two roles needs a branch for `runner` and one for a string it does not know.
+
 ## [v0.44.0] - 2026-10-14
 
 ### Added

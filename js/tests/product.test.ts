@@ -7,8 +7,10 @@ import {
 } from "../src/errors.js";
 import type { RunErrorReport } from "../src/error-models.js";
 import type {
+  Membership,
   MethodSummary,
   MethodVersionSummary,
+  OrgRole,
   PipelineRun,
   RunHistoryItem,
   RunPage,
@@ -527,6 +529,85 @@ describe("organizations", () => {
     expect(req.url).toBe("http://localhost:8081/v1/organizations/o1");
     expect(req.body).toEqual({ name: "Beta" });
   });
+
+  it("types a membership's role as an OrgRole, read open", () => {
+    expectTypeOf<OrgRole>().toEqualTypeOf<"admin" | "member" | "runner">();
+    expectTypeOf<Membership["role_in_org"]>().toEqualTypeOf<OrgRole | (string & {})>();
+  });
+
+  it("reads a runner membership beside the other roles", async () => {
+    const client = makeClient();
+    const membership = (orgId: string, role: string): Membership => ({
+      org_id: orgId,
+      workos_organization_id: `wo-${orgId}`,
+      name: orgId,
+      is_personal: false,
+      role_in_org: role,
+    });
+    const body = {
+      memberships: [
+        membership("o1", "admin"),
+        membership("o2", "member"),
+        membership("o3", "runner"),
+      ],
+      active_org_feature_flags: [],
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
+
+    const result = await client.listMemberships();
+
+    expect(result.memberships.map((row) => row.role_in_org)).toEqual(["admin", "member", "runner"]);
+  });
+
+  it("relays a role this SDK does not know as its raw string, and reads the rest", async () => {
+    const client = makeClient();
+    const body = {
+      memberships: [
+        {
+          org_id: "o1",
+          workos_organization_id: "wo1",
+          name: "Acme",
+          is_personal: false,
+          role_in_org: "runner",
+        },
+        {
+          org_id: "o2",
+          workos_organization_id: "wo2",
+          name: "Beta",
+          is_personal: false,
+          role_in_org: "auditor",
+        },
+      ],
+      active_org_feature_flags: ["flag"],
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
+
+    const result = await client.listMemberships();
+
+    expect(result).toEqual(body);
+    expect(result.memberships[1]?.role_in_org).toBe("auditor");
+  });
+
+  it.each(["runner", "auditor"])(
+    "hands back the %s role of an organization it creates or renames",
+    async (role) => {
+      const client = makeClient();
+      const body = {
+        org_id: "o1",
+        workos_organization_id: "wo1",
+        name: "Acme",
+        is_personal: false,
+        role_in_org: role,
+      };
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => jsonResponse(200, body));
+
+      const created = await client.createOrganization({ name: "Acme" });
+      const renamed = await client.renameOrganization("o1", { name: "Acme" });
+
+      expect(created.role_in_org).toBe(role);
+      expect(renamed.role_in_org).toBe(role);
+    },
+  );
 });
 
 describe("billing", () => {
