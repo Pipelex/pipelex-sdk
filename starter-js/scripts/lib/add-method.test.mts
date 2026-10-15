@@ -1028,6 +1028,18 @@ describe("renderForm", () => {
     expect(source).toContain("<RunDetails runId={state.runId} usage={state.usage} />");
     expect(source).not.toContain("CostReport");
   });
+
+  it("draws a durable run's live timeline last in the column, in every phase", () => {
+    // Outside every phase's branch and after the result, so the timeline never
+    // jumps between the status card and the result, and a file form gets it too.
+    for (const plan of [TEXT_STATS_PLAN, DOCUMENTS_PLAN]) {
+      const source = renderForm(plan);
+      expect(source).toContain('import { RunProgressPanel } from "./RunProgressPanel";');
+      expect(source).toMatch(
+        /\n {6}<RunProgressPanel state=\{state\} \/>\n {4}<\/div>\n {2}\);\n\}\n$/,
+      );
+    }
+  });
 });
 
 // ── The orchestration ───────────────────────────────────────────────────────

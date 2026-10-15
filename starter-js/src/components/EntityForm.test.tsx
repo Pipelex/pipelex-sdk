@@ -6,12 +6,18 @@ import {
   runExtractEntitiesBlocking,
   startExtractEntitiesRun,
 } from "@/actions/runExtractEntitiesPipeline";
+import { fetchRunProgress } from "@/lib/fetchRunProgress";
 
 vi.mock("@/actions/runExtractEntitiesPipeline", () => ({
   runExtractEntitiesBlocking: vi.fn(),
   startExtractEntitiesRun: vi.fn(),
   pollExtractEntitiesRun: vi.fn(),
 }));
+
+// The run timeline's reader, faked so no test fetches anything: the panel
+// follows a durable run through it, and this source serves no progress.
+vi.mock("@/lib/fetchRunProgress", () => ({ fetchRunProgress: vi.fn() }));
+const readProgress = vi.mocked(fetchRunProgress);
 
 const blocking = vi.mocked(runExtractEntitiesBlocking);
 const start = vi.mocked(startExtractEntitiesRun);
@@ -22,6 +28,7 @@ beforeEach(() => {
   blocking.mockReset();
   start.mockReset();
   poll.mockReset();
+  readProgress.mockReset().mockResolvedValue({ kind: "unavailable" });
 });
 afterEach(() => vi.useRealTimers());
 
@@ -92,6 +99,8 @@ describe("EntityForm", () => {
 
     await flush(); // start + first poll (running)
     expect(screen.getByRole("status")).toBeInTheDocument();
+    // The run timeline follows the durable run, by its id.
+    expect(readProgress).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
 
     await flush(2000); // scheduled second poll → completed
     expect(screen.getByText("Tim Cook")).toBeInTheDocument();
@@ -120,6 +129,8 @@ describe("EntityForm", () => {
     expect(screen.getByText("Tim Cook")).toBeInTheDocument();
     // Both modes hand over the same shape — the forms are mode-agnostic.
     expect(blocking).toHaveBeenCalledWith({ text: { text: expect.stringContaining("Tim Cook") } });
+    // A blocking run has no id until it has ended, so its timeline is never followed.
+    expect(readProgress).not.toHaveBeenCalled();
   });
 
   it("renders the structured error when a poll returns ok:false", async () => {

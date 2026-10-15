@@ -7,6 +7,7 @@ import {
   runSummarizePdfBlocking,
   startSummarizePdfRun,
 } from "@/actions/runSummarizePdfPipeline";
+import { fetchRunProgress } from "@/lib/fetchRunProgress";
 import type { UploadRequest } from "@/lib/fileInputs";
 
 vi.mock("@/actions/runSummarizePdfPipeline", () => ({
@@ -15,6 +16,11 @@ vi.mock("@/actions/runSummarizePdfPipeline", () => ({
   pollSummarizePdfRun: vi.fn(),
   requestSummarizePdfUpload: vi.fn(),
 }));
+
+// The run timeline's reader, faked so no test fetches anything: the panel
+// follows a durable run through it, and this source serves no progress.
+vi.mock("@/lib/fetchRunProgress", () => ({ fetchRunProgress: vi.fn() }));
+const readProgress = vi.mocked(fetchRunProgress);
 
 const uploadWithGrant = vi.fn();
 vi.mock("@pipelex/sdk/upload", () => ({
@@ -33,6 +39,7 @@ beforeEach(() => {
   blocking.mockReset();
   start.mockReset();
   poll.mockReset();
+  readProgress.mockReset().mockResolvedValue({ kind: "unavailable" });
   // Every drop is granted and stored unless a test says otherwise: the grant
   // names the reference, and the stand-in storage answers with it.
   requestUpload.mockReset().mockImplementation(async (request: UploadRequest) => ({

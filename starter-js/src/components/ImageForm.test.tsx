@@ -6,12 +6,18 @@ import {
   runGenerateImageBlocking,
   startGenerateImageRun,
 } from "@/actions/runGenerateImagePipeline";
+import { fetchRunProgress } from "@/lib/fetchRunProgress";
 
 vi.mock("@/actions/runGenerateImagePipeline", () => ({
   runGenerateImageBlocking: vi.fn(),
   startGenerateImageRun: vi.fn(),
   pollGenerateImageRun: vi.fn(),
 }));
+
+// The run timeline's reader, faked so no test fetches anything: the panel
+// follows a durable run through it, and this source serves no progress.
+vi.mock("@/lib/fetchRunProgress", () => ({ fetchRunProgress: vi.fn() }));
+const readProgress = vi.mocked(fetchRunProgress);
 
 const blocking = vi.mocked(runGenerateImageBlocking);
 const start = vi.mocked(startGenerateImageRun);
@@ -22,6 +28,7 @@ beforeEach(() => {
   blocking.mockReset();
   start.mockReset();
   poll.mockReset();
+  readProgress.mockReset().mockResolvedValue({ kind: "unavailable" });
 });
 afterEach(() => vi.useRealTimers());
 
