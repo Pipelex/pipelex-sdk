@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The starter runs on `@pipelex/sdk` 0.45.0 and `@pipelex/mthds-form` 0.17.1**: bumped from 0.39.0 and 0.10.1, and `npm ls mthds` now lists one copy, where it listed the form kernel's and the SDK's apart. A result holding an integer past `Number.MAX_SAFE_INTEGER` now arrives exact rather than rounded, so a generated schema expecting a number refuses it by name; in the result view each file gains its own download button, an HTML result shows as one page with a "Download PDF" control, and the JSON receipt stays beside the rendered result. On the form, an optional structure stays closed until the "+ N optional" disclosure opens it, a half-filled one holds the run back, and every tapped control is at least 44 pixels square on a phone.
+
 ## [v0.41.0] - 2026-10-13
 
 ### Changed
