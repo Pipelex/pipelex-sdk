@@ -61,26 +61,37 @@ function isFinalRefusal(caught: unknown): boolean {
  * retryable, a fault in one answer, or one carrying no verdict. The browser
  * keeps the snapshot it holds and reads again. It is not logged, following this
  * app's rule against diagnostic console writes; the status poll is where a
- * failing API shows itself.
+ * failing API shows itself. A read the browser aborted gets the same answer,
+ * which nobody reads.
  */
 const READ_FAILED = 502;
 
+function readFailed(): Response {
+  return new Response(null, { status: READ_FAILED, headers: NO_STORE });
+}
+
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ runId: string }> },
 ): Promise<Response> {
   const { runId } = await context.params;
   let progress: RunProgress;
   try {
-    progress = await getPipelexClient().getRunProgress(runId);
+    // The request's own signal: a browser that stops reading, because the run it
+    // follows changed or its page went, cancels the upstream read too.
+    progress = await getPipelexClient().getRunProgress(runId, { signal: request.signal });
   } catch (caught) {
+    // The browser has gone, so nobody reads this answer. The SDK rethrows its
+    // abort untouched; the failure is not classified at all, so whatever the
+    // abort threw is never taken for a final refusal.
+    if (request.signal.aborted) return readFailed();
     // The platform's `404` for a run it does not know: an id just started.
     if (caught instanceof ApiResponseError && caught.status === 404) {
       return answer({ state: "none" });
     }
     // No progress route, or a refused key: not worth reading again for this run.
     if (isFinalRefusal(caught)) return answer({ state: "unavailable" });
-    return new Response(null, { status: READ_FAILED, headers: NO_STORE });
+    return readFailed();
   }
   // Outside the `try`: a fault in the mapping is this app's bug, which Next
   // answers with a 500 and reports, never a read that merely failed.

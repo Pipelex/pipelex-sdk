@@ -23,9 +23,20 @@ beforeEach(() => {
   buildClient.mockClear();
 });
 
-function call(runId = "run-1") {
-  return GET(new Request(`http://127.0.0.1:4300/api/runs/${runId}/progress`), {
-    params: Promise.resolve({ runId }),
+function progressRequest(runId = "run-1", init?: RequestInit): Request {
+  return new Request(`http://127.0.0.1:4300/api/runs/${runId}/progress`, init);
+}
+
+function call(runId = "run-1", request = progressRequest(runId)) {
+  return GET(request, { params: Promise.resolve({ runId }) });
+}
+
+/** A progress read that settles only on its signal's abort, rethrowing the reason as the SDK's client does. */
+function readUntilAborted(_runId: string, options: { signal: AbortSignal }): Promise<never> {
+  const { signal } = options;
+  return new Promise((_, reject) => {
+    if (signal.aborted) reject(signal.reason);
+    else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
   });
 }
 
@@ -87,7 +98,7 @@ describe("GET /api/runs/{runId}/progress", () => {
     getRunProgress.mockResolvedValueOnce(PROGRESS);
     const response = await call();
 
-    expect(getRunProgress).toHaveBeenCalledWith("run-1");
+    expect(getRunProgress).toHaveBeenCalledWith("run-1", { signal: expect.any(AbortSignal) });
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
     const body = await response.json();
@@ -99,6 +110,31 @@ describe("GET /api/runs/{runId}/progress", () => {
       at: "2026-10-16T09:00:09Z",
     });
     expect(JSON.stringify(body)).not.toContain("upstream refused");
+  });
+
+  it("hands the SDK the request's own signal, so the browser leaving cancels the upstream read", async () => {
+    getRunProgress.mockResolvedValueOnce(PROGRESS);
+    const request = progressRequest();
+    await call("run-1", request);
+    expect(getRunProgress).toHaveBeenCalledOnce();
+    expect(getRunProgress.mock.calls[0][1].signal).toBe(request.signal);
+  });
+
+  it("answers a read the browser aborted with no body, never classifying what the abort threw", async () => {
+    // The SDK rethrows the caller's abort untouched, so the route sees the
+    // signal's reason. One carrying a final verdict shows the abort is checked
+    // before any classification: unchecked, it would answer `unavailable`.
+    for (const reason of [undefined, apiError(403)]) {
+      const browser = new AbortController();
+      getRunProgress.mockImplementationOnce(readUntilAborted);
+      const pending = call("run-1", progressRequest("run-1", { signal: browser.signal }));
+      browser.abort(reason);
+      const response = await pending;
+      expect(response.status).toBe(502);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.text()).toBe("");
+    }
+    expect(getRunProgress).toHaveBeenCalledTimes(2);
   });
 
   it("answers none for a run the platform does not know yet", async () => {
