@@ -40,10 +40,28 @@ function answer(body: RunProgressAnswer): Response {
 }
 
 /**
- * A failure reading again can fix, by the SDK's verdict, is an error status with
- * no body: the browser keeps the snapshot it holds and reads again. It is not
- * logged, following this app's rule against diagnostic console writes; the
- * status poll is where a failing API shows itself.
+ * Whether a failure is a refusal that reading again cannot change: one the SDK
+ * judges not retryable and lays on the request or the configuration (`input`
+ * or `config`). A bare runner without the route is the SDK's
+ * `RunLifecycleUnavailableError`, and a hosted gateway answers a path it does
+ * not route with `403 Forbidden`, as it answers a key it refuses, so the route
+ * being absent cannot be told from a refusal there; both are `config`.
+ *
+ * A `runtime` verdict is never final here, retryable or not: it is a fault in
+ * one answer, such as a `200` the SDK could not read (a malformed snapshot,
+ * truncated JSON, an empty body), and the next read may well be whole.
+ */
+function isFinalRefusal(caught: unknown): boolean {
+  const verdict = errorVerdictOf(caught);
+  return verdict !== undefined && !verdict.retryable && verdict.errorDomain !== "runtime";
+}
+
+/**
+ * Every other failure is an error status with no body: one the SDK judges
+ * retryable, a fault in one answer, or one carrying no verdict. The browser
+ * keeps the snapshot it holds and reads again. It is not logged, following this
+ * app's rule against diagnostic console writes; the status poll is where a
+ * failing API shows itself.
  */
 const READ_FAILED = 502;
 
@@ -60,12 +78,8 @@ export async function GET(
     if (caught instanceof ApiResponseError && caught.status === 404) {
       return answer({ state: "none" });
     }
-    // A bare runner without the route is the SDK's `RunLifecycleUnavailableError`.
-    // A hosted gateway answers a path it does not route with `403 Forbidden`, as
-    // it answers a key it refuses, so the route being absent cannot be told from
-    // a refusal there; the SDK judges both final, and neither is worth reading
-    // again for this run.
-    if (errorVerdictOf(caught)?.retryable === false) return answer({ state: "unavailable" });
+    // No progress route, or a refused key: not worth reading again for this run.
+    if (isFinalRefusal(caught)) return answer({ state: "unavailable" });
     return new Response(null, { status: READ_FAILED, headers: NO_STORE });
   }
   // Outside the `try`: a fault in the mapping is this app's bug, which Next

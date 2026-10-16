@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiResponseError,
   ApiUnreachableError,
+  errorVerdictOf,
   RunLifecycleUnavailableError,
   type RunProgress,
 } from "@pipelex/sdk";
@@ -39,6 +40,22 @@ function apiError(status: number): ApiResponseError {
     undefined,
     undefined,
     status === 404 ? "run_not_found" : undefined,
+  );
+}
+
+/** A `200` the SDK could not read, as its client raises one: the answer's status and raw text, no problem member. */
+function unreadableAnswer(body: string): ApiResponseError {
+  return new ApiResponseError(
+    "API GET /v1/runs/run-1/progress answered 200 with a snapshot it could not read",
+    "https://api-dev.pipelex.com",
+    200,
+    "OK",
+    body,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { cause: new SyntaxError("Unexpected end of JSON input") },
   );
 }
 
@@ -105,7 +122,13 @@ describe("GET /api/runs/{runId}/progress", () => {
   it("answers unavailable for any refusal the SDK judges final", async () => {
     // A hosted gateway answers a path it does not route with 403 Forbidden, as
     // it answers a key it refuses: reading again helps in neither case.
-    for (const failure of [apiError(403), apiError(401), apiError(400)]) {
+    for (const failure of [
+      apiError(403),
+      apiError(401),
+      apiError(400),
+      apiError(405),
+      apiError(501),
+    ]) {
       getRunProgress.mockRejectedValueOnce(failure);
       const response = await call();
       expect(response.status).toBe(200);
@@ -123,6 +146,20 @@ describe("GET /api/runs/{runId}/progress", () => {
       getRunProgress.mockRejectedValueOnce(failure);
       const response = await call();
       expect(response.ok).toBe(false);
+      expect(response.status).toBe(502);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.text()).toBe("");
+    }
+  });
+
+  it("answers an error status, never unavailable, for a 200 the SDK could not read", async () => {
+    // The SDK judges such an answer `runtime` and not retryable: a fault in one
+    // answer, which the next read may well not repeat, so the browser reads again.
+    for (const body of ['{"pipeline_run_id": "run-1", "invocations": [', "", '{"status": 7}']) {
+      const failure = unreadableAnswer(body);
+      expect(errorVerdictOf(failure)).toEqual({ errorDomain: "runtime", retryable: false });
+      getRunProgress.mockRejectedValueOnce(failure);
+      const response = await call();
       expect(response.status).toBe(502);
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(await response.text()).toBe("");
