@@ -8,7 +8,7 @@ The timeline appears once the run has reached its first invocation, stays under 
 
 The timeline is built so another app can lift it whole, keeping the view and replacing only where the snapshots come from. The line between the two is a reader function.
 
-**The view** knows nothing of the hosted API. It is three files:
+**The view** knows nothing of the hosted API, and it is made of these files:
 
 | File                                 | What it does                                                                                                                                                 |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -25,7 +25,7 @@ export type ProgressRead =
 export type ProgressReader = (runId: string, signal: AbortSignal) => Promise<ProgressRead>;
 ```
 
-**These three files import React, `@pipelex/mthds-ui/timeline`, `@pipelex/mthds-ui/timeline/react` and each other, and nothing else**, and ESLint holds them to it: an override in `eslint.config.mjs` refuses every other import with `no-restricted-imports`, so `make check` fails at the offending line. It is an allowlist rather than a list of what to refuse, because a module of this app such as `@/lib/errors` imports the SDK itself, and a denylist naming only `@pipelex/sdk`, the actions and `next/*` would let it in by the back door. The freshness rule the hook keeps by, `fresherSnapshot`, comes from the view's own dependency for the same reason; it is the same rule as the SDK's `isFresherRunProgress`.
+**These files import React, `@pipelex/mthds-ui/timeline`, `@pipelex/mthds-ui/timeline/react` and each other, and nothing else**, and ESLint holds them to it: an override in `eslint.config.mjs` refuses every other import with `no-restricted-imports`, so `make check` fails at the offending line. It is an allowlist rather than a list of what to refuse, because a module of this app such as `@/lib/errors` imports the SDK itself, and a denylist naming only `@pipelex/sdk`, the actions and `next/*` would let it in by the back door. The freshness rule the hook keeps by, `fresherSnapshot`, comes from the view's own dependency for the same reason; it is the same rule as the SDK's `isFresherRunProgress`.
 
 **The source** is this app's own, and it is the part another app replaces:
 
@@ -96,7 +96,7 @@ This is the rule a run's failure report already follows here, "the provider's ra
 
 ## Lifting the view into another app
 
-The view is three files and one dependency, and the one thing to write is a reader.
+The view is a handful of files and one dependency, and the one thing to write is a reader.
 
 1. Add `@pipelex/mthds-ui` to the app's dependencies, and inline it in Vitest's `server.deps` if the app tests with Vitest.
 2. Copy `src/lib/progressReader.ts`, `src/hooks/useRunProgress.ts` and `src/components/RunTimelineView.tsx`, and the ESLint override that holds them to their imports. Change `GALLERY_PALETTE` and `theme` in `RunTimelineView.tsx` to the app's own tokens.

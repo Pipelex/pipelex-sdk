@@ -17,11 +17,11 @@ const eslintConfig = defineConfig([
   },
   {
     // The run timeline's view knows nothing of where its snapshots come from,
-    // so another app can lift these three files whole and write one reader of
-    // its own (docs/run-timeline.md). They import React, the timeline's two
-    // entries and each other, and nothing else: an allowlist rather than a list
-    // of what to refuse, since `@/lib/errors` or any other module of this app
-    // would bring the SDK in by the back door.
+    // so another app can lift these files whole and write one reader of its
+    // own (docs/run-timeline.md). They import React, the timeline's entries in
+    // `@pipelex/mthds-ui` and each other, and nothing else: an allowlist rather
+    // than a list of what to refuse, since `@/lib/errors` or any other module
+    // of this app would bring the SDK in by the back door.
     files: [
       "src/lib/progressReader.ts",
       "src/hooks/useRunProgress.ts",

@@ -8,7 +8,7 @@ import type { ProgressSnapshot } from "@pipelex/mthds-ui/timeline";
  * progress snapshot. With `useRunProgress` and `src/lib/progressReader.ts` it
  * is the view, which knows nothing of where its snapshots come from (ESLint
  * holds these files to React and `@pipelex/mthds-ui`), so another app lifts
- * the three files whole and writes one reader of its own.
+ * the view's files whole and writes one reader of its own.
  */
 
 /**

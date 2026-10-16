@@ -5,8 +5,8 @@ import type { ProgressSnapshot } from "@pipelex/mthds-ui/timeline";
  *
  * The view (`useRunProgress`, `RunTimelineView` and this file) knows nothing of
  * the hosted API: it imports React and `@pipelex/mthds-ui` only, which ESLint
- * enforces, so another app can lift those three files whole and write one
- * reader of its own. This app's reader is `fetchRunProgress`, over its own
+ * enforces, so another app can lift those files whole and write one reader
+ * of its own. This app's reader is `fetchRunProgress`, over its own
  * `GET /api/runs/{runId}/progress` route.
  */
 

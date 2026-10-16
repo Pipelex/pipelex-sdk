@@ -55,7 +55,7 @@ One generated tree per method, mirroring `methods/` one-to-one: each method is i
 
 ## Two source kinds
 
-A method directory says where its method lives, and there are two answers. It holds either **`.mthds` files** — the bundle is in this repo, which is the four demo methods — or a **`method.json` manifest** naming a method that lives elsewhere:
+A method directory says where its method lives, and there are two answers. It holds either **`.mthds` files** — the bundle is in this repo, as it is for every demo method except `text-stats` — or a **`method.json` manifest** naming a method that lives elsewhere:
 
 ```json
 { "method_ref": "github.com/Pipelex/methods/text_stats@v0.1.1" }

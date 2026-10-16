@@ -3,7 +3,7 @@
 //
 // Written by hand after the hosted progress contract (`@pipelex/mthds-ui`'s
 // `ProgressSnapshot`, the SDK's `RunProgress`): the method's sequence, its
-// first step done, and its batch checking three claims, one of them done.
+// first step done, and its batch checking the claims, only the first done.
 // The paths follow the contract's grammar: the entry pipe's `pipe_ref`, then
 // one segment per controller level.
 // ---------------------------------------------------------------------------
