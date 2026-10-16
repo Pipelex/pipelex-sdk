@@ -52,6 +52,11 @@ function snapshot(value: ProgressSnapshot): ProgressRead {
   return { kind: "snapshot", snapshot: value };
 }
 
+/** The run ended in failure, projected from as many events as `version` says. */
+function failedAt(version: number): ProgressSnapshot {
+  return { ...claimsMidRun(RUN, version), status: "failed", summary: "Failed" };
+}
+
 function follow(options: Partial<UseRunProgressOptions> & Pick<UseRunProgressOptions, "read">) {
   return renderHook((props: UseRunProgressOptions) => useRunProgress(props), {
     initialProps: { runId: RUN, going: true, ...options },
@@ -177,7 +182,7 @@ describe("while the run goes", () => {
 });
 
 describe("once the run has ended", () => {
-  it("reads the final snapshot until one says the run ended", async () => {
+  it("reads past a read lagging behind the end, and takes the snapshot saying the run ended", async () => {
     const reader = heldReader();
     const { result, rerender } = follow({ read: reader.read });
     await reader.answer(snapshot(claimsMidRun(RUN, 7)));
@@ -194,8 +199,65 @@ describe("once the run has ended", () => {
     await reader.answer(snapshot(ended));
     expect(result.current).toBe(ended);
 
+    // The last read finds nothing fresher.
+    await advance(FINAL_PROGRESS_READ_GAP_MS);
+    await reader.answer(snapshot(claimsFinished()));
+    expect(result.current).toBe(ended);
     await advance(FINAL_PROGRESS_READ_GAP_MS * 5);
+    expect(reader.read).toHaveBeenCalledTimes(1 + FINAL_PROGRESS_READS);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("takes a later snapshot of the ended run over a lagging one that said it ended", async () => {
+    // The contract lets a read project an ended run from fewer events than an
+    // earlier read projected it running from: the reader keeps the ended one,
+    // and takes a later snapshot of the ended run by its version.
+    const reader = heldReader();
+    const { result, rerender } = follow({ read: reader.read });
+    await reader.answer(snapshot(claimsMidRun(RUN, 10)));
+    await advance(PROGRESS_POLL_MS);
+    const lagging = failedAt(8);
+    await reader.answer(snapshot(lagging));
+    expect(result.current).toBe(lagging);
+    // The ended snapshot stops the poll while the host still says the run goes.
+    await advance(PROGRESS_POLL_MS * 5);
+    expect(reader.read).toHaveBeenCalledTimes(2);
+
+    rerender({ runId: RUN, going: false, read: reader.read });
     expect(reader.read).toHaveBeenCalledTimes(3);
+    const complete = failedAt(12);
+    await reader.answer(snapshot(complete));
+    expect(result.current).toBe(complete);
+
+    await advance(FINAL_PROGRESS_READ_GAP_MS);
+    await reader.answer(snapshot(failedAt(12)));
+    await advance(FINAL_PROGRESS_READ_GAP_MS * 5);
+    expect(result.current).toBe(complete);
+    expect(reader.read).toHaveBeenCalledTimes(4);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops the final reads early once an ended snapshot is read twice unchanged", async () => {
+    const reader = heldReader();
+    const { result } = follow({ read: reader.read, going: false });
+    const ended = claimsFinished();
+    await reader.answer(snapshot(ended));
+    await advance(FINAL_PROGRESS_READ_GAP_MS);
+    await reader.answer(snapshot(claimsFinished()));
+
+    await advance(FINAL_PROGRESS_READ_GAP_MS * 5);
+    expect(reader.read).toHaveBeenCalledTimes(2);
+    expect(FINAL_PROGRESS_READS).toBeGreaterThan(2);
+    expect(result.current).toBe(ended);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops the final reads once the source says it serves no progress", async () => {
+    const reader = heldReader();
+    follow({ read: reader.read, going: false });
+    await reader.answer({ kind: "unavailable" });
+    await advance(FINAL_PROGRESS_READ_GAP_MS * 5);
+    expect(reader.read).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -237,13 +299,18 @@ describe("once the run has ended", () => {
     expect(result.current?.version).toBe(8 + FINAL_PROGRESS_READS);
   });
 
-  it("makes no final read when the held snapshot already says the run ended", async () => {
+  it("still makes a final read when the held snapshot says the run ended, and stops when it changes nothing", async () => {
     const reader = heldReader();
-    const { rerender } = follow({ read: reader.read });
-    await reader.answer(snapshot(claimsFinished()));
+    const { result, rerender } = follow({ read: reader.read });
+    const ended = claimsFinished();
+    await reader.answer(snapshot(ended));
     rerender({ runId: RUN, going: false, read: reader.read });
+    expect(reader.read).toHaveBeenCalledTimes(2);
+    await reader.answer(snapshot(claimsFinished()));
     await advance(FINAL_PROGRESS_READ_GAP_MS * 5);
-    expect(reader.read).toHaveBeenCalledTimes(1);
+    expect(reader.read).toHaveBeenCalledTimes(2);
+    expect(result.current).toBe(ended);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
