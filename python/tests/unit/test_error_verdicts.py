@@ -33,6 +33,9 @@ from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 import httpx
 import pytest
 from mthds.protocol.exceptions import PipelineRequestError
+from mthds.protocol.problem.answers import read_answer
+from mthds.protocol.problem.client_problems import make_client_problem
+from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.exceptions import ApiResponseError as MthdsApiResponseError
 from mthds.runners.api.exceptions import RunStillRunningError as MthdsRunStillRunningError
 from pydantic import BaseModel, ConfigDict, Field
@@ -73,6 +76,7 @@ from pipelex_sdk.errors import (
     UploadNotAllowedKind,
     UploadTransportCode,
     UploadTransportError,
+    argument_invalid_problem,
 )
 from pipelex_sdk.runs import RunStatus
 
@@ -225,6 +229,8 @@ _BASE_URL = "http://localhost:8081"
 _RUN_ID = "run-1"
 _INPUT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 _CONFIG = ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False)
+# The problem a hand-built refusal of an argument carries; the case file decides only its verdict.
+_REFUSED_ARGUMENT = argument_invalid_problem(argument="argument", reason="refused")
 
 
 def _answer(status: int, body: _Body) -> httpx.Response:
@@ -327,8 +333,8 @@ _BUILDERS: dict[str, Callable[[_Given], BaseException]] = {
     "RunLifecycleUnavailableError": lambda _: RunLifecycleUnavailableError("No run lifecycle here.", _BASE_URL),
     "MissingMainStuffError": lambda _: MissingMainStuffError("No main stuff.", _RUN_ID),
     "PagingNotTerminatingError": lambda _: PagingNotTerminatingError("Paging forever.", 10_000),
-    "RequestArgumentError": lambda given: RequestArgumentError("Refused before sending.", verdict=given.verdict),
-    "InputPreparationError": lambda given: InputPreparationError("Cannot prepare inputs.", verdict=given.verdict),
+    "RequestArgumentError": lambda given: RequestArgumentError("Refused before sending.", verdict=given.verdict, problem=_REFUSED_ARGUMENT),
+    "InputPreparationError": lambda given: InputPreparationError("Cannot prepare inputs.", verdict=given.verdict, problem=_REFUSED_ARGUMENT),
     "InvalidLocalSourceError": lambda _: InvalidLocalSourceError("No such file.", "/nope.pdf"),
     "InvalidInputValueError": lambda _: InvalidInputValueError(
         'Input "photo" holds a malformed data URL (invalid base64).', input_name="photo", input_path="photo"
@@ -339,7 +345,9 @@ _BUILDERS: dict[str, Callable[[_Given], BaseException]] = {
     "UnsupportedUploadCapabilityError": lambda _: UnsupportedUploadCapabilityError("No upload here."),
     "UploadAuthenticationError": lambda given: UploadAuthenticationError("Not authorized.", 401 if given.status is None else given.status),
     "UploadTransportError": _upload_transport,
-    "ArtifactOperationError": lambda given: ArtifactOperationError("The artifact operation failed.", verdict=given.verdict),
+    "ArtifactOperationError": lambda given: ArtifactOperationError(
+        "The artifact operation failed.", verdict=given.verdict, problem=_REFUSED_ARGUMENT
+    ),
     "ScopeUnavailableError": lambda _: ScopeUnavailableError(ArtifactScope.MAIN_STUFF, _RUN_ID),
     "ArtifactAuthenticationError": _artifact_authentication,
     "ArtifactFetchError": lambda given: ArtifactFetchError(
@@ -414,7 +422,11 @@ class _QueueFullError(PipelexRequestError):
     """A consumer's own subclass, declaring its verdict."""
 
     def __init__(self) -> None:
-        super().__init__("The local queue is full.", verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True))
+        super().__init__(
+            "The local queue is full.",
+            verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True),
+            problem=make_client_problem(CoreCode.RUNTIME_UNEXPECTED),
+        )
 
 
 class TestErrorVerdicts:
@@ -465,7 +477,7 @@ class TestErrorVerdicts:
         assert (caught.value.error_domain, caught.value.retryable) == (case.expected.error_domain, case.expected.retryable)
         # What the server sent stays readable, whatever the verdict became.
         if isinstance(case.body, dict):
-            assert caught.value.problem == case.body
+            assert caught.value.problem_document == case.body
 
     # ── A failed request that may create a run ──
 
@@ -604,14 +616,20 @@ class TestErrorVerdicts:
     def test_error_verdict_of_reads_a_consumer_subclass_declaring_its_verdict(self) -> None:
         assert error_verdict_of(_QueueFullError()) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
 
-    def test_error_verdict_of_reads_an_mthds_api_response_error_only_when_both_members_were_sent(self) -> None:
-        both = MthdsApiResponseError(
-            "refused", api_url=_BASE_URL, status=500, status_text="", response_body="", error_domain="config", retryable=False
+    def test_error_verdict_of_reads_nothing_off_an_mthds_api_response_error_whose_verdict_is_its_problem_s(self) -> None:
+        # The standard's error carries its verdict on its problem, in the standard's vocabulary, and no
+        # `error_domain` or `retryable` of its own, even when the runner sent both.
+        sent = '{"error_domain": "config", "retryable": false}'
+        mthds = MthdsApiResponseError(
+            "refused",
+            problem=read_answer(status=500, body=sent, headers={}, creates_run=False).problem,
+            api_url=_BASE_URL,
+            status=500,
+            status_text="",
+            response_body=sent,
         )
-        domain_only = MthdsApiResponseError("refused", api_url=_BASE_URL, status=500, status_text="", response_body="", error_domain="config")
 
-        assert error_verdict_of(both) == _CONFIG
-        assert error_verdict_of(domain_only) is None
+        assert error_verdict_of(mthds) is None
 
     # ── Arguments refused before sending ──
 
@@ -638,7 +656,10 @@ class TestErrorVerdicts:
         cause = caught.value.__cause__
         assert isinstance(cause, PipelineRequestError)
         assert not isinstance(cause, PipelexRequestError)
-        assert str(caught.value) == str(cause)
+        # The refusal reads as the standard's message did before its base appended the problem's next step,
+        # and carries the standard's problem as it is.
+        assert str(cause) == f"{caught.value}\nNext step: {cause.problem.next_step.detail}"
+        assert caught.value.problem is cause.problem
         spy.assert_not_awaited()
 
     def test_a_base_url_that_is_not_host_only_is_config(self) -> None:

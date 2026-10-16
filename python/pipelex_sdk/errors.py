@@ -11,16 +11,19 @@ started a run, which `pipelex_sdk.error_verdicts.run_may_have_started_of` reads.
 packages share holds them.
 
 The errors raised over a request derive from `PipelexRequestError`, itself the protocol base
-`PipelineRequestError` (`mthds.protocol.exceptions`), mirroring `@pipelex/sdk`'s `errors.ts`:
+`PipelineRequestError` (`mthds.protocol.exceptions`), mirroring `@pipelex/sdk`'s `errors.ts`. Each
+carries, beside its verdict, the base's `problem`: the failure as the standard's problem document
+under a registered code (see "The standard's problem" below).
 
 - `RequestArgumentError` — the client refused a call's arguments before sending any request.
 - `ApiUnreachableError` — the HTTP exchange never produced a response (DNS / connect / TLS / timeout).
-  Distinguished from `ApiResponseError`, which represents a non-2xx response that *did* come back.
+  Distinguished from `ApiResponseError`, which represents a non-2xx response that *did* come back. It
+  also subclasses `mthds`'s own `ApiTransportError`.
 - `ApiResponseError` — a non-2xx response from the API, carrying the members of its RFC 9457 problem
-  document. It also subclasses `mthds`'s own `ApiResponseError`, narrowing its `validation_errors` to
-  this SDK's `ValidationErrorItem`, deciding its verdict, and adding the Pipelex members the standard's
-  client leaves out (`code`, `error_category`, `errors`), so every route — protocol, lifecycle and
-  product alike — raises this one class.
+  document as the hosted plane sends them. It also subclasses `mthds`'s own `ApiResponseError`, whose
+  `problem` is the standard's reading of the same answer, deciding its verdict and adding the hosted
+  members the standard's error leaves out (`code`, `error_category`, `errors`, `validation_errors`,
+  `user_action`, …), so every route — protocol, lifecycle and product alike — raises this one class.
 - `PipelineExecuteTimeoutError` — a blocking `execute()` killed by the hosted gateway's ~30s
   synchronous-request ceiling; points the caller at the durable start+poll path.
 - `PagingNotTerminatingError` — a paged-list iterator hit its runaway backstop, meaning the server never
@@ -47,28 +50,46 @@ already-validated `RunResults` whose body did not carry a key the operation need
 `MissingMainStuffError`, it reports a results read that did not deliver what the caller reads, so it
 stays under the protocol base.
 
+**The standard's problem.** `exc.problem` is a `mthds.protocol.problem.models.Problem` on every error
+this module raises over a request. On `ApiResponseError` it is the standard's reading of the answer,
+the one the `mthds` client gives the same answer: the body's own problem document when it is one, and
+otherwise the problem the client reads from the status (`client.response_unreadable`,
+`client.outcome_unknown` on a route that creates a run, …). On `ApiUnreachableError` it is the
+transport's (`client.unreachable`, `client.timeout`, `client.outcome_unknown`). On an error wrapping
+another, an upload refused by the API say, it is the wrapped error's. On every other error it is the
+core code the class states, built from the registry by `make_client_problem`. The problem never decides
+the verdict, which stays the SDK's own (`retryable`, `error_domain`, `run_may_have_started`), and
+`str(exc)` stays the SDK's message: unlike the `mthds` errors, this module's do not append the
+problem's next step to it, since the hosted plane's own advice, when it gave one, is already there.
+
 See `docs/errors.md` for the verdict of each class.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+import httpx
 from mthds.protocol.exceptions import PipelineRequestError
+from mthds.protocol.problem.answers import decode_json, read_answer, unreadable_answer
+from mthds.protocol.problem.client_problems import make_client_problem
+from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.exceptions import ApiResponseError as _MthdsApiResponseError
+from mthds.runners.api.exceptions import ApiTransportError as _MthdsApiTransportError
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
+from mthds.runners.api.problem import transport_failure_problem
 
 from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_domain_of, error_verdict_of, fallback_verdict
 from pipelex_sdk.run_may_have_started import answer_may_have_started_run, transport_may_have_started_run
-from pipelex_sdk.validation_models import ValidationErrorItem
 
 if TYPE_CHECKING:
-    from mthds.runners.api.problem import UserAction
+    from mthds.protocol.problem.models import Problem
 
     from pipelex_sdk.artifact_models import ArtifactScope, DownloadArtifactsResult
-    from pipelex_sdk.error_models import FieldError, RunErrorReport
+    from pipelex_sdk.error_models import FieldError, ProblemUserAction, RunErrorReport
     from pipelex_sdk.runs import RunStatus
+    from pipelex_sdk.validation_models import ValidationErrorItem
 
 #: The `ApiUnreachableError.code` of a request that reached the API and that the client's own time limit
 #: cut off while it was sent or answered — `@pipelex/sdk`'s code for the same case. Every other transport
@@ -81,6 +102,50 @@ def _verdict(error_domain: ErrorDomain, *, retryable: bool) -> ErrorVerdict:
     return ErrorVerdict(error_domain=error_domain, retryable=retryable)
 
 
+# ── The standard's problems this module states ────────────────────────
+
+
+def argument_invalid_problem(*, argument: str, reason: str) -> Problem:
+    """The problem of an argument refused before any request left: `client.argument_invalid`.
+
+    The problem a `RequestArgumentError`, and an input-preparation or artifact refusal of an argument,
+    carries.
+
+    Args:
+        argument: The argument refused, by name (`idempotency_key`, `files`, …).
+        reason: Why it was refused, as an identifier (`not_a_string`, `mutually_exclusive`, `empty`, …).
+
+    Returns:
+        `client.argument_invalid` naming the argument and the reason.
+    """
+    return make_client_problem(CoreCode.CLIENT_ARGUMENT_INVALID, params={"argument": argument, "reason": reason})
+
+
+def response_unreadable_problem(*, status: int, pipeline_run_id: str | None = None) -> Problem:
+    """The problem of an answer the client cannot use as the route's answer: `client.response_unreadable`.
+
+    Args:
+        status: The HTTP status of the answer.
+        pipeline_run_id: The run the answer is about, when there is one.
+
+    Returns:
+        `client.response_unreadable` naming the status, and the run as its member when given.
+    """
+    return make_client_problem(CoreCode.CLIENT_RESPONSE_UNREADABLE, params={"status": status}, pipeline_run_id=pipeline_run_id)
+
+
+def _outcome_unknown_problem(*, pipeline_run_id: str | None = None) -> Problem:
+    """`client.outcome_unknown`, naming the run in its parameters and as its member when its id is known."""
+    if pipeline_run_id is None:
+        return make_client_problem(CoreCode.CLIENT_OUTCOME_UNKNOWN)
+    return make_client_problem(CoreCode.CLIENT_OUTCOME_UNKNOWN, params={"pipeline_run_id": pipeline_run_id}, pipeline_run_id=pipeline_run_id)
+
+
+def _status_problem(status: int) -> Problem:
+    """The problem the standard reads from an answer's status alone, as for a body that is no problem document."""
+    return read_answer(status=status, body="", headers={}, creates_run=False).problem
+
+
 # ── The base every request error derives from ─────────────────────────
 
 
@@ -89,7 +154,8 @@ class PipelexRequestError(PipelineRequestError):
     `retryable` and `error_domain`, and a third, `run_may_have_started`.
 
     Each subclass passes its verdict to this constructor, as the keyword `verdict`, so every class says
-    its verdict where it is defined. `run_may_have_started` is `False` unless the subclass passes it:
+    its verdict where it is defined, and its problem, as the keyword `problem`, which the standard's
+    `PipelineRequestError` keeps as `problem`. `run_may_have_started` is `False` unless the subclass passes it:
     only `ApiUnreachableError` and `ApiResponseError` built for a request that may create a run, and
     `PipelineExecuteTimeoutError`, ever carry it as `True`, and when they do, `retryable` is `False`
     whatever the verdict passed. It refines the standard's `PipelineRequestError`, so
@@ -99,9 +165,14 @@ class PipelexRequestError(PipelineRequestError):
     `pipelex_sdk.error_verdicts.run_may_have_started_of` for the third member.
 
     The keyword arguments the constructor does not name pass on to the next class in the method
-    resolution order: that is how `ApiResponseError` and `RunStillRunningError`, which also refine one of
-    the standard's own classes, hand it its members. Its subclasses are meant to be raised, never this
-    class itself.
+    resolution order: that is how `ApiResponseError`, `ApiUnreachableError` and `RunStillRunningError`,
+    which also refine one of the standard's own classes, hand it its members. Its subclasses are meant
+    to be raised, never this class itself.
+
+    `str(exc)` is the message the subclass gives, as it was before the standard's errors carried a
+    problem: the standard's `PipelineRequestError` appends the problem's next step to its message, and
+    this constructor sets the message back, since an SDK message already says what to change and the
+    hosted plane's own advice, when it gave one, already rides it (`ApiResponseError`).
     """
 
     #: Whether asking again can plausibly succeed. Always decided.
@@ -115,8 +186,11 @@ class PipelexRequestError(PipelineRequestError):
     #: request, a wait on a run already named included. Always decided.
     run_may_have_started: bool
 
-    def __init__(self, message: str, /, *, verdict: ErrorVerdict, run_may_have_started: bool = False, **kwargs: Any) -> None:
-        super().__init__(message, **kwargs)
+    def __init__(self, message: str, /, *, verdict: ErrorVerdict, problem: Problem, run_may_have_started: bool = False, **kwargs: Any) -> None:
+        super().__init__(message, problem=problem, **kwargs)
+        # The standard's base appended the problem's next step; the SDK's message is its own. Pickling
+        # rebuilds the error from these args, so it keeps the same message.
+        self.args = (message,)
         self.run_may_have_started = run_may_have_started
         # Asking again could start a second run, so a run that may have started is never retryable.
         self.retryable = False if run_may_have_started else verdict.retryable
@@ -140,18 +214,23 @@ class RequestArgumentError(PipelexRequestError):
     Its verdict is `input`, not retryable — the caller must change the arguments — unless `verdict`
     declares another: the client declares `config` for a base URL that is not host-only, since it
     typically comes from `PIPELEX_BASE_URL`. A refusal the standard's own client raises before sending
-    (nothing to run, a protocol argument in `extra`) is raised again as this class with the same message,
-    the standard's error as its `__cause__`.
+    (nothing to run, a protocol argument in `extra`, a request time limit it cannot state) is raised
+    again as this class with the same message and the standard's problem, the standard's error as its
+    `__cause__`.
+
+    `problem` is `client.argument_invalid` naming the argument and why it was refused
+    (`argument_invalid_problem`), or `client.not_configured` naming the setting for a base URL that is
+    not host-only.
     """
 
-    def __init__(self, message: str, *, verdict: ErrorVerdict | None = None) -> None:
-        super().__init__(message, verdict=verdict or _verdict(ErrorDomain.INPUT, retryable=False))
+    def __init__(self, message: str, *, problem: Problem, verdict: ErrorVerdict | None = None) -> None:
+        super().__init__(message, verdict=verdict or _verdict(ErrorDomain.INPUT, retryable=False), problem=problem)
 
 
 # ── Transport and refusals ────────────────────────────────────────────
 
 
-class ApiUnreachableError(PipelexRequestError):
+class ApiUnreachableError(PipelexRequestError, _MthdsApiTransportError):
     """Raised when the Pipelex API host cannot be reached at all.
 
     DNS failure, connection refused, TLS handshake failure, or a request timeout — the HTTP exchange
@@ -176,8 +255,13 @@ class ApiUnreachableError(PipelexRequestError):
     write timeout, a connection closed once the request had left or a body that could not be decoded
     proves nothing, so the run may have started and the error is not retryable.
 
-    It derives from the SDK's base directly because the `mthds` client has no unreachable error of its
-    own; when it gains one, this class subclasses it.
+    It also subclasses `mthds`'s `ApiTransportError`, the standard client's error for a request that
+    got no answer, so a handler written against the standard's client catches it too. Its `problem` is
+    `client.outcome_unknown` when the run may have started, and otherwise the transport's reading of
+    `failure` (`client.timeout` naming the time limit for a request that timed out, `client.unreachable`
+    naming the base URL for one that never connected). `request_url` is the URL requested, the base
+    URL when it is not given, and `timeout_seconds` the request's time limit, which the problem of a
+    timeout names.
     """
 
     def __init__(
@@ -188,15 +272,36 @@ class ApiUnreachableError(PipelexRequestError):
         *,
         may_start_run: bool = False,
         failure: BaseException | None = None,
+        request_url: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> None:
         error_domain = ErrorDomain.RUNTIME if code == ABORT_TIMEOUT_CODE else ErrorDomain.CONFIG
+        run_may_have_started = may_start_run and transport_may_have_started_run(failure)
         super().__init__(
             message,
             verdict=_verdict(error_domain, retryable=True),
-            run_may_have_started=may_start_run and transport_may_have_started_run(failure),
+            problem=_transport_problem(
+                run_may_have_started=run_may_have_started, code=code, failure=failure, api_url=api_url, timeout_seconds=timeout_seconds
+            ),
+            run_may_have_started=run_may_have_started,
+            api_url=api_url,
+            request_url=request_url or api_url,
         )
-        self.api_url = api_url
         self.code = code
+
+
+def _transport_problem(
+    *, run_may_have_started: bool, code: str | None, failure: BaseException | None, api_url: str, timeout_seconds: float | None
+) -> Problem:
+    """The standard's problem of a request that got no answer, agreeing with the SDK's own reading of whether a run may have started."""
+    if run_may_have_started:
+        return _outcome_unknown_problem()
+    if timeout_seconds is not None:
+        if isinstance(failure, httpx.TransportError):
+            return transport_failure_problem(failure, creates_run=False, base_url=api_url, timeout_seconds=timeout_seconds)
+        if code == ABORT_TIMEOUT_CODE:
+            return make_client_problem(CoreCode.CLIENT_TIMEOUT, params={"seconds": timeout_seconds})
+    return make_client_problem(CoreCode.CLIENT_UNREACHABLE, params={"base_url": api_url})
 
 
 class MethodErrorCode(StrEnum):
@@ -243,7 +348,7 @@ class IdempotencyErrorCode(StrEnum):
     second time. On a `start`, its `run_may_have_started` is `False`: this request started nothing."""
 
 
-class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErrorItem]):
+class ApiResponseError(PipelexRequestError, _MthdsApiResponseError):
     """A response that DID come back from the API and that the SDK cannot hand back as a result: a
     non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read — a body
     that is not UTF-8 or not JSON, an empty one where the route answers JSON, or JSON that is not the
@@ -254,11 +359,11 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
     Every route of `PipelexAPIClient` raises it on a non-2xx answer and on a 2xx it cannot read: the
     protocol routes it inherits from `mthds` (`execute`, `start`, `validate`, `models`, `version`), the
     run status and results reads, the product routes and `health`. It is `mthds`'s own
-    `ApiResponseError` narrowed to this SDK, so a handler written against the standard's client
+    `ApiResponseError` refined for this SDK, so a handler written against the standard's client
     (`except mthds.runners.api.exceptions.ApiResponseError`) catches it too. Every error the hosted API
-    answers is an RFC 9457 `application/problem+json` document, and this error carries its members as
-    typed attributes, each `None` when the document did not carry it — except the verdict, which is
-    always decided:
+    answers is an RFC 9457 `application/problem+json` document in the hosted plane's own shape, which
+    predates the standard's, and this error carries its members as typed attributes, each `None` when
+    the document did not carry it — except the verdict, which is always decided:
 
     - **The verdict.** `error_domain` says who can fix the failure — `input` (the caller), `config` (a
       configuration change), `runtime` (nobody beforehand) — and `retryable` whether asking again can
@@ -268,20 +373,20 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
       `retryable`, and then the domain it sent decides `retryable`: `input` and `config` are not
       retryable, as a stored report that says nothing is not, since the caller or the environment must
       change, while `runtime` takes the fallback's. Nothing on the error says which a value came from:
-      `problem` keeps what the server sent.
+      `problem_document` keeps what the server sent.
     - **A run that may have started.** On a `start` or an `execute`, `run_may_have_started` says whether
       the answer leaves a run possibly started without its id reaching the caller: any `2xx` the SDK
       could not read, a `408`, and every `5xx` but a `501` and the platform's `503` coded
       `pipeline_start_unavailable`, which says the runner was never reached. Then `retryable` is
       `False`, whatever the server sent: asking again could start a second run. A runner's own failure
       of a blocking execute reads the same, since the SDK cannot tell a run that ended from one that
-      goes on, and its `retryable` stays readable on `problem`. On every other route it is `False`.
+      goes on, and its `retryable` stays readable on `problem_document`. On every other route it is `False`.
     - **What happened, for a person.** `str(exc)` names the request and the status, gives the reason
       (the problem's `detail`, else its `title`, else the raw body, else the status text) and, when
       the server advised one, the next step on its own line (`Next step: …`); for a 2xx it could not
       read, it is `API <method> <path> answered <status> with <what>`, naming what could not be
       read. `server_message` is the `detail` alone, `title` the stable label of the error class,
-      `user_action` the advised next step (`kind` and `detail`, the `mthds` `UserAction`), and
+      `user_action` the advised next step (`kind` and `detail`, `ProblemUserAction`), and
       `error_category` a finer classification of an inference failure.
     - **The branch fields.** `error_domain`, and `type_uri` (the problem's `type`), the stable URI
       naming the error class, on every problem. Branch on these, never on the HTTP status or on the
@@ -300,19 +405,22 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
       refusal to run an invalid method (a `422` from `execute` or `start`), typed as
       `ValidationErrorItem`, so the failing pipe reads as `validation_errors[0].pipe_code`; it is
       `None` when the refusal is not itemized, or when an item does not fit that type (the raw list
-      stays on `problem`). `errors` is the platform's field-level list (`field`, `code`, `detail`).
+      stays on `problem_document`). `errors` is the platform's field-level list (`field`, `code`, `detail`).
+    - **The standard's reading.** `problem` is the answer as the standard's `mthds` client reads it,
+      a `mthds.protocol.problem.models.Problem` under a registered code: the body itself when it is a
+      core problem document, and otherwise the problem the standard reads from the status, such as
+      `client.response_unreadable` naming it, or `client.outcome_unknown` for a server error on a
+      `start` or an `execute`. Its `code` is the registry's and its `errors` the standard's problem
+      items, which share their names with the platform's `code` and `errors` above and never replace
+      them. The verdict and the message are not read from it.
 
-    `problem` is the decoded document whole, so a member this SDK does not name — the `run_status`
-    and `error` of a failed run's results read, say, or the `error_domain` and `retryable` the server
-    sent — stays reachable; `response_body` is the raw text, `status` / `status_text` the transport's,
-    `headers` the answer's headers (lower-case names), `request_url` the URL requested and `api_url` the
-    configured base URL. `problem` is `None` when the body was not a JSON object.
+    `problem_document` is the decoded document whole, so a member this SDK does not name — the
+    `run_status` and `error` of a failed run's results read, say, or the `error_domain` and
+    `retryable` the server sent — stays reachable; `response_body` is the raw text, `status` /
+    `status_text` the transport's, `headers` the answer's headers (lower-case names), `request_url` the
+    URL requested and `api_url` the configured base URL. `problem_document` is `None` when the body was
+    not a JSON object.
     """
-
-    # The standard's error leaves both members optional, `None` meaning the runner did not say; this SDK
-    # narrows them to always decided.
-    retryable: bool
-    error_domain: ErrorDomain
 
     def __init__(
         self,
@@ -333,14 +441,15 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
         request_id: str | None = None,
         error_domain: str | None = None,
         retryable: bool | None = None,
-        user_action: UserAction | None = None,
-        problem: dict[str, Any] | None = None,
+        user_action: ProblemUserAction | None = None,
+        problem: Problem | None = None,
+        problem_document: dict[str, Any] | None = None,
         code: str | None = None,
         error_category: str | None = None,
         errors: list[FieldError] | None = None,
         may_start_run: bool = False,
     ) -> None:
-        """Build the error: the verdict, the `mthds` members, then the Pipelex ones.
+        """Build the error: the verdict, the standard's reading and the `mthds` members, then the hosted ones.
 
         Args:
             message: What failed and why, e.g. `API POST /v1/start failed (422): <reason>`. The next
@@ -363,7 +472,10 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
             retryable: The `retryable` the server sent, `None` when it sent none. The error's own
                 `retryable` is this when it is a boolean, and decided as the class says otherwise.
             user_action: The next step the server advises.
-            problem: The decoded problem document whole.
+            problem: The standard's reading of the answer. The client passes the one the `mthds` client
+                reads; left out, it is read here from `status`, `response_body` and `headers` the same
+                way, so an error a caller builds by hand carries the problem the client would give it.
+            problem_document: The decoded problem document whole.
             code: The platform's closed native code.
             error_category: The finer classification of an inference failure.
             errors: The platform's field-level failures.
@@ -373,9 +485,11 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
         """
         run_may_have_started = may_start_run and answer_may_have_started_run(status=status, code=code)
         verdict = _response_verdict(status=status, error_type=error_type, code=code, sent_domain=error_domain, sent_retryable=retryable)
+        reading = problem or _answer_reading(status=status, body=response_body, headers=headers or {}, creates_run=may_start_run)
         super().__init__(
-            message,
+            _with_next_step(message, user_action),
             verdict=verdict,
+            problem=reading,
             run_may_have_started=run_may_have_started,
             api_url=api_url,
             status=status,
@@ -383,21 +497,46 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
             response_body=response_body,
             headers=headers,
             request_url=request_url,
-            error_type=error_type,
-            server_message=server_message,
-            validation_errors=validation_errors,
-            type_uri=type_uri,
-            title=title,
-            instance=instance,
             request_id=request_id,
-            error_domain=verdict.error_domain,
-            retryable=verdict.retryable,
-            user_action=user_action,
-            problem=problem,
         )
+        self.error_type = error_type
+        self.server_message = server_message
+        self.validation_errors = validation_errors
+        self.type_uri = type_uri
+        self.title = title
+        self.instance = instance
+        self.user_action = user_action
+        self.problem_document = problem_document
         self.code = code
         self.error_category = error_category
         self.errors = errors
+
+
+def _with_next_step(message: str, user_action: ProblemUserAction | None) -> str:
+    """Append the advised next step to a message, unless there is none or the message already ends with it."""
+    if user_action is None or message.rstrip().endswith(user_action.detail.strip()):
+        return message
+    return f"{message}\nNext step: {user_action.detail}"
+
+
+def _answer_reading(*, status: int, body: str, headers: dict[str, str], creates_run: bool) -> Problem:
+    """The standard's reading of an answer the SDK raises as an `ApiResponseError`, as the `mthds` client reads it.
+
+    A non-2xx reads as the body's own problem document when it is one, and otherwise as the problem the
+    status names. A 2xx the SDK could not read is `client.response_unreadable`, except on a route that
+    creates a run: the server accepted the request, so the run may exist, and it reads as
+    `client.outcome_unknown`, naming the run when the body names one.
+    """
+    if not 200 <= status < 300:
+        lower_case = {name.lower(): value for name, value in headers.items()}
+        return read_answer(status=status, body=body, headers=lower_case, creates_run=creates_run).problem
+    if not creates_run:
+        return unreadable_answer(status)
+    decoded: object = decode_json(body).value
+    started_run_id: object = cast("dict[str, Any]", decoded).get("pipeline_run_id") if isinstance(decoded, dict) else None
+    if isinstance(started_run_id, str) and started_run_id:
+        return _outcome_unknown_problem(pipeline_run_id=started_run_id)
+    return _outcome_unknown_problem()
 
 
 def _response_verdict(*, status: int, error_type: str | None, code: str | None, sent_domain: object, sent_retryable: object) -> ErrorVerdict:
@@ -433,11 +572,12 @@ class PipelineExecuteTimeoutError(PipelexRequestError):
 
     Its verdict is `input`, not retryable: asking again meets the same limit, and the caller fixes it by
     starting the run and polling. `run_may_have_started` is always `True`: the gateway gave up on the
-    request, and the run it carried goes on without its id reaching the caller.
+    request, and the run it carried goes on without its id reaching the caller. Its `problem` is
+    `client.outcome_unknown`, for the same reason.
     """
 
     def __init__(self, message: str, elapsed_seconds: float) -> None:
-        super().__init__(message, verdict=_verdict(ErrorDomain.INPUT, retryable=False), run_may_have_started=True)
+        super().__init__(message, verdict=_verdict(ErrorDomain.INPUT, retryable=False), problem=_outcome_unknown_problem(), run_may_have_started=True)
         self.elapsed_seconds = elapsed_seconds
 
 
@@ -477,10 +617,13 @@ class RunFailedError(PipelexRequestError):
     when the report's `retryable` is `True`: a report that says nothing, and a run with none, read as not
     retryable, since starting the run again spends credit and nothing says it would succeed. The report
     keeps its own `retryable` as written, so a consumer that words the unknown differently still can.
+
+    Its `problem` is `run.failed`, naming the run and the status it ended with.
     """
 
     def __init__(self, message: str, run_id: str, status: RunStatus, error: RunErrorReport | None = None) -> None:
-        super().__init__(message, verdict=_run_failure_verdict(error))
+        problem = make_client_problem(CoreCode.RUN_FAILED, params={"pipeline_run_id": run_id, "run_status": status}, pipeline_run_id=run_id)
+        super().__init__(message, verdict=_run_failure_verdict(error), problem=problem)
         self.run_id = run_id
         self.status = status
         self.error = error
@@ -499,11 +642,12 @@ class RunTimeoutError(PipelexRequestError):
     The run is NOT cancelled — it keeps executing server-side and can be resumed
     later by `run_id` (the poll loop just stopped waiting).
 
-    Its verdict is `runtime` and retryable: the run is still going, and waiting again can succeed.
+    Its verdict is `runtime` and retryable: the run is still going, and waiting again can succeed. Its
+    `problem` is `run.not_finished`, naming the run.
     """
 
     def __init__(self, message: str, run_id: str, timeout_seconds: float) -> None:
-        super().__init__(message, verdict=_verdict(ErrorDomain.RUNTIME, retryable=True))
+        super().__init__(message, verdict=_verdict(ErrorDomain.RUNTIME, retryable=True), problem=_run_not_finished_problem(run_id))
         self.run_id = run_id
         self.timeout_seconds = timeout_seconds
 
@@ -521,17 +665,28 @@ class RunStillRunningError(PipelexRequestError, _MthdsRunStillRunningError):
     It also subclasses `mthds`'s class of the same name, which the protocol `execute()` raises, so a
     handler written against the standard's client catches it too.
 
-    Its verdict is `runtime` and retryable: the run is still going, and is resumed by its id.
+    Its verdict is `runtime` and retryable: the run is still going, and is resumed by its id. Its
+    `problem` is `run.not_finished`, naming the run and the server's hint, unless `problem` gives
+    another: raised again from the protocol `execute()`'s `202`, it keeps the standard's own,
+    `client.follow_failed` naming the run.
     """
 
-    def __init__(self, message: str, run_id: str, retry_after_seconds: int | None = None, location: str | None = None) -> None:
+    def __init__(
+        self, message: str, run_id: str, retry_after_seconds: int | None = None, location: str | None = None, *, problem: Problem | None = None
+    ) -> None:
         super().__init__(
             message,
             verdict=_verdict(ErrorDomain.RUNTIME, retryable=True),
+            problem=problem or _run_not_finished_problem(run_id, retry_after_seconds=retry_after_seconds),
             run_id=run_id,
             retry_after_seconds=retry_after_seconds,
             location=location,
         )
+
+
+def _run_not_finished_problem(run_id: str, *, retry_after_seconds: int | None = None) -> Problem:
+    """`run.not_finished`, naming the run, with the server's hint as `retry_after` when it gave one."""
+    return make_client_problem(CoreCode.RUN_NOT_FINISHED, params={"pipeline_run_id": run_id}, retry_after=retry_after_seconds, pipeline_run_id=run_id)
 
 
 class MissingMainStuffError(PipelexRequestError):
@@ -544,11 +699,14 @@ class MissingMainStuffError(PipelexRequestError):
     memory. `run_id` locates the run. (A falsy-but-present main stuff — an empty list, `0` — is a
     valid output and does NOT raise; only a genuinely absent one does.)
 
-    Its verdict is `runtime`, not retryable: the API broke its own contract on a completed run.
+    Its verdict is `runtime`, not retryable: the API broke its own contract on a completed run. Its
+    `problem` is `client.response_unreadable` for the `200` that broke it, naming the run.
     """
 
     def __init__(self, message: str, run_id: str) -> None:
-        super().__init__(message, verdict=_verdict(ErrorDomain.RUNTIME, retryable=False))
+        super().__init__(
+            message, verdict=_verdict(ErrorDomain.RUNTIME, retryable=False), problem=response_unreadable_problem(status=200, pipeline_run_id=run_id)
+        )
         self.run_id = run_id
 
 
@@ -563,11 +721,13 @@ class RunLifecycleUnavailableError(PipelexRequestError):
     run-not-found 404, which carries the platform's structured error envelope.
 
     Its verdict is `config`, not retryable: the base URL points at a bare runner without the run
-    lifecycle.
+    lifecycle. Its `problem` is `runtime.unsupported`, naming the durable run lifecycle as the
+    capability the server lacks.
     """
 
     def __init__(self, message: str, api_url: str) -> None:
-        super().__init__(message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False))
+        problem = make_client_problem(CoreCode.RUNTIME_UNSUPPORTED, params={"capability": "the durable run lifecycle"})
+        super().__init__(message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False), problem=problem)
         self.api_url = api_url
 
 
@@ -577,11 +737,12 @@ class PagingNotTerminatingError(PipelexRequestError):
     The ceiling sits far beyond any real catalog, so reaching it is a server-side fault —
     an endpoint minting a fresh cursor forever — not a coverage limit the caller can raise.
     Raising beats returning, because a silently truncated list is exactly the bug paging
-    was introduced to remove. Its verdict is `runtime`, not retryable.
+    was introduced to remove. Its verdict is `runtime`, not retryable, and its `problem`
+    `client.response_unreadable` for the `200` pages that never stopped.
     """
 
     def __init__(self, message: str, page_limit: int) -> None:
-        super().__init__(message, verdict=_verdict(ErrorDomain.RUNTIME, retryable=False))
+        super().__init__(message, verdict=_verdict(ErrorDomain.RUNTIME, retryable=False), problem=response_unreadable_problem(status=200))
         self.page_limit = page_limit
 
 
@@ -599,20 +760,24 @@ class InputPreparationError(PipelexRequestError):
 
     Its verdict is `input`, not retryable — the asset, the inputs or the method selector must change —
     unless `verdict` declares another: the SDK's own subclasses do, and so can a consumer's, such as a
-    form reporting a missing input in its own words.
+    form reporting a missing input in its own words. `problem` is the failure as the standard's problem
+    document: each subclass states its own, and a direct raise gives it, `client.argument_invalid` for
+    an argument refused (`argument_invalid_problem`) or the wrapped error's for a refusal the API
+    answered.
     """
 
-    def __init__(self, message: str, *, verdict: ErrorVerdict | None = None) -> None:
-        super().__init__(message, verdict=verdict or _verdict(ErrorDomain.INPUT, retryable=False))
+    def __init__(self, message: str, *, problem: Problem, verdict: ErrorVerdict | None = None) -> None:
+        super().__init__(message, verdict=verdict or _verdict(ErrorDomain.INPUT, retryable=False), problem=problem)
 
 
 class InvalidLocalSourceError(InputPreparationError):
     """A local asset could not be turned into bytes — a missing or unreadable path.
-    `source` is the offending path.
+    `source` is the offending path. Its `problem` is `input.file_unreadable`, naming the path.
     """
 
     def __init__(self, message: str, source: str) -> None:
-        super().__init__(message)
+        problem = make_client_problem(CoreCode.INPUT_FILE_UNREADABLE, params={"input": source, "file_type": "file", "reason": "unreadable"})
+        super().__init__(message, problem=problem)
         self.source = source
 
 
@@ -628,11 +793,11 @@ class InvalidInputValueError(InputPreparationError):
     it sits inside that input (`report.attachments[1]`, or the name alone for a top-level file). The
     message names that path and describes the value by its kind, never by its content, since the value
     is the caller's data. The twin of `@pipelex/sdk`'s class of the same name, whose `inputName` and
-    `inputPath` these are.
+    `inputPath` these are. Its `problem` is `input.invalid`, naming the input and the path inside it.
     """
 
     def __init__(self, message: str, *, input_name: str, input_path: str) -> None:
-        super().__init__(message)
+        super().__init__(message, problem=make_client_problem(CoreCode.INPUT_INVALID, params={"input": input_name, "field": input_path}))
         self.input_name = input_name
         self.input_path = input_path
 
@@ -668,13 +833,15 @@ class UploadNotAllowedError(InputPreparationError):
     value itself is neither in the message nor on the error, since it is the caller's data. Its verdict
     is `input`, not retryable: the caller must pass an `http(s)` URL or a `pipelex-storage://` reference
     instead. The twin of `@pipelex/sdk`'s class of the same name, whose `inputName`, `inputPath` and
-    `valueKind` these are.
+    `valueKind` these are. Its `problem` is `client.argument_invalid`, naming the input's path and the
+    value's kind as the reason.
     """
 
     def __init__(self, *, input_name: str, input_path: str, value_kind: UploadNotAllowedKind) -> None:
         super().__init__(
             f'Input "{input_path}" is {_UPLOAD_NOT_ALLOWED_KIND_WORDS[value_kind]}, which would need an upload, and this '
-            "preparation uploads nothing: pass an http(s) URL or a pipelex-storage:// reference instead."
+            "preparation uploads nothing: pass an http(s) URL or a pipelex-storage:// reference instead.",
+            problem=argument_invalid_problem(argument=input_path, reason=value_kind),
         )
         self.input_name = input_name
         self.input_path = input_path
@@ -688,10 +855,11 @@ class MethodLoadError(InputPreparationError):
     `validation_errors` holds the answer's items, possibly none, and `server_message` the answer's own
     `message`. The error's message names the first item's message, else the answer's own. The twin of
     `@pipelex/sdk`'s class of the same name, whose `validationErrors` and `serverMessage` these are.
+    Its `problem` is `method.invalid`.
     """
 
     def __init__(self, message: str, *, validation_errors: list[ValidationErrorItem], server_message: str | None = None) -> None:
-        super().__init__(message)
+        super().__init__(message, problem=make_client_problem(CoreCode.METHOD_INVALID))
         self.validation_errors = validation_errors
         self.server_message = server_message
 
@@ -722,10 +890,12 @@ class RejectedAssetError(InputPreparationError):
     `filename` and `status` locate it, and `code` says why: the SDK sets it on every one it raises, so
     it is `None` only on one a caller constructs without it. Its verdict is `input`, not retryable,
     whatever the code: the asset, or the grant it was sent with, must change before a retry can pass.
+    Its `problem` is the refusal's as the API answered it, which `upload_file` passes, and otherwise
+    the one the standard reads from `status` alone.
     """
 
-    def __init__(self, message: str, filename: str, status: int, *, code: RejectedAssetCode | None = None) -> None:
-        super().__init__(message)
+    def __init__(self, message: str, filename: str, status: int, *, code: RejectedAssetCode | None = None, problem: Problem | None = None) -> None:
+        super().__init__(message, problem=problem or _status_problem(status))
         self.filename = filename
         self.status = status
         self.code = code
@@ -736,22 +906,26 @@ class UnsupportedUploadCapabilityError(InputPreparationError):
     as a `404`). Upload is a hosted Pipelex-product capability even though the SDK can
     be pointed at other base URLs. `filename` is the file whose upload met it, as `upload_file`
     sent it; the route's `ApiResponseError` is its `__cause__`. Its verdict is `config`, not
-    retryable: the base URL must point at a deployment that serves upload.
+    retryable: the base URL must point at a deployment that serves upload. Its `problem` is
+    `runtime.unsupported`, naming file upload as the capability the deployment lacks.
     """
 
     def __init__(self, message: str, *, filename: str | None = None) -> None:
-        super().__init__(message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False))
+        problem = make_client_problem(CoreCode.RUNTIME_UNSUPPORTED, params={"capability": "file upload"})
+        super().__init__(message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False), problem=problem)
         self.filename = filename
 
 
 class UploadAuthenticationError(InputPreparationError):
     """Upload was not authorized — a `401`/`403` from the upload route. `filename` is the file
     whose upload was refused, as `upload_file` sent it. Its verdict is `config`, not retryable: the
-    credential must change.
+    credential must change. Its `problem` is `auth.invalid_credential`.
     """
 
     def __init__(self, message: str, status: int, *, filename: str | None = None) -> None:
-        super().__init__(message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False))
+        super().__init__(
+            message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False), problem=make_client_problem(CoreCode.AUTH_INVALID_CREDENTIAL)
+        )
         self.status = status
         self.filename = filename
 
@@ -808,6 +982,9 @@ class UploadTransportError(InputPreparationError):
     refused for its timing — and not retryable for any other status or none; `unreachable` is `config`
     and retryable, like `ApiUnreachableError`; `redirected` is `config` and not retryable;
     `invalid_grant_url`, and no code at all, are `runtime` and not retryable.
+
+    Its `problem` is the wrapped error's when `cause` carries one, and otherwise the one the standard
+    reads from `status` alone, or `runtime.unexpected` when no status came back.
     """
 
     def __init__(
@@ -819,10 +996,19 @@ class UploadTransportError(InputPreparationError):
         code: UploadTransportCode | None = None,
         cause: BaseException | None = None,
     ) -> None:
-        super().__init__(message, verdict=error_verdict_of(cause) or _upload_transport_verdict(code=code, status=status))
+        super().__init__(
+            message,
+            verdict=error_verdict_of(cause) or _upload_transport_verdict(code=code, status=status),
+            problem=_wrapped_problem(cause) or (_status_problem(status) if status is not None else make_client_problem(CoreCode.RUNTIME_UNEXPECTED)),
+        )
         self.status = status
         self.filename = filename
         self.code = code
+
+
+def _wrapped_problem(cause: BaseException | None) -> Problem | None:
+    """The problem a wrapped error carries, when it is one of the standard's request errors."""
+    return cause.problem if isinstance(cause, PipelineRequestError) else None
 
 
 def _upload_transport_verdict(*, code: UploadTransportCode | None, status: int | None) -> ErrorVerdict:
@@ -917,11 +1103,14 @@ class ArtifactOperationError(PipelexRequestError):
 
     Its verdict is `runtime`, not retryable, unless `verdict` declares another: the SDK declares `input`
     where it refuses an argument (a `scope`, a bound, a location, both selectors or neither) and `config`
-    where the environment refuses the download (a directory that cannot be created).
+    where the environment refuses the download (a directory that cannot be created). `problem` is the
+    failure as the standard's problem document: each subclass states its own, and a direct raise gives
+    it — `client.argument_invalid` for an argument refused, `client.write_failed` for a directory that
+    cannot be created, `client.response_unreadable` for an answer the operation cannot use.
     """
 
-    def __init__(self, message: str, *, verdict: ErrorVerdict | None = None) -> None:
-        super().__init__(message, verdict=verdict or _verdict(ErrorDomain.RUNTIME, retryable=False))
+    def __init__(self, message: str, *, problem: Problem, verdict: ErrorVerdict | None = None) -> None:
+        super().__init__(message, verdict=verdict or _verdict(ErrorDomain.RUNTIME, retryable=False), problem=problem)
 
 
 class ScopeUnavailableError(ArtifactOperationError):
@@ -931,12 +1120,13 @@ class ScopeUnavailableError(ArtifactOperationError):
     the platform saying it has no such artifact for this run. Distinct from a key the results read
     never carried, which is `FieldNotIncludedError`, and from an empty walk over a present scope,
     which is a produced verdict with no artifacts. `scope` names the scope, `run_id` the run. Its
-    verdict is the family's, `runtime` and not retryable.
+    verdict is the family's, `runtime` and not retryable, and its `problem` `client.response_unreadable`
+    for the `200` that relayed it, naming the run.
     """
 
     def __init__(self, scope: ArtifactScope, run_id: str) -> None:
         msg = f'Run "{run_id}" carries no "{scope}" artifact to walk for produced files — the results relayed it as null.'
-        super().__init__(msg)
+        super().__init__(msg, problem=response_unreadable_problem(status=200, pipeline_run_id=run_id))
         self.scope = scope
         self.run_id = run_id
 
@@ -958,13 +1148,43 @@ class ArtifactFetchError(ArtifactOperationError):
     `runtime`, and retryable when the fallback table a refused API request reads would call its `status`
     retryable — a `408`, a `429` or a `5xx` other than `501` — and not retryable for any other status or
     none. A code this version does not know is `runtime` and not retryable.
+
+    Its `problem` follows `code` too, unless `problem` gives one: `input.reference_not_found` naming the
+    reference for `invalid_storage_uri`, `forbidden` and `not_found`, `client.link_refused` for
+    `unsupported_url`, `plain_http_refused` and `redirect_refused`, the one the standard reads from the
+    store's `status` for `store_refused` and `store_error`, and `runtime.unexpected` otherwise. The SDK
+    passes `client.download_limit_exceeded` naming the cap for `too_large` and `client.timeout` naming
+    the budget for `timeout`.
     """
 
-    def __init__(self, message: str, uri: str, code: str, status: int | None = None) -> None:
-        super().__init__(message, verdict=_artifact_fetch_verdict(code=code, status=status))
+    def __init__(self, message: str, uri: str, code: str, status: int | None = None, *, problem: Problem | None = None) -> None:
+        super().__init__(
+            message,
+            verdict=_artifact_fetch_verdict(code=code, status=status),
+            problem=problem or _artifact_fetch_problem(code=code, uri=uri, status=status),
+        )
         self.uri = uri
         self.code = code
         self.status = status
+
+
+def _artifact_fetch_problem(*, code: str, uri: str, status: int | None) -> Problem:
+    """The standard's problem of one reference's fetch failure, by its code and the store's status."""
+    match code:
+        case "invalid_storage_uri" | "forbidden" | "not_found":
+            return make_client_problem(CoreCode.INPUT_REFERENCE_NOT_FOUND, params={"input": uri})
+        case "unsupported_url":
+            return make_client_problem(CoreCode.CLIENT_LINK_REFUSED, params={"reason": "unsupported_scheme"})
+        case "plain_http_refused":
+            return make_client_problem(CoreCode.CLIENT_LINK_REFUSED, params={"reason": "plain_http"})
+        case "redirect_refused":
+            return make_client_problem(CoreCode.CLIENT_LINK_REFUSED, params={"reason": "redirect"})
+        case "store_refused" | "store_error" if status is not None:
+            return _status_problem(status)
+        case _:
+            # `too_large`, `timeout` and `network` without the problem their raise site states, a store
+            # refusal without its status, and a code this version does not know.
+            return make_client_problem(CoreCode.RUNTIME_UNEXPECTED)
 
 
 def _artifact_fetch_verdict(*, code: str, status: int | None) -> ErrorVerdict:
@@ -993,11 +1213,13 @@ class ArtifactAuthenticationError(ArtifactOperationError):
     refusal, and the rest marked `aborted`. `status` is the route's status; the wrapped
     `ApiResponseError` is reachable through `__cause__`. (`verdict` is the download's result, not the
     error's own: that is `retryable` and `error_domain`, `config` and not retryable, since the credential
-    must change.)
+    must change. Its `problem` is `auth.invalid_credential`.)
     """
 
     def __init__(self, message: str, status: int, verdict: DownloadArtifactsResult) -> None:
-        super().__init__(message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False))
+        super().__init__(
+            message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False), problem=make_client_problem(CoreCode.AUTH_INVALID_CREDENTIAL)
+        )
         self.status = status
         self.verdict = verdict
 
@@ -1012,9 +1234,17 @@ class FieldNotIncludedError(PipelexRequestError):
     over were read without the field, so the caller reads them again asking for it. `download_artifacts`
     declares `runtime` when it read the results itself, asking for the field, and the API did not carry
     it, which breaks the API's own contract.
+
+    Its `problem` is `client.argument_invalid`, naming the results the caller handed over, unless
+    `problem` gives another: `download_artifacts` gives `client.response_unreadable` for the `200` that
+    left the field out.
     """
 
-    def __init__(self, field_name: str, *, verdict: ErrorVerdict | None = None) -> None:
+    def __init__(self, field_name: str, *, verdict: ErrorVerdict | None = None, problem: Problem | None = None) -> None:
         msg = f"RunResults field `{field_name}` was not in the results body: the read did not carry it"
-        super().__init__(msg, verdict=verdict or _verdict(ErrorDomain.INPUT, retryable=False))
+        super().__init__(
+            msg,
+            verdict=verdict or _verdict(ErrorDomain.INPUT, retryable=False),
+            problem=problem or argument_invalid_problem(argument="results", reason="field_not_included"),
+        )
         self.field_name = field_name

@@ -115,7 +115,11 @@ def _map_upload_error(error: ApiResponseError | ApiUnreachableError, filename: s
         case 413:
             detail = error.server_message or "asset exceeds the service size limit"
             return RejectedAssetError(
-                f'The server rejected "{filename}": {detail}.', filename=filename, status=error.status, code=RejectedAssetCode.TOO_LARGE
+                f'The server rejected "{filename}": {detail}.',
+                filename=filename,
+                status=error.status,
+                code=RejectedAssetCode.TOO_LARGE,
+                problem=error.problem,
             )
         case 401 | 403:
             return UploadAuthenticationError(

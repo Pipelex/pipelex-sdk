@@ -54,6 +54,8 @@ from pipelex_sdk.errors import (
     MethodLoadError,
     UploadNotAllowedError,
     UploadNotAllowedKind,
+    argument_invalid_problem,
+    response_unreadable_problem,
 )
 from pipelex_sdk.upload import UploadRecord, UploadSource, upload_file
 
@@ -130,7 +132,7 @@ def _caller_selector(value: object, *, argument: str) -> str | None:
     if isinstance(value, str):
         return value.strip() or None
     msg = f"Cannot prepare inputs: `{argument}` must be a string, got {type(value).__name__}."
-    raise InputPreparationError(msg)
+    raise InputPreparationError(msg, problem=argument_invalid_problem(argument=argument, reason="not_a_string"))
 
 
 def _is_file_content(node: Any) -> bool:
@@ -391,13 +393,13 @@ def _resolve_selector(
             "closure), `method_ref` (a published method's address) or `method_id` (a stored method's "
             "catalog id)."
         )
-        raise InputPreparationError(msg)
+        raise InputPreparationError(msg, problem=argument_invalid_problem(argument="files", reason="nothing_to_prepare"))
     if len(given) > 1:
         msg = (
             f"Cannot prepare inputs: {' and '.join(given)} were both given. Supply exactly one method "
             "selector — `files`, `method_ref` or `method_id`."
         )
-        raise InputPreparationError(msg)
+        raise InputPreparationError(msg, problem=argument_invalid_problem(argument="files", reason="mutually_exclusive"))
     return selected_files, selected_method_ref, selected_method_id
 
 
@@ -422,10 +424,10 @@ def _checked_pipe_ref(pipe_ref: object) -> str | None:
             f'Cannot prepare inputs: `pipe_ref` "{requested}" names a dependency package\'s pipe. '
             "Preparation covers the method's own pipes: name one as `domain.pipe_code`."
         )
-        raise InputPreparationError(msg)
+        raise InputPreparationError(msg, problem=argument_invalid_problem(argument="pipe_ref", reason="dependency_pipe"))
     if "." not in requested:
         msg = f'Cannot prepare inputs: `pipe_ref` must be qualified (`domain.pipe_code`), got the bare "{requested}".'
-        raise InputPreparationError(msg)
+        raise InputPreparationError(msg, problem=argument_invalid_problem(argument="pipe_ref", reason="not_qualified"))
     return requested
 
 
@@ -438,7 +440,7 @@ def _checked_allow_uploads(allow_uploads: object) -> bool:
     if isinstance(allow_uploads, bool):
         return allow_uploads
     msg = f"Cannot prepare inputs: `allow_uploads` must be a bool, got {type(allow_uploads).__name__}."
-    raise InputPreparationError(msg)
+    raise InputPreparationError(msg, problem=argument_invalid_problem(argument="allow_uploads", reason="not_a_bool"))
 
 
 def _is_pipe_selection_refusal(exc: ApiResponseError) -> bool:
@@ -473,7 +475,7 @@ async def _fetch_signature(client: _PrepareClient, *, request: PipeIORequest) ->
             raise
         reason = exc.server_message or exc.title or exc.response_body or exc.status_text
         msg = f"Cannot prepare inputs: the pipe could not be selected — {reason}"
-        raise InputPreparationError(msg) from exc
+        raise InputPreparationError(msg, problem=exc.problem) from exc
 
     if isinstance(response, CrateInvalidReport):
         first = response.validation_errors[0].message if response.validation_errors else response.message
@@ -566,7 +568,9 @@ async def prepare_inputs(
         # against, and the caller's local paths would travel to the runner verbatim.
         # The API broke its own contract here, so the verdict is `runtime`, not the inputs' `input`.
         msg = f"Cannot prepare inputs: the pipe-io answer carries no input-form descriptor for the selected pipe ({selected_pipe_ref!r})."
-        raise InputPreparationError(msg, verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False))
+        raise InputPreparationError(
+            msg, verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False), problem=response_unreadable_problem(status=200)
+        )
     declared = {field.name: field for field in descriptor.fields}
 
     ctx = _PrepareContext(client, allow_uploads=uploads_allowed)

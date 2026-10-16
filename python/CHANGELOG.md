@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`problem` on every error raised over a request, the standard's reading of the failure**: an `ApiResponseError` carries the same answer as the MTHDS standard reads it, typed as the standard's `Problem` and equal to the problem `mthds`'s own `ApiResponseError` carries, so a caller handling both clients branches on `problem.code`; every other error raised over a request carries the core problem that states its failure, and `argument_invalid_problem` and `response_unreadable_problem` in `pipelex_sdk.errors` build the two a hand-built error most often needs. The hosted members read exactly as before, and the platform's `code` and `errors` stay on the error, apart from the registry's `problem.code` and the problem items of `problem.errors` (`docs/errors.md`).
+- **`HostedProblemMembers` and `ProblemUserAction`**: `pipelex_sdk.error_models` reads the hosted problem document's members itself, as the standard's client no longer does, and `ProblemUserAction` is the type of `ApiResponseError.user_action`.
+
+### Changed
+
+- **`ApiResponseError.problem` is the standard's problem, and the decoded document is `problem_document` (Breaking)**: code that read a member off `err.problem` as a dict reads it off `err.problem_document`, and an `ApiResponseError` built by hand passes the document as `problem_document`; the error is no longer generic over its validation item, and its `user_action` is a `ProblemUserAction` rather than the `mthds` `UserAction`.
+- **`RequestArgumentError`, `InputPreparationError` and `ArtifactOperationError` take a `problem` (Breaking)**: a caller raising one of them by hand passes the standard's problem it states, such as `argument_invalid_problem(argument=..., reason=...)`.
+- **`ApiUnreachableError` is the standard's `ApiTransportError`**: a handler written against the standard's client catches it, and it carries `request_url` and the standard's reading of the failure, `client.unreachable`, `client.timeout` or `client.outcome_unknown`.
+- **The validate verdict's types stand alone (Breaking)**: `PipelexValidationReport` and `PipelexInvalidReport` no longer subclass the standard's `ValidationReport` and `InvalidValidationReport`, which list problem items since protocol 2.0.0 while the hosted plane still sends `validation_errors`, and `ValidationErrorItem` no longer subclasses the standard's `ValidationDiagnostic`; every field they carried stays.
+- **`error_verdict_of` reads nothing off an `mthds` error**: the standard's client now carries its verdict on its problem, as `domain` and `retry`, so an `mthds` `ApiResponseError` reads as `None` where one whose runner sent `error_domain` and `retryable` used to read as their pair.
+- **A `request_timeout_seconds` that is not a finite number of seconds is refused (Breaking)**: the standard's client now refuses a time limit that is not finite or is negative, and the constructor raises it as a `RequestArgumentError` carrying the standard's problem, where such a limit used to be accepted.
+
 ## [v0.45.0] - 2026-10-16
 
 ### Changed

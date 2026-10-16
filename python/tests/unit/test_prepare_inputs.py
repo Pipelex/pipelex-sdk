@@ -78,7 +78,7 @@ def _api_error(status: int, body: dict[str, Any]) -> ApiResponseError:
     client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
     response = httpx.Response(status, json=body, request=httpx.Request("POST", f"{_BASE_URL}/v1/pipe-io"))
     with pytest.raises(ApiResponseError) as exc_info:
-        client._raise_api_response_error(method="POST", endpoint="pipe-io", response=response)
+        client._raise_v1_refusal(method="POST", endpoint="pipe-io", response=response)
     return exc_info.value
 
 

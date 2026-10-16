@@ -137,11 +137,13 @@ def error_verdict_of(error: object) -> ErrorVerdict | None:
     """The verdict of anything an `except` holds: the pair from an exception carrying a boolean
     `retryable` and a known `error_domain`, and `None` otherwise.
 
-    The check is structural rather than `isinstance`, so it reads every error of this SDK, an error of a
-    consumer's own subclass, and an `mthds` `ApiResponseError` whose runner sent both members. `None`
-    means the error carries no verdict: the `ValueError` the SDK raises for a malformed argument before any
-    request is sent, a bug in the calling code, or anything else a `try` block raised. An argument the
-    client refuses for what it asks is a `RequestArgumentError`, which carries one.
+    The check is structural rather than `isinstance`, so it reads every error of this SDK and an error of a
+    consumer's own subclass. `None` means the error carries no verdict: the `ValueError` the SDK raises for
+    a malformed argument before any request is sent, a bug in the calling code, or anything else a `try`
+    block raised. An argument the client refuses for what it asks is a `RequestArgumentError`, which
+    carries one. An error of the standard's own client (`mthds`) carries its verdict on its problem
+    instead, in the standard's vocabulary (`effective_domain` and `effective_retry`), which this reader
+    does not translate, so it reads as `None` too.
 
     Args:
         error: Anything, typically the exception an `except` clause caught.

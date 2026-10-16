@@ -169,7 +169,7 @@ class TestClientUnreadableAnswer:
         assert unreadable.status == 200
         assert unreadable.response_body == "<html>Maintenance</html>"
         assert unreadable.request_id == _REQUEST_ID
-        assert unreadable.problem is None
+        assert unreadable.problem_document is None
         assert unreadable.server_message is None
         assert isinstance(unreadable.__cause__, json.JSONDecodeError)
         # A 2xx is no refusal the fallback names: runtime, and nothing says a retry helps.
@@ -186,7 +186,7 @@ class TestClientUnreadableAnswer:
         assert unreadable.status == 200
         assert unreadable.response_body == "null"
         assert unreadable.request_id == _REQUEST_ID
-        assert unreadable.problem is None
+        assert unreadable.problem_document is None
         assert isinstance(unreadable.__cause__, ValidationError)
         assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
 

@@ -75,7 +75,7 @@ class TestApiResponseError:
         assert [(item.field, item.code, item.detail) for item in err.errors] == [
             ("body.label", "string_too_long", "String should have at most 64 characters"),
         ]
-        assert err.problem == _PLATFORM_422
+        assert err.problem_document == _PLATFORM_422
         # The platform sends no verdict of its own, so the fallback reads the status: a 422 is the caller's.
         assert "error_domain" not in _PLATFORM_422
         assert err.error_domain == ErrorDomain.INPUT
@@ -98,8 +98,43 @@ class TestApiResponseError:
         assert err.server_message == "Input 'document' expects a Document, got an Image."
         assert err.code is None
         # A member the SDK does not name stays reachable on the decoded document.
-        assert err.problem is not None
-        assert err.problem["location"] == "cv_screening.mthds:screen"
+        assert err.problem_document is not None
+        assert err.problem_document["location"] == "cv_screening.mthds:screen"
+
+    def test_the_standard_s_reading_stands_beside_the_platform_s_members_without_colliding(self, mocker: MockerFixture) -> None:
+        err = self._raise_from(mocker, _response(422, json_body=_PLATFORM_422, headers={"X-Request-ID": "req-422"}))
+
+        # The platform's own `code` and field-level `errors[]` read as they always have...
+        assert err.code == "validation_failed"
+        assert err.errors is not None
+        assert [item.field for item in err.errors] == ["body.label"]
+        # ...while the standard, which names neither, reads a document that is not one of its problems.
+        assert err.problem.code == "client.response_unreadable"
+        assert err.problem.params is not None
+        assert err.problem.params.model_extra == {"status": 422}
+
+    def test_a_core_problem_reads_its_registry_code_on_the_problem_and_leaves_the_platform_s_members_alone(self, mocker: MockerFixture) -> None:
+        core: dict[str, Any] = {
+            "type": "https://mthds.ai/errors/input.invalid",
+            "title": "An input does not fit its concept's structure",
+            "status": 422,
+            "detail": "The input 'a' does not fit its concept's structure at 'b'.",
+            "code": "input.invalid",
+            "domain": "input",
+            "retry": "no",
+            "next_step": {"kind": "change_input", "detail": "Correct the field 'b' of the input 'a', then send the request again."},
+            "params": {"input": "a", "field": "b"},
+        }
+        err = self._raise_from(mocker, _response(422, json_body=core))
+
+        assert err.problem.code == "input.invalid"
+        assert err.problem.next_step.kind == "change_input"
+        # The hosted members are read off the same document as they always were: its `code` is a string,
+        # and it carries no `user_action`, so the message has no next step of its own.
+        assert err.code == "input.invalid"
+        assert err.user_action is None
+        assert err.problem_document == core
+        assert "Next step" not in str(err)
 
     def test_request_id_falls_back_to_the_header(self, mocker: MockerFixture) -> None:
         body = {key: value for key, value in _PLATFORM_422.items() if key != "request_id"}
@@ -111,7 +146,7 @@ class TestApiResponseError:
         err = self._raise_from(mocker, _response(502, text="Bad Gateway", headers={"X-Request-ID": "req-edge"}))
 
         assert err.request_id == "req-edge"
-        assert err.problem is None
+        assert err.problem_document is None
         assert err.response_body == "Bad Gateway"
 
     def test_body_request_id_wins_over_the_header(self, mocker: MockerFixture) -> None:
@@ -137,7 +172,7 @@ class TestApiResponseError:
         assert err.error_domain == ErrorDomain.INPUT
         assert err.type_uri is None
         assert err.request_id is None
-        assert err.problem == body
+        assert err.problem_document == body
 
     @pytest.mark.parametrize(
         "user_action",
@@ -193,8 +228,8 @@ class TestApiResponseError:
 
         assert err.validation_errors is None
         # The raw list stays reachable on the decoded document.
-        assert err.problem is not None
-        assert err.problem["validation_errors"] == items
+        assert err.problem_document is not None
+        assert err.problem_document["validation_errors"] == items
 
     def test_headers_and_request_url_are_kept_as_plain_data(self, mocker: MockerFixture) -> None:
         err = self._raise_from(mocker, _response(429, json_body={"detail": "slow down"}, headers={"Retry-After": "12"}))
