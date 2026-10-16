@@ -692,6 +692,33 @@ class TestErrorVerdicts:
         assert problem_verdict(refused.problem) == _INPUT
         assert error_verdict_of(refused) == _CONFIG
 
+    @pytest.mark.parametrize(
+        ("error", "code", "params"),
+        [
+            pytest.param(
+                RequestArgumentError("execute() needs a run source"),
+                "client.argument_invalid",
+                {"argument": "arguments", "reason": "unspecified"},
+                id="RequestArgumentError",
+            ),
+            pytest.param(
+                InputPreparationError("The input is missing."),
+                "client.argument_invalid",
+                {"argument": "inputs", "reason": "unspecified"},
+                id="InputPreparationError",
+            ),
+            pytest.param(ArtifactOperationError("outputs/ is a file"), "runtime.unexpected", None, id="ArtifactOperationError"),
+        ],
+    )
+    def test_a_family_base_built_from_a_message_alone_carries_a_problem_stating_its_verdict(
+        self, error: PipelexRequestError, code: str, params: dict[str, str] | None
+    ) -> None:
+        # Templates and consumers build these from a message alone, as they did before the classes carried a problem.
+        assert error.problem.code == code
+        assert (error.problem.params.model_dump(exclude_none=True) if error.problem.params is not None else None) == params
+        assert problem_verdict(error.problem) == error_verdict_of(error)
+        assert str(error) == error.args[0]
+
     # ── Arguments refused before sending ──
 
     @pytest.mark.parametrize(("label", "call"), _REFUSALS, ids=[label for label, _ in _REFUSALS])

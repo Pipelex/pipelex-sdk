@@ -92,6 +92,7 @@ class _FakePrepareClient:
         pipe_io_error: ApiResponseError | None = None,
         upload_error: Exception | None = None,
     ) -> None:
+        self.api_key = "test-token"
         self._result = result
         self._pipe_io_error = pipe_io_error
         self._upload_error = upload_error

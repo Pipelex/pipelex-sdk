@@ -92,9 +92,13 @@ class PreparedInputs(BaseModel):
 
 class _PrepareClient(Protocol):
     """The client surface `prepare_inputs` needs: raw `upload` plus `pipe_io` as the
-    signature source. Typed as `PipelexAPIClient`'s own signatures so the client satisfies it
+    signature source, and the API key the client sends, which `upload_file` reads for the problem
+    of a refused credential. Typed as `PipelexAPIClient`'s own signatures so the client satisfies it
     structurally.
     """
+
+    @property
+    def api_key(self) -> str: ...
 
     async def upload(self, upload_input: UploadInput) -> UploadedFile: ...
 

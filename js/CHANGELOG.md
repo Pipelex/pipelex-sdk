@@ -4,7 +4,7 @@
 
 ### Added
 
-- **`ApiResponseError.problem`, the standard's reading of the answer**: every `ApiResponseError` now also carries the same answer as the MTHDS standard reads it, typed as the standard's `Problem` and equal to the problem `mthds`'s own `ApiResponseError` carries, so a caller handling both clients branches on `problem.code`, except that on `start` and `execute` it agrees with `runMayHaveStarted`: `client.outcome_unknown`, naming the run when the body names one, wherever a run may have started, and the reading of an answer to a request that creates no run wherever none did. The hosted members read exactly as before, and the platform's `code` and `errors` stay on the error, apart from the registry's `problem.code` and the problem items of `problem.errors` (`docs/errors.md`).
+- **`ApiResponseError.problem`, the standard's reading of the answer**: every `ApiResponseError` now also carries the same answer as the MTHDS standard reads it, typed as the standard's `Problem` and equal to the problem `mthds`'s own `ApiResponseError` carries, so a caller handling both clients branches on `problem.code`, except that on `start` and `execute` `runMayHaveStarted` decides: `client.outcome_unknown`, naming the run when the body names one, wherever a run may have started, even when the body is a core problem document, which a runner inviting a retry would otherwise have the error carry beside `runMayHaveStarted: true`, and the reading of an answer to a request that creates no run wherever none did. The hosted members read exactly as before, and the platform's `code` and `errors` stay on the error, apart from the registry's `problem.code` and the problem items of `problem.errors` (`docs/errors.md`).
 
 ### Changed
 

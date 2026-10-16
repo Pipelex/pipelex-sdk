@@ -54,8 +54,9 @@ stays under the protocol base.
 this module raises over a request. On `ApiResponseError` it is the standard's reading of the answer,
 the one the `mthds` client gives the same answer: the body's own problem document when it is one, and
 otherwise the problem the client reads from the status (`client.response_unreadable`,
-`client.outcome_unknown` on a route that creates a run, …), except that on a `start` or an `execute` it
-agrees with the error's `run_may_have_started` where the two readings part ways (`answer_reading`). On
+`client.outcome_unknown` on a route that creates a run, …), except that on a `start` or an `execute` the
+error's `run_may_have_started` decides: `client.outcome_unknown` wherever a run may have started, whatever
+the body, and the reading of a request that creates no run wherever none did (`answer_reading`). On
 `ApiUnreachableError` it is the
 transport's (`client.unreachable`, `client.timeout`, `client.outcome_unknown`). On an error wrapping
 another, an upload refused by the API say, it is the wrapped error's. On every other error it is the
@@ -100,6 +101,10 @@ if TYPE_CHECKING:
 #: failure carries the httpx exception's class name instead, a connect or pool timeout included.
 ABORT_TIMEOUT_CODE = "ABORT_TIMEOUT"
 
+# The reason `client.argument_invalid` names when an argument refusal is built from a message alone,
+# which says what was refused only in words.
+_UNSPECIFIED_REASON = "unspecified"
+
 
 def _verdict(error_domain: ErrorDomain, *, retryable: bool) -> ErrorVerdict:
     """A verdict; each class below declares its own with it."""
@@ -136,6 +141,19 @@ def response_unreadable_problem(*, status: int, pipeline_run_id: str | None = No
         `client.response_unreadable` naming the status, and the run as its member when given.
     """
     return make_client_problem(CoreCode.CLIENT_RESPONSE_UNREADABLE, params={"status": status}, pipeline_run_id=pipeline_run_id)
+
+
+def _credential_refused_problem(*, credential_sent: bool) -> Problem:
+    """The problem of a request refused for its credential (a `401` or a `403`).
+
+    Args:
+        credential_sent: Whether the request carried a credential: the client holds a non-empty API key.
+
+    Returns:
+        `auth.invalid_credential` when the request carried a credential, and `auth.missing_credential`
+        when it carried none, as a client with no API key sends its requests.
+    """
+    return make_client_problem(CoreCode.AUTH_INVALID_CREDENTIAL if credential_sent else CoreCode.AUTH_MISSING_CREDENTIAL)
 
 
 def _outcome_unknown_problem(*, pipeline_run_id: str | None = None) -> Problem:
@@ -224,11 +242,16 @@ class RequestArgumentError(PipelexRequestError):
 
     `problem` is `client.argument_invalid` naming the argument and why it was refused
     (`argument_invalid_problem`), or `client.not_configured` naming the setting for a base URL that is
-    not host-only.
+    not host-only. The SDK states one on every refusal it raises; one built with none, from a message
+    alone, carries `client.argument_invalid` naming `arguments`, for the reason `unspecified`.
     """
 
-    def __init__(self, message: str, *, problem: Problem, verdict: ErrorVerdict | None = None) -> None:
-        super().__init__(message, verdict=verdict or _verdict(ErrorDomain.INPUT, retryable=False), problem=problem)
+    def __init__(self, message: str, *, problem: Problem | None = None, verdict: ErrorVerdict | None = None) -> None:
+        super().__init__(
+            message,
+            verdict=verdict or _verdict(ErrorDomain.INPUT, retryable=False),
+            problem=problem or argument_invalid_problem(argument="arguments", reason=_UNSPECIFIED_REASON),
+        )
 
 
 # ── Transport and refusals ────────────────────────────────────────────
@@ -413,10 +436,11 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError):
     - **The standard's reading.** `problem` is the answer as the standard's `mthds` client reads it,
       a `mthds.protocol.problem.models.Problem` under a registered code: the body itself when it is a
       core problem document, and otherwise the problem the standard reads from the status, such as
-      `client.response_unreadable` naming it. On a `start` or an `execute` it agrees with
-      `run_may_have_started` (`answer_reading`): `client.outcome_unknown` for every answer that leaves a
-      run possibly started, a `408` included, and the reading of a request that creates no run for one
-      that started nothing, such as a `501` or the platform's `503` coded `pipeline_start_unavailable`.
+      `client.response_unreadable` naming it. On a `start` or an `execute`, `run_may_have_started`
+      decides (`answer_reading`): `client.outcome_unknown` for every answer that leaves a run possibly
+      started, a `408` included, even when the body is a core problem document, and the reading of a
+      request that creates no run for one that started nothing, such as a `501` or the platform's `503`
+      coded `pipeline_start_unavailable`.
       Its `code` is the registry's and its `errors` the standard's problem items, which share their
       names with the platform's `code` and `errors` above and never replace them. The verdict and the
       message are not read from it.
@@ -530,23 +554,22 @@ def _with_next_step(message: str, user_action: ProblemUserAction | None) -> str:
 def answer_reading(*, status: int, body: str, headers: Mapping[str, str], may_start_run: bool, code: str | None) -> AnswerReading:
     """The standard's reading of an answer the SDK raises as an `ApiResponseError`, agreeing with its `run_may_have_started`.
 
-    The answer is read as the `mthds` client reads it (`read_answer`), except where that reading and the
-    SDK's own reading of whether a run may have started (`answer_may_have_started_run`) part ways, on a
-    request that may create a run: the problem then follows the SDK's reading, as `ApiUnreachableError`'s
-    does for a request that got no answer, so that `problem` never says a run may exist where
-    `run_may_have_started` says none started, nor the reverse.
+    The answer is read as the `mthds` client reads it (`read_answer`), except on a request that may create
+    a run, where the SDK's own reading of whether a run may have started (`answer_may_have_started_run`)
+    decides, as `ApiUnreachableError`'s does for a request that got no answer, so that `problem` never says a
+    run may exist where `run_may_have_started` says none started, nor the reverse.
 
-    - A non-2xx whose body is a core problem document reads as that document, `from_body` true, whatever
-      the request.
-    - Any other non-2xx reads, where a run may have started, as `client.outcome_unknown`, naming the run when
-      the body names one (the platform's `bad_gateway` does when it lost a start's acknowledgement): a `408`,
-      which a proxy may answer for a request it forwarded, and every `5xx` but a `501` and a `503` carrying
-      the platform's code `pipeline_start_unavailable`. Where none started, which is every answer to a request
-      that creates no run, it reads as the answer to a request that creates none: the code its status names
-      (`runtime.unavailable` for that `503`), else `client.response_unreadable` naming the status (that `501`).
-    - A 2xx the SDK could not read is `client.response_unreadable`, except on a request that may create a
-      run: the server accepted the request, so the run may exist, and it reads as `client.outcome_unknown`,
-      naming the run when the body names one.
+    - Where a run may have started, the answer reads as `client.outcome_unknown`, naming the run when the
+      body names one (the platform's `bad_gateway` does when it lost a start's acknowledgement), whatever
+      the body: a `408`, which a proxy may answer for a request it forwarded, every `5xx` but a `501` and a
+      `503` carrying the platform's code `pipeline_start_unavailable`, and a 2xx the SDK could not read,
+      since the server accepted the request. A core problem document in such a body is not kept, since one
+      inviting a retry would contradict `run_may_have_started`.
+    - Where none started, which is every answer to a request that creates no run, a non-2xx whose body is
+      a core problem document reads as that document, `from_body` true, and any other non-2xx as the
+      answer to a request that creates none: the code its status names (`runtime.unavailable` for that
+      `503`), else `client.response_unreadable` naming the status (that `501`). A 2xx the SDK could not
+      read is `client.response_unreadable`.
 
     Args:
         status: The HTTP status of the answer.
@@ -559,13 +582,11 @@ def answer_reading(*, status: int, body: str, headers: Mapping[str, str], may_st
         The problem, and whether it is the body's own problem document.
     """
     run_may_have_started = may_start_run and answer_may_have_started_run(status=status, code=code)
-    if not 200 <= status < 300:
+    if not run_may_have_started:
+        if 200 <= status < 300:
+            return AnswerReading(problem=unreadable_answer(status), from_body=False)
         lower_case = {name.lower(): value for name, value in headers.items()}
-        reading = read_answer(status=status, body=body, headers=lower_case, creates_run=False)
-        if reading.from_body or not run_may_have_started:
-            return reading
-    elif not run_may_have_started:
-        return AnswerReading(problem=unreadable_answer(status), from_body=False)
+        return read_answer(status=status, body=body, headers=lower_case, creates_run=False)
     decoded: object = decode_json(body).value
     started_run_id: object = cast("dict[str, Any]", decoded).get("pipeline_run_id") if isinstance(decoded, dict) else None
     if isinstance(started_run_id, str) and started_run_id:
@@ -797,11 +818,16 @@ class InputPreparationError(PipelexRequestError):
     form reporting a missing input in its own words. `problem` is the failure as the standard's problem
     document: each subclass states its own, and a direct raise gives it, `client.argument_invalid` for
     an argument refused (`argument_invalid_problem`) or the wrapped error's for a refusal the API
-    answered.
+    answered. One built with none, from a message alone, carries `client.argument_invalid` naming
+    `inputs`, for the reason `unspecified`.
     """
 
-    def __init__(self, message: str, *, problem: Problem, verdict: ErrorVerdict | None = None) -> None:
-        super().__init__(message, verdict=verdict or _verdict(ErrorDomain.INPUT, retryable=False), problem=problem)
+    def __init__(self, message: str, *, problem: Problem | None = None, verdict: ErrorVerdict | None = None) -> None:
+        super().__init__(
+            message,
+            verdict=verdict or _verdict(ErrorDomain.INPUT, retryable=False),
+            problem=problem or argument_invalid_problem(argument="inputs", reason=_UNSPECIFIED_REASON),
+        )
 
 
 class InvalidLocalSourceError(InputPreparationError):
@@ -953,12 +979,14 @@ class UnsupportedUploadCapabilityError(InputPreparationError):
 class UploadAuthenticationError(InputPreparationError):
     """Upload was not authorized — a `401`/`403` from the upload route. `filename` is the file
     whose upload was refused, as `upload_file` sent it. Its verdict is `config`, not retryable: the
-    credential must change. Its `problem` is `auth.invalid_credential`.
+    credential must change. Its `problem` is `auth.invalid_credential` when the request carried a
+    credential, and `auth.missing_credential` when it carried none (`credential_sent` false, which
+    `upload_file` passes for a client holding no API key).
     """
 
-    def __init__(self, message: str, status: int, *, filename: str | None = None) -> None:
+    def __init__(self, message: str, status: int, *, filename: str | None = None, credential_sent: bool = True) -> None:
         super().__init__(
-            message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False), problem=make_client_problem(CoreCode.AUTH_INVALID_CREDENTIAL)
+            message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False), problem=_credential_refused_problem(credential_sent=credential_sent)
         )
         self.status = status
         self.filename = filename
@@ -1140,11 +1168,17 @@ class ArtifactOperationError(PipelexRequestError):
     where the environment refuses the download (a directory that cannot be created). `problem` is the
     failure as the standard's problem document: each subclass states its own, and a direct raise gives
     it — `client.argument_invalid` for an argument refused, `client.write_failed` for a directory that
-    cannot be created, `client.response_unreadable` for an answer the operation cannot use.
+    cannot be created, `client.response_unreadable` for an answer the operation cannot use. One built
+    with none, from a message alone, carries `runtime.unexpected`, which states the family's own
+    verdict, `runtime` and not retryable.
     """
 
-    def __init__(self, message: str, *, problem: Problem, verdict: ErrorVerdict | None = None) -> None:
-        super().__init__(message, verdict=verdict or _verdict(ErrorDomain.RUNTIME, retryable=False), problem=problem)
+    def __init__(self, message: str, *, problem: Problem | None = None, verdict: ErrorVerdict | None = None) -> None:
+        super().__init__(
+            message,
+            verdict=verdict or _verdict(ErrorDomain.RUNTIME, retryable=False),
+            problem=problem or make_client_problem(CoreCode.RUNTIME_UNEXPECTED),
+        )
 
 
 class ScopeUnavailableError(ArtifactOperationError):
@@ -1248,12 +1282,14 @@ class ArtifactAuthenticationError(ArtifactOperationError):
     refusal, and the rest marked `aborted`. `status` is the route's status; the wrapped
     `ApiResponseError` is reachable through `__cause__`. (`verdict` is the download's result, not the
     error's own: that is `retryable` and `error_domain`, `config` and not retryable, since the credential
-    must change. Its `problem` is `auth.invalid_credential`.)
+    must change. Its `problem` is `auth.invalid_credential` when the request carried a credential, and
+    `auth.missing_credential` when it carried none: `credential_sent` false, which `download_artifacts`
+    passes for a client holding no API key.)
     """
 
-    def __init__(self, message: str, status: int, verdict: DownloadArtifactsResult) -> None:
+    def __init__(self, message: str, status: int, verdict: DownloadArtifactsResult, *, credential_sent: bool = True) -> None:
         super().__init__(
-            message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False), problem=make_client_problem(CoreCode.AUTH_INVALID_CREDENTIAL)
+            message, verdict=_verdict(ErrorDomain.CONFIG, retryable=False), problem=_credential_refused_problem(credential_sent=credential_sent)
         )
         self.status = status
         self.verdict = verdict

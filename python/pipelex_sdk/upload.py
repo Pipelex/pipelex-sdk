@@ -55,7 +55,12 @@ class UploadRecord(BaseModel):
 
 
 class _UploadClient(Protocol):
-    """The client surface `upload_file` needs — the raw base64 `upload` wire call."""
+    """The client surface `upload_file` needs — the raw base64 `upload` wire call, and the API key the
+    client sends, empty for a client that sends none, which decides the problem of a refused credential.
+    """
+
+    @property
+    def api_key(self) -> str: ...
 
     async def upload(self, upload_input: UploadInput) -> UploadedFile: ...
 
@@ -91,12 +96,13 @@ def _to_asset_bytes(source: UploadSource, filename: str | None, content_type: st
     return data, resolved_name, content_type or _guess_content_type(resolved_name)
 
 
-def _map_upload_error(error: ApiResponseError | ApiUnreachableError, filename: str) -> InputPreparationError:
+def _map_upload_error(error: ApiResponseError | ApiUnreachableError, filename: str, *, credential_sent: bool) -> InputPreparationError:
     """Translate a raw `upload()` transport error into the matching preparation error.
 
     The wrapped error is passed as the `UploadTransportError`'s `cause`, whose verdict the wrapper takes:
     its `code` is too coarse to judge by, a `402` plan limit being `unexpected` like any other status the
-    SDK has no mapping for.
+    SDK has no mapping for. `credential_sent` says whether the request carried a credential, which
+    decides the problem of a `401` or `403`.
     """
     if isinstance(error, ApiUnreachableError):
         msg = f'Upload of "{filename}" could not reach the Pipelex API ({error.code or "unreachable"}).'
@@ -126,6 +132,7 @@ def _map_upload_error(error: ApiResponseError | ApiUnreachableError, filename: s
                 f'Upload of "{filename}" was not authorized ({error.status}). Check the configured Pipelex API key.',
                 status=error.status,
                 filename=filename,
+                credential_sent=credential_sent,
             )
         case 404:
             return UnsupportedUploadCapabilityError(
@@ -154,6 +161,8 @@ async def upload_file(
     asset, `401`/`403` an auth failure, `404` an unsupported upload capability, an
     unreachable host a transport failure, and a `2xx` answer the client could not read an
     `unexpected` transport failure, since whether and where the file was stored is unknown.
+    The auth failure's problem is `auth.missing_credential` when the client holds no API key, so
+    sent none, and `auth.invalid_credential` when it sent one.
     """
     # Offload the (possibly large) synchronous file read off the event loop — `read_bytes`
     # releases the GIL during the underlying os.read, so other coroutines run during disk I/O.
@@ -168,5 +177,5 @@ async def upload_file(
     try:
         uploaded = await client.upload(UploadInput(filename=resolved_name, data=encoded, content_type=resolved_type))
     except (ApiResponseError, ApiUnreachableError) as exc:
-        raise _map_upload_error(exc, resolved_name) from exc
+        raise _map_upload_error(exc, resolved_name, credential_sent=bool(client.api_key)) from exc
     return UploadRecord(uri=uploaded.uri, filename=uploaded.filename, content_type=resolved_type, size=len(data))
