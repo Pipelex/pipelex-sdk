@@ -51,18 +51,19 @@ function failed(runId: string | null): RunState<unknown> {
   };
 }
 
+/** The timeline's own region, the one landmark the panel adds. */
 function timeline() {
-  return screen.queryByRole("region", { name: "Run timeline" });
+  return screen.queryByRole("region", { name: "Run progress" });
 }
 
 describe("RunProgressPanel", () => {
   it("follows a durable run while it goes, and draws its timeline", async () => {
     answers["run-1"] = [{ kind: "snapshot", snapshot: claimsMidRun("run-1") }];
     render(<RunProgressPanel state={running("run-1")} />);
-    // The timeline's own region, inside the panel's once it has loaded.
+    // The timeline's own region, once it has loaded, with no wrapper of the panel's.
     const drawn = await screen.findByRole("region", { name: "Run progress" });
-    expect(timeline()).toContainElement(drawn);
     expect(drawn).toHaveTextContent("check_each_claim");
+    expect(screen.getAllByRole("region")).toEqual([drawn]);
     expect(read).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
   });
 
@@ -123,14 +124,15 @@ describe("RunProgressPanel", () => {
   it("draws nothing before the run reaches an invocation, nor where no progress is served", async () => {
     answers["run-1"] = [{ kind: "snapshot", snapshot: claimsPending("run-1") }];
     answers["run-2"] = [{ kind: "unavailable" }];
-    const { rerender } = render(<RunProgressPanel state={running("run-1")} />);
+    const { container, rerender } = render(<RunProgressPanel state={running("run-1")} />);
     await vi.waitFor(() => expect(read).toHaveBeenCalledWith("run-1", expect.any(AbortSignal)));
-    expect(timeline()).toBeNull();
+    // Nothing at all in the page, so the form's column keeps no empty region or gap.
+    expect(container).toBeEmptyDOMElement();
 
     rerender(<RunProgressPanel state={running("run-2")} />);
     await vi.waitFor(() => expect(read).toHaveBeenCalledWith("run-2", expect.any(AbortSignal)));
     rerender(<RunProgressPanel state={done("run-2")} />);
-    expect(timeline()).toBeNull();
+    expect(container).toBeEmptyDOMElement();
     // `unavailable` stops the reading: not even the final reads.
     expect(read.mock.calls.filter(([runId]) => runId === "run-2")).toHaveLength(1);
   });

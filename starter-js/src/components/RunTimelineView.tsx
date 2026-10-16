@@ -41,7 +41,7 @@ const GALLERY_PALETTE: Record<string, string> = {
 };
 
 /** Whether a snapshot has anything to draw: it has reached at least one invocation. */
-export function hasProgressToDraw(snapshot: ProgressSnapshot | null): snapshot is ProgressSnapshot {
+function hasProgressToDraw(snapshot: ProgressSnapshot | null): snapshot is ProgressSnapshot {
   return snapshot !== null && snapshot.invocations.length > 0;
 }
 
