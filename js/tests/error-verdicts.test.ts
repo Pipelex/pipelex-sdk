@@ -387,7 +387,7 @@ describe("a failed request that may create a run", () => {
         undefined,
         code,
         {
-          problem: {
+          details: {
             ...(isErrorDomainValue(body?.error_domain) ? { errorDomain: body.error_domain } : {}),
             ...(typeof body?.retryable === "boolean" ? { retryable: body.retryable } : {}),
           },
@@ -560,32 +560,22 @@ describe("errorVerdictOf", () => {
     });
   });
 
-  it("reads an mthds ApiResponseError whose runner sent both members, and only then", () => {
-    const both = new MthdsApiResponseError(
-      "refused",
-      BASE_URL,
-      500,
-      "Internal Server Error",
-      "{}",
-      "LLMCompletionError",
-      "refused",
-      undefined,
-      { problem: { errorDomain: "config", retryable: false } },
-    );
-    const domainOnly = new MthdsApiResponseError(
-      "refused",
-      BASE_URL,
-      500,
-      "Internal Server Error",
-      "{}",
-      "LLMCompletionError",
-      "refused",
-      undefined,
-      { problem: { errorDomain: "config" } },
+  it("reads nothing off an mthds ApiResponseError, whose verdict is its problem's", () => {
+    // The standard's client carries its verdict on its problem, as `domain` and `retry` in the
+    // standard's vocabulary, whatever the runner's body held beside it.
+    const body = '{"error_domain":"config","retryable":false}';
+    const mthds = new MthdsApiResponseError(
+      protocol.readAnswer({ status: 500, headers: {}, body }).problem,
+      {
+        apiUrl: BASE_URL,
+        route: "POST /v1/execute",
+        status: 500,
+        statusText: "Internal Server Error",
+        responseBody: body,
+      },
     );
 
-    expect(errorVerdictOf(both)).toEqual({ retryable: false, errorDomain: "config" });
-    expect(errorVerdictOf(domainOnly)).toBeUndefined();
+    expect(errorVerdictOf(mthds)).toBeUndefined();
   });
 
   it("returns a fresh pair, not the error itself", () => {

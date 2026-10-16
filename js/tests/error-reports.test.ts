@@ -20,14 +20,12 @@
 import { readFileSync } from "node:fs";
 
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import type {
-  ProblemDetails as MthdsProblemDetails,
-  UserAction as MthdsUserAction,
-} from "mthds/errors";
+import { ApiResponseError as MthdsApiResponseError, readAnswer } from "mthds/errors";
+import type { Problem } from "mthds/protocol";
 
 import { PipelexApiClient } from "../src/client.js";
 import { readRunErrorReport } from "../src/error-models.js";
-import type { ProblemDetails, RunErrorReport, UserAction } from "../src/error-models.js";
+import type { RunErrorReport } from "../src/error-models.js";
 import { ApiResponseError, RunFailedError } from "../src/errors.js";
 import type { RunRead, RunResultState } from "../src/runs.js";
 import type { RunHistoryItem } from "../src/product-models.js";
@@ -421,7 +419,7 @@ describe("ApiResponseError — the problem document's members", () => {
       "conflict",
       {
         cause: new Error("root"),
-        problem: { type: "https://pipelex.com/errors/conflict", requestId: "r-1", retryable: true },
+        details: { type: "https://pipelex.com/errors/conflict", requestId: "r-1", retryable: true },
         problemDocument: { code: "conflict" },
       },
     );
@@ -431,19 +429,85 @@ describe("ApiResponseError — the problem document's members", () => {
     expect(e.retryable).toBe(true);
     expect(e.problemDocument).toEqual({ code: "conflict" });
     expect((e.cause as Error).message).toBe("root");
+    // The standard's reading comes from the answer the error was built with.
+    expect(e.problem).toEqual(
+      readAnswer({ status: 409, headers: {}, body: "{}" }, { createsRun: false }).problem,
+    );
   });
 });
 
-describe("the vocabulary is the standard client's", () => {
-  it("declares the problem members under mthds's names and types", () => {
-    // `@pipelex/sdk` depends on `mthds` only through `mthds/protocol`, so these are declared
-    // here rather than imported; this pins them to the standard client's declarations, so a
-    // consumer reads one vocabulary whichever client raised the error.
-    expectTypeOf<UserAction>().toEqualTypeOf<MthdsUserAction>();
-    expectTypeOf<ProblemDetails>().toExtend<MthdsProblemDetails>();
-    expectTypeOf<
-      Pick<ProblemDetails, keyof MthdsProblemDetails>
-    >().toEqualTypeOf<MthdsProblemDetails>();
+describe("ApiResponseError — the standard's reading beside the hosted members", () => {
+  /** The answer as the standard's own client reads it. */
+  function standardProblem(status: number, body: unknown, createsRun: boolean): Problem {
+    return readAnswer({ status, headers: {}, body: JSON.stringify(body) }, { createsRun }).problem;
+  }
+
+  it("carries the problem mthds's own ApiResponseError carries, typed as the standard's", () => {
+    expectTypeOf<ApiResponseError["problem"]>().toEqualTypeOf<Problem>();
+    expectTypeOf<ApiResponseError["problem"]>().toEqualTypeOf<MthdsApiResponseError["problem"]>();
+  });
+
+  it("reads a platform refusal both ways, its own code and field errors kept apart", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(problemResponse(422, PLATFORM_422));
+
+    const e = (await caught(client.createPipelexApiKey({ label: "" }))) as ApiResponseError;
+
+    expect(e.problem).toEqual(standardProblem(422, PLATFORM_422, false));
+    // The platform's own code and field errors stay on the error, the standard's on its problem.
+    expect(e.code).toBe("validation_failed");
+    expect(e.problem.code).not.toBe("validation_failed");
+    expect(e.errors).toEqual(PLATFORM_422.errors);
+    expect(e.problem.errors).toBeUndefined();
+  });
+
+  it("reads a runner's failure of a run route as the standard does, an outcome unknown", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(problemResponse(500, RUNNER_500));
+
+    const e = (await caught(
+      client.execute({ pipe_code: "p", mthds_contents: ["x"] }),
+    )) as ApiResponseError;
+
+    expect(e.problem).toEqual(standardProblem(500, RUNNER_500, true));
+    expect(e.problem.code).toBe("client.outcome_unknown");
+    expect(e.errorType).toBe("LLMCompletionError");
+  });
+
+  it("keeps a core problem document as received", async () => {
+    const core: Problem = {
+      type: "https://mthds.ai/errors/runtime.unavailable",
+      title: "Runtime unavailable",
+      status: 503,
+      detail: "The runtime is not accepting requests.",
+      code: "runtime.unavailable",
+      domain: "runtime",
+      retry: "yes",
+      next_step: { kind: "wait", detail: "Wait, then repeat the request." },
+    };
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(problemResponse(503, core));
+
+    const e = (await caught(client.models())) as ApiResponseError;
+
+    expect(e.problem).toEqual(core);
+    expect(e.problemDocument).toEqual(core);
+  });
+
+  it("reads a success it cannot read as unreadable, or as an outcome unknown on a start", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("not json", { status: 200 }))
+      .mockResolvedValueOnce(new Response("not json", { status: 200 }));
+
+    const read = (await caught(client.models())) as ApiResponseError;
+    const started = (await caught(
+      client.start({ pipe_code: "p", mthds_contents: ["x"] }),
+    )) as ApiResponseError;
+
+    expect(read.problem.code).toBe("client.response_unreadable");
+    expect(read.problem.params).toEqual({ status: 200 });
+    expect(started.problem.code).toBe("client.outcome_unknown");
   });
 });
 

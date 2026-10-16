@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`ApiResponseError.problem`, the standard's reading of the answer**: every `ApiResponseError` now also carries the same answer as the MTHDS standard reads it, typed as the standard's `Problem` and equal to the problem `mthds`'s own `ApiResponseError` carries, so a caller handling both clients branches on `problem.code`. The hosted members read exactly as before, and the platform's `code` and `errors` stay on the error, apart from the registry's `problem.code` and the problem items of `problem.errors` (`docs/errors.md`).
+
+### Changed
+
+- **`ApiResponseErrorOptions.problem` is now `details` (Breaking)**: an `ApiResponseError` built by hand passes the hosted problem document's typed members as `details`, and may pass the answer's `headers`, from which the standard's reading takes a `Retry-After`.
+- **The validate verdict's types stand alone (Breaking)**: `PipelexValidationReport` and `PipelexInvalidReport` no longer extend the standard's `ValidationReport` and `InvalidValidationReport`, which list problem items since protocol 2.0.0 while the hosted plane still sends `validation_errors`, so `PipelexApiClient` implements `MTHDSProtocol` for every route but `validate`, and a `PipelexValidationResult` is no longer assignable to the standard's `ValidationResult`. `ValidationErrorItem` and `SuggestedFix` keep the hosted shape, no longer pinned to the standard's, whose fix shares only its operation kinds, safeties and values.
+- **`errorVerdictOf` reads nothing off an `mthds` error**: the standard's client now carries its verdict on its problem, as `domain` and `retry`, so an `mthds` `ApiResponseError` reads as `undefined` where one whose runner sent `error_domain` and `retryable` used to read as their pair.
+
 ## [v0.45.0] - 2026-10-16
 
 ### Changed

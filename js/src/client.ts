@@ -514,7 +514,10 @@ const BARE_RUNNER_IMPLEMENTATION = "pipelex-api";
  *   `RunLifecycleUnavailableError`.
  *
  * Implements `MTHDSProtocol<DictPipeOutput>` so the protocol-execution methods
- * stay shaped like the standard's wire surface (`mthds/protocol`). The Pipelex
+ * stay shaped like the standard's wire surface (`mthds/protocol`), all but
+ * `validate`, whose verdict is the one the hosted plane answers: since protocol
+ * `2.0.0` the protocol's verdict lists its faults as problem items, which the
+ * hosted plane does not send yet (see `PipelexValidationResult`). The Pipelex
  * extensions (the crate and tools routes, the run lifecycle) ride on top.
  */
 
@@ -754,7 +757,14 @@ const METHOD_EXAMPLE_FIELDS = {
   readonly [expected: string, fits: (value: unknown) => boolean]
 >;
 
-export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
+/**
+ * The protocol surface `PipelexApiClient` implements as the standard types it: every route but
+ * `validate`, whose verdict is Pipelex's own (`PipelexValidationResult`) while the hosted plane
+ * answers the verdict that predates the protocol's problem items.
+ */
+type HostedProtocolSurface = Omit<MTHDSProtocol<DictPipeOutput>, "validate">;
+
+export class PipelexApiClient implements HostedProtocolSurface {
   private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
   /** Origin root derived from the base URL — `/health` lives here, not under `/v1`. */
@@ -1272,7 +1282,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   /**
    * The `ApiResponseError` of a 2xx answer the SDK cannot read, its message
    * `API <method> <path> answered <status> with <what>`: the answer's status, its raw text as
-   * `responseBody`, no problem member but the `X-Request-ID` header, the failure that made it
+   * `responseBody`, no hosted problem member but the `X-Request-ID` header, the failure that made it
    * unreadable as `cause`, and the verdict the fallback gives a 2xx, `runtime` and not retryable.
    * On a request that may create a run, the run may have started: the server accepted it.
    */
@@ -1296,7 +1306,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       undefined,
       {
         cause,
-        problem: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) },
+        details: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) },
+        headers: res.headers,
         mayStartRun: run.mayStartRun === true,
       },
     );
@@ -1312,12 +1323,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     res: RawResponse,
     run: RunCreation = {},
   ): never {
-    const { errorType, serverMessage, validationErrors, code, problem, document } = parseErrorBody(
+    const { errorType, serverMessage, validationErrors, code, details, document } = parseErrorBody(
       res.body,
     );
     // The body's `request_id` wins; the header is the fallback for a response whose body
     // carries none (a gateway error page, a non-problem body).
-    const requestId = problem.requestId ?? nonEmptyHeader(res.headers, REQUEST_ID_HEADER);
+    const requestId = details.requestId ?? nonEmptyHeader(res.headers, REQUEST_ID_HEADER);
     throw new ApiResponseError(
       `API ${method} ${path} failed (${res.status}): ${serverMessage ?? (res.body || res.statusText)}`,
       this.baseUrl,
@@ -1329,8 +1340,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       validationErrors,
       code,
       {
-        problem: { ...problem, requestId },
+        details: { ...details, requestId },
         problemDocument: document,
+        headers: res.headers,
         mayStartRun: run.mayStartRun === true,
       },
     );
@@ -3892,7 +3904,7 @@ function parseErrorBody(body: string): {
   serverMessage: string | undefined;
   validationErrors: ValidationErrorItem[] | undefined;
   code: string | undefined;
-  problem: ProblemDetails;
+  details: ProblemDetails;
   document: Record<string, unknown> | undefined;
 } {
   const empty = {
@@ -3900,7 +3912,7 @@ function parseErrorBody(body: string): {
     serverMessage: undefined,
     validationErrors: undefined,
     code: undefined,
-    problem: {},
+    details: {},
     document: undefined,
   };
   if (!body) return empty;
@@ -3935,7 +3947,7 @@ function parseErrorBody(body: string): {
     : undefined;
   // The platform's closed native code (`conflict`, `not_found`, …), one-to-one with `type`.
   const code = typeof root.code === "string" ? root.code : undefined;
-  const problem: ProblemDetails = {
+  const details: ProblemDetails = {
     type: stringMember(root.type),
     title: stringMember(root.title),
     instance: stringMember(root.instance),
@@ -3956,7 +3968,7 @@ function parseErrorBody(body: string): {
       ? root.errors.filter(isPlainObject).map(readFieldError)
       : undefined,
   };
-  return { errorType, serverMessage, validationErrors, code, problem, document: root };
+  return { errorType, serverMessage, validationErrors, code, details, document: root };
 }
 
 /** A problem member kept only when it is a non-empty string. */

@@ -8,7 +8,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiResponseError as MthdsApiResponseError } from "mthds/errors";
+import { ApiResponseError as MthdsApiResponseError, buildProblem } from "mthds/errors";
 
 import { PipelexApiClient } from "../src/client.js";
 import {
@@ -406,7 +406,7 @@ describe("the errors built by hand", () => {
       undefined,
       "service_unavailable",
       {
-        problem: { errorDomain: "runtime", retryable: true },
+        details: { errorDomain: "runtime", retryable: true },
         problemDocument: { error_domain: "runtime", retryable: true },
         mayStartRun: true,
       },
@@ -432,16 +432,13 @@ describe("runMayHaveStartedOf", () => {
   });
 
   it("is false for an mthds ApiResponseError, a plain Error and a value that is not an Error", () => {
-    const mthds = new MthdsApiResponseError(
-      "refused",
-      BASE_URL,
-      500,
-      "",
-      "{}",
-      undefined,
-      "refused",
-      undefined,
-    );
+    const mthds = new MthdsApiResponseError(buildProblem("client.outcome_unknown", {}), {
+      apiUrl: BASE_URL,
+      route: "POST /v1/start",
+      status: 500,
+      statusText: "",
+      responseBody: "{}",
+    });
 
     expect(runMayHaveStartedOf(mthds)).toBe(false);
     expect(runMayHaveStartedOf(new Error("plain"))).toBe(false);
