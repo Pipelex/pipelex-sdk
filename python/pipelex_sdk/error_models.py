@@ -7,12 +7,20 @@ the run records (`PipelineRun.error`, `RunHistoryItem.error`), and inside the pr
 the results read's `409`, where the
 client lifts it onto `RunResultFailed.error` and `RunFailedError.error`. The same classification
 fields (`error_domain`, `user_action`, …) ride a runner-rendered problem document as extension
-members, but a refused request's `ApiResponseError` reads them through `mthds`'s own problem parse,
-so its `user_action` is `mthds.runners.api.problem.UserAction` — kept only whole, `kind` and `detail`
-both required — while a stored report's is the lenient `UserAction` declared here, both fields
-optional, because a report written by another runner version must never fail the read carrying it.
-The two share their field names, so code that shows the next step reads `user_action.detail` on
-either, checking it for `None` on a report.
+members, which a refused request's `ApiResponseError` reads through `HostedProblemMembers`, so its
+`user_action` is `ProblemUserAction` — kept only whole, `kind` and `detail` both required — while a
+stored report's is the lenient `UserAction` declared here, both fields optional, because a report
+written by another runner version must never fail the read carrying it. The two share their field
+names, so code that shows the next step reads `user_action.detail` on either, checking it for `None`
+on a report.
+
+**The hosted plane's problem document predates the standard's.** The MTHDS core names a problem by a
+registered `code` and carries its faults as problem items in `errors[]`; the platform sends its own
+closed `code` (`conflict`, `not_found`, …) and its field-level `errors[]` (`FieldError`), and the
+runner its `error_type`, `error_domain`, `retryable`, `user_action` and `validation_errors[]`.
+`HostedProblemMembers` reads those members as the hosted plane sends them today, so that a hosted
+answer reads exactly as it did, while the error carries the standard's own reading of the same
+answer beside them, as `problem` (see `pipelex_sdk.errors.ApiResponseError`).
 
 Every field is optional and every model is extension-open (`extra="allow"`), for the reason
 `TokensUsageRecord` gives: the runner adds fields without asking this SDK, and a field this version
@@ -45,12 +53,17 @@ the report arrives here as served.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Any, Self, TypeAlias, TypeVar, cast
 
-from pydantic import BaseModel, ConfigDict, ValidatorFunctionWrapHandler, WrapValidator, field_validator
+from mthds.protocol.problem.answers import decode_json
+from mthds.runners.api.problem import REQUEST_ID_HEADER
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, ValidatorFunctionWrapHandler, WrapValidator, field_validator
 
 from pipelex_sdk._pydantic_utils import none_when_it_does_not_fit
 from pipelex_sdk.validation_models import ValidationErrorItem
+
+if TYPE_CHECKING:
+    import httpx
 
 
 class _LenientReportPart(BaseModel):
@@ -199,3 +212,188 @@ class FieldError(_LenientReportPart):
 #: and `RunResultFailed.error`. A report is read field by field as `RunErrorReport` says, and a value
 #: that is not a report at all reads as `None`, so the read carrying it always answers.
 LenientRunErrorReport: TypeAlias = Annotated[RunErrorReport | None, WrapValidator(none_when_it_does_not_fit)]
+
+
+class ProblemUserAction(BaseModel):
+    """What a refused request's problem document says the caller should do next — its `user_action` member.
+
+    `kind` is the runner's coarse category of advice. The reference runner emits `wait_and_retry`,
+    `check_billing`, `check_credentials`, `change_input`, `change_model`, `contact_support` and
+    `unknown`; the vocabulary is the runner's, so it stays an open string. `detail` is the advice
+    itself, in words, and is never empty: a `user_action` without it is no next step and reads as
+    absent. Members a runner adds beyond these two ride `model_extra`.
+
+    It is the hosted plane's own member, which predates the standard's problem document: there the
+    next step is the problem's `next_step`, whose `kind` is a closed list of its own.
+    """
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    kind: str
+    detail: str
+
+
+class HostedProblemMembers(BaseModel):
+    """The members of a non-2xx hosted answer's problem document, each `None` when the answer did not carry it.
+
+    A body that is not a problem document at all (an HTML gateway page, plain text, an empty body)
+    reads as a document with no members, and a member is kept only when it has the type given here,
+    a text member only when it is not empty, so a malformed member reads as absent rather than as a
+    wrong value.
+
+    - `type_uri`, `title`, `instance`: the RFC 9457 members — the stable URI naming the error class,
+      its short human label, and the occurrence (a request path or a request URN).
+    - `server_message`: the reason for this occurrence, the problem's `detail` string. Older answers
+      nest it as `{"detail": {"error_type": ..., "message": ...}}` or put a top-level `message`; both
+      are read too, the top-level `message` standing in when the `detail` gives no reason.
+    - `error_type`: the runner's exception class name, from the same places.
+    - `request_id`: the body's `request_id`, or the `X-Request-ID` response header when the body
+      carries none (a gateway error page, a body that is no problem document).
+    - `error_domain`, `retryable`, `user_action`: who can fix the failure, whether a retry can
+      succeed (`None` means unknown, which is not `False`), and what to do next.
+    - `validation_errors`: the items of a run route's refusal to run an invalid method, kept only when
+      every item is a `ValidationErrorItem`, so a list that is present is the runner's whole list.
+    - `code`, `error_category`, `errors`: the platform's own closed code, the runner's finer
+      classification of an inference failure, and the platform's field-level `errors[]`, kept only
+      when every item is an object.
+    - `members`: the decoded JSON object whole, `None` when the body was not one.
+
+    The platform's `code` and `errors[]` share their names with the standard's registered `code` and
+    its problem items; they are read here as the platform sends them and never through the standard's
+    reading, so the two never collide.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    type_uri: str | None = None
+    title: str | None = None
+    instance: str | None = None
+    server_message: str | None = None
+    error_type: str | None = None
+    request_id: str | None = None
+    error_domain: str | None = None
+    retryable: bool | None = None
+    user_action: ProblemUserAction | None = None
+    validation_errors: list[ValidationErrorItem] | None = None
+    code: str | None = None
+    error_category: str | None = None
+    errors: list[FieldError] | None = None
+    members: dict[str, Any] | None = None
+
+    @classmethod
+    def make_from_response(cls, response: httpx.Response) -> Self:
+        """Read the problem members of a response, with the `X-Request-ID` header as the request id's fallback.
+
+        Args:
+            response: The API's non-2xx answer.
+
+        Returns:
+            The members the body carries, and the header's request id when the body names none.
+        """
+        document = cls.make_from_body(response.text)
+        if document.request_id is not None:
+            return document
+        header_request_id = response.headers.get(REQUEST_ID_HEADER, "").strip()
+        if not header_request_id:
+            return document
+        return document.model_copy(update={"request_id": header_request_id})
+
+    @classmethod
+    def make_from_body(cls, body: str) -> Self:
+        """Read the problem members of a response body, leniently.
+
+        Args:
+            body: The response body as text.
+
+        Returns:
+            The members the body carries; a body that is not a JSON object carries none.
+        """
+        root = _decode_object(body)
+        if root is None:
+            return cls()
+
+        error_type: str | None = None
+        server_message: str | None = None
+        detail = root.get("detail")
+        if isinstance(detail, dict):
+            detail_object = cast("dict[str, Any]", detail)
+            error_type = _non_empty_string_member(detail_object, "error_type")
+            server_message = _non_empty_string_member(detail_object, "message")
+        elif isinstance(detail, str) and detail:
+            server_message = detail
+        if error_type is None:
+            error_type = _non_empty_string_member(root, "error_type")
+        if server_message is None:
+            server_message = _non_empty_string_member(root, "message")
+
+        raw_retryable = root.get("retryable")
+        return cls(
+            type_uri=_non_empty_string_member(root, "type"),
+            title=_non_empty_string_member(root, "title"),
+            instance=_non_empty_string_member(root, "instance"),
+            server_message=server_message,
+            error_type=error_type,
+            request_id=_non_empty_string_member(root, "request_id"),
+            error_domain=_non_empty_string_member(root, "error_domain"),
+            retryable=raw_retryable if isinstance(raw_retryable, bool) else None,
+            user_action=_user_action_of(root.get("user_action")),
+            validation_errors=_validated_list(_VALIDATION_ERRORS_ADAPTER, root.get("validation_errors")),
+            code=_non_empty_string_member(root, "code"),
+            error_category=_non_empty_string_member(root, "error_category"),
+            errors=_validated_list(_FIELD_ERRORS_ADAPTER, root.get("errors")),
+            members=root,
+        )
+
+
+# Built once at import: the parse paths of a problem's `validation_errors[]` and the platform's `errors[]`.
+# A `ValidationErrorItem` is a closed shape, so the list is kept whole or not at all; a `FieldError` reads
+# each field leniently, so only a non-object item sets `errors` to `None`.
+_VALIDATION_ERRORS_ADAPTER: TypeAdapter[list[ValidationErrorItem]] = TypeAdapter(list[ValidationErrorItem])
+_FIELD_ERRORS_ADAPTER: TypeAdapter[list[FieldError]] = TypeAdapter(list[FieldError])
+
+
+def _decode_object(body: str) -> dict[str, Any] | None:
+    """Decode a body into its JSON object, or `None` for an empty, non-JSON or non-object body.
+
+    The body is decoded by the base's guarded decoder (`mthds.protocol.problem.answers.decode_json`),
+    which reads the same answer's `problem` too, its numbers kept as written: a body nested deeper than
+    the protocol's limit, or holding `NaN`, `Infinity` or a number past the range of a double, is no JSON
+    and carries no member, where `json.loads` would accept the constants and raise `RecursionError` on
+    the nesting. `@pipelex/sdk` reads a refusal's body by the same rules.
+    """
+    decoded = decode_json(body, numbers_as_written=True)
+    value: object = decoded.value
+    if not decoded.is_json or not isinstance(value, dict):
+        return None
+    return cast("dict[str, Any]", value)
+
+
+def _non_empty_string_member(members: dict[str, Any], key: str) -> str | None:
+    """A non-empty string member, or `None` when it is absent, empty or not a string."""
+    value = members.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _user_action_of(value: Any) -> ProblemUserAction | None:
+    """A `user_action` member, kept only whole: an object with a string `kind` and a non-empty string `detail`."""
+    if not isinstance(value, dict):
+        return None
+    action = cast("dict[str, Any]", value)
+    kind = action.get("kind")
+    detail = action.get("detail")
+    if not isinstance(kind, str) or not isinstance(detail, str) or not detail:
+        return None
+    return ProblemUserAction.model_validate(action)
+
+
+_ItemT = TypeVar("_ItemT")
+
+
+def _validated_list(adapter: TypeAdapter[list[_ItemT]], value: Any) -> list[_ItemT] | None:
+    """A list member validated whole by `adapter`, or `None` when it is absent, not a list, or an item does not fit."""
+    if not isinstance(value, list):
+        return None
+    try:
+        return adapter.validate_python(value)
+    except ValidationError:
+        return None

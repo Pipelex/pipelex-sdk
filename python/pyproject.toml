@@ -324,17 +324,14 @@ ignore = [
 ]
 
 [tool.ruff.lint.flake8-type-checking]
-# Ruff matches only the base classes named in the class statement, so it cannot see that the
-# `/v1/validate` narrowings in `validation_models.py` are pydantic models: they extend `mthds`'s
-# report/diagnostic models rather than `BaseModel` directly. Without these entries, an annotation
-# imported from `mthds.protocol` (the input-form descriptor, the pipe I/O contracts) is misread as
-# type-only and pushed into a `TYPE_CHECKING` block, where pydantic cannot resolve it when it
-# builds the model — a runtime failure the linter would have introduced.
+# Ruff matches only the base classes named in the class statement, so it cannot see that a model
+# extending one of `mthds`'s rather than `BaseModel` directly is a pydantic model: `PipelexRunResultStart`
+# and the `execute` acknowledgement in `client.py` extend `RunResultStart`, and `PipelexExecuteResult`
+# extends `DictRunResultExecute`. Without these entries, an annotation such a model imports is misread as
+# type-only and pushed into a `TYPE_CHECKING` block, where pydantic cannot resolve it when it builds
+# the model — a runtime failure the linter would have introduced.
 runtime-evaluated-base-classes = [
   "pydantic.BaseModel",
-  "mthds.protocol.models.ValidationReport",
-  "mthds.protocol.models.InvalidValidationReport",
-  "mthds.protocol.models.ValidationDiagnostic",
   "mthds.protocol.models.RunResultStart",
   "mthds.runners.api.models.DictRunResultExecute",
 ]
@@ -385,3 +382,6 @@ method-rgx = "^(?!.$)[a-z_][a-z0-9_]*$"
 class-rgx = "^(?!.$)[A-Z_][a-zA-Z0-9_]*$"
 typevar-rgx = "^[A-Za-z_][A-Za-z0-9_]*$"
 good-names = ["_"]
+
+[tool.uv.sources]
+mthds = { git = "https://github.com/mthds-ai/mthds-python.git", rev = "26b8e80cf2ba1cc39ba009ed633e9cc5d311cb62" }

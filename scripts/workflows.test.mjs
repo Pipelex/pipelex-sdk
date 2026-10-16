@@ -487,7 +487,7 @@ describe("renderNextSdkTwin", () => {
     );
   });
 
-  it("installs the Python SDK built from this commit right after the template's install", () => {
+  it("installs the Python SDK built from this commit, with the base its lock resolves, right after the template's install", () => {
     const python = renderNextSdkTwin("app-py", "lint-check.yml", PY_SOURCE, PYPI);
     assert.ok(
       python.includes(`      - name: Install dependencies
@@ -496,7 +496,8 @@ describe("renderNextSdkTwin", () => {
       - name: Install pipelex-sdk built from this commit
         run: |
           uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/python"
-          uv pip install --python .venv/bin/python --reinstall-package pipelex-sdk "$RUNNER_TEMP"/next-sdk/*.whl
+          uv export --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project --project "$GITHUB_WORKSPACE/python" | grep -E '^mthds( |=|@)' > "$RUNNER_TEMP/next-sdk/mthds.txt"
+          uv pip install --python .venv/bin/python --reinstall-package pipelex-sdk --reinstall-package mthds -r "$RUNNER_TEMP/next-sdk/mthds.txt" "$RUNNER_TEMP"/next-sdk/*.whl
 
       - name: Run ruff lint merge check
 `),

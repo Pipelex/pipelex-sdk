@@ -7,6 +7,8 @@ from mthds.protocol.exceptions import PipelineRequestError
 from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
+from pipelex_sdk.error_verdicts import ErrorDomain
+from pipelex_sdk.errors import RequestArgumentError
 
 
 class TestClientConstruction:
@@ -111,6 +113,17 @@ class TestClientConstruction:
         )
         for secret in secrets:
             assert secret not in message
+
+    def test_refuses_a_base_url_httpx_cannot_make_a_url_of(self) -> None:
+        """A host holding a control character passes `urlsplit` but fails every request httpx sends,
+        so construction refuses it as a configuration fault, as `@pipelex/sdk`'s WHATWG parser does,
+        rather than letting the first call report it as a bad argument.
+        """
+        with pytest.raises(RequestArgumentError) as raised:
+            PipelexAPIClient(base_url="http://ex\x7fample.com")
+        assert raised.value.error_domain == ErrorDomain.CONFIG
+        assert raised.value.problem.code == "client.not_configured"
+        assert str(raised.value).startswith("Invalid API base URL (not shown: it is not an absolute URL): it must be host-only")
 
     def test_set_but_empty_base_url_env_raises(self, mocker: MockerFixture) -> None:
         """A set-but-empty `PIPELEX_BASE_URL` (e.g. an unfilled CI secret) must fail fast
