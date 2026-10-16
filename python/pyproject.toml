@@ -387,4 +387,4 @@ typevar-rgx = "^[A-Za-z_][A-Za-z0-9_]*$"
 good-names = ["_"]
 
 [tool.uv.sources]
-mthds = { git = "https://github.com/mthds-ai/mthds-python.git", rev = "d8946a423c835d6eddac14636125df84729b39e1" }
+mthds = { git = "https://github.com/mthds-ai/mthds-python.git", rev = "26b8e80cf2ba1cc39ba009ed633e9cc5d311cb62" }
