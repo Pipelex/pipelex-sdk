@@ -99,7 +99,12 @@ interface RunStartCase {
   route: "start" | "execute";
   status: number;
   body: Record<string, unknown> | string | null;
-  expected: Required<WireRunVerdict>;
+  expected: Required<WireRunVerdict> & {
+    /** The code of the standard problem the error carries. */
+    problem_code: string;
+    /** The run that problem names, read from the body; absent when it names none. */
+    problem_run_id?: string;
+  };
 }
 
 /** A wrapped error: an SDK class built from its own members, or `Error`, which carries no verdict. */
@@ -370,6 +375,10 @@ describe("a failed request that may create a run", () => {
     });
     expect(runMayHaveStartedOf(err)).toBe(c.expected.run_may_have_started);
     expect(Object.hasOwn(err as object, "runMayHaveStarted")).toBe(true);
+    expect({
+      code: refused.problem.code,
+      pipelineRunId: refused.problem.pipeline_run_id,
+    }).toEqual({ code: c.expected.problem_code, pipelineRunId: c.expected.problem_run_id });
   });
 
   it.each(CASES.run_start.map((c) => [`${c.route}: ${c.case}`, c] as const))(
@@ -400,6 +409,9 @@ describe("a failed request that may create a run", () => {
       expect(err.runMayHaveStarted).toBe(c.expected.run_may_have_started);
       expect(err.retryable).toBe(c.expected.retryable);
       expect(err.errorDomain).toBe(c.expected.error_domain);
+      // Built with no body, the problem names no run.
+      expect(err.problem.code).toBe(c.expected.problem_code);
+      expect(err.problem.pipeline_run_id).toBeUndefined();
     },
   );
 });

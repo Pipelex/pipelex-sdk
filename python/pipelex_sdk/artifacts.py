@@ -43,6 +43,7 @@ from httpx._decoders import SUPPORTED_DECODERS  # ruff: ignore[import-private-na
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.problem.client_problems import make_client_problem
 from mthds.protocol.problem.registry import CoreCode
+from mthds.runners.api.problem import transport_failure_problem
 from pydantic import BaseModel, ValidationError
 
 from pipelex_sdk.artifact_models import (
@@ -582,6 +583,10 @@ async def _stream_resolved_url(
             except httpx.TimeoutException as exc:
                 msg = f"Fetching the artifact timed out after {bounds.timeout_seconds}s."
                 raise ArtifactFetchError(msg, uri=uri, code="timeout", problem=_out_of_time(bounds.timeout_seconds)) from exc
+            except (httpx.TransportError, httpx.DecodingError) as exc:
+                msg = f"The artifact could not be fetched: {exc}."
+                problem = _unreachable_store(exc, link=checked_url, timeout_seconds=bounds.timeout_seconds)
+                raise ArtifactFetchError(msg, uri=uri, code="network", problem=problem) from exc
             except httpx.HTTPError as exc:
                 msg = f"The artifact could not be fetched: {exc}."
                 raise ArtifactFetchError(msg, uri=uri, code="network") from exc
@@ -598,6 +603,17 @@ def _over_the_cap(max_bytes: int) -> Problem:
 def _out_of_time(timeout_seconds: float) -> Problem:
     """`client.timeout`, naming the budget a fetch ran out of."""
     return make_client_problem(CoreCode.CLIENT_TIMEOUT, params={"seconds": timeout_seconds})
+
+
+def _unreachable_store(failure: httpx.TransportError | httpx.DecodingError, *, link: str, timeout_seconds: float) -> Problem:
+    """The transport's problem of a fetch that got no usable answer: `client.unreachable`, naming the store by its origin.
+
+    It is the base's reading of a request that got no answer (`transport_failure_problem`), for a request
+    that creates nothing; a timeout is read before it, as `client.timeout`. The store is named by the
+    link's scheme and host alone, since the link's query string carries its authorization.
+    """
+    parsed = urlsplit(link)
+    return transport_failure_problem(failure, creates_run=False, base_url=f"{parsed.scheme}://{parsed.netloc}", timeout_seconds=timeout_seconds)
 
 
 def _os_error_reason(exc: OSError) -> str:

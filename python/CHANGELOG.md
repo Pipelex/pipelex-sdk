@@ -4,7 +4,7 @@
 
 ### Added
 
-- **`problem` on every error raised over a request, the standard's reading of the failure**: an `ApiResponseError` carries the same answer as the MTHDS standard reads it, typed as the standard's `Problem` and equal to the problem `mthds`'s own `ApiResponseError` carries, so a caller handling both clients branches on `problem.code`; every other error raised over a request carries the core problem that states its failure, and `argument_invalid_problem` and `response_unreadable_problem` in `pipelex_sdk.errors` build the two a hand-built error most often needs. The hosted members read exactly as before, and the platform's `code` and `errors` stay on the error, apart from the registry's `problem.code` and the problem items of `problem.errors` (`docs/errors.md`).
+- **`problem` on every error raised over a request, the standard's reading of the failure**: an `ApiResponseError` carries the same answer as the MTHDS standard reads it, typed as the standard's `Problem` and equal to the problem `mthds`'s own `ApiResponseError` carries, so a caller handling both clients branches on `problem.code`, except that on `start` and `execute` it agrees with `run_may_have_started`: `client.outcome_unknown`, naming the run when the body names one, wherever a run may have started, and the reading of an answer to a request that creates no run wherever none did; every other error raised over a request carries the core problem that states its failure, and `argument_invalid_problem` and `response_unreadable_problem` in `pipelex_sdk.errors` build the two a hand-built error most often needs. The hosted members read exactly as before, and the platform's `code` and `errors` stay on the error, apart from the registry's `problem.code` and the problem items of `problem.errors` (`docs/errors.md`).
 - **`HostedProblemMembers` and `ProblemUserAction`**: `pipelex_sdk.error_models` reads the hosted problem document's members itself, as the standard's client no longer does, and `ProblemUserAction` is the type of `ApiResponseError.user_action`.
 
 ### Changed
@@ -15,6 +15,11 @@
 - **The validate verdict's types stand alone (Breaking)**: `PipelexValidationReport` and `PipelexInvalidReport` no longer subclass the standard's `ValidationReport` and `InvalidValidationReport`, which list problem items since protocol 2.0.0 while the hosted plane still sends `validation_errors`, and `ValidationErrorItem` no longer subclasses the standard's `ValidationDiagnostic`; every field they carried stays.
 - **`error_verdict_of` reads an `mthds` error by its problem, and `problem_verdict` translates the standard's verdict**: the standard's client now carries its verdict on its problem, as `domain` and `retry`, so `error_verdict_of` reads an `mthds` error as that problem's verdict in this SDK's vocabulary rather than from the `error_domain` and `retryable` a runner sent: `input` and `method` read as `input`, `account` and `operator` as `config`, `runtime` as `runtime`, and only a `retry` of `yes` is retryable. `problem_verdict` in `pipelex_sdk.error_verdicts` applies the same mapping to any problem of the standard.
 - **A `request_timeout_seconds` that is not a finite number of seconds is refused (Breaking)**: the standard's client now refuses a time limit that is not finite or is negative, and the constructor raises it as a `RequestArgumentError` carrying the standard's problem, where such a limit used to be accepted.
+
+### Fixed
+
+- **A body the protocol refuses as JSON is an answer the SDK cannot read**: a `2xx` body nested deeper than the protocol's limit, or holding `NaN`, `Infinity` or a number past the range of a double, raises the `ApiResponseError` of an answer the SDK cannot read instead of a bare `RecursionError` or a value holding a non-finite float, and a refusal whose body is such JSON carries no hosted member, as `@pipelex/sdk` reads both.
+- **A base URL httpx cannot make a URL of is refused at construction**: a host holding a control character raises the `config` `RequestArgumentError` of a refused base URL when the client is built, as `@pipelex/sdk` refuses it, rather than failing every request.
 
 ## [v0.45.0] - 2026-10-16
 

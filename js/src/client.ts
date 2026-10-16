@@ -15,6 +15,7 @@ import type {
 import {
   assertExclusiveRunSources,
   hasBundlePayload,
+  parseJsonBody,
   parseMethodFiles,
   serializeMethodFiles,
 } from "mthds/protocol";
@@ -455,8 +456,27 @@ interface RawResponse {
  */
 type JsonReader = (text: string) => unknown;
 
-/** `JSON.parse`, the `JsonReader` an answer is read with unless its route names another. */
+/**
+ * `JSON.parse`, the `JsonReader` an answer is read with unless its route names another; the
+ * answer's text is held to the protocol's rules first (`readAnswerAt`), so `parseJsonBody`'s
+ * reading is the one returned.
+ */
 const readJson: JsonReader = (text) => JSON.parse(text) as unknown;
+
+/**
+ * What `JSON.parse` throws for a text, `undefined` when it reads it: the `cause` of an answer
+ * whose body is not JSON the protocol reads, which is `JSON.parse`'s own `SyntaxError` for a body
+ * that is not JSON at all, and none for JSON the protocol refuses, nested too deeply or holding a
+ * number past the range of a double.
+ */
+function jsonParseFailure(text: string): unknown {
+  try {
+    JSON.parse(text);
+  } catch (err) {
+    return err;
+  }
+  return undefined;
+}
 
 /** HTTP methods the client issues — the product routes add PUT/PATCH/DELETE. */
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -1228,6 +1248,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * SDK cannot read, so it throws the `ApiResponseError` `unreadableAnswer` builds, with the parse
    * failure as `cause`; so is a body holding a number `parseExactJson` cannot read exactly on this
    * runtime (`ExactJsonUnsupportedError`), rather than read rounded.
+   *
+   * Every body is first held to the rules the protocol reads every body by (`parseJsonBody`, as
+   * `mthds`'s own client does and as `pipelex-sdk` does with `decode_json`): JSON nested deeper
+   * than `MAX_BODY_NESTING`, or holding a number past the range of a double, such as `1e999`, which
+   * `JSON.parse` would read as `Infinity`, is not JSON the protocol reads, and is an answer the SDK
+   * cannot read too, with `JSON.parse`'s own failure as `cause` when it has one.
    * The one place a success body is parsed.
    */
   private readAnswerAt<T>(
@@ -1240,6 +1266,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (!res.utf8) {
       throw this.unreadableAnswer(method, path, res, "a body that is not UTF-8", undefined, run);
     }
+    const reading = parseJsonBody(res.body);
+    if (!reading.ok) {
+      const what = res.body ? "a body that is not JSON" : "an empty body where JSON was expected";
+      throw this.unreadableAnswer(method, path, res, what, jsonParseFailure(res.body), run);
+    }
+    if (parse === readJson) return reading.value as T;
     try {
       return parse(res.body) as T;
     } catch (err) {
@@ -3780,12 +3812,9 @@ function extractNetworkErrorCode(err: unknown): string | undefined {
  */
 function isMissingRoute404(body: string): boolean {
   if (!body) return true;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return true;
-  }
+  const reading = parseJsonBody(body);
+  if (!reading.ok) return true;
+  const parsed = reading.value;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
   return !("code" in parsed);
 }
@@ -3916,16 +3945,13 @@ function parseErrorBody(body: string): {
     document: undefined,
   };
   if (!body) return empty;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
+  // Read by the protocol's rules, as every body is: JSON nested deeper than `MAX_BODY_NESTING`, or
+  // holding a number past the range of a double, carries no member, as `pipelex-sdk` reads it.
+  const reading = parseJsonBody(body);
+  if (!reading.ok || !isPlainObject(reading.value)) {
     return empty;
   }
-  if (!isPlainObject(parsed)) {
-    return empty;
-  }
-  const root = parsed;
+  const root = reading.value;
   const detail = root.detail;
   let errorType: string | undefined;
   let serverMessage: string | undefined;

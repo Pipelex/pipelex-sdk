@@ -1137,8 +1137,10 @@ export class ApiResponseError extends PipelexRequestError {
   /**
    * The answer read as the MTHDS standard reads it, the problem `mthds`'s own client carries:
    * the body when it is a core problem document, otherwise the problem the standard reads the
-   * answer as. Built from the constructor's arguments, so an error a consumer builds by hand
-   * carries the reading the client would give it.
+   * answer as, agreeing with `runMayHaveStarted`: `client.outcome_unknown` where a run may have
+   * started, and where none started the reading of an answer to a request that creates no run.
+   * Built from the constructor's arguments, so an error a consumer builds by hand carries the
+   * reading the client would give it.
    */
   public readonly problem: Problem;
 
@@ -1185,26 +1187,47 @@ export class ApiResponseError extends PipelexRequestError {
       responseBody,
       options?.headers ?? {},
       options?.mayStartRun === true,
+      code,
     );
   }
 }
 
 /**
- * An answer read as the MTHDS standard reads it, as `mthds`'s own client does: a status outside
- * `2xx` by `readAnswer`, and a `2xx` the SDK could not read as `client.response_unreadable`,
- * except on a request that may create a run, where the server accepted the request and the run
- * may exist: there it is `client.outcome_unknown`, naming the run when the body names one.
+ * An answer read as the MTHDS standard reads it, as `mthds`'s own client does, agreeing with the
+ * error's `runMayHaveStarted`: where `readAnswer` and the SDK's own reading of whether a run may
+ * have started (`answerMayHaveStartedRun`) part ways, on a request that may create a run, the
+ * problem follows the SDK's reading, as an `ApiUnreachableError`'s does for a request that got no
+ * answer, so that `problem` never says a run may exist where `runMayHaveStarted` says none started,
+ * nor the reverse.
+ *
+ * - A status outside `2xx` whose body is a core problem document reads as that document, whatever
+ *   the request.
+ * - Any other status outside `2xx` reads, where a run may have started, as
+ *   `client.outcome_unknown`, naming the run when the body names one (the platform's `bad_gateway`
+ *   does when it lost a start's acknowledgement): a `408`, which a proxy may answer for a request
+ *   it forwarded, and every `5xx` but a `501` and a `503` carrying the platform's code
+ *   `pipeline_start_unavailable`. Where none started, which is every answer to a request that
+ *   creates no run, it reads as the answer to a request that creates none: the code its status
+ *   names (`runtime.unavailable` for that `503`), else `client.response_unreadable` naming the
+ *   status (that `501`).
+ * - A `2xx` the SDK could not read is `client.response_unreadable`, except on a request that may
+ *   create a run: the server accepted the request, so the run may exist, and it reads as
+ *   `client.outcome_unknown`, naming the run when the body names one.
  */
 function standardReading(
   status: number,
   body: string,
   headers: AnswerHeaders,
-  createsRun: boolean,
+  mayStartRun: boolean,
+  code: string | undefined,
 ): Problem {
+  const runMayHaveStarted = mayStartRun && answerMayHaveStartedRun(status, code);
   if (status < 200 || status >= 300) {
-    return readAnswer({ status, headers, body }, { createsRun }).problem;
+    const reading = readAnswer({ status, headers, body }, { createsRun: false });
+    if (reading.fromBody || !runMayHaveStarted) return reading.problem;
+  } else if (!runMayHaveStarted) {
+    return unreadableAnswer(status);
   }
-  if (!createsRun) return unreadableAnswer(status);
   const reading = parseJsonBody(body);
   const runId =
     reading.ok && isPlainObject(reading.value) ? reading.value.pipeline_run_id : undefined;

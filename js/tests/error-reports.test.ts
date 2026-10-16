@@ -434,6 +434,40 @@ describe("ApiResponseError — the problem document's members", () => {
       readAnswer({ status: 409, headers: {}, body: "{}" }, { createsRun: false }).problem,
     );
   });
+
+  // JSON `JSON.parse` reads but the protocol refuses, read as `pipelex-sdk` reads it: as no
+  // member at all, never a `code` taken from a body the standard's reading calls unreadable.
+  it.each([
+    [
+      "nested past the limit",
+      `{"code": "conflict", "detail": "x", "nest": ${"[".repeat(600)}${"]".repeat(600)}}`,
+    ],
+    ["holding a number past a double", '{"code": "conflict", "detail": "x", "retry_after": 1e999}'],
+  ])(
+    "a refusal whose body is JSON the protocol refuses, %s, carries no member",
+    async (_, body) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(body, {
+          status: 409,
+          headers: { "Content-Type": "application/problem+json" },
+        }),
+      );
+
+      const err = await caught(client.getSubscription());
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      const e = err as ApiResponseError;
+      expect(e.problemDocument).toBeUndefined();
+      expect(e.code).toBeUndefined();
+      expect(e.serverMessage).toBeUndefined();
+      expect(e.responseBody).toBe(body);
+      expect(e.problem.code).toBe("client.response_unreadable");
+      // Nothing names what was refused, so the fallback reads the 409 alone: the caller's, not retryable.
+      expect(e.errorDomain).toBe("input");
+      expect(e.retryable).toBe(false);
+    },
+  );
 });
 
 describe("ApiResponseError — the standard's reading beside the hosted members", () => {

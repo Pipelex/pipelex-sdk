@@ -53,9 +53,10 @@ the report arrives here as served.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Annotated, Any, Self, TypeAlias, TypeVar, cast
 
+from mthds.protocol.problem.answers import decode_json
+from mthds.runners.api.problem import REQUEST_ID_HEADER
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, ValidatorFunctionWrapHandler, WrapValidator, field_validator
 
 from pipelex_sdk._pydantic_utils import none_when_it_does_not_fit
@@ -63,9 +64,6 @@ from pipelex_sdk.validation_models import ValidationErrorItem
 
 if TYPE_CHECKING:
     import httpx
-
-#: The response header the platform and its gateway set to correlate a request with their logs.
-REQUEST_ID_HEADER = "x-request-id"
 
 
 class _LenientReportPart(BaseModel):
@@ -355,16 +353,19 @@ _FIELD_ERRORS_ADAPTER: TypeAdapter[list[FieldError]] = TypeAdapter(list[FieldErr
 
 
 def _decode_object(body: str) -> dict[str, Any] | None:
-    """Decode a body into its JSON object, or `None` for an empty, non-JSON or non-object body."""
-    if not body:
+    """Decode a body into its JSON object, or `None` for an empty, non-JSON or non-object body.
+
+    The body is decoded by the base's guarded decoder (`mthds.protocol.problem.answers.decode_json`),
+    which reads the same answer's `problem` too, its numbers kept as written: a body nested deeper than
+    the protocol's limit, or holding `NaN`, `Infinity` or a number past the range of a double, is no JSON
+    and carries no member, where `json.loads` would accept the constants and raise `RecursionError` on
+    the nesting. `@pipelex/sdk` reads a refusal's body by the same rules.
+    """
+    decoded = decode_json(body, numbers_as_written=True)
+    value: object = decoded.value
+    if not decoded.is_json or not isinstance(value, dict):
         return None
-    try:
-        parsed = json.loads(body)
-    except ValueError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    return cast("dict[str, Any]", parsed)
+    return cast("dict[str, Any]", value)
 
 
 def _non_empty_string_member(members: dict[str, Any], key: str) -> str | None:

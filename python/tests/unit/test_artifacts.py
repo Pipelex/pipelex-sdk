@@ -617,6 +617,10 @@ class TestArtifacts:
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read())
         assert caught.value.code == "network"
+        # The standard's transport problem, naming the store by its origin alone: the link's query string is its authorization.
+        assert caught.value.problem.code == "client.unreachable"
+        assert caught.value.problem.params is not None
+        assert caught.value.problem.params.model_dump(exclude_none=True) == {"base_url": _STORE}
 
     @pytest.mark.parametrize(("name", "value"), [("max_bytes", 0), ("timeout_seconds", -1)])
     def test_refuses_nonsense_bounds_before_resolving_anything(self, name: str, value: float) -> None:

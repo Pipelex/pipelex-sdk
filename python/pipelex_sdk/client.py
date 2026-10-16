@@ -33,12 +33,13 @@ from urllib.parse import quote, urlencode, urlparse, urlsplit
 import httpx
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import RunResultStart
+from mthds.protocol.problem.answers import decode_json
 from mthds.protocol.problem.client_problems import make_client_problem
 from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.client import MthdsAPIClient
 from mthds.runners.api.exceptions import ClientNotConfiguredError
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
-from mthds.runners.api.problem import read_error_answer
+from mthds.runners.api.problem import REQUEST_ID_HEADER, lower_case_headers
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import to_json
 from typing_extensions import override
@@ -81,6 +82,7 @@ from pipelex_sdk.errors import (
     RunLifecycleUnavailableError,
     RunStillRunningError,
     RunTimeoutError,
+    answer_reading,
     argument_invalid_problem,
 )
 from pipelex_sdk.execute_result import PipelexExecuteResult, results_from_execute
@@ -142,6 +144,7 @@ if TYPE_CHECKING:
     from mthds.protocol.models import ModelCategory, ModelDeck, VersionInfo
     from mthds.protocol.pipe_output import VariableMultiplicity
     from mthds.protocol.pipeline_inputs import PipelineInputs
+    from mthds.protocol.problem.answers import AnswerReading
     from mthds.protocol.problem.models import Problem
     from mthds.protocol.stuff import StuffType
     from mthds.protocol.working_memory import WorkingMemoryAbstract
@@ -256,10 +259,6 @@ _INHERITED_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_INHERITED_ANSWE
 # What reads a 2xx answer into the type a route returns: a model's `model_validate`, an adapter's
 # `validate_python`, or a function of the route's own.
 _AnswerT = TypeVar("_AnswerT")
-
-# The response header the platform and its gateway set to correlate a request with their logs, read for
-# an answer the SDK cannot read, which carries no problem document to read it from.
-_REQUEST_ID_HEADER = "x-request-id"
 
 # The answers this client reads that are not objects of a model of its own: the liveness probe's
 # free-form object, and the plans and invoices the billing routes list.
@@ -377,7 +376,8 @@ class PipelexAPIClient(MthdsAPIClient):
     return `401`. The base URL resolves from the `base_url` argument, then
     `PIPELEX_BASE_URL`, then the hosted default (`https://api.pipelex.com`). Both chains
     match the JS SDK exactly. The base URL is validated host-only (no
-    path/query/fragment/credentials; http/https only). `request_timeout_seconds` (default 20 min)
+    path/query/fragment/credentials; http/https only), and one httpx cannot make a URL of is refused
+    too, as `@pipelex/sdk`'s URL parser refuses it. `request_timeout_seconds` (default 20 min)
     is the time limit of the routes that can take long: the blocking `execute`, `validate`,
     `models`, and a `start` carrying a bundle (`mthds_contents`, `files` or `bundle_b64`) or a
     `method_ref`. `version` and any other `start` answer fast, so they take it capped at the
@@ -624,7 +624,9 @@ class PipelexAPIClient(MthdsAPIClient):
 
         `read` is what takes the decoded body: a model's `model_validate`, an adapter's
         `validate_python`, or a function of the route's own, which may raise an error of its own that
-        passes through. A body that is not UTF-8 or not JSON, an empty one included, and JSON that `read`
+        passes through. The body is decoded by the protocol's rules (`_decoded_answer`). A body that is
+        not UTF-8 or not JSON, an empty one included, JSON the protocol refuses (nested deeper than its
+        limit, or holding `NaN`, `Infinity` or a number past the range of a double), and JSON that `read`
         refuses with a pydantic `ValidationError`, are an answer the SDK cannot read, raised as the
         `ApiResponseError` `_unreadable_answer` builds, the parse failure as its `__cause__`.
 
@@ -639,7 +641,7 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiResponseError: The answer cannot be read; its verdict is `runtime`, not retryable.
         """
         try:
-            return read(response.json())
+            return read(_decoded_answer(response))
         except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
             what = _what_could_not_be_read(exc, response=response)
             raise self._unreadable_answer(method=method, path=path, request_url=request_url, response=response, what=what) from exc
@@ -649,10 +651,11 @@ class PipelexAPIClient(MthdsAPIClient):
         """Run an inherited protocol route so that a 2xx answer it cannot read raises this SDK's
         `ApiResponseError`, as every other route's does.
 
-        The base's `execute`, `start`, `models` and `version` parse the answer `_send` handed them
-        themselves, with `response.json()` and a pydantic model, so a body that is not UTF-8, not JSON
-        or not the route's object raises a bare `UnicodeDecodeError`, `json.JSONDecodeError` or
-        `ValidationError` there. Inside this block `_send` records the answer it receives, and such a
+        Parts of an inherited route parse the answer `_send` handed them outside `_parse_answer`, such as
+        the `202` acknowledgement `_raise_if_execute_degraded` reads, with `_decoded_answer` and a
+        pydantic model, so a body that is not UTF-8, not JSON or not the route's object raises a bare
+        `UnicodeDecodeError`, `json.JSONDecodeError` or `ValidationError` there. Inside this block `_send`
+        records the answer it receives, and such a
         failure met after a 2xx answer is raised again as the error `_unreadable_answer` builds, the
         parse failure as its `__cause__`. One met before any answer, while the base built the request
         from the caller's arguments, is the caller's and passes through untouched, as does one met after
@@ -706,7 +709,7 @@ class PipelexAPIClient(MthdsAPIClient):
         passes it as `problem`. A caller that met a parse failure raises it `from` the failure, which
         becomes its `__cause__`.
         """
-        request_id = response.headers.get(_REQUEST_ID_HEADER)
+        request_id = response.headers.get(REQUEST_ID_HEADER)
         return ApiResponseError(
             f"API {method} {path} answered {response.status_code} with {what}",
             api_url=self.base_url,
@@ -732,7 +735,7 @@ class PipelexAPIClient(MthdsAPIClient):
         `@pipelex/sdk`'s `throwIfExecuteDegraded` reads the same answers the same way.
         """
         if response.status_code == 202:
-            _ExecuteAcceptance.model_validate(response.json())
+            _ExecuteAcceptance.model_validate(_decoded_answer(response))
         super()._raise_if_execute_degraded(response)
 
     @override
@@ -749,7 +752,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Overrides the protected seam the `mthds` base parses every protocol route's answer through
         (`execute`, `start`, `validate`, `models`, `version`). A non-2xx raises through
-        `_raise_api_response_error` with the problem the base reads it as, exactly as the base does. A
+        `_raise_api_response_error` with the problem the base reads it as, except that on a request that
+        may create a run it agrees with the error's `run_may_have_started` (`_refusal_reading`). A
         2xx is read by `_read_v1_answer`, the one reader of this client's own routes, so a body it cannot
         read raises the `ApiResponseError` `_unreadable_answer` builds, naming what could not be read, with
         the parse failure as its `__cause__`, as on every other route.
@@ -758,8 +762,8 @@ class PipelexAPIClient(MthdsAPIClient):
             method: The HTTP method of the request, for the message.
             endpoint: The endpoint below `/v1`, query included.
             response: The API's answer.
-            creates_run: Whether the request may have created a run, which the standard's reading of a
-                non-2xx takes.
+            creates_run: Whether the request may have created a run, which the reading of a non-2xx
+                takes.
             parse: What turns the decoded body into the route's answer.
 
         Returns:
@@ -769,7 +773,7 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiResponseError: If the answer is a non-2xx, or a 2xx the client cannot read.
         """
         if not response.is_success:
-            reading = read_error_answer(response, creates_run=creates_run)
+            reading = _refusal_reading(response, may_start_run=creates_run)
             self._raise_api_response_error(
                 method=method, endpoint=endpoint, response=response, problem=reading.problem, problem_from_body=reading.from_body
             )
@@ -811,13 +815,13 @@ class PipelexAPIClient(MthdsAPIClient):
     def _raise_v1_refusal(self, *, method: str, endpoint: str, response: httpx.Response) -> NoReturn:
         """Raise this SDK's `ApiResponseError` for a non-2xx answer to one of this client's own `/v1` routes.
 
-        The standard's reading of the answer is the one the base gives an inherited route's, a request
-        that may create a run inside `_creating_run` reading as one that creates a run.
+        The standard's reading of the answer is the one an inherited route's takes (`_refusal_reading`),
+        a request inside `_creating_run` reading as one that may create a run.
 
         Raises:
             ApiResponseError: Always.
         """
-        reading = read_error_answer(response, creates_run=_MAY_START_RUN.get())
+        reading = _refusal_reading(response, may_start_run=_MAY_START_RUN.get())
         self._raise_api_response_error(
             method=method, endpoint=endpoint, response=response, problem=reading.problem, problem_from_body=reading.from_body
         )
@@ -832,7 +836,7 @@ class PipelexAPIClient(MthdsAPIClient):
         `error_category` and `validation_errors[]`, and the platform's own `code` and field-level
         `errors[]`, whose names the standard's problem also uses and which are never read through it.
         The standard's reading of the same answer rides beside them as `problem`: the one the caller
-        passes, which the base read, else the base's reading done here. The error decides its verdict
+        passes, else `_refusal_reading`'s done here. The error decides its verdict
         from what the server sent and the fallback table, and, inside `_creating_run`, whether the run
         the request may create may have started.
 
@@ -867,7 +871,7 @@ class PipelexAPIClient(MthdsAPIClient):
             error_domain=members.error_domain,
             retryable=members.retryable,
             user_action=members.user_action,
-            problem=problem or read_error_answer(response, creates_run=may_start_run).problem,
+            problem=problem or _refusal_reading(response, may_start_run=may_start_run).problem,
             problem_document=members.members,
             code=members.code,
             error_category=members.error_category,
@@ -3355,9 +3359,9 @@ def _run_result_failed(run_id: str, response: httpx.Response) -> RunResultFailed
 
 def _is_valid_base_url(value: str) -> bool:
     """Whether a base URL is host-only — http/https, no path, query, fragment, or
-    embedded credentials (auth travels in the Authorization header, never the URL).
-    Endpoints compose as `{base}/v1/{endpoint}`, so a path-prefixed base would double
-    the prefix.
+    embedded credentials (auth travels in the Authorization header, never the URL) — and one httpx
+    can make a URL of. Endpoints compose as `{base}/v1/{endpoint}`, so a path-prefixed base would
+    double the prefix.
     """
     # `urlsplit`, never `urlparse`: `urlparse` moves `;params` out of the path, so
     # `https://api.example.com/;token=…` would pass as host-only and send its token in every request
@@ -3374,7 +3378,15 @@ def _is_valid_base_url(value: str) -> bool:
         return False
     if parsed.username or parsed.password:
         return False
-    return not parsed.query and not parsed.fragment
+    if parsed.query or parsed.fragment:
+        return False
+    # A value httpx cannot make a URL of, such as one whose host holds a control character, would fail every
+    # request; `@pipelex/sdk`'s WHATWG parser refuses it here too.
+    try:
+        httpx.URL(value)
+    except httpx.InvalidURL:
+        return False
+    return True
 
 
 # The default port of each scheme a base URL may carry, which a URL shown in a refusal leaves out,
@@ -3404,6 +3416,12 @@ def _describe_refused_base_url(value: str) -> str:
     if parsed.scheme not in _DEFAULT_PORTS:
         return "(not shown: it is not an http or https URL)"
     if not hostname:
+        return "(not shown: it is not an absolute URL)"
+    # A host httpx cannot make a URL of is one WHATWG's parser refuses too, and `@pipelex/sdk` shows
+    # such a value as no URL at all.
+    try:
+        httpx.URL(value)
+    except httpx.InvalidURL:
         return "(not shown: it is not an absolute URL)"
     host = f"[{hostname}]" if ":" in hostname else hostname
     if port is not None and port != _DEFAULT_PORTS[parsed.scheme]:
@@ -3468,7 +3486,45 @@ def _what_the_body_is(response: httpx.Response) -> str:
     not the answer the route returns.
     """
     try:
-        decoded = response.json()
+        decoded = _decoded_answer(response)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         return _what_could_not_be_read(exc, response=response)
     return "a body that is not the answer the route returns" if isinstance(decoded, dict) else "a body that is not an object"
+
+
+def _decoded_answer(response: httpx.Response) -> Any:
+    """A 2xx answer's body decoded as JSON by the rules the protocol decodes every body by.
+
+    The bytes are read as text in the encoding JSON's own detection finds (`json.detect_encoding`, UTF-8
+    unless the body is UTF-16 or UTF-32), as `response.json()` reads them, and the text is decoded by the
+    base's guarded decoder (`mthds.protocol.problem.answers.decode_json`), its numbers kept as written as
+    the base keeps a success body's. That decoder refuses a body nested deeper than `MAX_BODY_NESTING`,
+    the constants `NaN` and `Infinity` and a number past the range of a double, all of which
+    `response.json()` accepts or, for the nesting, fails on with a `RecursionError`. A body it refuses is
+    raised as the `json.JSONDecodeError` of a body that is not JSON, so every reader names it so;
+    `@pipelex/sdk` reads its answers by the same rules.
+
+    Raises:
+        UnicodeDecodeError: The body is not text in the encoding detected.
+        json.JSONDecodeError: The body is not JSON the protocol reads, an empty one included.
+    """
+    content = response.content
+    text = content.decode(json.detect_encoding(content), "surrogatepass")
+    decoded = decode_json(text, numbers_as_written=True)
+    if not decoded.is_json:
+        msg = "The body is not JSON the protocol reads: it does not parse, nests too deeply, or holds a number JSON does not define"
+        raise json.JSONDecodeError(msg, text, 0)
+    return decoded.value
+
+
+def _refusal_reading(response: httpx.Response, *, may_start_run: bool) -> AnswerReading:
+    """The standard's reading of a non-2xx answer, agreeing with the `run_may_have_started` of the error it becomes.
+
+    It is `pipelex_sdk.errors.answer_reading` given the answer and the platform code its body carries,
+    which decides a `503`: the reading the `mthds` client gives, but for a request that may create a run,
+    where it follows the SDK's own reading of whether one may have started.
+    """
+    code = HostedProblemMembers.make_from_body(response.text).code
+    return answer_reading(
+        status=response.status_code, body=response.text, headers=lower_case_headers(response.headers), may_start_run=may_start_run, code=code
+    )

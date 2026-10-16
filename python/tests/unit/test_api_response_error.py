@@ -175,6 +175,28 @@ class TestApiResponseError:
         assert err.problem_document == body
 
     @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param("[" * 100_000 + "]" * 100_000, id="nested-past-the-limit"),
+            pytest.param('{"code": "conflict", "detail": "x", "retry_after": NaN}', id="nan"),
+            pytest.param('{"code": "conflict", "detail": "x", "retry_after": Infinity}', id="infinity"),
+            pytest.param('{"code": "conflict", "detail": "x", "retry_after": 1e999}', id="past-a-double"),
+        ],
+    )
+    def test_a_body_the_protocol_does_not_read_as_json_carries_no_member(self, mocker: MockerFixture, body: str) -> None:
+        """Decoded by the base's guarded decoder, as its `problem` is: never a bare `RecursionError`, never a `NaN` read."""
+        err = self._raise_from(mocker, _response(409, text=body))
+
+        assert err.problem_document is None
+        assert err.code is None
+        assert err.server_message is None
+        assert err.response_body == body
+        assert err.problem.code == "client.response_unreadable"
+        # Nothing names what was refused, so the fallback reads the 409 alone: the caller's, not retryable.
+        assert err.error_domain == ErrorDomain.INPUT
+        assert err.retryable is False
+
+    @pytest.mark.parametrize(
         "user_action",
         [{"kind": 5, "detail": "Retry in a minute."}, {"kind": "wait_and_retry", "detail": ""}, {"kind": "wait_and_retry"}],
     )

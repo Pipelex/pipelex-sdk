@@ -904,6 +904,85 @@ describe("PipelexApiClient answers it cannot read", () => {
     },
   );
 
+  // JSON `JSON.parse` reads but the protocol refuses, as `mthds`'s own client and `pipelex-sdk`
+  // refuse it: nested deeper than `MAX_BODY_NESTING`, and numbers past the range of a double,
+  // which `JSON.parse` reads as `Infinity`, an integer that long included, which `parseExactJson`
+  // would read as a `bigint`.
+  const BODIES_THE_PROTOCOL_REFUSES = [
+    ["nested past the limit", `${'{"a":'.repeat(600)}1${"}".repeat(600)}`],
+    ["a number past a double", '{"value": 1e999}'],
+    ["an integer past a double", `{"value": 1${"0".repeat(400)}}`],
+  ] as const;
+  const ROUTES_READING_JSON = [
+    ["health", (client: PipelexApiClient) => client.health(), "GET /health", 200, false],
+    ["version", (client: PipelexApiClient) => client.version(), "GET /v1/version", 200, false],
+    [
+      "getRunResult",
+      (client: PipelexApiClient) => client.getRunResult("run-1"),
+      "GET /v1/runs/run-1/results",
+      200,
+      false,
+    ],
+    [
+      "getRunDetail",
+      (client: PipelexApiClient) => client.getRunDetail("run-1"),
+      "GET /v1/runs/run-1",
+      200,
+      false,
+    ],
+    [
+      "start",
+      (client: PipelexApiClient) => client.start({ pipe_code: "p", mthds_contents: ["x"] }),
+      "POST /v1/start",
+      202,
+      true,
+    ],
+    [
+      "execute",
+      (client: PipelexApiClient) => client.execute({ pipe_code: "p", mthds_contents: ["x"] }),
+      "POST /v1/execute",
+      200,
+      true,
+    ],
+  ] as const;
+
+  it.each(
+    ROUTES_READING_JSON.flatMap(([name, call, route, status, startsRun]) =>
+      BODIES_THE_PROTOCOL_REFUSES.map(
+        ([label, body]) => [`${name}, ${label}`, call, route, status, startsRun, body] as const,
+      ),
+    ),
+  )(
+    "%s: a 2xx whose JSON the protocol refuses is an answer the SDK cannot read",
+    async (_, call, route, status, startsRun, body) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(body, { status, headers: { "X-Request-ID": "req-8" } }),
+      );
+
+      const err = await call(client).then(
+        () => expect.fail("expected the read to throw"),
+        (thrown: unknown) => thrown,
+      );
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      const unreadable = err as ApiResponseError;
+      expect(unreadable.message).toBe(
+        `API ${route} answered ${status} with a body that is not JSON`,
+      );
+      expect(unreadable.responseBody).toBe(body);
+      expect(unreadable.problemDocument).toBeUndefined();
+      expect(unreadable.requestId).toBe("req-8");
+      // `JSON.parse` reads each of them, so there is no parse failure to carry.
+      expect(unreadable.cause).toBeUndefined();
+      expect(unreadable.runMayHaveStarted).toBe(startsRun);
+      expect(unreadable.problem.code).toBe(
+        startsRun ? "client.outcome_unknown" : "client.response_unreadable",
+      );
+      expect(errorVerdictOf(unreadable)).toEqual({ errorDomain: "runtime", retryable: false });
+    },
+  );
+
   it.each([
     ["health", (client: PipelexApiClient) => client.health(), "GET /health"],
     ["version", (client: PipelexApiClient) => client.version(), "GET /v1/version"],

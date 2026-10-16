@@ -54,7 +54,9 @@ stays under the protocol base.
 this module raises over a request. On `ApiResponseError` it is the standard's reading of the answer,
 the one the `mthds` client gives the same answer: the body's own problem document when it is one, and
 otherwise the problem the client reads from the status (`client.response_unreadable`,
-`client.outcome_unknown` on a route that creates a run, …). On `ApiUnreachableError` it is the
+`client.outcome_unknown` on a route that creates a run, …), except that on a `start` or an `execute` it
+agrees with the error's `run_may_have_started` where the two readings part ways (`answer_reading`). On
+`ApiUnreachableError` it is the
 transport's (`client.unreachable`, `client.timeout`, `client.outcome_unknown`). On an error wrapping
 another, an upload refused by the API say, it is the wrapped error's. On every other error it is the
 core code the class states, built from the registry by `make_client_problem`. The problem never decides
@@ -72,7 +74,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from mthds.protocol.exceptions import PipelineRequestError
-from mthds.protocol.problem.answers import decode_json, read_answer, unreadable_answer
+from mthds.protocol.problem.answers import AnswerReading, decode_json, read_answer, unreadable_answer
 from mthds.protocol.problem.client_problems import make_client_problem
 from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.exceptions import ApiResponseError as _MthdsApiResponseError
@@ -84,6 +86,8 @@ from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_domain_o
 from pipelex_sdk.run_may_have_started import answer_may_have_started_run, transport_may_have_started_run
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from mthds.protocol.problem.models import Problem
 
     from pipelex_sdk.artifact_models import ArtifactScope, DownloadArtifactsResult
@@ -409,10 +413,13 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError):
     - **The standard's reading.** `problem` is the answer as the standard's `mthds` client reads it,
       a `mthds.protocol.problem.models.Problem` under a registered code: the body itself when it is a
       core problem document, and otherwise the problem the standard reads from the status, such as
-      `client.response_unreadable` naming it, or `client.outcome_unknown` for a server error on a
-      `start` or an `execute`. Its `code` is the registry's and its `errors` the standard's problem
-      items, which share their names with the platform's `code` and `errors` above and never replace
-      them. The verdict and the message are not read from it.
+      `client.response_unreadable` naming it. On a `start` or an `execute` it agrees with
+      `run_may_have_started` (`answer_reading`): `client.outcome_unknown` for every answer that leaves a
+      run possibly started, a `408` included, and the reading of a request that creates no run for one
+      that started nothing, such as a `501` or the platform's `503` coded `pipeline_start_unavailable`.
+      Its `code` is the registry's and its `errors` the standard's problem items, which share their
+      names with the platform's `code` and `errors` above and never replace them. The verdict and the
+      message are not read from it.
 
     `problem_document` is the decoded document whole, so a member this SDK does not name — the
     `run_status` and `error` of a failed run's results read, say, or the `error_domain` and
@@ -472,9 +479,10 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError):
             retryable: The `retryable` the server sent, `None` when it sent none. The error's own
                 `retryable` is this when it is a boolean, and decided as the class says otherwise.
             user_action: The next step the server advises.
-            problem: The standard's reading of the answer. The client passes the one the `mthds` client
-                reads; left out, it is read here from `status`, `response_body` and `headers` the same
-                way, so an error a caller builds by hand carries the problem the client would give it.
+            problem: The standard's reading of the answer. The client passes the one `answer_reading`
+                gives; left out, it is read here the same way, from `status`, `response_body`, `headers`,
+                `code` and `may_start_run`, so an error a caller builds by hand carries the problem the
+                client would give it.
             problem_document: The decoded problem document whole.
             code: The platform's closed native code.
             error_category: The finer classification of an inference failure.
@@ -485,7 +493,7 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError):
         """
         run_may_have_started = may_start_run and answer_may_have_started_run(status=status, code=code)
         verdict = _response_verdict(status=status, error_type=error_type, code=code, sent_domain=error_domain, sent_retryable=retryable)
-        reading = problem or _answer_reading(status=status, body=response_body, headers=headers or {}, creates_run=may_start_run)
+        reading = problem or answer_reading(status=status, body=response_body, headers=headers or {}, may_start_run=may_start_run, code=code).problem
         super().__init__(
             _with_next_step(message, user_action),
             verdict=verdict,
@@ -519,24 +527,50 @@ def _with_next_step(message: str, user_action: ProblemUserAction | None) -> str:
     return f"{message}\nNext step: {user_action.detail}"
 
 
-def _answer_reading(*, status: int, body: str, headers: dict[str, str], creates_run: bool) -> Problem:
-    """The standard's reading of an answer the SDK raises as an `ApiResponseError`, as the `mthds` client reads it.
+def answer_reading(*, status: int, body: str, headers: Mapping[str, str], may_start_run: bool, code: str | None) -> AnswerReading:
+    """The standard's reading of an answer the SDK raises as an `ApiResponseError`, agreeing with its `run_may_have_started`.
 
-    A non-2xx reads as the body's own problem document when it is one, and otherwise as the problem the
-    status names. A 2xx the SDK could not read is `client.response_unreadable`, except on a route that
-    creates a run: the server accepted the request, so the run may exist, and it reads as
-    `client.outcome_unknown`, naming the run when the body names one.
+    The answer is read as the `mthds` client reads it (`read_answer`), except where that reading and the
+    SDK's own reading of whether a run may have started (`answer_may_have_started_run`) part ways, on a
+    request that may create a run: the problem then follows the SDK's reading, as `ApiUnreachableError`'s
+    does for a request that got no answer, so that `problem` never says a run may exist where
+    `run_may_have_started` says none started, nor the reverse.
+
+    - A non-2xx whose body is a core problem document reads as that document, `from_body` true, whatever
+      the request.
+    - Any other non-2xx reads, where a run may have started, as `client.outcome_unknown`, naming the run when
+      the body names one (the platform's `bad_gateway` does when it lost a start's acknowledgement): a `408`,
+      which a proxy may answer for a request it forwarded, and every `5xx` but a `501` and a `503` carrying
+      the platform's code `pipeline_start_unavailable`. Where none started, which is every answer to a request
+      that creates no run, it reads as the answer to a request that creates none: the code its status names
+      (`runtime.unavailable` for that `503`), else `client.response_unreadable` naming the status (that `501`).
+    - A 2xx the SDK could not read is `client.response_unreadable`, except on a request that may create a
+      run: the server accepted the request, so the run may exist, and it reads as `client.outcome_unknown`,
+      naming the run when the body names one.
+
+    Args:
+        status: The HTTP status of the answer.
+        body: The answer's body, as text.
+        headers: The answer's headers, whatever the case of their names.
+        may_start_run: Whether the request may create a run: a `start` or an `execute`.
+        code: The platform's native code, when the body carried one, which decides a `503`.
+
+    Returns:
+        The problem, and whether it is the body's own problem document.
     """
+    run_may_have_started = may_start_run and answer_may_have_started_run(status=status, code=code)
     if not 200 <= status < 300:
         lower_case = {name.lower(): value for name, value in headers.items()}
-        return read_answer(status=status, body=body, headers=lower_case, creates_run=creates_run).problem
-    if not creates_run:
-        return unreadable_answer(status)
+        reading = read_answer(status=status, body=body, headers=lower_case, creates_run=False)
+        if reading.from_body or not run_may_have_started:
+            return reading
+    elif not run_may_have_started:
+        return AnswerReading(problem=unreadable_answer(status), from_body=False)
     decoded: object = decode_json(body).value
     started_run_id: object = cast("dict[str, Any]", decoded).get("pipeline_run_id") if isinstance(decoded, dict) else None
     if isinstance(started_run_id, str) and started_run_id:
-        return _outcome_unknown_problem(pipeline_run_id=started_run_id)
-    return _outcome_unknown_problem()
+        return AnswerReading(problem=_outcome_unknown_problem(pipeline_run_id=started_run_id), from_body=False)
+    return AnswerReading(problem=_outcome_unknown_problem(), from_body=False)
 
 
 def _response_verdict(*, status: int, error_type: str | None, code: str | None, sent_domain: object, sent_retryable: object) -> ErrorVerdict:
@@ -1153,8 +1187,9 @@ class ArtifactFetchError(ArtifactOperationError):
     reference for `invalid_storage_uri`, `forbidden` and `not_found`, `client.link_refused` for
     `unsupported_url`, `plain_http_refused` and `redirect_refused`, the one the standard reads from the
     store's `status` for `store_refused` and `store_error`, and `runtime.unexpected` otherwise. The SDK
-    passes `client.download_limit_exceeded` naming the cap for `too_large` and `client.timeout` naming
-    the budget for `timeout`.
+    passes `client.download_limit_exceeded` naming the cap for `too_large`, `client.timeout` naming
+    the budget for `timeout`, and the transport's `client.unreachable` naming the store's origin for a
+    `network` failure that is one of a transport.
     """
 
     def __init__(self, message: str, uri: str, code: str, status: int | None = None, *, problem: Problem | None = None) -> None:

@@ -116,6 +116,15 @@ class _ExpectedVerdict(_CaseModel):
         return ErrorVerdict(error_domain=self.error_domain, retryable=self.retryable)
 
 
+class _ExpectedRunStart(_ExpectedVerdict):
+    """A failed request that may create a run as the case file expects it: the verdict, and the standard
+    problem the error carries, by its code and the run it names (`None` when it names none).
+    """
+
+    problem_code: str
+    problem_run_id: str | None = None
+
+
 class _Route(StrEnum):
     START = "start"
     EXECUTE = "execute"
@@ -141,7 +150,7 @@ class _RunStartCase(_CaseModel):
     route: _Route
     status: int
     body: _Body
-    expected: _ExpectedVerdict
+    expected: _ExpectedRunStart
 
 
 class _Cause(_CaseModel):
@@ -496,6 +505,7 @@ class TestErrorVerdicts:
         )
         assert run_may_have_started_of(err) is case.expected.run_may_have_started
         assert "run_may_have_started" in vars(err)
+        assert (err.problem.code, err.problem.pipeline_run_id) == (case.expected.problem_code, case.expected.problem_run_id)
 
     @pytest.mark.parametrize("case", [pytest.param(case, id=f"{case.route}: {case.case}") for case in _CASES.run_start])
     def test_a_failed_request_that_may_create_a_run_built_by_hand_reads_the_same(self, case: _RunStartCase) -> None:
@@ -520,6 +530,7 @@ class TestErrorVerdicts:
             case.expected.retryable,
             case.expected.error_domain,
         )
+        assert (err.problem.code, err.problem.pipeline_run_id) == (case.expected.problem_code, None)
 
     # ── Each exported class's verdict ──
 
