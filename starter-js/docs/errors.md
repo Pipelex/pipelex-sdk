@@ -1,6 +1,6 @@
 # Errors: what a person reads when something goes wrong
 
-Every failure an example can meet reaches the person using it as one `PipelineError`, rendered by `<ErrorDisplay>`. The error is classified on the server, inside the helpers that call the SDK (`executeBlockingRun`, `startDurableRun`, `pollDurableRun`, the grant action), by `classifyPipelineError` in `src/lib/errors.ts`, because the SDK's error classes only match with `instanceof` there. The helpers return the classified error instead of throwing it, since a production build of Next.js turns a thrown Server Action error into an opaque digest.
+Every failure an example can meet reaches the person using it as one `PipelineError`, rendered by `<ErrorDisplay>`, except a failed read of a run's progress, which reaches no one ([below](#the-run-timeline)). The error is classified on the server, inside the helpers that call the SDK (`executeBlockingRun`, `startDurableRun`, `pollDurableRun`, the grant action), by `classifyPipelineError` in `src/lib/errors.ts`, because the SDK's error classes only match with `instanceof` there. The helpers return the classified error instead of throwing it, since a production build of Next.js turns a thrown Server Action error into an opaque digest.
 
 ## The fields of a classified error
 
@@ -53,3 +53,7 @@ An answer that is not a problem document, or carries none of these members, keep
 Every other kind (an unreachable API, a missing key, a `PIPELEX_BASE_URL` naming more than a host, which the SDK refuses before sending anything, a durable-run lifecycle the URL does not serve, a file upload that failed, an output that does not match the method's contract) has its own branch in `classifyPipelineError`, and [`CLAUDE.md`](../CLAUDE.md) says how to add one.
 
 **A refused `PIPELEX_BASE_URL` is never quoted.** The SDK refuses a value that names more than a host, and its message quotes that value whole, credentials, query and all, while the technical details reach every visitor of a deployed app. So `classifyConfigRefusal` leaves the SDK's message out and shows the value cut down to its scheme and host, naming the parts beyond them without their content: `PIPELEX_BASE_URL: https://proxy.example.com, with credentials and a query (not shown)`.
+
+## The run timeline
+
+**A failure to read a run's progress reaches no one.** The run timeline is an addition to the run's status, never a gate on it: its route answers a failed read with a bare error status or `unavailable`, the browser keeps the snapshot it holds, and the status poll alone decides how the run ends and shows what went wrong. **Its snapshot follows this page's rule about the provider's raw text**: the route replaces each invocation's failure text with one fixed sentence and words each degradation from its reason, so neither the platform's message nor a provider's text leaves the server. [`docs/run-timeline.md`](run-timeline.md) is the reference.
