@@ -297,7 +297,7 @@ def _transport_problem(
     if run_may_have_started:
         return _outcome_unknown_problem()
     if timeout_seconds is not None:
-        if isinstance(failure, httpx.TransportError):
+        if isinstance(failure, (httpx.TransportError, httpx.DecodingError)):
             return transport_failure_problem(failure, creates_run=False, base_url=api_url, timeout_seconds=timeout_seconds)
         if code == ABORT_TIMEOUT_CODE:
             return make_client_problem(CoreCode.CLIENT_TIMEOUT, params={"seconds": timeout_seconds})

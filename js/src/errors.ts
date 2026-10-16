@@ -10,13 +10,14 @@
 import {
   PipelineRequestError,
   buildProblem,
+  isProblem,
   parseJsonBody,
   readAnswer,
   unreadableAnswer,
 } from "mthds/protocol";
 import type { AnswerHeaders, Problem } from "mthds/protocol";
 import { isPlainObject } from "./error-models.js";
-import { fallbackVerdict } from "./error-verdicts.js";
+import { fallbackVerdict, problemVerdict } from "./error-verdicts.js";
 import { answerMayHaveStartedRun, transportMayHaveStartedRun } from "./run-may-have-started.js";
 import type { ValidationErrorItem } from "./models.js";
 import type { ArtifactScope, DownloadArtifactsResult } from "./artifacts.js";
@@ -120,23 +121,30 @@ export abstract class PipelexRequestError extends PipelineRequestError implement
 
 /**
  * The verdict of anything a `catch` holds: the pair from an `Error` carrying a boolean
- * `retryable` and a known `errorDomain`, and `undefined` otherwise.
+ * `retryable` and a known `errorDomain`, else the verdict of the MTHDS standard's problem an
+ * `Error` carries as `problem`, and `undefined` otherwise.
  *
  * The check is structural rather than `instanceof`, so it reads every error of this SDK, of
- * another copy of it installed beside this one, and of a consumer's own subclass. `undefined`
- * means the error carries no verdict: the `RangeError` or `TypeError` the SDK raises for an
- * argument of the wrong type or range before any request is sent (a bug in the calling code), the
- * caller's own abort, which the client rethrows untouched, or anything else a `try` block threw.
- * An argument the client refuses for what it asks is a `RequestArgumentError`, which carries one.
- * An error of the standard's own client (`mthds`) carries its verdict on its problem instead, in
- * the standard's vocabulary (`domain` and `retry`), which this reader does not translate, so it
- * reads as `undefined` too.
+ * another copy of it installed beside this one, and of a consumer's own subclass. An error of the
+ * standard's own client (`mthds`) carries its verdict on its problem, as `domain` and `retry` in
+ * the standard's vocabulary, and reads as that problem's verdict in this SDK's
+ * (`problemVerdict`), whatever the runner's body held beside it. `undefined` means the error
+ * carries no verdict: the `RangeError` or `TypeError` the SDK raises for an argument of the
+ * wrong type or range before any request is sent (a bug in the calling code), the caller's own
+ * abort, which the client rethrows untouched, or anything else a `try` block threw. An argument
+ * the client refuses for what it asks is a `RequestArgumentError`, which carries one.
  */
 export function errorVerdictOf(err: unknown): ErrorVerdict | undefined {
   if (!(err instanceof Error)) return undefined;
-  const { retryable, errorDomain } = err as { retryable?: unknown; errorDomain?: unknown };
-  if (typeof retryable !== "boolean" || !isErrorDomain(errorDomain)) return undefined;
-  return { retryable, errorDomain };
+  const { retryable, errorDomain, problem } = err as {
+    retryable?: unknown;
+    errorDomain?: unknown;
+    problem?: unknown;
+  };
+  if (typeof retryable === "boolean" && isErrorDomain(errorDomain)) {
+    return { retryable, errorDomain };
+  }
+  return isProblem(problem) ? problemVerdict(problem) : undefined;
 }
 
 /**

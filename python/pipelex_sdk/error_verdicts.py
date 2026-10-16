@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from mthds.protocol.problem.models import Problem
+from mthds.protocol.problem.registry import ProblemDomain, RetryVerdict
 from pydantic import BaseModel, ConfigDict
 
 
@@ -135,15 +137,16 @@ def fallback_verdict(*, status: int, code: str | None, named: bool) -> ErrorVerd
 
 def error_verdict_of(error: object) -> ErrorVerdict | None:
     """The verdict of anything an `except` holds: the pair from an exception carrying a boolean
-    `retryable` and a known `error_domain`, and `None` otherwise.
+    `retryable` and a known `error_domain`, else the verdict of the MTHDS standard's problem an exception
+    carries as `problem`, and `None` otherwise.
 
     The check is structural rather than `isinstance`, so it reads every error of this SDK and an error of a
-    consumer's own subclass. `None` means the error carries no verdict: the `ValueError` the SDK raises for
-    a malformed argument before any request is sent, a bug in the calling code, or anything else a `try`
-    block raised. An argument the client refuses for what it asks is a `RequestArgumentError`, which
-    carries one. An error of the standard's own client (`mthds`) carries its verdict on its problem
-    instead, in the standard's vocabulary (`effective_domain` and `effective_retry`), which this reader
-    does not translate, so it reads as `None` too.
+    consumer's own subclass. An error of the standard's own client (`mthds`) carries its verdict on its
+    problem, in the standard's vocabulary, and reads as that problem's verdict in this SDK's
+    (`problem_verdict`), whatever the runner's body held beside it. `None` means the error carries no
+    verdict: the `ValueError` the SDK raises for a malformed argument before any request is sent, a bug in
+    the calling code, or anything else a `try` block raised. An argument the client refuses for what it
+    asks is a `RequestArgumentError`, which carries one.
 
     Args:
         error: Anything, typically the exception an `except` clause caught.
@@ -155,8 +158,44 @@ def error_verdict_of(error: object) -> ErrorVerdict | None:
         return None
     retryable = getattr(error, "retryable", None)
     error_domain = error_domain_of(getattr(error, "error_domain", None))
-    if not isinstance(retryable, bool) or error_domain is None:
-        return None
+    if isinstance(retryable, bool) and error_domain is not None:
+        return ErrorVerdict(error_domain=error_domain, retryable=retryable)
+    problem = getattr(error, "problem", None)
+    if isinstance(problem, Problem):
+        return problem_verdict(problem)
+    return None
+
+
+def problem_verdict(problem: Problem) -> ErrorVerdict:
+    """The verdict of a problem of the MTHDS standard, in this SDK's vocabulary.
+
+    The standard's domain says who must act, and maps onto this SDK's by who that is: the caller, by
+    changing the request or the method it names (`input` and `method` read as `input`); someone changing
+    the environment, the credential, the plan or the deployment (`account` and `operator` read as
+    `config`); or nobody beforehand (`runtime`). Only a `retry` of `yes` is retryable: an operation whose
+    outcome is unknown may already have taken effect, and a run that may have started is never retryable.
+    The domain and the retry verdict are read by the standard's own fallbacks (`effective_domain`,
+    `effective_retry`), so a domain the standard's reader does not know reads by the code's family, else
+    as `runtime`, and a retry verdict it does not know as `no`. `@pipelex/sdk` applies the same mapping.
+
+    Args:
+        problem: The standard's problem, such as the one an `mthds` error carries.
+
+    Returns:
+        The problem's verdict.
+    """
+    match problem.effective_domain:
+        case ProblemDomain.INPUT | ProblemDomain.METHOD:
+            error_domain = ErrorDomain.INPUT
+        case ProblemDomain.ACCOUNT | ProblemDomain.OPERATOR:
+            error_domain = ErrorDomain.CONFIG
+        case ProblemDomain.RUNTIME:
+            error_domain = ErrorDomain.RUNTIME
+    match problem.effective_retry:
+        case RetryVerdict.YES:
+            retryable = True
+        case RetryVerdict.NO | RetryVerdict.OUTCOME_UNKNOWN:
+            retryable = False
     return ErrorVerdict(error_domain=error_domain, retryable=retryable)
 
 

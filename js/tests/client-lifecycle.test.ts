@@ -1112,14 +1112,18 @@ describe("PipelexApiClient answers it cannot read", () => {
     });
   });
 
+  // mthds refuses the list it is handed as an argument the caller must fix, and its refusal reads
+  // as its problem's verdict; a field that is not a string never reaches it.
+  const MTHDS_REFUSAL = { errorDomain: "input", retryable: false } as const;
+
   it.each([
-    ["not JSON", "not json"],
-    ["an entry without string name and content", '[{"name": 1}]'],
-    ["a JSON object rather than a list", '{"name": "a.py", "content": "x"}'],
-    ["not a string", 42],
+    ["not JSON", "not json", MTHDS_REFUSAL],
+    ["an entry without string name and content", '[{"name": 1}]', MTHDS_REFUSAL],
+    ["a JSON object rather than a list", '{"name": "a.py", "content": "x"}', MTHDS_REFUSAL],
+    ["not a string", 42, undefined],
   ])(
     "getMethod throws a typed ApiResponseError when the stored python is %s",
-    async (_, python) => {
+    async (_, python, causeVerdict) => {
       const client = makeClient();
       const body = JSON.stringify({ method_id: "m1", name: "M", mthds: "src", python });
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -1140,9 +1144,9 @@ describe("PipelexApiClient answers it cannot read", () => {
       expect(unreadable.status).toBe(200);
       expect(unreadable.responseBody).toBe(body);
       expect(unreadable.requestId).toBe("req-8");
-      // mthds's own refusal, which carries no verdict, rides as the cause.
+      // What refused the field rides as the cause, with the verdict it carries of its own.
       expect(unreadable.cause).toBeInstanceOf(Error);
-      expect(errorVerdictOf(unreadable.cause)).toBeUndefined();
+      expect(errorVerdictOf(unreadable.cause)).toEqual(causeVerdict);
       // Server data the caller cannot fix: runtime, and nothing says a retry helps.
       expect(errorVerdictOf(unreadable)).toEqual({ errorDomain: "runtime", retryable: false });
     },

@@ -44,7 +44,7 @@ from pipelex_sdk import errors as errors_module
 from pipelex_sdk.artifact_models import ArtifactScope, DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.error_models import RunErrorReport
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of, fallback_verdict, run_may_have_started_of
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of, fallback_verdict, problem_verdict, run_may_have_started_of
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
@@ -616,20 +616,70 @@ class TestErrorVerdicts:
     def test_error_verdict_of_reads_a_consumer_subclass_declaring_its_verdict(self) -> None:
         assert error_verdict_of(_QueueFullError()) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
 
-    def test_error_verdict_of_reads_nothing_off_an_mthds_api_response_error_whose_verdict_is_its_problem_s(self) -> None:
+    def test_error_verdict_of_reads_an_mthds_api_response_error_as_its_problem_s_verdict_whatever_the_runner_sent(self) -> None:
         # The standard's error carries its verdict on its problem, in the standard's vocabulary, and no
-        # `error_domain` or `retryable` of its own, even when the runner sent both.
-        sent = '{"error_domain": "config", "retryable": false}'
-        mthds = MthdsApiResponseError(
-            "refused",
-            problem=read_answer(status=500, body=sent, headers={}, creates_run=False).problem,
-            api_url=_BASE_URL,
-            status=500,
-            status_text="",
-            response_body=sent,
-        )
+        # `error_domain` or `retryable` of its own: the members the runner's body held beside it count for
+        # nothing, and an error whose runner sent neither reads all the same.
+        sent = '{"error_domain": "input", "retryable": false}'
+        problem = read_answer(status=503, body=sent, headers={}, creates_run=False).problem
+        mthds = MthdsApiResponseError("refused", problem=problem, api_url=_BASE_URL, status=503, status_text="", response_body=sent)
+        silent = MthdsApiResponseError("refused", problem=problem, api_url=_BASE_URL, status=503, status_text="", response_body="")
 
-        assert error_verdict_of(mthds) is None
+        assert problem.code == "runtime.unavailable"
+        assert error_verdict_of(mthds) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
+        assert error_verdict_of(silent) == error_verdict_of(mthds)
+
+    @pytest.mark.parametrize(
+        ("code", "params", "expected"),
+        [
+            pytest.param(CoreCode.REQUEST_INVALID, {"field": "f"}, _INPUT, id="input, no"),
+            pytest.param(
+                CoreCode.INPUT_URL_UNREACHABLE,
+                {"host": "h", "input": "i"},
+                ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=True),
+                id="input, yes",
+            ),
+            pytest.param(CoreCode.METHOD_INVALID, None, _INPUT, id="method, no"),
+            pytest.param(CoreCode.AUTH_INVALID_CREDENTIAL, None, _CONFIG, id="account, no"),
+            pytest.param(
+                CoreCode.ACCOUNT_RATE_LIMITED,
+                {"limit": 10, "window": 60},
+                ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=True),
+                id="account, yes",
+            ),
+            pytest.param(CoreCode.PROVIDER_CREDENTIAL_REFUSED, {"provider": "p"}, _CONFIG, id="operator, no"),
+            pytest.param(CoreCode.RUNTIME_UNEXPECTED, None, ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False), id="runtime, no"),
+            pytest.param(
+                CoreCode.METHOD_CHANGED_CONCURRENTLY, None, ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True), id="runtime, yes"
+            ),
+            pytest.param(
+                CoreCode.CLIENT_OUTCOME_UNKNOWN,
+                None,
+                ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False),
+                id="runtime, outcome unknown",
+            ),
+        ],
+    )
+    def test_error_verdict_of_translates_the_standard_s_domain_and_retry(
+        self, code: CoreCode, params: dict[str, object] | None, expected: ErrorVerdict
+    ) -> None:
+        problem = make_client_problem(code, params=params)
+
+        assert problem_verdict(problem) == expected
+        assert error_verdict_of(PipelineRequestError("refused", problem=problem)) == expected
+
+    def test_a_domain_and_a_retry_the_standard_does_not_know_read_by_its_own_fallbacks(self) -> None:
+        # An unknown domain reads by the code's family, else as `runtime`; an unknown retry verdict as `no`.
+        unknown = make_client_problem(CoreCode.AUTH_INVALID_CREDENTIAL).model_copy(update={"domain": "someday", "retry": "maybe"})
+
+        assert problem_verdict(unknown) == _CONFIG
+
+    def test_an_sdk_error_s_own_verdict_wins_over_its_problem_s(self) -> None:
+        # A refused base URL is the environment's to fix, though its problem names an argument the caller passed.
+        refused = RequestArgumentError("Refused before sending.", problem=_REFUSED_ARGUMENT, verdict=_CONFIG)
+
+        assert problem_verdict(refused.problem) == _INPUT
+        assert error_verdict_of(refused) == _CONFIG
 
     # ── Arguments refused before sending ──
 
