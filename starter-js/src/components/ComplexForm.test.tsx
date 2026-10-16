@@ -6,12 +6,18 @@ import {
   runComplexFormBlocking,
   startComplexFormRun,
 } from "@/actions/runComplexFormPipeline";
+import { fetchRunProgress } from "@/lib/fetchRunProgress";
 
 vi.mock("@/actions/runComplexFormPipeline", () => ({
   runComplexFormBlocking: vi.fn(),
   startComplexFormRun: vi.fn(),
   pollComplexFormRun: vi.fn(),
 }));
+
+// The run timeline's reader, faked so no test fetches anything: the panel
+// follows a durable run through it, and this source serves no progress.
+vi.mock("@/lib/fetchRunProgress", () => ({ fetchRunProgress: vi.fn() }));
+const readProgress = vi.mocked(fetchRunProgress);
 
 const blocking = vi.mocked(runComplexFormBlocking);
 const start = vi.mocked(startComplexFormRun);
@@ -22,6 +28,7 @@ beforeEach(() => {
   blocking.mockReset();
   start.mockReset();
   poll.mockReset();
+  readProgress.mockReset().mockResolvedValue({ kind: "unavailable" });
 });
 afterEach(() => vi.useRealTimers());
 
@@ -122,6 +129,8 @@ describe("ComplexForm", () => {
 
     await flush();
     expect(screen.getByRole("status")).toBeInTheDocument();
+    // The run timeline follows the durable run, by its id.
+    expect(readProgress).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
 
     await flush(2000);
     expect(screen.getByText("Tim Cook")).toBeInTheDocument();

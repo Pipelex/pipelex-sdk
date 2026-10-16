@@ -54,6 +54,8 @@ The `src/types/` convention comes with them: `pipelineError.ts` — the tagged `
 
 `src/hooks/useRun.ts` (the blocking|durable client state machine) is worth taking only if your host app is React; the server pattern above does not depend on it. Likewise `src/actions/` is Next.js Server Actions plumbing — in another stack the equivalent is whatever server endpoint calls the two run helpers.
 
+The run timeline, a durable run's live progress drawn under its form, is optional too, and built to be lifted on its own: the view's files, which import React and `@pipelex/mthds-ui` only, plus one reader you write over a server endpoint of yours that calls `getRunProgress`. [`docs/run-timeline.md`](run-timeline.md) lists the files and what the reader must answer.
+
 ## 5. Author methods and generate
 
 ```bash

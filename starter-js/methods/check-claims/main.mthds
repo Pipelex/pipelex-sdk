@@ -1,0 +1,125 @@
+domain      = "check_claims"
+description = "Split a text into its factual claims, check each one, and give an overall verdict."
+main_pipe   = "check_claims"
+
+[concept.Claim]
+description = "One factual statement a text makes, as a self-contained sentence"
+refines     = "Text"
+
+[concept.ClaimCheck]
+description = "The verdict on one factual claim"
+
+[concept.ClaimCheck.structure]
+claim = { type = "text", description = "The claim, as it was checked", required = true }
+verdict = { choices = [
+  "holds",
+  "doubtful",
+], description = "Whether the claim holds up against well-established knowledge", required = true }
+reason = { type = "text", description = "One sentence explaining the verdict", required = true }
+
+[concept.Verdict]
+description = "The overall verdict on the claims of a text, in one or two sentences"
+refines     = "Text"
+
+[concept.FactCheck]
+description = "The claims a text makes, each checked, and the overall verdict on them"
+
+[concept.FactCheck.structure]
+verdict = { type = "text", description = "The overall verdict on the text's claims", required = true }
+checks  = { type = "list", item_type = "concept", item_concept_ref = "ClaimCheck", description = "Each claim the text makes, with its verdict and the reason for it", required = true }
+
+[pipe.check_claims]
+type = "PipeSequence"
+description = "Split the text into claims, check each one, then word the overall verdict"
+inputs = { text = "Text" }
+output = "FactCheck"
+steps = [
+  { pipe = "split_claims", result = "claims" },
+  { pipe = "check_each_claim", result = "checks" },
+  { pipe = "word_verdict", result = "verdict" },
+  { pipe = "assemble_fact_check", result = "fact_check" },
+]
+
+[pipe.split_claims]
+type = "PipeLLM"
+description = "List the distinct factual claims the text makes"
+inputs = { text = "Text" }
+output = "Claim[]"
+model = "$writing-factual-cheap"
+prompt = """
+List the factual claims the text below makes: between two and five distinct, checkable statements of fact. Rewrite each one as a single self-contained sentence that can be judged without the rest of the text. Leave out opinions, predictions and questions.
+
+@text
+"""
+
+[pipe.check_each_claim]
+type             = "PipeBatch"
+description      = "Check every claim, each on its own"
+inputs           = { claims = "Claim[]" }
+output           = "ClaimCheck[]"
+branch_pipe_code = "check_claim"
+input_list_name  = "claims"
+input_item_name  = "claim"
+
+[pipe.check_claim]
+type = "PipeLLM"
+description = "Judge whether one claim holds up against well-established knowledge"
+inputs = { claim = "Claim" }
+output = "ClaimCheck"
+model = "$writing-factual-cheap"
+prompt = """
+Judge whether the claim below holds up against well-established general knowledge.
+
+@claim
+
+Return:
+- claim: the claim, word for word.
+- verdict: "holds" when it is accurate, "doubtful" when it is false, misleading or cannot be confirmed.
+- reason: one sentence explaining the verdict.
+"""
+
+[pipe.word_verdict]
+type                = "PipeCondition"
+description         = "Word the overall verdict one way when every claim holds, another when any is doubtful"
+inputs              = { checks = "ClaimCheck[]" }
+output              = "Verdict"
+expression_template = '{% if checks | rejectattr("verdict", "equalto", "holds") | list %}some_doubtful{% else %}all_hold{% endif %}'
+default_outcome     = "word_doubtful_verdict"
+
+[pipe.word_verdict.outcomes]
+all_hold      = "word_reliable_verdict"
+some_doubtful = "word_doubtful_verdict"
+
+[pipe.word_reliable_verdict]
+type = "PipeLLM"
+description = "Word the verdict on a text whose every claim holds"
+inputs = { checks = "ClaimCheck[]" }
+output = "Verdict"
+model = "$writing-factual-cheap"
+prompt = """
+Every claim checked below holds up. In one or two sentences, give the overall verdict on the text these claims come from: say that its factual claims check out, and name what they cover.
+
+@checks
+"""
+
+[pipe.word_doubtful_verdict]
+type = "PipeLLM"
+description = "Word the verdict on a text with at least one doubtful claim"
+inputs = { checks = "ClaimCheck[]" }
+output = "Verdict"
+model = "$writing-factual-cheap"
+prompt = """
+At least one claim checked below is doubtful. In one or two sentences, give the overall verdict on the text these claims come from: say how many of its claims hold and how many are doubtful, name the doubtful ones, and advise the reader to verify them before relying on the text.
+
+@checks
+"""
+
+[pipe.assemble_fact_check]
+type        = "PipeCompose"
+description = "Put the overall verdict and the checked claims together"
+inputs      = { verdict = "Verdict", checks = "ClaimCheck[]" }
+output      = "FactCheck"
+
+[pipe.assemble_fact_check.construct]
+verdict = { from = "verdict" }
+checks  = { from = "checks" }

@@ -16,6 +16,34 @@ const eslintConfig = defineConfig([
     },
   },
   {
+    // The run timeline's view knows nothing of where its snapshots come from,
+    // so another app can lift these files whole and write one reader of its
+    // own (docs/run-timeline.md). They import React, the timeline's entries in
+    // `@pipelex/mthds-ui` and each other, and nothing else: an allowlist rather
+    // than a list of what to refuse, since `@/lib/errors` or any other module
+    // of this app would bring the SDK in by the back door.
+    files: [
+      "src/lib/progressReader.ts",
+      "src/hooks/useRunProgress.ts",
+      "src/components/RunTimelineView.tsx",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              regex:
+                "^(?!(react|@pipelex/mthds-ui/timeline|@pipelex/mthds-ui/timeline/react|@/lib/progressReader|@/hooks/useRunProgress|@/components/RunTimelineView)$)",
+              message:
+                "The run timeline's view imports React and @pipelex/mthds-ui only, never the SDK, an action or Next.js, so it can be lifted whole: read progress through a ProgressReader instead.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // e2e specs may log for debugging — same carve-out the siblings give tests.
     files: ["e2e/**/*.ts"],
     rules: {
