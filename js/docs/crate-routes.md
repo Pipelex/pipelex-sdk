@@ -38,7 +38,7 @@ An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>
 
 Supplying **no** selector or **more than one** is a request-shape `422` — the tooling routes are stateless, so there is no linkage exception; a second selector could only be ignored, which is the worst contract of the three. The SDK does not model the XOR in the type system — the union would force the overwhelmingly common `{ files }` call site to pick a branch for no gain, and the server's answer is a typed `ApiResponseError` either way.
 
-The old advice to expand a stored method client-side (`resolve({ files: await client.getMethodClosure(methodId) })`) remains valid — `getMethodClosure` stays public as the local expansion utility, and it is what a caller uses against a bare runner, which has no catalog to resolve an id against.
+A caller facing a bare runner, which has no catalog to resolve an id against, expands a stored method itself: it reads the method's tree with `getMethod` or `getMethodVersion`, writes it to disk with `writeMethodTree`, and sends the files from there ([method-trees.md](./method-trees.md)).
 
 Beside inline `files`, `resources` carries the files the closure's steps read, such as a `PipeDocGen` step's `template_file`, keyed by the path the step names, each as its bytes. It is the one member the client does not post as given: it encodes the bytes into the wire's base64 map, after refusing a key the runner's path rule refuses. A step whose template file was not sent makes the closure invalid, a `200` verdict saying so; `resources` beside a `method_ref` is the server's `422`. The rules, the limits and the refusals are in [`bundle-resources.md`](./bundle-resources.md).
 

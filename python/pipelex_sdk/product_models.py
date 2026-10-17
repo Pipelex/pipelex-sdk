@@ -14,10 +14,13 @@ models name exactly what the routes accept.
 These are Pipelex-branded (the hosted product surface), so they live in this SDK,
 not in `mthds`. `RunHistoryItem.status` and `PipelineRun.status` reuse the run-lifecycle `RunStatus`.
 
-A saved method has a draft and published versions. The method's content fields (`mthds`,
-`python`, `input_data`) are its DRAFT, written freely by `write_draft` and never validated on
-write. A VERSION is an immutable copy of the draft, numbered from 1 and never reused, written
-only by `publish_method` and only when the draft validates and runs. A bare `method_id` runs
+A saved method has a draft and published versions. Its DRAFT is a tree of files, the MTHDS
+standard's method tree, which the platform holds in the organization's blob store and the method
+names by digest (`draft_digest`), with the editor's form inputs (`input_data`); it is written freely
+by `write_draft` and never validated on write. A VERSION is an immutable copy of the draft, numbered
+from 1 and never reused, written only by `publish_method` and only when the draft validates and runs.
+A read of a method or of a version lists its tree's files, each with a short-lived link to its bytes
+(`SavedMethodFile`). A bare `method_id` runs
 the latest published version, `mt_…@<n>` a fixed version and `mt_…@draft` the draft; the
 method routes themselves take a bare id (`pipelex_sdk.method_selector.parse_method_selector`
 strips a suffix).
@@ -25,13 +28,13 @@ strips a suffix).
 
 from __future__ import annotations
 
-import json
 from enum import StrEnum
-from typing import Annotated, Any, Literal, TypeAlias, cast
+from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, TypeAdapter, ValidationError, field_serializer, field_validator
+from mthds.method_tree.file_entry import FileEntry
+from mthds.method_tree.models import MethodTree
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, TypeAdapter
 
-from pipelex_sdk._pydantic_utils import empty_list_factory_of
 from pipelex_sdk.error_models import LenientRunErrorReport
 from pipelex_sdk.runs import RunStatus
 from pipelex_sdk.validation_models import PipelexValidationResult
@@ -62,208 +65,37 @@ class MethodDeletionState(StrEnum):
     FAILED = "failed"
 
 
-class MethodFile(BaseModel):
-    """One named source file of a stored method — the at-rest catalog form.
+class SavedMethodFile(BaseModel):
+    """One file of a saved method's tree, as `get_method` and `get_method_version` serve it.
 
-    This is the shape the hosted platform persists for a method's custom PipeFunc Python:
-    a JSON `[{name, content}]` array in one wire string. It is deliberately distinct from
-    two neighbours that look similar and are not: `MthdsFile` (`client.py`) is the *validate*
-    input, content plus an optional provenance URI; `MthdsFileItem` (`crate_models.py`) is
-    the *crate* closure entry. Three shapes for three surfaces — do not merge them.
+    The platform holds a saved tree's files in the organization's blob store, and a read lists them,
+    in tree path order, each with a short-lived link to its bytes. A client holding a file whose
+    `sha256` matches already holds those bytes, and `PipelexAPIClient.write_method_tree` brings the
+    whole tree back to disk.
     """
 
     model_config = ConfigDict(extra="allow")
 
-    #: Bundle-relative path, e.g. `"funcs/price.py"`.
-    name: str
-    #: The file's UTF-8 text content.
-    content: str
+    path: str
+    """The file's tree path, relative to the method's root, `/`-separated."""
 
+    sha256: str
+    """The SHA-256 of the file's bytes, 64 lowercase hexadecimal characters."""
 
-_METHOD_FILES_ADAPTER: TypeAdapter[list[MethodFile]] = TypeAdapter(list[MethodFile])
-"""Built once at import — TypeAdapter construction is expensive."""
+    size: int
+    """The file's length in bytes."""
 
-_METHOD_FILES_SHAPE = "a JSON array of {name, content} entries"
+    url: str
+    """A presigned `GET` of the file's bytes, valid until `expires_at`. It is a bearer credential: it
+    needs no API key, and anyone holding it can read the file until it expires, so it is never logged."""
 
-
-def _is_blank(content: str) -> bool:
-    """A file carries no source when its content is empty or whitespace-only."""
-    return not content.strip()
-
-
-def _decode_method_source(source: str) -> Any:
-    """Decode a stored source string, with every way the decoder can refuse one as a `ValueError`.
-
-    The two readers of a stored source apply different shape rules to what comes back — see
-    `method_source_to_contents` for why — but they must fail identically on text the decoder
-    cannot take at all, so that rule lives here and in one place. `json.loads` refuses in two
-    ways: `JSONDecodeError` for malformed text, and `RecursionError` — which is NOT a
-    `ValueError` — for a source nested past a depth that is an interpreter build constant,
-    because `json.loads` recurses where `JSON.parse` iterates. Converting both gives each
-    caller the failure its own contract promises: `MethodData`'s validator turns this
-    `ValueError` into the `ValidationError` a caller catches (pydantic converts only
-    `ValueError`), and `method_source_to_contents` reads it as "not the catalog form".
-    """
-    try:
-        return json.loads(source)
-    except json.JSONDecodeError as exc:
-        msg = f"Method file source is not valid JSON; expected {_METHOD_FILES_SHAPE}."
-        raise ValueError(msg) from exc
-    except RecursionError as exc:
-        msg = f"Method file source is nested too deeply to decode; expected {_METHOD_FILES_SHAPE}."
-        raise ValueError(msg) from exc
-
-
-def _is_catalog_entry(entry: object) -> bool:
-    """The catalog gate the platform and `@pipelex/sdk` both apply: an object carrying both keys.
-
-    Key presence alone, with no check on either value's type — mirroring
-    `pipelex_platform.services.method_resolution.method_source_to_contents` and
-    `@pipelex/sdk`'s `isFileEntry`. Each entry's value types are filtered afterwards, per entry.
-    """
-    return isinstance(entry, dict) and "name" in entry and "content" in entry
-
-
-def parse_method_files(source: str | None) -> list[MethodFile]:
-    """Parse the catalog wire string into method files.
-
-    A blank source (`None`, `""`, whitespace) and an empty JSON array both yield `[]`.
-    A JSON `[{name, content}]` array yields those files, with blank-content entries
-    dropped so the round-trip with `serialize_method_files` is stable.
-
-    Raises:
-        ValueError: For anything else — a non-array JSON value, an entry that is not a
-            `{name: str, content: str}` object, unparseable text, or a source nested more
-            deeply than the decoder can descend. Reached through `MethodData`'s validator,
-            this surfaces as a `pydantic.ValidationError`, the same way any other malformed
-            response body fails here.
-    """
-    if source is None or _is_blank(source):
-        return []
-
-    parsed = _decode_method_source(source)
-
-    try:
-        files = _METHOD_FILES_ADAPTER.validate_python(parsed)
-    except ValidationError as exc:
-        msg = f"Method file source must be {_METHOD_FILES_SHAPE}."
-        raise ValueError(msg) from exc
-
-    return [file for file in files if not _is_blank(file.content)]
-
-
-def serialize_method_files(files: list[MethodFile]) -> str:
-    """Serialize method files to the catalog wire string.
-
-    Blank-content entries are dropped (a zero-source file is not persisted), and an empty
-    result serializes to `""` — the platform's "no source" / "clear the field" sentinel —
-    never to the literal `"[]"`. Only `name` and `content` cross the wire; anything an
-    extension-open `MethodFile` picked up on the way in is not written back.
-    """
-    kept = [file for file in files if not _is_blank(file.content)]
-    if not kept:
-        return ""
-    return json.dumps([{"name": file.name, "content": file.content} for file in kept])
-
-
-def method_source_to_contents(mthds: str | None) -> list[str]:
-    """Read a stored method's polymorphic `mthds` source as the bundle contents a call takes.
-
-    `MethodData.mthds` is polymorphic at rest. The webapp editor writes the catalog
-    file-array — the JSON `[{name, content}]` string the gate below recognizes — while a
-    row written before that editor, or by hand, holds the `.mthds` source itself as plain
-    text. A caller holding one of those strings cannot tell which it has, so this resolves
-    it to the `list[str]` that `run`, `start` and `validate` take as `mthds_contents`.
-
-    An empty list means the method carries no MTHDS source — a row that exists but is not
-    runnable yet. It is never a failure to read one: this function does not raise.
-
-    **The catalog gate is key presence, and each entry's types are filtered afterwards.** An
-    array is the catalog form when every entry is an object carrying both a `name` and a
-    `content` key, whatever those values hold; an entry whose `content` is not a non-blank
-    string is then dropped and its siblings are kept. So
-    `[{"name": "a", "content": "x"}, {"name": "b", "content": 1}]` reads as `["x"]`.
-
-    That rule is not this SDK's preference — it reproduces, deliberately and character for
-    character, what the server does with the same stored row: the platform's own
-    `method_source_to_contents` (`pipelex_platform/services/method_resolution.py`, the resolver
-    that expands a `method_id` run) and `@pipelex/sdk`'s `methodSourceToContents`. A client-side
-    reader of a server-stored field exists so a caller can do locally what the platform does
-    with that row, and a reader that disagrees with the code which actually runs the method is a
-    reader that lies, however defensible its own rule. One stored method therefore has one
-    observable reading across `method_id`, `@pipelex/sdk` and this SDK. This was ruled against a
-    stricter reading that took a partly malformed array as a bundle; `docs/architecture.md` carries
-    the ruling and the three readers it compares.
-
-    The cost of the ruled rule is real and is not this function's to fix: a file whose `content`
-    is not a string vanishes from the bundle without a word. That is a property of the format's
-    decoder, shared by all three readers, so it is fixed once in the platform rather than three
-    times in its clients.
-
-    This is consequently NOT a pure delegation to `parse_method_files`. That function reads
-    `MethodData.python`, whose entries are a typed `[{name: str, content: str}]` catalog with no
-    second at-rest shape to tell apart, so it stays strict and rejects what this accepts. The two
-    share what must not drift — the decoder (`_decode_method_source`) and blankness
-    (`_is_blank`) — and nothing else.
-
-    Lesser divergences from the JS twin follow from the decoder rather than from this function,
-    and they flip in both directions: `json.loads` accepts `NaN` and `Infinity`, which
-    `JSON.parse` refuses, and refuses an integer literal past CPython's digit cap, which
-    `JSON.parse` accepts; blankness here is Python's `str.strip`, not ECMAScript's, so the two
-    disagree on a source of only U+FEFF and on one of only U+0085. `mthds.protocol.method_files`
-    closes all of these and is the adoption target once its exception base class is settled.
-
-    Args:
-        mthds: The stored source, as `MethodData.mthds` carries it. `None` is tolerated
-            although the model types it `str`, so a contract-violating response body reads
-            as "no source" rather than raising — the twin's own defensive guard.
-
-    Returns:
-        One content string per bundle file: the non-blank string contents of the catalog
-        file-array, or the whole source as a single bundle when it is not that form.
-    """
-    if mthds is None or _is_blank(mthds):
-        # A blank source is no source, not a bundle of whitespace — and `None` although the
-        # model types the field `str`, the twin's own defensive guard. `_is_blank` is the
-        # parser's predicate rather than a second one, so the two readings of one stored
-        # source cannot drift apart on what blank means.
-        return []
-
-    try:
-        parsed: Any = _decode_method_source(mthds)
-    except ValueError:
-        # Text the decoder cannot take — not JSON at all, or nested past what it can descend —
-        # so the whole source is one legacy bare bundle. A `.mthds` file may legally open with a
-        # digit or a brace, which is why a decode failure is a bundle rather than an error.
-        return [mthds]
-
-    if isinstance(parsed, list) and all(_is_catalog_entry(entry) for entry in cast("list[Any]", parsed)):
-        # Vacuously true for `[]`, which is the webapp editor's "no files" sentinel and yields
-        # no contents — read as a bundle it would send the two characters `[]` to the runner.
-        entries = cast("list[dict[str, Any]]", parsed)
-        contents: list[str] = []
-        for entry in entries:
-            content: Any = entry["content"]
-            if isinstance(content, str) and not _is_blank(content):
-                contents.append(content)
-        return contents
-
-    return [mthds]
-
-
-def _python_files_from_wire(value: object) -> object:
-    """Convert the catalog wire string of a `python` field into `MethodFile` entries.
-
-    A `str` or `None` is the wire form and goes through `parse_method_files`; anything else (a
-    list, from programmatic construction) passes through to normal validation.
-    """
-    if value is None or isinstance(value, str):
-        return parse_method_files(value)
-    return value
+    expires_at: str
+    """When `url` stops working, an ISO-8601 UTC instant about fifteen minutes after the read. Read the
+    method again for fresh links."""
 
 
 class MethodVersionSummary(BaseModel):
-    """One published version without its sources.
+    """One published version without its files.
 
     What `list_method_versions` lists, what a method read carries as `latest_published`, and
     what a publish answers as `version`.
@@ -274,10 +106,11 @@ class MethodVersionSummary(BaseModel):
     version: int
     """The version number, from 1, never reused and never renumbered."""
 
-    source_digest: str
-    """SHA-256 of the canonical form of the version's two file sets (`.mthds` and Python), as 64
-    lowercase hex characters — the same function as the method's `draft_digest`, so equal digests
-    mean the same sources would run."""
+    tree_digest: str | None = None
+    """The digest of the version's method tree, `sha256:` and 64 lowercase hexadecimal characters: the
+    SHA-256 of the tree's listing, the same function as the method's `draft_digest`, so equal digests
+    mean the same files. `None` for a version stored before methods were trees and not yet rewritten as
+    one, which the platform can neither serve nor run."""
 
     crate_fingerprint: str | None = None
     """The runner's `crate.fingerprint` for the bundle (`POST /v1/resolve`), which covers its
@@ -299,30 +132,21 @@ class MethodVersionSummary(BaseModel):
 
 
 class MethodVersion(MethodVersionSummary):
-    """One published version with its sources — `get_method_version`.
+    """One published version with its files — `get_method_version`.
 
     It carries no `name`, which belongs to the method and changes without a publish, and no
     `input_data`, which is the editor's form state and not part of what a caller runs.
     """
 
     method_id: str
-    mthds: str
-    """The version's `.mthds` source, in the same stored form as `MethodData.mthds`; read it with
-    `method_source_to_contents`."""
 
-    python: list[MethodFile] = Field(default_factory=empty_list_factory_of(MethodFile))
-    """The version's custom PipeFunc source files, converted from the wire string exactly as
-    `MethodData.python` is."""
-
-    @field_validator("python", mode="before")
-    @classmethod
-    def _parse_python_files(cls, value: object) -> object:
-        """Convert the catalog wire string into `MethodFile` entries."""
-        return _python_files_from_wire(value)
+    files: list[SavedMethodFile]
+    """The version's tree, one file per entry in tree path order, each with a link to its bytes.
+    `PipelexAPIClient.write_method_tree` writes it to disk."""
 
 
 class MethodVersionPage(BaseModel):
-    """One page of a method's published versions, newest first, without their sources — `{items, next_cursor}`.
+    """One page of a method's published versions, newest first, without their files — `{items, next_cursor}`.
 
     Same opaque-cursor contract as `MethodPage`: pass `next_cursor` straight back, and a `None`
     means the last page. Versions are read whole on the server, so a page may be short while
@@ -336,39 +160,31 @@ class MethodVersionPage(BaseModel):
 
 
 class MethodData(BaseModel):
-    """One saved method — `get_method`, `create_method`, `write_draft`, `rename_method`, and the
-    `method` of every publish outcome.
+    """One saved method — `create_method`, `write_draft`, `rename_method`, and the `method` of every
+    publish outcome. `get_method` answers a `MethodDetail`, which adds the draft's files.
 
-    Its content fields ARE the draft; the latest published version is summarized in
-    `latest_published`. The publish state a client shows is derived, never stored: never
-    published (`latest_version` is `None`), published with the draft unchanged (`draft_digest ==
-    latest_published.source_digest`), or published with the draft ahead (they differ).
+    Its draft is a tree of files, named here by its digest alone (`draft_digest`), with the form
+    inputs (`input_data`); the latest published version is summarized in `latest_published`. The
+    publish state a client shows is derived, never stored: never published (`latest_version` is
+    `None`), published with the draft unchanged (`draft_digest` is not `None` and equals
+    `latest_published.tree_digest`), or published with the draft ahead.
     """
 
     model_config = ConfigDict(extra="allow")
 
     method_id: str
     name: str
-    #: The draft's `.mthds` bundle source, polymorphic at rest and left exactly as the platform
-    #: stored it: the catalog `[{name, content}]` array the webapp editor writes, or a bare bundle
-    #: as plain text. Read it with `method_source_to_contents`, which resolves either shape to the
-    #: `mthds_contents` a run or a validate takes exactly as the platform's own resolver reads the
-    #: same row; unlike `python`, it is not converted here.
-    mthds: str
     org_id: str
     created_by_user_id: str
     description: str | None = None
+    """The draft's description, which the platform reads from its files on every draft write: the
+    top-level `description` of the first `.mthds` file that declares one."""
+
     deletion_state: MethodDeletionState | None = None
-    #: The editor's form inputs, saved with the draft and outside both digests.
+    #: The editor's form inputs, saved with the draft and outside its digest.
     input_data: dict[str, Any] | None = None
     #: Legacy persisted output spec; optional.
     pipe_output: dict[str, Any] | None = None
-    python: list[MethodFile] = Field(default_factory=empty_list_factory_of(MethodFile))
-    """The draft's custom PipeFunc source files.
-
-    On the wire this is one string — the JSON text of a `[{name, content}]` array, or `""`
-    for a method with no custom Python. The validator below converts at the boundary so
-    callers never see that string."""
 
     created_at: str
     updated_at: str
@@ -377,10 +193,10 @@ class MethodData(BaseModel):
     strings — as `expected_updated_at` on the next `write_draft`, or as `expected_draft_updated_at`
     on `publish_method`, so neither ever overwrites or publishes a draft the caller has not seen."""
 
-    draft_digest: str
-    """The draft's digest: SHA-256 of the canonical form of its two file sets, 64 lowercase hex
-    characters. `input_data` is outside it, so saving only the form inputs moves the token and
-    leaves the digest as it was."""
+    draft_digest: str | None = None
+    """The digest of the draft's method tree, `sha256:` and 64 lowercase hexadecimal characters: the
+    SHA-256 of the tree's listing. `None` for an empty draft. `input_data` is outside it, so saving
+    only the form inputs moves the token and leaves the digest as it was."""
 
     latest_version: int | None = None
     """The number of the latest published version; `None` when the method was never published."""
@@ -388,50 +204,62 @@ class MethodData(BaseModel):
     latest_published: MethodVersionSummary | None = None
     """The latest published version's summary; `None` when the method was never published."""
 
-    @field_validator("python", mode="before")
-    @classmethod
-    def _parse_python_files(cls, value: object) -> object:
-        """Convert the catalog wire string into `MethodFile` entries."""
-        return _python_files_from_wire(value)
+
+class MethodDetail(MethodData):
+    """One saved method with its draft's files — `get_method`."""
+
+    files: list[SavedMethodFile]
+    """The draft's tree, the one `draft_digest` names, one file per entry in tree path order, each with
+    a link to its bytes; an empty list for an empty draft. `PipelexAPIClient.write_method_tree` writes it
+    to disk."""
 
 
 class MethodWriteInput(BaseModel):
-    """The create payload — `create_method`.
+    """The create payload — `create_method`, `POST /v1/methods`.
 
-    A new method holds this as its draft and has no version yet. Its draft is then written with
+    A new method holds its tree as its draft and has no version yet. Its draft is then written with
     `write_draft` (`MethodDraftInput`) and its name changed with `rename_method`.
+
+    The tree is given in one of three forms, or in none for an empty draft, and the client refuses two
+    together before anything is sent:
+
+    - `files`, the MTHDS standard's map of file entries, the same `files` a run takes, sent as given;
+    - `tree`, a tree listed from a directory (`PipelexAPIClient.list_method_tree`), or
+    - `contents`, each file's bytes or text by tree path,
+
+    the last two sent inline when the tree is small and by hash otherwise, after uploading the files
+    the platform lacks (`mthds`'s `prepare_files`). Closed: the retired `mthds` and `python` fields are
+    refused rather than dropped.
     """
 
-    name: str
-    mthds: str
-    input_data: dict[str, Any] | None = None
-    python: list[MethodFile] | None = None
-    """The custom PipeFunc source files, serialized to the catalog wire string; `None` or an
-    empty list, the method has none."""
+    model_config = ConfigDict(extra="forbid")
 
-    @field_serializer("python")
-    def _serialize_python_files(self, value: list[MethodFile] | None) -> str | None:
-        """Render the file list as the catalog wire string, leaving `None` for `exclude_none`."""
-        if value is None:
-            return None
-        return serialize_method_files(value)
+    name: str
+    files: dict[str, FileEntry] | None = None
+    tree: MethodTree | None = None
+    contents: dict[str, bytes | str] | None = None
+    input_data: dict[str, Any] | None = None
 
 
 class MethodDraftInput(BaseModel):
     """The draft write — `write_draft`, `PUT /v1/methods/{id}/draft`.
 
     It never validates: a draft may be invalid, and an autosave of work in progress often is. The
-    body is the fields the caller SET (`model_dump(exclude_unset=True)`), which is what gives each
-    optional field its three-way meaning: a field left unset is not sent.
+    write replaces the draft's whole tree, given in exactly one of the forms `MethodWriteInput`
+    takes: `files` (where an explicit `None` empties the draft), `tree` or `contents`. Closed: the
+    retired `mthds` and `python` fields are refused rather than dropped.
     """
 
-    mthds: str
-    """The draft's `.mthds` files, in the stored serialized form. Required."""
+    model_config = ConfigDict(extra="forbid")
 
-    python: list[MethodFile] | None = None
-    """The custom PipeFunc source files. Left unset (or `None`), the stored Python is **kept**; an
-    empty list serializes to `""`, the platform's clear sentinel, which **erases** it; a non-empty
-    list **replaces** it. A replace, not a merge."""
+    files: dict[str, FileEntry] | None = None
+    """The draft's tree as a map of file entries, sent as given. Set to `None`, the draft is emptied."""
+
+    tree: MethodTree | None = None
+    """The draft's tree, listed from a directory."""
+
+    contents: dict[str, bytes | str] | None = None
+    """The draft's files, each one's bytes or text by tree path."""
 
     input_data: dict[str, Any] | None = None
     """The editor's form inputs. Left unset, the stored inputs are **kept**; set to `None`, they
@@ -442,13 +270,6 @@ class MethodDraftInput(BaseModel):
     echoed verbatim. With it the write is a compare-and-swap: a draft that moved since is refused
     with a `409` whose `code` is `method_update_conflict`, and nothing is written. Unset or `None`,
     the write is last-writer-wins."""
-
-    @field_serializer("python")
-    def _serialize_python_files(self, value: list[MethodFile] | None) -> str | None:
-        """Render the file list as the catalog wire string; `None` stays `None`, which the platform reads as "keep"."""
-        if value is None:
-            return None
-        return serialize_method_files(value)
 
 
 class MethodPublishOutcome(StrEnum):
@@ -526,15 +347,15 @@ MethodPublishResultAdapter: TypeAdapter[MethodPublishResult] = TypeAdapter(Metho
 class MethodSummary(BaseModel):
     """One row of the paged method index — `GET /v1/methods`.
 
-    Deliberately **not** a `MethodData`: no `mthds`, no `python`, no `updated_at`, because
-    none of them is in the index projection. Putting `mthds` back is exactly what restored
-    the truncation bug paging was introduced to fix. A method mid-deletion still appears
-    here — so a UI can render "Deleting…" — while `get_method` refuses it with a `409`.
+    Deliberately **not** a `MethodData`: no `updated_at`, because the index projection orders
+    by the immutable `created_at`, and no files, which `get_method` lists. A method mid-deletion
+    still appears here — so a UI can render "Deleting…" — while `get_method` refuses it with a `409`.
 
     The row carries the method's publish state, so a list tells its methods apart without
     reading each one: never published (`latest_version` is `None`), published with the draft
-    unchanged (`draft_digest == latest_published.source_digest`), or published with the draft
-    ahead (they differ). The three fields read as `None` from a platform that does not serve them.
+    unchanged (`draft_digest` is not `None` and equals `latest_published.tree_digest`), or
+    published with the draft ahead. The three fields read as `None` from a platform that does not
+    serve them.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -552,10 +373,8 @@ class MethodSummary(BaseModel):
     """The latest published version's summary; `None` when the method was never published."""
 
     draft_digest: str | None = None
-    """The digest the last draft write stored, in the form of `MethodData.draft_digest`. Unlike on
-    `MethodData` it can be `None` here: the list reads an index that holds no bundle to digest, so a
-    row that never stored a digest carries `None` until its next draft write stores one. Compare it
-    with `latest_published.source_digest` only when both are strings."""
+    """The digest of the draft's method tree, as on `MethodData.draft_digest`; `None` for an empty
+    draft. Compare it with `latest_published.tree_digest` only when both are strings."""
 
 
 class MethodPage(BaseModel):
@@ -1037,9 +856,10 @@ class PipelineRun(BaseModel):
     it recorded versions."""
 
     source_digest: str | None = None
-    """The digest of the files the run ran, in the canonical form of `MethodData.draft_digest`, so
-    an inline run identical to a version records that version's `source_digest`. `None` when the
-    platform never held the files, as on a `method_ref` run, or did not record it yet."""
+    """The digest of the sources a run sent as text, `mthds_contents` or a `files` map of text
+    entries, as 64 lowercase hexadecimal characters. Not a tree digest: a run's method tree is named
+    by `RunDetail.tree_digest`. `None` when the platform never held the sources as text: a run of a
+    saved method, a `method_ref` run, a map with a Base64 or hash entry, or a run recorded before it."""
 
 
 class RunDetail(PipelineRun):
@@ -1058,6 +878,15 @@ class RunDetail(PipelineRun):
     platform and the runner logged it under. `None` for a run saved before the platform recorded it,
     and on a server that does not serve it. The run list does not carry it; the status read does, as
     `RunRead.request_id`."""
+
+    tree_digest: str | None = None
+    """The tree digest (`sha256:` and 64 lowercase hexadecimal characters) of the method tree the run
+    sent as `files`, the files it sent in `resources` joined to it: the run's method by content, in the
+    form of `MethodData.draft_digest`, so a run of a tree identical to a version's records that
+    version's `tree_digest`. `None` for a run that sent no tree, and on a run recorded before it."""
+
+    crate_fingerprint: str | None = None
+    """The fingerprint of the crate the runner loaded the run's method into, when the runner reported it."""
 
 
 class RunPage(BaseModel):

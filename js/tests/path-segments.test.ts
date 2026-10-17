@@ -45,7 +45,7 @@ const METHOD_ID_ROUTES: IdRoute[] = [
   ["getMethod", (client, id) => client.getMethod(id), METHOD_URL],
   [
     "writeDraft",
-    (client, id) => client.writeDraft(id, { mthds: "" }),
+    (client, id) => client.writeDraft(id, { files: null }),
     (segment) => `${METHOD_URL(segment)}/draft`,
   ],
   ["renameMethod", (client, id) => client.renameMethod(id, { name: "n" }), METHOD_URL],

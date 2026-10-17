@@ -669,7 +669,7 @@ class TestClientRunFallback:
         [
             {"method_ref": "github.com/acme/methods/receipt-review@v1.0.0"},
             {"pipe_code": "p", "mthds_contents": ['domain = "d"']},
-            {"pipe_code": "p", "extra": {"files": {"main.mthds": 'domain = "d"'}}},
+            {"pipe_code": "p", "files": {"main.mthds": 'domain = "d"'}},
             {"pipe_code": "p", "extra": {"bundle_b64": "UEsDBA=="}},
         ],
         ids=["method_ref", "mthds_contents", "files", "bundle_b64"],

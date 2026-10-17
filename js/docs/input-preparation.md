@@ -119,7 +119,7 @@ Exactly one per call. The type pins the other two to `never`, so a second select
 
 Inline `files` may bring `resources`, the files the closure's steps read, such as a `PipeDocGen` step's `template_file`, keyed by the path the step names, each as its bytes ([`bundle-resources.md`](./bundle-resources.md)). They ride the one pipe I/O request, which loads the closure and fails to load it, as a `MethodLoadError`, when a step's template file was not sent. A published or stored method's files are its own, so `resources` beside `method_ref` or `method_id` is an `InputPreparationError` before any request.
 
-Nothing is expanded client-side: `method_id` here is a **pass-through**, the same rule every other id-taking operation follows. `getMethodClosure` stays available for callers that want the files in hand, but it is no longer a step on the way to preparing inputs.
+Nothing is expanded client-side: `method_id` here is a **pass-through**, the same rule every other id-taking operation follows (see "[A method's files in hand](#a-methods-files-in-hand)").
 
 #### Where the signature comes from
 
@@ -160,35 +160,11 @@ client.prepareInputs({ method_id, inputs, allowUploads: false }) → PreparedInp
 
 The error names the input as `inputName` and where inside it the value sits as `inputPath`: the input's name for a top-level file, then `.field` for each declared field and `[index]` for each list element (`dossier.attachments[1]`). An explicit envelope adds nothing to the path, since its `content` is the input's value. `valueKind` says what the value is, `local_path`, `data_url` or `bytes`, so a consumer can tell its caller what to send instead; the value itself is never in the message or on the error, since it is the caller's data. The option is `true` when omitted, must be a boolean when given — anything else is refused with an `InputPreparationError` before any request, since reading a stray `"false"` as permission would upload exactly what the caller meant to keep — and is not sent to the server. The option covers `prepareInputs` alone: `uploadFile` is an upload by definition.
 
-## `getMethodClosure` — the explicit expansion utility
+## A method's files in hand
 
-```
-client.getMethodClosure(methodId) → MthdsFileItem[]
-```
+Every method-taking operation — `execute` / `start`, `validate` / `resolve` / `codegen` / `pipeIo`, and `prepareInputs` — takes a `method_id` **natively** on the hosted API, as a server pass-through, its version suffix included (`mt_…`, `mt_…@<n>`, `mt_…@draft`): the platform resolves it and injects the tree of the version it names before the runner sees the request (see [architecture.md → hosted run extensions](./architecture.md#hosted-run-extensions-method_id)). That is the uniform rule — *an id option is always a server pass-through, and any client-side expansion is the caller's own explicit call*.
 
-`getMethodClosure` is the public **local expansion utility** — a client-side semantic layer over `getMethod` (the platform has no route that returns a parsed closure). It fetches the method, parses its **draft's** polymorphic `mthds` source with [`methodSourceToContents`](#methodsourcetocontents--the-canonical-source-parser), and labels each resulting file with the `method_id` as its `source` provenance.
-
-**It reads the draft, which is not what a bare id runs.** `GET /v1/methods/{id}` answers the method with its draft, whatever the publish state, while a run or a tooling call by a bare `method_id` resolves to the latest *published* version, which the draft may be ahead of. For the closure of a version, read it with `getMethodVersion(methodId, n)` and parse its `mthds` with `methodSourceToContents`. Like `getMethod`, it takes a bare id: a caller holding `mt_…@3` strips the suffix with `parseMethodSelector` first.
-
-Reach for it whenever you want the files **in hand** — to edit, to diff, or to send to a bare runner, which has no catalog to resolve an id against:
-
-```
-runner.resolve({ files: await hosted.getMethodClosure("mt_…") })
-```
-
-Every method-taking operation — `execute` / `start`, `validate` / `resolve` / `codegen` / `pipeIo`, and `prepareInputs` — takes a `method_id` **natively** on the hosted API, as a server pass-through, its version suffix included (`mt_…`, `mt_…@<n>`, `mt_…@draft`): the platform resolves it and injects the source of the version it names before the runner sees the request (see [architecture.md → hosted run extensions](./architecture.md#hosted-run-extensions-method_id)). That is the uniform rule — *an id option is always a server pass-through, and any client-side expansion is the caller's own explicit call*.
-
-- **Requires an API key.** The methods catalog is org-scoped to the key's org, so resolution only works with an authenticated Pipelex-product key.
-- **Unknown or foreign-org id → the `getMethod` `404`** (`ApiResponseError`, `code: "not_found"`), propagated unchanged. An id from another org is indistinguishable from a nonexistent one — both 404.
-- **A real, in-org method whose source parses to nothing → `EmptyMethodSourceError`** — the row exists but has no runnable MTHDS source yet. This is a distinct outcome from the 404 (see "[Error and capability behavior](#error-and-capability-behavior)"), and `getMethodClosure` is now its only raiser: `prepareInputs` passes the id to the server, which answers a sourceless method with a `422`.
-
-### `methodSourceToContents` — the canonical source parser
-
-```
-methodSourceToContents(mthds: string) → string[]
-```
-
-A stored method's `mthds` field is **polymorphic**: it is either the raw single-bundle source, or a JSON array of `{ name, content }` file entries (a multi-file closure). `methodSourceToContents` is the one canonical parser that turns either shape into a flat list of file contents — a verbatim port of the platform's `method_source_to_contents`, so the SDK and the runtime read a stored source identically. It is exported from the barrel for consumers (e.g. `pipelex-mcp`) that need the parse without the fetch. Blank entries are dropped; a source that parses to no non-blank content yields `[]`, which is what `getMethodClosure` turns into `EmptyMethodSourceError`.
+A caller that wants a method's files in hand, to edit, to diff, or to send to a bare runner, which has no catalog to resolve an id against, reads them explicitly. `getMethod(id)` lists the draft's tree and `getMethodVersion(id, n)` a published version's, each file with a short-lived link to its bytes, and `writeMethodTree(files, { destination })` writes that listing to disk, checked against the listing ([`method-trees.md`](./method-trees.md)). The draft is not what a bare id runs: a run or a tooling call by a bare `method_id` resolves to the latest published version, which the draft may be ahead of.
 
 ## Compact or explicit-envelope inputs
 
@@ -248,7 +224,6 @@ Upload is a **hosted Pipelex-product capability**, even though the SDK can be po
 The contract distinguishes these semantic outcomes, each a typed subclass of `InputPreparationError` (catch the base to handle any preparation failure, a subclass to branch on category):
 
 - **an unresolvable signature** (`InputPreparationError`) — a bare or alias-qualified `pipe_ref`, refused before any request; a closure that does not load (`MethodLoadError`, below); or a pipe selection the route refused (its `422` typed `EntryPipeNotFoundError` or `EntryPipeAmbiguousError`, carrying the server's detail). Any other failure from `/v1/pipe-io` — a malformed selector, an over-limit file, an unknown or foreign-org `method_id`, no package at the address or one with no `.mthds` file, auth, a server fault, a deployment that does not serve the route — stays an `ApiResponseError` and propagates unchanged;
-- **empty method source** (`EmptyMethodSourceError`, carries `methodId`) — `getMethodClosure` found the stored method but its `mthds` source parses to nothing (the row exists, no runnable source yet). Distinct from the `getMethod` `404` for an unknown/foreign id, which stays an `ApiResponseError`. `prepareInputs` never raises it: it hands the id to the server, which answers a sourceless method with a `422`;
 - **a method that does not load** (`MethodLoadError`) — the pipe I/O answer's `is_valid: false` arm. Its message names the first validation item's message, else the answer's own `message`; `validationErrors` holds the answer's items, each kept when it carries a string `category` and `message`, and `serverMessage` the answer's own `message` when it is a string, so a consumer lists every item rather than reading the first from a sentence. The method must change, not the inputs;
 - **invalid local source** (`InvalidLocalSourceError`) — missing, unreadable, or a path string outside Node;
 - **invalid input value** (`InvalidInputValueError`, carries `inputName` and `inputPath`) — a value at a file input that cannot be turned into a file to upload: a `data:` URL that does not decode (no comma, bad base64, bad percent-encoding), or a value of a type no file input takes, such as a number or an object that is neither bytes nor `{url}` content. It is raised while the inputs are read, before anything is uploaded. It names the input and the path inside it as `UploadNotAllowedError` does (`Input "dossier.attachments[1]" holds a number, which no file input takes: …`), describes the value by its kind and never quotes it, and lists the forms a file input takes in the mode it ran in. With `InvalidLocalSourceError`, it is how a consumer tells the inputs' own mistakes from a method that does not load, though all three are `InputPreparationError`s with the same verdict;

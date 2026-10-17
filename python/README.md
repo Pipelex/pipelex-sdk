@@ -94,14 +94,17 @@ print(ack.method_version)  # 3
 
 ### Draft, publish and pin a saved method
 
-A saved method has a draft, written freely and never validated, and immutable published versions numbered from 1. `updated_at` is the draft's token: echo it so no write or publish takes a draft you have not seen. The method routes take a bare id, and `parse_method_selector` strips a suffix:
+A saved method has a draft, written freely and never validated, and immutable published versions numbered from 1. Each is a method tree, the same files a run takes. `updated_at` is the draft's token: echo it so no write or publish takes a draft you have not seen. The method routes take a bare id, and `parse_method_selector` strips a suffix:
 
 ```python
+from pathlib import Path
+
 from pipelex_sdk.method_selector import parse_method_selector
 from pipelex_sdk.product_models import MethodDraftInput, MethodPublishRefused
 
 method = await client.get_method("mt_123")
-draft = await client.write_draft("mt_123", MethodDraftInput(mthds="domain = 'demo'\n", expected_updated_at=method.updated_at))
+tree = await client.list_method_tree(Path("methods/demo"))
+draft = await client.write_draft("mt_123", MethodDraftInput(tree=tree, expected_updated_at=method.updated_at))
 result = await client.publish_method("mt_123", expected_draft_updated_at=draft.updated_at)
 if isinstance(result, MethodPublishRefused):
     print(result.message, result.validation)
@@ -109,6 +112,13 @@ else:
     print(f"version {result.version.version}")  # published, or unchanged
 versions = await client.list_method_versions("mt_123")  # newest first
 parsed = parse_method_selector("mt_123@3")  # ParsedMethodSelector(method_id="mt_123", version=3)
+```
+
+A save sends a small tree inline and a large one by hash, uploading first the files the organization does not hold yet, so a file is uploaded once. A read lists the files with a short-lived link to each one's bytes, and `write_method_tree` writes them to disk, each checked against its SHA-256 ([`docs/method-trees.md`](docs/method-trees.md)):
+
+```python
+detail = await client.get_method("mt_123")
+await client.write_method_tree(detail.files, destination=Path("demo-copy"))
 ```
 
 ### Save examples and rerun them
@@ -336,7 +346,7 @@ There is no barrel import — package `__init__.py` files stay empty. Import eac
 - **Client & construction** — `from pipelex_sdk.client import PipelexAPIClient, DEFAULT_API_BASE_URL, MthdsFile`
 - **Run lifecycle types** — `from pipelex_sdk.runs import RunStatus, RunPublic, RunRead, RunResults, RunResultState, WaitForResultOptions, PollInfo`, and the progress snapshot `RunProgress`, `RunProgressStatus`, `ProgressInvocation`, `ProgressInvocationStatus`, `ProgressBatch`, `ProgressCondition`, `ProgressFailure`, `ProgressAttempt` with `is_fresher_run_progress`
 - **Error reports** — `from pipelex_sdk.error_models import RunErrorReport, UserAction, ProviderErrorMetadata, MigrationErrorBlock, FieldError`
-- **Product wire models** — `from pipelex_sdk.product_models import UserProfile, MethodData, MethodWriteInput, MethodDraftInput, MethodVersion, MethodVersionSummary, MethodPublished, MethodPublishUnchanged, MethodPublishRefused, Membership, MembershipsResponse, SubscriptionResponse, PlanView, InvoiceView, OnboardingSubmission, UploadInput, UploadedFile, RunHistoryItem, RunDetail, ...`, with the catalog-source readers beside them: `method_source_to_contents` turns a fetched `MethodData.mthds` into the `mthds_contents` a run or a validate takes, and `MethodFile` / `parse_method_files` / `serialize_method_files` are the codec for a method's custom PipeFunc `python`.
+- **Product wire models** — `from pipelex_sdk.product_models import UserProfile, MethodData, MethodDetail, SavedMethodFile, MethodWriteInput, MethodDraftInput, MethodVersion, MethodVersionSummary, MethodPublished, MethodPublishUnchanged, MethodPublishRefused, Membership, MembershipsResponse, SubscriptionResponse, PlanView, InvoiceView, OnboardingSubmission, UploadInput, UploadedFile, RunHistoryItem, RunDetail, ...`; a method's tree is `mthds`'s own, `MethodTree` and `TreeLimits` from `mthds.method_tree.models` and `FileEntry` from `mthds.method_tree.file_entry`.
 - **Method selectors** — `from pipelex_sdk.method_selector import parse_method_selector, ParsedMethodSelector`
 - **Validation verdict types** — `from pipelex_sdk.validation_models import PipelexValidationResult, PipelexValidationReport, PipelexInvalidReport, ValidationErrorItem, SuggestedFix, VALIDATION_VIEW_INPUT_FORM, ...`
 - **Crate routes** — `from pipelex_sdk.crate_models import ResolveRequest, CodegenRequest, PipeIORequest, PipeIOValidReport, CrateInvalidReport, MthdsFileItem, ...`, the requests and the two 200 arms of `resolve`, `codegen` and `pipe_io`

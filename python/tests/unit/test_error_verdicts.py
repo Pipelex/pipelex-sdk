@@ -54,6 +54,9 @@ from pipelex_sdk.errors import (
     InputPreparationError,
     InvalidInputValueError,
     InvalidLocalSourceError,
+    MethodFileTransferCode,
+    MethodFileTransferError,
+    MethodFileTransferOperation,
     MethodLoadError,
     MissingMainStuffError,
     PagingNotTerminatingError,
@@ -310,6 +313,17 @@ def _upload_transport(given: _Given) -> UploadTransportError:
     return UploadTransportError("The upload failed.", status=given.status, code=code, cause=_cause_from(given.cause))
 
 
+def _method_file_transfer(given: _Given) -> MethodFileTransferError:
+    return MethodFileTransferError(
+        "The transfer failed.",
+        operation=MethodFileTransferOperation.DOWNLOAD,
+        code=MethodFileTransferCode(_code_of(given)),
+        sha256="0" * 64,
+        path="main.mthds",
+        status=given.status,
+    )
+
+
 def _artifact_authentication(given: _Given) -> ArtifactAuthenticationError:
     result = DownloadArtifactsResult(scope=ArtifactScope.MAIN_STUFF, all_saved=True)
     return ArtifactAuthenticationError("Credential refused.", 401 if given.status is None else given.status, result)
@@ -339,6 +353,7 @@ _BUILDERS: dict[str, Callable[[_Given], BaseException]] = {
     "UnsupportedUploadCapabilityError": lambda _: UnsupportedUploadCapabilityError("No upload here."),
     "UploadAuthenticationError": lambda given: UploadAuthenticationError("Not authorized.", 401 if given.status is None else given.status),
     "UploadTransportError": _upload_transport,
+    "MethodFileTransferError": _method_file_transfer,
     "ArtifactOperationError": lambda given: ArtifactOperationError("The artifact operation failed.", verdict=given.verdict),
     "ScopeUnavailableError": lambda _: ScopeUnavailableError(ArtifactScope.MAIN_STUFF, _RUN_ID),
     "ArtifactAuthenticationError": _artifact_authentication,

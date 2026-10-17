@@ -54,7 +54,7 @@ _ROUTES: list[tuple[str, str, IdRouteCall, IdRouteUrl]] = [
     (
         _A_METHOD_ID,
         "write_draft",
-        lambda client, id_: client.write_draft(id_, MethodDraftInput(mthds="")),
+        lambda client, id_: client.write_draft(id_, MethodDraftInput(files=None)),
         lambda seg: f"{_METHODS_URL}/{seg}/draft",
     ),
     (_A_METHOD_ID, "rename_method", lambda client, id_: client.rename_method(id_, "n"), lambda seg: f"{_METHODS_URL}/{seg}"),

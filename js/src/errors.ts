@@ -188,28 +188,6 @@ export class InputPreparationError extends PipelexRequestError {
 }
 
 /**
- * The stored method resolved by `getMethodClosure` has no MTHDS source yet — its
- * `MethodData.mthds` parses to an empty closure (a blank string, a JSON `[]`, or
- * an all-blank file array). `getMethodClosure` is the only raiser: the operations
- * that take a `method_id` natively — `prepareInputs` among them — pass the id to
- * the server, which answers a sourceless method with a `422`.
- *
- * Distinct from a transport failure: the `getMethod` fetch succeeded (`200`) and
- * the id is real and in-org; the row simply carries no runnable source. A missing
- * or foreign-org id is a `getMethod` `404` (`ApiResponseError` `not_found`), not
- * this. `methodId` locates the empty method.
- */
-export class EmptyMethodSourceError extends InputPreparationError {
-  public readonly methodId: string;
-
-  constructor(methodId: string, options?: { cause?: unknown }) {
-    super(`Method "${methodId}" has no MTHDS source yet.`, options);
-    this.name = "EmptyMethodSourceError";
-    this.methodId = methodId;
-  }
-}
-
-/**
  * A local asset could not be turned into bytes: a missing or unreadable path, or
  * a path string in a non-Node runtime (path strings are Node-only). `source` is
  * the offending path.
@@ -653,6 +631,81 @@ export class ArtifactAuthenticationError extends ArtifactOperationError {
     this.name = "ArtifactAuthenticationError";
     this.status = status;
     this.verdict = verdict;
+  }
+}
+
+// ── A saved method's tree ────────────────────────────────────────────
+
+/** Which way a file of a method's tree was moving when its transfer failed. */
+export type MethodFileTransferOperation = "upload" | "download";
+
+/**
+ * Why a file of a method's tree could not be moved, the same vocabulary as the Python SDK's:
+ *
+ * - `unreachable`: storage gave no answer, the connection failing or the time limit running out.
+ * - `storage_error`: storage timed out or throttled the request (`408`, `429`), or failed (a `5xx`
+ *   other than `501`).
+ * - `refused`: storage refused the request with any other status, an expired link among them.
+ * - `mismatch`: a download's bytes are not the file the listing names, another size or another
+ *   SHA-256.
+ */
+export type MethodFileTransferCode = "unreachable" | "storage_error" | "refused" | "mismatch";
+
+/**
+ * A file of a method's tree that could not be moved between this machine and the platform's
+ * storage: thrown by `createMethod` and `writeDraft` when a file the organization lacks could not
+ * be uploaded to the target `POST /v1/blobs/missing` named, so the method was not saved, and by
+ * `writeMethodTree` when a saved file could not be downloaded through its link, or its bytes are
+ * not the file the listing names.
+ *
+ * `operation` says which way the file was moving, `code` why it failed, `sha256` which bytes,
+ * `path` the tree path when one is known, and `status` storage's HTTP status when it answered.
+ * Neither the message nor any member carries the link, whose query is a bearer credential, nor
+ * storage's error body, which can echo the signed request, and it keeps no `cause`, since the
+ * failure fetch throws can quote the URL.
+ *
+ * Its domain is always `runtime`, since neither the call nor the environment is at fault:
+ * `unreachable`, `storage_error` and `mismatch` are retryable, since the same transfer can succeed
+ * later, and `refused` is not. A download refused for an expired link succeeds once the method is
+ * read again, which serves fresh links. A code this version does not know is not retryable.
+ */
+export class MethodFileTransferError extends PipelexRequestError {
+  public readonly operation: MethodFileTransferOperation;
+  public readonly code: MethodFileTransferCode;
+  public readonly sha256: string | undefined;
+  public readonly path: string | undefined;
+  public readonly status: number | undefined;
+
+  constructor(
+    message: string,
+    details: {
+      operation: MethodFileTransferOperation;
+      code: MethodFileTransferCode;
+      sha256?: string;
+      path?: string;
+      status?: number;
+    },
+  ) {
+    super(message, methodFileTransferVerdict(details.code));
+    this.name = "MethodFileTransferError";
+    this.operation = details.operation;
+    this.code = details.code;
+    this.sha256 = details.sha256;
+    this.path = details.path;
+    this.status = details.status;
+  }
+}
+
+/** The verdict of a failed transfer of a method's file, by its code. */
+function methodFileTransferVerdict(code: string): ErrorVerdict {
+  switch (code) {
+    case "unreachable":
+    case "storage_error":
+    case "mismatch":
+      return makeVerdict("runtime", true);
+    default:
+      // `refused`, and a code this version does not know.
+      return makeVerdict("runtime", false);
   }
 }
 

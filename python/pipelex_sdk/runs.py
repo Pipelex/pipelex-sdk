@@ -216,8 +216,10 @@ class RunPublic(BaseModel):
     #: addressed by `mt_…@draft`, and `None` for a run of an inline source. A hosted extension,
     #: `None` on a server that does not record it.
     method_version: int | Literal["draft"] | None = None
-    #: The digest of the files the run ran, in the canonical form of `MethodData.draft_digest`;
-    #: `None` when the platform never held the files, as on a `method_ref` run, or does not record it.
+    #: The digest of the sources a run sent as text (`mthds_contents`, or a `files` map of text entries),
+    #: 64 lowercase hexadecimal characters, which is not a tree digest (`RunDetail.tree_digest` names a
+    #: run's tree); `None` when the platform never held the sources as text, as on a run of a saved method
+    #: or a `method_ref` run, or does not record it.
     source_digest: str | None = None
 
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A saved method's tree, saved by hash**: `create_method` and `write_draft` take the method's tree as `files`, the MTHDS standard's map of file entries sent as given, as `tree`, a tree listed from a directory by the new `list_method_tree`, or as `contents`, each file's bytes or text by tree path; the last two travel inline when small and otherwise by hash, after `POST /v1/blobs/missing` names the files the organization lacks and the client uploads those once, so a large method saves in a small request (`docs/method-trees.md`).
+- **A saved method's tree, read and written to disk**: `get_method` answers a `MethodDetail` and `get_method_version` a `MethodVersion` whose `files` list the tree, each `SavedMethodFile` with its `path`, `sha256`, `size` and a link to its bytes valid for about fifteen minutes, and `write_method_tree(files, destination=…)` downloads them, checks each against its size and SHA-256, and writes the tree into a fresh directory that takes its name only once complete.
+- **`method_tree_limits`**: the limits the deployment announces for a method's tree in its version handshake, as `mthds`'s `TreeLimits`, which `list_method_tree` applies so a tree the platform would refuse is refused while it is listed.
+- **`MethodFileTransferError`**: raised when a file of a method's tree could not be uploaded before a save or downloaded by `write_method_tree`, with its `operation`, a `code` (`unreachable`, `storage_error`, `refused` or `mismatch`) deciding whether it is retryable, the file's `sha256` and `path`, and storage's `status`, and never the link, which is a bearer credential.
+- **`files` on the run routes**: `execute`, `start` and `start_and_wait` take `files`, the standard's map of file entries, beside `mthds_contents`, now a keyword-only argument this client sends as the Pipelex API's extension; `method_ref` beside `files` is refused before sending, as beside `mthds_contents`.
+- **`RunDetail.tree_digest` and `RunDetail.crate_fingerprint`**: the digest of the method tree a run sent and the crate the runner loaded it into, each `None` for a run that recorded none.
+
+### Changed
+
+- **A saved method is a tree, and its source fields are gone (Breaking)**: `MethodData` loses `mthds` and `python`, `MethodWriteInput` and `MethodDraftInput` refuse them, and `MethodVersionSummary.source_digest` is now `tree_digest`, so code reading a method's source reads its `files` instead, and a draft is unchanged since its latest version when `draft_digest` is not `None` and equals `latest_published.tree_digest`. `draft_digest` is the draft's tree digest, `sha256:` and 64 hex digits, and `None` for an empty draft.
+- **`write_draft` replaces the whole tree (Breaking)**: a draft write always sends `files` and refuses a `MethodDraftInput` that gives the tree in no form, so keeping the stored files means sending them again; `files=None` empties the draft.
+- **Requires `mthds` 0.24.0 (Breaking)**: the exact pin moves from `mthds==0.22.0` to `mthds==0.24.0`, which brings the method-tree library and the blob routes the saves are built on, and whose client takes a run's method as `files`; `mthds_contents` given positionally to `execute` or `start` must now be given by name.
+
+### Removed
+
+- **The catalog-source readers (Breaking)**: `method_source_to_contents`, `MethodFile`, `parse_method_files` and `serialize_method_files` are gone with the fields they read; a method's files come back as `MethodDetail.files`.
+
 ## [v0.45.0] - 2026-10-16
 
 ### Changed
