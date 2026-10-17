@@ -6,6 +6,7 @@ before sending anything.
 """
 
 import asyncio
+import inspect
 import json
 from typing import Any
 
@@ -131,3 +132,35 @@ class TestClientRunFiles:
             asyncio.run(getattr(client, route)(method_ref="github.com/Pipelex/methods/documents@v0.1.0", files={"main.mthds": _MAIN}))
 
         send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("source", "sent_as"),
+        [
+            pytest.param({"pipe_code": "review_receipt"}, "pipe_code", id="pipe_code"),
+            pytest.param({"method_ref": "github.com/Pipelex/methods/documents@v0.1.0"}, "method_ref", id="method_ref"),
+            pytest.param({"method_id": "mt_receipts01"}, "method_id", id="method_id"),
+            pytest.param({"files": {"main.mthds": _MAIN}}, "files", id="files"),
+        ],
+    )
+    @pytest.mark.parametrize("route", ["start", "execute"])
+    def test_an_empty_mthds_contents_beside_another_source_is_not_sent(
+        self, mocker: MockerFixture, route: str, source: dict[str, Any], sent_as: str
+    ) -> None:
+        """An empty list names nothing to run, so it never reaches the wire beside what does, a `method_ref` included."""
+        client = self._client()
+        answer = _response(202, json_body=_START_BODY) if route == "start" else _response(200, json_body=_EXECUTE_BODY)
+        send = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=answer))
+
+        asyncio.run(getattr(client, route)(mthds_contents=[], **source))
+
+        body = _sent_body(send)
+        assert "mthds_contents" not in body
+        assert sent_as in body
+
+    def test_start_and_wait_takes_every_argument_but_the_pipe_by_keyword(self) -> None:
+        """So no positional call reads one run source as another, as `start` and `execute` read `files` second."""
+        parameters = list(inspect.signature(PipelexAPIClient.start_and_wait).parameters.values())
+
+        assert [parameter.name for parameter in parameters[:2]] == ["self", "pipe_code"]
+        assert all(parameter.kind is inspect.Parameter.KEYWORD_ONLY for parameter in parameters[2:])
+        assert {"files", "mthds_contents", "method_ref", "method_id"} <= {parameter.name for parameter in parameters[2:]}

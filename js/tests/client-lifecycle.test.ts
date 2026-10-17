@@ -1145,7 +1145,8 @@ describe("PipelexApiClient answers it cannot read", () => {
         `API GET /v1/methods/m1 answered 200 with a stored method whose \`files\` ${fault}`,
       );
       expect(unreadable.status).toBe(200);
-      expect(unreadable.responseBody).toBe(body);
+      // The answer carries links, each a bearer credential, so every `url` member is hidden.
+      expect(unreadable.responseBody).toBe(body.replace('"url":"u"', '"url":"[redacted]"'));
       expect(unreadable.requestId).toBe("req-8");
       // Server data the caller cannot fix: runtime, and nothing says a retry helps.
       expect(errorVerdictOf(unreadable)).toEqual({ errorDomain: "runtime", retryable: false });

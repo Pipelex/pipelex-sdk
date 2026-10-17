@@ -510,7 +510,7 @@ async function downloadMethodFile(
     { method: "GET" },
     options,
     unreachable,
-    async (response, stopped) => {
+    async (response, failureCode) => {
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
         throw new MethodFileTransferError(
@@ -528,7 +528,7 @@ async function downloadMethodFile(
       try {
         return await readAtMost(response, file.size + 1);
       } catch (cause) {
-        throw unreachable(stopped() ? "stopped" : networkCodeOf(cause));
+        throw unreachable(failureCode(cause));
       }
     },
   );
@@ -553,26 +553,34 @@ async function downloadMethodFile(
  * times out as a request with no answer does. A redirect is not followed, since a signed link names
  * its object, so it reads as a refusal. A request that gets no answer throws what `unreachable`
  * builds from the network code alone, with no cause: the failure fetch throws can quote the URL,
- * whose query is a credential. `consume` is handed whether the caller stopped the exchange, to name
- * a body read that failed for it.
+ * whose query is a credential. `consume` is handed the code that names a body read that failed:
+ * `ABORT_TIMEOUT` once the exchange's own time limit ran out, whatever error the aborted read
+ * raised, `stopped` once the caller stopped it, and the network code of the failure otherwise.
  */
 async function storageExchange<T>(
   url: string,
   init: RequestInit,
   options: { timeoutMs: number; signal?: AbortSignal },
   unreachable: (code: string) => MethodFileTransferError,
-  consume: (response: Response, stopped: () => boolean) => Promise<T>,
+  consume: (response: Response, failureCode: (cause: unknown) => string) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(new DOMException("The transfer timed out.", "TimeoutError")),
-    options.timeoutMs,
-  );
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new DOMException("The transfer timed out.", "TimeoutError"));
+  }, options.timeoutMs);
   const callerSignal = options.signal;
   const onCallerAbort = (): void => controller.abort(callerSignal?.reason);
   if (callerSignal?.aborted === true) controller.abort(callerSignal.reason);
   else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
-  const stopped = (): boolean => callerSignal?.aborted === true;
+  // The time limit is read before the caller's signal: an abort the timer made is a timeout, and
+  // the error the aborted request or read raises says nothing reliable about which abort it was.
+  const failureCode = (cause: unknown): string => {
+    if (timedOut) return "ABORT_TIMEOUT";
+    if (callerSignal?.aborted === true) return "stopped";
+    return networkCodeOf(cause);
+  };
   try {
     let response: Response;
     try {
@@ -583,9 +591,9 @@ async function storageExchange<T>(
         signal: controller.signal,
       });
     } catch (cause) {
-      throw unreachable(stopped() ? "stopped" : networkCodeOf(cause));
+      throw unreachable(failureCode(cause));
     }
-    return await consume(response, stopped);
+    return await consume(response, failureCode);
   } finally {
     clearTimeout(timer);
     callerSignal?.removeEventListener("abort", onCallerAbort);
@@ -760,6 +768,9 @@ const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 const LONE_SURROGATE = /[\uD800-\uDFFF]/u;
 const CONTROL_CHARACTER = /\p{Cc}/u;
 const MAX_SEGMENT_BYTES = 255;
+const REDACTED = "[redacted]";
+// A link up to its query, then its query, which a redaction replaces.
+const LINK_QUERY = /(\bhttps?:\/\/[^\s"'<>?#]*)\?[^\s"'<>]*/gi;
 const MAX_TREE_PATH_BYTES = 1024;
 
 function objectMember(holder: object, name: string): Record<string, unknown> | undefined {
@@ -781,6 +792,37 @@ function hostOf(url: string): string {
   } catch {
     return "storage";
   }
+}
+
+/**
+ * `text`, an answer that carries signed links, with every link hidden, for an error to hold: in a
+ * JSON body every `url` member, at any depth, is replaced whole, and in any text, JSON or not, a
+ * truncated body included, the query of every `http(s)` link is replaced, since a signed link's
+ * signature rides its query. A link is a bearer credential, so no error, message or member may
+ * carry one.
+ */
+export function redactSignedLinks(text: string): string {
+  let redacted = text;
+  try {
+    redacted = JSON.stringify(withUrlMembersRedacted(JSON.parse(text)));
+  } catch {
+    // Not JSON: the pattern below still hides every link's query.
+  }
+  return redacted.replace(LINK_QUERY, "$1?[redacted]");
+}
+
+function withUrlMembersRedacted(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withUrlMembersRedacted);
+  if (value !== null && typeof value === "object") {
+    // `fromEntries` defines each member as an own property, so a `__proto__` member stays one.
+    return Object.fromEntries(
+      Object.entries(value).map(([name, member]) => [
+        name,
+        name === "url" ? REDACTED : withUrlMembersRedacted(member),
+      ]),
+    );
+  }
+  return value;
 }
 
 function statusLine(response: Response): string {

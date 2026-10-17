@@ -79,15 +79,16 @@ class SavedMethodFile(BaseModel):
     path: str
     """The file's tree path, relative to the method's root, `/`-separated."""
 
-    sha256: str
-    """The SHA-256 of the file's bytes, 64 lowercase hexadecimal characters."""
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    """The SHA-256 of the file's bytes, 64 lowercase hexadecimal characters; a listing naming anything else is an answer the SDK cannot read."""
 
-    size: int
+    size: int = Field(ge=0)
     """The file's length in bytes."""
 
-    url: str
+    url: str = Field(repr=False)
     """A presigned `GET` of the file's bytes, valid until `expires_at`. It is a bearer credential: it
-    needs no API key, and anyone holding it can read the file until it expires, so it is never logged."""
+    needs no API key, and anyone holding it can read the file until it expires, so it is never logged,
+    and a file's `repr` leaves it out."""
 
     expires_at: str
     """When `url` stops working, an ISO-8601 UTC instant about fifteen minutes after the read. Read the

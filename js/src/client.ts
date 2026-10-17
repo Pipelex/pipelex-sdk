@@ -132,6 +132,8 @@ import {
   inlineFilesOf,
   inlineMapBytes,
   readTreeBytes,
+  redactSignedLinks,
+  sha256Hex,
   treeTotalSize,
   uniqueBlobs,
   uploadBlob,
@@ -449,6 +451,15 @@ export interface PipelexApiClientOptions {
    * beside the specs' tests.
    */
   appInfo?: AppInfo;
+  /**
+   * The client's request ceiling, in milliseconds: the time limit of a request given no
+   * `timeoutMs` of its own, the blocking `execute` and a `start` carrying its method among them,
+   * and of each transfer of a method's file to or from storage, an upload before a save or a
+   * download by `writeMethodTree`. Defaults to 20 minutes, the runner's blocking execute ceiling.
+   * A positive number no larger than 2147483647, the longest delay a timer honours, else a
+   * `RangeError` at construction.
+   */
+  requestTimeoutMs?: number;
 }
 
 /** Decoders of an answer's bytes: the strict one tells a body that is not UTF-8. */
@@ -464,6 +475,12 @@ interface RawResponse {
   body: string;
   /** Whether the body's bytes are UTF-8, which a JSON answer must be (RFC 8259). */
   utf8: boolean;
+  /**
+   * Whether the body carries signed links, each a bearer credential: an error built from such an
+   * answer holds its body with every link hidden (`redactSignedLinks`) and no `cause`, since a
+   * parse failure can quote the text it failed on.
+   */
+  carriesLinks?: boolean;
 }
 
 /**
@@ -737,6 +754,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   /** Cached `/v1/version` handshake outcome — whether the durable lifecycle is served. */
   private lifecycleAvailable: boolean | undefined;
   /**
+   * The first `/v1/version` handshake that answered, kept for the client's lifetime: what a save
+   * reads from it (`blob_store`) and the tree limits it announces do not change while a client
+   * lives. A handshake that failed is not kept, so the next call asks again.
+   */
+  private versionInfo: VersionInfo | undefined;
+  /** The client's request ceiling (`PipelexApiClientOptions.requestTimeoutMs`). */
+  private readonly requestTimeoutMs: number;
+  /**
    * The `User-Agent` sent on every API request, computed once at construction;
    * `undefined` in a browser, where no header may be set.
    */
@@ -769,6 +794,15 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     this.baseUrl = normalizedBaseUrl;
     this.originUrl = new URL("/", this.baseUrl).origin;
+    const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    // A longer delay overflows the timer, which then fires at once as a false timeout.
+    if (!isTimerDelay(requestTimeoutMs)) {
+      throw new RangeError(
+        `"requestTimeoutMs" must be a positive number no larger than ${MAX_TIMER_DELAY_MS}, got ` +
+          `${String(requestTimeoutMs)}.`,
+      );
+    }
+    this.requestTimeoutMs = requestTimeoutMs;
   }
 
   // ── URL resolution ───────────────────────────────────────────────────
@@ -828,7 +862,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     const bodyText = hasBody ? requestBodyText(method, url, options.body) : undefined;
     const headers = this.requestHeaders(hasBody, options.idempotencyKey);
 
-    const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
     // A longer delay overflows the timer, which then fires at once as a false timeout.
     if (!isTimerDelay(timeoutMs)) {
       throw new RangeError(
@@ -1239,7 +1273,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `API <method> <path> answered <status> with <what>`: the answer's status, its raw text as
    * `responseBody`, no problem member but the `X-Request-ID` header, the failure that made it
    * unreadable as `cause`, and the verdict the fallback gives a 2xx, `runtime` and not retryable.
-   * On a request that may create a run, the run may have started: the server accepted it.
+   * An answer that carries signed links (`RawResponse.carriesLinks`) is held with every link
+   * hidden, and with no `cause`, which could quote one. On a request that may create a run, the run may have started: the server accepted it.
    */
   private unreadableAnswer(
     method: HttpMethod,
@@ -1249,18 +1284,19 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     cause?: unknown,
     run: RunCreation = {},
   ): ApiResponseError {
+    const carriesLinks = res.carriesLinks === true;
     return new ApiResponseError(
       `API ${method} ${path} answered ${res.status} with ${what}`,
       this.baseUrl,
       res.status,
       res.statusText,
-      res.body,
+      carriesLinks ? redactSignedLinks(res.body) : res.body,
       undefined,
       undefined,
       undefined,
       undefined,
       {
-        cause,
+        cause: carriesLinks ? undefined : cause,
         problem: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) },
         mayStartRun: run.mayStartRun === true,
       },
@@ -1565,7 +1601,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       nonEmptyString(options.method_ref) !== undefined;
     const res = await this.requestRaw("POST", url, {
       body: request,
-      timeoutMs: needsLongCeiling ? DEFAULT_REQUEST_TIMEOUT_MS : POLL_REQUEST_TIMEOUT_MS,
+      timeoutMs: needsLongCeiling ? this.requestTimeoutMs : POLL_REQUEST_TIMEOUT_MS,
       idempotencyKey,
       ...STARTS_RUN,
     });
@@ -2004,7 +2040,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    */
   async resolve(request: ResolveRequest): Promise<ResolveResponse> {
     return this.requestExtension("resolve", await wireCrateRequest(request), {
-      timeoutMs: crateRequestTimeoutMs(request),
+      timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
     });
   }
 
@@ -2025,7 +2061,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    */
   async codegen(request: CodegenRequest): Promise<CodegenResponse> {
     return this.requestExtension("codegen", await wireCrateRequest(request), {
-      timeoutMs: crateRequestTimeoutMs(request),
+      timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
     });
   }
 
@@ -2068,7 +2104,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    */
   async pipeIo(request: PipeIORequest): Promise<PipeIOResponse> {
     return this.requestExtension("pipe-io", await wireCrateRequest(request), {
-      timeoutMs: crateRequestTimeoutMs(request),
+      timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
     });
   }
 
@@ -2262,6 +2298,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (this.lifecycleAvailable === undefined) {
       try {
         const info = await this.version();
+        this.versionInfo ??= info;
         const impl = info.implementation;
         this.lifecycleAvailable = !(
           typeof impl === "string" && impl === BARE_RUNNER_IMPLEMENTATION
@@ -2443,7 +2480,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   async getMethod(methodId: string): Promise<MethodDetail> {
     const endpoint = methodPath(methodId, "getMethod");
     const res = await this.requestProductAnswer("GET", endpoint, undefined);
-    return this.readSavedTree<MethodDetail>("GET", endpoint, res, "a stored method");
+    return this.readSavedTree<MethodDetail>("GET", endpoint, withLinks(res), "a stored method");
   }
 
   /**
@@ -2530,7 +2567,16 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * rather than trusted.
    */
   async methodTreeLimits(): Promise<MethodTreeLimits> {
-    return announcedTreeLimits(await this.version());
+    return announcedTreeLimits(await this.cachedVersion());
+  }
+
+  /**
+   * The version handshake, asked once per client: the first answer is kept (see `versionInfo`),
+   * and a failure is thrown and not kept, so the next call asks again.
+   */
+  private async cachedVersion(): Promise<VersionInfo> {
+    this.versionInfo ??= await this.version();
+    return this.versionInfo;
   }
 
   /**
@@ -2558,7 +2604,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     files: readonly SavedMethodFile[],
     options: { destination: string },
   ): Promise<void> {
-    await writeMethodTreeTo(files, options.destination, { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS });
+    await writeMethodTreeTo(files, options.destination, { timeoutMs: this.requestTimeoutMs });
   }
 
   /**
@@ -2585,9 +2631,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
           `${given.join(" and ")}.`,
       );
     }
-    if (input.tree != null) return this.prepareTreeFiles(input.tree);
+    if (input.tree != null) return this.prepareTreeFiles(input.tree, call);
     if (input.contents != null) {
-      return this.prepareTreeFiles(await contentsTreeSource(input.contents, call));
+      return this.prepareTreeFiles(await contentsTreeSource(input.contents, call), call);
     }
     return input.files;
   }
@@ -2600,10 +2646,16 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * travels inline too when the version handshake declares no blob store; otherwise
    * `POST /v1/blobs/missing` is asked which files the organization lacks, naming the tree's
    * digest, each one it lacks is uploaded once, and every file travels by hash. A file read to be
-   * measured is uploaded from memory rather than read a second time. A blob the platform asks
-   * for that the tree does not hold is refused with `RequestArgumentError` before any upload.
+   * measured is uploaded from memory rather than read a second time. A tree holding no file is
+   * refused with `RequestArgumentError` before any request, `call` naming the caller's method.
    */
-  private async prepareTreeFiles(tree: MethodTreeSource): Promise<MethodFiles> {
+  private async prepareTreeFiles(tree: MethodTreeSource, call: string): Promise<MethodFiles> {
+    if (tree.files.length === 0) {
+      throw new RequestArgumentError(
+        `${call}() got a tree holding no file, and a method tree holds at least one; give ` +
+          "files: null for an empty draft.",
+      );
+    }
     let read: Map<string, Uint8Array> | undefined;
     // An inline map is never smaller than the bytes it carries, so a tree whose bytes alone pass
     // the threshold is not read in full just to be measured.
@@ -2612,23 +2664,26 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       const inline = inlineFilesOf(tree, read);
       if (inlineMapBytes(inline) <= INLINE_TREE_MAX_BYTES) return inline;
     }
-    if (!declaresBlobStore(await this.version())) {
+    if (!declaresBlobStore(await this.cachedVersion())) {
       return inlineFilesOf(tree, read ?? (await readTreeBytes(tree)));
     }
-    const answer = await this.findMissingBlobs({ blobs: uniqueBlobs(tree), digest: tree.digest });
-    await this.uploadMissing(tree, answer.missing, read);
+    const asked = await this.findMissingBlobs({ blobs: uniqueBlobs(tree), digest: tree.digest });
+    await this.uploadMissing(tree, asked, read);
     return hashMethodFiles(tree);
   }
 
   /**
    * Which of these blobs the organization lacks, and where to upload each —
-   * `POST /v1/blobs/missing`. A blob held is left out, and an empty `missing` means nothing to
-   * upload. An answer whose `missing` is not a list of blobs, each with its upload target, is an
-   * answer the SDK cannot read, thrown as an `ApiResponseError`.
+   * `POST /v1/blobs/missing` — with the answer it was read from, which carries signed links. A
+   * blob held is left out, and an empty `missing` means nothing to upload. An answer whose
+   * `missing` is not a list of blobs, each with its upload target, is an answer the SDK cannot
+   * read, thrown as an `ApiResponseError` holding the answer with its links hidden.
    */
-  private async findMissingBlobs(request: MissingBlobsRequest): Promise<MissingBlobsResult> {
+  private async findMissingBlobs(
+    request: MissingBlobsRequest,
+  ): Promise<{ result: MissingBlobsResult; res: RawResponse }> {
     const endpoint = "blobs/missing";
-    const res = await this.requestProductAnswer("POST", endpoint, request);
+    const res = withLinks(await this.requestProductAnswer("POST", endpoint, request));
     const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
     const missing = answer.missing;
     if (!Array.isArray(missing) || !missing.every(isMissingBlob)) {
@@ -2639,32 +2694,47 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         "a body whose `missing` is not a list of blobs, each with its upload target",
       );
     }
-    return answer as MissingBlobsResult;
+    return { result: answer as MissingBlobsResult, res };
   }
 
   /**
    * Upload each missing blob from the tree's bytes, a few at a time, stopping at the first
-   * failure. A blob the tree does not hold, or holds at another size, is refused before anything
-   * is sent.
+   * failure. A blob the platform asks for that the tree does not hold, or holds at another size,
+   * is the platform's fault, thrown before anything is sent as the `ApiResponseError` of an answer
+   * the SDK cannot read. The bytes the tree reads for a blob are checked against it before they
+   * are sent, since storage keeps a blob under the hash it is named by: bytes of another hash or
+   * size are refused with `RequestArgumentError`, and nothing more is uploaded.
    */
   private async uploadMissing(
     tree: MethodTreeSource,
-    missing: readonly MissingBlob[],
+    asked: { result: MissingBlobsResult; res: RawResponse },
     read: ReadonlyMap<string, Uint8Array> | undefined,
   ): Promise<void> {
+    const missing = asked.result.missing;
     const byBlob = fileByBlob(tree);
     const strangers = missing
       .filter((blob) => byBlob.get(blob.sha256)?.size !== blob.size)
       .map((blob) => blob.sha256);
     if (strangers.length > 0) {
-      throw new RequestArgumentError(
-        `The platform asked for blobs this tree does not hold: ${[...new Set(strangers)].sort().join(", ")}.`,
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/blobs/missing`,
+        asked.res,
+        `a body asking for blobs this tree does not hold: ${[...new Set(strangers)].sort().join(", ")}`,
       );
     }
     await forEachConcurrently(missing, MAX_CONCURRENT_TRANSFERS, async (blob, signal) => {
       const file = byBlob.get(blob.sha256)!;
       const bytes = read?.get(file.path) ?? (await tree.readFile(file.path));
-      await uploadBlob(blob, bytes, { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS, signal });
+      const bytesSha256 = await sha256Hex(bytes);
+      if (bytes.length !== blob.size || bytesSha256 !== blob.sha256) {
+        throw new RequestArgumentError(
+          `The tree read ${bytes.length} bytes hashing to ${bytesSha256} for '${file.path}', which ` +
+            `its listing names as ${blob.size} bytes hashing to ${blob.sha256}, so they were not ` +
+            "uploaded and the method was not saved.",
+        );
+      }
+      await uploadBlob(blob, bytes, { timeoutMs: this.requestTimeoutMs, signal });
     });
   }
 
@@ -2782,7 +2852,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     const endpoint = `${methodPath(methodId, "getMethodVersion")}/versions/${version}`;
     const res = await this.requestProductAnswer("GET", endpoint, undefined);
-    return this.readSavedTree<MethodVersion>("GET", endpoint, res, "a published version");
+    return this.readSavedTree<MethodVersion>(
+      "GET",
+      endpoint,
+      withLinks(res),
+      "a published version",
+    );
   }
 
   /**
@@ -3570,14 +3645,18 @@ const METHOD_REF_FETCH_TIMEOUT_MS = 180_000; // 3 min — covers the server's cl
  *
  * - **`resources`** make the request *body* as large as the runner's limits allow,
  *   about 13 MiB of base64 by default, and the whole upload is charged against
- *   this budget. They get the execute ceiling `start` gives a request carrying
- *   them, and `validate` carries them under by default, so the same bundle and
- *   files never time out on one route yet go through on another.
+ *   this budget. They get the client's request ceiling (`requestTimeoutMs`),
+ *   which `start` gives a request carrying them and `validate` carries them under
+ *   by default, so the same bundle and files never time out on one route yet go
+ *   through on another.
  * - **A `method_ref`** may make the server clone a repository first, which gets
  *   the fetch-sized budget.
  */
-function crateRequestTimeoutMs(request: CrateRequestBase): number | undefined {
-  if (hasBundleResources(request.resources)) return DEFAULT_REQUEST_TIMEOUT_MS;
+function crateRequestTimeoutMs(
+  request: CrateRequestBase,
+  executeCeilingMs: number,
+): number | undefined {
+  if (hasBundleResources(request.resources)) return executeCeilingMs;
   return nonEmptyString(request.method_ref) !== undefined ? METHOD_REF_FETCH_TIMEOUT_MS : undefined;
 }
 
@@ -3864,10 +3943,18 @@ function isUndecodableBody(error: ApiUnreachableError): boolean {
 }
 
 /** Whether one entry of a `POST /v1/blobs/missing` answer is a blob with its upload target. */
+/** A SHA-256 as the platform names a blob: 64 lowercase hexadecimal digits. */
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/** `res`, marked as an answer whose body carries signed links (`RawResponse.carriesLinks`). */
+function withLinks(res: RawResponse): RawResponse {
+  return { ...res, carriesLinks: true };
+}
+
 function isMissingBlob(entry: unknown): entry is MissingBlob {
   if (!isPlainObject(entry)) return false;
   const { sha256, size, upload } = entry;
-  if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) return false;
+  if (typeof sha256 !== "string" || !SHA256_HEX.test(sha256)) return false;
   if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) return false;
   if (!isPlainObject(upload)) return false;
   if (typeof upload.method !== "string" || typeof upload.url !== "string") return false;
@@ -3890,6 +3977,9 @@ function savedFilesFault(files: unknown): string | null {
       if (typeof file[member] !== "string") {
         return `holds an entry whose \`${member}\` is not a string, at [${index}]`;
       }
+    }
+    if (!SHA256_HEX.test(file.sha256 as string)) {
+      return `holds an entry whose \`sha256\` is not 64 lowercase hex digits, at [${index}]`;
     }
     const size = file.size;
     if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {

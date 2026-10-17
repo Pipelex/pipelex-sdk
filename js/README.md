@@ -42,6 +42,7 @@ See [`docs/cli.md`](./docs/cli.md) for every flag, the output, the exit codes an
 import { PipelexApiClient } from "@pipelex/sdk";
 
 // Base URL + key from PIPELEX_BASE_URL / PIPELEX_API_KEY, or pass them explicitly.
+// `requestTimeoutMs` sets the client's request ceiling, twenty minutes by default.
 const client = new PipelexApiClient({
   baseUrl: "https://api.pipelex.com",
   apiKey: process.env.PIPELEX_API_KEY,

@@ -251,9 +251,12 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
     """A response that DID come back from the API and that the SDK cannot hand back as a result: a
     non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read — a body
     that is not UTF-8 or not JSON, an empty one where the route answers JSON, or JSON that is not the
-    answer the route returns. The second carries the answer's status and raw text, no problem member
-    but the `X-Request-ID` header as `request_id`, the parse failure as `__cause__`, and the verdict the
-    fallback gives a 2xx: `runtime`, not retryable.
+    answer the route returns, or one asking for blobs the tree being saved does not hold. The second
+    carries the answer's status and raw text, no problem member but the `X-Request-ID` header as
+    `request_id`, the parse failure as `__cause__`, and the verdict the fallback gives a 2xx: `runtime`,
+    not retryable. An answer holding signed links (a method's listing, the upload targets of
+    `POST /v1/blobs/missing`) has every link redacted in `response_body`, and chains only a copy of a
+    pydantic refusal whose values are redacted the same way, never a failure that holds the body.
 
     Every route of `PipelexAPIClient` raises it on a non-2xx answer and on a 2xx it cannot read: the
     protocol routes it inherits from `mthds` (`execute`, `start`, `validate`, `models`, `version`), the
@@ -893,8 +896,9 @@ class MethodFileTransferError(PipelexRequestError):
     downloaded through its link, or its bytes are not the file the listing names. `operation` says which
     way the file was moving, `code` why it failed, `sha256` which bytes (`None` for an upload that got no
     answer, which the standard's client does not attribute to a blob), `path` the tree path when one is
-    known, and `status` storage's HTTP status when it answered. Neither the message nor any member
-    carries the link, whose query is a bearer credential.
+    known, and `status` storage's HTTP status when it answered. Neither the message, nor any member, nor
+    a cause or a context carries the link, whose query is a bearer credential: httpx's error, which holds
+    the request, is never chained.
 
     Its verdict follows `code`, and its domain is always `runtime`, since neither the call nor the
     environment is at fault: `unreachable`, `storage_error` and `mismatch` are retryable, since the same

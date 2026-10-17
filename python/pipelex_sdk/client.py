@@ -25,8 +25,9 @@ import os
 import re
 import secrets
 import shutil
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
+from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, TypeVar, cast
 from urllib.parse import quote, urlencode, urlparse, urlsplit
@@ -43,7 +44,7 @@ from mthds.runners.api.exceptions import BlobUploadError as _MthdsBlobUploadErro
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
 from mthds.runners.api.problem import ProblemDocument
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
-from pydantic_core import to_json
+from pydantic_core import InitErrorDetails, to_json
 from typing_extensions import override
 
 from pipelex_sdk.artifact_models import (
@@ -145,10 +146,10 @@ from pipelex_sdk.validation_models import PipelexValidationResultAdapter, Valida
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Sequence
     from contextlib import AbstractAsyncContextManager
-    from pathlib import Path
 
     from mthds.method_tree.file_entry import FileEntry, MethodFiles
-    from mthds.protocol.models import ModelCategory, ModelDeck, ValidationDiagnostic, VersionInfo
+    from mthds.method_tree.models import TreeFile
+    from mthds.protocol.models import BlobRef, MissingBlob, MissingBlobsResult, ModelCategory, ModelDeck, ValidationDiagnostic, VersionInfo
     from mthds.protocol.pipe_output import VariableMultiplicity
     from mthds.protocol.pipeline_inputs import PipelineInputs
     from mthds.protocol.stuff import StuffType
@@ -261,6 +262,18 @@ class _AnswerSeen:
 # (`_reading_inherited_answer`). A context variable keeps the record to the task that asked, as above.
 _INHERITED_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_INHERITED_ANSWER", default=None)
 
+# Where the `missing_blobs` override records the answer of `POST /v1/blobs/missing` while the base prepares a
+# tree (`_prepare_files`), so the `_upload_missing` override can report an answer asking for blobs the tree
+# does not hold as an answer the SDK cannot read, carrying that answer's status and headers.
+_MISSING_BLOBS_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_MISSING_BLOBS_ANSWER", default=None)
+
+# What stands in for a signed link in an error: its query is a bearer credential, valid until it expires.
+_REDACTED = "[redacted]"
+
+# The query of a link in text that is not JSON, or in a member other than `url`: everything from `?` to the
+# next space or quote, dropped with its signature, as `@pipelex/sdk`'s `redactSignedLinks` drops it.
+_LINK_QUERY = re.compile(r"(\bhttps?://[^\s\"'<>?#]*)\?[^\s\"'<>]*", re.IGNORECASE)
+
 # What reads a 2xx answer into the type a route returns: a model's `model_validate`, an adapter's
 # `validate_python`, or a function of the route's own.
 _AnswerT = TypeVar("_AnswerT")
@@ -294,6 +307,94 @@ def _refuses_a_non_object(failure: ValidationError) -> bool:
     union's `union_tag_not_found`), so it is not one.
     """
     return any(error["loc"] == () and error["type"] in _NOT_AN_OBJECT_ERROR_TYPES for error in failure.errors(include_url=False))
+
+
+def _unreadable_what(failure: json.JSONDecodeError | UnicodeDecodeError | ValidationError, response: httpx.Response) -> str:
+    """What a 2xx answer that failed to parse is, as `_unreadable_answer`'s message names it.
+
+    A body that is not UTF-8, a body that is not JSON, an empty body where JSON was expected, a body
+    that is not an object where the route answers one (`null`, a number, a string, a list), worded as
+    `@pipelex/sdk` words it, or a body that is not the answer the route returns: an object of the wrong
+    shape, or anything but a list where the route answers a list.
+    """
+    what: str
+    match failure:
+        case UnicodeDecodeError():
+            what = "a body that is not UTF-8"
+        case json.JSONDecodeError():
+            what = "a body that is not JSON" if response.content else "an empty body where JSON was expected"
+        case ValidationError():
+            what = "a body that is not an object" if _refuses_a_non_object(failure) else "a body that is not the answer the route returns"
+    return what
+
+
+def _raise_with_cause_alone(error: BaseException, *, cause: BaseException | None) -> NoReturn:
+    """Raise `error` with `cause` as its cause and no context, so nothing else it replaces travels with it.
+
+    Raised while another exception is handled, an exception takes that one as its `__context__`, even
+    `from None`, which only hides it from a traceback. An answer carrying signed links fails to parse
+    with errors that hold it (a pydantic `ValidationError` holds and prints the values it refused, a
+    `JSONDecodeError` the whole document), so the error raised in its stead reaches none of them: the
+    context is cleared as it propagates, and the cause is only ever a redacted copy.
+    """
+    error.__cause__ = cause
+    try:
+        raise error
+    finally:
+        error.__context__ = None
+
+
+def _validation_error_without_links(failure: json.JSONDecodeError | UnicodeDecodeError | ValidationError) -> ValidationError | None:
+    """A copy of a pydantic refusal of an answer carrying signed links, every link in its values redacted, to chain in its stead.
+
+    The copy keeps each error's type, location and context, so a caller reading which member was
+    refused reads it as before, while each refused value has its `url` members and its links' queries
+    redacted. A body that is not UTF-8 or not JSON has no such copy: its failure holds the raw body.
+    Neither has a refusal that holds a validator's own exception, whose message may quote anything, or
+    one of a validator's own error types, which pydantic cannot rebuild by name.
+    """
+    if not isinstance(failure, ValidationError):
+        return None
+    details: list[InitErrorDetails] = []
+    for error in failure.errors(include_url=False):
+        context = error.get("ctx")
+        if context is not None and "error" in context:
+            return None
+        detail: InitErrorDetails = {"type": error["type"], "loc": error["loc"], "input": _with_links_redacted(error["input"])}
+        if context is not None:
+            detail["ctx"] = context
+        details.append(detail)
+    try:
+        return ValidationError.from_exception_data(failure.title, details)
+    except KeyError:
+        # "Invalid error type": a validator's own `PydanticCustomError`, known by no name pydantic holds.
+        return None
+
+
+def _redact_signed_links(text: str) -> str:
+    """`text` with every signed link redacted, `@pipelex/sdk`'s `redactSignedLinks`.
+
+    A JSON body has every `url` member replaced, at any depth, and is written back compactly; then, in
+    any text, the query of every `http(s)` link is replaced, which catches a link in another member or
+    in a body that is not JSON. A link's query is a bearer credential, so no error carries one.
+    """
+    redacted = text
+    with suppress(json.JSONDecodeError, RecursionError):
+        # Not JSON, or nested too deep to walk: the link pattern below still finds every query.
+        redacted = json.dumps(_with_links_redacted(json.loads(text)), separators=(",", ":"), ensure_ascii=False)
+    return _LINK_QUERY.sub(rf"\1?{_REDACTED}", redacted)
+
+
+def _with_links_redacted(value: object) -> object:
+    """A decoded JSON value with every `url` member of every object in it replaced, and every link's query in every string."""
+    if isinstance(value, dict):
+        members = cast("dict[str, object]", value)
+        return {key: _REDACTED if key == "url" else _with_links_redacted(member) for key, member in members.items()}
+    if isinstance(value, list):
+        return [_with_links_redacted(item) for item in cast("list[object]", value)]
+    if isinstance(value, str):
+        return _LINK_QUERY.sub(rf"\1?{_REDACTED}", value)
+    return value
 
 
 _PIPELEX_API_KEY_ENV = "PIPELEX_API_KEY"
@@ -565,6 +666,7 @@ class PipelexAPIClient(MthdsAPIClient):
         read: Callable[[Any], _AnswerT],
         body: object | None = None,
         request_timeout: float | None = None,
+        carries_links: bool = False,
     ) -> _AnswerT:
         """Issue a Pipelex-product request (`/v1/me`, `/v1/methods`, `/v1/billing/*`, …)
         and read its JSON body with `read`, mapping a non-2xx response to the typed `ApiResponseError`
@@ -575,9 +677,10 @@ class PipelexAPIClient(MthdsAPIClient):
         `_read_answer`). Uses the management-call timeout, not the blocking ceiling;
         `request_timeout` overrides it for the crate calls whose `method_ref` closure
         the server may have to fetch first (see `_METHOD_REF_FETCH_TIMEOUT_SECONDS`).
+        `carries_links` marks an answer holding signed links, which an error reports redacted.
         """
         response = await self._product_answer(method, endpoint, body=body, request_timeout=request_timeout)
-        return self._read_v1_answer(read, method=method, endpoint=endpoint, response=response)
+        return self._read_v1_answer(read, method=method, endpoint=endpoint, response=response, carries_links=carries_links)
 
     async def _request_product_without_answer(self, method: str, endpoint: str, *, body: object | None = None) -> None:
         """Issue a Pipelex-product request whose route answers no content (`DELETE` of a key,
@@ -600,11 +703,24 @@ class PipelexAPIClient(MthdsAPIClient):
             self._raise_api_response_error(method=method, endpoint=endpoint, response=response)
         return response
 
-    def _read_v1_answer(self, read: Callable[[Any], _AnswerT], *, method: str, endpoint: str, response: httpx.Response) -> _AnswerT:
+    def _read_v1_answer(
+        self, read: Callable[[Any], _AnswerT], *, method: str, endpoint: str, response: httpx.Response, carries_links: bool = False
+    ) -> _AnswerT:
         """Read a `/v1` route's 2xx answer, `endpoint` being the endpoint below `/v1`, query included; see `_read_answer`."""
-        return self._read_answer(read, method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response)
+        return self._read_answer(
+            read, method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response, carries_links=carries_links
+        )
 
-    def _read_answer(self, read: Callable[[Any], _AnswerT], *, method: str, path: str, request_url: str, response: httpx.Response) -> _AnswerT:
+    def _read_answer(
+        self,
+        read: Callable[[Any], _AnswerT],
+        *,
+        method: str,
+        path: str,
+        request_url: str,
+        response: httpx.Response,
+        carries_links: bool = False,
+    ) -> _AnswerT:
         """Read a 2xx answer's JSON body into the type its route returns — the one place a success body is
         parsed, but for the inherited protocol routes, which parse their own (`_reading_inherited_answer`).
 
@@ -614,12 +730,20 @@ class PipelexAPIClient(MthdsAPIClient):
         refuses with a pydantic `ValidationError`, are an answer the SDK cannot read, raised as the
         `ApiResponseError` `_unreadable_answer` builds, the parse failure as its `__cause__`.
 
+        An answer that `carries_links` (a method's listing, whose every file holds a signed link) is
+        reported with its links redacted, and the parse failure itself is chained neither as the cause
+        nor as the context, since a pydantic `ValidationError` holds and prints the values it refused, a
+        link among them, a `JSONDecodeError` holds the whole document, and a traceback prints the chain:
+        the cause is a copy of a `ValidationError` with every link in its values redacted, and nothing
+        for the other failures.
+
         Args:
             read: What turns the decoded body into the route's answer.
             method: The HTTP method of the request, for the message (`GET`).
             path: The path the message names (`/v1/me`, or `/health` at the origin).
             request_url: The URL the request was sent to.
             response: The API's 2xx answer.
+            carries_links: Whether the answer holds signed links, which no error may carry.
 
         Raises:
             ApiResponseError: The answer cannot be read; its verdict is `runtime`, not retryable.
@@ -627,16 +751,26 @@ class PipelexAPIClient(MthdsAPIClient):
         try:
             return read(response.json())
         except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
-            raise self._unreadable_answer(method=method, path=path, request_url=request_url, response=response, failure=exc) from exc
+            error = self._unreadable_answer(
+                method=method,
+                path=path,
+                request_url=request_url,
+                response=response,
+                what=_unreadable_what(exc, response),
+                carries_links=carries_links,
+            )
+            if carries_links:
+                _raise_with_cause_alone(error, cause=_validation_error_without_links(exc))
+            raise error from exc
 
     @contextmanager
-    def _reading_inherited_answer(self, *, method: str, endpoint: str) -> Generator[None, None, None]:
+    def _reading_inherited_answer(self, *, method: str, endpoint: str, carries_links: bool = False) -> Generator[_AnswerSeen, None, None]:
         """Run an inherited protocol route so that a 2xx answer it cannot read raises this SDK's
         `ApiResponseError`, as every other route's does.
 
-        The base's `execute`, `start`, `models` and `version` parse the answer `_send` handed them
-        themselves, with `response.json()` and a pydantic model, so a body that is not UTF-8, not JSON
-        or not the route's object raises a bare `UnicodeDecodeError`, `json.JSONDecodeError` or
+        The base's `execute`, `start`, `models`, `version` and `missing_blobs` parse the answer `_send`
+        handed them themselves, with `response.json()` and a pydantic model, so a body that is not UTF-8,
+        not JSON or not the route's object raises a bare `UnicodeDecodeError`, `json.JSONDecodeError` or
         `ValidationError` there. Inside this block `_send` records the answer it receives, and such a
         failure met after a 2xx answer is raised again as the error `_unreadable_answer` builds, the
         parse failure as its `__cause__`. One met before any answer, while the base built the request
@@ -649,58 +783,57 @@ class PipelexAPIClient(MthdsAPIClient):
         Args:
             method: The HTTP method of the route's request, for the message (`POST`).
             endpoint: The endpoint below `/v1`, query included, exactly as the base sends it.
+            carries_links: Whether the answer holds signed links (`blobs/missing`'s upload targets): its
+                links are redacted, and the parse failure is chained redacted or not at all, as
+                `_read_answer` does.
+
+        Yields:
+            The record of the answer the block receives, which holds it once the route has sent.
         """
         seen = _INHERITED_ANSWER.get() or _AnswerSeen()
         token = _INHERITED_ANSWER.set(seen)
         try:
-            yield
+            yield seen
         except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
             response = seen.response
             if response is None or not response.is_success:
                 raise
-            raise self._unreadable_answer(
-                method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response, failure=exc
-            ) from exc
+            error = self._unreadable_answer(
+                method=method,
+                path=f"/{_API_PREFIX}/{endpoint}",
+                request_url=self._url(endpoint),
+                response=response,
+                what=_unreadable_what(exc, response),
+                carries_links=carries_links,
+            )
+            if carries_links:
+                _raise_with_cause_alone(error, cause=_validation_error_without_links(exc))
+            raise error from exc
         finally:
             _INHERITED_ANSWER.reset(token)
 
     def _unreadable_answer(
-        self,
-        *,
-        method: str,
-        path: str,
-        request_url: str,
-        response: httpx.Response,
-        failure: json.JSONDecodeError | UnicodeDecodeError | ValidationError,
+        self, *, method: str, path: str, request_url: str, response: httpx.Response, what: str, carries_links: bool = False
     ) -> ApiResponseError:
         """The `ApiResponseError` of a 2xx answer the SDK cannot read, `@pipelex/sdk`'s `unreadableAnswer`.
 
-        Its message is `API <method> <path> answered <status> with <what>`, `what` naming the failure: a
-        body that is not UTF-8, a body that is not JSON, an empty body where JSON was expected, a body
-        that is not an object where the route answers one (`null`, a number, a string, a list), worded
-        as `@pipelex/sdk` words it, or a body that is not the answer the route returns: an object of the
-        wrong shape, or anything but a list where the route answers a list. It carries the answer's
-        status, its raw text as `response_body`, its headers, and the `X-Request-ID` header as
-        `request_id`, but no problem member, since a success body is no problem document; its verdict is
-        the fallback's for a status no refusal carries, `runtime` and not retryable, since no change to
-        the call fixes the answer. Inside `_creating_run`, the run may have started: the server accepted
-        the request. The caller raises it `from` the failure, which becomes its `__cause__`.
+        Its message is `API <method> <path> answered <status> with <what>`, `what` naming why the answer
+        cannot be read: the parse failure as `_unreadable_what` words it, or a fault of the answer's
+        meaning, such as `blobs/missing` asking for blobs the tree does not hold. It carries the answer's
+        status, its raw text as `response_body`, its links redacted when it `carries_links`, its headers,
+        and the `X-Request-ID` header as `request_id`, but no problem member, since a success body is no
+        problem document; its verdict is the fallback's for a status no refusal carries, `runtime` and
+        not retryable, since no change to the call fixes the answer. Inside `_creating_run`, the run may
+        have started: the server accepted the request. The caller raises it `from` the failure, which
+        becomes its `__cause__`, or, for an answer that carries links, with a redacted copy of it or none.
         """
-        what: str
-        match failure:
-            case UnicodeDecodeError():
-                what = "a body that is not UTF-8"
-            case json.JSONDecodeError():
-                what = "a body that is not JSON" if response.content else "an empty body where JSON was expected"
-            case ValidationError():
-                what = "a body that is not an object" if _refuses_a_non_object(failure) else "a body that is not the answer the route returns"
         request_id = response.headers.get(_REQUEST_ID_HEADER)
         return ApiResponseError(
             f"API {method} {path} answered {response.status_code} with {what}",
             api_url=self.base_url,
             status=response.status_code,
             status_text=response.reason_phrase,
-            response_body=response.text,
+            response_body=_redact_signed_links(response.text) if carries_links else response.text,
             headers=dict(response.headers),
             request_url=request_url,
             request_id=request_id or None,
@@ -1538,6 +1671,8 @@ class PipelexAPIClient(MthdsAPIClient):
     async def start_and_wait(
         self,
         pipe_code: str | None = None,
+        *,
+        files: MethodFiles | None = None,
         mthds_contents: list[str] | None = None,
         inputs: PipelineInputs | WorkingMemoryAbstract[StuffType] | None = None,
         output_name: str | None = None,
@@ -1545,8 +1680,6 @@ class PipelexAPIClient(MthdsAPIClient):
         dynamic_output_concept_ref: str | None = None,
         extra: dict[str, Any] | None = None,
         wait_options: WaitForResultOptions | None = None,
-        *,
-        files: MethodFiles | None = None,
         method_ref: str | None = None,
         method_id: str | None = None,
         artifacts: Sequence[RunArtifact] | None = None,
@@ -1566,6 +1699,9 @@ class PipelexAPIClient(MthdsAPIClient):
         field a compliant bare runner may omit). Such a runner raises `RunLifecycleUnavailableError`
         from `start`, BEFORE any run is created, so the blocking fallback cannot double-run; the
         negative is cached so later calls skip the durable attempt.
+
+        Every argument but `pipe_code` is keyword-only, the run sources (`files`, `mthds_contents`,
+        `method_ref`, `method_id`) among them, so no positional call reads one source as another.
 
         The method's `files` tree and the method selectors — `method_ref` and `method_id`,
         documented on `execute` — are forwarded on BOTH paths: a `method_ref` run must run the same fetched package on the
@@ -1806,9 +1942,11 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             ApiResponseError: `404` `not_found` for an unknown or foreign-org method; `409`
                 `method_being_deleted` while its erasure runs; a `409` whose verdict is `runtime` for a
-                method whose draft names a tree the platform holds no record of.
+                method whose draft names a tree the platform holds no record of; a `200` the SDK cannot
+                read, a listing whose `sha256` is not 64 lowercase hex digits among them, reported with
+                every link redacted.
         """
-        return await self._request_product("GET", _method_path(method_id, call="get_method"), read=MethodDetail.model_validate)
+        return await self._request_product("GET", _method_path(method_id, call="get_method"), read=MethodDetail.model_validate, carries_links=True)
 
     async def create_method(self, write_input: MethodWriteInput) -> MethodData:
         """Create a method — `POST /v1/methods`.
@@ -1928,39 +2066,107 @@ class PipelexAPIClient(MthdsAPIClient):
 
         An upload target's refusal becomes a `MethodFileTransferError` whose message and members name
         the blob and the status, never the target's link or storage's error body, which can echo the
-        signed request: so the standard's error, which quotes that body, is not kept as the cause. The
-        API's own refusals and failures already carry a verdict, and the standard client's bare
-        refusals become a `RequestArgumentError`.
+        signed request: so neither the standard's error, which quotes that body, nor httpx's, which holds
+        the request, is kept as the cause or the context. The API's own refusals and failures already
+        carry a verdict, and the standard client's bare refusals become a `RequestArgumentError`.
         """
+        transfer_error: MethodFileTransferError
         try:
             return await prepare()
         except _MthdsBlobUploadError as exc:
             upload_host = urlsplit(exc.upload_url).hostname or "storage"
             status_line = f"{exc.status} {exc.status_text}".rstrip()
             msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed ({status_line}), so the method was not saved."
-            raise MethodFileTransferError(
+            transfer_error = MethodFileTransferError(
                 msg,
                 operation=MethodFileTransferOperation.UPLOAD,
                 code=method_file_transfer_code_of_status(exc.status),
                 sha256=exc.sha256,
                 status=exc.status,
-            ) from None
-        except httpx.TransportError as exc:
-            # The API's own requests go through `_send`, which raises `ApiUnreachableError`, so a transport
-            # failure reaching here is an upload's, sent straight to storage. httpx's error holds the request,
-            # whose URL is the signed target, so only its class name travels, and it is not kept as the cause.
+            )
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            # The API's own requests go through `_send`, which raises `ApiUnreachableError`, so an httpx
+            # failure reaching here is an upload's, sent straight to storage: no answer, or one whose body
+            # could not be decoded. httpx's error holds the request, whose URL is the signed target, so
+            # only its class name travels.
             msg = (
                 f"A file the organization lacks could not be uploaded to storage: no answer came back ({type(exc).__name__}), "
                 "so the method was not saved."
             )
-            raise MethodFileTransferError(
+            transfer_error = MethodFileTransferError(
                 msg, operation=MethodFileTransferOperation.UPLOAD, code=MethodFileTransferCode.UNREACHABLE, sha256=None
-            ) from None
+            )
         except PipelineRequestError as exc:
             refined = _with_verdict(exc)
             if refined is exc:
                 raise
             raise refined from exc
+        # Raised outside the handler, so the failure it replaces is not even its context.
+        raise transfer_error
+
+    @override
+    async def _prepare_files(
+        self, *, tree_files: list[TreeFile], digest: str, read: Callable[[TreeFile], bytes], inline_max_bytes: int
+    ) -> dict[str, FileEntry]:
+        """Prepare a tree's files as the base does, keeping the answer of `POST /v1/blobs/missing` for `_upload_missing`.
+
+        The base's `prepare_files` and `prepare_files_from_contents` both prepare through here, so a
+        caller of either reads an answer asking for blobs the tree does not hold as every save does.
+        """
+        token = _MISSING_BLOBS_ANSWER.set(_AnswerSeen())
+        try:
+            return await super()._prepare_files(tree_files=tree_files, digest=digest, read=read, inline_max_bytes=inline_max_bytes)
+        finally:
+            _MISSING_BLOBS_ANSWER.reset(token)
+
+    @override
+    async def missing_blobs(self, blobs: Sequence[BlobRef], digest: str | None = None) -> MissingBlobsResult:
+        """Which of these blobs the platform lacks, and where to upload each — `POST /v1/blobs/missing`.
+
+        The base's route, so that a `200` whose body is not JSON or not the route's answer raises this
+        SDK's `ApiResponseError` of an answer it cannot read, as every other route's does: its upload
+        targets are signed links, so the error carries the body redacted and no parse failure.
+
+        Raises:
+            ApiResponseError: The platform answers non-2xx, or a 2xx this SDK cannot read.
+            ApiUnreachableError: No answer came back.
+        """
+        with self._reading_inherited_answer(method="POST", endpoint="blobs/missing", carries_links=True) as seen:
+            answer = await super().missing_blobs(blobs, digest=digest)
+        preparing = _MISSING_BLOBS_ANSWER.get()
+        if preparing is not None:
+            preparing.response = seen.response
+        return answer
+
+    @override
+    async def _upload_missing(self, missing: list[MissingBlob], *, file_of_blob: dict[str, TreeFile], read: Callable[[TreeFile], bytes]) -> None:
+        """Upload what `missing_blobs` asked for as the base does, once its answer asks only for blobs the tree holds.
+
+        A blob is named by its hash and its size, so one the tree holds under the same hash at another
+        size is a blob the tree does not hold. An answer asking for one is the platform's fault, not the
+        caller's: it is raised as an answer this SDK cannot read, carrying that answer redacted, rather
+        than the base's bare refusal, and nothing is uploaded.
+
+        Raises:
+            ApiResponseError: The answer asks for a blob the tree does not hold; its verdict is `runtime`.
+        """
+        strangers: set[str] = set()
+        for blob in missing:
+            tree_file = file_of_blob.get(blob.sha256)
+            if tree_file is None or tree_file.size != blob.size:
+                strangers.add(blob.sha256)
+        preparing = _MISSING_BLOBS_ANSWER.get()
+        response = preparing.response if preparing is not None else None
+        if strangers and response is not None:
+            raise self._unreadable_answer(
+                method="POST",
+                path=f"/{_API_PREFIX}/blobs/missing",
+                request_url=self._url("blobs/missing"),
+                response=response,
+                what=f"a body asking for blobs this tree does not hold: {', '.join(sorted(strangers))}",
+                carries_links=True,
+            )
+        await super()._upload_missing(missing, file_of_blob=file_of_blob, read=read)
 
     async def method_tree_limits(self) -> TreeLimits:
         """The limits the deployment holds a method's tree to, as `mthds`'s lister takes them — `GET /v1/version`.
@@ -2005,9 +2211,15 @@ class PipelexAPIClient(MthdsAPIClient):
         against the listing: its size and its SHA-256 must be the ones listed, so what lands on disk is
         the tree the method's digest names. The files are written into a fresh hidden directory beside
         `destination`, which takes the name `destination` only once every file is written: an
-        interrupted or failed write never leaves a partial tree under that name. `destination` must not
-        exist, or be an empty directory; a directory already holding files is refused rather than
-        written into or replaced. An empty listing writes an empty directory.
+        interrupted, failed or cancelled write never leaves a partial tree under that name, and its
+        hidden directory is removed. `destination` is made absolute and normalized first, without
+        following a symbolic link, so a relative name, `Path(".")` included, names the directory it
+        means; it must not exist, or be an empty directory, and a directory already holding files is
+        refused rather than written into or replaced. An empty listing writes an empty directory.
+
+        A bounded number of files move at a time, each holding its turn until its bytes are on disk, and
+        the first failure stops the write: the downloads still running are cancelled. The checks on
+        disk, the directories, the move into place and the cleanup run off the event loop.
 
         The links expire about fifteen minutes after the read that served them: write the tree soon
         after reading the method, and read it again for fresh links when a download is refused.
@@ -2017,39 +2229,59 @@ class PipelexAPIClient(MthdsAPIClient):
             destination: The directory the tree is written as.
 
         Raises:
-            RequestArgumentError: `destination` exists and is not an empty directory, or the listing
-                holds a path that is not a tree path, the same path twice, or paths that collide once
-                case-folded or where one names a directory of another; nothing is downloaded.
+            RequestArgumentError: `destination` exists and is not an empty directory, or is the root of
+                a filesystem, or the listing holds a path that is not a tree path, the same path twice,
+                or paths that collide once case-folded or where one names a directory of another;
+                nothing is downloaded.
             MethodFileTransferError: A file could not be downloaded, or its bytes are not the file
                 listed; nothing is left under `destination`.
         """
         _refuse_unwritable_listing(files)
-        _refuse_occupied_destination(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        staging = destination.parent / f".{destination.name}.{secrets.token_hex(8)}.writing"
-        staging.mkdir()
+        target = Path(os.path.normpath(destination.absolute()))
+        if not target.name:
+            msg = f"Cannot write a method tree at '{destination}': it is the root of a filesystem, and a tree is written as a directory of its own."
+            raise RequestArgumentError(msg)
+        staging = await asyncio.to_thread(_make_staging_directory, target)
         is_in_place = False
         try:
-            slots = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
             async with self._make_download_client() as download_client:
-
-                async def download_one(saved_file: SavedMethodFile) -> None:
-                    async with slots:
-                        data = await self._download_method_file(download_client, saved_file=saved_file)
-                    await asyncio.to_thread(_write_new_file, staging.joinpath(*saved_file.path.split("/")), data)
-
-                outcomes = await asyncio.gather(*(download_one(saved_file) for saved_file in files), return_exceptions=True)
-            for outcome in outcomes:
-                if isinstance(outcome, BaseException):
-                    raise outcome
-            if destination.is_dir():
-                # `rmdir` removes only an empty directory, so a file written there meanwhile is never lost.
-                destination.rmdir()
-            staging.rename(destination)
+                await self._download_tree_into(download_client, files=files, staging=staging)
+            await _run_to_end_in_thread(_move_into_place, staging, target)
             is_in_place = True
         finally:
             if not is_in_place:
-                shutil.rmtree(staging, ignore_errors=True)
+                # Shielded, so a cancellation arriving now still leaves no hidden directory behind.
+                await asyncio.shield(asyncio.to_thread(shutil.rmtree, staging, ignore_errors=True))
+
+    async def _download_tree_into(self, download_client: httpx.AsyncClient, *, files: Sequence[SavedMethodFile], staging: Path) -> None:
+        """Download every file of a listing into `staging`, a bounded number at a time, stopping at the first failure.
+
+        A file holds its slot from its request until its bytes are written, so no more than
+        `_MAX_CONCURRENT_DOWNLOADS` files are ever held in memory. At the first failure the downloads
+        still running are cancelled and awaited, a write in progress running to its end, so nothing
+        writes into `staging` once this returns; the first failure in listing order among those met is
+        then raised.
+        """
+        slots = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
+
+        async def download_one(saved_file: SavedMethodFile) -> None:
+            async with slots:
+                data = await self._download_method_file(download_client, saved_file=saved_file)
+                await _run_to_end_in_thread(_write_new_file, staging.joinpath(*saved_file.path.split("/")), data)
+
+        tasks = [asyncio.create_task(download_one(saved_file)) for saved_file in files]
+        if not tasks:
+            return
+        try:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks:
+            failure = None if task.cancelled() else task.exception()
+            if failure is not None:
+                raise failure
 
     def _make_download_client(self) -> httpx.AsyncClient:
         """The HTTP client a saved method's files are downloaded through, apart from the API client: no default header, no auth, no event hook.
@@ -2062,43 +2294,36 @@ class PipelexAPIClient(MthdsAPIClient):
     async def _download_method_file(self, download_client: httpx.AsyncClient, *, saved_file: SavedMethodFile) -> bytes:
         """Download one file of a listing and check its bytes against it, reading no more than its listed size and one byte.
 
+        The whole exchange, its body included, is bounded by `request_timeout_seconds`, as each of
+        httpx's phases is: a body that stalls after its headers arrived times out as surely as a
+        server that never answers.
+
         Raises:
-            MethodFileTransferError: Storage gave no answer or refused the request, or the bytes are not
-                the file listed. Neither the message nor a member carries the link.
+            MethodFileTransferError: Storage gave no answer in time, refused the request, or sent a body
+                httpx cannot decode, or the bytes are not the file listed. Neither the message, nor a
+                member, nor a cause or context carries the link.
         """
         host = urlsplit(saved_file.url).hostname or "storage"
+        failure_name: str | None = None
+        received = bytearray()
         try:
-            async with download_client.stream("GET", saved_file.url, timeout=self.request_timeout_seconds) as response:
-                if not response.is_success:
-                    status_line = f"{response.status_code} {response.reason_phrase}".rstrip()
-                    msg = (
-                        f"Downloading '{saved_file.path}' from {host} failed ({status_line}). A refused link may have expired: "
-                        "read the method again for fresh links."
-                    )
-                    raise MethodFileTransferError(
-                        msg,
-                        operation=MethodFileTransferOperation.DOWNLOAD,
-                        code=method_file_transfer_code_of_status(response.status_code),
-                        sha256=saved_file.sha256,
-                        path=saved_file.path,
-                        status=response.status_code,
-                    )
-                received = bytearray()
-                async for chunk in response.aiter_bytes():
-                    received.extend(chunk)
-                    if len(received) > saved_file.size:
-                        break
-        except httpx.TransportError as exc:
-            # httpx's error holds the request, whose URL is the signed link, so only its class name travels,
-            # and it is not kept as the cause.
-            msg = f"Downloading '{saved_file.path}' from {host} failed: no answer came back ({type(exc).__name__})."
+            async with asyncio.timeout(self.request_timeout_seconds):
+                received = await self._received_bytes(download_client, saved_file=saved_file, host=host)
+        except TimeoutError:
+            failure_name = "TimeoutError"
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            # httpx's error holds the request, whose URL is the signed link, so only its class name travels.
+            failure_name = type(exc).__name__
+        if failure_name is not None:
+            # Raised outside the handler, so httpx's error is not even its context.
+            msg = f"Downloading '{saved_file.path}' from {host} failed: no answer came back ({failure_name})."
             raise MethodFileTransferError(
                 msg,
                 operation=MethodFileTransferOperation.DOWNLOAD,
                 code=MethodFileTransferCode.UNREACHABLE,
                 sha256=saved_file.sha256,
                 path=saved_file.path,
-            ) from None
+            )
         data = bytes(received)
         data_sha256 = await asyncio.to_thread(sha256_hex, data)
         if len(data) != saved_file.size or data_sha256 != saved_file.sha256:
@@ -2115,6 +2340,34 @@ class PipelexAPIClient(MthdsAPIClient):
                 path=saved_file.path,
             )
         return data
+
+    async def _received_bytes(self, download_client: httpx.AsyncClient, *, saved_file: SavedMethodFile, host: str) -> bytearray:
+        """Send one file's download and read its body, stopping once it passes the listed size.
+
+        Raises:
+            MethodFileTransferError: Storage refused the request; a refused link may have expired.
+        """
+        async with download_client.stream("GET", saved_file.url, timeout=self.request_timeout_seconds) as response:
+            if not response.is_success:
+                status_line = f"{response.status_code} {response.reason_phrase}".rstrip()
+                msg = (
+                    f"Downloading '{saved_file.path}' from {host} failed ({status_line}). A refused link may have expired: "
+                    "read the method again for fresh links."
+                )
+                raise MethodFileTransferError(
+                    msg,
+                    operation=MethodFileTransferOperation.DOWNLOAD,
+                    code=method_file_transfer_code_of_status(response.status_code),
+                    sha256=saved_file.sha256,
+                    path=saved_file.path,
+                    status=response.status_code,
+                )
+            received = bytearray()
+            async for chunk in response.aiter_bytes():
+                received.extend(chunk)
+                if len(received) > saved_file.size:
+                    break
+        return received
 
     async def rename_method(self, method_id: str, name: str) -> MethodData:
         """Rename a method — `PATCH /v1/methods/{id}`.
@@ -2225,7 +2478,8 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiResponseError: `404` `method_version_not_found` for a version the method never
                 published; `404` `not_found` for an unknown method; `409` `method_being_deleted`; a
                 `409` `conflict` for a version stored before methods were trees that the platform has
-                not rewritten as one (its `tree_digest` is `None`).
+                not rewritten as one (its `tree_digest` is `None`); a `200` the SDK cannot read,
+                reported with every link redacted.
         """
         # Checked as an `object`: the annotation is a promise to the type checker, not to a caller
         # forwarding a float or a CLI argument, and only an `int` puts a version number in the path.
@@ -2234,7 +2488,7 @@ class PipelexAPIClient(MthdsAPIClient):
             msg = f"get_method_version() takes a version number, a positive integer; got {version!r}."
             raise RequestArgumentError(msg)
         endpoint = f"{_method_path(method_id, call='get_method_version')}/versions/{version}"
-        return await self._request_product("GET", endpoint, read=MethodVersion.model_validate)
+        return await self._request_product("GET", endpoint, read=MethodVersion.model_validate, carries_links=True)
 
     async def delete_method(self, method_id: str) -> MethodDeletionAccepted:
         """Erase a method and everything it produced — `DELETE /v1/methods/{id}`.
@@ -3020,10 +3274,11 @@ def _merge_run_extensions(
     `_PIPELEX_API_RUN_ARGS` / `_HOSTED_RUN_ARGS`.
 
     Both selectors go through `_normalized_selector`: a non-string is refused, an absent or
-    empty value contributes nothing. `mthds_contents` is sent whenever it is not `None`, an
-    empty list included, as the protocol client sent it before the protocol took a method as
-    `files`. `None` is returned for an empty result, leaving the base's own handling of an
-    absent `extra` untouched.
+    empty value contributes nothing. `mthds_contents` is sent only when it holds a bundle: an
+    empty list names nothing to run, the one test every run-source check of this client makes
+    (`has_inline_source`, `_assert_method_ref_pairs_with_nothing`), so it never reaches the wire
+    beside a source that does. `None` is returned for an empty result, leaving the base's own
+    handling of an absent `extra` untouched.
 
     Args:
         extra: Server-specific extension args from the caller, or None.
@@ -3049,7 +3304,7 @@ def _merge_run_extensions(
     selected_method_id = _normalized_selector(name="method_id", value=method_id)
     if selected_method_id is not None:
         extensions["method_id"] = selected_method_id
-    if mthds_contents is not None:
+    if mthds_contents:
         extensions["mthds_contents"] = mthds_contents
     return extensions or None
 
@@ -3064,16 +3319,15 @@ def _assert_run_source_named(
 ) -> None:
     """Refuse a run whose only source is an empty `mthds_contents`, before any request is sent.
 
-    The base client refuses a run that names nothing, counting every extension arg as something to
-    run. `mthds_contents` rides `extra`, so an empty list beside nothing else would pass that check
-    and reach the server: this closes that gap alone, worded as the protocol client worded the
-    refusal when it took `mthds_contents` itself, and leaves every other case to the base.
+    The base client refuses a run that names nothing. An empty `mthds_contents` names nothing either,
+    and `_merge_run_extensions` leaves it out of the extensions, so the base would refuse such a run
+    without naming the argument the caller gave: this words that refusal as the protocol client
+    worded it when it took `mthds_contents` itself, and leaves every other case to the base.
 
     Raises:
         RequestArgumentError: The only source given is an empty `mthds_contents`.
     """
-    other_extensions = {key: value for key, value in (merged_extra or {}).items() if key != "mthds_contents"}
-    if mthds_contents is None or pipe_code or has_inline_source or other_extensions:
+    if mthds_contents is None or pipe_code or has_inline_source or merged_extra:
         return
     msg = f"Either pipe_code, files, mthds_contents or a server-specific extension arg (extra) must be provided to the API {route}."
     raise RequestArgumentError(msg)
@@ -3491,6 +3745,45 @@ def _write_new_file(target: Path, data: bytes) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("xb") as new_file:
         new_file.write(data)
+
+
+def _make_staging_directory(target: Path) -> Path:
+    """Refuse an occupied `target`, then make the fresh hidden directory beside it that a tree is written into before it takes `target`'s name.
+
+    Raises:
+        RequestArgumentError: `target` exists and is not an empty directory.
+    """
+    _refuse_occupied_destination(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / f".{target.name}.{secrets.token_hex(8)}.writing"
+    staging.mkdir()
+    return staging
+
+
+def _move_into_place(staging: Path, target: Path) -> None:
+    """Give a written tree its name: `target`, an empty directory left there removed first.
+
+    `rmdir` removes only an empty directory, so a file written at `target` meanwhile is never lost: the
+    move fails instead.
+    """
+    if target.is_dir():
+        target.rmdir()
+    staging.rename(target)
+
+
+async def _run_to_end_in_thread(func: Callable[..., None], /, *args: object) -> None:
+    """Run `func(*args)` in a worker thread, and when the awaiting task is cancelled, let the thread end before the cancellation goes on.
+
+    A thread cannot be stopped, so a task cancelled while it waits would leave the thread running on,
+    writing into a directory its caller is about to remove. Awaiting its end first keeps the order.
+    """
+    running = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    try:
+        await asyncio.shield(running)
+    except asyncio.CancelledError:
+        # The thread's own failure no longer matters once the caller is cancelled; its end does.
+        await asyncio.wait({running})
+        raise
 
 
 def _method_path(method_id: str, *, call: str) -> str:

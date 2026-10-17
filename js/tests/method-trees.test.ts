@@ -8,13 +8,19 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inspect } from "node:util";
 
 import { listMethodTree, TreeLimitExceededError } from "mthds";
 import type { MethodFiles } from "mthds/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PipelexApiClient } from "../src/client.js";
-import { errorVerdictOf, MethodFileTransferError, RequestArgumentError } from "../src/errors.js";
+import {
+  ApiResponseError,
+  errorVerdictOf,
+  MethodFileTransferError,
+  RequestArgumentError,
+} from "../src/errors.js";
 import { writeMethodTreeTo } from "../src/method-trees.js";
 import type { SavedMethodFile } from "../src/product-models.js";
 
@@ -78,6 +84,8 @@ interface PlatformOptions {
   storageStatus?: number;
   /** Storage gives no answer: the fetch fails as undici's does, its message quoting the link. */
   storageUnreachable?: boolean;
+  /** What `POST /v1/blobs/missing` answers instead of the blobs it lacks. */
+  missingAnswer?: unknown;
 }
 
 /** The API and its storage, routed by URL. */
@@ -133,6 +141,9 @@ class Platform {
       };
       if (this.options.limits !== undefined) version.limits = this.options.limits;
       return jsonResponse(200, version);
+    }
+    if (path === "/v1/blobs/missing" && this.options.missingAnswer !== undefined) {
+      return jsonResponse(200, this.options.missingAnswer);
     }
     if (path === "/v1/blobs/missing") {
       const { blobs } = sent.body as { blobs: { sha256: string; size: number }[] };
@@ -215,6 +226,15 @@ function makeClient(platform: Platform): PipelexApiClient {
   return new PipelexApiClient({ baseUrl: BASE_URL, apiKey: "test-token" });
 }
 
+/** Asserts that no link's signature reaches the error, however it is shown, and that it keeps no cause. */
+function expectNoLink(err: Error): void {
+  expect(err.message).not.toContain(SIGNATURE);
+  expect(String(err.stack)).not.toContain(SIGNATURE);
+  expect(inspect(err, { depth: Infinity })).not.toContain(SIGNATURE);
+  expect(JSON.stringify({ ...err })).not.toContain(SIGNATURE);
+  expect(err.cause).toBeUndefined();
+}
+
 /** The error a call threw, asserting it is a `MethodFileTransferError` that holds no link. */
 async function transferError(call: Promise<unknown>): Promise<MethodFileTransferError> {
   const thrown = await call.then(
@@ -223,11 +243,27 @@ async function transferError(call: Promise<unknown>): Promise<MethodFileTransfer
   );
   expect(thrown).toBeInstanceOf(MethodFileTransferError);
   const err = thrown as MethodFileTransferError;
-  expect(err.message).not.toContain(SIGNATURE);
   expect(err.message).not.toContain("AccessDenied");
-  expect(JSON.stringify({ ...err })).not.toContain(SIGNATURE);
-  expect(err.cause).toBeUndefined();
+  expectNoLink(err);
   return err;
+}
+
+/**
+ * A fetch whose storage sends its headers, then a body that never ends, which errors when the
+ * request is aborted with the error undici raises for a body cut short, not the abort's reason.
+ */
+function stallingStorage(): void {
+  vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+    const signal = init?.signal;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        signal?.addEventListener("abort", () => controller.error(new TypeError("terminated")), {
+          once: true,
+        });
+      },
+    });
+    return Promise.resolve(new Response(body, { status: 200 }));
+  });
 }
 
 let scratch: string;
@@ -381,7 +417,7 @@ describe("saving a method's tree", () => {
     expect(platform.api).toEqual([]);
   });
 
-  it("refuses a blob the platform asks for that the tree does not hold, uploading nothing", async () => {
+  it("reports a blob the platform asks for that the tree does not hold as its unreadable answer", async () => {
     const stranger = "f".repeat(64);
     const platform = new Platform({ extraMissing: [stranger] });
     const client = makeClient(platform);
@@ -390,12 +426,84 @@ describe("saving a method's tree", () => {
       .createMethod({ name: "M", contents: { "data/big.txt": LARGE } })
       .catch((thrown: unknown) => thrown);
 
+    expect(err).toBeInstanceOf(ApiResponseError);
+    const unreadable = err as ApiResponseError;
+    expect(unreadable.message).toBe(
+      "API POST /v1/blobs/missing answered 200 with a body asking for blobs this tree does not " +
+        `hold: ${stranger}`,
+    );
+    expect(unreadable.status).toBe(200);
+    // The platform's fault, which no change to the call fixes.
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expectNoLink(unreadable);
+    expect(platform.storage).toEqual([]);
+    expect(platform.sent("POST", "/v1/methods")).toEqual([]);
+  });
+
+  it("refuses a tree holding no file before any request", async () => {
+    const platform = new Platform();
+    const client = makeClient(platform);
+    const empty = { files: [], digest: treeDigest({}), readFile: () => Promise.resolve(BINARY) };
+
+    const err = await client
+      .createMethod({ name: "M", tree: empty })
+      .catch((thrown: unknown) => thrown);
+
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toBe(
-      `The platform asked for blobs this tree does not hold: ${stranger}.`,
+      "createMethod() got a tree holding no file, and a method tree holds at least one; give " +
+        "files: null for an empty draft.",
+    );
+    expect(platform.api).toEqual([]);
+  });
+
+  it("refuses to upload bytes that are not the blob the tree's listing names", async () => {
+    const platform = new Platform();
+    const client = makeClient(platform);
+    const other = new Uint8Array(LARGE.length).fill(0x79);
+    // A hand-built tree whose listing names LARGE but whose reads give other bytes of its size.
+    const lying = {
+      files: [{ path: "data/big.txt", size: LARGE.length, sha256: sha256(LARGE) }],
+      digest: treeDigest({ "data/big.txt": LARGE }),
+      readFile: () => Promise.resolve(other),
+    };
+
+    const err = await client
+      .createMethod({ name: "M", tree: lying })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).message).toBe(
+      `The tree read ${other.length} bytes hashing to ${sha256(other)} for 'data/big.txt', which ` +
+        `its listing names as ${LARGE.length} bytes hashing to ${sha256(LARGE)}, so they were not ` +
+        "uploaded and the method was not saved.",
     );
     expect(platform.storage).toEqual([]);
     expect(platform.sent("POST", "/v1/methods")).toEqual([]);
+  });
+
+  it("asks the version handshake once per client", async () => {
+    const platform = new Platform({ limits: { method_tree: { max_files: 10 } } });
+    const client = makeClient(platform);
+
+    await client.methodTreeLimits();
+    await client.createMethod({ name: "M", contents: { "data/big.txt": LARGE } });
+    await client.writeDraft("m1", { contents: { "data/big.txt": LARGE, "main.mthds": MAIN } });
+
+    expect(platform.sent("GET", "/v1/version")).toHaveLength(1);
+  });
+
+  it("asks the version handshake again after one that failed", async () => {
+    const platform = new Platform();
+    const client = makeClient(platform);
+    const spy = vi.mocked(globalThis.fetch);
+    spy.mockImplementationOnce(() => Promise.resolve(jsonResponse(503, { code: "unavailable" })));
+
+    await expect(client.methodTreeLimits()).rejects.toBeInstanceOf(ApiResponseError);
+    await expect(client.methodTreeLimits()).resolves.toEqual({});
+    await expect(client.methodTreeLimits()).resolves.toEqual({});
+
+    expect(platform.sent("GET", "/v1/version")).toHaveLength(1);
   });
 
   it.each([
@@ -675,25 +783,41 @@ describe("writeMethodTree", () => {
 
   it("times out a download whose body stalls, as one with no answer", async () => {
     const { listing } = served({ "main.mthds": MAIN });
-    // Storage sends its headers, then nothing: the body errors only when the request is aborted,
-    // as fetch's own body does.
-    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
-      const signal = init?.signal;
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          signal?.addEventListener("abort", () => controller.error(signal.reason), { once: true });
-        },
-      });
-      return Promise.resolve(new Response(body, { status: 200 }));
-    });
+    stallingStorage();
     const destination = join(scratch, "receipts");
 
     const err = await transferError(writeMethodTreeTo(listing, destination, { timeoutMs: 20 }));
 
+    // The transfer's own time limit names the failure, whatever error the aborted read raised.
     expect(err.code).toBe("unreachable");
     expect(err.message).toContain("(ABORT_TIMEOUT)");
     expect(await readdir(scratch)).toEqual([]);
   });
+
+  it("bounds each download by the client's request ceiling", async () => {
+    const { listing } = served({ "main.mthds": MAIN });
+    stallingStorage();
+    const client = new PipelexApiClient({
+      baseUrl: BASE_URL,
+      apiKey: "test-token",
+      requestTimeoutMs: 20,
+    });
+
+    const err = await transferError(
+      client.writeMethodTree(listing, { destination: join(scratch, "receipts") }),
+    );
+
+    expect(err.message).toContain("(ABORT_TIMEOUT)");
+  });
+
+  it.each([0, -1, Number.POSITIVE_INFINITY, 2 ** 31])(
+    "refuses a request ceiling of %d at construction",
+    (requestTimeoutMs) => {
+      expect(() => new PipelexApiClient({ baseUrl: BASE_URL, requestTimeoutMs })).toThrow(
+        RangeError,
+      );
+    },
+  );
 
   it("writes back the tree a save sent by hash", async () => {
     const platform = new Platform();
@@ -713,5 +837,98 @@ describe("writeMethodTree", () => {
     expect(await readFile(join(destination, "main.mthds"), "utf8")).toBe(MAIN);
     expect(new Uint8Array(await readFile(join(destination, "data", "big.txt")))).toEqual(LARGE);
     expect(new Uint8Array(await readFile(join(destination, "assets", "logo.png")))).toEqual(BINARY);
+  });
+});
+
+describe("answers that carry links", () => {
+  const signedFile = {
+    path: "main.mthds",
+    sha256: sha256(MAIN),
+    size: ENCODER.encode(MAIN).length,
+    url: link(sha256(MAIN)),
+    expires_at: "2026-10-17T10:15:00Z",
+  };
+
+  function answering(text: string): void {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(text, { status: 200, headers: { "X-Request-ID": "req-1" } }),
+    );
+  }
+
+  it.each([
+    [
+      "getMethod",
+      (client: PipelexApiClient) => client.getMethod("m1"),
+      "GET /v1/methods/m1",
+      "a stored method",
+      { ...METHOD },
+    ],
+    [
+      "getMethodVersion",
+      (client: PipelexApiClient) => client.getMethodVersion("m1", 3),
+      "GET /v1/methods/m1/versions/3",
+      "a published version",
+      { version: 3, method_id: "m1", tree_digest: null },
+    ],
+  ])(
+    "%s holds a listing it cannot read with every link hidden",
+    async (_, call, route, subject, record) => {
+      const files = [signedFile, { ...signedFile, path: "helper.py", sha256: "A".repeat(64) }];
+      answering(JSON.stringify({ ...record, files }));
+
+      const err = await call(new PipelexApiClient({ baseUrl: BASE_URL })).catch(
+        (thrown: unknown) => thrown,
+      );
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      const unreadable = err as ApiResponseError;
+      expect(unreadable.message).toBe(
+        `API ${route} answered 200 with ${subject} whose \`files\` holds an entry whose ` +
+          "`sha256` is not 64 lowercase hex digits, at [1]",
+      );
+      expect(unreadable.responseBody).toContain('"url":"[redacted]"');
+      expect(unreadable.requestId).toBe("req-1");
+      expectNoLink(unreadable);
+    },
+  );
+
+  it("holds an answer cut short with every link's query hidden, and no parse failure", async () => {
+    const whole = JSON.stringify({ ...METHOD, files: [signedFile] });
+    answering(whole.slice(0, whole.indexOf(SIGNATURE) + SIGNATURE.length));
+
+    const err = await new PipelexApiClient({ baseUrl: BASE_URL })
+      .getMethod("m1")
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as Error).message).toBe(
+      "API GET /v1/methods/m1 answered 200 with a body that is not JSON",
+    );
+    expect((err as ApiResponseError).responseBody).toContain("?[redacted]");
+    // The parse failure is not kept: V8's message quotes the text around the failure.
+    expectNoLink(err as Error);
+  });
+
+  it("holds a blob answer it cannot read with every upload link hidden", async () => {
+    const blob = sha256(LARGE);
+    const platform = new Platform({
+      missingAnswer: {
+        missing: [{ sha256: blob, size: LARGE.length, upload: { method: "PUT", url: link(blob) } }],
+      },
+    });
+    const client = makeClient(platform);
+
+    const err = await client
+      .createMethod({ name: "M", contents: { "data/big.txt": LARGE } })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as Error).message).toBe(
+      "API POST /v1/blobs/missing answered 200 with a body whose `missing` is not a list of " +
+        "blobs, each with its upload target",
+    );
+    expect((err as ApiResponseError).responseBody).toContain('"url":"[redacted]"');
+    expectNoLink(err as Error);
+    expect(platform.storage).toEqual([]);
   });
 });
