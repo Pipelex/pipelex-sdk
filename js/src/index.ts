@@ -148,7 +148,6 @@ export type {
   RemapValueOp,
   FixOp,
   SuggestedFix,
-  MthdsFileItem,
   CrateRequestBase,
   CrateInvalidReport,
   GeneratedArtifact,

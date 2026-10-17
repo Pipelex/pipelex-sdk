@@ -38,7 +38,7 @@ The MIME type and size are known client-side, so the record is assembled without
 ### `prepare_inputs` — signature-driven input preparation
 
 ```
-client.prepare_inputs(files=…,      pipe_ref=…, inputs=…) → PreparedInputs
+client.prepare_inputs(files=… | tree=… | contents=…, dependencies=…, pipe_ref=…, inputs=…) → PreparedInputs
 client.prepare_inputs(method_ref=…, pipe_ref=…, inputs=…) → PreparedInputs
 client.prepare_inputs(method_id=…,  pipe_ref=…, inputs=…) → PreparedInputs
 ```
@@ -52,15 +52,17 @@ The prepared `inputs` are passed to the existing run lifecycle unchanged.
 
 #### The three selectors
 
-Exactly one per call. **Empty is absent** — `files=[]`, `method_ref=""`, `method_id="  "` — mirroring the run options' rule, so an empty selector may sit beside a real one without tripping the exclusivity check. None or several raises `InputPreparationError` naming the three forms, before any request leaves the process.
+Exactly one per call. **Empty is absent** — `files={}`, `contents={}`, `method_ref=""`, `method_id="  "` — mirroring the run options' rule, so an empty selector may sit beside a real one without tripping the exclusivity check. None or several raises `InputPreparationError` naming the three forms, before any request leaves the process, and so does the tree given in two forms. A `files` that is not a map, such as the retired list of `content` and `source` items, raises `InputPreparationError` too rather than reading as absent.
 
 **Empty is absent; the wrong type is not.** A non-string `method_ref` / `method_id` / `pipe_ref` raises `InputPreparationError` naming the argument and the type it got, on that same pre-request boundary. Reading it as absent instead is what would make the exclusivity check unsound — `method_ref=123` beside a real `files` would pass the check and silently prepare against the wrong method — and would let a mistyped `pipe_ref` be absorbed by the defaulting below.
 
 | Selector | What it is | Who resolves it |
 | --- | --- | --- |
-| `files` | the inline MTHDS closure (`MthdsFileItem` entries: `content` plus an optional `source` label) | nobody — inline |
+| the tree | the method's tree, in exactly one of the forms the crate routes take: `files`, the protocol's map from tree path to file entry; `tree`, a listed `MethodTree`; or `contents`, each file's bytes or text by tree path ([architecture.md](architecture.md#crate-routes)) | nobody — sent with the request, a `tree` or `contents` inline when small and by hash otherwise |
 | `method_ref` | a published method's address, `github.com/<owner>/<repo>[/<selector>][@<tag>]` | the runner, server-side (pipelex-api >= 0.21.0 fetches the repository at the tag) |
-| `method_id` | a stored method's catalog id: `mt_…` for its latest published version, `mt_…@<n>` for a fixed version, `mt_…@draft` for its draft | the hosted platform, which injects the stored source before the runner sees the request |
+| `method_id` | a stored method's catalog id: `mt_…` for its latest published version, `mt_…@<n>` for a fixed version, `mt_…@draft` for its draft | the hosted platform, which injects the stored tree before the runner sees the request |
+
+The tree may bring `dependencies`, the method packages it calls by address, each a `files` map keyed by its address; the pipe I/O route loads them beside the method, so a call into one resolves. A published or stored method's packages are its own, so `dependencies` beside `method_ref` or `method_id` raises `InputPreparationError` before any request.
 
 Nothing is expanded client-side: `method_id` here is a **pass-through**, its version suffix included, the same rule every other id-taking operation in this SDK follows.
 
@@ -69,22 +71,22 @@ Nothing is expanded client-side: `method_id` here is a **pass-through**, its ver
 One `POST /v1/pipe-io` per call, whatever the selector, through the client's `pipe_io`:
 
 ```python
-await client.pipe_io(PipeIORequest(<files | method_ref | method_id>, pipe_ref=<the caller's, or None>))
+await client.pipe_io(PipeIORequest(<files | tree | contents [+ dependencies] | method_ref | method_id>, pipe_ref=<the caller's, or None>))
 ```
 
 The route resolves the closure, selects the pipe (see below) and answers with that pipe's input-form descriptor, keyed by the qualified `pipe_ref` it resolved. It runs **no dry run**, so a call costs one load where `/v1/validate` dry-runs every pipe of the method. Preparation needs a pipe's *declared* inputs, which static validation settles: a pending signature elsewhere in the method does not refuse inputs to a pipe whose inputs are declared, and a method whose dry run would fail still prepares — whether the method runs is the run's verdict, not preparation's. An `is_valid: false` verdict still means the closure does not load, which is a preparation failure.
 
-A `method_ref` makes the server clone a repository first, so the call gets the crate routes' 3-minute fetch budget; any other selector gets the 30-second management budget. On the hosted API the gateway caps a request at 30 seconds whatever the client allows, so a cold clone can answer a `502` that a retry clears once the runner has cached it.
+A `tree` or `contents` too large to send inline is uploaded first, by hash, and a blob that fails to upload raises `MethodFileTransferError` before the route is asked. A `method_ref` makes the server clone a repository first, so the call gets the crate routes' 3-minute fetch budget; any other selector gets the 30-second management budget. On the hosted API the gateway caps a request at 30 seconds whatever the client allows, so a cold clone can answer a `502` that a retry clears once the runner has cached it.
 
 **`prepare_inputs` needs an API that serves `POST /v1/pipe-io`.** Against one that does not, the call raises `ApiResponseError` rather than falling back to another signature source. A valid answer that carries no descriptor for the pipe it names is an `InputPreparationError`, never a silent "no uploads" that would let local paths travel to the runner verbatim. A descriptor that is malformed where the walk reads it — an entry that is not an object, a `fields` that is not a list, a field with no string `name`, a node with no string `kind` or one outside the vocabulary of the pinned `mthds`, an `object` node with no list of `fields`, a `list` node whose `item` is not a node — never reaches the walk: the client refuses the answer when it parses it into the standard's closed models, as the `ApiResponseError` it raises for a 2xx it cannot read, `runtime` and not retryable, before `prepare_inputs` walks anything or uploads. `@pipelex/sdk` refuses the same answers with an `InputPreparationError` of the same verdict, and the case file both suites run, `tests/fixtures/malformed-input-forms.json`, holds the two to it.
 
-**Known limit.** The route resolves the closure through the crate routes' static core, which refuses an address-based cross-package dependency that `/v1/validate` would load. Preparing a closure that carries one raises `InputPreparationError` on the route's invalid verdict.
+**A call by address resolves only from what was shipped.** The route loads a package the method calls by address from the request's `dependencies`, or from the packages a fetched package ships under its `.mthds/methods/`, and from nowhere else. Preparing a closure that calls a package nothing shipped raises `InputPreparationError` on the route's invalid verdict.
 
 #### Pipe selection
 
 The route selects the pipe, and the helper keeps no selection chain of its own:
 
-1. **`pipe_ref` when given.** Qualified-only: `domain.pipe_code`. A bare code or a non-string is refused with an `InputPreparationError` before any request — the runner would still resolve a bare code across domains today, and search is a run-route affordance this helper does not grow. An `alias->domain.pipe_code` ref is refused the same way, since the alias names a dependency package's pipe and preparation covers the method's own pipes: the route loads no address-based dependency. The run routes take such a ref, so the asymmetry is deliberate, and `@pipelex/sdk` refuses it with the same wording. A qualified ref the method does not declare is refused by the route.
+1. **`pipe_ref` when given.** Qualified-only: `domain.pipe_code`. A bare code or a non-string is refused with an `InputPreparationError` before any request — the runner would still resolve a bare code across domains today, and search is a run-route affordance this helper does not grow. An `alias->domain.pipe_code` ref is refused the same way, since the alias names a dependency package's pipe and preparation covers the method's own pipes, whose input form the pipe I/O route describes. The run routes take such a ref, so the asymmetry is deliberate, and `@pipelex/sdk` refuses it with the same wording. A qualified ref the method does not declare is refused by the route.
 2. **A fetched package manifest's `main_pipe`**, for a `method_ref`: a package that names its entry pipe in `METHODS.toml` alone needs no `pipe_ref`.
 3. **The closure's own `main_pipe` declaration**, when exactly one domain declares one.
 

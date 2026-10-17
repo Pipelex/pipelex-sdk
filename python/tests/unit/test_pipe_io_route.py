@@ -11,19 +11,20 @@ import json
 
 import httpx
 import pytest
+from mthds.method_tree.file_entry import FileEntry
 from mthds.protocol.input_form import ObjectField, PipeInputFormDescriptor
 from mthds.protocol.output_form import PipeOutputFormDescriptor
 from mthds.protocol.pipe_io_contracts import PipeIOContract, PresenceMarker
 from pytest_mock import MockerFixture, MockType
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.crate_models import CrateInvalidReport, MthdsFileItem, PipeIORequest, PipeIOValidReport
+from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIOValidReport
 from pipelex_sdk.errors import ApiResponseError
 from tests.unit.test_data import PipeIOBodies
 
 _BASE_URL = "http://localhost:8081"
 _METHOD_REF = "github.com/Pipelex/methods/documents@v0.1.0"
-_FILES = [MthdsFileItem(content='domain = "smoke"', source="smoke.mthds")]
+_FILES: dict[str, FileEntry] = {"smoke.mthds": 'domain = "smoke"'}
 
 
 def _response(status_code: int, *, json_body: object | None = None) -> httpx.Response:
@@ -42,7 +43,7 @@ class TestPipeIORoute:
 
     # ── The request ──────────────────────────────────────────────────
 
-    def test_posts_the_closure_to_the_route(self, mocker: MockerFixture) -> None:
+    def test_posts_the_tree_to_the_route(self, mocker: MockerFixture) -> None:
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body=PipeIOBodies.VALID))
 
@@ -53,7 +54,7 @@ class TestPipeIORoute:
         assert call.args[1] == f"{_BASE_URL}/v1/pipe-io"
         # An opt-in left at its default is not sent, as `@pipelex/sdk` sends it, and an absent `pipe_ref` is
         # not sent either, so the server's chain selects.
-        assert json.loads(call.kwargs["content"]) == {"files": [{"content": 'domain = "smoke"', "source": "smoke.mthds"}]}
+        assert json.loads(call.kwargs["content"]) == {"files": {"smoke.mthds": 'domain = "smoke"'}}
 
     def test_the_pipe_selector_and_the_opt_ins_ride_the_body(self, mocker: MockerFixture) -> None:
         client = self._client()
@@ -106,7 +107,7 @@ class TestPipeIORoute:
 
     def test_the_files_echo_and_stated_nulls_parse(self, mocker: MockerFixture) -> None:
         """Under `all_pipes` with no entry pipe, `pipe_ref` and `default_pipe_ref` are stated `null`s, and
-        the `include_files` echo keeps a file's absent `source` absent.
+        the `include_files` echo is a map from each bundle's tree path to its text.
         """
         client = self._client()
         body = {
@@ -115,7 +116,7 @@ class TestPipeIORoute:
             "default_pipe_ref": None,
             "pending_signatures": ["smoke.draft"],
             "is_runnable": False,
-            "files": [{"content": 'domain = "smoke"', "source": "smoke.mthds"}, {"content": "x"}],
+            "files": {"smoke.mthds": 'domain = "smoke"', "steps/echo.mthds": "x"},
         }
         self._mock_send(mocker, client, _response(200, json_body=body))
 
@@ -126,7 +127,7 @@ class TestPipeIORoute:
         assert report.default_pipe_ref is None
         assert report.pending_signatures == ["smoke.draft"]
         assert report.is_runnable is False
-        assert report.files == [MthdsFileItem(content='domain = "smoke"', source="smoke.mthds"), MthdsFileItem(content="x")]
+        assert report.files == {"smoke.mthds": 'domain = "smoke"', "steps/echo.mthds": "x"}
 
     def test_the_valid_arm_is_extension_open(self, mocker: MockerFixture) -> None:
         client = self._client()

@@ -126,7 +126,7 @@ beforeAll(async () => {
 describe("e2e resolve (/v1/resolve)", () => {
   it("emits the normalized crate with its fingerprint riding inside the payload", async () => {
     const result = await client.resolve({
-      files: [{ content: VALID_BUNDLE, source: "smoke.mthds" }],
+      files: { "smoke.mthds": VALID_BUNDLE },
     });
 
     expect(result.is_valid).toBe(true);
@@ -140,7 +140,7 @@ describe("e2e resolve (/v1/resolve)", () => {
 
   it("returns an unresolvable closure as a 200 verdict, not a throw", async () => {
     const result = await client.resolve({
-      files: [{ content: INVALID_BUNDLE, source: "broken.mthds" }],
+      files: { "broken.mthds": INVALID_BUNDLE },
     });
 
     expect(result.is_valid).toBe(false);
@@ -160,7 +160,7 @@ describe("e2e resolve (/v1/resolve)", () => {
 describe("e2e codegen (/v1/codegen)", () => {
   it("projects the concept set into stamped ts-zod artifacts plus a lock", async () => {
     const result = await client.codegen({
-      files: [{ content: VALID_BUNDLE, source: "smoke.mthds" }],
+      files: { "smoke.mthds": VALID_BUNDLE },
       kind: "types",
       target: "ts-zod",
     });
@@ -190,7 +190,7 @@ describe("e2e codegen (/v1/codegen)", () => {
     "serves the %s target",
     async (target) => {
       const result = await client.codegen({
-        files: [{ content: VALID_BUNDLE }],
+        files: { "main.mthds": VALID_BUNDLE },
         kind: "types",
         target,
       });
@@ -203,7 +203,7 @@ describe("e2e codegen (/v1/codegen)", () => {
   );
 
   it("agrees with resolve on the crate fingerprint for the same closure", async () => {
-    const files = [{ content: VALID_BUNDLE, source: "smoke.mthds" }];
+    const files = { "smoke.mthds": VALID_BUNDLE };
     const resolved = (await client.resolve({ files })) as ResolveValidReport;
     const generated = (await client.codegen({
       files,
@@ -218,7 +218,7 @@ describe("e2e codegen (/v1/codegen)", () => {
 
   it("returns an unresolvable closure as a 200 verdict, not a throw", async () => {
     const result = await client.codegen({
-      files: [{ content: INVALID_BUNDLE, source: "broken.mthds" }],
+      files: { "broken.mthds": INVALID_BUNDLE },
       kind: "types",
       target: "ts-zod",
     });
@@ -232,7 +232,7 @@ describe("e2e codegen (/v1/codegen)", () => {
     // ignoring the selector would mislead the caller into believing the artifacts
     // were narrowed to one pipe.
     const failure = client.codegen({
-      files: [{ content: VALID_BUNDLE }],
+      files: { "main.mthds": VALID_BUNDLE },
       kind: "types",
       target: "ts-zod",
       pipe_ref: "smoke.echo",
@@ -243,7 +243,7 @@ describe("e2e codegen (/v1/codegen)", () => {
 });
 
 describe("e2e pipe-io (/v1/pipe-io)", () => {
-  const files = [{ content: VALID_BUNDLE, source: "smoke.mthds" }];
+  const files = { "smoke.mthds": VALID_BUNDLE };
 
   it("describes the entry pipe: the three artifacts under the resolved ref, and the runnability facts", async () => {
     const result = await client.pipeIo({ files });
@@ -266,7 +266,7 @@ describe("e2e pipe-io (/v1/pipe-io)", () => {
   it("answers artifacts equal to validate's views for the same closure and pipe", async () => {
     const piped = (await client.pipeIo({ files })) as PipeIOValidReport;
     const validated = await client.validateFiles(
-      files.map((file) => ({ content: file.content, uri: file.source })),
+      Object.entries(files).map(([treePath, content]) => ({ content, uri: treePath })),
       { views: ["input_form", "output_form"] },
     );
 
@@ -278,14 +278,14 @@ describe("e2e pipe-io (/v1/pipe-io)", () => {
     expect(piped.output_form["smoke.echo"]).toEqual(report.output_form?.["smoke.echo"]);
   });
 
-  it("echoes the closure with include_files, in the request's own shape", async () => {
+  it("echoes the bundles with include_files, as a map from tree path to text", async () => {
     const report = (await client.pipeIo({ files, include_files: true })) as PipeIOValidReport;
 
     expect(report.files).toEqual(files);
   });
 
   it("describes every pipe of a method with no entry pipe under all_pipes, pipe_ref null, files echoed", async () => {
-    const noMainFiles = [{ content: NO_MAIN_BUNDLE, source: "smoke_no_main.mthds" }];
+    const noMainFiles = { "smoke_no_main.mthds": NO_MAIN_BUNDLE };
     const result = await client.pipeIo({
       files: noMainFiles,
       all_pipes: true,
@@ -312,8 +312,8 @@ describe("e2e pipe-io (/v1/pipe-io)", () => {
     expect(report.pipe_ref).toEqual(expect.stringMatching(/^documents\./));
     expect(report.pipe_ref).toBe(report.default_pipe_ref);
     expect(Object.keys(report.input_form)).toEqual([report.pipe_ref]);
-    expect(report.files!.length).toBeGreaterThan(0);
-    for (const file of report.files!) expect(file.source).toMatch(/\.mthds$/);
+    expect(Object.keys(report.files!).length).toBeGreaterThan(0);
+    for (const treePath of Object.keys(report.files!)) expect(treePath).toMatch(/\.mthds$/);
   });
 
   it("describes every pipe of a method_ref package under all_pipes, the entry pipe still resolved", async () => {
@@ -331,7 +331,7 @@ describe("e2e pipe-io (/v1/pipe-io)", () => {
     expect(refs.length).toBeGreaterThan(1);
     expect(refs).toContain(report.pipe_ref);
     expect(Object.keys(report.pipe_io_contracts).sort()).toEqual([...refs].sort());
-    expect(report.files!.length).toBeGreaterThan(0);
+    expect(Object.keys(report.files!).length).toBeGreaterThan(0);
   });
 
   it.skipIf(METHOD_ID === undefined)(
@@ -348,15 +348,15 @@ describe("e2e pipe-io (/v1/pipe-io)", () => {
       const refs = Object.keys(report.input_form);
       expect(refs.length).toBeGreaterThan(0);
       if (report.pipe_ref !== null) expect(refs).toContain(report.pipe_ref);
-      // The platform forwards the stored files under their stored names.
-      expect(report.files!.length).toBeGreaterThan(0);
-      for (const file of report.files!) expect(file.content.length).toBeGreaterThan(0);
+      // The platform forwards the stored tree, whose bundles come back under their tree paths.
+      expect(Object.keys(report.files!).length).toBeGreaterThan(0);
+      for (const text of Object.values(report.files!)) expect(text.length).toBeGreaterThan(0);
     },
   );
 
   it("returns an unresolvable closure as a 200 verdict carrying no files, whatever include_files says", async () => {
     const result = await client.pipeIo({
-      files: [{ content: INVALID_BUNDLE, source: "broken.mthds" }],
+      files: { "broken.mthds": INVALID_BUNDLE },
       include_files: true,
     });
 
@@ -407,7 +407,7 @@ describe.each(CHECKED_TARGETS)(
 
     beforeAll(async () => {
       const result = await client.codegen({
-        files: [{ content: VALID_BUNDLE, source: "smoke.mthds" }],
+        files: { "smoke.mthds": VALID_BUNDLE },
         kind: "types",
         target,
       });

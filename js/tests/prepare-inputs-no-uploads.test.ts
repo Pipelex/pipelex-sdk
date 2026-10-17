@@ -90,7 +90,7 @@ function makeClient(fields: InputFormTopLevelField[]): FakeClient {
   return client;
 }
 
-const FILES = [{ content: 'domain = "demo"' }];
+const FILES = { "demo.mthds": 'domain = "demo"' };
 const readFileSpy = vi.mocked(fsPromises.readFile);
 
 /** Run a preparation that must fail, and hand back what it threw. */

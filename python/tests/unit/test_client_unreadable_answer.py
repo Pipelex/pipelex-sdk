@@ -20,7 +20,7 @@ from mthds.protocol.models import ModelCategory
 from pydantic import ValidationError
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.crate_models import MthdsFileItem, PipeIORequest
+from pipelex_sdk.crate_models import PipeIORequest
 from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import ApiResponseError, UploadTransportCode, UploadTransportError
 from pipelex_sdk.product_models import UpdateRunInput, UploadedFile, UploadInput
@@ -56,7 +56,7 @@ _ROUTES: list[tuple[str, _Call, str]] = [
     ("get_subscription", lambda client: client.get_subscription(), "GET /v1/billing/subscription"),
     ("list_plans", lambda client: client.list_plans(), "GET /v1/billing/plans"),
     ("list_invoices", lambda client: client.list_invoices(), "GET /v1/billing/invoices"),
-    ("pipe_io", lambda client: client.pipe_io(PipeIORequest(files=[MthdsFileItem(content="x")])), "POST /v1/pipe-io"),
+    ("pipe_io", lambda client: client.pipe_io(PipeIORequest(files={"main.mthds": "x"})), "POST /v1/pipe-io"),
     (
         "check_model_reference",
         lambda client: client.check_model_reference("$writing-factual"),

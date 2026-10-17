@@ -930,7 +930,7 @@ describe("PipelexApiClient answers it cannot read", () => {
     ["validate", (client: PipelexApiClient) => client.validate(["x"]), "POST /v1/validate"],
     [
       "pipeIo",
-      (client: PipelexApiClient) => client.pipeIo({ files: [{ content: "x" }] }),
+      (client: PipelexApiClient) => client.pipeIo({ files: { "main.mthds": "x" } }),
       "POST /v1/pipe-io",
     ],
     ["listMethods", (client: PipelexApiClient) => client.listMethods(), "GET /v1/methods"],
@@ -1076,7 +1076,7 @@ describe("PipelexApiClient answers it cannot read", () => {
 
       const err = await client
         .prepareInputs({
-          files: [{ content: 'domain = "demo"' }],
+          files: { "main.mthds": 'domain = "demo"' },
           inputs: { photo: new Uint8Array([1]) },
         })
         .then(

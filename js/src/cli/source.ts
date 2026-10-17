@@ -1,9 +1,10 @@
 /**
  * The method as each route names it, and the one pipe I/O call that checks it.
  *
- * A bundle read from disk travels to the pipe I/O route as `files`, each file under its name in the
- * bundle, and to the run as `mthds_contents`, in the same order. An address travels as
- * `method_ref` and a catalog id as `method_id`, both resolved by the server.
+ * A bundle read from disk travels to the pipe I/O route as the method's tree, given as `contents`,
+ * each file's text under its name in the bundle, which the client sends as the `files` map, inline
+ * when small and by hash otherwise; and to the run as `mthds_contents`, in the bundle's order. An
+ * address travels as `method_ref` and a catalog id as `method_id`, both resolved by the server.
  */
 
 import type { FieldKind } from "mthds/protocol";
@@ -27,14 +28,14 @@ export type MethodSource =
 
 /** The method as the crate routes and the input preparation name it. */
 export type CrateSelector =
-  | { files: Array<{ content: string; source: string }> }
-  | { method_ref: string }
-  | { method_id: string };
+  { contents: Record<string, string> } | { method_ref: string } | { method_id: string };
 
 export function crateSelector(source: MethodSource): CrateSelector {
   switch (source.kind) {
     case "bundle":
-      return { files: source.files.map((file) => ({ content: file.content, source: file.name })) };
+      return {
+        contents: Object.fromEntries(source.files.map((file) => [file.name, file.content])),
+      };
     case "address":
       return { method_ref: source.methodRef };
     case "catalog":

@@ -303,7 +303,7 @@ describe("the bytes reach the wire as base64 under the caller's key", () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(() => Promise.resolve(jsonResponse(200, PIPE_IO_INVALID)));
-    const files = [{ content: INVOICE_MTHDS, source: "invoice.mthds" }];
+    const files = { "invoice.mthds": INVOICE_MTHDS };
     const resources = { [TEMPLATE_PATH]: TEMPLATE_BYTES };
 
     await client.pipeIo({ files, resources, pipe_ref: "invoicing.print_invoice" });
@@ -362,8 +362,8 @@ describe("nothing is sent when there is nothing to send", () => {
     await client.validate([INVOICE_MTHDS], false, undefined, undefined, undefined, {
       resources: {},
     });
-    await client.pipeIo({ files: [{ content: INVOICE_MTHDS }], resources: null });
-    await client.pipeIo({ files: [{ content: INVOICE_MTHDS }] });
+    await client.pipeIo({ files: { "main.mthds": INVOICE_MTHDS }, resources: null });
+    await client.pipeIo({ files: { "main.mthds": INVOICE_MTHDS } });
     for (let call = 0; call < fetchSpy.mock.calls.length; call++) {
       expect(bodyOf(fetchSpy, call)).not.toHaveProperty("resources");
     }
@@ -429,7 +429,7 @@ describe("what the runner refuses for certain is refused before any request", ()
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     await expect(
       client.pipeIo({
-        files: [{ content: INVOICE_MTHDS }],
+        files: { "main.mthds": INVOICE_MTHDS },
         resources: { [TEMPLATE_PATH]: TEMPLATE_B64 } as unknown as BundleResources,
       }),
     ).rejects.toThrow(/must be the file's bytes.*neither as a path nor as base64/);
@@ -475,10 +475,14 @@ describe("what the runner refuses for certain is refused before any request", ()
       ),
     ).rejects.toBeInstanceOf(RequestArgumentError);
     await expect(
-      client.pipeIo({ files: [{ content: INVOICE_MTHDS }], resources: asMap }),
+      client.pipeIo({ files: { "main.mthds": INVOICE_MTHDS }, resources: asMap }),
     ).rejects.toBeInstanceOf(RequestArgumentError);
     await expect(
-      client.prepareInputs({ files: [{ content: INVOICE_MTHDS }], resources: asMap, inputs: {} }),
+      client.prepareInputs({
+        files: { "main.mthds": INVOICE_MTHDS },
+        resources: asMap,
+        inputs: {},
+      }),
     ).rejects.toBeInstanceOf(RequestArgumentError);
     await expect(
       client.prepareInputs({
@@ -554,14 +558,14 @@ describe("prepareInputs sends them with inline files", () => {
       }),
     );
     const prepared = await client.prepareInputs({
-      files: [{ content: INVOICE_MTHDS, source: "invoice.mthds" }],
+      files: { "invoice.mthds": INVOICE_MTHDS },
       resources: { [TEMPLATE_PATH]: TEMPLATE_BYTES },
       inputs: { invoice: "INV-1" },
     });
     expect(prepared.inputs).toEqual({ invoice: "INV-1" });
     expect(String(fetchSpy.mock.calls[0]![0])).toBe(`${BASE_URL}/v1/pipe-io`);
     expect(bodyOf(fetchSpy)).toEqual({
-      files: [{ content: INVOICE_MTHDS, source: "invoice.mthds" }],
+      files: { "invoice.mthds": INVOICE_MTHDS },
       resources: { [TEMPLATE_PATH]: TEMPLATE_B64 },
     });
   });
@@ -591,7 +595,7 @@ describe("prepareInputs sends them with inline files", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     await expect(
       client.prepareInputs({
-        files: [{ content: INVOICE_MTHDS }],
+        files: { "main.mthds": INVOICE_MTHDS },
         resources: "templates/invoice.docx",
         inputs: {},
       } as never),
@@ -618,7 +622,10 @@ describe("prepareInputs sends them with inline files", () => {
       }),
     );
     await expect(
-      client.prepareInputs({ files: [{ content: INVOICE_MTHDS }], inputs: { invoice: "INV-1" } }),
+      client.prepareInputs({
+        files: { "main.mthds": INVOICE_MTHDS },
+        inputs: { invoice: "INV-1" },
+      }),
     ).rejects.toThrow(/not supplied with its bundle/);
   });
 });
@@ -747,7 +754,7 @@ describe("a request carrying them gets a budget their upload fits in", () => {
     return state;
   }
 
-  const files = [{ content: INVOICE_MTHDS, source: "invoice.mthds" }];
+  const files = { "invoice.mthds": INVOICE_MTHDS };
   const resources = { [TEMPLATE_PATH]: TEMPLATE_BYTES };
   const MINUTE = 60_000;
 

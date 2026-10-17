@@ -162,7 +162,7 @@ async def _prepare(
     selector = crate_selector(source)
     await before_request()
     prepared = await client.prepare_inputs(
-        files=selector.files,
+        contents=selector.contents,
         method_ref=selector.method_ref,
         method_id=selector.method_id,
         pipe_ref=pipe,

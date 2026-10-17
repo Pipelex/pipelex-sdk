@@ -178,20 +178,50 @@ function makeClient(
   };
 }
 
-const FILES = [{ content: 'domain = "demo"' }];
+const FILES = { "demo.mthds": 'domain = "demo"' };
 
 // ── The signature call, per selector ─────────────────────────────────
 
 describe("prepareInputs composes one pipeIo call, whatever the selector", () => {
-  it("sends inline files verbatim, source labels and all, with no other key", async () => {
+  it("sends the files map verbatim, every entry form and all, with no other key", async () => {
     const client = makeClient([topLevel("photo", image())]);
-    const files = [{ content: "a" }, { content: "b", source: "pipes.mthds" }];
+    const files = {
+      "main.mthds": "a",
+      "pipes/pipes.mthds": "b",
+      "assets/logo.png": { base64: "iVBORw0KGgo=" },
+      "data/big.txt": { sha256: "8f".repeat(32), size: 307_200 },
+    };
 
     await prepareInputs(client, { files, inputs: { photo: "https://example.com/p.png" } });
 
     // No `pipe_ref`, `all_pipes` or `include_files` key: the route selects the entry
     // pipe itself, and one pipe's descriptor is all preparation reads.
     expect(client.pipeIoCalls).toEqual([{ files }]);
+  });
+
+  it("hands a tree or contents to pipeIo as given, which sends it inline or by hash", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+    const contents = { "main.mthds": 'domain = "demo"', "assets/logo.png": new Uint8Array([1]) };
+    const tree = {
+      files: [{ path: "main.mthds", size: 15, sha256: "ab".repeat(32) }],
+      digest: `sha256:${"cd".repeat(32)}`,
+      readFile: () => Promise.resolve(new Uint8Array(0)),
+    };
+
+    await prepareInputs(client, { contents, inputs: {} });
+    await prepareInputs(client, { tree, inputs: {} });
+
+    expect(client.pipeIoCalls).toEqual([{ contents }, { tree }]);
+  });
+
+  it("sends the dependencies and the resources beside the tree", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+    const dependencies = { "github.com/acme/scoring": { "scoring.mthds": 'domain = "s"' } };
+    const resources = { "templates/invoice.docx": new Uint8Array([0x50, 0x4b]) };
+
+    await prepareInputs(client, { files: FILES, dependencies, resources, inputs: {} });
+
+    expect(client.pipeIoCalls).toEqual([{ files: FILES, dependencies, resources }]);
   });
 
   it("passes a method_ref straight through, beside the qualified pipe_ref", async () => {
@@ -1338,12 +1368,68 @@ describe("prepareInputs verdicts and guards", () => {
     await expect(failure).rejects.toThrow(/were all given/);
   });
 
-  it("treats empty selectors as absent — an empty files array is no selector", async () => {
+  it.each([
+    ["files", { files: {} }],
+    ["contents", { contents: {} }],
+  ])("treats empty selectors as absent — an empty %s map is no selector", async (_, empty) => {
     const client = makeClient([topLevel("photo", image())]);
 
     await expect(
-      prepareInputs(client, { files: [], inputs: {} } as unknown as PrepareInputsRequest),
+      prepareInputs(client, { ...empty, inputs: {} } as unknown as PrepareInputsRequest),
     ).rejects.toThrow(/no method selector/);
+  });
+
+  it("refuses the retired list of files rather than reading it as absent", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+
+    const failure = prepareInputs(client, {
+      files: [{ content: 'domain = "demo"', source: "demo.mthds" }],
+      inputs: {},
+    } as unknown as PrepareInputsRequest);
+
+    await expect(failure).rejects.toBeInstanceOf(InputPreparationError);
+    await expect(failure).rejects.toThrow(
+      "Cannot prepare inputs: `files` must be the method's tree as a map from tree path to file " +
+        "entry, got a list.",
+    );
+    expect(client.pipeIoCalls).toHaveLength(0);
+  });
+
+  it("refuses the method's tree given in two forms", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+
+    const failure = prepareInputs(client, {
+      files: FILES,
+      contents: { "demo.mthds": 'domain = "demo"' },
+      inputs: {},
+    } as unknown as PrepareInputsRequest);
+
+    await expect(failure).rejects.toBeInstanceOf(InputPreparationError);
+    await expect(failure).rejects.toThrow(
+      "Cannot prepare inputs: the method's tree was given as `files` and `contents`. Give it in " +
+        "one form — `files`, `tree` or `contents`.",
+    );
+    expect(client.pipeIoCalls).toHaveLength(0);
+  });
+
+  it.each([
+    ["method_ref", { method_ref: "github.com/o/r" }, "published"],
+    ["method_id", { method_id: "mt_1" }, "stored"],
+  ])("refuses dependencies beside a %s, whose packages are its own", async (_, selector, owner) => {
+    const client = makeClient([topLevel("photo", image())]);
+
+    const failure = prepareInputs(client, {
+      ...selector,
+      dependencies: { "github.com/acme/scoring": { "scoring.mthds": 'domain = "s"' } },
+      inputs: {},
+    } as unknown as PrepareInputsRequest);
+
+    await expect(failure).rejects.toBeInstanceOf(InputPreparationError);
+    await expect(failure).rejects.toThrow(
+      `Cannot prepare inputs: \`dependencies\` accompany the method's own tree; a ${owner} ` +
+        "method's packages are its own.",
+    );
+    expect(client.pipeIoCalls).toHaveLength(0);
   });
 
   it("treats a blank method_ref and a blank method_id as absent", async () => {
@@ -1521,6 +1607,7 @@ describe("prepareInputs refuses a malformed descriptor before anything is upload
 describe("PrepareInputsRequest is a type-level XOR over the three selectors", () => {
   it("accepts each selector alone and rejects every pair", () => {
     const byFiles: PrepareInputsRequest = { files: FILES, inputs: {} };
+    const byContents: PrepareInputsRequest = { contents: FILES, inputs: {} };
     const byRef: PrepareInputsRequest = { method_ref: "github.com/o/r", inputs: {} };
     const byId: PrepareInputsRequest = { method_id: "mt_1", inputs: {} };
 
@@ -1540,7 +1627,26 @@ describe("PrepareInputsRequest is a type-level XOR over the three selectors", ()
     };
     // @ts-expect-error — a request must name the method some way.
     const noSelector: PrepareInputsRequest = { inputs: {} };
+    // @ts-expect-error — the tree comes in one form.
+    const filesAndContents: PrepareInputsRequest = { files: FILES, contents: FILES, inputs: {} };
+    // @ts-expect-error — a published method's packages are its own.
+    const refAndDependencies: PrepareInputsRequest = {
+      method_ref: "github.com/o/r",
+      dependencies: { "github.com/acme/scoring": FILES },
+      inputs: {},
+    };
 
-    expect([byFiles, byRef, byId, filesAndRef, filesAndId, refAndId, noSelector]).toHaveLength(7);
+    expect([
+      byFiles,
+      byContents,
+      byRef,
+      byId,
+      filesAndRef,
+      filesAndId,
+      refAndId,
+      noSelector,
+      filesAndContents,
+      refAndDependencies,
+    ]).toHaveLength(10);
   });
 });

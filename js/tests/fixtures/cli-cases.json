@@ -555,12 +555,9 @@
         "POST /v1/pipe-io": [
           {
             "request_body": {
-              "files": [
-                {
-                  "content": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
-                  "source": "mt_receipts.mthds"
-                }
-              ]
+              "files": {
+                "mt_receipts.mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+              }
             },
             "answer": "pipe-io/receipt-review"
           }
@@ -586,12 +583,9 @@
         "POST /v1/pipe-io": [
           {
             "request_body": {
-              "files": [
-                {
-                  "content": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
-                  "source": "receipt-review.mthds"
-                }
-              ]
+              "files": {
+                "receipt-review.mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+              }
             },
             "answer": "pipe-io/receipt-review"
           }
@@ -605,7 +599,7 @@
     },
     {
       "name": "bundle/directory",
-      "summary": "A directory is every .mthds file under it, named by its path in the directory and ordered by code point; hidden entries and other files are skipped.",
+      "summary": "A directory is every .mthds file under it, each named by its path in the directory, which is its key in the tree the pipe I/O route is sent; hidden entries and other files are skipped.",
       "argv": ["run", "--method", "bundle/", "--inputs-template"],
       "files": [
         { "path": "bundle/main.mthds", "text": "# main\n" },
@@ -624,13 +618,13 @@
         "POST /v1/pipe-io": [
           {
             "request_body": {
-              "files": [
-                { "content": "# Zeta\n", "source": "Zeta.mthds" },
-                { "content": "# main\n", "source": "main.mthds" },
-                { "content": "# extra\n", "source": "steps/deep/extra.mthds" },
-                { "content": "# score\n", "source": "steps/score.mthds" },
-                { "content": "# steps2\n", "source": "steps2.mthds" }
-              ]
+              "files": {
+                "Zeta.mthds": "# Zeta\n",
+                "main.mthds": "# main\n",
+                "steps/deep/extra.mthds": "# extra\n",
+                "steps/score.mthds": "# score\n",
+                "steps2.mthds": "# steps2\n"
+              }
             },
             "answer": "pipe-io/receipt-review"
           }
@@ -660,10 +654,10 @@
         "POST /v1/pipe-io": [
           {
             "request_body": {
-              "files": [
-                { "content": "# common\n", "source": "linked.mthds" },
-                { "content": "# main\n", "source": "main.mthds" }
-              ]
+              "files": {
+                "linked.mthds": "# common\n",
+                "main.mthds": "# main\n"
+              }
             },
             "answer": "pipe-io/receipt-review"
           }
@@ -688,10 +682,10 @@
         "POST /v1/pipe-io": [
           {
             "request_body": {
-              "files": [
-                { "content": "# v2\n", "source": "main.mthds" },
-                { "content": "# v2 score\n", "source": "steps/score.mthds" }
-              ]
+              "files": {
+                "main.mthds": "# v2\n",
+                "steps/score.mthds": "# v2 score\n"
+              }
             },
             "answer": "pipe-io/receipt-review"
           }
@@ -717,12 +711,9 @@
         "POST /v1/pipe-io": [
           {
             "request_body": {
-              "files": [
-                {
-                  "content": "﻿domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
-                  "source": "bom.mthds"
-                }
-              ]
+              "files": {
+                "bom.mthds": "﻿domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+              }
             },
             "answer": "pipe-io/receipt-review"
           }
@@ -736,31 +727,39 @@
     },
     {
       "name": "bundle/code-point-order",
-      "summary": "Names are ordered code point by code point, so a character beyond U+FFFF sorts after U+FF5E, where UTF-16 order would put it before.",
-      "argv": ["run", "--method", "bundle", "--inputs-template"],
+      "summary": "Names are ordered code point by code point, so a character beyond U+FFFF sorts after U+FF5E, where UTF-16 order would put it before; the run's mthds_contents carries that order.",
+      "argv": ["run", "--method", "bundle"],
       "files": [
         { "path": "bundle/🧾.mthds", "text": "# receipt emoji\n" },
         { "path": "bundle/～.mthds", "text": "# fullwidth tilde\n" },
         { "path": "bundle/z.mthds", "text": "# z\n" }
       ],
       "routes": {
-        "POST /v1/pipe-io": [
+        "GET /v1/version": [{ "answer": "version/hosted" }],
+        "POST /v1/start": [
           {
             "request_body": {
-              "files": [
-                { "content": "# z\n", "source": "z.mthds" },
-                { "content": "# fullwidth tilde\n", "source": "～.mthds" },
-                { "content": "# receipt emoji\n", "source": "🧾.mthds" }
-              ]
+              "mthds_contents": ["# z\n", "# fullwidth tilde\n", "# receipt emoji\n"]
             },
-            "answer": "pipe-io/receipt-review"
+            "status": 202,
+            "body": {
+              "pipeline_run_id": "run-1",
+              "state": "STARTED",
+              "created_at": "2026-10-08T10:00:00Z"
+            }
+          }
+        ],
+        "GET /v1/runs/run-1/results?artifacts=main_stuff": [
+          {
+            "status": 200,
+            "body": { "pipeline_run_id": "run-1", "main_stuff": { "text": "done" } }
           }
         ]
       },
       "expect": {
         "exit_code": 0,
-        "stdout": "{\n  \"receipt\": \"https://mock.invalid/url\",\n  \"note\": \"text_value\"\n}\n",
-        "stderr_excludes": ["Error"]
+        "stdout": "{\n  \"text\": \"done\"\n}\n",
+        "stderr": ["Run started: run-1\n"]
       }
     },
     {
@@ -1494,12 +1493,9 @@
         "POST /v1/pipe-io": [
           {
             "request_body": {
-              "files": [
-                {
-                  "content": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n",
-                  "source": "receipt-review.mthds"
-                }
-              ]
+              "files": {
+                "receipt-review.mthds": "domain = \"receipts\"\nmain_pipe = \"review_receipt\"\n"
+              }
             },
             "status": 200,
             "body": {

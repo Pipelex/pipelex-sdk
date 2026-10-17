@@ -48,6 +48,8 @@ The save is refused, with the `ApiResponseError` of its problem, when the platfo
 
 An upload that fails raises `MethodFileTransferError` with `operation` `upload`, and the method is not saved (below).
 
+The crate routes, `resolve`, `codegen` and `pipe_io`, and `prepare_inputs`, which reads `pipe_io`, take the method's tree in the same three forms and send a `tree` or `contents` by the same rules, so a tree too large to send inline is uploaded once and then read by hash. There an upload that fails means the request was not sent ([architecture.md](architecture.md), "Crate routes").
+
 ## The deployment's limits
 
 `method_tree_limits()` returns the limits the deployment holds a tree to, as `mthds.method_tree.models.TreeLimits`: the most files, the largest file and the largest total, read from `limits.method_tree` of the public version handshake (`GET /v1/version`). A limit the server does not announce is left unset, and none is ever assumed, so a bare runner, which announces none, yields no limit. `list_method_tree(path)` lists a tree under those limits, off the event loop, so a tree the platform would refuse for its size is refused while it is listed, with `mthds`'s `TreeLimitError` naming the limit, before any file is hashed.
@@ -87,7 +89,7 @@ Each file is downloaded through its link, at most eight at a time, by an HTTP cl
 
 ## When a transfer fails
 
-`MethodFileTransferError` is raised when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a save, `download` for `write_method_tree`), `code` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps neither a cause nor a context: the `mthds` error an upload refusal starts as quotes that body, and httpx's error for a request that got no answer, or whose body httpx could not decode (`DecodingError`), holds the request and its URL.
+`MethodFileTransferError` is raised when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a save or a crate request, `download` for `write_method_tree`), `code` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps neither a cause nor a context: the `mthds` error an upload refusal starts as quotes that body, and httpx's error for a request that got no answer, or whose body httpx could not decode (`DecodingError`), holds the request and its URL.
 
 | `code` | When | Retryable |
 |---|---|---|

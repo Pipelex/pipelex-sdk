@@ -3,10 +3,12 @@
  *
  * Three things are pinned here, and they are the three a consumer gets wrong:
  *
- * 1. **The request type IS the wire body.** Crate requests are posted verbatim, so
- *    these tests assert the exact JSON that leaves the client — the `files[]` XOR
- *    `method_ref` envelope, and codegen's two explicit `kind`/`target` axes with
- *    `pipe_ref` ABSENT (not `undefined`) when unset.
+ * 1. **The request type IS the wire body.** A crate request given its tree as the
+ *    `files` map is posted verbatim, so these tests assert the exact JSON that leaves
+ *    the client — the `files` map XOR `method_ref` envelope, with `dependencies` and
+ *    `read_scope` beside it, and codegen's two explicit `kind`/`target` axes with
+ *    `pipe_ref` ABSENT (not `undefined`) when unset. How a `tree` or `contents` travels,
+ *    inline or by hash, is pinned in `crate-route-trees.test.ts`.
  * 2. **The 200 is a verdict, not a payload.** An unresolvable closure comes back as a
  *    200 `is_valid: false`, so a consumer that only catches throws would render a
  *    success over an unusable result. Only a no-verdict condition (a request-shape
@@ -58,25 +60,62 @@ describe("crate routes — request envelope", () => {
     vi.restoreAllMocks();
   });
 
-  it("posts the files[] envelope to /v1/resolve with per-file source labels", async () => {
+  it("posts the files map to /v1/resolve as given, each entry under its tree path", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { is_valid: true, crate: {}, message: "ok" }));
+    const files = {
+      "smoke.mthds": "domain = 'smoke'",
+      "other/other.mthds": "domain = 'other'",
+      "assets/logo.png": { base64: "iVBORw0KGgo=" },
+      "data/big.txt": { sha256: "8f".repeat(32), size: 307_200 },
+    };
+
+    await client.resolve({ files });
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/resolve");
+    // A map sent as given needs no round trip: the route is the only request.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(postedBody(fetchSpy)).toEqual({ files });
+  });
+
+  it("posts the dependencies and the read scope beside the tree", async () => {
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { is_valid: true, crate: {}, message: "ok" }));
+    const dependencies = {
+      "github.com/acme/scoring": { "METHODS.toml": "[package]\n", "scoring.mthds": "domain = 's'" },
+    };
+
+    await client.resolve({
+      files: { "main.mthds": "domain = 'smoke'" },
+      dependencies,
+      read_scope: "org_1/user_1",
+    });
+
+    expect(postedBody(fetchSpy)).toEqual({
+      files: { "main.mthds": "domain = 'smoke'" },
+      dependencies,
+      read_scope: "org_1/user_1",
+    });
+  });
+
+  it("encodes the resources beside the tree as base64", async () => {
     const client = makeClient();
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { is_valid: true, crate: {}, message: "ok" }));
 
     await client.resolve({
-      files: [
-        { content: "domain = 'smoke'", source: "smoke.mthds" },
-        { content: "domain = 'other'" },
-      ],
+      files: { "main.mthds": "domain = 'smoke'" },
+      resources: { "templates/invoice.docx": new Uint8Array([0x50, 0x4b, 0x03, 0x04]) },
     });
 
-    expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/resolve");
     expect(postedBody(fetchSpy)).toEqual({
-      files: [
-        { content: "domain = 'smoke'", source: "smoke.mthds" },
-        { content: "domain = 'other'" },
-      ],
+      files: { "main.mthds": "domain = 'smoke'" },
+      resources: { "templates/invoice.docx": "UEsDBA==" },
     });
   });
 
@@ -87,7 +126,7 @@ describe("crate routes — request envelope", () => {
       .mockResolvedValue(jsonResponse(200, { is_valid: true }));
 
     await client.codegen({
-      files: [{ content: "domain = 'smoke'" }],
+      files: { "smoke.mthds": "domain = 'smoke'" },
       kind: "types",
       target: "ts-zod",
     });
@@ -97,7 +136,7 @@ describe("crate routes — request envelope", () => {
     // pipe_ref with a 422, so emitting the key at all would turn every default call
     // into a request-shape error.
     expect(postedBody(fetchSpy)).toEqual({
-      files: [{ content: "domain = 'smoke'" }],
+      files: { "smoke.mthds": "domain = 'smoke'" },
       kind: "types",
       target: "ts-zod",
     });
@@ -165,7 +204,7 @@ describe("crate routes — request envelope", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       problemResponse(422, "provide exactly one of `files`, `method_ref`, or `method_id`"),
     );
-    const overSpecified = client.resolve({ files: [{ content: "x" }], method_id: "mt_1" });
+    const overSpecified = client.resolve({ files: { "main.mthds": "x" }, method_id: "mt_1" });
     await expect(overSpecified).rejects.toMatchObject({ status: 422 });
   });
 });
@@ -213,7 +252,7 @@ describe("crate routes — a method_ref closure gets the fetch budget", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(hangingFetch());
     const client = makeClient();
 
-    const byFiles = track(client.resolve({ files: [{ content: "domain = 'smoke'\n" }] }));
+    const byFiles = track(client.resolve({ files: { "smoke.mthds": "domain = 'smoke'\n" } }));
     const byRef = track(
       client.resolve({ method_ref: "github.com/Pipelex/methods/documents@v0.1.0" }),
     );
@@ -237,7 +276,7 @@ describe("crate routes — a method_ref closure gets the fetch budget", () => {
 
     const byFiles = track(
       client.codegen({
-        files: [{ content: "domain = 'smoke'\n" }],
+        files: { "smoke.mthds": "domain = 'smoke'\n" },
         kind: "types",
         target: "ts-zod",
       }),
@@ -279,7 +318,7 @@ describe("crate routes — the 200 verdict", () => {
       jsonResponse(200, { is_valid: true, crate, message: "MTHDS library resolved successfully" }),
     );
 
-    const result = await client.resolve({ files: [{ content: "domain = 'smoke'" }] });
+    const result = await client.resolve({ files: { "smoke.mthds": "domain = 'smoke'" } });
 
     expect(result.is_valid).toBe(true);
     const report = result as ResolveValidReport;
@@ -309,7 +348,7 @@ describe("crate routes — the 200 verdict", () => {
     );
 
     const result = await client.codegen({
-      files: [{ content: "domain = 'smoke'" }],
+      files: { "smoke.mthds": "domain = 'smoke'" },
       kind: "types",
       target: "ts-zod",
     });
@@ -335,8 +374,9 @@ describe("crate routes — the 200 verdict", () => {
     );
 
     for (const call of [
-      () => client.resolve({ files: [{ content: "!!broken" }] }),
-      () => client.codegen({ files: [{ content: "!!broken" }], kind: "types", target: "ts-zod" }),
+      () => client.resolve({ files: { "smoke.mthds": "!!broken" } }),
+      () =>
+        client.codegen({ files: { "smoke.mthds": "!!broken" }, kind: "types", target: "ts-zod" }),
     ]) {
       const result = await call();
       // The request was well-formed; the library was not. Nothing throws, so a consumer
@@ -364,7 +404,7 @@ describe("crate routes — what throws", () => {
     // crate verdict: nothing is wrong with the closure, so it must not come back as
     // `is_valid: false`.
     const failure = client.codegen({
-      files: [{ content: "domain = 'smoke'" }],
+      files: { "smoke.mthds": "domain = 'smoke'" },
       kind: "types",
       target: "ts-zod",
       pipe_ref: "smoke.echo",

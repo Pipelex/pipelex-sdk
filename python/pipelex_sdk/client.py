@@ -62,7 +62,7 @@ from pipelex_sdk.crate_models import (
     CodegenRequest,
     CodegenResponse,
     CodegenResponseAdapter,
-    MthdsFileItem,
+    CrateToolingRequest,
     PipeIORequest,
     PipeIOResponse,
     PipeIOResponseAdapter,
@@ -266,6 +266,10 @@ _INHERITED_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_INHERITED_ANSWE
 # tree (`_prepare_files`), so the `_upload_missing` override can report an answer asking for blobs the tree
 # does not hold as an answer the SDK cannot read, carrying that answer's status and headers.
 _MISSING_BLOBS_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_MISSING_BLOBS_ANSWER", default=None)
+
+# What a failed upload of a tree's file prevented, as its error says it: a save's, and a crate request's.
+_METHOD_NOT_SAVED = "the method was not saved"
+_REQUEST_NOT_SENT = "the request was not sent"
 
 # What stands in for a signed link in an error: its query is a bearer credential, valid until it expires.
 _REDACTED = "[redacted]"
@@ -1979,6 +1983,7 @@ class PipelexAPIClient(MthdsAPIClient):
             files_given="files" in write_input.model_fields_set,
             tree=write_input.tree,
             contents=write_input.contents,
+            unsent=_METHOD_NOT_SAVED,
         )
         body: dict[str, Any] = {"name": write_input.name}
         if files is not None:
@@ -2024,7 +2029,7 @@ class PipelexAPIClient(MthdsAPIClient):
             msg = "write_draft() replaces the draft's whole tree: give it as files (files=None empties the draft), tree or contents."
             raise RequestArgumentError(msg)
         files = await self._method_tree_files(
-            call="write_draft", files=draft.files, files_given=files_given, tree=draft.tree, contents=draft.contents
+            call="write_draft", files=draft.files, files_given=files_given, tree=draft.tree, contents=draft.contents, unsent=_METHOD_NOT_SAVED
         )
         body: dict[str, Any] = {"files": files}
         if "input_data" in draft.model_fields_set:
@@ -2041,8 +2046,12 @@ class PipelexAPIClient(MthdsAPIClient):
         files_given: bool,
         tree: MethodTree | None,
         contents: dict[str, bytes | str] | None,
+        unsent: str,
     ) -> dict[str, FileEntry] | None:
-        """The `files` a save sends: `files` as given, or `tree` or `contents` prepared, uploading what the organization lacks.
+        """The `files` a save or a crate request sends: `files` as given, or `tree` or `contents` prepared, uploading what the organization lacks.
+
+        `unsent` says, in an upload's failure, what did not happen because of it: `the method was not
+        saved` for a save, `the request was not sent` for a crate request.
 
         Raises:
             RequestArgumentError: Two forms were given, or `contents` holds no file or a text no
@@ -2055,13 +2064,13 @@ class PipelexAPIClient(MthdsAPIClient):
             raise RequestArgumentError(msg)
         if tree is not None:
             listed_tree = tree
-            return await self._prepared_tree_files(lambda: self.prepare_files(listed_tree))
+            return await self._prepared_tree_files(lambda: self.prepare_files(listed_tree), unsent=unsent)
         if contents is not None:
             data = _contents_as_bytes(contents, call=call)
-            return await self._prepared_tree_files(lambda: self.prepare_files_from_contents(data))
+            return await self._prepared_tree_files(lambda: self.prepare_files_from_contents(data), unsent=unsent)
         return files
 
-    async def _prepared_tree_files(self, prepare: Callable[[], Awaitable[dict[str, FileEntry]]]) -> dict[str, FileEntry]:
+    async def _prepared_tree_files(self, prepare: Callable[[], Awaitable[dict[str, FileEntry]]], *, unsent: str) -> dict[str, FileEntry]:
         """Run `mthds`'s tree preparation, its failures raised as this SDK's errors, each carrying a verdict.
 
         An upload target's refusal becomes a `MethodFileTransferError` whose message and members name
@@ -2076,7 +2085,7 @@ class PipelexAPIClient(MthdsAPIClient):
         except _MthdsBlobUploadError as exc:
             upload_host = urlsplit(exc.upload_url).hostname or "storage"
             status_line = f"{exc.status} {exc.status_text}".rstrip()
-            msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed ({status_line}), so the method was not saved."
+            msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed ({status_line}), so {unsent}."
             transfer_error = MethodFileTransferError(
                 msg,
                 operation=MethodFileTransferOperation.UPLOAD,
@@ -2089,10 +2098,7 @@ class PipelexAPIClient(MthdsAPIClient):
             # failure reaching here is an upload's, sent straight to storage: no answer, or one whose body
             # could not be decoded. httpx's error holds the request, whose URL is the signed target, so
             # only its class name travels.
-            msg = (
-                f"A file the organization lacks could not be uploaded to storage: no answer came back ({type(exc).__name__}), "
-                "so the method was not saved."
-            )
+            msg = f"A file the organization lacks could not be uploaded to storage: no answer came back ({type(exc).__name__}), so {unsent}."
             transfer_error = MethodFileTransferError(
                 msg, operation=MethodFileTransferOperation.UPLOAD, code=MethodFileTransferCode.UNREACHABLE, sha256=None
             )
@@ -2880,9 +2886,9 @@ class PipelexAPIClient(MthdsAPIClient):
     # The second crate-family surface, mirroring the JS SDK: `/v1/resolve` emits the
     # normalized library crate, `/v1/codegen` projects that crate into stamped typed
     # artifacts plus their lock, and `/v1/pipe-io` returns a method's three I/O artifacts
-    # with no dry run. Same envelope family and same 200-verdict discipline as the build
-    # routes, PLUS the hosted `method_id` selector under the tooling routes' strict
-    # three-way XOR (see `crate_models`).
+    # with no dry run. Same 200-verdict discipline as `validate`, the method given as its
+    # tree (the protocol's `files` map, sent as a save sends it), a `method_ref` or the
+    # hosted `method_id`, under the tooling routes' strict three-way XOR (see `crate_models`).
 
     async def resolve(self, request: ResolveRequest) -> ResolveResponse:
         """Resolve a closure into its normalized library crate — `POST /v1/resolve`.
@@ -2893,20 +2899,28 @@ class PipelexAPIClient(MthdsAPIClient):
         sweep, so a valid verdict here says the library resolves, never that it runs; that
         is `validate`'s vocabulary.
 
-        The closure arrives in exactly one of three forms — inline `files`, an address-form
+        The method arrives in exactly one of three forms — its tree, an address-form
         `method_ref` (server-resolved; registry form `501`), or a hosted `method_id`
-        (platform-resolved) — enforced at request construction and by the server alike.
+        (platform-resolved) — enforced at request construction and by the server alike. The
+        tree is the protocol's `files` map: `files` is sent as given, and a `tree` or `contents`
+        inline when small and by hash otherwise, after uploading the files the API lacks, as
+        `create_method` sends it.
 
         Returns a 200 verdict: branch on `is_valid` before reading the arm. A no-verdict
-        condition (a malformed selector, a selector-resolution failure — fetch failure, no
-        package at the address, an unknown or foreign-org id — auth, a server fault) raises
-        `ApiResponseError`, never an `is_valid: false` verdict.
+        condition (a tree the runner cannot read — `InvalidMethodFiles`, `MissingBlobs`,
+        `MethodTreeTooLarge`, `InvalidBundle` — a malformed selector, a selector-resolution
+        failure — fetch failure, no package at the address, an unknown or foreign-org id — auth, a
+        server fault) raises `ApiResponseError`, never an `is_valid: false` verdict.
+
+        Raises:
+            MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be uploaded.
+            TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
+            ApiResponseError: No verdict could be produced.
         """
-        body = request.model_dump(mode="json", exclude_none=True)
         return await self._request_product(
             "POST",
             "resolve",
-            body=body,
+            body=await self._crate_body(request, call="resolve"),
             read=ResolveResponseAdapter.validate_python,
             request_timeout=_crate_request_timeout_seconds(request.method_ref),
         )
@@ -2921,16 +2935,21 @@ class PipelexAPIClient(MthdsAPIClient):
         `pipelex codegen types` run, so the offline `pipelex codegen check` passes on it;
         `pipelex_sdk.codegen_writer.write_codegen_tree` does exactly that.
 
-        Same 200-verdict discipline and same three-form closure selector as `resolve`. A
-        no-verdict condition (an unknown `kind`/`target`, a `pipe_ref` on the
-        concept-set-wide `types` kind, a malformed selector, a selector-resolution failure)
-        raises `ApiResponseError`; a registry-form `method_ref` is a `501`.
+        Same 200-verdict discipline, same three-form method selector and same tree sending as
+        `resolve`. A no-verdict condition (an unknown `kind`/`target`, a `pipe_ref` on the
+        concept-set-wide `types` kind, a tree the runner cannot read, a malformed selector, a
+        selector-resolution failure) raises `ApiResponseError`; a registry-form `method_ref` is a
+        `501`.
+
+        Raises:
+            MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be uploaded.
+            TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
+            ApiResponseError: No verdict could be produced.
         """
-        body = request.model_dump(mode="json", exclude_none=True)
         return await self._request_product(
             "POST",
             "codegen",
-            body=body,
+            body=await self._crate_body(request, call="codegen"),
             read=CodegenResponseAdapter.validate_python,
             request_timeout=_crate_request_timeout_seconds(request.method_ref),
         )
@@ -2943,33 +2962,62 @@ class PipelexAPIClient(MthdsAPIClient):
         `output_form` (the standard's artifacts, typed from `mthds.protocol`), beside the
         resolved qualified `pipe_ref`, the method's own `default_pipe_ref`, its
         `pending_signatures` and `is_runnable`. `all_pipes=True` keys the three maps by every
-        pipe the closure loads instead; `include_files=True` echoes the closure's `.mthds`
-        files. It runs NO dry-run sweep, so it costs one load where `validate` dry-runs every
-        pipe, and a valid verdict never says the method runs.
+        pipe the closure loads instead; `include_files=True` echoes the text of the method's own
+        `.mthds` bundles, keyed by tree path. It runs NO dry-run sweep, so it costs one load where
+        `validate` dry-runs every pipe, and a valid verdict never says the method runs.
 
-        Same three-form closure selector as `resolve`, enforced at request construction and by
-        the server alike. The pipe is selected by the request's `pipe_ref`, else a fetched
-        package manifest's `main_pipe`, else the closure's single `main_pipe` declaration.
+        Same three-form method selector and same tree sending as `resolve`, enforced at request
+        construction and by the server alike. The pipe is selected by the request's `pipe_ref`,
+        else the `main_pipe` of the `METHODS.toml` at the tree's root, else the closure's single
+        `main_pipe` declaration.
 
         Returns a 200 verdict: branch on `is_valid` before reading the arm. A no-verdict
         condition raises `ApiResponseError`: a refused selection (an unknown ref, or no
         `pipe_ref` and a chain that finds no entry pipe or several, without `all_pipes`) is a
         `422` whose `error_type` is `EntryPipeNotFoundError` or `EntryPipeAmbiguousError`
-        (pipelex-api >= 0.33.1); a malformed request is a request-shape `422`; the
-        `method_ref` fetch failures and the `method_id`
-        resolution failures are those of `resolve`; an artifact the server cannot derive is a
-        `500`.
+        (pipelex-api >= 0.33.1); a malformed request is a request-shape `422`; a tree the runner
+        cannot read, the `method_ref` fetch failures and the `method_id` resolution failures are
+        those of `resolve`; an artifact the server cannot derive is a `500`.
+
+        Raises:
+            MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be uploaded.
+            TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
+            ApiResponseError: No verdict could be produced.
         """
         # `all_pipes` and `include_files` default to False on the server too, so a flag left at its
         # default is not sent, as `@pipelex/sdk` sends it: the two SDKs put the same body on the wire.
-        body = request.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
         return await self._request_product(
             "POST",
             "pipe-io",
-            body=body,
+            body=await self._crate_body(request, call="pipe_io", exclude_defaults=True),
             read=PipeIOResponseAdapter.validate_python,
             request_timeout=_crate_request_timeout_seconds(request.method_ref),
         )
+
+    async def _crate_body(self, request: CrateToolingRequest, *, call: str, exclude_defaults: bool = False) -> dict[str, Any]:
+        """The body a crate request posts: its members as given, its tree as the `files` map a save would send.
+
+        A `tree` or `contents` is prepared here, inline when small and by hash otherwise, uploading the
+        files the API lacks first, through the helper `create_method` and `write_draft` send a tree
+        with, so the three routes and a save send one tree the same way. `files` and `dependencies`
+        travel as given; a member left unset is not sent.
+        """
+        body = request.model_dump(
+            mode="json", exclude_none=True, exclude_defaults=exclude_defaults, exclude={"files", "tree", "contents", "dependencies"}
+        )
+        files = await self._method_tree_files(
+            call=call,
+            files=request.files,
+            files_given=request.files is not None,
+            tree=request.tree,
+            contents=request.contents,
+            unsent=_REQUEST_NOT_SENT,
+        )
+        if files is not None:
+            body["files"] = files
+        if request.dependencies is not None:
+            body["dependencies"] = request.dependencies
+        return body
 
     # ── Model reference check (Pipelex API — `/v1/models/check`) ────────────
     #
@@ -3026,7 +3074,10 @@ class PipelexAPIClient(MthdsAPIClient):
     async def prepare_inputs(
         self,
         *,
-        files: list[MthdsFileItem] | None = None,
+        files: dict[str, FileEntry] | None = None,
+        tree: MethodTree | None = None,
+        contents: dict[str, bytes | str] | None = None,
+        dependencies: dict[str, dict[str, FileEntry]] | None = None,
         method_ref: str | None = None,
         method_id: str | None = None,
         pipe_ref: str | None = None,
@@ -3039,12 +3090,13 @@ class PipelexAPIClient(MthdsAPIClient):
         and existing `pipelex-storage://` URIs pass through unchanged; all failures are raised
         before any run is created.
 
-        The method is named exactly one of three ways — inline `files`, a `method_ref` address
+        The method is named exactly one of three ways — its tree, a `method_ref` address
         (runner-resolved) or a stored `method_id` (platform-resolved) — all server-resolved,
-        with nothing expanded client-side. An empty selector is treated as absent. The
-        signature comes from one `POST /v1/pipe-io` (see `pipe_io`), which selects the pipe
-        and returns its input-form descriptor, so the walk is guided by each input's DECLARED
-        kind rather than by the shape of its value.
+        with nothing expanded client-side. The tree is given as `pipe_io` takes it, in one of
+        `files`, `tree` or `contents`, with the `dependencies` it calls beside it. An empty
+        selector is treated as absent. The signature comes from one `POST /v1/pipe-io` (see
+        `pipe_io`), which selects the pipe and returns its input-form descriptor, so the walk is
+        guided by each input's DECLARED kind rather than by the shape of its value.
 
         `pipe_ref` is qualified-only (`domain.pipe_code`); omit it and the server selects the
         method's entry pipe. A refused selection raises `InputPreparationError` with the
@@ -3058,6 +3110,9 @@ class PipelexAPIClient(MthdsAPIClient):
         return await _prepare_inputs_impl(
             self,
             files=files,
+            tree=tree,
+            contents=contents,
+            dependencies=dependencies,
             method_ref=method_ref,
             method_id=method_id,
             pipe_ref=pipe_ref,

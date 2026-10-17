@@ -123,9 +123,12 @@ import type { ProblemDetails, UserAction } from "./error-models.js";
 import {
   INLINE_TREE_MAX_BYTES,
   MAX_CONCURRENT_TRANSFERS,
+  REQUEST_SENDING,
+  SAVE_SENDING,
   announcedTreeLimits,
   contentsTreeSource,
   declaresBlobStore,
+  emptyTreeRefusal,
   fileByBlob,
   forEachConcurrently,
   hashMethodFiles,
@@ -142,6 +145,7 @@ import {
 import type {
   MethodTreeLimits,
   MethodTreeSource,
+  TreeSending,
   MissingBlob,
   MissingBlobsRequest,
   MissingBlobsResult,
@@ -2039,7 +2043,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * see {@link PipelexHostedToolingExtensions}).
    */
   async resolve(request: ResolveRequest): Promise<ResolveResponse> {
-    return this.requestExtension("resolve", await wireCrateRequest(request), {
+    return this.requestExtension("resolve", await this.crateBody("resolve", request), {
       timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
     });
   }
@@ -2060,7 +2064,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * a malformed selector is a 422; a registry-form `method_ref` is a `501`.
    */
   async codegen(request: CodegenRequest): Promise<CodegenResponse> {
-    return this.requestExtension("codegen", await wireCrateRequest(request), {
+    return this.requestExtension("codegen", await this.crateBody("codegen", request), {
       timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
     });
   }
@@ -2103,9 +2107,31 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * that a retry clears once the runner has cached the clone.
    */
   async pipeIo(request: PipeIORequest): Promise<PipeIOResponse> {
-    return this.requestExtension("pipe-io", await wireCrateRequest(request), {
+    return this.requestExtension("pipe-io", await this.crateBody("pipeIo", request), {
       timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
     });
+  }
+
+  /**
+   * A crate request as the wire takes it: its members as given, its tree as the `files` map a save
+   * would send, and its `resources` encoded into the base64 map, each key left off when there is
+   * nothing to send. A `tree` or `contents` is prepared here, inline when small and by hash
+   * otherwise, uploading the files the API lacks first, through the helper `createMethod` and
+   * `writeDraft` send a tree with, so the three routes and a save send one tree the same way.
+   */
+  private async crateBody(call: string, request: CrateRequestBase): Promise<unknown> {
+    if (typeof request !== "object" || request === null) return request;
+    const { tree, contents, resources, ...rest } = request;
+    const body: Record<string, unknown> = { ...rest };
+    if (tree != null || contents != null) {
+      const files = await this.methodTreeFiles(call, request, REQUEST_SENDING);
+      if (files != null) body.files = files;
+    }
+    if (resources !== undefined) {
+      const encoded = await encodeBundleResources(resources);
+      if (encoded !== undefined) body.resources = encoded;
+    }
+    return body;
   }
 
   // ── Hosted extension: durable run lifecycle (NOT part of the protocol) ──
@@ -2504,7 +2530,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * room for a publish.
    */
   async createMethod(input: MethodWriteInput): Promise<MethodData> {
-    const files = await this.methodTreeFiles("createMethod", input);
+    const files = await this.methodTreeFiles("createMethod", input, SAVE_SENDING);
     const body: Record<string, unknown> = { name: input.name };
     if (files != null) body.files = files;
     if (input.input_data !== undefined) body.input_data = input.input_data;
@@ -2541,7 +2567,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
           "draft), tree or contents.",
       );
     }
-    const files = await this.methodTreeFiles("writeDraft", input);
+    const files = await this.methodTreeFiles("writeDraft", input, SAVE_SENDING);
     const body: Record<string, unknown> = { files: files ?? null };
     if (input.input_data !== undefined) body.input_data = input.input_data;
     if (input.expected_updated_at !== undefined) {
@@ -2608,13 +2634,15 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
-   * The `files` a save sends: `files` as given, or `tree` or `contents` prepared, uploading what
-   * the organization lacks; `undefined` when the input gives none. Two forms are refused with
-   * `RequestArgumentError` before any request, naming `call`.
+   * The `files` a save or a crate request sends: `files` as given, or `tree` or `contents`
+   * prepared, uploading what the organization lacks; `undefined` when the input gives none. Two
+   * forms are refused with `RequestArgumentError` before any request, naming `call`. `sending`
+   * says what the tree is for, which a refusal or a failed upload names.
    */
   private async methodTreeFiles(
     call: string,
     input: MethodTreeInput,
+    sending: TreeSending,
   ): Promise<MethodFiles | null | undefined> {
     const given = (
       [
@@ -2631,9 +2659,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
           `${given.join(" and ")}.`,
       );
     }
-    if (input.tree != null) return this.prepareTreeFiles(input.tree, call);
+    if (input.tree != null) return this.prepareTreeFiles(input.tree, call, sending);
     if (input.contents != null) {
-      return this.prepareTreeFiles(await contentsTreeSource(input.contents, call), call);
+      return this.prepareTreeFiles(
+        await contentsTreeSource(input.contents, call, sending),
+        call,
+        sending,
+      );
     }
     return input.files;
   }
@@ -2649,13 +2681,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * measured is uploaded from memory rather than read a second time. A tree holding no file is
    * refused with `RequestArgumentError` before any request, `call` naming the caller's method.
    */
-  private async prepareTreeFiles(tree: MethodTreeSource, call: string): Promise<MethodFiles> {
-    if (tree.files.length === 0) {
-      throw new RequestArgumentError(
-        `${call}() got a tree holding no file, and a method tree holds at least one; give ` +
-          "files: null for an empty draft.",
-      );
-    }
+  private async prepareTreeFiles(
+    tree: MethodTreeSource,
+    call: string,
+    sending: TreeSending,
+  ): Promise<MethodFiles> {
+    if (tree.files.length === 0) throw emptyTreeRefusal(call, "a tree", sending);
     let read: Map<string, Uint8Array> | undefined;
     // An inline map is never smaller than the bytes it carries, so a tree whose bytes alone pass
     // the threshold is not read in full just to be measured.
@@ -2668,7 +2699,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       return inlineFilesOf(tree, read ?? (await readTreeBytes(tree)));
     }
     const asked = await this.findMissingBlobs({ blobs: uniqueBlobs(tree), digest: tree.digest });
-    await this.uploadMissing(tree, asked, read);
+    await this.uploadMissing(tree, asked, read, sending);
     return hashMethodFiles(tree);
   }
 
@@ -2709,6 +2740,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     tree: MethodTreeSource,
     asked: { result: MissingBlobsResult; res: RawResponse },
     read: ReadonlyMap<string, Uint8Array> | undefined,
+    sending: TreeSending,
   ): Promise<void> {
     const missing = asked.result.missing;
     const byBlob = fileByBlob(tree);
@@ -2731,10 +2763,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
         throw new RequestArgumentError(
           `The tree read ${bytes.length} bytes hashing to ${bytesSha256} for '${file.path}', which ` +
             `its listing names as ${blob.size} bytes hashing to ${blob.sha256}, so they were not ` +
-            "uploaded and the method was not saved.",
+            `uploaded and ${sending.unsent}.`,
         );
       }
-      await uploadBlob(blob, bytes, { timeoutMs: this.requestTimeoutMs, signal });
+      await uploadBlob(blob, bytes, {
+        timeoutMs: this.requestTimeoutMs,
+        signal,
+        unsent: sending.unsent,
+      });
     });
   }
 
@@ -3804,20 +3840,6 @@ function assertResourcesAccompanyABundle(
       "resources accompany the bundle whose steps read them: send them with mthds_contents or a method bundle.",
     );
   }
-}
-
-/**
- * A crate request as the wire takes it: the request as given, its `resources`
- * encoded into the base64 map, the key left off when there is nothing to send.
- * A request that carries no `resources` key is posted untouched.
- */
-async function wireCrateRequest(request: CrateRequestBase): Promise<unknown> {
-  if (typeof request !== "object" || request === null || !("resources" in request)) {
-    return request;
-  }
-  const { resources, ...rest } = request;
-  const encoded = await encodeBundleResources(resources);
-  return encoded === undefined ? rest : { ...rest, resources: encoded };
 }
 
 /**

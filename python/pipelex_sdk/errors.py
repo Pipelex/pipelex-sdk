@@ -892,7 +892,9 @@ class MethodFileTransferError(PipelexRequestError):
     """A file of a method's tree that could not be moved between this machine and the platform's storage.
 
     Raised by `create_method` and `write_draft` when a blob the platform lacks could not be uploaded to
-    the target `POST /v1/blobs/missing` named, and by `write_method_tree` when a saved file could not be
+    the target `POST /v1/blobs/missing` named, so the method was not saved, by `resolve`, `codegen`,
+    `pipe_io` and `prepare_inputs` for the same failure, so the request was not sent, and by
+    `write_method_tree` when a saved file could not be
     downloaded through its link, or its bytes are not the file the listing names. `operation` says which
     way the file was moving, `code` why it failed, `sha256` which bytes (`None` for an upload that got no
     answer, which the standard's client does not attribute to a blob), `path` the tree path when one is
