@@ -15,10 +15,12 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
+from mthds.method_tree.models import MethodTree
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.crate_models import CodegenRequest, PipeIORequest, PipeIOValidReport, ResolveRequest
-from pipelex_sdk.errors import MethodFileTransferCode, MethodFileTransferError, MethodFileTransferOperation
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
+from pipelex_sdk.errors import MethodFileTransferCode, MethodFileTransferError, MethodFileTransferOperation, RequestArgumentError
 from tests.unit.conftest import BASE_URL
 from tests.unit.test_data import PipeIOBodies
 
@@ -183,3 +185,51 @@ class TestCrateRouteTrees:
         assert str(error).endswith("so the request was not sent.")
         assert "fixture-signature" not in str(error)
         assert "/v1/resolve" not in api.paths()
+
+    def test_the_blob_route_is_asked_under_the_request_read_scope(self, mocker: MockerFixture) -> None:
+        """The blobs go to the store the request's hash entries are read from, and the request still carries its scope."""
+        api = _Api()
+        client = _client(api, mocker)
+
+        asyncio.run(client.resolve(ResolveRequest(contents={"data/big.txt": _LARGE}, read_scope="org_acme")))
+
+        assert api.paths() == ["/v1/version", "/v1/blobs/missing", "/v1/resolve"]
+        (asked,) = [request for request in api.requests if request.url.path == "/v1/blobs/missing"]
+        assert dict(asked.url.params) == {"read_scope": "org_acme"}
+        assert api.body_of("/v1/resolve") == {
+            "files": {"data/big.txt": {"sha256": _sha256(_LARGE), "size": len(_LARGE)}},
+            "read_scope": "org_acme",
+        }
+
+    def test_the_scope_does_not_outlive_its_request(self, mocker: MockerFixture) -> None:
+        """A request with no `read_scope`, after one with a scope, asks the blob route with no query."""
+        api = _Api()
+        client = _client(api, mocker)
+
+        async def both() -> None:
+            await client.resolve(ResolveRequest(contents={"data/big.txt": _LARGE}, read_scope="org_acme"))
+            await client.resolve(ResolveRequest(contents={"data/other.txt": _LARGE + b"y"}))
+
+        asyncio.run(both())
+
+        asked = [request for request in api.requests if request.url.path == "/v1/blobs/missing"]
+        assert [dict(request.url.params) for request in asked] == [{"read_scope": "org_acme"}, {}]
+
+    @pytest.mark.parametrize("call", ["resolve", "codegen", "pipe_io"])
+    def test_a_tree_holding_no_file_is_refused_before_any_request(self, mocker: MockerFixture, call: str) -> None:
+        api = _Api()
+        client = _client(api, mocker)
+        empty = MethodTree(files=[], digest=f"sha256:{'0' * 64}")
+        requests: dict[str, Any] = {
+            "resolve": (client.resolve, ResolveRequest(tree=empty)),
+            "codegen": (client.codegen, CodegenRequest(tree=empty, target="python-pydantic")),
+            "pipe_io": (client.pipe_io, PipeIORequest(tree=empty)),
+        }
+        route, request = requests[call]
+
+        with pytest.raises(RequestArgumentError) as caught:
+            asyncio.run(route(request))
+
+        assert str(caught.value) == f"{call}() got a tree holding no file, and a method tree holds at least one."
+        assert error_verdict_of(caught.value) == ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
+        assert not api.requests

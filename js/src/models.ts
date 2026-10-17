@@ -632,7 +632,9 @@ export interface FormatResponse {
  * make the common `{ files }` call site pick a branch for no gain, and the server rejects the
  * illegal shapes with a typed `ApiResponseError` either way. Two forms of the tree at once are
  * the one shape the client refuses itself, with a `RequestArgumentError`, since it prepares the
- * tree before posting.
+ * tree before posting. An empty map is absent, as in the Python SDK: `files: {}`, `files: null`,
+ * `contents: {}` and `dependencies: {}` select and send nothing, so an empty one beside another
+ * selector never reaches the wire as a second selector.
  *
  * `dependencies` accompanies the tree: the method packages it calls by address that the runner
  * cannot fetch, each a map of file entries keyed by its address, sent as given. These routes load
@@ -646,9 +648,11 @@ export interface FormatResponse {
  * `method_ref` it is the server's `422`, a published method's files being its package's own.
  *
  * `read_scope` is the Pipelex API's scope the request reads the method under: a hash entry of
- * `files` resolves in that scope's blob store, else in the caller's own. **The hosted platform
- * ignores it**: it stamps the caller's organization as the read scope of every crate request and
- * drops the one the caller sent, so it only reaches a runner called directly.
+ * `files` resolves in that scope's blob store, else in the caller's own. A `tree` or `contents`
+ * sent by hash asks `POST /v1/blobs/missing` under the same scope, so its blobs are uploaded into
+ * the store the request reads. **The hosted platform ignores it**: it stamps the caller's
+ * organization as the read scope of every crate request and drops the one the caller sent, so it
+ * only reaches a runner called directly.
  */
 export interface CrateRequestBase {
   /** The method's tree as the protocol's map of file entries, sent as given. */
@@ -664,6 +668,18 @@ export interface CrateRequestBase {
   resources?: BundleResources | null;
   /** The scope the runner reads the tree under; the hosted platform replaces it with the caller's organization. */
   read_scope?: string;
+}
+
+/**
+ * What a crate route call — `resolve`, `codegen`, `pipeIo` — takes beside its request.
+ *
+ * `signal` is read between the steps a `tree` or `contents` costs before the request, and before
+ * the request itself: once it has aborted, no further file of the tree is read, neither the blob
+ * route nor an upload starts, and the route is not asked, and the call throws the abort. A request
+ * already sent runs to its end, as in `prepareInputs`, which passes its own `signal` here.
+ */
+export interface CrateRouteOptions {
+  signal?: AbortSignal;
 }
 
 /**
@@ -858,7 +874,8 @@ export interface PipeIOValidReport {
   output_form: OutputForm;
   /**
    * The method's own entry pipe: the selection chain without the request's `pipe_ref` —
-   * the fetched manifest's `main_pipe`, else the closure's single declaration. A request
+   * the `main_pipe` of the `METHODS.toml` at the tree's root, sent or fetched, else the
+   * closure's single declaration. A request
    * that omits `pipe_ref` always answers `pipe_ref === default_pipe_ref`. A stated `null`
    * when the chain finds none or several.
    *

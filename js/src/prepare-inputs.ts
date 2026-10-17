@@ -51,7 +51,12 @@ import {
 import { hasBundleResources, isResourceMap } from "./bundle-resources.js";
 import type { BundleResources } from "./bundle-resources.js";
 import type { MethodTreeSource } from "./method-trees.js";
-import type { PipeIORequest, PipeIOResponse, PipeIOValidReport } from "./models.js";
+import type {
+  CrateRouteOptions,
+  PipeIORequest,
+  PipeIOResponse,
+  PipeIOValidReport,
+} from "./models.js";
 import type { UploadCapableClient, UploadRecord } from "./upload.js";
 import { uploadFile } from "./upload.js";
 
@@ -112,7 +117,9 @@ export interface PrepareInputsBase {
   /**
    * Stops the preparation between its steps, a file's read and its upload included: once it has
    * aborted, neither the pipe I/O request nor any upload starts, and `prepareInputs` throws the
-   * abort. A request already sent runs to its end. It is not sent to the server.
+   * abort. A `tree` or `contents` sent by hash counts its steps too — the version handshake, the
+   * blob route, each read and upload of a missing blob — so an abort during the handshake starts
+   * none of the rest. A request already sent runs to its end. It is not sent to the server.
    */
   signal?: AbortSignal;
   /**
@@ -188,7 +195,7 @@ export interface PreparedInputs {
  * `PipelexApiClient` satisfies it structurally.
  */
 export interface PrepareCapableClient extends UploadCapableClient {
-  pipeIo(request: PipeIORequest): Promise<PipeIOResponse>;
+  pipeIo(request: PipeIORequest, options?: CrateRouteOptions): Promise<PipeIOResponse>;
 }
 
 /** Mutable state threaded through one preparation walk. */
@@ -537,6 +544,69 @@ function nonEmptyMap<T>(value: unknown): Record<string, T> | undefined {
     : undefined;
 }
 
+/** How a value that should have been a map is named in a refusal. */
+function describeNonMap(value: unknown): string {
+  if (Array.isArray(value)) return "a list";
+  if (value instanceof Uint8Array) return "bytes";
+  return typeof value;
+}
+
+/**
+ * Refuse a selector member that is given but is not a map, such as a list, or whose values are not
+ * what `isValue` accepts, before any request: read as absent, a list would leave the method
+ * unselected, or select another one, without a word.
+ */
+function refuseNonMap(
+  name: string,
+  value: unknown,
+  holds: string,
+  isValue: (entry: unknown) => boolean,
+): void {
+  if (value === undefined || value === null) return;
+  if (!isPlainObject(value)) {
+    throw new InputPreparationError(
+      `Cannot prepare inputs: \`${name}\` must be ${holds}, got ${describeNonMap(value)}.`,
+    );
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    if (!isValue(entry)) {
+      throw new InputPreparationError(
+        `Cannot prepare inputs: \`${name}\` must be ${holds}, and "${key}" holds ` +
+          `${entry === null ? "null" : describeNonMap(entry)}.`,
+      );
+    }
+  }
+}
+
+/**
+ * The caller's `tree`, checked as far as the client reads it before any request: an object with a
+ * `files` list holding at least one file, a `digest` string and a `readFile` function. A tree with
+ * no file is refused here, since a method tree holds at least one; the client's own check would
+ * name `pipeIo()` rather than the preparation.
+ */
+function checkedTree(value: unknown): MethodTreeSource | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (
+    typeof value !== "object" ||
+    !Array.isArray((value as { files?: unknown }).files) ||
+    typeof (value as { digest?: unknown }).digest !== "string" ||
+    typeof (value as { readFile?: unknown }).readFile !== "function"
+  ) {
+    throw new InputPreparationError(
+      "Cannot prepare inputs: `tree` must be a listed method tree — its `files`, its `digest` and " +
+        "a `readFile` — such as the `MethodTree` the client's `listMethodTree` returns, got " +
+        `${Array.isArray(value) ? "a list" : typeof value === "object" ? "an object without them" : typeof value}.`,
+    );
+  }
+  const tree = value as MethodTreeSource;
+  if (tree.files.length === 0) {
+    throw new InputPreparationError(
+      "Cannot prepare inputs: `tree` holds no file, and a method tree holds at least one.",
+    );
+  }
+  return tree;
+}
+
 /**
  * Normalize and check the three selectors. Empty is absent (`files: {}`, `contents: {}`,
  * `method_ref: ""`, `method_id: "  "`), mirroring the run options' rule and the
@@ -544,8 +614,9 @@ function nonEmptyMap<T>(value: unknown): Record<string, T> | undefined {
  * lives here because this helper is the one that composes the `pipeIo` call. The tree
  * counts as one selector, given in exactly one of `files`, `tree` and `contents`, and a
  * `files` that is not a map, such as the retired list of `{ content, source }` items, is
- * refused rather than read as absent. `dependencies`, and `resources` that carry a file,
- * accompany the tree only. The illegal shapes are compile errors for typed callers; this
+ * refused rather than read as absent; so are a `contents` or `dependencies` that is not a map, and
+ * a `tree` that is not a listed tree or holds no file. `dependencies`, and `resources` that carry
+ * a file, accompany the tree only. The illegal shapes are compile errors for typed callers; this
  * backs them up for untyped (JS) ones with a typed `InputPreparationError`.
  */
 function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
@@ -557,8 +628,20 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
         `entry, got ${Array.isArray(rawFiles) ? "a list" : typeof rawFiles}.`,
     );
   }
+  refuseNonMap(
+    "contents",
+    raw["contents"],
+    "the method's files as a map from tree path to bytes or text",
+    (entry) => typeof entry === "string" || entry instanceof Uint8Array,
+  );
+  refuseNonMap(
+    "dependencies",
+    raw["dependencies"],
+    "the method packages as a map from package address to its map of file entries",
+    isPlainObject,
+  );
   const files = nonEmptyMap<FileEntry>(rawFiles);
-  const tree = raw["tree"] == null ? undefined : (raw["tree"] as MethodTreeSource);
+  const tree = checkedTree(raw["tree"]);
   const contents = nonEmptyMap<Uint8Array | string>(raw["contents"]);
   const dependencies = nonEmptyMap<MethodFiles>(raw["dependencies"]);
   const methodRef = nonEmptyString(raw["method_ref"]);
@@ -689,12 +772,13 @@ async function fetchSignature(
   client: PrepareCapableClient,
   selector: ResolvedSelector,
   pipeRef: string | undefined,
+  signal: AbortSignal | undefined,
 ): Promise<PipeIOValidReport> {
   const request: PipeIORequest =
     pipeRef === undefined ? { ...selector } : { ...selector, pipe_ref: pipeRef };
   let result: PipeIOResponse;
   try {
-    result = await client.pipeIo(request);
+    result = await client.pipeIo(request, signal === undefined ? {} : { signal });
   } catch (error) {
     if (
       error instanceof ApiResponseError &&
@@ -921,7 +1005,7 @@ export async function prepareInputs(
   const pipeRef = normalizePipeRef(request.pipe_ref);
   const allowUploads = resolveAllowUploads((request as { allowUploads?: unknown }).allowUploads);
   throwIfAborted(request.signal);
-  const report = await fetchSignature(client, selector, pipeRef);
+  const report = await fetchSignature(client, selector, pipeRef, request.signal);
   throwIfAborted(request.signal);
   const descriptor = selectedDescriptor(report);
 

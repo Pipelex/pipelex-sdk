@@ -15,6 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PipelexApiClient } from "../src/client.js";
 import { errorVerdictOf, MethodFileTransferError, RequestArgumentError } from "../src/errors.js";
+import type { MethodTreeSource } from "../src/method-trees.js";
+import { prepareInputs } from "../src/prepare-inputs.js";
 
 const BASE_URL = "http://localhost:8081";
 const STORAGE = "https://app-bucket.s3.amazonaws.com";
@@ -61,11 +63,15 @@ interface ApiOptions {
   held?: readonly string[];
   /** What storage answers an upload with. */
   storageStatus?: number;
+  /** Run while the version handshake is in flight, before it answers. */
+  duringVersion?: () => void;
 }
 
 /** The API and its storage, routed by URL: the handshake, the blob route, the crate routes, the uploads. */
 class Api {
   readonly paths: string[] = [];
+  /** Each API request's whole URL, its query included. */
+  readonly urls: string[] = [];
   readonly bodies = new Map<string, unknown>();
   readonly uploads: { url: string; body: Uint8Array }[] = [];
 
@@ -84,9 +90,11 @@ class Api {
     }
     const path = new URL(url).pathname;
     this.paths.push(path);
+    this.urls.push(url);
     const body: unknown = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
     this.bodies.set(path, body);
     if (path === "/v1/version") {
+      this.options.duringVersion?.();
       return Promise.resolve(
         jsonResponse(200, {
           protocol_version: "1",
@@ -114,6 +122,13 @@ function makeClient(api: Api): PipelexApiClient {
   vi.spyOn(globalThis, "fetch").mockImplementation(api.fetch);
   return new PipelexApiClient({ baseUrl: BASE_URL, apiKey: "test-token" });
 }
+
+/** A listed tree holding no file. */
+const EMPTY_TREE: MethodTreeSource = {
+  files: [],
+  digest: `sha256:${"0".repeat(64)}`,
+  readFile: () => Promise.reject(new Error("an empty tree has no file to read")),
+};
 
 let scratch: string;
 
@@ -220,8 +235,8 @@ describe("the method's tree on the crate routes", () => {
     ],
     [
       "no file",
-      { contents: {} },
-      "resolve() got contents holding no file, and a method tree holds at least one.",
+      { tree: EMPTY_TREE },
+      "resolve() got a tree holding no file, and a method tree holds at least one.",
     ],
   ])("refuses a tree given in %s before any request", async (_, request, message) => {
     const api = new Api();
@@ -232,6 +247,126 @@ describe("the method's tree on the crate routes", () => {
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toBe(message);
     expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect(api.paths).toEqual([]);
+  });
+
+  it("asks the blob route under the request's read_scope, and sends the scope on", async () => {
+    const api = new Api();
+    const client = makeClient(api);
+
+    await client.resolve({ contents: { "data/big.txt": LARGE }, read_scope: "org_acme" });
+
+    expect(api.paths).toEqual(["/v1/version", "/v1/blobs/missing", "/v1/resolve"]);
+    expect(api.urls[1]).toBe(`${BASE_URL}/v1/blobs/missing?read_scope=org_acme`);
+    expect(api.bodies.get("/v1/resolve")).toEqual({
+      files: { "data/big.txt": { sha256: sha256(LARGE), size: LARGE.length } },
+      read_scope: "org_acme",
+    });
+  });
+
+  it("asks the blob route with no query when the request names no read_scope", async () => {
+    const api = new Api();
+    const client = makeClient(api);
+
+    await client.resolve({ contents: { "data/big.txt": LARGE }, read_scope: "" });
+
+    expect(api.urls[1]).toBe(`${BASE_URL}/v1/blobs/missing`);
+  });
+
+  it.each([
+    ["files: {}", { files: {}, method_id: "mt_1" }, { method_id: "mt_1" }],
+    [
+      "files: null",
+      { files: null, method_ref: "github.com/acme/methods" },
+      { method_ref: "github.com/acme/methods" },
+    ],
+    [
+      "contents: {} and dependencies: {}",
+      { contents: {}, dependencies: {}, method_ref: "github.com/acme/methods" },
+      { method_ref: "github.com/acme/methods" },
+    ],
+  ])("reads %s as absent and posts the other selector alone", async (_, request, posted) => {
+    const api = new Api();
+    const client = makeClient(api);
+
+    await client.resolve(request as Parameters<PipelexApiClient["resolve"]>[0]);
+
+    expect(api.paths).toEqual(["/v1/resolve"]);
+    expect(api.bodies.get("/v1/resolve")).toEqual(posted);
+  });
+
+  it("starts nothing after an abort during the version handshake", async () => {
+    const controller = new AbortController();
+    const reason = new Error("caller gave up");
+    const api = new Api({ duringVersion: () => controller.abort(reason) });
+    const client = makeClient(api);
+
+    const err = await client
+      .pipeIo(
+        { contents: { "main.mthds": MAIN, "data/big.txt": LARGE } },
+        { signal: controller.signal },
+      )
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBe(reason);
+    expect(api.paths).toEqual(["/v1/version"]);
+    expect(api.uploads).toEqual([]);
+  });
+
+  it("stops prepareInputs after an abort during the handshake, before the blob route and pipe I/O", async () => {
+    const controller = new AbortController();
+    const reason = new Error("caller gave up");
+    const api = new Api({ duringVersion: () => controller.abort(reason) });
+    const client = makeClient(api);
+
+    const err = await prepareInputs(client, {
+      contents: { "main.mthds": MAIN, "data/big.txt": LARGE },
+      inputs: {},
+      signal: controller.signal,
+    }).catch((thrown: unknown) => thrown);
+
+    expect(err).toBe(reason);
+    expect(api.paths).toEqual(["/v1/version"]);
+    expect(api.uploads).toEqual([]);
+  });
+
+  it("sends no further blob once the signal aborts between uploads", async () => {
+    const controller = new AbortController();
+    const second = new Uint8Array(300 * 1024).fill(0x79);
+    const api = new Api();
+    const client = makeClient(api);
+    const fetchSpy = vi.mocked(globalThis.fetch);
+    fetchSpy.mockImplementation((input, init) => {
+      const answer = api.fetch(input as string, init);
+      if (!String(input).startsWith(BASE_URL)) controller.abort(new Error("enough"));
+      return answer;
+    });
+
+    const err = await client
+      .codegen(
+        {
+          contents: { "data/a.txt": LARGE, "data/b.txt": second },
+          kind: "types",
+          target: "ts-zod",
+        },
+        { signal: controller.signal },
+      )
+      .catch((thrown: unknown) => thrown);
+
+    expect((err as Error).message).toBe("enough");
+    expect(api.uploads).toHaveLength(1);
+    expect(api.paths).not.toContain("/v1/codegen");
+  });
+
+  it("starts no request under a signal aborted before the call", async () => {
+    const api = new Api();
+    const client = makeClient(api);
+
+    const err = await client
+      .resolve({ files: { "main.mthds": MAIN } }, { signal: AbortSignal.abort() })
+      .catch((thrown: unknown) => thrown);
+
+    expect((err as Error).name).toBe("AbortError");
     expect(api.paths).toEqual([]);
   });
 });

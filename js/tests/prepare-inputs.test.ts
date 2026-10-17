@@ -1395,6 +1395,82 @@ describe("prepareInputs verdicts and guards", () => {
     expect(client.pipeIoCalls).toHaveLength(0);
   });
 
+  it.each([
+    [
+      "a contents list",
+      { contents: [["demo.mthds", 'domain = "demo"']] },
+      "`contents` must be the method's files as a map from tree path to bytes or text, got a list.",
+    ],
+    [
+      "a contents value that is neither text nor bytes",
+      { contents: { "demo.mthds": 42 } },
+      "`contents` must be the method's files as a map from tree path to bytes or text, and " +
+        '"demo.mthds" holds number.',
+    ],
+    [
+      "a dependencies list",
+      { files: FILES, dependencies: ["github.com/acme/scoring"] },
+      "`dependencies` must be the method packages as a map from package address to its map of " +
+        "file entries, got a list.",
+    ],
+    [
+      "a dependency that is not a map",
+      { files: FILES, dependencies: { "github.com/acme/scoring": "scoring.mthds" } },
+      "`dependencies` must be the method packages as a map from package address to its map of " +
+        'file entries, and "github.com/acme/scoring" holds string.',
+    ],
+    [
+      "a tree that is a string",
+      { tree: "./method" },
+      "`tree` must be a listed method tree — its `files`, its `digest` and a `readFile` — such " +
+        "as the `MethodTree` the client's `listMethodTree` returns, got string.",
+    ],
+    [
+      "a tree with no listing",
+      { tree: { root: "./method" } },
+      "`tree` must be a listed method tree — its `files`, its `digest` and a `readFile` — such " +
+        "as the `MethodTree` the client's `listMethodTree` returns, got an object without them.",
+    ],
+    [
+      "a tree holding no file",
+      {
+        tree: {
+          files: [],
+          digest: `sha256:${"0".repeat(64)}`,
+          readFile: () => Promise.resolve(new Uint8Array(0)),
+        },
+      },
+      "`tree` holds no file, and a method tree holds at least one.",
+    ],
+  ])("refuses %s before any request", async (_, selector, message) => {
+    const client = makeClient([topLevel("photo", image())]);
+
+    const failure = prepareInputs(client, {
+      ...selector,
+      inputs: {},
+    } as unknown as PrepareInputsRequest);
+
+    await expect(failure).rejects.toBeInstanceOf(InputPreparationError);
+    await expect(failure).rejects.toThrow(`Cannot prepare inputs: ${message}`);
+    expect(client.pipeIoCalls).toHaveLength(0);
+  });
+
+  it("hands its signal to pipeIo, which reads it between the tree's steps", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+    const seen: unknown[] = [];
+    const pipeIo = client.pipeIo.bind(client);
+    client.pipeIo = (request, options) => {
+      seen.push(options);
+      return pipeIo(request, options);
+    };
+    const controller = new AbortController();
+
+    await prepareInputs(client, { files: FILES, inputs: {}, signal: controller.signal });
+    await prepareInputs(client, { files: FILES, inputs: {} });
+
+    expect(seen).toEqual([{ signal: controller.signal }, {}]);
+  });
+
   it("refuses the method's tree given in two forms", async () => {
     const client = makeClient([topLevel("photo", image())]);
 

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, assert_never, cast
 from urllib.parse import unquote_to_bytes
 
+from mthds.method_tree.models import MethodTree
 from mthds.protocol.input_form import (
     BooleanItem,
     DateItem,
@@ -43,7 +44,7 @@ from mthds.protocol.input_form import (
     TextItem,
     UnknownItem,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIOValidReport
 from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
@@ -58,8 +59,9 @@ from pipelex_sdk.errors import (
 from pipelex_sdk.upload import UploadRecord, UploadSource, upload_file
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from mthds.method_tree.file_entry import FileEntry
-    from mthds.method_tree.models import MethodTree
 
     from pipelex_sdk.crate_models import PipeIOResponse
     from pipelex_sdk.product_models import UploadedFile, UploadInput
@@ -152,6 +154,48 @@ def _caller_files(value: object) -> dict[str, FileEntry] | None:
     kind = "a list" if isinstance(value, list) else type(value).__name__
     msg = f"Cannot prepare inputs: `files` must be the method's tree as a map from tree path to file entry, got {kind}."
     raise InputPreparationError(msg)
+
+
+def _kind_of(value: object) -> str:
+    """How a value that should have been a map, or a map's value, is named in a refusal."""
+    return "a list" if isinstance(value, list) else type(value).__name__
+
+
+def _caller_map(value: object, *, argument: str, holds: str, value_ok: Callable[[object], bool]) -> dict[str, Any] | None:
+    """The caller's `contents` or `dependencies` — `None` when absent or empty, refused when not a map of what it holds.
+
+    Refused before any request, as `_caller_files` refuses a `files` that is not a map: read as
+    absent, a list would leave the method unselected without a word, and a value of the wrong type
+    would fail later as pydantic's refusal instead of the `InputPreparationError` this module owes,
+    with the wording `@pipelex/sdk` uses.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        msg = f"Cannot prepare inputs: `{argument}` must be {holds}, got {_kind_of(value)}."
+        raise InputPreparationError(msg)
+    mapping = cast("dict[str, Any]", value)
+    for key, entry in mapping.items():
+        if not value_ok(entry):
+            msg = f'Cannot prepare inputs: `{argument}` must be {holds}, and "{key}" holds {"None" if entry is None else _kind_of(entry)}.'
+            raise InputPreparationError(msg)
+    return mapping or None
+
+
+def _caller_tree(value: object) -> MethodTree | None:
+    """The caller's `tree` — `None` when absent, refused when it is not a listed tree or holds no file."""
+    if value is None:
+        return None
+    if not isinstance(value, MethodTree):
+        msg = (
+            "Cannot prepare inputs: `tree` must be a listed method tree, a `MethodTree` such as the client's "
+            f"`list_method_tree` returns, got {_kind_of(value)}."
+        )
+        raise InputPreparationError(msg)
+    if not value.files:
+        msg = "Cannot prepare inputs: `tree` holds no file, and a method tree holds at least one."
+        raise InputPreparationError(msg)
+    return value
 
 
 def _is_file_content(node: Any) -> bool:
@@ -405,22 +449,41 @@ def _resolve_selector(
     run options' rule and the `CrateRequestBase` normalizers, so an empty selector may sit beside
     a real one without tripping the XOR. The tree counts as one selector, given in exactly one of
     `files`, `tree` and `contents`, and the `dependencies` it calls accompany it alone. A `files`
-    that is not a map is refused rather than read as absent. A
+    that is not a map is refused rather than read as absent, and so are a `contents` that is not a
+    map of bytes or text, a `dependencies` that is not a map of file maps, and a `tree` that is not
+    a `MethodTree` or holds no file. A
     non-string `method_ref` / `method_id` is NOT absent but refused, so a mistyped selector cannot
     slip past the XOR as a silent `None`. The check lives here, rather than in `PipeIORequest`'s
     own validator, so that it raises the `InputPreparationError` this module owes, and it runs
     BEFORE any request.
     """
     selected_files = _caller_files(files)
-    selected_contents = contents or None
-    selected_dependencies = dependencies or None
+    selected_tree = _caller_tree(tree)
+    selected_contents = cast(
+        "dict[str, bytes | str] | None",
+        _caller_map(
+            contents,
+            argument="contents",
+            holds="the method's files as a map from tree path to bytes or text",
+            value_ok=lambda entry: isinstance(entry, bytes | str),
+        ),
+    )
+    selected_dependencies = cast(
+        "dict[str, dict[str, FileEntry]] | None",
+        _caller_map(
+            dependencies,
+            argument="dependencies",
+            holds="the method packages as a map from package address to its map of file entries",
+            value_ok=lambda entry: isinstance(entry, dict),
+        ),
+    )
     selected_method_ref = _caller_selector(method_ref, argument="method_ref")
     selected_method_id = _caller_selector(method_id, argument="method_id")
 
     tree_forms: list[str] = []
     if selected_files is not None:
         tree_forms.append("`files`")
-    if tree is not None:
+    if selected_tree is not None:
         tree_forms.append("`tree`")
     if selected_contents is not None:
         tree_forms.append("`contents`")
@@ -454,7 +517,7 @@ def _resolve_selector(
         raise InputPreparationError(msg)
     return _MethodSelection(
         files=selected_files,
-        tree=tree,
+        tree=selected_tree,
         contents=selected_contents,
         dependencies=selected_dependencies,
         method_ref=selected_method_ref,
@@ -509,10 +572,10 @@ def _is_pipe_selection_refusal(exc: ApiResponseError) -> bool:
 async def _fetch_signature(client: _PrepareClient, *, request: PipeIORequest) -> PipeIOValidReport:
     """Ask `pipe_io` for the selected pipe's signature and hand back the valid report.
 
-    The route selects the pipe — the request's `pipe_ref`, else a fetched package manifest's
-    `main_pipe`, else the closure's single `main_pipe` declaration — so this module keeps no
-    selection chain of its own, and a package that names its entry pipe in its manifest alone
-    is selected like any other.
+    The route selects the pipe — the request's `pipe_ref`, else the `main_pipe` of the
+    `METHODS.toml` at the tree's root, sent or fetched, else the closure's single `main_pipe`
+    declaration — so this module keeps no selection chain of its own, and a method that names
+    its entry pipe in its manifest alone is selected like any other.
 
     The route runs no dry run. Preparation needs a pipe's DECLARED inputs, which static
     validation settles, so a pending signature elsewhere in the method does not refuse inputs
@@ -599,7 +662,9 @@ async def prepare_inputs(
 
     Raises:
         InputPreparationError: No selector or several; a selector or `pipe_ref` that is not a
-            string; a bare `pipe_ref`, or one naming a dependency package's pipe
+            string; a `files`, `contents` or `dependencies` that is not a map of what it holds, a
+            `tree` that is not a `MethodTree` or holds no file, or any other selector the pipe I/O
+            request refuses, each before any request; a bare `pipe_ref`, or one naming a dependency package's pipe
             (`alias->domain.pipe_code`); the closure did not resolve; the route refused the pipe
             selection with the runner's entry-lookup `error_type` (pipelex-api >= 0.33.1) — an
             unknown `pipe_ref`, or no `pipe_ref` and a method declaring no single entry pipe —
@@ -625,15 +690,23 @@ async def prepare_inputs(
     # on the same pre-request boundary as a mistyped selector.
     requested_pipe_ref = _checked_pipe_ref(pipe_ref)
     uploads_allowed = _checked_allow_uploads(allow_uploads)
-    request = PipeIORequest(
-        files=selection.files,
-        tree=selection.tree,
-        contents=selection.contents,
-        dependencies=selection.dependencies,
-        method_ref=selection.method_ref,
-        method_id=selection.method_id,
-        pipe_ref=requested_pipe_ref,
-    )
+    try:
+        request = PipeIORequest(
+            files=selection.files,
+            tree=selection.tree,
+            contents=selection.contents,
+            dependencies=selection.dependencies,
+            method_ref=selection.method_ref,
+            method_id=selection.method_id,
+            pipe_ref=requested_pipe_ref,
+        )
+    except ValidationError as exc:
+        # What the checks above do not read, such as a `files` entry that is no file entry, is the
+        # request model's to refuse; it is still the caller's selector, refused before any request.
+        first = exc.errors(include_url=False, include_input=False)[0]
+        where = ".".join(str(part) for part in first["loc"])
+        msg = f"Cannot prepare inputs: the method selector does not form a pipe I/O request: {where}: {first['msg']}."
+        raise InputPreparationError(msg) from exc
     report = await _fetch_signature(client, request=request)
 
     selected_pipe_ref = report.pipe_ref

@@ -21,6 +21,7 @@ import {
   type MethodFileTransferCode,
 } from "./errors.js";
 import type { SavedMethodFile } from "./product-models.js";
+import { throwIfAborted } from "./runs.js";
 
 // ── The source of a tree ─────────────────────────────────────────────
 
@@ -137,6 +138,36 @@ export const SAVE_SENDING: TreeSending = {
 /** A crate request's: a method has at least one file, so there is nothing to give instead. */
 export const REQUEST_SENDING: TreeSending = { unsent: "the request was not sent" };
 
+/** How a crate request prepares its tree, beyond what a save needs. */
+export interface TreeSendOptions {
+  /**
+   * Read before each step the tree costs: each file read, the version handshake's use, the blob
+   * route and each upload. Once it has aborted, none of them starts and the abort is thrown; a
+   * request already sent runs to its end.
+   */
+  readonly signal?: AbortSignal | undefined;
+  /**
+   * The request's `read_scope`, under which the blob route is asked which blobs are missing, so
+   * the blobs are uploaded into the store the request's hash entries are read from. The upload
+   * targets the route names are signed for that scope already.
+   */
+  readonly readScope?: string | undefined;
+}
+
+/**
+ * A map a crate request was given, or `undefined` when it selects or sends nothing: absent, `null`,
+ * or a plain object holding no key, the empty-as-absent rule of the run options and of the Python
+ * SDK. Any other value is kept as given, so the server refuses a `files` that is not a map as the
+ * shape it is rather than reading it as absent.
+ */
+export function presentMap<T>(value: T | null | undefined): T | undefined {
+  if (value === undefined || value === null) return undefined;
+  const isEmptyObject =
+    Object.prototype.toString.call(value) === "[object Object]" &&
+    Object.keys(value as object).length === 0;
+  return isEmptyObject ? undefined : value;
+}
+
 /** The refusal of a tree holding no file, `call` naming the caller's method. */
 export function emptyTreeRefusal(
   call: string,
@@ -189,10 +220,17 @@ export function treeTotalSize(tree: MethodTreeSource): number {
   return tree.files.reduce((total, file) => total + file.size, 0);
 }
 
-/** Every file's bytes, by tree path, each read and checked by the tree, one file at a time. */
-export async function readTreeBytes(tree: MethodTreeSource): Promise<Map<string, Uint8Array>> {
+/**
+ * Every file's bytes, by tree path, each read and checked by the tree, one file at a time. `signal`
+ * is read before each file: once it has aborted, no further file is read and the abort is thrown.
+ */
+export async function readTreeBytes(
+  tree: MethodTreeSource,
+  signal?: AbortSignal,
+): Promise<Map<string, Uint8Array>> {
   const bytes = new Map<string, Uint8Array>();
   for (const file of tree.files) {
+    throwIfAborted(signal);
     bytes.set(file.path, await tree.readFile(file.path));
   }
   return bytes;

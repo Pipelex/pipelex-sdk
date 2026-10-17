@@ -17,6 +17,7 @@ import type {
   CodegenRequest,
   CodegenResponse,
   CrateRequestBase,
+  CrateRouteOptions,
   DictPipeOutput,
   DictRunResultExecute,
   FormatResponse,
@@ -134,6 +135,7 @@ import {
   hashMethodFiles,
   inlineFilesOf,
   inlineMapBytes,
+  presentMap,
   readTreeBytes,
   redactSignedLinks,
   sha256Hex,
@@ -146,6 +148,7 @@ import type {
   MethodTreeLimits,
   MethodTreeSource,
   TreeSending,
+  TreeSendOptions,
   MissingBlob,
   MissingBlobsRequest,
   MissingBlobsResult,
@@ -1917,6 +1920,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * If a static route ever genuinely needs longer, give the WHOLE static family one
    * uniform transport-options parameter in a single pass — do not bolt it onto one
    * route.
+   *
+   * The one exception is the crate family's `signal` (`CrateRouteOptions`), given to all three
+   * crate routes at once: a `tree` or `contents` can cost the version handshake, the blob route
+   * and uploads before the request, client-side work a caller such as `prepareInputs` must be
+   * able to stop. It is read between those steps and stops nothing in flight, so it is no
+   * transport option and the reasons above still hold.
    */
   private async requestExtension<T extends object>(
     endpoint: string,
@@ -2016,8 +2025,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   // `docs/crate-routes.md`).
   //
   // All three are STATIC routes (no dry-run sweep), so like every static sibling they
-  // take no `timeoutMs`/`signal` — see the policy note on `requestExtension` before
-  // adding one here.
+  // take no `timeoutMs` — see the policy note on `requestExtension` before adding one
+  // here. Their `signal` (`CrateRouteOptions`) is that note's one exception: it is read
+  // between the steps that prepare a `tree` or `contents`, and stops nothing in flight.
 
   /**
    * Resolve a closure into its normalized library crate — `POST /v1/resolve`.
@@ -2037,15 +2047,25 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * (fetch failure, no package at the address, an unknown or foreign-org id) is
    * non-2xx too — never an `is_valid: false` verdict.
    *
-   * The closure arrives in exactly one of three forms: inline `files`, an
-   * address-form `method_ref` (server-resolved, pipelex-api >= 0.21.0; the
-   * registry form stays a `501`), or a hosted `method_id` (platform-resolved —
-   * see {@link PipelexHostedToolingExtensions}).
+   * The closure arrives in exactly one of three forms: the method's tree, as the
+   * protocol's `files` map or as a `tree` or `contents` the client sends inline when
+   * small and by hash otherwise (see {@link CrateRequestBase}); an address-form
+   * `method_ref` (server-resolved, pipelex-api >= 0.21.0; the registry form stays a
+   * `501`); or a hosted `method_id` (platform-resolved — see
+   * {@link PipelexHostedToolingExtensions}). An empty map is absent.
+   *
+   * `options.signal` stops the call between the steps a `tree` or `contents` costs before
+   * the request — the version handshake, the blob route, each read and upload of a missing
+   * blob — and before the request itself, throwing the abort; a request already sent runs
+   * to its end. A blob that fails to upload throws `MethodFileTransferError`, and a tree
+   * this client refuses to send (no file, two forms, a `contents` value that is neither
+   * text nor bytes) `RequestArgumentError`, each before the route is asked.
    */
-  async resolve(request: ResolveRequest): Promise<ResolveResponse> {
-    return this.requestExtension("resolve", await this.crateBody("resolve", request), {
-      timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
-    });
+  async resolve(
+    request: ResolveRequest,
+    options: CrateRouteOptions = {},
+  ): Promise<ResolveResponse> {
+    return this.crateRequest<ResolveResponse>("resolve", "resolve", request, options);
   }
 
   /**
@@ -2063,10 +2083,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * unknown `kind`/`target`, a `pipe_ref` on the concept-set-wide `types` kind, or
    * a malformed selector is a 422; a registry-form `method_ref` is a `501`.
    */
-  async codegen(request: CodegenRequest): Promise<CodegenResponse> {
-    return this.requestExtension("codegen", await this.crateBody("codegen", request), {
-      timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
-    });
+  async codegen(
+    request: CodegenRequest,
+    options: CrateRouteOptions = {},
+  ): Promise<CodegenResponse> {
+    return this.crateRequest<CodegenResponse>("codegen", "codegen", request, options);
   }
 
   /**
@@ -2080,19 +2101,22 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * dry-runs every pipe; a caller that shows a method, prepares its inputs or generates
    * types for it reads this, and one that needs the dry-run verdict stays on `validate`.
    *
-   * Selection: the request's qualified `pipe_ref`, else a fetched package's manifest
-   * `main_pipe`, else the closure's single `main_pipe` declaration. `all_pipes: true`
-   * describes every pipe instead, and never refuses for want of an entry pipe.
-   * `include_files: true` echoes the resolved closure's `.mthds` files as `files`.
+   * Selection: the request's qualified `pipe_ref`, else the `main_pipe` of the
+   * `METHODS.toml` at the tree's root, sent in the tree or fetched with a package, else the
+   * closure's single `main_pipe` declaration. `all_pipes: true` describes every pipe
+   * instead, and never refuses for want of an entry pipe. `include_files: true` echoes the
+   * method's own `.mthds` bundles as `files`, a map from tree path to each bundle's text,
+   * in the shape of the request's `files` map.
    *
-   * Beside inline `files`, `resources` sends the files the closure's steps read, such as a
+   * Beside the method's tree, `resources` sends the files the closure's steps read, such as a
    * `PipeDocGen` step's `template_file`, keyed by the path the step names, each as its bytes;
    * a step whose template file was not sent makes the closure invalid. `resolve` and `codegen`
    * take it too (see {@link CrateRequestBase}).
    *
-   * Same 200-verdict discipline and same three-form closure selector as {@link resolve}
-   * (the request is posted as given, its `resources` encoded to base64, and the selector XOR
-   * and the `resources` pairing are the server's to enforce).
+   * Same 200-verdict discipline, same three-form closure selector and same `options` as
+   * {@link resolve} (the request's members are posted as given, its `tree` or `contents` as
+   * the `files` map, its `resources` encoded to base64, and the selector XOR and the
+   * `resources` pairing are the server's to enforce).
    * Only a no-verdict condition throws `ApiResponseError`: a malformed selector and an
    * over-limit file are `ValidationError` `422`s; a selection the route refuses is a
    * `422` whose `errorType` is `EntryPipeNotFoundError` (an unknown `pipe_ref`, no entry
@@ -2106,8 +2130,23 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * seconds whatever the client allows, so a cold `method_ref` clone can answer a `502`
    * that a retry clears once the runner has cached the clone.
    */
-  async pipeIo(request: PipeIORequest): Promise<PipeIOResponse> {
-    return this.requestExtension("pipe-io", await this.crateBody("pipeIo", request), {
+  async pipeIo(request: PipeIORequest, options: CrateRouteOptions = {}): Promise<PipeIOResponse> {
+    return this.crateRequest<PipeIOResponse>("pipe-io", "pipeIo", request, options);
+  }
+
+  /**
+   * Post a crate request: its body built by `crateBody`, then the route asked, unless `signal`
+   * aborted meanwhile, under the budget `crateRequestTimeoutMs` gives it.
+   */
+  private async crateRequest<T extends object>(
+    endpoint: string,
+    call: string,
+    request: CrateRequestBase,
+    options: CrateRouteOptions,
+  ): Promise<T> {
+    const body = await this.crateBody(call, request, options.signal);
+    throwIfAborted(options.signal);
+    return this.requestExtension<T>(endpoint, body, {
       timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
     });
   }
@@ -2115,18 +2154,32 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   /**
    * A crate request as the wire takes it: its members as given, its tree as the `files` map a save
    * would send, and its `resources` encoded into the base64 map, each key left off when there is
-   * nothing to send. A `tree` or `contents` is prepared here, inline when small and by hash
+   * nothing to send. An empty map is absent, as in the Python SDK: `files: {}` or `null`,
+   * `contents: {}` and `dependencies: {}` are not sent, so an empty one never reaches the wire as
+   * a second selector. A `tree` or `contents` is prepared here, inline when small and by hash
    * otherwise, uploading the files the API lacks first, through the helper `createMethod` and
-   * `writeDraft` send a tree with, so the three routes and a save send one tree the same way.
+   * `writeDraft` send a tree with, so the three routes and a save send one tree the same way; the
+   * blob route is asked under the request's `read_scope`, the scope its hash entries are read in.
+   * `signal` is read before each step (see `TreeSendOptions`).
    */
-  private async crateBody(call: string, request: CrateRequestBase): Promise<unknown> {
+  private async crateBody(
+    call: string,
+    request: CrateRequestBase,
+    signal: AbortSignal | undefined,
+  ): Promise<unknown> {
     if (typeof request !== "object" || request === null) return request;
-    const { tree, contents, resources, ...rest } = request;
+    throwIfAborted(signal);
+    const { files, tree, contents, dependencies, resources, ...rest } = request;
     const body: Record<string, unknown> = { ...rest };
-    if (tree != null || contents != null) {
-      const files = await this.methodTreeFiles(call, request, REQUEST_SENDING);
-      if (files != null) body.files = files;
-    }
+    const sent = await this.methodTreeFiles(
+      call,
+      { files: presentMap(files), tree: tree ?? undefined, contents: presentMap(contents) },
+      REQUEST_SENDING,
+      { signal, readScope: nonEmptyString(request.read_scope) },
+    );
+    if (sent != null) body.files = sent;
+    const packages = presentMap(dependencies);
+    if (packages !== undefined) body.dependencies = packages;
     if (resources !== undefined) {
       const encoded = await encodeBundleResources(resources);
       if (encoded !== undefined) body.resources = encoded;
@@ -2637,12 +2690,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * The `files` a save or a crate request sends: `files` as given, or `tree` or `contents`
    * prepared, uploading what the organization lacks; `undefined` when the input gives none. Two
    * forms are refused with `RequestArgumentError` before any request, naming `call`. `sending`
-   * says what the tree is for, which a refusal or a failed upload names.
+   * says what the tree is for, which a refusal or a failed upload names, and `options` how a crate
+   * request prepares it (`TreeSendOptions`).
    */
   private async methodTreeFiles(
     call: string,
     input: MethodTreeInput,
     sending: TreeSending,
+    options: TreeSendOptions = {},
   ): Promise<MethodFiles | null | undefined> {
     const given = (
       [
@@ -2659,12 +2714,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
           `${given.join(" and ")}.`,
       );
     }
-    if (input.tree != null) return this.prepareTreeFiles(input.tree, call, sending);
+    if (input.tree != null) return this.prepareTreeFiles(input.tree, call, sending, options);
     if (input.contents != null) {
       return this.prepareTreeFiles(
         await contentsTreeSource(input.contents, call, sending),
         call,
         sending,
+        options,
       );
     }
     return input.files;
@@ -2680,26 +2736,36 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * digest, each one it lacks is uploaded once, and every file travels by hash. A file read to be
    * measured is uploaded from memory rather than read a second time. A tree holding no file is
    * refused with `RequestArgumentError` before any request, `call` naming the caller's method.
+   * `options.readScope` is the scope the blob route is asked under, and `options.signal` is read
+   * before each read, the use of the handshake's answer, the blob route and each upload.
    */
   private async prepareTreeFiles(
     tree: MethodTreeSource,
     call: string,
     sending: TreeSending,
+    options: TreeSendOptions = {},
   ): Promise<MethodFiles> {
+    const { signal, readScope } = options;
     if (tree.files.length === 0) throw emptyTreeRefusal(call, "a tree", sending);
     let read: Map<string, Uint8Array> | undefined;
     // An inline map is never smaller than the bytes it carries, so a tree whose bytes alone pass
     // the threshold is not read in full just to be measured.
     if (treeTotalSize(tree) <= INLINE_TREE_MAX_BYTES) {
-      read = await readTreeBytes(tree);
+      read = await readTreeBytes(tree, signal);
       const inline = inlineFilesOf(tree, read);
       if (inlineMapBytes(inline) <= INLINE_TREE_MAX_BYTES) return inline;
     }
-    if (!declaresBlobStore(await this.cachedVersion())) {
-      return inlineFilesOf(tree, read ?? (await readTreeBytes(tree)));
+    throwIfAborted(signal);
+    const version = await this.cachedVersion();
+    throwIfAborted(signal);
+    if (!declaresBlobStore(version)) {
+      return inlineFilesOf(tree, read ?? (await readTreeBytes(tree, signal)));
     }
-    const asked = await this.findMissingBlobs({ blobs: uniqueBlobs(tree), digest: tree.digest });
-    await this.uploadMissing(tree, asked, read, sending);
+    const asked = await this.findMissingBlobs(
+      { blobs: uniqueBlobs(tree), digest: tree.digest },
+      readScope,
+    );
+    await this.uploadMissing(tree, asked, read, sending, signal);
     return hashMethodFiles(tree);
   }
 
@@ -2709,11 +2775,20 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * blob held is left out, and an empty `missing` means nothing to upload. An answer whose
    * `missing` is not a list of blobs, each with its upload target, is an answer the SDK cannot
    * read, thrown as an `ApiResponseError` holding the answer with its links hidden.
+   *
+   * `readScope`, a crate request's `read_scope`, is sent as the route's `read_scope` query, the
+   * Pipelex API's extension naming the blob store asked, so the blobs are uploaded into the store
+   * the request's hash entries are read from; each upload target is signed for that scope. The
+   * hosted platform's own route reads the caller's organization instead.
    */
   private async findMissingBlobs(
     request: MissingBlobsRequest,
+    readScope?: string,
   ): Promise<{ result: MissingBlobsResult; res: RawResponse }> {
-    const endpoint = "blobs/missing";
+    const endpoint =
+      readScope === undefined
+        ? "blobs/missing"
+        : `blobs/missing?${new URLSearchParams({ read_scope: readScope }).toString()}`;
     const res = withLinks(await this.requestProductAnswer("POST", endpoint, request));
     const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
     const missing = answer.missing;
@@ -2734,13 +2809,16 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * is the platform's fault, thrown before anything is sent as the `ApiResponseError` of an answer
    * the SDK cannot read. The bytes the tree reads for a blob are checked against it before they
    * are sent, since storage keeps a blob under the hash it is named by: bytes of another hash or
-   * size are refused with `RequestArgumentError`, and nothing more is uploaded.
+   * size are refused with `RequestArgumentError`, and nothing more is uploaded. `userSignal` is
+   * read before each blob's read and before its upload: once it has aborted, no further blob is
+   * read or sent, and an upload already sent runs to its end.
    */
   private async uploadMissing(
     tree: MethodTreeSource,
     asked: { result: MissingBlobsResult; res: RawResponse },
     read: ReadonlyMap<string, Uint8Array> | undefined,
     sending: TreeSending,
+    userSignal?: AbortSignal,
   ): Promise<void> {
     const missing = asked.result.missing;
     const byBlob = fileByBlob(tree);
@@ -2757,6 +2835,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     await forEachConcurrently(missing, MAX_CONCURRENT_TRANSFERS, async (blob, signal) => {
       const file = byBlob.get(blob.sha256)!;
+      throwIfAborted(userSignal);
       const bytes = read?.get(file.path) ?? (await tree.readFile(file.path));
       const bytesSha256 = await sha256Hex(bytes);
       if (bytes.length !== blob.size || bytesSha256 !== blob.sha256) {
@@ -2766,6 +2845,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
             `uploaded and ${sending.unsent}.`,
         );
       }
+      throwIfAborted(userSignal);
       await uploadBlob(blob, bytes, {
         timeoutMs: this.requestTimeoutMs,
         signal,

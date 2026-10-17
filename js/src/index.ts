@@ -149,6 +149,7 @@ export type {
   FixOp,
   SuggestedFix,
   CrateRequestBase,
+  CrateRouteOptions,
   CrateInvalidReport,
   GeneratedArtifact,
   ResolveRequest,

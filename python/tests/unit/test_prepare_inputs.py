@@ -20,6 +20,7 @@ from typing import Any, cast
 import httpx
 import pytest
 from mthds.method_tree.file_entry import Base64FileEntry, FileEntry
+from mthds.method_tree.models import MethodTree
 from mthds.protocol.input_form import (
     DocumentField,
     DocumentItem,
@@ -167,6 +168,62 @@ class TestPrepareInputs:
         with pytest.raises(InputPreparationError) as caught:
             asyncio.run(prepare_inputs(client, files=retired, inputs={}))
         assert str(caught.value) == ("Cannot prepare inputs: `files` must be the method's tree as a map from tree path to file entry, got a list.")
+        assert client.pipe_io_calls == []
+
+    @pytest.mark.parametrize(
+        ("selector", "message"),
+        [
+            pytest.param(
+                {"contents": [("demo.mthds", 'domain = "demo"')]},
+                "`contents` must be the method's files as a map from tree path to bytes or text, got a list.",
+                id="contents-list",
+            ),
+            pytest.param(
+                {"contents": {"demo.mthds": 42}},
+                '`contents` must be the method\'s files as a map from tree path to bytes or text, and "demo.mthds" holds int.',
+                id="contents-value",
+            ),
+            pytest.param(
+                {"files": {"main.mthds": "a"}, "dependencies": ["github.com/acme/scoring"]},
+                "`dependencies` must be the method packages as a map from package address to its map of file entries, got a list.",
+                id="dependencies-list",
+            ),
+            pytest.param(
+                {"files": {"main.mthds": "a"}, "dependencies": {"github.com/acme/scoring": "scoring.mthds"}},
+                "`dependencies` must be the method packages as a map from package address to its map of file entries, "
+                'and "github.com/acme/scoring" holds str.',
+                id="dependency-value",
+            ),
+            pytest.param(
+                {"tree": "./method"},
+                "`tree` must be a listed method tree, a `MethodTree` such as the client's `list_method_tree` returns, got str.",
+                id="tree-string",
+            ),
+            pytest.param(
+                {"tree": MethodTree(files=[], digest=f"sha256:{'0' * 64}")},
+                "`tree` holds no file, and a method tree holds at least one.",
+                id="tree-empty",
+            ),
+        ],
+    )
+    def test_a_mistyped_selector_is_refused_before_any_request(self, selector: dict[str, Any], message: str) -> None:
+        """Each is refused with the wording `@pipelex/sdk` uses, never as pydantic's `ValidationError`."""
+        client = _image_client()
+
+        with pytest.raises(InputPreparationError) as caught:
+            asyncio.run(prepare_inputs(client, **selector, inputs={}))
+        assert str(caught.value) == f"Cannot prepare inputs: {message}"
+        assert client.pipe_io_calls == []
+
+    def test_a_files_entry_the_request_refuses_is_an_input_preparation_error(self) -> None:
+        """What the selector checks do not read is the request model's to refuse, still before any request."""
+        client = _image_client()
+        files: Any = {"main.mthds": 42}
+
+        with pytest.raises(
+            InputPreparationError, match=r"^Cannot prepare inputs: the method selector does not form a pipe I/O request: files\.main\.mthds"
+        ):
+            asyncio.run(prepare_inputs(client, files=files, inputs={}))
         assert client.pipe_io_calls == []
 
     @pytest.mark.parametrize("selector", [{"method_ref": "github.com/o/r"}, {"method_id": "mt_1"}])

@@ -206,6 +206,16 @@ class TestCrateRoutes:
         with pytest.raises(ValidationError, match="in one form"):
             PipeIORequest.model_validate(kwargs)
 
+    @pytest.mark.parametrize("request_model", [ResolveRequest, CodegenRequest, PipeIORequest])
+    def test_a_member_the_request_does_not_declare_is_refused_not_dropped(
+        self, request_model: type[ResolveRequest | CodegenRequest | PipeIORequest]
+    ) -> None:
+        """`resources`, which `@pipelex/sdk`'s crate requests carry, is refused at construction rather than
+        dropped from the wire without a word, until this SDK carries it too (L-261012-992a34).
+        """
+        with pytest.raises(ValidationError, match="resources\n  Extra inputs are not permitted"):
+            request_model.model_validate({"files": {"main.mthds": "x"}, "resources": {"templates/invoice.docx": b"PK"}})
+
     @pytest.mark.parametrize("selector", [{"method_ref": _METHOD_REF}, {"method_id": "mt_1"}])
     def test_dependencies_accompany_the_tree_alone(self, selector: dict[str, object]) -> None:
         """`dependencies` are the packages the sent tree calls: beside a published or stored method they

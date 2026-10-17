@@ -76,7 +76,14 @@ class CrateRequestBase(BaseModel):
 
     The subclass owns the exclusivity validator, because the crate routes add a third
     selector (the hosted `method_id`) this base does not know about.
+
+    A member this model does not declare is refused at construction rather than dropped, so a
+    request never reaches the wire without something the caller gave it. `resources`, which
+    `@pipelex/sdk`'s crate requests carry, is one: this SDK sends a step's files in the tree
+    itself until it carries them as `@pipelex/sdk` does (L-261012-992a34).
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     files: dict[str, FileEntry] | None = None
     tree: MethodTree | None = None

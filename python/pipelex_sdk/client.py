@@ -38,7 +38,7 @@ from mthds.method_tree.lister import list_method_tree
 from mthds.method_tree.models import MethodTree, TreeLimits
 from mthds.method_tree.tree_path import path_collisions, tree_path_violation
 from mthds.protocol.exceptions import PipelineRequestError
-from mthds.protocol.models import RunResultStart
+from mthds.protocol.models import MissingBlobsRequest, MissingBlobsResult, RunResultStart
 from mthds.runners.api.client import MthdsAPIClient
 from mthds.runners.api.exceptions import BlobUploadError as _MthdsBlobUploadError
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
@@ -149,7 +149,7 @@ if TYPE_CHECKING:
 
     from mthds.method_tree.file_entry import FileEntry, MethodFiles
     from mthds.method_tree.models import TreeFile
-    from mthds.protocol.models import BlobRef, MissingBlob, MissingBlobsResult, ModelCategory, ModelDeck, ValidationDiagnostic, VersionInfo
+    from mthds.protocol.models import BlobRef, MissingBlob, ModelCategory, ModelDeck, ValidationDiagnostic, VersionInfo
     from mthds.protocol.pipe_output import VariableMultiplicity
     from mthds.protocol.pipeline_inputs import PipelineInputs
     from mthds.protocol.stuff import StuffType
@@ -266,6 +266,11 @@ _INHERITED_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_INHERITED_ANSWE
 # tree (`_prepare_files`), so the `_upload_missing` override can report an answer asking for blobs the tree
 # does not hold as an answer the SDK cannot read, carrying that answer's status and headers.
 _MISSING_BLOBS_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_MISSING_BLOBS_ANSWER", default=None)
+
+# The `read_scope` of the crate request whose tree the base is preparing, which the `missing_blobs` override
+# asks `POST /v1/blobs/missing` under, so the blobs are uploaded into the store the request's hash entries
+# are read from. A context variable, as above, because the base asks the route with no scope of its own.
+_TREE_READ_SCOPE: ContextVar[str | None] = ContextVar("_TREE_READ_SCOPE", default=None)
 
 # What a failed upload of a tree's file prevented, as its error says it: a save's, and a crate request's.
 _METHOD_NOT_SAVED = "the method was not saved"
@@ -2047,28 +2052,38 @@ class PipelexAPIClient(MthdsAPIClient):
         tree: MethodTree | None,
         contents: dict[str, bytes | str] | None,
         unsent: str,
+        read_scope: str | None = None,
     ) -> dict[str, FileEntry] | None:
         """The `files` a save or a crate request sends: `files` as given, or `tree` or `contents` prepared, uploading what the organization lacks.
 
         `unsent` says, in an upload's failure, what did not happen because of it: `the method was not
-        saved` for a save, `the request was not sent` for a crate request.
+        saved` for a save, `the request was not sent` for a crate request. `read_scope`, a crate
+        request's, is the scope `POST /v1/blobs/missing` is asked under (see `missing_blobs`).
 
         Raises:
-            RequestArgumentError: Two forms were given, or `contents` holds no file or a text no
-                UTF-8 encoder takes.
+            RequestArgumentError: Two forms were given, `tree` holds no file, or `contents` holds no
+                file or a text no UTF-8 encoder takes.
             MethodFileTransferError: A file the organization lacks could not be uploaded.
         """
         given = [name for name, present in (("files", files_given), ("tree", tree is not None), ("contents", contents is not None)) if present]
         if len(given) > 1:
             msg = f"{call}() takes the method's tree in one form, files, tree or contents; got {' and '.join(given)}."
             raise RequestArgumentError(msg)
-        if tree is not None:
-            listed_tree = tree
-            return await self._prepared_tree_files(lambda: self.prepare_files(listed_tree), unsent=unsent)
-        if contents is not None:
-            data = _contents_as_bytes(contents, call=call)
-            return await self._prepared_tree_files(lambda: self.prepare_files_from_contents(data), unsent=unsent)
-        return files
+        if tree is not None and not tree.files:
+            remedy = "; give files=None for an empty draft" if unsent == _METHOD_NOT_SAVED else ""
+            msg = f"{call}() got a tree holding no file, and a method tree holds at least one{remedy}."
+            raise RequestArgumentError(msg)
+        token = _TREE_READ_SCOPE.set(read_scope or None)
+        try:
+            if tree is not None:
+                listed_tree = tree
+                return await self._prepared_tree_files(lambda: self.prepare_files(listed_tree), unsent=unsent)
+            if contents is not None:
+                data = _contents_as_bytes(contents, call=call)
+                return await self._prepared_tree_files(lambda: self.prepare_files_from_contents(data), unsent=unsent)
+            return files
+        finally:
+            _TREE_READ_SCOPE.reset(token)
 
     async def _prepared_tree_files(self, prepare: Callable[[], Awaitable[dict[str, FileEntry]]], *, unsent: str) -> dict[str, FileEntry]:
         """Run `mthds`'s tree preparation, its failures raised as this SDK's errors, each carrying a verdict.
@@ -2133,12 +2148,27 @@ class PipelexAPIClient(MthdsAPIClient):
         SDK's `ApiResponseError` of an answer it cannot read, as every other route's does: its upload
         targets are signed links, so the error carries the body redacted and no parse failure.
 
+        While a crate request carrying a `read_scope` prepares its tree, the route is asked under that
+        scope, as its `read_scope` query, the Pipelex API's extension naming the blob store asked, so
+        the blobs are uploaded into the store the request's hash entries are read from; each upload
+        target the runner answers is signed for that scope. The hosted platform's own route reads the
+        caller's organization and ignores the query, as it ignores the request's `read_scope`.
+
         Raises:
             ApiResponseError: The platform answers non-2xx, or a 2xx this SDK cannot read.
             ApiUnreachableError: No answer came back.
         """
-        with self._reading_inherited_answer(method="POST", endpoint="blobs/missing", carries_links=True) as seen:
-            answer = await super().missing_blobs(blobs, digest=digest)
+        endpoint = _missing_blobs_endpoint()
+        with self._reading_inherited_answer(method="POST", endpoint=endpoint, carries_links=True) as seen:
+            if endpoint == _MISSING_BLOBS:
+                answer = await super().missing_blobs(blobs, digest=digest)
+            else:
+                # The base's request, at the scoped endpoint: the base takes no query of its own.
+                content = MissingBlobsRequest(blobs=list(blobs), digest=digest).model_dump_json(exclude_none=True).encode("utf-8")
+                response = await self._send("POST", self._url(endpoint), content=content, request_timeout=self.request_timeout_seconds)
+                if not response.is_success:
+                    self._raise_api_response_error(method="POST", endpoint=endpoint, response=response)
+                answer = MissingBlobsResult.model_validate(response.json())
         preparing = _MISSING_BLOBS_ANSWER.get()
         if preparing is not None:
             preparing.response = seen.response
@@ -2166,8 +2196,8 @@ class PipelexAPIClient(MthdsAPIClient):
         if strangers and response is not None:
             raise self._unreadable_answer(
                 method="POST",
-                path=f"/{_API_PREFIX}/blobs/missing",
-                request_url=self._url("blobs/missing"),
+                path=f"/{_API_PREFIX}/{_MISSING_BLOBS}",
+                request_url=self._url(_missing_blobs_endpoint()),
                 response=response,
                 what=f"a body asking for blobs this tree does not hold: {', '.join(sorted(strangers))}",
                 carries_links=True,
@@ -2913,9 +2943,12 @@ class PipelexAPIClient(MthdsAPIClient):
         server fault) raises `ApiResponseError`, never an `is_valid: false` verdict.
 
         Raises:
+            RequestArgumentError: `tree` holds no file, or `contents` holds a text no UTF-8 encoder
+                takes, refused before any request.
             MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be uploaded.
             TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
             ApiResponseError: No verdict could be produced.
+            ApiUnreachableError: No answer came back.
         """
         return await self._request_product(
             "POST",
@@ -2942,9 +2975,12 @@ class PipelexAPIClient(MthdsAPIClient):
         `501`.
 
         Raises:
+            RequestArgumentError: `tree` holds no file, or `contents` holds a text no UTF-8 encoder
+                takes, refused before any request.
             MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be uploaded.
             TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
             ApiResponseError: No verdict could be produced.
+            ApiUnreachableError: No answer came back.
         """
         return await self._request_product(
             "POST",
@@ -2968,8 +3004,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Same three-form method selector and same tree sending as `resolve`, enforced at request
         construction and by the server alike. The pipe is selected by the request's `pipe_ref`,
-        else the `main_pipe` of the `METHODS.toml` at the tree's root, else the closure's single
-        `main_pipe` declaration.
+        else the `main_pipe` of the `METHODS.toml` at the tree's root, sent or fetched, else the
+        closure's single `main_pipe` declaration.
 
         Returns a 200 verdict: branch on `is_valid` before reading the arm. A no-verdict
         condition raises `ApiResponseError`: a refused selection (an unknown ref, or no
@@ -2980,12 +3016,16 @@ class PipelexAPIClient(MthdsAPIClient):
         those of `resolve`; an artifact the server cannot derive is a `500`.
 
         Raises:
+            RequestArgumentError: `tree` holds no file, or `contents` holds a text no UTF-8 encoder
+                takes, refused before any request.
             MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be uploaded.
             TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
             ApiResponseError: No verdict could be produced.
+            ApiUnreachableError: No answer came back.
         """
         # `all_pipes` and `include_files` default to False on the server too, so a flag left at its
-        # default is not sent, as `@pipelex/sdk` sends it: the two SDKs put the same body on the wire.
+        # default is not sent, as `@pipelex/sdk` leaves it off. The two bodies still differ by one member:
+        # `@pipelex/sdk` carries `resources`, which this SDK's crate requests refuse until L-261012-992a34.
         return await self._request_product(
             "POST",
             "pipe-io",
@@ -2999,8 +3039,9 @@ class PipelexAPIClient(MthdsAPIClient):
 
         A `tree` or `contents` is prepared here, inline when small and by hash otherwise, uploading the
         files the API lacks first, through the helper `create_method` and `write_draft` send a tree
-        with, so the three routes and a save send one tree the same way. `files` and `dependencies`
-        travel as given; a member left unset is not sent.
+        with, so the three routes and a save send one tree the same way, the blob route asked under the
+        request's `read_scope`. `files` and `dependencies` travel as given; a member left unset, or an
+        empty map, is not sent.
         """
         body = request.model_dump(
             mode="json", exclude_none=True, exclude_defaults=exclude_defaults, exclude={"files", "tree", "contents", "dependencies"}
@@ -3012,6 +3053,7 @@ class PipelexAPIClient(MthdsAPIClient):
             tree=request.tree,
             contents=request.contents,
             unsent=_REQUEST_NOT_SENT,
+            read_scope=request.read_scope,
         )
         if files is not None:
             body["files"] = files
@@ -3710,6 +3752,17 @@ def _id_path_segment(value: object, *, call: str, what: str) -> str:
 
 # How many files of a saved tree `write_method_tree` downloads at once, as many as `mthds` uploads at once.
 _MAX_CONCURRENT_DOWNLOADS = 8
+
+
+_MISSING_BLOBS = "blobs/missing"
+
+
+def _missing_blobs_endpoint() -> str:
+    """`POST /v1/blobs/missing`'s endpoint below `/v1`, under the read scope of the tree being prepared when there is one."""
+    read_scope = _TREE_READ_SCOPE.get()
+    if read_scope is None:
+        return _MISSING_BLOBS
+    return f"{_MISSING_BLOBS}?{urlencode({'read_scope': read_scope})}"
 
 
 def _contents_as_bytes(contents: dict[str, bytes | str], *, call: str) -> dict[str, bytes]:
