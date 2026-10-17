@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A saved method's tree, saved by hash**: `createMethod` and `writeDraft` take the method's tree as `files`, the MTHDS standard's map of file entries sent as given, as `tree`, any `MethodTreeSource` such as the `MethodTree` the `mthds` package's `listMethodTree` lists from a directory, or as `contents`, each file's bytes or text by tree path; the last two travel inline when their map weighs `INLINE_TREE_MAX_BYTES` or less, and otherwise by hash, after `POST /v1/blobs/missing` names the files the organization lacks and the client uploads those once, each checked against the tree's listing first, so a large method saves in a small request (`docs/method-trees.md`). A tree holding no file is refused before any request, and an answer asking for a blob the tree does not hold is an `ApiResponseError` of an answer the SDK cannot read.
+- **A saved method's tree, read and written to disk**: `getMethod` answers a `MethodDetail` and `getMethodVersion` a `MethodVersion` whose `files` list the tree, each `SavedMethodFile` with its `path`, `sha256`, `size` and a link to its bytes valid for about fifteen minutes, and `writeMethodTree(files, { destination })`, in Node, downloads them with no credential of the client, checks each against its size and SHA-256, and writes the tree into a fresh directory that takes its name only once complete. An answer of these routes the SDK cannot read, a `sha256` that is not 64 lower-case hex digits among them, reaches its `ApiResponseError` with every link redacted in `responseBody` and no `cause`, a link being a bearer credential.
+- **`methodTreeLimits`**: the limits the deployment announces for a method's tree in its version handshake, in the shape `listMethodTree` takes as its `limits` option, so a tree the platform would refuse is refused while it is listed. The client asks for the handshake once and keeps its answer for `methodTreeLimits` and every save by hash.
+- **`requestTimeoutMs`**: a `PipelexApiClient` option setting the client's request ceiling, twenty minutes by default as before: the time limit of a request given no `timeoutMs` of its own, the blocking `execute` among them, and of each upload before a save and each download by `writeMethodTree`, which it bounds whole, the body included.
+- **`MethodFileTransferError`**: thrown when a file of a method's tree could not be uploaded before a save or downloaded by `writeMethodTree`, with its `operation`, a `code` (`unreachable`, `storage_error`, `refused` or `mismatch`) deciding whether it is retryable, the file's `sha256` and `path`, and storage's `status`, and never the link, which is a bearer credential, nor a `cause`.
+- **`RunDetail.tree_digest` and `RunDetail.crate_fingerprint`**: the digest of the method tree a run sent and the crate the runner loaded it into, each `null` for a run that recorded none.
+
+### Changed
+
+- **A saved method is a tree, and its source fields are gone (Breaking)**: `MethodData`, `MethodVersion`, `MethodWriteInput` and `MethodDraftInput` lose `mthds` and `python`, and `MethodVersionSummary.source_digest` is now `tree_digest`, so code reading a method's source reads its `files` instead, and a draft is unchanged since its latest version when `draft_digest` is not `null` and equals `latest_published.tree_digest`. `draft_digest` is the draft's tree digest, `sha256:` and 64 hex digits, and `null` for an empty draft. A stored method or version whose `files` is not a listing is an `ApiResponseError`, and `getMethodVersion` answers a version stored before methods were trees with a `409` whose verdict is `runtime`.
+- **`writeDraft` replaces the whole tree (Breaking)**: a draft write always sends `files` and refuses a `MethodDraftInput` that gives the tree in no form, so keeping the stored files means sending them again; `files: null` empties the draft.
+- **The `mthds` floor moves from `^0.30.0` to `^0.32.0` (Breaking)**: this package reads the standard's `FileEntry` and `MethodFiles` types from `mthds/protocol` 0.32. A project that also imports `mthds` itself moves to 0.32 with it, so that one copy is installed.
+
+### Removed
+
+- **The catalog-source readers (Breaking)**: `methodSourceToContents`, `getMethodClosure` and `EmptyMethodSourceError` are gone with the fields they read; a method's files come back as `MethodDetail.files`, and `writeMethodTree` puts them on disk.
+
 ## [v0.45.0] - 2026-10-16
 
 ### Changed

@@ -28,7 +28,7 @@ const result = await client.startAndWaitForResult({ mthds_contents: [mthds], res
 
 An absent, `null` or empty map is not sent.
 
-A request carrying `resources` can be large, so every route gives it the 20-minute execute ceiling: `validate` and `validateFiles` have it by default (a caller's `timeoutMs` still overrides it), and `start` and the crate routes raise their shorter default to it for a request that carries a file. On the hosted API the gateway caps a request at about 30 seconds whatever the client allows.
+A request carrying `resources` can be large, so every route gives it the client's request ceiling (`requestTimeoutMs`, twenty minutes by default, the execute ceiling): `validate` and `validateFiles` have it by default (a caller's `timeoutMs` still overrides it), and `start` and the crate routes raise their shorter default to it for a request that carries a file. On the hosted API the gateway caps a request at about 30 seconds whatever the client allows.
 
 ## The key is the path the step names
 

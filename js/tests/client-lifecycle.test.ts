@@ -4,7 +4,6 @@ import {
   ApiResponseError,
   ApiUnreachableError,
   MissingMainStuffError,
-  PipelineRequestError,
   RunLifecycleUnavailableError,
   UploadTransportError,
   errorVerdictOf,
@@ -1113,15 +1112,24 @@ describe("PipelexApiClient answers it cannot read", () => {
   });
 
   it.each([
-    ["not JSON", "not json"],
-    ["an entry without string name and content", '[{"name": 1}]'],
-    ["a JSON object rather than a list", '{"name": "a.py", "content": "x"}'],
-    ["not a string", 42],
+    ["not an array", { "main.mthds": "src" }, "is not an array"],
+    ["absent", undefined, "is not an array"],
+    ["holding a string", ["main.mthds"], "holds an entry that is not an object, at [0]"],
+    [
+      "holding an entry with no link",
+      [{ path: "main.mthds", sha256: "0".repeat(64), size: 3, expires_at: "t" }],
+      "holds an entry whose `url` is not a string, at [0]",
+    ],
+    [
+      "holding a negative size",
+      [{ path: "main.mthds", sha256: "0".repeat(64), size: -1, url: "u", expires_at: "t" }],
+      "holds an entry whose `size` is not a non-negative integer, at [0]",
+    ],
   ])(
-    "getMethod throws a typed ApiResponseError when the stored python is %s",
-    async (_, python) => {
+    "getMethod throws a typed ApiResponseError when the stored files listing is %s",
+    async (_, files, fault) => {
       const client = makeClient();
-      const body = JSON.stringify({ method_id: "m1", name: "M", mthds: "src", python });
+      const body = JSON.stringify({ method_id: "m1", name: "M", files });
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
         new Response(body, { status: 200, statusText: "OK", headers: { "X-Request-ID": "req-8" } }),
       );
@@ -1134,68 +1142,14 @@ describe("PipelexApiClient answers it cannot read", () => {
       expect(err).toBeInstanceOf(ApiResponseError);
       const unreadable = err as ApiResponseError;
       expect(unreadable.message).toBe(
-        "API GET /v1/methods/m1 answered 200 with a stored method whose `python` field could " +
-          "not be read",
+        `API GET /v1/methods/m1 answered 200 with a stored method whose \`files\` ${fault}`,
       );
       expect(unreadable.status).toBe(200);
-      expect(unreadable.responseBody).toBe(body);
+      // The answer carries links, each a bearer credential, so every `url` member is hidden.
+      expect(unreadable.responseBody).toBe(body.replace('"url":"u"', '"url":"[redacted]"'));
       expect(unreadable.requestId).toBe("req-8");
-      // mthds's own refusal, which carries no verdict, rides as the cause.
-      expect(unreadable.cause).toBeInstanceOf(Error);
-      expect(errorVerdictOf(unreadable.cause)).toBeUndefined();
       // Server data the caller cannot fix: runtime, and nothing says a retry helps.
       expect(errorVerdictOf(unreadable)).toEqual({ errorDomain: "runtime", retryable: false });
-    },
-  );
-
-  it("getMethod hands mthds's refusal of a malformed python list on as the cause", async () => {
-    const client = makeClient();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ method_id: "m1", python: "not json" }), { status: 200 }),
-    );
-
-    const err = await client.getMethod("m1").catch((thrown: unknown) => thrown);
-
-    expect((err as ApiResponseError).cause).toBeInstanceOf(PipelineRequestError);
-    expect(((err as ApiResponseError).cause as Error).message).toMatch(/not valid JSON/);
-  });
-
-  it.each([
-    [
-      "createMethod",
-      (client: PipelexApiClient) => client.createMethod({ name: "M", mthds: "src" }),
-      "POST /v1/methods",
-    ],
-    [
-      "writeDraft",
-      (client: PipelexApiClient) => client.writeDraft("m1", { mthds: "src" }),
-      "PUT /v1/methods/m1/draft",
-    ],
-    [
-      "renameMethod",
-      (client: PipelexApiClient) => client.renameMethod("m1", { name: "M" }),
-      "PATCH /v1/methods/m1",
-    ],
-  ])(
-    "%s throws a typed ApiResponseError when the stored python it answers is unreadable",
-    async (_, call, route) => {
-      const client = makeClient();
-      vi.spyOn(globalThis, "fetch").mockResolvedValue(
-        new Response(JSON.stringify({ method_id: "m1", python: '[{"name": 1}]' }), {
-          status: 200,
-        }),
-      );
-
-      const err = await call(client).then(
-        () => expect.fail("expected the write to throw"),
-        (thrown: unknown) => thrown,
-      );
-
-      expect(err).toBeInstanceOf(ApiResponseError);
-      expect((err as ApiResponseError).message).toBe(
-        `API ${route} answered 200 with a stored method whose \`python\` field could not be read`,
-      );
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
     },
   );
 });

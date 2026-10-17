@@ -175,13 +175,6 @@
       ]
     },
     {
-      "class": "EmptyMethodSourceError",
-      "only_in": "js",
-      "variants": [
-        { "variant": "a stored method with no source", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
-      ]
-    },
-    {
       "class": "InvalidLocalSourceError",
       "variants": [
         { "variant": "a missing path", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
@@ -250,6 +243,15 @@
         { "variant": "storage timing out the request", "given": { "code": "unexpected", "status": 408 }, "expected": { "error_domain": "runtime", "retryable": true } },
         { "variant": "storage throttling the request", "given": { "code": "unexpected", "status": 429 }, "expected": { "error_domain": "runtime", "retryable": true } },
         { "variant": "an unmapped status", "given": { "code": "unexpected", "status": 418 }, "expected": { "error_domain": "runtime", "retryable": false } }
+      ]
+    },
+    {
+      "class": "MethodFileTransferError",
+      "variants": [
+        { "variant": "storage gave no answer to an upload", "given": { "code": "unreachable" }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "storage failing a download", "given": { "code": "storage_error", "status": 503 }, "expected": { "error_domain": "runtime", "retryable": true } },
+        { "variant": "storage refusing an expired link", "given": { "code": "refused", "status": 403 }, "expected": { "error_domain": "runtime", "retryable": false } },
+        { "variant": "downloaded bytes that are not the listed file", "given": { "code": "mismatch" }, "expected": { "error_domain": "runtime", "retryable": true } }
       ]
     },
     {

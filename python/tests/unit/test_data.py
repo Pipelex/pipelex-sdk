@@ -187,19 +187,23 @@ class PipeIOBodies:
 
 
 class MethodVersionBodies:
-    """A saved method and its published versions, as the platform serializes them (`MethodPublic`, `MethodVersionSummary`).
+    """A saved method and its published versions, as the platform serializes them (`MethodPublic`, `MethodDetail`,
+    `MethodVersionSummary`, `MethodVersionDetail`).
 
-    `python` crosses the wire as one string holding a JSON `[{name, content}]` array, and the draft's
-    token (`updated_at`) carries microseconds, which a client echoes verbatim.
+    The draft and each version name a method tree by its digest, and a read lists the tree's files, each
+    with a short-lived link to its bytes. The draft's token (`updated_at`) carries microseconds, which a
+    client echoes verbatim.
     """
 
-    DIGEST: ClassVar[str] = "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47"
-    OTHER_DIGEST: ClassVar[str] = "0d1c2b3a49586776a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f00f1e"
+    DIGEST: ClassVar[str] = "sha256:5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47"
+    OTHER_DIGEST: ClassVar[str] = "sha256:0d1c2b3a49586776a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f00f1e"
     TOKEN: ClassVar[str] = "2026-10-08T09:00:00.123456+00:00"
+    #: A run's `source_digest`, the SHA-256 of the sources it sent as text: 64 hex digits, no `sha256:` prefix.
+    SOURCE_DIGEST: ClassVar[str] = "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47"
 
     SUMMARY: ClassVar[dict[str, Any]] = {
         "version": 3,
-        "source_digest": DIGEST,
+        "tree_digest": DIGEST,
         "crate_fingerprint": "a1b2c3",
         "runner_version": "0.80.0",
         "description": "Review a receipt",
@@ -207,13 +211,29 @@ class MethodVersionBodies:
         "published_by": "user_1",
     }
 
+    #: The tree's files in tree path order, each with a presigned link to its bytes.
+    FILES: ClassVar[list[dict[str, Any]]] = [
+        {
+            "path": "helper.py",
+            "sha256": "8ff436def1451285599a1b1ad70800493b8dcafde2912e1a38345633054e4c26",
+            "size": 5,
+            "url": "https://app-bucket.s3.amazonaws.com/org_1/blobs/8ff436def1451285599a1b1ad70800493b8dcafde2912e1a38345633054e4c26?X-Amz-Signature=abc",
+            "expires_at": "2026-10-08T09:15:00+00:00",
+        },
+        {
+            "path": "main.mthds",
+            "sha256": "16c322ec9ceeb29cf54ef4553f087cba1683c3f20f3bf334e49ccc2ad0ecba3e",
+            "size": 19,
+            "url": "https://app-bucket.s3.amazonaws.com/org_1/blobs/16c322ec9ceeb29cf54ef4553f087cba1683c3f20f3bf334e49ccc2ad0ecba3e?X-Amz-Signature=def",
+            "expires_at": "2026-10-08T09:15:00+00:00",
+        },
+    ]
+
     METHOD: ClassVar[dict[str, Any]] = {
         "method_id": "mt_receipts01",
         "org_id": "org_1",
         "created_by_user_id": "user_1",
         "name": "Receipt review",
-        "mthds": '[{"name": "main.mthds", "content": "domain = \\"receipts\\""}]',
-        "python": '[{"name": "helper.py", "content": "x = 1"}]',
         "input_data": {"total": 1},
         "pipe_output": None,
         "description": "Review a receipt",
@@ -225,14 +245,11 @@ class MethodVersionBodies:
         "latest_published": SUMMARY,
     }
 
+    METHOD_DETAIL: ClassVar[dict[str, Any]] = {**METHOD, "files": FILES}
+
     NEVER_PUBLISHED: ClassVar[dict[str, Any]] = {**METHOD, "latest_version": None, "latest_published": None}
 
-    VERSION: ClassVar[dict[str, Any]] = {
-        **SUMMARY,
-        "method_id": "mt_receipts01",
-        "mthds": "domain = 'receipts'",
-        "python": '[{"name": "helper.py", "content": "x = 1"}]',
-    }
+    VERSION: ClassVar[dict[str, Any]] = {**SUMMARY, "method_id": "mt_receipts01", "files": FILES}
 
     INVALID_VERDICT: ClassVar[dict[str, Any]] = {
         "is_valid": False,

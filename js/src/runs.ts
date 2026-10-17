@@ -151,9 +151,11 @@ export interface RunPublic {
    */
   method_version?: number | "draft" | null;
   /**
-   * The digest of the files the run ran, in the canonical form of `MethodData.draft_digest`;
-   * `null` when the platform never held the files, as on a `method_ref` run. A hosted
-   * extension, absent on a server that does not record it.
+   * The SHA-256 of the sources the run sent as text (`mthds_contents`, or a `files` map of text
+   * entries), 64 lowercase hex characters, which is not a tree digest (`RunDetail.tree_digest`
+   * names a run's tree); `null` when the platform never held the sources as text, as on a run of
+   * a saved method or a `method_ref` run. A hosted extension, absent on a server that does not
+   * record it.
    */
   source_digest?: string | null;
   /** Server-specific response fields (defined by the server you call). */

@@ -1,6 +1,6 @@
 import type {
   MTHDSProtocol,
-  MethodFile,
+  MethodFiles,
   ModelCategory,
   ModelDeck,
   RunOptions,
@@ -12,12 +12,7 @@ import type {
 // Run-source predicates come from the standard, not a local restatement: which
 // source combinations are legal is an invariant of `RunRequest` itself, so this
 // client and the MTHDS runners cannot disagree about what they reject.
-import {
-  assertExclusiveRunSources,
-  hasBundlePayload,
-  parseMethodFiles,
-  serializeMethodFiles,
-} from "mthds/protocol";
+import { assertExclusiveRunSources, hasBundlePayload } from "mthds/protocol";
 import type {
   CodegenRequest,
   CodegenResponse,
@@ -28,7 +23,6 @@ import type {
   LintResponse,
   ModelCheckCategory,
   ModelReferenceVerdict,
-  MthdsFileItem,
   PipeIORequest,
   PipeIOResponse,
   PipelexRunResultStart,
@@ -70,6 +64,7 @@ import type {
   ListMethodVersionsQuery,
   MethodData,
   MethodDeletionAccepted,
+  MethodDetail,
   MethodDraftInput,
   MethodExample,
   MethodExampleCreateInput,
@@ -82,6 +77,7 @@ import type {
   MethodPublishResult,
   MethodRenameInput,
   MethodSummary,
+  MethodTreeInput,
   MethodVersion,
   MethodVersionPage,
   MethodVersionSummary,
@@ -95,6 +91,7 @@ import type {
   RunPage,
   PlanView,
   ResolvedStorageUrl,
+  SavedMethodFile,
   SubscriptionResponse,
   UpdateRunInput,
   UploadGrant,
@@ -106,7 +103,6 @@ import type {
 import {
   ApiResponseError,
   ApiUnreachableError,
-  EmptyMethodSourceError,
   MissingMainStuffError,
   PagingNotTerminatingError,
   PipelineExecuteTimeoutError,
@@ -124,7 +120,32 @@ import {
   readRunErrorReport,
 } from "./error-models.js";
 import type { ProblemDetails, UserAction } from "./error-models.js";
-import { methodSourceToContents } from "./method-source.js";
+import {
+  INLINE_TREE_MAX_BYTES,
+  MAX_CONCURRENT_TRANSFERS,
+  announcedTreeLimits,
+  contentsTreeSource,
+  declaresBlobStore,
+  fileByBlob,
+  forEachConcurrently,
+  hashMethodFiles,
+  inlineFilesOf,
+  inlineMapBytes,
+  readTreeBytes,
+  redactSignedLinks,
+  sha256Hex,
+  treeTotalSize,
+  uniqueBlobs,
+  uploadBlob,
+  writeMethodTreeTo,
+} from "./method-trees.js";
+import type {
+  MethodTreeLimits,
+  MethodTreeSource,
+  MissingBlob,
+  MissingBlobsRequest,
+  MissingBlobsResult,
+} from "./method-trees.js";
 import { buildUserAgent } from "./user-agent.js";
 import type { AppInfo } from "./user-agent.js";
 import { uploadFile as uploadFileImpl } from "./upload.js";
@@ -430,6 +451,15 @@ export interface PipelexApiClientOptions {
    * beside the specs' tests.
    */
   appInfo?: AppInfo;
+  /**
+   * The client's request ceiling, in milliseconds: the time limit of a request given no
+   * `timeoutMs` of its own, the blocking `execute` and a `start` carrying its method among them,
+   * and of each transfer of a method's file to or from storage, an upload before a save or a
+   * download by `writeMethodTree`. Defaults to 20 minutes, the runner's blocking execute ceiling.
+   * A positive number no larger than 2147483647, the longest delay a timer honours, else a
+   * `RangeError` at construction.
+   */
+  requestTimeoutMs?: number;
 }
 
 /** Decoders of an answer's bytes: the strict one tells a body that is not UTF-8. */
@@ -445,6 +475,12 @@ interface RawResponse {
   body: string;
   /** Whether the body's bytes are UTF-8, which a JSON answer must be (RFC 8259). */
   utf8: boolean;
+  /**
+   * Whether the body carries signed links, each a bearer credential: an error built from such an
+   * answer holds its body with every link hidden (`redactSignedLinks`) and no `cause`, since a
+   * parse failure can quote the text it failed on.
+   */
+  carriesLinks?: boolean;
 }
 
 /**
@@ -517,50 +553,6 @@ const BARE_RUNNER_IMPLEMENTATION = "pipelex-api";
  * stay shaped like the standard's wire surface (`mthds/protocol`). The Pipelex
  * extensions (the crate and tools routes, the run lifecycle) ride on top.
  */
-
-// ── Methods catalog: typed `python` ⇄ wire string ────────────────────────
-// The catalog stores the `python` of a method's draft, and of each published version, as
-// the serialized `[{ name, content }]` string; the public `MethodData`, `MethodVersion`,
-// `MethodWriteInput` and `MethodDraftInput` type it as `MethodFile[]`. These wire shapes +
-// converters are the one place the SDK (de)serializes it, via `mthds/protocol`'s canonical
-// `parseMethodFiles`/`serializeMethodFiles`.
-
-/** A model carrying stored sources, as it travels on the wire: `python` is the catalog string. */
-type WithWirePython<T extends { python?: MethodFile[] }> = Omit<T, "python"> & { python?: string };
-/** `MethodData` as it travels on the wire. */
-type MethodDataWire = WithWirePython<MethodData>;
-/** `MethodVersion` as it travels on the wire. */
-type MethodVersionWire = WithWirePython<MethodVersion>;
-
-/**
- * Parse a wire model's `python` into the public shape (`MethodFile[]`). A stored `python` that
- * is not the serialized `[{ name, content }]` list is server data the SDK cannot read, not a
- * caller's argument, so `mthds`'s refusal is handed to `unreadable`, which builds the error to
- * throw from the answer that carried it.
- */
-function withParsedPython<T extends { python?: MethodFile[] }>(
-  wire: WithWirePython<T>,
-  unreadable: (cause: unknown) => Error,
-): T {
-  const { python, ...rest } = wire;
-  if (python == null) return rest as T;
-  try {
-    return { ...rest, python: parseMethodFiles(python) } as T;
-  } catch (err) {
-    throw unreadable(err);
-  }
-}
-
-/**
- * Serialize a write payload for the wire. `python` is three-way: OMITTED stays
- * omitted (preserve server-side); an array — including `[]` — is serialized (`[]`
- * → `""`, the clear sentinel; non-empty → the JSON array). It is never sent as an
- * array on the wire.
- */
-function withWirePython<T extends { python?: MethodFile[] }>(input: T): WithWirePython<T> {
-  const { python, ...rest } = input;
-  return python === undefined ? rest : { ...rest, python: serializeMethodFiles(python) };
-}
 
 /**
  * A request's body as the JSON text it is sent as, written by `stringifyExactJson` in one pass,
@@ -762,6 +754,14 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   /** Cached `/v1/version` handshake outcome — whether the durable lifecycle is served. */
   private lifecycleAvailable: boolean | undefined;
   /**
+   * The first `/v1/version` handshake that answered, kept for the client's lifetime: what a save
+   * reads from it (`blob_store`) and the tree limits it announces do not change while a client
+   * lives. A handshake that failed is not kept, so the next call asks again.
+   */
+  private versionInfo: VersionInfo | undefined;
+  /** The client's request ceiling (`PipelexApiClientOptions.requestTimeoutMs`). */
+  private readonly requestTimeoutMs: number;
+  /**
    * The `User-Agent` sent on every API request, computed once at construction;
    * `undefined` in a browser, where no header may be set.
    */
@@ -794,6 +794,15 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     this.baseUrl = normalizedBaseUrl;
     this.originUrl = new URL("/", this.baseUrl).origin;
+    const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    // A longer delay overflows the timer, which then fires at once as a false timeout.
+    if (!isTimerDelay(requestTimeoutMs)) {
+      throw new RangeError(
+        `"requestTimeoutMs" must be a positive number no larger than ${MAX_TIMER_DELAY_MS}, got ` +
+          `${String(requestTimeoutMs)}.`,
+      );
+    }
+    this.requestTimeoutMs = requestTimeoutMs;
   }
 
   // ── URL resolution ───────────────────────────────────────────────────
@@ -853,7 +862,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     const bodyText = hasBody ? requestBodyText(method, url, options.body) : undefined;
     const headers = this.requestHeaders(hasBody, options.idempotencyKey);
 
-    const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
     // A longer delay overflows the timer, which then fires at once as a false timeout.
     if (!isTimerDelay(timeoutMs)) {
       throw new RangeError(
@@ -964,8 +973,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
-   * A methods-catalog route answering one stored method (`getMethod`, `createMethod`,
-   * `writeDraft`, `renameMethod`), parsed into the public shape by `readStoredSources`.
+   * A methods-catalog route answering one stored method (`createMethod`, `writeDraft`,
+   * `renameMethod`), read as `readObjectAnswer` reads it.
    */
   private async requestMethodData(
     method: HttpMethod,
@@ -973,43 +982,33 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     body?: unknown,
   ): Promise<MethodData> {
     const res = await this.requestProductAnswer(method, endpoint, body);
-    const wire = this.readObjectAnswer<MethodDataWire>(method, endpoint, res);
-    return this.readStoredSources<MethodData>(method, endpoint, res, wire, "a stored method");
+    return this.readObjectAnswer<MethodData>(method, endpoint, res);
   }
 
   /**
-   * The stored sources of a method or of a published version, read from the answer `res`
-   * carried, into the public shape. A stored `mthds` that is neither a string nor absent (`null`
-   * stays "no source", which `getMethodClosure` reports), and a stored `python` the SDK cannot
-   * parse, are an answer it cannot read, so each throws an `ApiResponseError` built from that
-   * answer, the latter with `mthds`'s refusal as `cause`: `runtime`, not retryable, since no
-   * change to the call fixes it. `subject` names what carried them in the message.
+   * A route answering a saved tree's listing beside what names it (`getMethod`,
+   * `getMethodVersion`), read as `readObjectAnswer` reads it, then its `files` checked: a listing
+   * that is not an array of `{ path, sha256, size, url, expires_at }`, each a string but `size`, a
+   * non-negative integer, is an answer the SDK cannot read, since `writeMethodTree` would write
+   * from it. Throws the `ApiResponseError` `unreadableAnswer` builds, `subject` naming the answer.
    */
-  private readStoredSources<T extends { python?: MethodFile[] }>(
+  private readSavedTree<T extends { files: SavedMethodFile[] }>(
     method: HttpMethod,
     endpoint: string,
     res: RawResponse,
-    wire: WithWirePython<T>,
     subject: string,
   ): T {
-    const source: unknown = (wire as { mthds?: unknown }).mthds;
-    if (source != null && typeof source !== "string") {
+    const answer = this.readObjectAnswer<Record<string, unknown>>(method, endpoint, res);
+    const fault = savedFilesFault(answer.files);
+    if (fault !== null) {
       throw this.unreadableAnswer(
         method,
         `/${API_PREFIX}/${endpoint}`,
         res,
-        `${subject} whose \`mthds\` field is not a string`,
+        `${subject} whose \`files\` ${fault}`,
       );
     }
-    return withParsedPython<T>(wire, (cause) =>
-      this.unreadableAnswer(
-        method,
-        `/${API_PREFIX}/${endpoint}`,
-        res,
-        `${subject} whose \`python\` field could not be read`,
-        cause,
-      ),
-    );
+    return answer as unknown as T;
   }
 
   /**
@@ -1274,7 +1273,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * `API <method> <path> answered <status> with <what>`: the answer's status, its raw text as
    * `responseBody`, no problem member but the `X-Request-ID` header, the failure that made it
    * unreadable as `cause`, and the verdict the fallback gives a 2xx, `runtime` and not retryable.
-   * On a request that may create a run, the run may have started: the server accepted it.
+   * An answer that carries signed links (`RawResponse.carriesLinks`) is held with every link
+   * hidden, and with no `cause`, which could quote one. On a request that may create a run, the run may have started: the server accepted it.
    */
   private unreadableAnswer(
     method: HttpMethod,
@@ -1284,18 +1284,19 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     cause?: unknown,
     run: RunCreation = {},
   ): ApiResponseError {
+    const carriesLinks = res.carriesLinks === true;
     return new ApiResponseError(
       `API ${method} ${path} answered ${res.status} with ${what}`,
       this.baseUrl,
       res.status,
       res.statusText,
-      res.body,
+      carriesLinks ? redactSignedLinks(res.body) : res.body,
       undefined,
       undefined,
       undefined,
       undefined,
       {
-        cause,
+        cause: carriesLinks ? undefined : cause,
         problem: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) },
         mayStartRun: run.mayStartRun === true,
       },
@@ -1600,7 +1601,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       nonEmptyString(options.method_ref) !== undefined;
     const res = await this.requestRaw("POST", url, {
       body: request,
-      timeoutMs: needsLongCeiling ? DEFAULT_REQUEST_TIMEOUT_MS : POLL_REQUEST_TIMEOUT_MS,
+      timeoutMs: needsLongCeiling ? this.requestTimeoutMs : POLL_REQUEST_TIMEOUT_MS,
       idempotencyKey,
       ...STARTS_RUN,
     });
@@ -2039,7 +2040,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    */
   async resolve(request: ResolveRequest): Promise<ResolveResponse> {
     return this.requestExtension("resolve", await wireCrateRequest(request), {
-      timeoutMs: crateRequestTimeoutMs(request),
+      timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
     });
   }
 
@@ -2060,7 +2061,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    */
   async codegen(request: CodegenRequest): Promise<CodegenResponse> {
     return this.requestExtension("codegen", await wireCrateRequest(request), {
-      timeoutMs: crateRequestTimeoutMs(request),
+      timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
     });
   }
 
@@ -2103,7 +2104,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    */
   async pipeIo(request: PipeIORequest): Promise<PipeIOResponse> {
     return this.requestExtension("pipe-io", await wireCrateRequest(request), {
-      timeoutMs: crateRequestTimeoutMs(request),
+      timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
     });
   }
 
@@ -2297,6 +2298,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (this.lifecycleAvailable === undefined) {
       try {
         const info = await this.version();
+        this.versionInfo ??= info;
         const impl = info.implementation;
         this.lifecycleAvailable = !(
           typeof impl === "string" && impl === BARE_RUNNER_IMPLEMENTATION
@@ -2455,10 +2457,13 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
-   * Read one method — `GET /v1/methods/{id}`: its identity, its draft (`mthds`, `python`,
-   * `input_data`) with the draft's token (`updated_at`) and digest (`draft_digest`), and its
-   * latest published version's summary (`latest_version`, `latest_published`), whatever the
-   * publish state. A method never published reads with both `null`, never as an error.
+   * Read one method with its draft's files — `GET /v1/methods/{id}`: its identity, its draft
+   * (`files`, `input_data`) with the draft's token (`updated_at`) and digest (`draft_digest`),
+   * and its latest published version's summary (`latest_version`, `latest_published`), whatever
+   * the publish state. A method never published reads with both `null`, never as an error.
+   * `files` lists the draft's tree in tree path order, each file with its SHA-256, its size and a
+   * link to its bytes valid for about fifteen minutes, and is empty for an empty draft;
+   * `writeMethodTree` brings the tree to disk.
    *
    * Takes a bare catalog id: the method routes address the method itself, never a version of
    * it. A caller holding `mt_…@3` strips the suffix with `parseMethodSelector` and reads that
@@ -2466,56 +2471,44 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * suffixed id, before any request, rather than read back the `404` the platform would answer,
    * and for an id that is empty, `.` or `..`, which the URL would resolve into another route's
    * path.
+   *
+   * Throws `ApiResponseError`: `404` `not_found` for an unknown or foreign-org method, `409`
+   * `method_being_deleted` while its erasure runs, and a `409` whose verdict is `runtime` for a
+   * method whose draft names a tree the platform holds no record of. An answer whose `files` is
+   * not a listing is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
-  async getMethod(methodId: string): Promise<MethodData> {
-    return this.requestMethodData("GET", methodPath(methodId, "getMethod"));
+  async getMethod(methodId: string): Promise<MethodDetail> {
+    const endpoint = methodPath(methodId, "getMethod");
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
+    return this.readSavedTree<MethodDetail>("GET", endpoint, withLinks(res), "a stored method");
   }
 
   /**
-   * Resolve a stored method's id into the runnable MTHDS closure of its DRAFT — a
-   * client-side semantic layer over `getMethod` (the platform has no route that
-   * returns a parsed closure). Fetches the method, parses its draft's polymorphic
-   * `mthds` source with `methodSourceToContents`, and labels each resulting file
-   * with the `method_id` as its `source` provenance.
+   * Create a method — `POST /v1/methods`. The new method holds its tree as its draft and has no
+   * published version, so its bare id answers `409 method_not_published` on the run and tooling
+   * routes until its first `publishMethod`; its draft runs as `mt_…@draft` at once.
    *
-   * **This is the draft, not what a bare id runs.** A run, a validation or a pipe I/O
-   * read by a bare `method_id` resolves to the latest PUBLISHED version, which the
-   * draft may be ahead of. For the closure of a version, read it with
-   * `getMethodVersion` and parse its `mthds` with `methodSourceToContents`.
+   * The tree is `files`, sent as given, or `tree` or `contents`, which the client sends inline
+   * when its inline map weighs 256 KiB or less, or when the platform keeps no blob store, and
+   * otherwise every file by hash, after asking `POST /v1/blobs/missing` which files the
+   * organization lacks and uploading those: a file uploaded once is never uploaded again. With
+   * none of the three, the draft is empty (see `docs/method-trees.md`).
    *
-   * This is the LOCAL expansion utility — for callers that want the files in
-   * hand (to edit, to diff, or to send to a bare runner, which has no catalog to
-   * resolve an id against). The operations that accept `method_id`
-   * natively (`execute`/`start`, `validate`/`resolve`/`codegen`/`pipeIo`, and
-   * `prepareInputs`, which composes a `pipeIo` of its own) take the id as a
-   * pass-through instead; nothing in this client expands an id behind your back.
-   *
-   * Takes a bare catalog id, as `getMethod` does. Requires an API key: the methods
-   * catalog is org-scoped to the key's org, so an unknown OR foreign-org id is a
-   * `getMethod` `404` (`ApiResponseError` `not_found`), which propagates unchanged. A
-   * real, in-org method whose draft parses to nothing throws `EmptyMethodSourceError`
-   * (distinct from the 404) — the row exists but has no runnable source yet.
-   */
-  async getMethodClosure(methodId: string): Promise<MthdsFileItem[]> {
-    const method = await this.getMethod(methodId);
-    const contents = methodSourceToContents(method.mthds);
-    if (contents.length === 0) {
-      throw new EmptyMethodSourceError(methodId);
-    }
-    return contents.map((content) => ({ content, source: methodId }));
-  }
-
-  /**
-   * Create a method — `POST /v1/methods`. The new method holds the input as its draft and has
-   * no published version, so its bare id answers `409 method_not_published` on the run and
-   * tooling routes until its first `publishMethod`; its draft runs as `mt_…@draft` at once.
-   *
-   * Throws `ApiResponseError`: `413` `payload_too_large` for a method that would leave no room
-   * for a publish, measured as a draft write is, and `422` `validation_failed` for Python files
-   * no run could import or for text holding a lone surrogate.
+   * Throws `RequestArgumentError` for two forms of the tree, or `contents` holding no file, before
+   * any request; `MethodFileTransferError` when a file the organization lacks could not be
+   * uploaded, and nothing is saved. Throws `ApiResponseError`: `422` `invalid_method_files` for a
+   * map the standard refuses, with its `tree_refusal`; `422` `method_tree_too_large` for a tree
+   * past one of the deployment's limits, named in its `limit`; `422` `blob_mismatch` for a hash
+   * stated at another size than the one held; `422` `missing_blobs` for a hash entry whose bytes
+   * the organization does not hold; `413` `payload_too_large` for a method that would leave no
+   * room for a publish.
    */
   async createMethod(input: MethodWriteInput): Promise<MethodData> {
-    return this.requestMethodData("POST", "methods", withWirePython(input));
+    const files = await this.methodTreeFiles("createMethod", input);
+    const body: Record<string, unknown> = { name: input.name };
+    if (files != null) body.files = files;
+    if (input.input_data !== undefined) body.input_data = input.input_data;
+    return this.requestMethodData("POST", "methods", body);
   }
 
   /**
@@ -2524,25 +2517,225 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    *
    * The draft is never validated on write, and writing it changes nothing for the callers of
    * the method's bare id, who run the latest published version until the next `publishMethod`.
-   * `python` and `input_data` are three-way (see `MethodDraftInput`). With
+   * The write replaces the draft's whole tree, given in exactly one form: `files`, sent as given,
+   * `files: null` emptying the draft, or `tree` or `contents`, sent inline or by hash as
+   * `createMethod` sends them. `input_data` is three-way (see `MethodDraftInput`). With
    * `expected_updated_at`, the write is a compare-and-swap on the draft token: a draft that
    * moved since is refused with a `409` whose `code` is `method_update_conflict`, and nothing is
    * written. Without it, last writer wins.
    *
-   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`
-   * for an unknown or foreign-org method, `409` `method_being_deleted` while its erasure runs,
-   * `413` `payload_too_large` for a draft that would grow the method past the room a publish
-   * needs, which keeps a draft that saves publishable, `422` `validation_failed` for Python
-   * files no run could import or for text holding a lone surrogate, `403` for a read-only key,
-   * and a `503` that wrote nothing, safe to retry, when the method kept changing under the
-   * write.
+   * Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` for a draft that
+   * gives its tree in no form or in two, or `contents` holding no file, before any request;
+   * `MethodFileTransferError` when a file the organization lacks could not be uploaded. Throws
+   * `ApiResponseError`: `404` `not_found` for an unknown or foreign-org method, `409`
+   * `method_being_deleted` while its erasure runs, the `422` refusals of a tree `createMethod`
+   * lists, `413` `payload_too_large` for a draft that would grow the method past the room a
+   * publish needs, `403` for a read-only key, and a `503` that wrote nothing, safe to retry,
+   * when the method kept changing under the write.
    */
   async writeDraft(methodId: string, input: MethodDraftInput): Promise<MethodData> {
-    return this.requestMethodData(
-      "PUT",
-      `${methodPath(methodId, "writeDraft")}/draft`,
-      withWirePython(input),
-    );
+    const endpoint = `${methodPath(methodId, "writeDraft")}/draft`;
+    if (input.files === undefined && input.tree == null && input.contents == null) {
+      throw new RequestArgumentError(
+        "writeDraft() replaces the draft's whole tree: give it as files (files: null empties the " +
+          "draft), tree or contents.",
+      );
+    }
+    const files = await this.methodTreeFiles("writeDraft", input);
+    const body: Record<string, unknown> = { files: files ?? null };
+    if (input.input_data !== undefined) body.input_data = input.input_data;
+    if (input.expected_updated_at !== undefined) {
+      body.expected_updated_at = input.expected_updated_at;
+    }
+    return this.requestMethodData("PUT", endpoint, body);
+  }
+
+  /**
+   * The limits the deployment holds a method's tree to — `GET /v1/version`, read from
+   * `limits.method_tree` of the public handshake — in the shape the `mthds` package's
+   * `listMethodTree` takes as its `limits` option, so a tree the platform would refuse is refused
+   * while it is listed, before any file is hashed:
+   *
+   * ```ts
+   * import { listMethodTree } from "mthds";
+   * const tree = await listMethodTree("methods/receipts", { limits: await client.methodTreeLimits() });
+   * await client.createMethod({ name: "Receipts", tree });
+   * ```
+   *
+   * A limit the server does not announce is absent, so a bare runner, which announces none,
+   * yields no limit, and none is ever assumed. A value that is not a positive integer is left out
+   * rather than trusted.
+   */
+  async methodTreeLimits(): Promise<MethodTreeLimits> {
+    return announcedTreeLimits(await this.cachedVersion());
+  }
+
+  /**
+   * The version handshake, asked once per client: the first answer is kept (see `versionInfo`),
+   * and a failure is thrown and not kept, so the next call asks again.
+   */
+  private async cachedVersion(): Promise<VersionInfo> {
+    this.versionInfo ??= await this.version();
+    return this.versionInfo;
+  }
+
+  /**
+   * Write a saved method's tree to disk: each file of a listing `getMethod` or `getMethodVersion`
+   * served, at its tree path under `options.destination`. **Node only.**
+   *
+   * Each file is downloaded through its link, at most eight at a time, with no credential of this
+   * client, and checked against the listing: its size and its SHA-256 must be the ones listed, so
+   * what lands on disk is the tree the method's digest names. The files are written into a fresh
+   * hidden directory beside the destination, which takes its name only once every file is
+   * written: an interrupted or failed write never leaves a partial tree under that name. The
+   * destination must not exist, or be an empty directory; one holding anything is refused rather
+   * than written into or replaced. An empty listing writes an empty directory.
+   *
+   * The links expire about fifteen minutes after the read that served them: write the tree soon
+   * after reading the method, and read it again for fresh links when a download is refused.
+   *
+   * Throws `RequestArgumentError` before any download when the destination exists and is not an
+   * empty directory, or the listing holds a path that is not a tree path, the same path twice, or
+   * paths that collide once case-folded or where one names a directory of another;
+   * `MethodFileTransferError` when a file could not be downloaded, or its bytes are not the file
+   * listed, and nothing is left under the destination.
+   */
+  async writeMethodTree(
+    files: readonly SavedMethodFile[],
+    options: { destination: string },
+  ): Promise<void> {
+    await writeMethodTreeTo(files, options.destination, { timeoutMs: this.requestTimeoutMs });
+  }
+
+  /**
+   * The `files` a save sends: `files` as given, or `tree` or `contents` prepared, uploading what
+   * the organization lacks; `undefined` when the input gives none. Two forms are refused with
+   * `RequestArgumentError` before any request, naming `call`.
+   */
+  private async methodTreeFiles(
+    call: string,
+    input: MethodTreeInput,
+  ): Promise<MethodFiles | null | undefined> {
+    const given = (
+      [
+        ["files", input.files !== undefined],
+        ["tree", input.tree != null],
+        ["contents", input.contents != null],
+      ] as const
+    )
+      .filter(([, present]) => present)
+      .map(([name]) => name);
+    if (given.length > 1) {
+      throw new RequestArgumentError(
+        `${call}() takes the method's tree in one form, files, tree or contents; got ` +
+          `${given.join(" and ")}.`,
+      );
+    }
+    if (input.tree != null) return this.prepareTreeFiles(input.tree, call);
+    if (input.contents != null) {
+      return this.prepareTreeFiles(await contentsTreeSource(input.contents, call), call);
+    }
+    return input.files;
+  }
+
+  /**
+   * The `files` map that sends `tree`: inline, or by hash once the organization holds every file.
+   *
+   * A tree whose inline map weighs `INLINE_TREE_MAX_BYTES` or less travels inline, with no round
+   * trip, measured as the request spends it, its JSON with no whitespace in UTF-8. A larger tree
+   * travels inline too when the version handshake declares no blob store; otherwise
+   * `POST /v1/blobs/missing` is asked which files the organization lacks, naming the tree's
+   * digest, each one it lacks is uploaded once, and every file travels by hash. A file read to be
+   * measured is uploaded from memory rather than read a second time. A tree holding no file is
+   * refused with `RequestArgumentError` before any request, `call` naming the caller's method.
+   */
+  private async prepareTreeFiles(tree: MethodTreeSource, call: string): Promise<MethodFiles> {
+    if (tree.files.length === 0) {
+      throw new RequestArgumentError(
+        `${call}() got a tree holding no file, and a method tree holds at least one; give ` +
+          "files: null for an empty draft.",
+      );
+    }
+    let read: Map<string, Uint8Array> | undefined;
+    // An inline map is never smaller than the bytes it carries, so a tree whose bytes alone pass
+    // the threshold is not read in full just to be measured.
+    if (treeTotalSize(tree) <= INLINE_TREE_MAX_BYTES) {
+      read = await readTreeBytes(tree);
+      const inline = inlineFilesOf(tree, read);
+      if (inlineMapBytes(inline) <= INLINE_TREE_MAX_BYTES) return inline;
+    }
+    if (!declaresBlobStore(await this.cachedVersion())) {
+      return inlineFilesOf(tree, read ?? (await readTreeBytes(tree)));
+    }
+    const asked = await this.findMissingBlobs({ blobs: uniqueBlobs(tree), digest: tree.digest });
+    await this.uploadMissing(tree, asked, read);
+    return hashMethodFiles(tree);
+  }
+
+  /**
+   * Which of these blobs the organization lacks, and where to upload each —
+   * `POST /v1/blobs/missing` — with the answer it was read from, which carries signed links. A
+   * blob held is left out, and an empty `missing` means nothing to upload. An answer whose
+   * `missing` is not a list of blobs, each with its upload target, is an answer the SDK cannot
+   * read, thrown as an `ApiResponseError` holding the answer with its links hidden.
+   */
+  private async findMissingBlobs(
+    request: MissingBlobsRequest,
+  ): Promise<{ result: MissingBlobsResult; res: RawResponse }> {
+    const endpoint = "blobs/missing";
+    const res = withLinks(await this.requestProductAnswer("POST", endpoint, request));
+    const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
+    const missing = answer.missing;
+    if (!Array.isArray(missing) || !missing.every(isMissingBlob)) {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a body whose `missing` is not a list of blobs, each with its upload target",
+      );
+    }
+    return { result: answer as MissingBlobsResult, res };
+  }
+
+  /**
+   * Upload each missing blob from the tree's bytes, a few at a time, stopping at the first
+   * failure. A blob the platform asks for that the tree does not hold, or holds at another size,
+   * is the platform's fault, thrown before anything is sent as the `ApiResponseError` of an answer
+   * the SDK cannot read. The bytes the tree reads for a blob are checked against it before they
+   * are sent, since storage keeps a blob under the hash it is named by: bytes of another hash or
+   * size are refused with `RequestArgumentError`, and nothing more is uploaded.
+   */
+  private async uploadMissing(
+    tree: MethodTreeSource,
+    asked: { result: MissingBlobsResult; res: RawResponse },
+    read: ReadonlyMap<string, Uint8Array> | undefined,
+  ): Promise<void> {
+    const missing = asked.result.missing;
+    const byBlob = fileByBlob(tree);
+    const strangers = missing
+      .filter((blob) => byBlob.get(blob.sha256)?.size !== blob.size)
+      .map((blob) => blob.sha256);
+    if (strangers.length > 0) {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/blobs/missing`,
+        asked.res,
+        `a body asking for blobs this tree does not hold: ${[...new Set(strangers)].sort().join(", ")}`,
+      );
+    }
+    await forEachConcurrently(missing, MAX_CONCURRENT_TRANSFERS, async (blob, signal) => {
+      const file = byBlob.get(blob.sha256)!;
+      const bytes = read?.get(file.path) ?? (await tree.readFile(file.path));
+      const bytesSha256 = await sha256Hex(bytes);
+      if (bytes.length !== blob.size || bytesSha256 !== blob.sha256) {
+        throw new RequestArgumentError(
+          `The tree read ${bytes.length} bytes hashing to ${bytesSha256} for '${file.path}', which ` +
+            `its listing names as ${blob.size} bytes hashing to ${blob.sha256}, so they were not ` +
+            "uploaded and the method was not saved.",
+        );
+      }
+      await uploadBlob(blob, bytes, { timeoutMs: this.requestTimeoutMs, signal });
+    });
   }
 
   /**
@@ -2612,18 +2805,11 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       outcomes: ["published", "unchanged", "refused"],
       member: "method",
     });
-    const method = this.readStoredSources<MethodData>(
-      "POST",
-      endpoint,
-      res,
-      subject as MethodDataWire,
-      "a stored method",
-    );
-    return { ...answer, outcome, method } as MethodPublishResult;
+    return { ...answer, outcome, method: subject as unknown as MethodData } as MethodPublishResult;
   }
 
   /**
-   * One page of a method's published versions, newest first, without their sources —
+   * One page of a method's published versions, newest first, without their files —
    * `GET /v1/methods/{id}/versions`.
    *
    * Pass the page's `nextCursor` back as `cursor` to continue; `null` is the last page. A page
@@ -2645,14 +2831,16 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   }
 
   /**
-   * One published version of a method, with its sources —
-   * `GET /v1/methods/{id}/versions/{n}`. Its `python` is parsed into `MethodFile[]` as a
-   * method's is.
+   * One published version of a method, with its files — `GET /v1/methods/{id}/versions/{n}`.
+   * `files` lists the version's tree as `getMethod` lists the draft's, each file with a link to
+   * its bytes valid for about fifteen minutes, which `writeMethodTree` writes to disk.
    *
    * Takes a bare catalog id, as `getMethod` does, and the version number. Throws
    * `RequestArgumentError` for a `version` that is not a positive integer, before any request.
    * Throws `ApiResponseError`: `404` `method_version_not_found` for a version the method never
-   * published, `404` `not_found` for an unknown method, `409` `method_being_deleted`.
+   * published, `404` `not_found` for an unknown method, `409` `method_being_deleted`, and `409`
+   * `conflict`, whose verdict is `runtime`, for a version stored before methods were trees and
+   * never rewritten as one, which names no tree to serve.
    */
   async getMethodVersion(methodId: string, version: number): Promise<MethodVersion> {
     if (!Number.isSafeInteger(version) || version < 1) {
@@ -2664,8 +2852,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     }
     const endpoint = `${methodPath(methodId, "getMethodVersion")}/versions/${version}`;
     const res = await this.requestProductAnswer("GET", endpoint, undefined);
-    const wire = this.readObjectAnswer<MethodVersionWire>("GET", endpoint, res);
-    return this.readStoredSources<MethodVersion>("GET", endpoint, res, wire, "a published version");
+    return this.readSavedTree<MethodVersion>(
+      "GET",
+      endpoint,
+      withLinks(res),
+      "a published version",
+    );
   }
 
   /**
@@ -3453,14 +3645,18 @@ const METHOD_REF_FETCH_TIMEOUT_MS = 180_000; // 3 min — covers the server's cl
  *
  * - **`resources`** make the request *body* as large as the runner's limits allow,
  *   about 13 MiB of base64 by default, and the whole upload is charged against
- *   this budget. They get the execute ceiling `start` gives a request carrying
- *   them, and `validate` carries them under by default, so the same bundle and
- *   files never time out on one route yet go through on another.
+ *   this budget. They get the client's request ceiling (`requestTimeoutMs`),
+ *   which `start` gives a request carrying them and `validate` carries them under
+ *   by default, so the same bundle and files never time out on one route yet go
+ *   through on another.
  * - **A `method_ref`** may make the server clone a repository first, which gets
  *   the fetch-sized budget.
  */
-function crateRequestTimeoutMs(request: CrateRequestBase): number | undefined {
-  if (hasBundleResources(request.resources)) return DEFAULT_REQUEST_TIMEOUT_MS;
+function crateRequestTimeoutMs(
+  request: CrateRequestBase,
+  executeCeilingMs: number,
+): number | undefined {
+  if (hasBundleResources(request.resources)) return executeCeilingMs;
   return nonEmptyString(request.method_ref) !== undefined ? METHOD_REF_FETCH_TIMEOUT_MS : undefined;
 }
 
@@ -3744,6 +3940,53 @@ const UNDECODABLE_BODY_CODE = /^(Z_|ERR__ERROR_|ZSTD_error_)/;
  */
 function isUndecodableBody(error: ApiUnreachableError): boolean {
   return error.code !== undefined && UNDECODABLE_BODY_CODE.test(error.code);
+}
+
+/** Whether one entry of a `POST /v1/blobs/missing` answer is a blob with its upload target. */
+/** A SHA-256 as the platform names a blob: 64 lowercase hexadecimal digits. */
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/** `res`, marked as an answer whose body carries signed links (`RawResponse.carriesLinks`). */
+function withLinks(res: RawResponse): RawResponse {
+  return { ...res, carriesLinks: true };
+}
+
+function isMissingBlob(entry: unknown): entry is MissingBlob {
+  if (!isPlainObject(entry)) return false;
+  const { sha256, size, upload } = entry;
+  if (typeof sha256 !== "string" || !SHA256_HEX.test(sha256)) return false;
+  if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) return false;
+  if (!isPlainObject(upload)) return false;
+  if (typeof upload.method !== "string" || typeof upload.url !== "string") return false;
+  const headers = upload.headers;
+  return (
+    isPlainObject(headers) && Object.values(headers).every((value) => typeof value === "string")
+  );
+}
+
+/**
+ * Why a saved tree's listing is not one the SDK reads, or `null` when it is: an array of objects,
+ * each with a string `path`, `sha256`, `url` and `expires_at` and a non-negative integer `size`.
+ */
+function savedFilesFault(files: unknown): string | null {
+  if (!Array.isArray(files)) return "is not an array";
+  for (let index = 0; index < files.length; index += 1) {
+    const file: unknown = files[index];
+    if (!isPlainObject(file)) return `holds an entry that is not an object, at [${index}]`;
+    for (const member of ["path", "sha256", "url", "expires_at"]) {
+      if (typeof file[member] !== "string") {
+        return `holds an entry whose \`${member}\` is not a string, at [${index}]`;
+      }
+    }
+    if (!SHA256_HEX.test(file.sha256 as string)) {
+      return `holds an entry whose \`sha256\` is not 64 lowercase hex digits, at [${index}]`;
+    }
+    const size = file.size;
+    if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {
+      return `holds an entry whose \`size\` is not a non-negative integer, at [${index}]`;
+    }
+  }
+  return null;
 }
 
 function extractNetworkErrorCode(err: unknown): string | undefined {

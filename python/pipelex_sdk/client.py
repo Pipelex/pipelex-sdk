@@ -23,20 +23,28 @@ import asyncio
 import json
 import os
 import re
-from contextlib import contextmanager
+import secrets
+import shutil
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
+from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, TypeVar, cast
 from urllib.parse import quote, urlencode, urlparse, urlsplit
 
 import httpx
+from mthds.method_tree.digest import sha256_hex
+from mthds.method_tree.lister import list_method_tree
+from mthds.method_tree.models import MethodTree, TreeLimits
+from mthds.method_tree.tree_path import path_collisions, tree_path_violation
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import RunResultStart
 from mthds.runners.api.client import MthdsAPIClient
+from mthds.runners.api.exceptions import BlobUploadError as _MthdsBlobUploadError
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
 from mthds.runners.api.problem import ProblemDocument
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
-from pydantic_core import to_json
+from pydantic_core import InitErrorDetails, to_json
 from typing_extensions import override
 
 from pipelex_sdk.artifact_models import (
@@ -68,6 +76,9 @@ from pipelex_sdk.errors import (
     ABORT_TIMEOUT_CODE,
     ApiResponseError,
     ApiUnreachableError,
+    MethodFileTransferCode,
+    MethodFileTransferError,
+    MethodFileTransferOperation,
     MissingMainStuffError,
     PagingNotTerminatingError,
     PipelexRequestError,
@@ -77,6 +88,7 @@ from pipelex_sdk.errors import (
     RunLifecycleUnavailableError,
     RunStillRunningError,
     RunTimeoutError,
+    method_file_transfer_code_of_status,
 )
 from pipelex_sdk.execute_result import PipelexExecuteResult, results_from_execute
 from pipelex_sdk.model_reference_models import ModelCheckCategory, ModelReferenceVerdict, ModelReferenceVerdictAdapter
@@ -91,6 +103,7 @@ from pipelex_sdk.product_models import (
     MembershipsResponse,
     MethodData,
     MethodDeletionAccepted,
+    MethodDetail,
     MethodExample,
     MethodExampleLatestRunResultAdapter,
     MethodExamplePage,
@@ -106,6 +119,7 @@ from pipelex_sdk.product_models import (
     RunDetail,
     RunHistoryItem,
     RunPage,
+    SavedMethodFile,
     SubscriptionResponse,
     UploadedFile,
     UserProfile,
@@ -132,9 +146,10 @@ from pipelex_sdk.validation_models import PipelexValidationResultAdapter, Valida
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Sequence
     from contextlib import AbstractAsyncContextManager
-    from pathlib import Path
 
-    from mthds.protocol.models import ModelCategory, ModelDeck, ValidationDiagnostic, VersionInfo
+    from mthds.method_tree.file_entry import FileEntry, MethodFiles
+    from mthds.method_tree.models import TreeFile
+    from mthds.protocol.models import BlobRef, MissingBlob, MissingBlobsResult, ModelCategory, ModelDeck, ValidationDiagnostic, VersionInfo
     from mthds.protocol.pipe_output import VariableMultiplicity
     from mthds.protocol.pipeline_inputs import PipelineInputs
     from mthds.protocol.stuff import StuffType
@@ -247,6 +262,18 @@ class _AnswerSeen:
 # (`_reading_inherited_answer`). A context variable keeps the record to the task that asked, as above.
 _INHERITED_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_INHERITED_ANSWER", default=None)
 
+# Where the `missing_blobs` override records the answer of `POST /v1/blobs/missing` while the base prepares a
+# tree (`_prepare_files`), so the `_upload_missing` override can report an answer asking for blobs the tree
+# does not hold as an answer the SDK cannot read, carrying that answer's status and headers.
+_MISSING_BLOBS_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_MISSING_BLOBS_ANSWER", default=None)
+
+# What stands in for a signed link in an error: its query is a bearer credential, valid until it expires.
+_REDACTED = "[redacted]"
+
+# The query of a link in text that is not JSON, or in a member other than `url`: everything from `?` to the
+# next space or quote, dropped with its signature, as `@pipelex/sdk`'s `redactSignedLinks` drops it.
+_LINK_QUERY = re.compile(r"(\bhttps?://[^\s\"'<>?#]*)\?[^\s\"'<>]*", re.IGNORECASE)
+
 # What reads a 2xx answer into the type a route returns: a model's `model_validate`, an adapter's
 # `validate_python`, or a function of the route's own.
 _AnswerT = TypeVar("_AnswerT")
@@ -282,6 +309,94 @@ def _refuses_a_non_object(failure: ValidationError) -> bool:
     return any(error["loc"] == () and error["type"] in _NOT_AN_OBJECT_ERROR_TYPES for error in failure.errors(include_url=False))
 
 
+def _unreadable_what(failure: json.JSONDecodeError | UnicodeDecodeError | ValidationError, response: httpx.Response) -> str:
+    """What a 2xx answer that failed to parse is, as `_unreadable_answer`'s message names it.
+
+    A body that is not UTF-8, a body that is not JSON, an empty body where JSON was expected, a body
+    that is not an object where the route answers one (`null`, a number, a string, a list), worded as
+    `@pipelex/sdk` words it, or a body that is not the answer the route returns: an object of the wrong
+    shape, or anything but a list where the route answers a list.
+    """
+    what: str
+    match failure:
+        case UnicodeDecodeError():
+            what = "a body that is not UTF-8"
+        case json.JSONDecodeError():
+            what = "a body that is not JSON" if response.content else "an empty body where JSON was expected"
+        case ValidationError():
+            what = "a body that is not an object" if _refuses_a_non_object(failure) else "a body that is not the answer the route returns"
+    return what
+
+
+def _raise_with_cause_alone(error: BaseException, *, cause: BaseException | None) -> NoReturn:
+    """Raise `error` with `cause` as its cause and no context, so nothing else it replaces travels with it.
+
+    Raised while another exception is handled, an exception takes that one as its `__context__`, even
+    `from None`, which only hides it from a traceback. An answer carrying signed links fails to parse
+    with errors that hold it (a pydantic `ValidationError` holds and prints the values it refused, a
+    `JSONDecodeError` the whole document), so the error raised in its stead reaches none of them: the
+    context is cleared as it propagates, and the cause is only ever a redacted copy.
+    """
+    error.__cause__ = cause
+    try:
+        raise error
+    finally:
+        error.__context__ = None
+
+
+def _validation_error_without_links(failure: json.JSONDecodeError | UnicodeDecodeError | ValidationError) -> ValidationError | None:
+    """A copy of a pydantic refusal of an answer carrying signed links, every link in its values redacted, to chain in its stead.
+
+    The copy keeps each error's type, location and context, so a caller reading which member was
+    refused reads it as before, while each refused value has its `url` members and its links' queries
+    redacted. A body that is not UTF-8 or not JSON has no such copy: its failure holds the raw body.
+    Neither has a refusal that holds a validator's own exception, whose message may quote anything, or
+    one of a validator's own error types, which pydantic cannot rebuild by name.
+    """
+    if not isinstance(failure, ValidationError):
+        return None
+    details: list[InitErrorDetails] = []
+    for error in failure.errors(include_url=False):
+        context = error.get("ctx")
+        if context is not None and "error" in context:
+            return None
+        detail: InitErrorDetails = {"type": error["type"], "loc": error["loc"], "input": _with_links_redacted(error["input"])}
+        if context is not None:
+            detail["ctx"] = context
+        details.append(detail)
+    try:
+        return ValidationError.from_exception_data(failure.title, details)
+    except KeyError:
+        # "Invalid error type": a validator's own `PydanticCustomError`, known by no name pydantic holds.
+        return None
+
+
+def _redact_signed_links(text: str) -> str:
+    """`text` with every signed link redacted, `@pipelex/sdk`'s `redactSignedLinks`.
+
+    A JSON body has every `url` member replaced, at any depth, and is written back compactly; then, in
+    any text, the query of every `http(s)` link is replaced, which catches a link in another member or
+    in a body that is not JSON. A link's query is a bearer credential, so no error carries one.
+    """
+    redacted = text
+    with suppress(json.JSONDecodeError, RecursionError):
+        # Not JSON, or nested too deep to walk: the link pattern below still finds every query.
+        redacted = json.dumps(_with_links_redacted(json.loads(text)), separators=(",", ":"), ensure_ascii=False)
+    return _LINK_QUERY.sub(rf"\1?{_REDACTED}", redacted)
+
+
+def _with_links_redacted(value: object) -> object:
+    """A decoded JSON value with every `url` member of every object in it replaced, and every link's query in every string."""
+    if isinstance(value, dict):
+        members = cast("dict[str, object]", value)
+        return {key: _REDACTED if key == "url" else _with_links_redacted(member) for key, member in members.items()}
+    if isinstance(value, list):
+        return [_with_links_redacted(item) for item in cast("list[object]", value)]
+    if isinstance(value, str):
+        return _LINK_QUERY.sub(rf"\1?{_REDACTED}", value)
+    return value
+
+
 _PIPELEX_API_KEY_ENV = "PIPELEX_API_KEY"
 _PIPELEX_BASE_URL_ENV = "PIPELEX_BASE_URL"
 
@@ -295,12 +410,13 @@ _BARE_RUNNER_IMPLEMENTATION = "pipelex-api"
 # produced validation-error verdict carry `rendered_markdown`; callers may add more tokens.
 _VALIDATE_MARKDOWN_RENDER_FORMAT = "markdown"
 
-# The PIPELEX API's own run args — the layer-2 extension the RUNNER resolves itself
-# (`method_ref`, a run source in its own right). A named parameter here, travelling to the
-# base client through its generic `extra` passthrough exactly like the hosted args below.
-# Reserved on `extra` for the same reason: a smuggled copy would arrive by a second path
-# with different validation and bypass the selector-exclusivity checks.
-_PIPELEX_API_RUN_ARGS: frozenset[str] = frozenset({"method_ref"})
+# The PIPELEX API's own run args — the layer-2 extensions the RUNNER reads itself: `method_ref`,
+# a run source in its own right, and `mthds_contents`, the inline bundles the protocol carried
+# before it sent a method as its `files` tree, which the Pipelex API still reads. Named
+# parameters here, travelling to the base client through its generic `extra` passthrough exactly
+# like the hosted args below. Reserved on `extra` for the same reason: a smuggled copy would
+# arrive by a second path with different validation and bypass the selector-exclusivity checks.
+_PIPELEX_API_RUN_ARGS: frozenset[str] = frozenset({"method_ref", "mthds_contents"})
 
 # The HOSTED API's own run args — the layer-3 extensions this client names itself, on top of
 # the MTHDS Protocol's basic run args. They are named parameters here and travel to the base
@@ -550,6 +666,7 @@ class PipelexAPIClient(MthdsAPIClient):
         read: Callable[[Any], _AnswerT],
         body: object | None = None,
         request_timeout: float | None = None,
+        carries_links: bool = False,
     ) -> _AnswerT:
         """Issue a Pipelex-product request (`/v1/me`, `/v1/methods`, `/v1/billing/*`, …)
         and read its JSON body with `read`, mapping a non-2xx response to the typed `ApiResponseError`
@@ -560,9 +677,10 @@ class PipelexAPIClient(MthdsAPIClient):
         `_read_answer`). Uses the management-call timeout, not the blocking ceiling;
         `request_timeout` overrides it for the crate calls whose `method_ref` closure
         the server may have to fetch first (see `_METHOD_REF_FETCH_TIMEOUT_SECONDS`).
+        `carries_links` marks an answer holding signed links, which an error reports redacted.
         """
         response = await self._product_answer(method, endpoint, body=body, request_timeout=request_timeout)
-        return self._read_v1_answer(read, method=method, endpoint=endpoint, response=response)
+        return self._read_v1_answer(read, method=method, endpoint=endpoint, response=response, carries_links=carries_links)
 
     async def _request_product_without_answer(self, method: str, endpoint: str, *, body: object | None = None) -> None:
         """Issue a Pipelex-product request whose route answers no content (`DELETE` of a key,
@@ -585,11 +703,24 @@ class PipelexAPIClient(MthdsAPIClient):
             self._raise_api_response_error(method=method, endpoint=endpoint, response=response)
         return response
 
-    def _read_v1_answer(self, read: Callable[[Any], _AnswerT], *, method: str, endpoint: str, response: httpx.Response) -> _AnswerT:
+    def _read_v1_answer(
+        self, read: Callable[[Any], _AnswerT], *, method: str, endpoint: str, response: httpx.Response, carries_links: bool = False
+    ) -> _AnswerT:
         """Read a `/v1` route's 2xx answer, `endpoint` being the endpoint below `/v1`, query included; see `_read_answer`."""
-        return self._read_answer(read, method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response)
+        return self._read_answer(
+            read, method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response, carries_links=carries_links
+        )
 
-    def _read_answer(self, read: Callable[[Any], _AnswerT], *, method: str, path: str, request_url: str, response: httpx.Response) -> _AnswerT:
+    def _read_answer(
+        self,
+        read: Callable[[Any], _AnswerT],
+        *,
+        method: str,
+        path: str,
+        request_url: str,
+        response: httpx.Response,
+        carries_links: bool = False,
+    ) -> _AnswerT:
         """Read a 2xx answer's JSON body into the type its route returns — the one place a success body is
         parsed, but for the inherited protocol routes, which parse their own (`_reading_inherited_answer`).
 
@@ -599,12 +730,20 @@ class PipelexAPIClient(MthdsAPIClient):
         refuses with a pydantic `ValidationError`, are an answer the SDK cannot read, raised as the
         `ApiResponseError` `_unreadable_answer` builds, the parse failure as its `__cause__`.
 
+        An answer that `carries_links` (a method's listing, whose every file holds a signed link) is
+        reported with its links redacted, and the parse failure itself is chained neither as the cause
+        nor as the context, since a pydantic `ValidationError` holds and prints the values it refused, a
+        link among them, a `JSONDecodeError` holds the whole document, and a traceback prints the chain:
+        the cause is a copy of a `ValidationError` with every link in its values redacted, and nothing
+        for the other failures.
+
         Args:
             read: What turns the decoded body into the route's answer.
             method: The HTTP method of the request, for the message (`GET`).
             path: The path the message names (`/v1/me`, or `/health` at the origin).
             request_url: The URL the request was sent to.
             response: The API's 2xx answer.
+            carries_links: Whether the answer holds signed links, which no error may carry.
 
         Raises:
             ApiResponseError: The answer cannot be read; its verdict is `runtime`, not retryable.
@@ -612,16 +751,26 @@ class PipelexAPIClient(MthdsAPIClient):
         try:
             return read(response.json())
         except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
-            raise self._unreadable_answer(method=method, path=path, request_url=request_url, response=response, failure=exc) from exc
+            error = self._unreadable_answer(
+                method=method,
+                path=path,
+                request_url=request_url,
+                response=response,
+                what=_unreadable_what(exc, response),
+                carries_links=carries_links,
+            )
+            if carries_links:
+                _raise_with_cause_alone(error, cause=_validation_error_without_links(exc))
+            raise error from exc
 
     @contextmanager
-    def _reading_inherited_answer(self, *, method: str, endpoint: str) -> Generator[None, None, None]:
+    def _reading_inherited_answer(self, *, method: str, endpoint: str, carries_links: bool = False) -> Generator[_AnswerSeen, None, None]:
         """Run an inherited protocol route so that a 2xx answer it cannot read raises this SDK's
         `ApiResponseError`, as every other route's does.
 
-        The base's `execute`, `start`, `models` and `version` parse the answer `_send` handed them
-        themselves, with `response.json()` and a pydantic model, so a body that is not UTF-8, not JSON
-        or not the route's object raises a bare `UnicodeDecodeError`, `json.JSONDecodeError` or
+        The base's `execute`, `start`, `models`, `version` and `missing_blobs` parse the answer `_send`
+        handed them themselves, with `response.json()` and a pydantic model, so a body that is not UTF-8,
+        not JSON or not the route's object raises a bare `UnicodeDecodeError`, `json.JSONDecodeError` or
         `ValidationError` there. Inside this block `_send` records the answer it receives, and such a
         failure met after a 2xx answer is raised again as the error `_unreadable_answer` builds, the
         parse failure as its `__cause__`. One met before any answer, while the base built the request
@@ -634,58 +783,57 @@ class PipelexAPIClient(MthdsAPIClient):
         Args:
             method: The HTTP method of the route's request, for the message (`POST`).
             endpoint: The endpoint below `/v1`, query included, exactly as the base sends it.
+            carries_links: Whether the answer holds signed links (`blobs/missing`'s upload targets): its
+                links are redacted, and the parse failure is chained redacted or not at all, as
+                `_read_answer` does.
+
+        Yields:
+            The record of the answer the block receives, which holds it once the route has sent.
         """
         seen = _INHERITED_ANSWER.get() or _AnswerSeen()
         token = _INHERITED_ANSWER.set(seen)
         try:
-            yield
+            yield seen
         except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
             response = seen.response
             if response is None or not response.is_success:
                 raise
-            raise self._unreadable_answer(
-                method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response, failure=exc
-            ) from exc
+            error = self._unreadable_answer(
+                method=method,
+                path=f"/{_API_PREFIX}/{endpoint}",
+                request_url=self._url(endpoint),
+                response=response,
+                what=_unreadable_what(exc, response),
+                carries_links=carries_links,
+            )
+            if carries_links:
+                _raise_with_cause_alone(error, cause=_validation_error_without_links(exc))
+            raise error from exc
         finally:
             _INHERITED_ANSWER.reset(token)
 
     def _unreadable_answer(
-        self,
-        *,
-        method: str,
-        path: str,
-        request_url: str,
-        response: httpx.Response,
-        failure: json.JSONDecodeError | UnicodeDecodeError | ValidationError,
+        self, *, method: str, path: str, request_url: str, response: httpx.Response, what: str, carries_links: bool = False
     ) -> ApiResponseError:
         """The `ApiResponseError` of a 2xx answer the SDK cannot read, `@pipelex/sdk`'s `unreadableAnswer`.
 
-        Its message is `API <method> <path> answered <status> with <what>`, `what` naming the failure: a
-        body that is not UTF-8, a body that is not JSON, an empty body where JSON was expected, a body
-        that is not an object where the route answers one (`null`, a number, a string, a list), worded
-        as `@pipelex/sdk` words it, or a body that is not the answer the route returns: an object of the
-        wrong shape, or anything but a list where the route answers a list. It carries the answer's
-        status, its raw text as `response_body`, its headers, and the `X-Request-ID` header as
-        `request_id`, but no problem member, since a success body is no problem document; its verdict is
-        the fallback's for a status no refusal carries, `runtime` and not retryable, since no change to
-        the call fixes the answer. Inside `_creating_run`, the run may have started: the server accepted
-        the request. The caller raises it `from` the failure, which becomes its `__cause__`.
+        Its message is `API <method> <path> answered <status> with <what>`, `what` naming why the answer
+        cannot be read: the parse failure as `_unreadable_what` words it, or a fault of the answer's
+        meaning, such as `blobs/missing` asking for blobs the tree does not hold. It carries the answer's
+        status, its raw text as `response_body`, its links redacted when it `carries_links`, its headers,
+        and the `X-Request-ID` header as `request_id`, but no problem member, since a success body is no
+        problem document; its verdict is the fallback's for a status no refusal carries, `runtime` and
+        not retryable, since no change to the call fixes the answer. Inside `_creating_run`, the run may
+        have started: the server accepted the request. The caller raises it `from` the failure, which
+        becomes its `__cause__`, or, for an answer that carries links, with a redacted copy of it or none.
         """
-        what: str
-        match failure:
-            case UnicodeDecodeError():
-                what = "a body that is not UTF-8"
-            case json.JSONDecodeError():
-                what = "a body that is not JSON" if response.content else "an empty body where JSON was expected"
-            case ValidationError():
-                what = "a body that is not an object" if _refuses_a_non_object(failure) else "a body that is not the answer the route returns"
         request_id = response.headers.get(_REQUEST_ID_HEADER)
         return ApiResponseError(
             f"API {method} {path} answered {response.status_code} with {what}",
             api_url=self.base_url,
             status=response.status_code,
             status_text=response.reason_phrase,
-            response_body=response.text,
+            response_body=_redact_signed_links(response.text) if carries_links else response.text,
             headers=dict(response.headers),
             request_url=request_url,
             request_id=request_id or None,
@@ -799,13 +947,14 @@ class PipelexAPIClient(MthdsAPIClient):
     async def execute(
         self,
         pipe_code: str | None = None,
-        mthds_contents: list[str] | None = None,
+        files: MethodFiles | None = None,
         inputs: PipelineInputs | WorkingMemoryAbstract[StuffType] | None = None,
         output_name: str | None = None,
         output_multiplicity: VariableMultiplicity | None = None,
         dynamic_output_concept_ref: str | None = None,
         extra: dict[str, Any] | None = None,
         *,
+        mthds_contents: list[str] | None = None,
         method_ref: str | None = None,
         method_id: str | None = None,
     ) -> PipelexExecuteResult:
@@ -817,9 +966,11 @@ class PipelexAPIClient(MthdsAPIClient):
         `method_ref` run's result additionally carries `method_provenance` — the address, the
         tag, and the commit SHA that was actually fetched.
 
-        Identical to the inherited protocol `execute`, except for three things. First,
+        Identical to the inherited protocol `execute`, except for four things. First,
         `method_ref` — the Pipelex API's own run source, resolved by the RUNNER (see below).
-        Second, `method_id` — the hosted platform's own run arg (see below). Third, a failure
+        Second, `method_id` — the hosted platform's own run arg (see below). Third,
+        `mthds_contents` — the inline bundles the Pipelex API still reads beside the protocol's
+        `files`. Fourth, a failure
         consistent with the hosted gateway's ~30s synchronous ceiling — a gateway `503`/`504`,
         or a client-side request timeout, after at least ~28s have elapsed — is translated into
         a clear `PipelineExecuteTimeoutError` pointing at the durable start+poll path, matching
@@ -832,22 +983,28 @@ class PipelexAPIClient(MthdsAPIClient):
         Args:
             pipe_code: The code identifying the pipe to execute. Beside a `method_ref` it
                 overrides the fetched manifest's `main_pipe`.
-            mthds_contents: List of MTHDS bundle contents to load.
+            files: The method to load as its whole tree, the protocol's own run source: a map
+                from tree path to file entry, holding at least one file, sent as given.
+                `prepare_files` (inherited from `mthds`) builds it from a listed tree, uploading
+                the blobs the platform lacks.
             inputs: Inputs passed to the method.
             output_name: Name of the output slot to write to.
             output_multiplicity: Output multiplicity setting.
             dynamic_output_concept_ref: Override for the dynamic output concept ref.
             extra: Server-specific extension args this client does not know about, merged into
                 the request body as top-level properties. Protocol args and this client's own
-                named args (`method_ref`, `method_id`) must be passed as named parameters, not
-                through `extra` (raises `RequestArgumentError`).
+                named args (`mthds_contents`, `method_ref`, `method_id`) must be passed as named
+                parameters, not through `extra` (raises `RequestArgumentError`).
+            mthds_contents: List of MTHDS bundle contents to load, the Pipelex API's inline
+                source beside `files`.
             method_ref: A published method's address —
                 `github.com/<owner>/<repo>[/<selector>][@<tag>]` (e.g.
                 `github.com/Pipelex/methods/documents@v0.1.0`) — a layer-2 Pipelex-API
                 extension the RUNNER resolves (git fetch at the tag, package located by
                 manifest identity; pipelex-api >= 0.21.0). A complete run source of its own,
-                so it pairs with NOTHING: exclusive with inline `mthds_contents` and with
-                `method_id` (an address run has its own provenance and needs no linkage id) —
+                so it pairs with NOTHING: exclusive with an inline source (`files` or
+                `mthds_contents`) and with `method_id` (an address run has its own provenance
+                and needs no linkage id) —
                 the illegal pairings are rejected client-side, mirroring the server's 422s.
                 `pipe_code` beside it is fine. An empty string is treated as absent.
             method_id: A stored method's hosted catalog id (`mt_…`) — a pure PASS-THROUGH the
@@ -858,8 +1015,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 `method_not_published` for a method never published), `mt_…@<n>` the fixed
                 version `n` (a `404` `method_version_not_found` for one never published) and
                 `mt_…@draft` its draft, the suffix riding the string untouched; the answer's
-                `method_version` says which ran. Alongside `mthds_contents`, the inline source is
-                what RUNS (precedence) and the id is recorded as run-history linkage on the Run
+                `method_version` says which ran. Alongside an inline source (`files` or
+                `mthds_contents`), the inline source is what RUNS (precedence) and the id is recorded as run-history linkage on the Run
                 row — the index key `GET /v1/runs?method_id=` queries, so a run started without it
                 is absent from its method's history permanently. The id must be bare there: the
                 inline source is what runs, so a suffix would claim a version that did not, and a
@@ -869,10 +1026,10 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             PipelineExecuteTimeoutError: The blocking request hit the hosted gateway's ~30s
                 synchronous ceiling — use `start_and_wait` (or `start` + `wait_for_result`).
-            RequestArgumentError: Nothing to run was named, `extra` carries a protocol arg or a
-                reserved named arg, a selector is present and is not a string, `method_ref` is
-                combined with inline `mthds_contents` or with `method_id`, or a suffixed
-                `method_id` is combined with inline `mthds_contents`.
+            RequestArgumentError: Nothing to run was named, `files` holds no file, `extra`
+                carries a protocol arg or a reserved named arg, a selector is present and is not
+                a string, `method_ref` is combined with an inline source or with `method_id`, or a
+                suffixed `method_id` is combined with an inline source.
             RunStillRunningError: The server answered 202 (the protocol's optional async
                 degrade) — the run continues server-side; resume by `pipeline_run_id`.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
@@ -880,15 +1037,19 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiUnreachableError: No answer came back (DNS / connect / TLS), or a client-side
                 timeout came before the ~28s the gateway translation waits for.
         """
-        merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
-        _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
-        _assert_linkage_method_id_is_bare(mthds_contents=mthds_contents, merged_extra=merged_extra)
+        merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id, mthds_contents=mthds_contents)
+        has_inline_source = files is not None or bool(mthds_contents)
+        _assert_run_source_named(
+            pipe_code=pipe_code, has_inline_source=has_inline_source, mthds_contents=mthds_contents, merged_extra=merged_extra, route="execute"
+        )
+        _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, carries_files=files is not None, merged_extra=merged_extra)
+        _assert_linkage_method_id_is_bare(has_inline_source=has_inline_source, merged_extra=merged_extra)
         started_at = monotonic()
         with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="execute"):
             try:
                 result = await super().execute(
                     pipe_code=pipe_code,
-                    mthds_contents=mthds_contents,
+                    files=files,
                     inputs=inputs,
                     output_name=output_name,
                     output_multiplicity=output_multiplicity,
@@ -918,13 +1079,14 @@ class PipelexAPIClient(MthdsAPIClient):
     async def start(
         self,
         pipe_code: str | None = None,
-        mthds_contents: list[str] | None = None,
+        files: MethodFiles | None = None,
         inputs: PipelineInputs | WorkingMemoryAbstract[StuffType] | None = None,
         output_name: str | None = None,
         output_multiplicity: VariableMultiplicity | None = None,
         dynamic_output_concept_ref: str | None = None,
         extra: dict[str, Any] | None = None,
         *,
+        mthds_contents: list[str] | None = None,
         method_ref: str | None = None,
         method_id: str | None = None,
         idempotency_key: str | None = None,
@@ -934,7 +1096,8 @@ class PipelexAPIClient(MthdsAPIClient):
         Identical to the inherited protocol `start`, except for the two method selectors —
         `method_ref` (the Pipelex API's own run source, resolved by the runner) and
         `method_id` (the hosted platform's own run arg), both documented on `execute` and
-        carrying the same semantics and exclusivity here — the `idempotency_key` the request
+        carrying the same semantics and exclusivity here — the inline `mthds_contents` the
+        Pipelex API still reads beside `files`, the `idempotency_key` the request
         carries as a header, and that a bare-runner
         missing-route 404 (no run store) is translated into a clear
         `RunLifecycleUnavailableError`, matching the JS SDK and letting `start_and_wait`
@@ -943,12 +1106,13 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Args:
             pipe_code: The code identifying the pipe to run, as on `execute`.
-            mthds_contents: List of MTHDS bundle contents to load.
+            files: The method to load as its whole tree, as on `execute`.
             inputs: Inputs passed to the method.
             output_name: Name of the output slot to write to.
             output_multiplicity: Output multiplicity setting.
             dynamic_output_concept_ref: Override for the dynamic output concept ref.
             extra: Server-specific extension args this client does not know about, as on `execute`.
+            mthds_contents: List of MTHDS bundle contents to load, as on `execute`.
             method_ref: A published method's address, as on `execute`.
             method_id: A stored method's hosted catalog id, as on `execute`.
             idempotency_key: The start's idempotency key, sent as the `Idempotency-Key` header, and not
@@ -973,11 +1137,11 @@ class PipelexAPIClient(MthdsAPIClient):
             `None` otherwise.
 
         Raises:
-            RequestArgumentError: Nothing to run was named, `extra` carries a protocol arg or a
-                reserved named arg, a selector is present and is not a string, `method_ref` is
-                combined with inline `mthds_contents` or with `method_id`, a suffixed
-                `method_id` is combined with inline `mthds_contents`, or `idempotency_key` is not 1
-                to 255 visible ASCII characters.
+            RequestArgumentError: Nothing to run was named, `files` holds no file, `extra`
+                carries a protocol arg or a reserved named arg, a selector is present and is not
+                a string, `method_ref` is combined with an inline source or with `method_id`, a
+                suffixed `method_id` is combined with an inline source, or `idempotency_key` is not
+                1 to 255 visible ASCII characters.
             RunLifecycleUnavailableError: The configured server has no run store.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
                 `422`, its diagnostics on `validation_errors`), auth, a server fault, a key an earlier
@@ -985,17 +1149,23 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
         """
         checked_idempotency_key = _idempotency_key_of(idempotency_key)
-        merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
-        _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, merged_extra=merged_extra)
-        _assert_linkage_method_id_is_bare(mthds_contents=mthds_contents, merged_extra=merged_extra)
-        token = _REQUEST_TIMEOUT_OVERRIDE.set(_start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, mthds_contents))
+        merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id, mthds_contents=mthds_contents)
+        has_inline_source = files is not None or bool(mthds_contents)
+        _assert_run_source_named(
+            pipe_code=pipe_code, has_inline_source=has_inline_source, mthds_contents=mthds_contents, merged_extra=merged_extra, route="start"
+        )
+        _assert_method_ref_pairs_with_nothing(mthds_contents=mthds_contents, carries_files=files is not None, merged_extra=merged_extra)
+        _assert_linkage_method_id_is_bare(has_inline_source=has_inline_source, merged_extra=merged_extra)
+        token = _REQUEST_TIMEOUT_OVERRIDE.set(
+            _start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, has_inline_source=has_inline_source)
+        )
         key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
         try:
             with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="start"):
                 try:
                     result = await super().start(
                         pipe_code=pipe_code,
-                        mthds_contents=mthds_contents,
+                        files=files,
                         inputs=inputs,
                         output_name=output_name,
                         output_multiplicity=output_multiplicity,
@@ -1120,22 +1290,15 @@ class PipelexAPIClient(MthdsAPIClient):
             )
             raise RequestArgumentError(msg)
 
-        if mthds_contents:
-            extra: dict[str, Any] = {"render": _with_validate_markdown_render(render)}
-            if mthds_sources is not None:
-                extra["mthds_sources"] = mthds_sources
-            if views is not None:
-                extra["views"] = views
-            # Reuse the inherited transport seam (`_post_validate`) for body-building + the wire
-            # call, then parse the 200-diagnostic body into this SDK's Pipelex-branded narrowing.
-            # The base's own `validate` parses the same body into the neutral `ValidationResult`.
-            response = await self._post_validate(mthds_contents, allow_signatures, extra)
-            return self._read_v1_answer(PipelexValidationResultAdapter.validate_python, method="POST", endpoint="validate", response=response)
-
-        # A selector validation must NOT carry the `mthds_contents` key at all (the server XORs
-        # on presence, and an empty list is a request-shape 422), so the body is built here
-        # rather than through `_post_validate`, on the same inherited `_send` transport seam.
+        # The body is built here, on the inherited `_send` transport seam, rather than through the
+        # base's `_post_validate`, which sends a method as its `files` tree: `mthds_contents` is the
+        # Pipelex API's own inline source. A selector validation must NOT carry the `mthds_contents`
+        # key at all (the server XORs on presence, and an empty list is a request-shape 422).
         body: dict[str, Any] = {"allow_signatures": allow_signatures, "render": _with_validate_markdown_render(render)}
+        if mthds_contents:
+            body["mthds_contents"] = mthds_contents
+        if mthds_sources is not None:
+            body["mthds_sources"] = mthds_sources
         if views is not None:
             body["views"] = views
         if selected_method_ref is not None:
@@ -1508,6 +1671,8 @@ class PipelexAPIClient(MthdsAPIClient):
     async def start_and_wait(
         self,
         pipe_code: str | None = None,
+        *,
+        files: MethodFiles | None = None,
         mthds_contents: list[str] | None = None,
         inputs: PipelineInputs | WorkingMemoryAbstract[StuffType] | None = None,
         output_name: str | None = None,
@@ -1515,7 +1680,6 @@ class PipelexAPIClient(MthdsAPIClient):
         dynamic_output_concept_ref: str | None = None,
         extra: dict[str, Any] | None = None,
         wait_options: WaitForResultOptions | None = None,
-        *,
         method_ref: str | None = None,
         method_id: str | None = None,
         artifacts: Sequence[RunArtifact] | None = None,
@@ -1536,8 +1700,11 @@ class PipelexAPIClient(MthdsAPIClient):
         from `start`, BEFORE any run is created, so the blocking fallback cannot double-run; the
         negative is cached so later calls skip the durable attempt.
 
-        The method selectors — `method_ref` and `method_id`, documented on `execute` — are
-        forwarded on BOTH paths: a `method_ref` run must run the same fetched package on the
+        Every argument but `pipe_code` is keyword-only, the run sources (`files`, `mthds_contents`,
+        `method_ref`, `method_id`) among them, so no positional call reads one source as another.
+
+        The method's `files` tree and the method selectors — `method_ref` and `method_id`,
+        documented on `execute` — are forwarded on BOTH paths: a `method_ref` run must run the same fetched package on the
         blocking fallback, and dropping `method_id` there would turn a server-side 422 that
         names the key into a silently different run.
 
@@ -1596,6 +1763,7 @@ class PipelexAPIClient(MthdsAPIClient):
                     on_starting()
                 started = await self.start(
                     pipe_code=pipe_code,
+                    files=files,
                     mthds_contents=mthds_contents,
                     inputs=inputs,
                     output_name=output_name,
@@ -1613,6 +1781,7 @@ class PipelexAPIClient(MthdsAPIClient):
                     on_starting()
                 return await self._execute_blocking(
                     pipe_code=pipe_code,
+                    files=files,
                     mthds_contents=mthds_contents,
                     inputs=inputs,
                     output_name=output_name,
@@ -1631,6 +1800,7 @@ class PipelexAPIClient(MthdsAPIClient):
             on_starting()
         return await self._execute_blocking(
             pipe_code=pipe_code,
+            files=files,
             mthds_contents=mthds_contents,
             inputs=inputs,
             output_name=output_name,
@@ -1645,6 +1815,7 @@ class PipelexAPIClient(MthdsAPIClient):
         self,
         *,
         pipe_code: str | None,
+        files: MethodFiles | None,
         mthds_contents: list[str] | None,
         inputs: PipelineInputs | WorkingMemoryAbstract[StuffType] | None,
         output_name: str | None,
@@ -1670,6 +1841,7 @@ class PipelexAPIClient(MthdsAPIClient):
         with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="execute"):
             result = await self.execute(
                 pipe_code=pipe_code,
+                files=files,
                 mthds_contents=mthds_contents,
                 inputs=inputs,
                 output_name=output_name,
@@ -1749,13 +1921,15 @@ class PipelexAPIClient(MthdsAPIClient):
         ):
             yield method_summary
 
-    async def get_method(self, method_id: str) -> MethodData:
-        """Read one method — `GET /v1/methods/{id}`.
+    async def get_method(self, method_id: str) -> MethodDetail:
+        """Read one method with its draft's files — `GET /v1/methods/{id}`.
 
-        Its identity, its draft (`mthds`, `python`, `input_data`) with the draft's token
-        (`updated_at`) and digest (`draft_digest`), and its latest published version's summary
-        (`latest_version`, `latest_published`), whatever the publish state: a method never
-        published reads with both `None`, never as an error.
+        Its identity, its draft (`files`, `input_data`) with the draft's token (`updated_at`) and
+        digest (`draft_digest`), and its latest published version's summary (`latest_version`,
+        `latest_published`), whatever the publish state: a method never published reads with both
+        `None`, never as an error. `files` lists the draft's tree in tree path order, each file with
+        its SHA-256, its size and a link to its bytes valid for about fifteen minutes, and is empty for
+        an empty draft; `write_method_tree` brings the tree to disk.
 
         Takes a bare catalog id: the method routes address the method itself, never a version of
         it. A caller holding `mt_…@3` strips the suffix with
@@ -1764,22 +1938,53 @@ class PipelexAPIClient(MthdsAPIClient):
         before any request, rather than read back the `404` the platform would answer, and for an
         id that is empty, `.` or `..`, which the URL would resolve into another route's path, or
         that holds a lone surrogate, which a URL cannot carry.
+
+        Raises:
+            ApiResponseError: `404` `not_found` for an unknown or foreign-org method; `409`
+                `method_being_deleted` while its erasure runs; a `409` whose verdict is `runtime` for a
+                method whose draft names a tree the platform holds no record of; a `200` the SDK cannot
+                read, a listing whose `sha256` is not 64 lowercase hex digits among them, reported with
+                every link redacted.
         """
-        return await self._request_product("GET", _method_path(method_id, call="get_method"), read=MethodData.model_validate)
+        return await self._request_product("GET", _method_path(method_id, call="get_method"), read=MethodDetail.model_validate, carries_links=True)
 
     async def create_method(self, write_input: MethodWriteInput) -> MethodData:
         """Create a method — `POST /v1/methods`.
 
-        The new method holds the input as its draft and has no published version, so its bare id
+        The new method holds its tree as its draft and has no published version, so its bare id
         answers `409 method_not_published` on the run and tooling routes until its first
         `publish_method`; its draft runs as `mt_…@draft` at once.
 
+        The tree is `write_input.files`, sent as given, or `tree` or `contents`, which the client
+        sends inline when its inline map weighs 256 KiB or less, or when the platform keeps no blob
+        store, and otherwise every file by hash, after asking `POST /v1/blobs/missing` which files the
+        organization lacks and uploading those (`mthds`'s `prepare_files`): a file uploaded once is
+        never uploaded again. With none of the three, the draft is empty.
+
         Raises:
-            ApiResponseError: `413` `payload_too_large` for a method that would leave no room for a
-                publish, measured as a draft write is; `422` `validation_failed` for Python files no
-                run could import or for text holding a lone surrogate.
+            RequestArgumentError: Two forms of the tree were given, or `contents` holds no file.
+            MethodFileTransferError: A file the organization lacks could not be uploaded.
+            TreeSourceError: A file of `tree` cannot be read, or changed since it was listed
+                (`mthds.method_tree.exceptions`).
+            ApiResponseError: `422` `invalid_method_files` for a map the standard refuses, with its
+                `tree_refusal`; `422` `method_tree_too_large` for a tree past one of the deployment's
+                limits, named in its `limit`; `422` `blob_mismatch` for a hash stated at another size
+                than the one held; `422` `missing_blobs` for a hash entry whose bytes the organization
+                does not hold; `413` `payload_too_large` for a method that would leave no room for a
+                publish.
         """
-        body = write_input.model_dump(mode="json", exclude_none=True)
+        files = await self._method_tree_files(
+            call="create_method",
+            files=write_input.files,
+            files_given="files" in write_input.model_fields_set,
+            tree=write_input.tree,
+            contents=write_input.contents,
+        )
+        body: dict[str, Any] = {"name": write_input.name}
+        if files is not None:
+            body["files"] = files
+        if write_input.input_data is not None:
+            body["input_data"] = write_input.input_data
         return await self._request_product("POST", "methods", body=body, read=MethodData.model_validate)
 
     async def write_draft(self, method_id: str, draft: MethodDraftInput) -> MethodData:
@@ -1787,10 +1992,12 @@ class PipelexAPIClient(MthdsAPIClient):
 
         The draft is never validated on write, and writing it changes nothing for the callers of the
         method's bare id, who run the latest published version until the next `publish_method`.
-        The body is the fields `draft` SET, so a field left unset keeps the stored value, and an
-        explicit `input_data=None` clears the form inputs (see `MethodDraftInput`). With
-        `expected_updated_at`, the write is a compare-and-swap on the draft token: a draft that
-        moved since is refused, and nothing is written. Without it, last writer wins.
+        The write replaces the draft's whole tree, given in exactly one form: `files`, sent as given,
+        an explicit `files=None` emptying the draft, or `tree` or `contents`, sent inline or by hash as
+        `create_method` sends them. `input_data` left unset keeps the stored form inputs, and an
+        explicit `input_data=None` clears them (see `MethodDraftInput`). With `expected_updated_at`,
+        the write is a compare-and-swap on the draft token: a draft that moved since is refused, and
+        nothing is written. Without it, last writer wins.
 
         Args:
             method_id: The method's bare catalog id.
@@ -1800,17 +2007,367 @@ class PipelexAPIClient(MthdsAPIClient):
             The method, with the draft's new token (`updated_at`) and digest (`draft_digest`).
 
         Raises:
+            RequestArgumentError: The draft gives its tree in no form or in two, or `contents` holds
+                no file.
+            MethodFileTransferError: A file the organization lacks could not be uploaded.
+            TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
             ApiResponseError: `409` `method_update_conflict` for a draft that moved since the token;
                 `404` `not_found` for an unknown or foreign-org method; `409` `method_being_deleted`
-                while its erasure runs; `413` `payload_too_large` for a draft that would grow the
-                method past the room a publish needs, which keeps a draft that saves publishable;
-                `422` `validation_failed` for Python files no run could import or for text holding a
-                lone surrogate; `403` for a read-only key; a `503` that wrote nothing, safe to retry,
-                when the method kept changing under the write.
+                while its erasure runs; the `422` refusals of a tree `create_method` lists; `413`
+                `payload_too_large` for a draft that would grow the method past the room a publish
+                needs; `403` for a read-only key; a `503` that wrote nothing, safe to retry, when the
+                method kept changing under the write.
         """
-        body = draft.model_dump(mode="json", exclude_unset=True)
         endpoint = f"{_method_path(method_id, call='write_draft')}/draft"
+        files_given = "files" in draft.model_fields_set
+        if not files_given and draft.tree is None and draft.contents is None:
+            msg = "write_draft() replaces the draft's whole tree: give it as files (files=None empties the draft), tree or contents."
+            raise RequestArgumentError(msg)
+        files = await self._method_tree_files(
+            call="write_draft", files=draft.files, files_given=files_given, tree=draft.tree, contents=draft.contents
+        )
+        body: dict[str, Any] = {"files": files}
+        if "input_data" in draft.model_fields_set:
+            body["input_data"] = draft.input_data
+        if "expected_updated_at" in draft.model_fields_set:
+            body["expected_updated_at"] = draft.expected_updated_at
         return await self._request_product("PUT", endpoint, body=body, read=MethodData.model_validate)
+
+    async def _method_tree_files(
+        self,
+        *,
+        call: str,
+        files: dict[str, FileEntry] | None,
+        files_given: bool,
+        tree: MethodTree | None,
+        contents: dict[str, bytes | str] | None,
+    ) -> dict[str, FileEntry] | None:
+        """The `files` a save sends: `files` as given, or `tree` or `contents` prepared, uploading what the organization lacks.
+
+        Raises:
+            RequestArgumentError: Two forms were given, or `contents` holds no file or a text no
+                UTF-8 encoder takes.
+            MethodFileTransferError: A file the organization lacks could not be uploaded.
+        """
+        given = [name for name, present in (("files", files_given), ("tree", tree is not None), ("contents", contents is not None)) if present]
+        if len(given) > 1:
+            msg = f"{call}() takes the method's tree in one form, files, tree or contents; got {' and '.join(given)}."
+            raise RequestArgumentError(msg)
+        if tree is not None:
+            listed_tree = tree
+            return await self._prepared_tree_files(lambda: self.prepare_files(listed_tree))
+        if contents is not None:
+            data = _contents_as_bytes(contents, call=call)
+            return await self._prepared_tree_files(lambda: self.prepare_files_from_contents(data))
+        return files
+
+    async def _prepared_tree_files(self, prepare: Callable[[], Awaitable[dict[str, FileEntry]]]) -> dict[str, FileEntry]:
+        """Run `mthds`'s tree preparation, its failures raised as this SDK's errors, each carrying a verdict.
+
+        An upload target's refusal becomes a `MethodFileTransferError` whose message and members name
+        the blob and the status, never the target's link or storage's error body, which can echo the
+        signed request: so neither the standard's error, which quotes that body, nor httpx's, which holds
+        the request, is kept as the cause or the context. The API's own refusals and failures already
+        carry a verdict, and the standard client's bare refusals become a `RequestArgumentError`.
+        """
+        transfer_error: MethodFileTransferError
+        try:
+            return await prepare()
+        except _MthdsBlobUploadError as exc:
+            upload_host = urlsplit(exc.upload_url).hostname or "storage"
+            status_line = f"{exc.status} {exc.status_text}".rstrip()
+            msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed ({status_line}), so the method was not saved."
+            transfer_error = MethodFileTransferError(
+                msg,
+                operation=MethodFileTransferOperation.UPLOAD,
+                code=method_file_transfer_code_of_status(exc.status),
+                sha256=exc.sha256,
+                status=exc.status,
+            )
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            # The API's own requests go through `_send`, which raises `ApiUnreachableError`, so an httpx
+            # failure reaching here is an upload's, sent straight to storage: no answer, or one whose body
+            # could not be decoded. httpx's error holds the request, whose URL is the signed target, so
+            # only its class name travels.
+            msg = (
+                f"A file the organization lacks could not be uploaded to storage: no answer came back ({type(exc).__name__}), "
+                "so the method was not saved."
+            )
+            transfer_error = MethodFileTransferError(
+                msg, operation=MethodFileTransferOperation.UPLOAD, code=MethodFileTransferCode.UNREACHABLE, sha256=None
+            )
+        except PipelineRequestError as exc:
+            refined = _with_verdict(exc)
+            if refined is exc:
+                raise
+            raise refined from exc
+        # Raised outside the handler, so the failure it replaces is not even its context.
+        raise transfer_error
+
+    @override
+    async def _prepare_files(
+        self, *, tree_files: list[TreeFile], digest: str, read: Callable[[TreeFile], bytes], inline_max_bytes: int
+    ) -> dict[str, FileEntry]:
+        """Prepare a tree's files as the base does, keeping the answer of `POST /v1/blobs/missing` for `_upload_missing`.
+
+        The base's `prepare_files` and `prepare_files_from_contents` both prepare through here, so a
+        caller of either reads an answer asking for blobs the tree does not hold as every save does.
+        """
+        token = _MISSING_BLOBS_ANSWER.set(_AnswerSeen())
+        try:
+            return await super()._prepare_files(tree_files=tree_files, digest=digest, read=read, inline_max_bytes=inline_max_bytes)
+        finally:
+            _MISSING_BLOBS_ANSWER.reset(token)
+
+    @override
+    async def missing_blobs(self, blobs: Sequence[BlobRef], digest: str | None = None) -> MissingBlobsResult:
+        """Which of these blobs the platform lacks, and where to upload each — `POST /v1/blobs/missing`.
+
+        The base's route, so that a `200` whose body is not JSON or not the route's answer raises this
+        SDK's `ApiResponseError` of an answer it cannot read, as every other route's does: its upload
+        targets are signed links, so the error carries the body redacted and no parse failure.
+
+        Raises:
+            ApiResponseError: The platform answers non-2xx, or a 2xx this SDK cannot read.
+            ApiUnreachableError: No answer came back.
+        """
+        with self._reading_inherited_answer(method="POST", endpoint="blobs/missing", carries_links=True) as seen:
+            answer = await super().missing_blobs(blobs, digest=digest)
+        preparing = _MISSING_BLOBS_ANSWER.get()
+        if preparing is not None:
+            preparing.response = seen.response
+        return answer
+
+    @override
+    async def _upload_missing(self, missing: list[MissingBlob], *, file_of_blob: dict[str, TreeFile], read: Callable[[TreeFile], bytes]) -> None:
+        """Upload what `missing_blobs` asked for as the base does, once its answer asks only for blobs the tree holds.
+
+        A blob is named by its hash and its size, so one the tree holds under the same hash at another
+        size is a blob the tree does not hold. An answer asking for one is the platform's fault, not the
+        caller's: it is raised as an answer this SDK cannot read, carrying that answer redacted, rather
+        than the base's bare refusal, and nothing is uploaded.
+
+        Raises:
+            ApiResponseError: The answer asks for a blob the tree does not hold; its verdict is `runtime`.
+        """
+        strangers: set[str] = set()
+        for blob in missing:
+            tree_file = file_of_blob.get(blob.sha256)
+            if tree_file is None or tree_file.size != blob.size:
+                strangers.add(blob.sha256)
+        preparing = _MISSING_BLOBS_ANSWER.get()
+        response = preparing.response if preparing is not None else None
+        if strangers and response is not None:
+            raise self._unreadable_answer(
+                method="POST",
+                path=f"/{_API_PREFIX}/blobs/missing",
+                request_url=self._url("blobs/missing"),
+                response=response,
+                what=f"a body asking for blobs this tree does not hold: {', '.join(sorted(strangers))}",
+                carries_links=True,
+            )
+        await super()._upload_missing(missing, file_of_blob=file_of_blob, read=read)
+
+    async def method_tree_limits(self) -> TreeLimits:
+        """The limits the deployment holds a method's tree to, as `mthds`'s lister takes them — `GET /v1/version`.
+
+        The hosted platform announces them under `limits.method_tree` of its public version handshake:
+        how many files, how large one file, how large all of them together. A limit the server does not
+        announce is left unset, so a bare runner, which announces none, yields no limit, and none is ever
+        assumed. A value that is not a positive integer is left out rather than trusted.
+
+        Raises:
+            ApiResponseError: The server answers non-2xx, or a 2xx that is not a version.
+            ApiUnreachableError: No answer came back.
+        """
+        return _announced_tree_limits(await self.version())
+
+    async def list_method_tree(self, path: Path) -> MethodTree:
+        """List the method tree of a directory or of a `.mthds` file, under the limits the deployment announces.
+
+        `mthds`'s lister (`mthds.method_tree.lister.list_method_tree`) finds the method's root by
+        Manifest Discovery, applies the standard's membership rule and hashes every file, stopping at
+        the first limit `method_tree_limits` reports before hashing anything, so a tree the platform
+        would refuse is refused here, naming the limit. The listing runs off the event loop. The tree is
+        what `MethodWriteInput.tree` and `MethodDraftInput.tree` take.
+
+        Args:
+            path: The directory, or the `.mthds` file, to list.
+
+        Raises:
+            TreeLimitError: The tree passes one of the deployment's limits (`mthds.method_tree.exceptions`).
+            MethodTreeRefusedError: The tree breaks the standard's rules, or holds no file.
+            TreeSourceError: The path is missing or a file cannot be read.
+            ApiResponseError: The version handshake answered non-2xx.
+            ApiUnreachableError: The version handshake got no answer.
+        """
+        limits = await self.method_tree_limits()
+        return await asyncio.to_thread(list_method_tree, path, limits=limits)
+
+    async def write_method_tree(self, files: Sequence[SavedMethodFile], *, destination: Path) -> None:
+        """Write a saved method's tree to disk: each file of a listing `get_method` or `get_method_version` served, at its tree path.
+
+        Each file is downloaded through its link, with no credential of this client, and checked
+        against the listing: its size and its SHA-256 must be the ones listed, so what lands on disk is
+        the tree the method's digest names. The files are written into a fresh hidden directory beside
+        `destination`, which takes the name `destination` only once every file is written: an
+        interrupted, failed or cancelled write never leaves a partial tree under that name, and its
+        hidden directory is removed. `destination` is made absolute and normalized first, without
+        following a symbolic link, so a relative name, `Path(".")` included, names the directory it
+        means; it must not exist, or be an empty directory, and a directory already holding files is
+        refused rather than written into or replaced. An empty listing writes an empty directory.
+
+        A bounded number of files move at a time, each holding its turn until its bytes are on disk, and
+        the first failure stops the write: the downloads still running are cancelled. The checks on
+        disk, the directories, the move into place and the cleanup run off the event loop.
+
+        The links expire about fifteen minutes after the read that served them: write the tree soon
+        after reading the method, and read it again for fresh links when a download is refused.
+
+        Args:
+            files: The listing, as `MethodDetail.files` or `MethodVersion.files` carries it.
+            destination: The directory the tree is written as.
+
+        Raises:
+            RequestArgumentError: `destination` exists and is not an empty directory, or is the root of
+                a filesystem, or the listing holds a path that is not a tree path, the same path twice,
+                or paths that collide once case-folded or where one names a directory of another;
+                nothing is downloaded.
+            MethodFileTransferError: A file could not be downloaded, or its bytes are not the file
+                listed; nothing is left under `destination`.
+        """
+        _refuse_unwritable_listing(files)
+        target = Path(os.path.normpath(destination.absolute()))
+        if not target.name:
+            msg = f"Cannot write a method tree at '{destination}': it is the root of a filesystem, and a tree is written as a directory of its own."
+            raise RequestArgumentError(msg)
+        staging = await asyncio.to_thread(_make_staging_directory, target)
+        is_in_place = False
+        try:
+            async with self._make_download_client() as download_client:
+                await self._download_tree_into(download_client, files=files, staging=staging)
+            await _run_to_end_in_thread(_move_into_place, staging, target)
+            is_in_place = True
+        finally:
+            if not is_in_place:
+                # Shielded, so a cancellation arriving now still leaves no hidden directory behind.
+                await asyncio.shield(asyncio.to_thread(shutil.rmtree, staging, ignore_errors=True))
+
+    async def _download_tree_into(self, download_client: httpx.AsyncClient, *, files: Sequence[SavedMethodFile], staging: Path) -> None:
+        """Download every file of a listing into `staging`, a bounded number at a time, stopping at the first failure.
+
+        A file holds its slot from its request until its bytes are written, so no more than
+        `_MAX_CONCURRENT_DOWNLOADS` files are ever held in memory. At the first failure the downloads
+        still running are cancelled and awaited, a write in progress running to its end, so nothing
+        writes into `staging` once this returns; the first failure in listing order among those met is
+        then raised.
+        """
+        slots = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
+
+        async def download_one(saved_file: SavedMethodFile) -> None:
+            async with slots:
+                data = await self._download_method_file(download_client, saved_file=saved_file)
+                await _run_to_end_in_thread(_write_new_file, staging.joinpath(*saved_file.path.split("/")), data)
+
+        tasks = [asyncio.create_task(download_one(saved_file)) for saved_file in files]
+        if not tasks:
+            return
+        try:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks:
+            failure = None if task.cancelled() else task.exception()
+            if failure is not None:
+                raise failure
+
+    def _make_download_client(self) -> httpx.AsyncClient:
+        """The HTTP client a saved method's files are downloaded through, apart from the API client: no default header, no auth, no event hook.
+
+        A link is presigned storage, another server than the API, so neither the API key nor this
+        client's headers go with it. Redirects are not followed: a presigned link names its object.
+        """
+        return httpx.AsyncClient()
+
+    async def _download_method_file(self, download_client: httpx.AsyncClient, *, saved_file: SavedMethodFile) -> bytes:
+        """Download one file of a listing and check its bytes against it, reading no more than its listed size and one byte.
+
+        The whole exchange, its body included, is bounded by `request_timeout_seconds`, as each of
+        httpx's phases is: a body that stalls after its headers arrived times out as surely as a
+        server that never answers.
+
+        Raises:
+            MethodFileTransferError: Storage gave no answer in time, refused the request, or sent a body
+                httpx cannot decode, or the bytes are not the file listed. Neither the message, nor a
+                member, nor a cause or context carries the link.
+        """
+        host = urlsplit(saved_file.url).hostname or "storage"
+        failure_name: str | None = None
+        received = bytearray()
+        try:
+            async with asyncio.timeout(self.request_timeout_seconds):
+                received = await self._received_bytes(download_client, saved_file=saved_file, host=host)
+        except TimeoutError:
+            failure_name = "TimeoutError"
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            # httpx's error holds the request, whose URL is the signed link, so only its class name travels.
+            failure_name = type(exc).__name__
+        if failure_name is not None:
+            # Raised outside the handler, so httpx's error is not even its context.
+            msg = f"Downloading '{saved_file.path}' from {host} failed: no answer came back ({failure_name})."
+            raise MethodFileTransferError(
+                msg,
+                operation=MethodFileTransferOperation.DOWNLOAD,
+                code=MethodFileTransferCode.UNREACHABLE,
+                sha256=saved_file.sha256,
+                path=saved_file.path,
+            )
+        data = bytes(received)
+        data_sha256 = await asyncio.to_thread(sha256_hex, data)
+        if len(data) != saved_file.size or data_sha256 != saved_file.sha256:
+            msg = (
+                f"The bytes downloaded for '{saved_file.path}' are not the file listed: the listing names {saved_file.size} bytes "
+                f"hashing to {saved_file.sha256}, and {'more than that' if len(data) > saved_file.size else f'{len(data)} bytes'} came back"
+                + ("." if len(data) > saved_file.size else f", hashing to {data_sha256}.")
+            )
+            raise MethodFileTransferError(
+                msg,
+                operation=MethodFileTransferOperation.DOWNLOAD,
+                code=MethodFileTransferCode.MISMATCH,
+                sha256=saved_file.sha256,
+                path=saved_file.path,
+            )
+        return data
+
+    async def _received_bytes(self, download_client: httpx.AsyncClient, *, saved_file: SavedMethodFile, host: str) -> bytearray:
+        """Send one file's download and read its body, stopping once it passes the listed size.
+
+        Raises:
+            MethodFileTransferError: Storage refused the request; a refused link may have expired.
+        """
+        async with download_client.stream("GET", saved_file.url, timeout=self.request_timeout_seconds) as response:
+            if not response.is_success:
+                status_line = f"{response.status_code} {response.reason_phrase}".rstrip()
+                msg = (
+                    f"Downloading '{saved_file.path}' from {host} failed ({status_line}). A refused link may have expired: "
+                    "read the method again for fresh links."
+                )
+                raise MethodFileTransferError(
+                    msg,
+                    operation=MethodFileTransferOperation.DOWNLOAD,
+                    code=method_file_transfer_code_of_status(response.status_code),
+                    sha256=saved_file.sha256,
+                    path=saved_file.path,
+                    status=response.status_code,
+                )
+            received = bytearray()
+            async for chunk in response.aiter_bytes():
+                received.extend(chunk)
+                if len(received) > saved_file.size:
+                    break
+        return received
 
     async def rename_method(self, method_id: str, name: str) -> MethodData:
         """Rename a method — `PATCH /v1/methods/{id}`.
@@ -1892,7 +2449,7 @@ class PipelexAPIClient(MthdsAPIClient):
             cursor: The `next_cursor` of the previous page, passed back opaquely.
 
         Returns:
-            A `MethodVersionPage` of `MethodVersionSummary` rows, without their sources. `next_cursor`
+            A `MethodVersionPage` of `MethodVersionSummary` rows, without their files. `next_cursor`
             is `None` on the last page; a page may be short while it is set, because the platform
             reads versions whole. A method never published answers an empty page.
 
@@ -1906,9 +2463,10 @@ class PipelexAPIClient(MthdsAPIClient):
         return await self._request_product("GET", endpoint, read=MethodVersionPage.model_validate)
 
     async def get_method_version(self, method_id: str, version: int) -> MethodVersion:
-        """Read one published version of a method, with its sources — `GET /v1/methods/{id}/versions/{n}`.
+        """Read one published version of a method, with its files — `GET /v1/methods/{id}/versions/{n}`.
 
-        Its `python` is converted into `MethodFile` entries as a method's is.
+        `files` lists the version's tree in tree path order, each file with a link to its bytes valid
+        for about fifteen minutes; `write_method_tree` brings the tree to disk.
 
         Args:
             method_id: The method's bare catalog id.
@@ -1918,7 +2476,10 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `version` is not a positive integer — a `bool`, a `float` such as
                 `2.0`, a numeric string and anything else that is not an `int` included; nothing is sent.
             ApiResponseError: `404` `method_version_not_found` for a version the method never
-                published; `404` `not_found` for an unknown method; `409` `method_being_deleted`.
+                published; `404` `not_found` for an unknown method; `409` `method_being_deleted`; a
+                `409` `conflict` for a version stored before methods were trees that the platform has
+                not rewritten as one (its `tree_digest` is `None`); a `200` the SDK cannot read,
+                reported with every link redacted.
         """
         # Checked as an `object`: the annotation is a promise to the type checker, not to a caller
         # forwarding a float or a CLI argument, and only an `int` puts a version number in the path.
@@ -1927,7 +2488,7 @@ class PipelexAPIClient(MthdsAPIClient):
             msg = f"get_method_version() takes a version number, a positive integer; got {version!r}."
             raise RequestArgumentError(msg)
         endpoint = f"{_method_path(method_id, call='get_method_version')}/versions/{version}"
-        return await self._request_product("GET", endpoint, read=MethodVersion.model_validate)
+        return await self._request_product("GET", endpoint, read=MethodVersion.model_validate, carries_links=True)
 
     async def delete_method(self, method_id: str) -> MethodDeletionAccepted:
         """Erase a method and everything it produced — `DELETE /v1/methods/{id}`.
@@ -2699,25 +3260,31 @@ def _normalized_selector(*, name: str, value: object) -> str | None:
     return value or None
 
 
-def _merge_run_extensions(extra: dict[str, Any] | None, *, method_ref: object, method_id: object) -> dict[str, Any] | None:
+def _merge_run_extensions(
+    extra: dict[str, Any] | None, *, method_ref: object, method_id: object, mthds_contents: list[str] | None = None
+) -> dict[str, Any] | None:
     """Fold this client's own named run args into the generic `extra` passthrough handed to
     the base client.
 
-    This is the layering seam: `method_ref` (layer 2 — the Pipelex API's run source, resolved
-    by the runner) and `method_id` (layer 3 — the hosted platform's run arg) are named
-    parameters on this client because it is the client that types its own stack's arguments,
-    and each reaches the wire as a top-level body property through the protocol client's
-    extension mechanism — which merges it without knowing what it means. See
+    This is the layering seam: `method_ref` and `mthds_contents` (layer 2 — the Pipelex API's
+    run sources, read by the runner) and `method_id` (layer 3 — the hosted platform's run arg)
+    are named parameters on this client because it is the client that types its own stack's
+    arguments, and each reaches the wire as a top-level body property through the protocol
+    client's extension mechanism — which merges it without knowing what it means. See
     `_PIPELEX_API_RUN_ARGS` / `_HOSTED_RUN_ARGS`.
 
     Both selectors go through `_normalized_selector`: a non-string is refused, an absent or
-    empty value contributes nothing. `None` is returned for an empty result, leaving the
-    base's own handling of an absent `extra` untouched.
+    empty value contributes nothing. `mthds_contents` is sent only when it holds a bundle: an
+    empty list names nothing to run, the one test every run-source check of this client makes
+    (`has_inline_source`, `_assert_method_ref_pairs_with_nothing`), so it never reaches the wire
+    beside a source that does. `None` is returned for an empty result, leaving the base's own
+    handling of an absent `extra` untouched.
 
     Args:
         extra: Server-specific extension args from the caller, or None.
         method_ref: The published method's address, or None.
         method_id: The hosted catalog id, or None.
+        mthds_contents: The inline bundles, or None.
 
     Returns:
         The merged extension mapping to hand to the base client, or None if there is nothing.
@@ -2737,7 +3304,33 @@ def _merge_run_extensions(extra: dict[str, Any] | None, *, method_ref: object, m
     selected_method_id = _normalized_selector(name="method_id", value=method_id)
     if selected_method_id is not None:
         extensions["method_id"] = selected_method_id
+    if mthds_contents:
+        extensions["mthds_contents"] = mthds_contents
     return extensions or None
+
+
+def _assert_run_source_named(
+    *,
+    pipe_code: str | None,
+    has_inline_source: bool,
+    mthds_contents: list[str] | None,
+    merged_extra: dict[str, Any] | None,
+    route: Literal["execute", "start"],
+) -> None:
+    """Refuse a run whose only source is an empty `mthds_contents`, before any request is sent.
+
+    The base client refuses a run that names nothing. An empty `mthds_contents` names nothing either,
+    and `_merge_run_extensions` leaves it out of the extensions, so the base would refuse such a run
+    without naming the argument the caller gave: this words that refusal as the protocol client
+    worded it when it took `mthds_contents` itself, and leaves every other case to the base.
+
+    Raises:
+        RequestArgumentError: The only source given is an empty `mthds_contents`.
+    """
+    if mthds_contents is None or pipe_code or has_inline_source or merged_extra:
+        return
+    msg = f"Either pipe_code, files, mthds_contents or a server-specific extension arg (extra) must be provided to the API {route}."
+    raise RequestArgumentError(msg)
 
 
 def _idempotency_key_of(value: object) -> str | None:
@@ -2779,27 +3372,30 @@ def _idempotency_key_fault(value: object) -> str | None:
     return None
 
 
-def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, merged_extra: dict[str, Any] | None) -> None:
+def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, carries_files: bool, merged_extra: dict[str, Any] | None) -> None:
     """Enforce the run routes' `method_ref` exclusivity, mirroring the server's own 422s so an
     illegal pairing fails before anything hits the wire.
 
     A `method_ref` is a complete run source (the fetched package carries its `.mthds` and its
-    entry pipe), so it pairs with NOTHING: not with inline `mthds_contents` and not with the
-    hosted `method_id` — an address run has its own provenance and needs no linkage id. Reads
-    the MERGED extensions, so the presence semantics are the normalized ones (an empty selector
-    was already dropped).
+    entry pipe), so it pairs with NOTHING: not with an inline source (`files` or `mthds_contents`)
+    and not with the hosted `method_id` — an address run has its own provenance and needs no
+    linkage id. Reads the MERGED extensions, so the presence semantics are the normalized ones (an
+    empty selector was already dropped).
 
     The one documented run-route exception is deliberately NOT here: inline source +
     `method_id` stays legal (the inline source runs; the id demotes to run-history linkage), its
     one condition, a bare id, held by `_assert_linkage_method_id_is_bare` below.
     `pipe_code` beside a `method_ref` is legal too — it overrides the manifest's `main_pipe`.
-    This SDK names no bundle encodings (`files` / `bundle_b64`), so their arm of the server's
-    exclusivity has no client-side twin here; the server still enforces it.
+    This SDK does not name the `bundle_b64` encoding, so its arm of the server's exclusivity has no
+    client-side twin here; the server still enforces it.
     """
     if merged_extra is None or "method_ref" not in merged_extra:
         return
     if mthds_contents:
         msg = "method_ref and inline mthds_contents are mutually exclusive; send one or the other."
+        raise RequestArgumentError(msg)
+    if carries_files:
+        msg = "method_ref and a method bundle (bundle_b64 / files) are mutually exclusive; send one or the other."
         raise RequestArgumentError(msg)
     if "method_id" in merged_extra:
         msg = (
@@ -2809,24 +3405,23 @@ def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, m
         raise RequestArgumentError(msg)
 
 
-def _assert_linkage_method_id_is_bare(*, mthds_contents: list[str] | None, merged_extra: dict[str, Any] | None) -> None:
+def _assert_linkage_method_id_is_bare(*, has_inline_source: bool, merged_extra: dict[str, Any] | None) -> None:
     """Enforce the run routes' linkage clause, mirroring the platform's own `422` so a suffixed
     linkage id fails before anything hits the wire.
 
-    Beside inline `mthds_contents` the `method_id` is run-history linkage and must be a bare catalog
-    id: the inline source is what runs, so a version suffix (`mt_…@3`, `mt_…@draft`) would claim a
-    version that did not. A `method_id` alone keeps its suffix, which names the version to run.
-    Reads the MERGED extensions, so an empty id was already dropped, and checks the suffix alone, by
-    its `@`, since the catalog id's alphabet has none: the id itself stays a pass-through the
-    platform resolves. As in `_assert_method_ref_pairs_with_nothing`, the bundle encodings this SDK
-    does not name (`files` / `bundle_b64`) have no client-side twin; the platform still refuses a
-    suffixed id beside them.
+    Beside an inline source (`files` or `mthds_contents`) the `method_id` is run-history linkage and
+    must be a bare catalog id: the inline source is what runs, so a version suffix (`mt_…@3`,
+    `mt_…@draft`) would claim a version that did not. A `method_id` alone keeps its suffix, which
+    names the version to run. Reads the MERGED extensions, so an empty id was already dropped, and
+    checks the suffix alone, by its `@`, since the catalog id's alphabet has none: the id itself
+    stays a pass-through the platform resolves. As in `_assert_method_ref_pairs_with_nothing`, the
+    `bundle_b64` encoding this SDK does not name has no client-side twin; the platform still refuses
+    a suffixed id beside it.
 
     Raises:
-        RequestArgumentError: A `method_id` carrying a version suffix rides beside inline
-            `mthds_contents`.
+        RequestArgumentError: A `method_id` carrying a version suffix rides beside an inline source.
     """
-    if not mthds_contents or merged_extra is None:
+    if not has_inline_source or merged_extra is None:
         return
     method_id = merged_extra.get("method_id")
     if not isinstance(method_id, str) or "@" not in method_id:
@@ -2847,20 +3442,20 @@ def _quick_request_timeout_seconds(request_timeout_seconds: float) -> float:
     return min(request_timeout_seconds, _POLL_REQUEST_TIMEOUT_SECONDS)
 
 
-def _start_request_timeout_seconds(request_timeout_seconds: float, merged_extra: dict[str, Any] | None, mthds_contents: list[str] | None) -> float:
+def _start_request_timeout_seconds(request_timeout_seconds: float, merged_extra: dict[str, Any] | None, *, has_inline_source: bool) -> float:
     """The time limit of `POST /v1/start`, by `@pipelex/sdk`'s rule.
 
     The start answers its `202` fast, so it normally gets the time limit of a quick request (see
     `_quick_request_timeout_seconds`), with exceptions that get the caller's whole
-    `request_timeout_seconds`, the blocking-execute ceiling by default. A method bundle, inline as `mthds_contents` or riding the `files`
-    or `bundle_b64` extension, can make the request body multi-megabyte, and its upload is charged
+    `request_timeout_seconds`, the blocking-execute ceiling by default. A method sent inline, as its `files` tree, as `mthds_contents`
+    or riding the `bundle_b64` extension, can make the request body multi-megabyte, and its upload is charged
     against the limit: the same payload must not time out on the durable path yet succeed on the
     blocking fallback. And a `method_ref` start makes the server fetch the package before the
     acknowledgement, which can run well past 30s on a cold cache; cutting it off would blame the
     network for a server still fetching.
     """
     extension = merged_extra or {}
-    carries_bundle = bool(mthds_contents) or bool(extension.get("files")) or bool(extension.get("bundle_b64"))
+    carries_bundle = has_inline_source or bool(extension.get("bundle_b64"))
     fetches_package = bool(extension.get("method_ref"))
     if carries_bundle or fetches_package:
         return request_timeout_seconds
@@ -3056,6 +3651,139 @@ def _id_path_segment(value: object, *, call: str, what: str) -> str:
         return quote(id_value, safe="")
     except UnicodeEncodeError as exc:
         raise _argument_refusal(call, what, "a string holding a lone surrogate, which a URL cannot carry") from exc
+
+
+# How many files of a saved tree `write_method_tree` downloads at once, as many as `mthds` uploads at once.
+_MAX_CONCURRENT_DOWNLOADS = 8
+
+
+def _contents_as_bytes(contents: dict[str, bytes | str], *, call: str) -> dict[str, bytes]:
+    """A save's `contents` as each file's bytes, a text encoded in UTF-8.
+
+    Raises:
+        RequestArgumentError: `contents` holds no file, or a text no UTF-8 encoder takes, one holding a
+            lone surrogate.
+    """
+    if not contents:
+        msg = f"{call}() got contents holding no file, and a method tree holds at least one; give files=None for an empty draft."
+        raise RequestArgumentError(msg)
+    data: dict[str, bytes] = {}
+    for tree_path, content in contents.items():
+        if isinstance(content, bytes):
+            data[tree_path] = content
+            continue
+        try:
+            data[tree_path] = content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            msg = f"{call}() got contents['{tree_path}'] holding a lone surrogate, which is no text a file can hold: give its bytes instead."
+            raise RequestArgumentError(msg) from exc
+    return data
+
+
+def _announced_tree_limits(version_info: VersionInfo) -> TreeLimits:
+    """The tree limits a version handshake announces under `limits.method_tree`, each one a positive integer or left unset."""
+    limits = (version_info.model_extra or {}).get("limits")
+    announced = cast("dict[str, object]", limits).get("method_tree") if isinstance(limits, dict) else None
+    if not isinstance(announced, dict):
+        return TreeLimits()
+    method_tree = cast("dict[str, object]", announced)
+
+    def read(name: str) -> int | None:
+        value = method_tree.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None
+        return value
+
+    return TreeLimits(max_files=read("max_files"), max_file_bytes=read("max_file_bytes"), max_total_bytes=read("max_total_bytes"))
+
+
+def _refuse_unwritable_listing(files: Sequence[SavedMethodFile]) -> None:
+    """Refuse a listing whose paths could not be written as a tree, before anything is downloaded.
+
+    A platform's listing holds tree paths that never collide; the check guards the disk against any
+    other listing a caller hands over, such as one built by hand, since a path such as `../x` would be
+    written outside the destination.
+
+    Raises:
+        RequestArgumentError: A path is not a tree path, appears twice, or collides with another.
+    """
+    seen: set[str] = set()
+    for saved_file in files:
+        violation = tree_path_violation(saved_file.path)
+        if violation is not None:
+            msg = f"The listing holds '{saved_file.path}', which is not a tree path ({violation}), so the tree cannot be written."
+            raise RequestArgumentError(msg)
+        if saved_file.path in seen:
+            msg = f"The listing holds '{saved_file.path}' twice, so the tree cannot be written."
+            raise RequestArgumentError(msg)
+        seen.add(saved_file.path)
+    colliding = path_collisions(seen)
+    if colliding:
+        msg = f"The listing holds paths that collide once case-folded, or where one names a directory of another: {', '.join(colliding)}."
+        raise RequestArgumentError(msg)
+
+
+def _refuse_occupied_destination(destination: Path) -> None:
+    """Refuse a destination that exists and is not an empty directory, as `mthds`'s `write_tree` does.
+
+    Raises:
+        RequestArgumentError: `destination` exists and is not an empty directory.
+    """
+    if not destination.exists() and not destination.is_symlink():
+        return
+    if destination.is_dir() and not destination.is_symlink() and not any(destination.iterdir()):
+        return
+    msg = (
+        f"Cannot write a method tree at '{destination}': it already exists and is not an empty directory, "
+        "and a written tree holds nothing but its files."
+    )
+    raise RequestArgumentError(msg)
+
+
+def _write_new_file(target: Path, data: bytes) -> None:
+    """Write a file that must not exist yet, its directories created first, so no file of the tree is ever written over."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("xb") as new_file:
+        new_file.write(data)
+
+
+def _make_staging_directory(target: Path) -> Path:
+    """Refuse an occupied `target`, then make the fresh hidden directory beside it that a tree is written into before it takes `target`'s name.
+
+    Raises:
+        RequestArgumentError: `target` exists and is not an empty directory.
+    """
+    _refuse_occupied_destination(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / f".{target.name}.{secrets.token_hex(8)}.writing"
+    staging.mkdir()
+    return staging
+
+
+def _move_into_place(staging: Path, target: Path) -> None:
+    """Give a written tree its name: `target`, an empty directory left there removed first.
+
+    `rmdir` removes only an empty directory, so a file written at `target` meanwhile is never lost: the
+    move fails instead.
+    """
+    if target.is_dir():
+        target.rmdir()
+    staging.rename(target)
+
+
+async def _run_to_end_in_thread(func: Callable[..., None], /, *args: object) -> None:
+    """Run `func(*args)` in a worker thread, and when the awaiting task is cancelled, let the thread end before the cancellation goes on.
+
+    A thread cannot be stopped, so a task cancelled while it waits would leave the thread running on,
+    writing into a directory its caller is about to remove. Awaiting its end first keeps the order.
+    """
+    running = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    try:
+        await asyncio.shield(running)
+    except asyncio.CancelledError:
+        # The thread's own failure no longer matters once the caller is cancelled; its end does.
+        await asyncio.wait({running})
+        raise
 
 
 def _method_path(method_id: str, *, call: str) -> str:

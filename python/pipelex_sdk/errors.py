@@ -37,6 +37,10 @@ subclasses, plus `FieldNotIncludedError`) are the download twin of that family: 
 where the artifact operations can produce no verdict at all, per-reference failure being a value on the
 verdict's item. See `docs/artifact-download.md`.
 
+`MethodFileTransferError` is raised when a file of a method's tree could not be moved between this
+machine and the platform's storage: a blob uploaded before a save, or a saved file downloaded through
+the link a method read serves. See `docs/method-trees.md`.
+
 The codegen tree errors (`CodegenError`, `CodegenLockError`) are not request errors at all: they are
 raised by `pipelex_sdk.codegen_writer`, `pipelex_sdk.codegen_check`, `pipelex_sdk.codegen_lock` and
 `pipelex_sdk.codegen_stamp` over bytes and a directory, so they derive from `Exception` rather than from
@@ -247,9 +251,12 @@ class ApiResponseError(PipelexRequestError, _MthdsApiResponseError[ValidationErr
     """A response that DID come back from the API and that the SDK cannot hand back as a result: a
     non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read — a body
     that is not UTF-8 or not JSON, an empty one where the route answers JSON, or JSON that is not the
-    answer the route returns. The second carries the answer's status and raw text, no problem member
-    but the `X-Request-ID` header as `request_id`, the parse failure as `__cause__`, and the verdict the
-    fallback gives a 2xx: `runtime`, not retryable.
+    answer the route returns, or one asking for blobs the tree being saved does not hold. The second
+    carries the answer's status and raw text, no problem member but the `X-Request-ID` header as
+    `request_id`, the parse failure as `__cause__`, and the verdict the fallback gives a 2xx: `runtime`,
+    not retryable. An answer holding signed links (a method's listing, the upload targets of
+    `POST /v1/blobs/missing`) has every link redacted in `response_body`, and chains only a copy of a
+    pydantic refusal whose values are redacted the same way, never a failure that holds the body.
 
     Every route of `PipelexAPIClient` raises it on a non-2xx answer and on a 2xx it cannot read: the
     protocol routes it inherits from `mthds` (`execute`, `start`, `validate`, `models`, `version`), the
@@ -851,6 +858,84 @@ def _status_is_retryable(status: int) -> bool:
     `429`, or a `5xx` other than `501`.
     """
     return fallback_verdict(status=status, code=None, named=True).retryable
+
+
+# ── A saved method's files ─────────────────────────────────────────────
+
+
+class MethodFileTransferOperation(StrEnum):
+    """Which way a file of a method's tree was moving when its transfer failed — `MethodFileTransferError.operation`."""
+
+    UPLOAD = "upload"
+    """A blob the platform lacked, sent to the upload target `POST /v1/blobs/missing` named, before a save."""
+
+    DOWNLOAD = "download"
+    """A file of a saved tree, read through the link `get_method` or `get_method_version` served."""
+
+
+class MethodFileTransferCode(StrEnum):
+    """Why a file of a method's tree could not be moved — `MethodFileTransferError.code`, the same vocabulary as `@pipelex/sdk`'s.
+
+    - `UNREACHABLE`: storage gave no answer, the connection failing or the time limit running out.
+    - `STORAGE_ERROR`: storage timed out or throttled the request (`408`, `429`), or failed (a `5xx` other than `501`).
+    - `REFUSED`: storage refused the request: any other status, an expired link among them.
+    - `MISMATCH`: a download's bytes are not the file the listing names, another size or another SHA-256.
+    """
+
+    UNREACHABLE = "unreachable"
+    STORAGE_ERROR = "storage_error"
+    REFUSED = "refused"
+    MISMATCH = "mismatch"
+
+
+class MethodFileTransferError(PipelexRequestError):
+    """A file of a method's tree that could not be moved between this machine and the platform's storage.
+
+    Raised by `create_method` and `write_draft` when a blob the platform lacks could not be uploaded to
+    the target `POST /v1/blobs/missing` named, and by `write_method_tree` when a saved file could not be
+    downloaded through its link, or its bytes are not the file the listing names. `operation` says which
+    way the file was moving, `code` why it failed, `sha256` which bytes (`None` for an upload that got no
+    answer, which the standard's client does not attribute to a blob), `path` the tree path when one is
+    known, and `status` storage's HTTP status when it answered. Neither the message, nor any member, nor
+    a cause or a context carries the link, whose query is a bearer credential: httpx's error, which holds
+    the request, is never chained.
+
+    Its verdict follows `code`, and its domain is always `runtime`, since neither the call nor the
+    environment is at fault: `unreachable`, `storage_error` and `mismatch` are retryable, since the same
+    transfer can succeed later, and `refused` is not. A download refused for an expired link succeeds
+    once the method is read again, which serves fresh links.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: MethodFileTransferOperation,
+        code: MethodFileTransferCode,
+        sha256: str | None,
+        path: str | None = None,
+        status: int | None = None,
+    ) -> None:
+        super().__init__(message, verdict=_method_file_transfer_verdict(code))
+        self.operation = operation
+        self.code = code
+        self.sha256 = sha256
+        self.path = path
+        self.status = status
+
+
+def _method_file_transfer_verdict(code: MethodFileTransferCode) -> ErrorVerdict:
+    """The verdict of a failed transfer of a method's file, by its code."""
+    match code:
+        case MethodFileTransferCode.UNREACHABLE | MethodFileTransferCode.STORAGE_ERROR | MethodFileTransferCode.MISMATCH:
+            return _verdict(ErrorDomain.RUNTIME, retryable=True)
+        case MethodFileTransferCode.REFUSED:
+            return _verdict(ErrorDomain.RUNTIME, retryable=False)
+
+
+def method_file_transfer_code_of_status(status: int) -> MethodFileTransferCode:
+    """The code of a transfer storage answered with a non-2xx `status`: `storage_error` for one the fallback table calls retryable, else `refused`."""
+    return MethodFileTransferCode.STORAGE_ERROR if _status_is_retryable(status) else MethodFileTransferCode.REFUSED
 
 
 # ── Codegen trees ─────────────────────────────────────────────────────

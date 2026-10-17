@@ -42,6 +42,7 @@ See [`docs/cli.md`](./docs/cli.md) for every flag, the output, the exit codes an
 import { PipelexApiClient } from "@pipelex/sdk";
 
 // Base URL + key from PIPELEX_BASE_URL / PIPELEX_API_KEY, or pass them explicitly.
+// `requestTimeoutMs` sets the client's request ceiling, twenty minutes by default.
 const client = new PipelexApiClient({
   baseUrl: "https://api.pipelex.com",
   apiKey: process.env.PIPELEX_API_KEY,
@@ -113,6 +114,7 @@ A reference the runner cannot read at all (blank, a sigil alone, too long) or an
 The hosted management surface (catalog, account, billing) hangs off the same client. Every route maps a non-2xx `problem+json` to a typed `ApiResponseError` (see [Errors](#errors) for how to branch on it):
 
 ```ts
+import { listMethodTree } from "mthds";
 import { PipelexApiClient, ApiResponseError, parseMethodSelector } from "@pipelex/sdk";
 
 const client = new PipelexApiClient({ apiKey: process.env.PIPELEX_API_KEY });
@@ -124,13 +126,16 @@ const drafts = await client.listMethods({ published: false });
 for await (const method of client.iterateMethods()) {
   // follows the cursor for callers that genuinely want the whole catalog
 }
-const created = await client.createMethod({ name: "Greeter", mthds: "domain = 'demo'" });
+// A saved method is a method tree: list one from a directory, under the deployment's limits,
+// and the save sends it inline when small, or by hash after uploading the files it lacks.
+const tree = await listMethodTree("methods/greeter", { limits: await client.methodTreeLimits() });
+const created = await client.createMethod({ name: "Greeter", tree });
 
 // A saved method has a draft, written freely and never validated, and immutable published
-// versions. `updated_at` is the draft's token: echo it so no write or publish takes a draft
-// you have not seen.
+// versions. A draft write replaces the whole tree. `updated_at` is the draft's token: echo it so
+// no write or publish takes a draft you have not seen.
 const draft = await client.writeDraft(created.method_id, {
-  mthds: "domain = 'demo'\n",
+  contents: { "main.mthds": "domain = 'demo'\n" },
   expected_updated_at: created.updated_at,
 });
 const published = await client.publishMethod(created.method_id, {
@@ -140,6 +145,9 @@ if (published.outcome === "refused") console.error(published.message, published.
 else console.log(`version ${published.version.version}`); // "published" or "unchanged"
 const versions = await client.listMethodVersions(created.method_id); // newest first
 const { method_id, version } = parseMethodSelector("mt_abc123@3"); // the method routes take a bare id
+// A read lists the tree's files with short-lived links; write them to disk, checked (Node only).
+const detail = await client.getMethod(created.method_id);
+await client.writeMethodTree(detail.files, { destination: "greeter-draft" });
 
 // A saved example is a named set of inputs with the latest run of exactly those inputs. Record a
 // run against the revision whose inputs it used: an edit since answers `stale`, never an error.
@@ -244,6 +252,7 @@ These pages ship inside the published package, so a reader who has only installe
 | [`docs/artifact-download.md`](./docs/artifact-download.md) | Turning the `pipelex-storage://` references a run produced back into bytes: `locateArtifacts`, `collectArtifacts`, `resolveArtifacts`, `fetchArtifact`, `downloadArtifacts`, and how a saved file is named after the field it fills |
 | [`docs/input-preparation.md`](./docs/input-preparation.md) | The other direction — `uploadFile` and `prepareInputs`, which turn local files into references a run can take, and the upload grant a browser page sends a file with |
 | [`docs/bundle-resources.md`](./docs/bundle-resources.md) | Sending the files a bundle's steps read, such as a `PipeDocGen` step's template, as `resources` beside its `.mthds` contents: where they go, what is refused and by whom, and the template check's warnings |
+| [`docs/method-trees.md`](./docs/method-trees.md) | A saved method's tree: the three forms a save takes it in, how it travels inline or by hash and what is uploaded, the deployment's limits, the read's listing with its links, `writeMethodTree`, and `MethodFileTransferError` |
 | [`docs/method-examples.md`](./docs/method-examples.md) | A method's saved examples: the create, the paged list and its iterator, the edit that raises the input revision, the latest-run write and its `recorded` or `stale` verdict, how an integer past `Number.MAX_SAFE_INTEGER` in the inputs stays exact, and what is refused before sending |
 | [`docs/exact-integers.md`](./docs/exact-integers.md) | Which reads keep an integer past `Number.MAX_SAFE_INTEGER` exact, as a `bigint` (a run's inputs and outputs, an example's inputs), how a request body writes it back with its digits, and `parseExactJson` and `stringifyExactJson` for code showing such data as JSON text |
 | [`docs/crate-routes.md`](./docs/crate-routes.md) | `resolve`, `codegen` and `pipeIo` — the normalized crate, the stamped types, and a method's I/O artifacts without a validation — and the offline `runCodegenCheck` that guards a committed tree |
