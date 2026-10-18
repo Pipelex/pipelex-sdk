@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **The CLI's test client declares `api_key`**: the `FakeClient` in `cli-python`'s `tests/support.py` carries the API key a client sends, which `pipelex-sdk`'s `prepare_inputs` reads from its next release on to tell a missing credential from a refused one.
 - **Both templates run on the SDK 0.45.0, and the web app on `@pipelex/mthds-form` 0.17.1**: `@pipelex/sdk` in the web app and `pipelex-sdk` in the CLI, with `mthds` 0.22.0 in the CLI, bumped from 0.39.0, `mthds` 0.21.0 and the kernel 0.10.0, and `npm ls mthds` now lists one copy in the web app, where it listed the form kernel's and the SDK's apart. In the web app, a result holding an integer past `Number.MAX_SAFE_INTEGER` arrives exact rather than rounded, so a generated schema expecting a number refuses it by name; each file in a result gains its own download button, an HTML result shows as one page with a "Download PDF" control and its stored pictures painted through the assets route, the JSON receipt stays beside the rendered result, an optional structure stays closed until the "+ N optional" disclosure opens it, a half-filled one holds the run back, and every tapped control is at least 44 pixels square on a phone. The CLI puts on the wire what it did, since the kernel's payload rules did not change, and its refusal of a value no file input takes now names the input's position; `mthds` 0.22.0 reports MTHDS standard 7.0.0, which neither template reads, and the SDK's other changes in between reach nothing either calls.
 
 ## [v0.41.0] - 2026-10-13

@@ -1,12 +1,16 @@
-"""Pipelex's narrowing of the MTHDS `POST /v1/validate` 200-diagnostic union.
+"""Pipelex's `POST /v1/validate` 200-diagnostic union, the hosted twin of the MTHDS one.
 
 The MTHDS Protocol layer (`mthds.protocol.models`) declares the brand-neutral verdict
 shapes: `ValidationReport` (`is_valid: true`), `InvalidValidationReport` (`is_valid: false`),
-the `ValidationResult` discriminated union, and the neutral `ValidationDiagnostic` item.
-The Pipelex runtime *narrows* those with its structural artifacts and its closed
-`ValidationErrorCategory` vocabulary.
+and the `ValidationResult` discriminated union, whose faults and warnings are the standard's
+`ProblemItem`s under registered codes. The hosted plane answers `validate` in its own shape today,
+which predates those items: the faults ride `validation_errors[]` as Pipelex items under the closed
+`ValidationErrorCategory` vocabulary, and the valid arm carries the runtime's structural artifacts.
+So the two arms here stand alone rather than narrowing the standard's, which name their faults
+`errors` and type them as problem items, and they move to the standard's shape with the hosted
+plane itself.
 
-These narrowings are **Pipelex-branded implementation envelopes**, so they live here in
+These shapes are **Pipelex-branded implementation envelopes**, so they live here in
 `pipelex-sdk`, not in the brand-neutral `mthds` package — mirroring `pipelex-sdk-js/src/models.ts`
 and the documented brand boundary (`docs/architecture.md` → "Brand boundary"). The report/union
 types carry the `Pipelex` prefix; the supporting types (`DryRunStatus`, `ValidatedPipeEntry`,
@@ -29,9 +33,8 @@ only be a copy.
 
 Strictness composes rather than spreads. The imported artifacts are **closed** shapes
 (`extra="forbid"`) — a member this `mthds` version does not define is version drift, refused at the
-parse — while the report envelope around them stays extension-open (`extra="allow"`, inherited from
-`ValidationReport`), so an unrelated field a future server adds to the report still parses and still
-rides `model_extra`.
+parse — while the report envelope around them stays extension-open (`extra="allow"`), so an
+unrelated field a future server adds to the report still parses and still rides `model_extra`.
 
 `PipelexAPIClient.validate()` returns this `PipelexValidationResult` (parsed via
 `PipelexValidationResultAdapter`); the protocol base `MthdsAPIClient.validate()` returns the
@@ -44,7 +47,6 @@ from enum import StrEnum
 from typing import Annotated, Any, Final, Literal, TypeAlias
 
 from mthds.protocol.input_form import InputForm
-from mthds.protocol.models import InvalidValidationReport, ValidationDiagnostic, ValidationReport
 from mthds.protocol.output_form import OutputForm
 from mthds.protocol.pipe_io_contracts import PipeIOContracts
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -264,13 +266,14 @@ class ValidatedPipeEntry(BaseModel):
     status: DryRunStatus
 
 
-class ValidationErrorItem(ValidationDiagnostic):
-    """Pipelex's structured `validation_errors[]` item — narrows the protocol base.
+class ValidationErrorItem(BaseModel):
+    """Pipelex's structured `validation_errors[]` item.
 
-    `category` narrows to the closed `ValidationErrorCategory` set; the locators are
-    populated per category and dropped from the wire when unset. Built by pipelex's
-    one shared builder, so the hosted `InvalidReport` and the agent-CLI envelope
-    cannot drift.
+    `category` is the closed `ValidationErrorCategory` set and `message` the fault in words; the
+    locators are populated per category and dropped from the wire when unset. Members this
+    version does not name ride `model_extra`. Built by pipelex's one shared builder, so the hosted
+    `InvalidReport` and the agent-CLI envelope cannot drift. The shape is the hosted plane's, which
+    predates the standard's `ProblemItem`, so it stands alone rather than extending it.
 
     The same item type serves `PipelexValidationReport.warnings[]`, where the locators are
     serialized as explicit `null` rather than dropped. Every optional member is therefore
@@ -278,7 +281,10 @@ class ValidationErrorItem(ValidationDiagnostic):
     same `None`, and tightening any of them to required would break the valid arm.
     """
 
-    category: ValidationErrorCategory  # pyright: ignore[reportIncompatibleVariableOverride]
+    model_config = ConfigDict(extra="allow")
+
+    category: ValidationErrorCategory
+    message: str
     error_type: str | None = None
     """Deliberately an open string, not an enum: the runtime union keeps gaining advisory
     members (the `hint_*` lint types), and closing it here would turn every runtime addition
@@ -299,9 +305,15 @@ class ValidationErrorItem(ValidationDiagnostic):
     one; absent otherwise."""
 
 
-class PipelexValidationReport(ValidationReport):
-    """The valid arm narrowed with pipelex's structural artifacts (`is_valid: true`)."""
+class PipelexValidationReport(BaseModel):
+    """The valid arm with pipelex's structural artifacts (`is_valid: true`).
 
+    Extension-open: a member a later server adds rides `model_extra`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    is_valid: Literal[True] = True
     bundle_blueprint: dict[str, Any] = Field(default_factory=dict)
     """The parsed bundle, carried opaquely: no published package declares its shape, so a type
     here could only be a copy free to drift from the runtime that emits it."""
@@ -394,12 +406,23 @@ class PipelexValidationReport(ValidationReport):
     present only when the request asked for it (`render: ["markdown"]`); absent (None) otherwise."""
 
 
-class PipelexInvalidReport(InvalidValidationReport[ValidationErrorItem]):
+class PipelexInvalidReport(BaseModel):
     """The invalid arm carrying pipelex's structured `validation_errors[]` (`is_valid: false`).
 
-    It gains none of the valid arm's additions: `warnings` and `input_form` derive from a crate
-    that was never assembled, so the invalid arm never carries them.
+    It carries the per-error items (`validation_errors[]`, always non-empty on an invalid verdict),
+    best-effort `pending_signatures`, `is_runnable: false` and a human-readable `message`. It gains
+    none of the valid arm's additions: `warnings` and `input_form` derive from a crate that was
+    never assembled, so the invalid arm never carries them. Extension-open: a member a later server
+    adds rides `model_extra`.
     """
+
+    model_config = ConfigDict(extra="allow")
+
+    is_valid: Literal[False] = False
+    validation_errors: list[ValidationErrorItem]
+    pending_signatures: list[str] = Field(default_factory=list)
+    is_runnable: Literal[False] = False
+    message: str
 
     rendered_markdown: str | None = None
     """Opt-in Pipelex-API presentation extra: the server-rendered Markdown view of the invalid

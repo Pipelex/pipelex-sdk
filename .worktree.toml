@@ -10,3 +10,6 @@
 # release workflow from `dev`, never from `main` (docs/release-model.md), and the workflow
 # refuses any package but `@pipelex/sdk` and any version other than the one it computes.
 prerelease = "gh workflow run release.yml --repo Pipelex/pipelex-sdk --ref dev -f sha={sha} -f package={package} -f version={version}"
+
+[pins.mthds]
+site = "python/pyproject.toml"

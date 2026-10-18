@@ -52,8 +52,8 @@ import type { ValidationErrorItem } from "./models.js";
  *
  * Known `kind` values: `wait_and_retry`, `check_billing`, `check_credentials`, `change_input`,
  * `change_model`, `contact_support`, `unknown`. The set is the runner's, so it is typed open.
- * The shape is the one `mthds`'s `UserAction` declares, so a value moves between the two
- * clients' errors unchanged.
+ * It is the hosted plane's own member, which predates the standard's problem document: there the
+ * next step is the problem's `next_step`, whose `kind` is a closed list of its own.
  */
 export interface UserAction {
   kind: string;
@@ -219,10 +219,10 @@ export interface FieldError {
  * failure. Every member is optional — a server sends what it knows, and a body that is not a
  * problem document carries none of them.
  *
- * It is a superset of `mthds`'s `ProblemDetails`, member for member under the same names, so a
- * consumer reads one vocabulary whichever client raised the error; the members past that set
- * (`errorCategory`, `model`, `provider`, `providerMetadata`, `migration`, `errors`) are the ones
- * the standard's client leaves to this SDK.
+ * These are the hosted plane's members, which predate the standard's problem document: the
+ * standard's reading of the same answer is `ApiResponseError.problem`, and the two never share a
+ * slot, so the platform's field-level `errors` here and the problem items of `problem.errors`
+ * stay apart.
  */
 export interface ProblemDetails {
   /** RFC 9457 `type` — the stable URI of the error class. */

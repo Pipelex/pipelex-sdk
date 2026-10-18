@@ -20,8 +20,12 @@
  * - The next-SDK twin, `<slug>-next-sdk-<file>`, runs the same jobs on a
  *   pull-request trigger of its own, and after the template's install step it
  *   installs the SDK the template depends on, built from the same commit, over
- *   the registry's copy. It is reported, not required. A template that depends
- *   on no SDK, and a workflow with no install step, get none.
+ *   the registry's copy, with the base the SDK's own lockfile resolves: a
+ *   Python wheel names its base by version alone, so the `mthds` of the SDK's
+ *   `uv.lock` is installed beside it, which is a git commit while the lock pins
+ *   one and the registry's release otherwise. It is reported, not required. A
+ *   template that depends on no SDK, and a workflow with no install step, get
+ *   none.
  *
  *   node scripts/workflows.mjs <template>...          write every twin
  *   node scripts/workflows.mjs --check <template>...  exit 1 on a missing, stale or orphaned twin
@@ -75,11 +79,16 @@ export const TWIN_MARKER = "# Rendered by `make workflows` from ";
 
 /**
  * The SDKs a template can depend on, each with the directory it is built from.
- * A template's next-SDK twin installs the one it depends on.
+ * A template's next-SDK twin installs the one it depends on. A Python SDK names
+ * its `lockedBase`, the package its wheel requires by version alone, which the
+ * twin installs as the SDK's `uv.lock` resolves it, so that the template runs
+ * the SDK with the base it was locked against, a git commit included. An npm
+ * SDK's tarball carries its dependencies' specifiers as written, a `github:`
+ * one included, which npm installs and builds itself.
  */
 export const SDKS = [
   { package: "@pipelex/sdk", ecosystem: "npm", dir: "js" },
-  { package: "pipelex-sdk", ecosystem: "pypi", dir: "python" },
+  { package: "pipelex-sdk", ecosystem: "pypi", dir: "python", lockedBase: "mthds" },
 ];
 
 export class TwinError extends Error {
@@ -361,7 +370,10 @@ function extractionStep(template, dash) {
 /**
  * The step that installs the SDK built from this commit over the registry's copy. The SDK is
  * installed the way its own CI job installs it, `make install` in its directory, rather than
- * with `npm ci`, which the runner's bundled npm refuses on the SDK's lockfile.
+ * with `npm ci`, which the runner's bundled npm refuses on the SDK's lockfile. A Python SDK's
+ * locked base is exported from its `uv.lock` and reinstalled with the wheel, since the template's
+ * environment already holds the registry's release of that version, which the wheel's metadata
+ * alone would keep.
  */
 function nextSdkStep(sdk, dash) {
   const at = " ".repeat(dash);
@@ -375,11 +387,13 @@ function nextSdkStep(sdk, dash) {
       `${at}    npm install --no-save "$RUNNER_TEMP"/next-sdk/*.tgz`,
     ];
   }
+  const base = sdk.lockedBase;
   return [
     name,
     `${at}  run: |`,
     `${at}    uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/${sdk.dir}"`,
-    `${at}    uv pip install --python .venv/bin/python --reinstall-package ${sdk.package} "$RUNNER_TEMP"/next-sdk/*.whl`,
+    `${at}    uv export --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project --project "$GITHUB_WORKSPACE/${sdk.dir}" | grep -E '^${base}( |=|@)' > "$RUNNER_TEMP/next-sdk/${base}.txt"`,
+    `${at}    uv pip install --python .venv/bin/python --reinstall-package ${sdk.package} --reinstall-package ${base} -r "$RUNNER_TEMP/next-sdk/${base}.txt" "$RUNNER_TEMP"/next-sdk/*.whl`,
   ];
 }
 

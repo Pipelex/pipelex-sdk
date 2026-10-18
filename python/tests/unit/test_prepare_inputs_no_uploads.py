@@ -44,6 +44,7 @@ class _FakeClient:
     """`pipe_io` answers one pipe's descriptor and records the request; `upload` counts its calls."""
 
     def __init__(self, *fields: InputFormField) -> None:
+        self.api_key = "test-token"
         self._report = PipeIOValidReport(
             is_valid=True,
             pipe_ref=_PIPE_REF,

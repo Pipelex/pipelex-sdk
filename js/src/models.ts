@@ -12,11 +12,9 @@
 import type {
   InputForm,
   OutputForm,
-  InvalidValidationReport,
   PipeIOContracts,
   RunResultExecute,
   RunResultStart,
-  ValidationReport,
 } from "mthds/protocol";
 import type { BundleResources } from "./bundle-resources.js";
 
@@ -127,12 +125,20 @@ export interface PipelexHostedToolingExtensions {
 // ── Validate surface (Pipelex-API extensions over the protocol) ──────────
 //
 // `POST /v1/validate` is a diagnostic endpoint: every produced verdict rides a
-// 200, discriminated on `is_valid` (the protocol's `ValidationResult` union).
-// The Pipelex API narrows both arms: the VALID arm is the canonical
-// `PipelexValidationReport`; the INVALID arm is `PipelexInvalidReport`, carrying
-// a structured `validation_errors[]` list. Non-2xx is reserved for no-verdict
-// conditions (a malformed request, an `mthds_sources` length mismatch, auth, a
-// server fault), surfaced as `ApiResponseError`.
+// 200, discriminated on `is_valid`. The Pipelex API answers both arms in its own
+// shape: the VALID arm is the canonical `PipelexValidationReport`; the INVALID arm
+// is `PipelexInvalidReport`, carrying a structured `validation_errors[]` list.
+// Non-2xx is reserved for no-verdict conditions (a malformed request, an
+// `mthds_sources` length mismatch, auth, a server fault), surfaced as
+// `ApiResponseError`.
+//
+// Both arms are declared here whole rather than as extensions of the protocol's
+// `ValidationReport` and `InvalidValidationReport`. Since protocol `2.0.0` those
+// list each fault and each warning as a problem item (`errors[]`, `warnings[]` of
+// `ProblemItem`), while the hosted plane still answers the verdict it answered
+// before, faults in `validation_errors[]` and warnings as `ValidationErrorItem`s,
+// until the hosted plane itself moves to problem documents. Narrowing the
+// protocol's arms would claim members the hosted answer does not carry.
 
 /**
  * The method selector the tooling routes take in place of inline contents: a
@@ -178,9 +184,9 @@ export interface LiftablePipeEntry {
 
 /**
  * Pipelex's `POST /v1/validate` 200 body for a VALID bundle — the canonical
- * `PipelexValidationReport` (typed extension over the protocol's `ValidationReport`,
- * carrying its `is_valid: true` discriminant) plus the route's wire-only extras
- * (`message`, the `mthds_contents` echo). Field names follow the MTHDS brand
+ * `PipelexValidationReport`, carrying the `is_valid: true` discriminant of the
+ * protocol's union, plus the route's wire-only extras (`message`, the
+ * `mthds_contents` echo). Field names follow the MTHDS brand
  * boundary — blueprints/graphs are language artifacts, so no `pipelex_` prefix
  * inside this envelope.
  *
@@ -199,9 +205,11 @@ export interface LiftablePipeEntry {
  * / `unknown`): their canonical schemas are owned elsewhere — the runtime's blueprint
  * models, and `@pipelex/mthds-ui`'s `GraphSpec` — and neither has a wire declaration in
  * the standard for this SDK to import. Each narrows on the day one exists.
- * Inherits the extension index signature, so any further server field is preserved.
+ * Carries an extension index signature, so any further server field is preserved.
  */
-export interface PipelexValidationReport extends ValidationReport {
+export interface PipelexValidationReport {
+  /** Discriminant of the valid arm of the 200 response union. */
+  is_valid: true;
   /** The batch's primary blueprint (first declaring `main_pipe`, else first). */
   bundle_blueprint: Record<string, unknown>;
   /**
@@ -295,19 +303,29 @@ export interface PipelexValidationReport extends ValidationReport {
    * matches the local CLI's `--format markdown` output in format/structure.
    */
   rendered_markdown?: string;
+  /** Further implementation extension fields, preserved as the server sent them. */
+  [extension: string]: unknown;
 }
 
 /**
  * Pipelex's `POST /v1/validate` 200 body for an INVALID bundle — the `is_valid: false`
- * arm of the response union, narrowing the protocol's `InvalidValidationReport` to the
- * closed-vocabulary `ValidationErrorItem[]`. The structural artifacts of the valid arm
+ * arm of the response union, carrying the closed-vocabulary `ValidationErrorItem[]`.
+ * The structural artifacts of the valid arm
  * are absent (they don't exist when load/parse/wiring failed); `validation_errors[]` is
  * non-empty on every invalid verdict (the structured-info invariant — even a parse-level
  * failure carries one source-less `blueprint_validation` residual).
  */
-export interface PipelexInvalidReport extends InvalidValidationReport {
+export interface PipelexInvalidReport {
+  /** Discriminant of the invalid arm. */
+  is_valid: false;
   /** Structured per-error diagnostics, built by pipelex's one shared builder. */
   validation_errors: ValidationErrorItem[];
+  /** Outstanding signatures (best-effort; empty when no library could be assembled). */
+  pending_signatures: string[];
+  /** An invalid bundle is never runnable. */
+  is_runnable: false;
+  /** Human-readable summary of the verdict. */
+  message: string;
   /**
    * Opt-in Pipelex-API presentation extra: the server-rendered Markdown view of the
    * invalid verdict (`# Validation failed` + the `validation_errors`), present only
@@ -318,8 +336,9 @@ export interface PipelexInvalidReport extends InvalidValidationReport {
 
 /**
  * The Pipelex `POST /v1/validate` 200 response — the discriminated union the
- * `PipelexApiClient.validate` returns, keyed on `is_valid`. Narrows the protocol's
- * `ValidationResult` to Pipelex's typed arms.
+ * `PipelexApiClient.validate` returns, keyed on `is_valid`, as the protocol's
+ * `ValidationResult` is. Its arms are Pipelex's own, the verdict the hosted plane
+ * answers, not narrowings of the protocol's (see the section's heading above).
  */
 export type PipelexValidationResult = PipelexValidationReport | PipelexInvalidReport;
 
@@ -341,25 +360,19 @@ export type ValidationErrorCategory =
  * when the runner refuses the method for its validation errors
  * (`ApiResponseError.validationErrors`), and by a failed run's stored report.
  *
- * **The shape is `mthds`'s.** The standard's client declares the same item, member for
- * member under the same names, and a consumer reads one vocabulary whichever client
- * handed it the item. It is restated here rather than imported because `mthds` exports it
- * only from its package root, which this SDK does not import (it takes `mthds` through
- * `mthds/protocol` alone, the rule `.dependency-cruiser.cjs` enforces); a type-level test
- * (`tests/validation-items.test.ts`) pins this declaration and `SuggestedFix`'s to the
- * standard's, so a member added on one side and not the other fails the typecheck. The
- * one difference it allows is the pair of template-check locators, `template_file` and
- * `template_location`, which the runner's item carries and the `mthds` this SDK depends on
- * does not declare yet; the test pins that difference too, so it fails the day `mthds`
- * declares them.
+ * **The shape is the hosted plane's.** It is the item the runner sends today, which
+ * predates the standard's problem items: from protocol 2.0.0 a verdict lists its faults
+ * as `ProblemItem`s under a registry `code`, which the hosted plane does not send yet, so
+ * this declaration is not the standard's and is not pinned to it. Its fix shares the
+ * standard's operation and safety vocabularies, which `tests/validation-items.test.ts`
+ * pins.
  *
  * Only `category` and `message` are always present; the rest are populated per
- * `category`. Every other member is `?: T | null` — the one way this declaration
- * differs from `mthds`'s — because the two channels serialize an unset locator
- * differently: the invalid arm and the crate routes drop the key (`exclude_none`
- * server-side) while the valid arm — which carries `warnings[]` — does not, so the same
- * item arrives with explicit `null`s there. A truthiness check reads both; an
- * `=== undefined` check would be wrong on one of them.
+ * `category`. Every other member is `?: T | null` because the two channels serialize an
+ * unset locator differently: the invalid arm and the crate routes drop the key
+ * (`exclude_none` server-side) while the valid arm — which carries `warnings[]` — does
+ * not, so the same item arrives with explicit `null`s there. A truthiness check reads
+ * both; an `=== undefined` check would be wrong on one of them.
  *
  * `source` is the declaring file path (CLI) or the per-content `mthds_sources` name
  * the API threads onto the in-memory load path — the owning file for cross-file
@@ -522,9 +535,11 @@ export type FixOp =
  * mirror of pipelex's `SuggestedFix`. The ops are semantic patches over the `.mthds`
  * document, not a text diff, so an applier keeps the author's formatting.
  *
- * The shape is `mthds`'s `SuggestedFix`, its op vocabulary included (this SDK's
- * `TomlValue` is the standard's `FixValue`), restated and pinned for the reason
- * `ValidationErrorItem` gives; `source` alone is widened to `| null`.
+ * The shape is the hosted plane's, as `ValidationErrorItem`'s is: the standard's
+ * `SuggestedFix` names the file `file` rather than `source` and is open to members it does
+ * not declare. Its operation kinds, its safeties and the values a `set_key` writes are the
+ * standard's (this SDK's `TomlValue` is the standard's `FixValue`), and a type-level test
+ * pins them.
  */
 export interface SuggestedFix {
   /** The kebab-case rule id, e.g. `"match-sequence-output"`. */
