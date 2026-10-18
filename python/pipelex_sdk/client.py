@@ -33,7 +33,6 @@ from urllib.parse import quote, urlencode, urlparse, urlsplit
 import httpx
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import RunResultStart
-from mthds.protocol.problem.answers import decode_json
 from mthds.protocol.problem.client_problems import make_client_problem
 from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.client import MthdsAPIClient
@@ -44,6 +43,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import to_json
 from typing_extensions import override
 
+from pipelex_sdk._answer_json import decode_json_as_written
 from pipelex_sdk.artifact_models import (
     BulkResolvedStorageUrls,
     DownloadArtifactsOptions,
@@ -3496,9 +3496,10 @@ def _decoded_answer(response: httpx.Response) -> Any:
     """A 2xx answer's body decoded as JSON by the rules the protocol decodes every body by.
 
     The bytes are read as text in the encoding JSON's own detection finds (`json.detect_encoding`, UTF-8
-    unless the body is UTF-16 or UTF-32), as `response.json()` reads them, and the text is decoded by the
-    base's guarded decoder (`mthds.protocol.problem.answers.decode_json`), its numbers kept as written as
-    the base keeps a success body's. That decoder refuses a body nested deeper than `MAX_BODY_NESTING`,
+    unless the body is UTF-16 or UTF-32), as `response.json()` reads them, and the text is decoded by
+    `decode_json_as_written` (`pipelex_sdk._answer_json`): the guards of the base's problem decoder,
+    `mthds.protocol.problem.answers.decode_json`, with the numbers kept as written, as the base keeps a
+    success body's. It refuses a body nested deeper than `MAX_BODY_NESTING`,
     the constants `NaN` and `Infinity` and a number past the range of a double, all of which
     `response.json()` accepts or, for the nesting, fails on with a `RecursionError`. A body it refuses is
     raised as the `json.JSONDecodeError` of a body that is not JSON, so every reader names it so;
@@ -3510,7 +3511,7 @@ def _decoded_answer(response: httpx.Response) -> Any:
     """
     content = response.content
     text = content.decode(json.detect_encoding(content), "surrogatepass")
-    decoded = decode_json(text, numbers_as_written=True)
+    decoded = decode_json_as_written(text)
     if not decoded.is_json:
         msg = "The body is not JSON the protocol reads: it does not parse, nests too deeply, or holds a number JSON does not define"
         raise json.JSONDecodeError(msg, text, 0)

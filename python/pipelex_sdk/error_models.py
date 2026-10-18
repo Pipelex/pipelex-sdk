@@ -55,10 +55,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Any, Self, TypeAlias, TypeVar, cast
 
-from mthds.protocol.problem.answers import decode_json
 from mthds.runners.api.problem import REQUEST_ID_HEADER
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, ValidatorFunctionWrapHandler, WrapValidator, field_validator
 
+from pipelex_sdk._answer_json import decode_json_as_written
 from pipelex_sdk._pydantic_utils import none_when_it_does_not_fit
 from pipelex_sdk.validation_models import ValidationErrorItem
 
@@ -355,13 +355,12 @@ _FIELD_ERRORS_ADAPTER: TypeAdapter[list[FieldError]] = TypeAdapter(list[FieldErr
 def _decode_object(body: str) -> dict[str, Any] | None:
     """Decode a body into its JSON object, or `None` for an empty, non-JSON or non-object body.
 
-    The body is decoded by the base's guarded decoder (`mthds.protocol.problem.answers.decode_json`),
-    which reads the same answer's `problem` too, its numbers kept as written: a body nested deeper than
-    the protocol's limit, or holding `NaN`, `Infinity` or a number past the range of a double, is no JSON
-    and carries no member, where `json.loads` would accept the constants and raise `RecursionError` on
-    the nesting. `@pipelex/sdk` reads a refusal's body by the same rules.
+    The body is decoded by `decode_json_as_written`, the base's guards with the numbers kept as
+    written: a body nested deeper than the protocol's limit, or holding `NaN`, `Infinity` or a number
+    past the range of a double, is no JSON and carries no member. `@pipelex/sdk` reads a refusal's body
+    by the same rules.
     """
-    decoded = decode_json(body, numbers_as_written=True)
+    decoded = decode_json_as_written(body)
     value: object = decoded.value
     if not decoded.is_json or not isinstance(value, dict):
         return None
