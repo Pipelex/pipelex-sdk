@@ -1,7 +1,8 @@
 """Tests for the answers the client cannot read: a 2xx whose body is not JSON, not UTF-8, empty where JSON was
 expected, JSON that is not an object where the route answers one, or JSON that is not what the route returns.
 Each is raised as the `ApiResponseError` whose verdict the fallback reads from the 2xx, `runtime` and not
-retryable, the parse failure as its `__cause__`, as `@pipelex/sdk` throws it.
+retryable, the parse failure as its `__cause__`, as `@pipelex/sdk` throws it. An answer carrying signed links
+chains a redacted copy of a pydantic refusal, and nothing for a body that is not JSON, whose failure holds it whole.
 
 Every request goes through an `httpx.MockTransport`, below `_send`, so the protocol routes the client
 inherits from `mthds`, which parse their answer themselves, meet it as they would on the wire.
@@ -75,6 +76,9 @@ _ROUTES: list[tuple[str, _Call, str]] = [
     ("get_run_detail", lambda client: client.get_run_detail("run-1"), "GET /v1/runs/run-1"),
 ]
 _ROUTE_PARAMS = [pytest.param(call, route, id=name) for name, call, route in _ROUTES]
+
+# The routes whose answer carries signed links, a method's listing, so that no failure holding the body is chained.
+_LINK_BEARING_ROUTES = frozenset({"GET /v1/methods/m1"})
 
 # The routes that answer a list rather than an object. JSON that is not a list, an object included, is not their
 # answer, and the message says so rather than calling it JSON that is not an object.
@@ -190,7 +194,11 @@ class TestClientUnreadableAnswer:
         assert unreadable.request_id == _REQUEST_ID
         assert unreadable.problem_document is None
         assert unreadable.server_message is None
-        assert isinstance(unreadable.__cause__, json.JSONDecodeError)
+        if route in _LINK_BEARING_ROUTES:
+            assert unreadable.__cause__ is None
+            assert unreadable.__context__ is None
+        else:
+            assert isinstance(unreadable.__cause__, json.JSONDecodeError)
         # A 2xx is no refusal the fallback names: runtime, and nothing says a retry helps.
         assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
 
@@ -206,7 +214,12 @@ class TestClientUnreadableAnswer:
         assert unreadable.status == status
         assert unreadable.request_id == _REQUEST_ID
         assert unreadable.problem_document is None
-        assert isinstance(unreadable.__cause__, json.JSONDecodeError)
+        if route in _LINK_BEARING_ROUTES:
+            # The decoder's failure holds the whole document, its links among them, so none is chained.
+            assert unreadable.__cause__ is None
+            assert unreadable.__context__ is None
+        else:
+            assert isinstance(unreadable.__cause__, json.JSONDecodeError)
         assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
 
     @pytest.mark.parametrize(("call", "route"), _OBJECT_ROUTE_PARAMS)

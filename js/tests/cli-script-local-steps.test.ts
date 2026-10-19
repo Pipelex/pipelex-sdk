@@ -51,10 +51,17 @@ const CATALOG_ENTRY = {
   org_id: "org_1",
   created_by_user_id: "user_1",
   name: "Receipt Review",
-  mthds: 'domain = "receipts"\nmain_pipe = "review_receipt"\n',
-  python: "",
   created_at: "2026-10-01T09:00:00Z",
   updated_at: "2026-10-01T09:00:00Z",
+  files: [
+    {
+      path: "main.mthds",
+      sha256: "4f".repeat(32),
+      size: 46,
+      url: "https://storage.example/blobs/4f",
+      expires_at: "2026-10-01T09:15:00Z",
+    },
+  ],
 };
 
 function jsonResponse(status: number, body: unknown): Response {

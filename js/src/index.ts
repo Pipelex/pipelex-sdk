@@ -37,8 +37,20 @@ export type {
 } from "./client.js";
 export type { BundleResourceBytes, BundleResources } from "./bundle-resources.js";
 
-// Canonical parser: a stored method's polymorphic `MethodData.mthds` source → bundle contents.
-export { methodSourceToContents } from "./method-source.js";
+// A saved method's tree: the source a save reads a tree from (the `mthds` package's `MethodTree`
+// is one), the limits `methodTreeLimits` reports, the blob routes a large tree travels through,
+// and the inline threshold below which a tree travels whole.
+export { INLINE_TREE_MAX_BYTES } from "./method-trees.js";
+export type {
+  BlobRef,
+  MethodTreeLimits,
+  MethodTreeSource,
+  MethodTreeSourceFile,
+  MissingBlob,
+  MissingBlobsRequest,
+  MissingBlobsResult,
+  UploadTarget,
+} from "./method-trees.js";
 // A method selector (`mt_…`, `mt_…@<n>`, `mt_…@draft`) → its bare id and the version it names.
 export { parseMethodSelector } from "./method-selector.js";
 export type { ParsedMethodSelector } from "./method-selector.js";
@@ -195,6 +207,7 @@ export type {
   MethodData,
   MethodDeletionAccepted,
   MethodDeletionState,
+  MethodDetail,
   MethodDraftInput,
   MethodExample,
   MethodExampleCreateInput,
@@ -215,10 +228,12 @@ export type {
   MethodPublishUnchanged,
   MethodRenameInput,
   MethodSummary,
+  MethodTreeInput,
   MethodVersion,
   MethodVersionPage,
   MethodVersionSummary,
   MethodWriteInput,
+  SavedMethodFile,
   Membership,
   MembershipsResponse,
   OrgRole,
@@ -309,7 +324,6 @@ export {
   RunStillRunningError,
   RunLifecycleUnavailableError,
   InputPreparationError,
-  EmptyMethodSourceError,
   InvalidLocalSourceError,
   InvalidInputValueError,
   UploadNotAllowedError,
@@ -322,6 +336,7 @@ export {
   ArtifactAuthenticationError,
   ArtifactFetchError,
   ScopeUnavailableError,
+  MethodFileTransferError,
 } from "./errors.js";
 export type {
   ApiResponseErrorOptions,
@@ -329,6 +344,8 @@ export type {
   ErrorVerdict,
   IdempotencyErrorCode,
   MethodErrorCode,
+  MethodFileTransferCode,
+  MethodFileTransferOperation,
   RejectedAssetCode,
   UploadNotAllowedKind,
   UploadTransportCode,
