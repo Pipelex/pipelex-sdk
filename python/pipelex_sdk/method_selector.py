@@ -21,7 +21,7 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from pipelex_sdk.errors import RequestArgumentError
+from pipelex_sdk.errors import RequestArgumentError, argument_invalid_problem
 
 #: A catalog id, which never contains an `@`. Explicit ASCII classes: `\w` and `\d` would admit
 #: Unicode letters and digits the platform refuses.
@@ -67,22 +67,22 @@ def parse_method_selector(selector: str) -> ParsedMethodSelector:
     candidate = cast("object", selector)
     if not isinstance(candidate, str):
         msg = f"parse_method_selector() takes a method selector string (mt_…); got {type(candidate).__name__}."
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="selector", reason="not_a_string"))
     method_id, separator, suffix = selector.partition("@")
     if _METHOD_ID_PATTERN.fullmatch(method_id) is None:
         msg = f'"{selector}" is not a method selector: a catalog id is mt_ followed by letters, digits, _ or -.'
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="selector", reason="not_a_catalog_id"))
     if not separator:
         return ParsedMethodSelector(method_id=method_id, version=None)
     if suffix == _DRAFT_SUFFIX:
         return ParsedMethodSelector(method_id=method_id, version="draft")
     if _VERSION_PATTERN.fullmatch(suffix) is None:
         msg = f'"{selector}" names no version: the suffix of a catalog id is @<version>, a positive number without a leading zero, or @draft.'
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="selector", reason="not_a_version"))
     try:
         version = int(suffix)
     except ValueError as exc:
         # Only past the interpreter's integer-string conversion limit, thousands of digits long.
         msg = f'"{selector}" names a version number too long to read.'
-        raise RequestArgumentError(msg) from exc
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="selector", reason="version_too_long")) from exc
     return ParsedMethodSelector(method_id=method_id, version=version)

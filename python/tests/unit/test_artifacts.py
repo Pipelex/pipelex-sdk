@@ -79,14 +79,16 @@ _ARGUMENT_REFUSED = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False
 
 
 class _FakeClient:
-    """The two client methods the artifact operations call, scripted per test and recorded."""
+    """The two client methods the artifact operations call, scripted per test and recorded, and the API key it sends, empty for none."""
 
     def __init__(
         self,
         *,
         resolve: Callable[[list[str]], BulkResolvedStorageUrls] | None = None,
         run_result: RunResultState | None = None,
+        api_key: str = "test-token",
     ) -> None:
+        self.api_key = api_key
         self._resolve = resolve
         self._run_result = run_result
         self.resolve_calls: list[list[str]] = []
@@ -617,6 +619,10 @@ class TestArtifacts:
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read())
         assert caught.value.code == "network"
+        # The standard's transport problem, naming the store by its origin alone: the link's query string is its authorization.
+        assert caught.value.problem.code == "client.unreachable"
+        assert caught.value.problem.params is not None
+        assert caught.value.problem.params.model_dump(exclude_none=True) == {"base_url": _STORE}
 
     @pytest.mark.parametrize(("name", "value"), [("max_bytes", 0), ("timeout_seconds", -1)])
     def test_refuses_nonsense_bounds_before_resolving_anything(self, name: str, value: float) -> None:
@@ -978,14 +984,37 @@ class TestArtifacts:
         assert verdict.saved_paths == []
         assert [artifact.error.code for artifact in verdict.artifacts if artifact.error is not None] == ["aborted", "aborted"]
         assert [artifact.found_at for artifact in verdict.artifacts] == [["$.items[0].url"], ["$.items[1].url"]]
+        # The client sent its key, so the key is what was refused.
+        assert caught.value.problem.code == "auth.invalid_credential"
 
-    def test_raises_a_credential_failure_part_way_through_carrying_the_verdict_so_far(self, mocker: MockerFixture, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_a_credential_failure_of_a_client_without_a_key_is_a_missing_credential(self, tmp_path: Path, status: int) -> None:
+        def _refuse(_: list[str]) -> BulkResolvedStorageUrls:
+            raise _api_error(status)
+
+        client = _FakeClient(resolve=_refuse, api_key="")
+        with pytest.raises(ArtifactAuthenticationError) as caught:
+            asyncio.run(download_artifacts(client, dir_path=tmp_path / "out", results=_results({"doc": _content(_URI_PDF)})))
+
+        assert caught.value.problem.code == "auth.missing_credential"
+        assert (caught.value.error_domain, caught.value.retryable) == ("config", False)
+
+    @pytest.mark.parametrize(
+        ("api_key", "problem_code"),
+        [
+            pytest.param("test-token", "auth.invalid_credential", id="a client sending a key"),
+            pytest.param("", "auth.missing_credential", id="a client sending none"),
+        ],
+    )
+    def test_raises_a_credential_failure_part_way_through_carrying_the_verdict_so_far(
+        self, mocker: MockerFixture, tmp_path: Path, api_key: str, problem_code: str
+    ) -> None:
         def _resolve(uris: list[str]) -> BulkResolvedStorageUrls:
             if len(uris) > 1:
                 return _answer(_resolved(_URI_PDF), _resolved(_URI_PNG, expires_in_seconds=1.0))
             raise _api_error(401)
 
-        client = _FakeClient(resolve=_resolve)
+        client = _FakeClient(resolve=_resolve, api_key=api_key)
         _patch_storage(mocker, _serving(_PDF_BYTES))
         with pytest.raises(ArtifactAuthenticationError) as caught:
             asyncio.run(
@@ -1005,6 +1034,7 @@ class TestArtifacts:
         assert second is not None
         assert second.code == "aborted"
         assert "credential failure" in second.detail
+        assert caught.value.problem.code == problem_code
 
     def test_refuses_a_declared_oversize_and_leaves_nothing_behind(self, mocker: MockerFixture, tmp_path: Path) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))

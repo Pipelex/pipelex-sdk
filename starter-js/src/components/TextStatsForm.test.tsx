@@ -6,6 +6,7 @@ import {
   runTextStatsBlocking,
   startTextStatsRun,
 } from "@/actions/runTextStatsPipeline";
+import { fetchRunProgress } from "@/lib/fetchRunProgress";
 
 // The scaffolded slice's own test, written by hand like the other four examples
 // — `make add-method` emits only the fixture-free action test, deliberately.
@@ -18,6 +19,11 @@ vi.mock("@/actions/runTextStatsPipeline", () => ({
   pollTextStatsRun: vi.fn(),
 }));
 
+// The run timeline's reader, faked so no test fetches anything: the panel
+// follows a durable run through it, and this source serves no progress.
+vi.mock("@/lib/fetchRunProgress", () => ({ fetchRunProgress: vi.fn() }));
+const readProgress = vi.mocked(fetchRunProgress);
+
 const blocking = vi.mocked(runTextStatsBlocking);
 const start = vi.mocked(startTextStatsRun);
 const poll = vi.mocked(pollTextStatsRun);
@@ -27,6 +33,7 @@ beforeEach(() => {
   blocking.mockReset();
   start.mockReset();
   poll.mockReset();
+  readProgress.mockReset().mockResolvedValue({ kind: "unavailable" });
 });
 afterEach(() => vi.useRealTimers());
 
@@ -90,6 +97,8 @@ describe("TextStatsForm", () => {
 
     await flush();
     expect(screen.getByRole("status")).toBeInTheDocument();
+    // The run timeline follows the durable run, by its id.
+    expect(readProgress).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
 
     await flush(2000);
     // The result is rendered from the method's own output contract, so a
@@ -116,6 +125,7 @@ describe("TextStatsForm", () => {
     await flush();
     expect(blocking).toHaveBeenCalledWith({ text: { text: "Some prose." } });
     expect(start).not.toHaveBeenCalled();
+    expect(readProgress).not.toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: "Text statistics" })).toBeInTheDocument();
   });
 

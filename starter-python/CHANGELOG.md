@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.46.0] - 2026-10-19
+
+### Changed
+
+- **The starter runs on `pipelex-sdk` 0.45.0, with `mthds` 0.22.0**: bumped from 0.39.0 and `mthds` 0.21.0. `mthds` 0.22.0 reports MTHDS standard 7.0.0 and Protocol 1.0.0, which nothing in the starter reads, and its other breaking changes sit in the lock, cache and manifest of method packages, which the starter does not use. The SDK's changes in between reach nothing the starter calls.
+
 ## [v0.41.0] - 2026-10-13
 
 ### Changed

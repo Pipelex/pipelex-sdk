@@ -16,6 +16,7 @@ import { ErrorDisplay } from "./ErrorDisplay";
 import { ModeToggle } from "./ModeToggle";
 import { RunDetails } from "./RunDetails";
 import { RunInputsForm } from "./RunInputsForm";
+import { RunProgressPanel } from "./RunProgressPanel";
 import { RunResult } from "./RunResult";
 import { RunStatus } from "./RunStatus";
 
@@ -92,6 +93,10 @@ export function TextStatsForm() {
           <RunDetails runId={state.runId} usage={state.usage} />
         </>
       )}
+      {/* A durable run's live timeline, last in every phase, so it stays under
+          the result once the run ends. It draws nothing for a blocking run, or
+          on a base URL that serves no progress. */}
+      <RunProgressPanel state={state} />
     </div>
   );
 }

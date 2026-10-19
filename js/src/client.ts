@@ -15,6 +15,7 @@ import type {
 import {
   assertExclusiveRunSources,
   hasBundlePayload,
+  parseJsonBody,
   parseMethodFiles,
   serializeMethodFiles,
 } from "mthds/protocol";
@@ -455,8 +456,27 @@ interface RawResponse {
  */
 type JsonReader = (text: string) => unknown;
 
-/** `JSON.parse`, the `JsonReader` an answer is read with unless its route names another. */
+/**
+ * `JSON.parse`, the `JsonReader` an answer is read with unless its route names another; the
+ * answer's text is held to the protocol's rules first (`readAnswerAt`), so `parseJsonBody`'s
+ * reading is the one returned.
+ */
 const readJson: JsonReader = (text) => JSON.parse(text) as unknown;
+
+/**
+ * What `JSON.parse` throws for a text, `undefined` when it reads it: the `cause` of an answer
+ * whose body is not JSON the protocol reads, which is `JSON.parse`'s own `SyntaxError` for a body
+ * that is not JSON at all, and none for JSON the protocol refuses, nested too deeply or holding a
+ * number past the range of a double.
+ */
+function jsonParseFailure(text: string): unknown {
+  try {
+    JSON.parse(text);
+  } catch (err) {
+    return err;
+  }
+  return undefined;
+}
 
 /** HTTP methods the client issues — the product routes add PUT/PATCH/DELETE. */
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -514,7 +534,10 @@ const BARE_RUNNER_IMPLEMENTATION = "pipelex-api";
  *   `RunLifecycleUnavailableError`.
  *
  * Implements `MTHDSProtocol<DictPipeOutput>` so the protocol-execution methods
- * stay shaped like the standard's wire surface (`mthds/protocol`). The Pipelex
+ * stay shaped like the standard's wire surface (`mthds/protocol`), all but
+ * `validate`, whose verdict is the one the hosted plane answers: since protocol
+ * `2.0.0` the protocol's verdict lists its faults as problem items, which the
+ * hosted plane does not send yet (see `PipelexValidationResult`). The Pipelex
  * extensions (the crate and tools routes, the run lifecycle) ride on top.
  */
 
@@ -754,7 +777,14 @@ const METHOD_EXAMPLE_FIELDS = {
   readonly [expected: string, fits: (value: unknown) => boolean]
 >;
 
-export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
+/**
+ * The protocol surface `PipelexApiClient` implements as the standard types it: every route but
+ * `validate`, whose verdict is Pipelex's own (`PipelexValidationResult`) while the hosted plane
+ * answers the verdict that predates the protocol's problem items.
+ */
+type HostedProtocolSurface = Omit<MTHDSProtocol<DictPipeOutput>, "validate">;
+
+export class PipelexApiClient implements HostedProtocolSurface {
   private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
   /** Origin root derived from the base URL — `/health` lives here, not under `/v1`. */
@@ -1218,6 +1248,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
    * SDK cannot read, so it throws the `ApiResponseError` `unreadableAnswer` builds, with the parse
    * failure as `cause`; so is a body holding a number `parseExactJson` cannot read exactly on this
    * runtime (`ExactJsonUnsupportedError`), rather than read rounded.
+   *
+   * Every body is first held to the rules the protocol reads a problem body by (`parseJsonBody`,
+   * as `pipelex-sdk` does with `decode_json_as_written`): JSON nested deeper
+   * than `MAX_BODY_NESTING`, or holding a number past the range of a double, such as `1e999`, which
+   * `JSON.parse` would read as `Infinity`, is not JSON the protocol reads, and is an answer the SDK
+   * cannot read too, with `JSON.parse`'s own failure as `cause` when it has one.
    * The one place a success body is parsed.
    */
   private readAnswerAt<T>(
@@ -1230,6 +1266,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     if (!res.utf8) {
       throw this.unreadableAnswer(method, path, res, "a body that is not UTF-8", undefined, run);
     }
+    const reading = parseJsonBody(res.body);
+    if (!reading.ok) {
+      const what = res.body ? "a body that is not JSON" : "an empty body where JSON was expected";
+      throw this.unreadableAnswer(method, path, res, what, jsonParseFailure(res.body), run);
+    }
+    if (parse === readJson) return reading.value as T;
     try {
       return parse(res.body) as T;
     } catch (err) {
@@ -1272,7 +1314,7 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
   /**
    * The `ApiResponseError` of a 2xx answer the SDK cannot read, its message
    * `API <method> <path> answered <status> with <what>`: the answer's status, its raw text as
-   * `responseBody`, no problem member but the `X-Request-ID` header, the failure that made it
+   * `responseBody`, no hosted problem member but the `X-Request-ID` header, the failure that made it
    * unreadable as `cause`, and the verdict the fallback gives a 2xx, `runtime` and not retryable.
    * On a request that may create a run, the run may have started: the server accepted it.
    */
@@ -1296,7 +1338,8 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       undefined,
       {
         cause,
-        problem: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) },
+        details: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) },
+        headers: res.headers,
         mayStartRun: run.mayStartRun === true,
       },
     );
@@ -1312,12 +1355,12 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
     res: RawResponse,
     run: RunCreation = {},
   ): never {
-    const { errorType, serverMessage, validationErrors, code, problem, document } = parseErrorBody(
+    const { errorType, serverMessage, validationErrors, code, details, document } = parseErrorBody(
       res.body,
     );
     // The body's `request_id` wins; the header is the fallback for a response whose body
     // carries none (a gateway error page, a non-problem body).
-    const requestId = problem.requestId ?? nonEmptyHeader(res.headers, REQUEST_ID_HEADER);
+    const requestId = details.requestId ?? nonEmptyHeader(res.headers, REQUEST_ID_HEADER);
     throw new ApiResponseError(
       `API ${method} ${path} failed (${res.status}): ${serverMessage ?? (res.body || res.statusText)}`,
       this.baseUrl,
@@ -1329,8 +1372,9 @@ export class PipelexApiClient implements MTHDSProtocol<DictPipeOutput> {
       validationErrors,
       code,
       {
-        problem: { ...problem, requestId },
+        details: { ...details, requestId },
         problemDocument: document,
+        headers: res.headers,
         mayStartRun: run.mayStartRun === true,
       },
     );
@@ -3768,12 +3812,9 @@ function extractNetworkErrorCode(err: unknown): string | undefined {
  */
 function isMissingRoute404(body: string): boolean {
   if (!body) return true;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return true;
-  }
+  const reading = parseJsonBody(body);
+  if (!reading.ok) return true;
+  const parsed = reading.value;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
   return !("code" in parsed);
 }
@@ -3892,7 +3933,7 @@ function parseErrorBody(body: string): {
   serverMessage: string | undefined;
   validationErrors: ValidationErrorItem[] | undefined;
   code: string | undefined;
-  problem: ProblemDetails;
+  details: ProblemDetails;
   document: Record<string, unknown> | undefined;
 } {
   const empty = {
@@ -3900,20 +3941,17 @@ function parseErrorBody(body: string): {
     serverMessage: undefined,
     validationErrors: undefined,
     code: undefined,
-    problem: {},
+    details: {},
     document: undefined,
   };
   if (!body) return empty;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
+  // Read by the protocol's rules, as every body is: JSON nested deeper than `MAX_BODY_NESTING`, or
+  // holding a number past the range of a double, carries no member, as `pipelex-sdk` reads it.
+  const reading = parseJsonBody(body);
+  if (!reading.ok || !isPlainObject(reading.value)) {
     return empty;
   }
-  if (!isPlainObject(parsed)) {
-    return empty;
-  }
-  const root = parsed;
+  const root = reading.value;
   const detail = root.detail;
   let errorType: string | undefined;
   let serverMessage: string | undefined;
@@ -3935,7 +3973,7 @@ function parseErrorBody(body: string): {
     : undefined;
   // The platform's closed native code (`conflict`, `not_found`, …), one-to-one with `type`.
   const code = typeof root.code === "string" ? root.code : undefined;
-  const problem: ProblemDetails = {
+  const details: ProblemDetails = {
     type: stringMember(root.type),
     title: stringMember(root.title),
     instance: stringMember(root.instance),
@@ -3956,7 +3994,7 @@ function parseErrorBody(body: string): {
       ? root.errors.filter(isPlainObject).map(readFieldError)
       : undefined,
   };
-  return { errorType, serverMessage, validationErrors, code, problem, document: root };
+  return { errorType, serverMessage, validationErrors, code, details, document: root };
 }
 
 /** A problem member kept only when it is a non-empty string. */

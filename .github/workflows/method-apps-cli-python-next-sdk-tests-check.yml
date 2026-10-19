@@ -52,7 +52,8 @@ jobs:
       - name: Install pipelex-sdk built from this commit
         run: |
           uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/python"
-          uv pip install --python .venv/bin/python --reinstall-package pipelex-sdk "$RUNNER_TEMP"/next-sdk/*.whl
+          uv export --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project --project "$GITHUB_WORKSPACE/python" | grep -E '^mthds( |=|@)' > "$RUNNER_TEMP/next-sdk/mthds.txt"
+          uv pip install --python .venv/bin/python --reinstall-package pipelex-sdk --reinstall-package mthds -r "$RUNNER_TEMP/next-sdk/mthds.txt" "$RUNNER_TEMP"/next-sdk/*.whl
 
       - name: Run unit tests
         run: make test

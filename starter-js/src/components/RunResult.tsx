@@ -5,7 +5,15 @@ import {
   FieldPresentationProvider,
   humanizeFieldName,
   StuffViewer,
+  type StuffViewerView,
 } from "@pipelex/mthds-form/react";
+
+/**
+ * Both views, named rather than left to the kernel's default: under
+ * `presentation="app"` the kernel offers the rendered result alone, so the JSON
+ * receipt is asked for here.
+ */
+const RESULT_VIEWS: readonly StuffViewerView[] = ["rendered", "json"];
 
 interface RunResultProps {
   /** The method's result descriptor, from `requireResultField`. */
@@ -39,7 +47,9 @@ interface RunResultProps {
  *
  * `StuffViewer` gives the two views a result actually needs: **Rendered**, the
  * descriptor-driven view for a person, and **JSON**, the verbatim receipt for
- * whoever is debugging the pipe. `presentation="app"` is the same seam
+ * whoever is debugging the pipe. The kernel draws the switch between them only
+ * in `studio` unless told otherwise, so `RESULT_VIEWS` names both, and the
+ * switch opens on Rendered. `presentation="app"` is the same seam
  * `<RunInputsForm>` uses and must stay in step with it: humanized labels and no
  * concept pills, because a result and the form that produced it show the same
  * fields and must read the same way.
@@ -70,7 +80,7 @@ export function RunResult({ field, value, name }: RunResultProps) {
     // tab panel is out of the accessibility tree, so the tabs cannot collide.
     <section aria-label={humanizeFieldName(name)}>
       <FieldPresentationProvider presentation="app">
-        <StuffViewer field={field} value={value} name={name} />
+        <StuffViewer field={field} value={value} name={name} views={RESULT_VIEWS} />
       </FieldPresentationProvider>
     </section>
   );

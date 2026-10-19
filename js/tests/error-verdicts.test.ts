@@ -29,7 +29,7 @@ import { PipelexApiClient } from "../src/client.js";
 import { CodegenLockError } from "../src/codegen-check.js";
 import { ExactJsonUnsupportedError } from "../src/exact-json.js";
 import type { RunErrorReport } from "../src/error-models.js";
-import { fallbackVerdict } from "../src/error-verdicts.js";
+import { fallbackVerdict, problemVerdict } from "../src/error-verdicts.js";
 import {
   ApiResponseError,
   ApiUnreachableError,
@@ -99,7 +99,12 @@ interface RunStartCase {
   route: "start" | "execute";
   status: number;
   body: Record<string, unknown> | string | null;
-  expected: Required<WireRunVerdict>;
+  expected: Required<WireRunVerdict> & {
+    /** The code of the standard problem the error carries. */
+    problem_code: string;
+    /** The run that problem names, read from the body; absent when it names none. */
+    problem_run_id?: string;
+  };
 }
 
 /** A wrapped error: an SDK class built from its own members, or `Error`, which carries no verdict. */
@@ -155,6 +160,8 @@ const OUR_CLASSES = CASES.classes.filter(isOurs);
 // ── Building each class from a variant's `given` ─────────────────────
 
 const BASE_URL = "http://localhost:8081";
+const INPUT = { errorDomain: "input", retryable: false } as const;
+const CONFIG = { errorDomain: "config", retryable: false } as const;
 
 function toVerdict(wire: WireVerdict): ErrorVerdict {
   return { errorDomain: wire.error_domain, retryable: wire.retryable };
@@ -368,6 +375,10 @@ describe("a failed request that may create a run", () => {
     });
     expect(runMayHaveStartedOf(err)).toBe(c.expected.run_may_have_started);
     expect(Object.hasOwn(err as object, "runMayHaveStarted")).toBe(true);
+    expect({
+      code: refused.problem.code,
+      pipelineRunId: refused.problem.pipeline_run_id,
+    }).toEqual({ code: c.expected.problem_code, pipelineRunId: c.expected.problem_run_id });
   });
 
   it.each(CASES.run_start.map((c) => [`${c.route}: ${c.case}`, c] as const))(
@@ -387,7 +398,7 @@ describe("a failed request that may create a run", () => {
         undefined,
         code,
         {
-          problem: {
+          details: {
             ...(isErrorDomainValue(body?.error_domain) ? { errorDomain: body.error_domain } : {}),
             ...(typeof body?.retryable === "boolean" ? { retryable: body.retryable } : {}),
           },
@@ -398,6 +409,9 @@ describe("a failed request that may create a run", () => {
       expect(err.runMayHaveStarted).toBe(c.expected.run_may_have_started);
       expect(err.retryable).toBe(c.expected.retryable);
       expect(err.errorDomain).toBe(c.expected.error_domain);
+      // Built with no body, the problem names no run.
+      expect(err.problem.code).toBe(c.expected.problem_code);
+      expect(err.problem.pipeline_run_id).toBeUndefined();
     },
   );
 });
@@ -560,32 +574,89 @@ describe("errorVerdictOf", () => {
     });
   });
 
-  it("reads an mthds ApiResponseError whose runner sent both members, and only then", () => {
-    const both = new MthdsApiResponseError(
-      "refused",
-      BASE_URL,
-      500,
-      "Internal Server Error",
-      "{}",
-      "LLMCompletionError",
-      "refused",
-      undefined,
-      { problem: { errorDomain: "config", retryable: false } },
-    );
-    const domainOnly = new MthdsApiResponseError(
-      "refused",
-      BASE_URL,
-      500,
-      "Internal Server Error",
-      "{}",
-      "LLMCompletionError",
-      "refused",
-      undefined,
-      { problem: { errorDomain: "config" } },
-    );
+  it("reads an mthds ApiResponseError as its problem's verdict, whatever the runner sent beside it", () => {
+    // The standard's client carries its verdict on its problem, as `domain` and `retry` in the
+    // standard's vocabulary, and no `errorDomain` or `retryable` of its own: the members the
+    // runner's body held count for nothing, and an error whose runner sent neither reads the same.
+    const body = '{"error_domain":"input","retryable":false}';
+    const problem = protocol.readAnswer({ status: 503, headers: {}, body }).problem;
+    const details = {
+      apiUrl: BASE_URL,
+      route: "POST /v1/execute",
+      status: 503,
+      statusText: "Service Unavailable",
+    };
+    const mthds = new MthdsApiResponseError(problem, { ...details, responseBody: body });
+    const silent = new MthdsApiResponseError(problem, { ...details, responseBody: "" });
 
-    expect(errorVerdictOf(both)).toEqual({ retryable: false, errorDomain: "config" });
-    expect(errorVerdictOf(domainOnly)).toBeUndefined();
+    expect(problem.code).toBe("runtime.unavailable");
+    expect(errorVerdictOf(mthds)).toEqual({ errorDomain: "runtime", retryable: true });
+    expect(errorVerdictOf(silent)).toEqual(errorVerdictOf(mthds));
+  });
+
+  it.each([
+    {
+      label: "input, no",
+      problem: protocol.buildProblem("request.invalid", { field: "f" }),
+      verdict: INPUT,
+    },
+    {
+      label: "input, yes",
+      problem: protocol.buildProblem("input.url_unreachable", { host: "h", input: "i" }),
+      verdict: { errorDomain: "input", retryable: true },
+    },
+    { label: "method, no", problem: protocol.buildProblem("method.invalid", {}), verdict: INPUT },
+    {
+      label: "account, no",
+      problem: protocol.buildProblem("auth.invalid_credential", {}),
+      verdict: CONFIG,
+    },
+    {
+      label: "account, yes",
+      problem: protocol.buildProblem("account.rate_limited", { limit: 10, window: 60 }),
+      verdict: { errorDomain: "config", retryable: true },
+    },
+    {
+      label: "operator, no",
+      problem: protocol.buildProblem("provider.credential_refused", { provider: "p" }),
+      verdict: CONFIG,
+    },
+    {
+      label: "runtime, no",
+      problem: protocol.buildProblem("runtime.unexpected", {}),
+      verdict: { errorDomain: "runtime", retryable: false },
+    },
+    {
+      label: "runtime, yes",
+      problem: protocol.buildProblem("method.changed_concurrently", {}),
+      verdict: { errorDomain: "runtime", retryable: true },
+    },
+    {
+      label: "runtime, outcome unknown",
+      problem: protocol.buildProblem("client.outcome_unknown", {}),
+      verdict: { errorDomain: "runtime", retryable: false },
+    },
+  ] as const)("translates the standard's domain and retry: $label", ({ problem, verdict }) => {
+    expect(problemVerdict(problem)).toEqual(verdict);
+    expect(errorVerdictOf(new protocol.ProblemError(problem))).toEqual(verdict);
+  });
+
+  it("reads a domain and a retry the standard does not know by its own fallbacks", () => {
+    // An unknown domain reads by the code's family, else as `runtime`; an unknown retry as `no`.
+    const known = protocol.buildProblem("auth.invalid_credential", {});
+
+    expect(problemVerdict({ ...known, domain: "someday", retry: "maybe" })).toEqual(CONFIG);
+  });
+
+  it("reads an error's own verdict before the problem it carries", () => {
+    const problem = protocol.buildProblem("runtime.unexpected", {});
+    const own = Object.assign(new Error("Refused."), {
+      retryable: true,
+      errorDomain: "input",
+      problem,
+    });
+
+    expect(errorVerdictOf(own)).toEqual({ errorDomain: "input", retryable: true });
   });
 
   it("returns a fresh pair, not the error itself", () => {

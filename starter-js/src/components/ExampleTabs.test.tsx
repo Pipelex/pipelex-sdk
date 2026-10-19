@@ -10,6 +10,7 @@ vi.mock("./PdfForm", () => ({ PdfForm: () => <div>PDF PANEL</div> }));
 vi.mock("./ImageForm", () => ({ ImageForm: () => <div>IMAGE PANEL</div> }));
 vi.mock("./ComplexForm", () => ({ ComplexForm: () => <div>COMPLEX PANEL</div> }));
 vi.mock("./TextStatsForm", () => ({ TextStatsForm: () => <div>TEXT STATS PANEL</div> }));
+vi.mock("./CheckClaimsForm", () => ({ CheckClaimsForm: () => <div>CHECK CLAIMS PANEL</div> }));
 
 describe("ExampleTabs", () => {
   it("shows the text example by default", () => {
@@ -58,5 +59,19 @@ describe("ExampleTabs", () => {
 
     expect(screen.getByText("TEXT STATS PANEL")).toBeVisible();
     expect(screen.getByText("TEXT PANEL")).not.toBeVisible();
+  });
+
+  // The demo whose run has controllers, scaffolded the same way, so the run
+  // timeline has a sequence, a batch and a condition to draw.
+  it("switches to the scaffolded check-claims example when its tab is clicked", () => {
+    render(<ExampleTabs />);
+    fireEvent.click(screen.getByRole("tab", { name: /check claims/i }));
+
+    expect(screen.getByText("CHECK CLAIMS PANEL")).toBeVisible();
+    expect(screen.getByText("TEXT PANEL")).not.toBeVisible();
+    expect(screen.getByRole("tab", { name: /check claims/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 });

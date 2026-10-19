@@ -6,6 +6,7 @@ import { EntityForm } from "./EntityForm";
 import { PdfForm } from "./PdfForm";
 import { ImageForm } from "./ImageForm";
 import { TextStatsForm } from "./TextStatsForm";
+import { CheckClaimsForm } from "./CheckClaimsForm";
 // add-method:imports — `make add-method` inserts a scaffolded form's import
 // directly above this line. Do not move it, reword it, or delete it; the
 // scaffold refuses when it cannot find it, and a test pins that it is here.
@@ -25,6 +26,7 @@ const TABS: { id: string; label: string; Component: () => React.JSX.Element }[] 
   { id: "image", label: "Image generation", Component: ImageForm },
   { id: "complex", label: "Complex inputs", Component: ComplexForm },
   { id: "text-stats", label: "Text stats", Component: TextStatsForm },
+  { id: "check-claims", label: "Check claims", Component: CheckClaimsForm },
   // add-method:tabs — `make add-method` inserts a scaffolded tab's entry
   // directly above this line. Same rules as the import anchor above.
 ];

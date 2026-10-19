@@ -9,6 +9,7 @@ It ships demo pipelines, presented as tabs:
 - **Image generation** (`methods/generate-image`) — turns a text prompt into an image with `gpt-image-2`.
 - **Complex inputs** (`methods/complex-form`) — the same extraction with an optional structured input and a plural one, so the form has something to derive beyond a single text box. Its point is what the code does _not_ contain: `src/components/ComplexForm.tsx` is no longer than `EntityForm.tsx` and names no input.
 - **Text stats** (`methods/text-stats`) — a method that does **not** live in this repo. `methods/text-stats/method.json` names a published package by address, and every file behind the tab was written by `make add-method` rather than by hand (see [Add a method](#add-a-method)).
+- **Check claims** (`methods/check-claims`) — splits a text into its factual claims, checks each one in a batch, then a condition picks how to word the overall verdict, on a cheap model. It is the demo for the [run timeline](#the-run-timeline): its run has a sequence, a batch and a condition to draw, where every other tab's method is a single pipe. Its tab was scaffolded by `make add-method` too.
 
 Starting from zero? Use this template (next section). Adding Pipelex to an app you already have? This repo doubles as the worked example of the pattern — [`docs/adopt-in-an-existing-project.md`](docs/adopt-in-an-existing-project.md) is the transplant checklist.
 
@@ -60,11 +61,13 @@ methods/
   summarize-pdf/main.mthds    # PDF Document → { title, doc_type, key_points }
   generate-image/main.mthds   # text prompt → generated Image
   text-stats/method.json      # a selector — the method lives in a published package, not here
+  check-claims/main.mthds     # text → claims checked in a batch → a verdict, the run timeline's demo
 public/sample-invoice.pdf     # sample PDF, so the PDF example works out of the box
 scripts/                      # npm run codegen / codegen:check / codegen:verify / add-method
 src/
   config.ts                   # ExecutionMode + DEFAULT_EXECUTION_MODE
   app/                        # Next.js App Router (layout, page, globals.css)
+    api/runs/[runId]/progress/route.ts  # one run's progress snapshot, read on the server for the run timeline
   actions/                    # 'use server' Server Actions — blocking + start + poll trio per pipeline
   generated/                  # generated from methods/ — committed, never hand-edited
     summarize-pdf/            # types.ts (zod) + binder.ts + contracts.ts + codegen.lock + sources.json
@@ -81,11 +84,15 @@ src/
     uploadGrant.ts            # grantFileUpload — the upload grant behind each file method's action
     runRequest.ts             # a run's inputs against the Server Action body limit
     usageReport.ts            # token usage → the render-ready cost report
+    progressReader.ts         # the run timeline's seam: what one read of a run's progress gave
+    runProgress.ts            # toProgressSnapshot — a run's progress, mapped and redacted for the browser
+    fetchRunProgress.ts       # the browser's progress reader, over the progress route
   hooks/
     useRun.ts                 # unified blocking|durable client state machine — the run
     useRunInputs.ts           # form values + readiness + the wire shape — the inputs
     useFileInputs.ts          # the drop → grant → upload → write-back seam for file inputs
-  components/                 # ExampleTabs + RunInputsForm + RunResult + per-example chrome
+    useRunProgress.ts         # follows one run's progress, keeping the fresher snapshot
+  components/                 # ExampleTabs + RunInputsForm + RunResult + RunTimelineView + RunProgressPanel + per-example chrome
   types/                      # thin adapters over src/generated/ — parseXxx(RunResults)
 ```
 
@@ -103,6 +110,12 @@ The flow, end to end:
 3. The Pipelex API runs the pipe and returns the main output as `main_stuff` — the same resolved field on both paths.
 4. A `parseXxx(results)` narrower in `src/types/` validates it into a typed shape, using a zod schema generated from the method's own `.mthds` bundle (see [Generated types](#generated-types)).
 5. The hook drives the result: a live-status card while running, then `<RunResult>` — which renders the typed value from the method's own output-form descriptor, so **no result markup is written by hand either** — or a classified `PipelineError` shown by `<ErrorDisplay>`. A failed durable run is shown from its stored error report: the runtime's reason, its next step, whether running it again can help, and a line for support with the run id, the error type and when it ended, never the model provider's raw text ([`docs/errors.md`](docs/errors.md)). Under a finished result, `<RunDetails>` shows the run's id, selectable with a Copy button, in either mode, and keeps the token-and-cost table one click away in a closed "Usage and cost" disclosure. The server logs the same id for every run.
+
+### The run timeline
+
+A durable run also draws its progress live, under every tab's form: one row per pipe the run has reached, nested under the controller that ran it, with a bar on a shared time axis, so a sequence shows its steps, a batch its items and a condition the outcome it took. The drawing is `RunTimeline` from [`@pipelex/mthds-ui`](https://www.npmjs.com/package/@pipelex/mthds-ui), loaded only once there is something to draw, and the data is the hosted progress snapshot: the app's own route, `GET /api/runs/{runId}/progress`, reads it on the server with `getRunProgress`, so the key stays there and a provider's raw failure text never reaches the browser, and the browser reads that route every couple of seconds while the run goes, then a few times once it has ended. It never decides how a run ends, and no failure to read progress reaches the person. The timeline stays under the result once the run is done, and shows where a failed one stopped. A run in Blocking mode has no id to follow until it has ended, so it shows no timeline.
+
+**Today the hosted dev plane serves the progress route and production does not.** Against the default `https://api.pipelex.com`, every tab shows exactly what it showed before the timeline existed. To see it, set `PIPELEX_BASE_URL=https://api-dev.pipelex.com` in `.env.local`, with a key that plane accepts, and run the "Check claims" tab in Durable mode. The view is a handful of files that know nothing of the hosted API, built to be lifted into another app with one reader of its own; [`docs/run-timeline.md`](docs/run-timeline.md) says how, and how the route answers.
 
 ## Input forms
 
@@ -182,7 +195,7 @@ Stripping the demos is usually the first act of making this template yours. Each
 5. Its e2e spec: `e2e/extract.spec.ts`.
 6. The references the shared code keeps to it. The text example is the form `e2e/error-display.spec.ts` drives — repoint it at a surviving example. The blurb in `src/app/page.tsx` names the examples, and the bundle-read hint in `src/lib/errors.ts` names this one by path. The complex-inputs example is additionally named by the shared gate test (`src/lib/runInputs.test.ts` imports its contract for the structured and plural rows).
 
-Then run `make all`. `tsc` type-checks the co-located tests, so it names most dangling references itself; the two it cannot see — the `vi.mock` module string in `ExampleTabs.test.tsx` and the Playwright selectors — surface as test failures instead. The PDF example additionally owns `public/sample-invoice.pdf` and `src/types/summarizePdfUploads.ts`, and is named by the shared hook test `src/hooks/useRunInputs.test.tsx`; the image example is the one exercising the blocking-cap e2e case.
+Then run `make all`. `tsc` type-checks the co-located tests, so it names most dangling references itself; the two it cannot see — the `vi.mock` module string in `ExampleTabs.test.tsx` and the Playwright selectors — surface as test failures instead. The PDF example additionally owns `public/sample-invoice.pdf` and `src/types/summarizePdfUploads.ts`, and is named by the shared hook test `src/hooks/useRunInputs.test.tsx`; the image example is the one exercising the blocking-cap e2e case, and the check-claims example is the one `e2e/run-timeline.spec.ts` drives.
 
 **A scaffolded example (`text-stats`) comes apart the same way**, `methods/text-stats/` holding a `method.json` manifest rather than a bundle. Leave the two `add-method:` anchor comments in `ExampleTabs.tsx` in place — `make add-method` inserts at them, and a test fails if they go missing.
 
@@ -224,12 +237,13 @@ Widen the host only on a network you trust, for a container or to open the app o
 
 The Playwright specs are **optional** — `make all` never runs them, and you can delete `e2e/` entirely if you don't want live tests. They open the dev server and exercise each example tab end-to-end, asserting the expected output.
 
-The happy-path specs (`extract`, `summarize-pdf`, `generate-image`, `text-stats`) hit the **live** Pipelex API using `PIPELEX_API_KEY` from `.env.local`, so they cost an LLM call each. To keep that deliberate and safe:
+The happy-path specs (`extract`, `summarize-pdf`, `generate-image`, `text-stats`, `run-timeline`) hit the **live** Pipelex API using `PIPELEX_API_KEY` from `.env.local`, so they cost an LLM call each. To keep that deliberate and safe:
 
 - **They auto-skip without a key.** No `PIPELEX_API_KEY`? Those specs skip cleanly (you'll see them reported as skipped) instead of failing with an auth error — so a fresh fork can run `make test-e2e` before configuring credentials.
 - **`make test-e2e` prompts for confirmation** before spending, since it costs money. The prompt is skipped in CI / non-interactive shells; pass `CONFIRM=1 make test-e2e` to bypass it in scripts.
 - **It is excluded from `make all`.**
 - `summarize-pdf` stores the sample PDF through an upload grant, so it also needs a base URL that serves `POST /v1/upload/grant` and, to prepare the run's inputs, `POST /v1/pipe-io`, both of which the hosted APIs serve.
+- `run-timeline` runs the "Check claims" tab and checks the run timeline draws while the run goes and stays under the result, so it also needs a base URL that serves the progress route, which today is `https://api-dev.pipelex.com`. It finds out before spending anything and skips elsewhere.
 - Two specs need **no** key, cost nothing, and run out of the box: `home` renders the page and checks it hydrates cleanly, and `error-display` tests the offline error UX.
 - A script driving the page waits for `html[data-hydrated]`, which the root layout sets once React has hydrated it. Acting earlier, a click or a dropped file never reaches its handler, and a screenshot raises a hydration mismatch of its own making.
 - First-time setup needs the browser binary: `npx playwright install chromium`.

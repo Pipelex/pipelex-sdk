@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.46.0] - 2026-10-19
+
+### Added
+
+- **A durable run's live timeline under every tab**: while a run started in Durable mode goes, its form draws the run's progress with `RunTimeline` from `@pipelex/mthds-ui`, a new dependency, one row per pipe the run has reached, nested under the controller that ran it, and keeps it under the result or the error once the run ends; it never decides how a run ends, and no failure to read progress reaches the person. The browser reads it from the app's own `GET /api/runs/{runId}/progress` route, which reads the snapshot on the server, keeps a provider's raw failure text there, and answers `unavailable` where the base URL serves no progress, as production does not yet, so the timeline draws today against `https://api-dev.pipelex.com` and every tab elsewhere shows what it showed before. The view is a handful of files that never import the SDK, documented in `docs/run-timeline.md` with how to lift them into another app, and `make add-method` adds the timeline to every form it writes.
+- **A "Check claims" demo tab**: `methods/check-claims` splits a text into its factual claims, checks each one in a batch and words the verdict through a condition, on a cheap model, so the run timeline has a sequence, a batch's items and a condition's outcome to draw; its tab was scaffolded by `make add-method`, and `e2e/run-timeline.spec.ts` drives it live wherever the base URL serves progress.
+
+### Changed
+
+- **The starter runs on `@pipelex/sdk` 0.45.0 and `@pipelex/mthds-form` 0.17.1**: bumped from 0.39.0 and 0.10.1, and `npm ls mthds` now lists one copy, where it listed the form kernel's and the SDK's apart. A result holding an integer past `Number.MAX_SAFE_INTEGER` now arrives exact rather than rounded, so a generated schema expecting a number refuses it by name; in the result view each file gains its own download button, an HTML result shows as one page with a "Download PDF" control, and the JSON receipt stays beside the rendered result. On the form, an optional structure stays closed until the "+ N optional" disclosure opens it, a half-filled one holds the run back, and every tapped control is at least 44 pixels square on a phone.
+
 ## [v0.41.0] - 2026-10-13
 
 ### Changed
