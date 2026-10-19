@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.46.1] - 2026-10-19
+
+### Changed
+
+- **The `.mthds` check hook's lint engine moves to `@pipelex/tools-wasm` 0.6.0**: the bundle built by `npm run build:hook` now embeds `@pipelex/tools-wasm` 0.6.0, whose MTHDS schema follows pipelex v0.87.0 and holds a `PipeFunc`'s `function_name` to the function's import path from the root of the method tree, such as `funcs.totals.compute_totals`, so the hook now blocks with a schema error a `function_name` holding no dot or an empty segment, such as a bare `capitalize`, `funcs..compute_totals` or `funcs.`, and accepts no form it blocked before.
+
 ## [v0.46.0] - 2026-10-19
 
 ### Added
