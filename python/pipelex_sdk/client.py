@@ -774,7 +774,7 @@ class PipelexAPIClient(MthdsAPIClient):
             raise error from exc
 
     @contextmanager
-    def _reading_inherited_answer(self, *, method: str, endpoint: str, carries_links: bool = False) -> Generator[_AnswerSeen, None, None]:
+    def _reading_inherited_answer(self, *, method: str, endpoint: str) -> Generator[None, None, None]:
         """Run an inherited protocol route so that a 2xx answer it cannot read raises this SDK's
         `ApiResponseError`, as every other route's does.
 
@@ -794,32 +794,19 @@ class PipelexAPIClient(MthdsAPIClient):
         Args:
             method: The HTTP method of the route's request, for the message (`POST`).
             endpoint: The endpoint below `/v1`, query included, exactly as the base sends it.
-            carries_links: Whether the answer holds signed links (`blobs/missing`'s upload targets): its
-                links are redacted, and the parse failure is chained redacted or not at all, as
-                `_read_answer` does.
-
-        Yields:
-            The record of the answer the block receives, which holds it once the route has sent.
         """
         seen = _INHERITED_ANSWER.get() or _AnswerSeen()
         token = _INHERITED_ANSWER.set(seen)
         try:
-            yield seen
+            yield
         except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
             response = seen.response
             if response is None or not response.is_success:
                 raise
-            error = self._unreadable_answer(
-                method=method,
-                path=f"/{_API_PREFIX}/{endpoint}",
-                request_url=self._url(endpoint),
-                response=response,
-                what=_what_could_not_be_read(exc, response=response),
-                carries_links=carries_links,
-            )
-            if carries_links:
-                _raise_with_cause_alone(error, cause=_validation_error_without_links(exc))
-            raise error from exc
+            what = _what_could_not_be_read(exc, response=response)
+            raise self._unreadable_answer(
+                method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response, what=what
+            ) from exc
         finally:
             _INHERITED_ANSWER.reset(token)
 
@@ -2171,12 +2158,15 @@ class PipelexAPIClient(MthdsAPIClient):
         """Run `mthds`'s tree preparation, its failures raised as this SDK's errors, each carrying a verdict.
 
         A failed upload, which the standard's client raises as its `BlobUploadError`, becomes a
-        `MethodFileTransferError` carrying that error's problem, whose message and members name the blob
-        and the status, never the target's link or storage's error body, which can echo the signed
-        request, so the standard's error, which keeps that body, is kept as neither the cause nor the
-        context. An upload that got no usable answer has no status: one that got no answer at all reads
-        `client.unreachable` or `client.timeout` and is `unreachable`, and a target the client cannot
-        send to reads `client.response_unreadable` and is `refused`. The API's own refusals and failures
+        `MethodFileTransferError` whose message and members name the blob and the status, never the
+        target's link or storage's error body, which can echo the signed request, so the standard's
+        error, which keeps that body, is kept as neither the cause nor the context. An upload storage
+        answered carries the problem its status reads as, never the one the standard's client read from
+        the answer: a target that answers with a problem document of its own, as a runner signing its
+        own upload targets does, may quote the signed request in it. An upload that got no usable answer
+        has no status and carries the problem the standard's client stated for it: one that got no
+        answer at all reads `client.unreachable` or `client.timeout` and is `unreachable`, and a target
+        the client cannot send to reads `client.response_unreadable` and is `refused`. The API's own refusals and failures
         already carry a verdict, and the standard client's bare refusals become a `RequestArgumentError`.
         """
         transfer_error: MethodFileTransferError
@@ -2184,21 +2174,29 @@ class PipelexAPIClient(MthdsAPIClient):
             return await prepare()
         except _MthdsBlobUploadError as exc:
             upload_host = urlsplit(exc.upload_url).hostname or "storage"
+            # The client's own problem names no link; a problem storage answered with may quote the signed request.
+            problem: Problem | None
             if exc.status is not None:
+                problem = None
                 status_line = f"{exc.status} {exc.status_text or ''}".rstrip()
                 msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed ({status_line}), so the method was not saved."
                 code = method_file_transfer_code_of_status(exc.status)
-            elif exc.problem.code in {CoreCode.CLIENT_UNREACHABLE, CoreCode.CLIENT_TIMEOUT}:
-                msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed: no answer came back, so the method was not saved."
-                code = MethodFileTransferCode.UNREACHABLE
             else:
-                msg = (
-                    f"Uploading the file with SHA-256 {exc.sha256} failed: the API named an upload target the client cannot send to, "
-                    "so the method was not saved."
-                )
-                code = MethodFileTransferCode.REFUSED
+                problem = exc.problem
+                match exc.problem.code:
+                    case CoreCode.CLIENT_UNREACHABLE | CoreCode.CLIENT_TIMEOUT:
+                        msg = (
+                            f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed: no answer came back, so the method was not saved."
+                        )
+                        code = MethodFileTransferCode.UNREACHABLE
+                    case _:
+                        msg = (
+                            f"Uploading the file with SHA-256 {exc.sha256} failed: the API named an upload target the client cannot send to, "
+                            "so the method was not saved."
+                        )
+                        code = MethodFileTransferCode.REFUSED
             transfer_error = MethodFileTransferError(
-                msg, operation=MethodFileTransferOperation.UPLOAD, code=code, sha256=exc.sha256, status=exc.status, problem=exc.problem
+                msg, operation=MethodFileTransferOperation.UPLOAD, code=code, sha256=exc.sha256, status=exc.status, problem=problem
             )
         except PipelineRequestError as exc:
             refined = _with_verdict(exc)
@@ -2281,9 +2279,11 @@ class PipelexAPIClient(MthdsAPIClient):
         if not target.name:
             msg = f"Cannot write a method tree at '{destination}': it is the root of a filesystem, and a tree is written as a directory of its own."
             raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="destination", reason="filesystem_root"))
-        staging = await asyncio.to_thread(_make_staging_directory, target)
+        staging = target.parent / f".{target.name}.{secrets.token_hex(8)}.writing"
         is_in_place = False
         try:
+            # Made inside the cleanup's scope and run to its end, so a cancellation while it is made still removes it.
+            await _run_to_end_in_thread(_make_staging_directory, target, staging)
             async with self._make_download_client() as download_client:
                 await self._download_tree_into(download_client, files=files, staging=staging)
             await _run_to_end_in_thread(_move_into_place, staging, target)
@@ -3820,17 +3820,15 @@ def _write_new_file(target: Path, data: bytes) -> None:
         new_file.write(data)
 
 
-def _make_staging_directory(target: Path) -> Path:
-    """Refuse an occupied `target`, then make the fresh hidden directory beside it that a tree is written into before it takes `target`'s name.
+def _make_staging_directory(target: Path, staging: Path) -> None:
+    """Refuse an occupied `target`, then make `staging`, the hidden directory beside it a tree is written into before taking `target`'s name.
 
     Raises:
         RequestArgumentError: `target` exists and is not an empty directory.
     """
     _refuse_occupied_destination(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    staging = target.parent / f".{target.name}.{secrets.token_hex(8)}.writing"
     staging.mkdir()
-    return staging
 
 
 def _move_into_place(staging: Path, target: Path) -> None:
