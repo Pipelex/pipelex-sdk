@@ -18,6 +18,7 @@ from pytest_mock import MockerFixture
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import RequestArgumentError
+from tests.unit.conftest import refused_argument
 
 _BASE_URL = "http://localhost:8081"
 _MAIN = 'domain = "receipts"\nmain_pipe = "review_receipt"\n'
@@ -110,6 +111,7 @@ class TestClientRunFiles:
             asyncio.run(getattr(client, route)(mthds_contents=[]))
 
         assert error_verdict_of(caught.value) == _ARGUMENT_VERDICT
+        assert refused_argument(caught.value) == {"argument": "mthds_contents", "reason": "empty"}
         send.assert_not_called()
 
     @pytest.mark.parametrize("smuggled", ["mthds_contents", "files"])

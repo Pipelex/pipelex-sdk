@@ -40,17 +40,12 @@ from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIORe
 from pipelex_sdk.errors import ApiResponseError, InputPreparationError, InvalidInputValueError, MethodLoadError, RejectedAssetError
 from pipelex_sdk.prepare_inputs import prepare_inputs
 from pipelex_sdk.product_models import UploadedFile, UploadInput
+from tests.unit.conftest import refused_argument
 from tests.unit.test_data import PipeIOBodies
 
 _BASE_URL = "http://localhost:8081"
 _FILES: dict[str, FileEntry] = {"main.mthds": 'domain = "demo"'}
 _PIPE_REF = "demo.main"
-
-
-def _refused_argument(error: InputPreparationError) -> dict[str, object] | None:
-    """The argument and the reason a refusal's `client.argument_invalid` problem names."""
-    assert error.problem.code == "client.argument_invalid"
-    return error.problem.params.model_dump(exclude_none=True) if error.problem.params is not None else None
 
 
 def _required(**kwargs: Any) -> dict[str, Any]:
@@ -166,7 +161,7 @@ class TestPrepareInputs:
 
         with pytest.raises(InputPreparationError, match="given as `files` and `contents`") as caught:
             asyncio.run(prepare_inputs(client, files=_FILES, contents={"main.mthds": "a"}, inputs={}))
-        assert _refused_argument(caught.value) == {"argument": "files", "reason": "mutually_exclusive"}
+        assert refused_argument(caught.value) == {"argument": "files", "reason": "mutually_exclusive"}
         assert client.pipe_io_calls == []
 
     def test_the_retired_list_of_files_is_refused_not_read_as_absent(self) -> None:
@@ -176,7 +171,7 @@ class TestPrepareInputs:
         with pytest.raises(InputPreparationError) as caught:
             asyncio.run(prepare_inputs(client, files=retired, inputs={}))
         assert str(caught.value) == ("Cannot prepare inputs: `files` must be the method's tree as a map from tree path to file entry, got a list.")
-        assert _refused_argument(caught.value) == {"argument": "files", "reason": "not_a_map"}
+        assert refused_argument(caught.value) == {"argument": "files", "reason": "not_a_map"}
         assert client.pipe_io_calls == []
 
     @pytest.mark.parametrize(
@@ -228,7 +223,7 @@ class TestPrepareInputs:
         with pytest.raises(InputPreparationError) as caught:
             asyncio.run(prepare_inputs(client, **selector, inputs={}))
         assert str(caught.value) == f"Cannot prepare inputs: {message}"
-        assert _refused_argument(caught.value) == named
+        assert refused_argument(caught.value) == named
         assert client.pipe_io_calls == []
 
     def test_a_files_entry_the_request_refuses_is_an_input_preparation_error(self) -> None:
@@ -240,7 +235,7 @@ class TestPrepareInputs:
             InputPreparationError, match=r"^Cannot prepare inputs: the method selector does not form a pipe I/O request: files\.main\.mthds"
         ) as caught:
             asyncio.run(prepare_inputs(client, files=files, inputs={}))
-        assert _refused_argument(caught.value) == {"argument": "files", "reason": "invalid"}
+        assert refused_argument(caught.value) == {"argument": "files", "reason": "invalid"}
         assert client.pipe_io_calls == []
 
     @pytest.mark.parametrize("selector", [{"method_ref": "github.com/o/r"}, {"method_id": "mt_1"}])
@@ -249,7 +244,7 @@ class TestPrepareInputs:
 
         with pytest.raises(InputPreparationError, match="`dependencies` accompany the method's own tree") as caught:
             asyncio.run(prepare_inputs(client, dependencies={"github.com/acme/helpers": {"main.mthds": "x"}}, inputs={}, **selector))
-        assert _refused_argument(caught.value) == {"argument": "dependencies", "reason": "without_a_tree"}
+        assert refused_argument(caught.value) == {"argument": "dependencies", "reason": "without_a_tree"}
         assert client.pipe_io_calls == []
 
     def test_method_ref_is_a_server_side_pass_through(self) -> None:
