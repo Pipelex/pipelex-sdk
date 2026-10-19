@@ -1,40 +1,33 @@
 /**
- * A validation item reaches a caller with everything the runner put on it, under the
- * standard's vocabulary.
+ * A validation item reaches a caller with everything the runner put on it.
  *
  * Two things are shown. At run time, an `unknown_model` item — a model reference the
  * runner's model deck does not know — keeps the reference as written, its kind, the close
  * matches and the remap fix, on the two channels a refusal takes: the `/v1/validate`
- * invalid verdict and a run route's `422` problem document. At compile time, this SDK's
- * `ValidationErrorItem` and `SuggestedFix` are pinned to `mthds`'s declarations, so a
- * member the standard adds and this SDK misses, or the reverse, fails
+ * invalid verdict and a run route's `422` problem document. At compile time, the fix's
+ * operation and safety vocabularies are pinned to `mthds`'s, which the standard's problem
+ * items share, so a kind the standard adds and this SDK misses, or the reverse, fails
  * `npm run typecheck:test`, which `make check` runs; `expectTypeOf` is erased at run time,
- * so vitest alone would not catch it.
+ * so vitest alone would not catch it. The item itself is the hosted plane's, which predates
+ * the standard's problem items, so it is not pinned to them.
  */
 
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 // The test is outside `src/`, so it may read the package root that `.dependency-cruiser.cjs`
-// keeps the SDK itself from importing: that is where `mthds` exports these declarations.
+// keeps the SDK itself from importing.
 import type {
-  FixOp as MthdsFixOp,
   FixOpKind as MthdsFixOpKind,
   FixSafety as MthdsFixSafety,
   FixValue as MthdsFixValue,
-  SuggestedFix as MthdsSuggestedFix,
-  ValidationErrorCategory as MthdsValidationErrorCategory,
-  ValidationErrorItem as MthdsValidationErrorItem,
 } from "mthds";
 
 import { PipelexApiClient } from "../src/client.js";
 import { ApiResponseError } from "../src/errors.js";
 import type {
-  FixOp,
   FixOpKind,
   FixSafety,
   FixValue,
-  SuggestedFix,
   TomlValue,
-  ValidationErrorCategory,
   ValidationErrorItem,
 } from "../src/index.js";
 
@@ -155,41 +148,8 @@ describe("an unknown model's refusal reaches the caller whole", () => {
   });
 });
 
-/**
- * Each member of `T` without `null`. This SDK widens every optional member to `| null`
- * because the validate verdict's valid arm sends an unset locator as an explicit `null`;
- * `mthds`'s declarations drop the key instead, and are otherwise the same.
- */
-type WithoutNull<T> = { [K in keyof T]: Exclude<T[K], null> };
-
-/**
- * The members this SDK declares ahead of `mthds`: the template-check locators the runner's
- * item carries since its template check reports into the verdict. The pin below sets them
- * aside, and the test after it fails the day `mthds` declares them, when they leave this list.
- */
-type AheadOfMthds = "template_file" | "template_location";
-
-describe("the validation vocabulary is the standard client's", () => {
-  it("declares the item under mthds's members, names and types, widened to null", () => {
-    expectTypeOf<
-      Omit<WithoutNull<ValidationErrorItem>, "suggested_fix" | AheadOfMthds>
-    >().toEqualTypeOf<Omit<MthdsValidationErrorItem, "suggested_fix">>();
-    expectTypeOf<NonNullable<ValidationErrorItem["suggested_fix"]>>().toEqualTypeOf<SuggestedFix>();
-    expectTypeOf<ValidationErrorCategory>().toEqualTypeOf<MthdsValidationErrorCategory>();
-  });
-
-  it("is ahead of mthds by the template-check locators alone, and only until mthds declares them", () => {
-    // Fails once `mthds` declares either locator: drop it from `AheadOfMthds` then.
-    expectTypeOf<Extract<AheadOfMthds, keyof MthdsValidationErrorItem>>().toEqualTypeOf<never>();
-    expectTypeOf<Pick<ValidationErrorItem, AheadOfMthds>>().toEqualTypeOf<{
-      template_file?: string | null;
-      template_location?: string | null;
-    }>();
-  });
-
-  it("declares the suggested fix and its ops as mthds does", () => {
-    expectTypeOf<WithoutNull<SuggestedFix>>().toEqualTypeOf<MthdsSuggestedFix>();
-    expectTypeOf<FixOp>().toEqualTypeOf<MthdsFixOp>();
+describe("the fix vocabulary is the standard's", () => {
+  it("declares the operation kinds, the safeties and the written values as mthds does", () => {
     expectTypeOf<FixOpKind>().toEqualTypeOf<MthdsFixOpKind>();
     expectTypeOf<FixSafety>().toEqualTypeOf<MthdsFixSafety>();
     expectTypeOf<FixValue>().toEqualTypeOf<MthdsFixValue>();

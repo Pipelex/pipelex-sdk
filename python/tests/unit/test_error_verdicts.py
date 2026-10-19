@@ -33,6 +33,9 @@ from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 import httpx
 import pytest
 from mthds.protocol.exceptions import PipelineRequestError
+from mthds.protocol.problem.answers import read_answer
+from mthds.protocol.problem.client_problems import make_client_problem
+from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.exceptions import ApiResponseError as MthdsApiResponseError
 from mthds.runners.api.exceptions import RunStillRunningError as MthdsRunStillRunningError
 from pydantic import BaseModel, ConfigDict, Field
@@ -41,7 +44,7 @@ from pipelex_sdk import errors as errors_module
 from pipelex_sdk.artifact_models import ArtifactScope, DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.error_models import RunErrorReport
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of, fallback_verdict, run_may_have_started_of
+from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of, fallback_verdict, problem_verdict, run_may_have_started_of
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
@@ -76,6 +79,7 @@ from pipelex_sdk.errors import (
     UploadNotAllowedKind,
     UploadTransportCode,
     UploadTransportError,
+    argument_invalid_problem,
 )
 from pipelex_sdk.runs import RunStatus
 
@@ -115,6 +119,15 @@ class _ExpectedVerdict(_CaseModel):
         return ErrorVerdict(error_domain=self.error_domain, retryable=self.retryable)
 
 
+class _ExpectedRunStart(_ExpectedVerdict):
+    """A failed request that may create a run as the case file expects it: the verdict, and the standard
+    problem the error carries, by its code and the run it names (`None` when it names none).
+    """
+
+    problem_code: str
+    problem_run_id: str | None = None
+
+
 class _Route(StrEnum):
     START = "start"
     EXECUTE = "execute"
@@ -140,7 +153,7 @@ class _RunStartCase(_CaseModel):
     route: _Route
     status: int
     body: _Body
-    expected: _ExpectedVerdict
+    expected: _ExpectedRunStart
 
 
 class _Cause(_CaseModel):
@@ -228,6 +241,8 @@ _BASE_URL = "http://localhost:8081"
 _RUN_ID = "run-1"
 _INPUT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 _CONFIG = ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False)
+# The problem a hand-built refusal of an argument carries; the case file decides only its verdict.
+_REFUSED_ARGUMENT = argument_invalid_problem(argument="argument", reason="refused")
 
 
 def _answer(status: int, body: _Body) -> httpx.Response:
@@ -341,8 +356,8 @@ _BUILDERS: dict[str, Callable[[_Given], BaseException]] = {
     "RunLifecycleUnavailableError": lambda _: RunLifecycleUnavailableError("No run lifecycle here.", _BASE_URL),
     "MissingMainStuffError": lambda _: MissingMainStuffError("No main stuff.", _RUN_ID),
     "PagingNotTerminatingError": lambda _: PagingNotTerminatingError("Paging forever.", 10_000),
-    "RequestArgumentError": lambda given: RequestArgumentError("Refused before sending.", verdict=given.verdict),
-    "InputPreparationError": lambda given: InputPreparationError("Cannot prepare inputs.", verdict=given.verdict),
+    "RequestArgumentError": lambda given: RequestArgumentError("Refused before sending.", verdict=given.verdict, problem=_REFUSED_ARGUMENT),
+    "InputPreparationError": lambda given: InputPreparationError("Cannot prepare inputs.", verdict=given.verdict, problem=_REFUSED_ARGUMENT),
     "InvalidLocalSourceError": lambda _: InvalidLocalSourceError("No such file.", "/nope.pdf"),
     "InvalidInputValueError": lambda _: InvalidInputValueError(
         'Input "photo" holds a malformed data URL (invalid base64).', input_name="photo", input_path="photo"
@@ -354,7 +369,9 @@ _BUILDERS: dict[str, Callable[[_Given], BaseException]] = {
     "UploadAuthenticationError": lambda given: UploadAuthenticationError("Not authorized.", 401 if given.status is None else given.status),
     "UploadTransportError": _upload_transport,
     "MethodFileTransferError": _method_file_transfer,
-    "ArtifactOperationError": lambda given: ArtifactOperationError("The artifact operation failed.", verdict=given.verdict),
+    "ArtifactOperationError": lambda given: ArtifactOperationError(
+        "The artifact operation failed.", verdict=given.verdict, problem=_REFUSED_ARGUMENT
+    ),
     "ScopeUnavailableError": lambda _: ScopeUnavailableError(ArtifactScope.MAIN_STUFF, _RUN_ID),
     "ArtifactAuthenticationError": _artifact_authentication,
     "ArtifactFetchError": lambda given: ArtifactFetchError(
@@ -429,7 +446,11 @@ class _QueueFullError(PipelexRequestError):
     """A consumer's own subclass, declaring its verdict."""
 
     def __init__(self) -> None:
-        super().__init__("The local queue is full.", verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True))
+        super().__init__(
+            "The local queue is full.",
+            verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True),
+            problem=make_client_problem(CoreCode.RUNTIME_UNEXPECTED),
+        )
 
 
 class TestErrorVerdicts:
@@ -480,7 +501,7 @@ class TestErrorVerdicts:
         assert (caught.value.error_domain, caught.value.retryable) == (case.expected.error_domain, case.expected.retryable)
         # What the server sent stays readable, whatever the verdict became.
         if isinstance(case.body, dict):
-            assert caught.value.problem == case.body
+            assert caught.value.problem_document == case.body
 
     # ── A failed request that may create a run ──
 
@@ -499,6 +520,7 @@ class TestErrorVerdicts:
         )
         assert run_may_have_started_of(err) is case.expected.run_may_have_started
         assert "run_may_have_started" in vars(err)
+        assert (err.problem.code, err.problem.pipeline_run_id) == (case.expected.problem_code, case.expected.problem_run_id)
 
     @pytest.mark.parametrize("case", [pytest.param(case, id=f"{case.route}: {case.case}") for case in _CASES.run_start])
     def test_a_failed_request_that_may_create_a_run_built_by_hand_reads_the_same(self, case: _RunStartCase) -> None:
@@ -523,6 +545,7 @@ class TestErrorVerdicts:
             case.expected.retryable,
             case.expected.error_domain,
         )
+        assert (err.problem.code, err.problem.pipeline_run_id) == (case.expected.problem_code, None)
 
     # ── Each exported class's verdict ──
 
@@ -619,14 +642,97 @@ class TestErrorVerdicts:
     def test_error_verdict_of_reads_a_consumer_subclass_declaring_its_verdict(self) -> None:
         assert error_verdict_of(_QueueFullError()) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
 
-    def test_error_verdict_of_reads_an_mthds_api_response_error_only_when_both_members_were_sent(self) -> None:
-        both = MthdsApiResponseError(
-            "refused", api_url=_BASE_URL, status=500, status_text="", response_body="", error_domain="config", retryable=False
-        )
-        domain_only = MthdsApiResponseError("refused", api_url=_BASE_URL, status=500, status_text="", response_body="", error_domain="config")
+    def test_error_verdict_of_reads_an_mthds_api_response_error_as_its_problem_s_verdict_whatever_the_runner_sent(self) -> None:
+        # The standard's error carries its verdict on its problem, in the standard's vocabulary, and no
+        # `error_domain` or `retryable` of its own: the members the runner's body held beside it count for
+        # nothing, and an error whose runner sent neither reads all the same.
+        sent = '{"error_domain": "input", "retryable": false}'
+        problem = read_answer(status=503, body=sent, headers={}, creates_run=False).problem
+        mthds = MthdsApiResponseError("refused", problem=problem, api_url=_BASE_URL, status=503, status_text="", response_body=sent)
+        silent = MthdsApiResponseError("refused", problem=problem, api_url=_BASE_URL, status=503, status_text="", response_body="")
 
-        assert error_verdict_of(both) == _CONFIG
-        assert error_verdict_of(domain_only) is None
+        assert problem.code == "runtime.unavailable"
+        assert error_verdict_of(mthds) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
+        assert error_verdict_of(silent) == error_verdict_of(mthds)
+
+    @pytest.mark.parametrize(
+        ("code", "params", "expected"),
+        [
+            pytest.param(CoreCode.REQUEST_INVALID, {"field": "f"}, _INPUT, id="input, no"),
+            pytest.param(
+                CoreCode.INPUT_URL_UNREACHABLE,
+                {"host": "h", "input": "i"},
+                ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=True),
+                id="input, yes",
+            ),
+            pytest.param(CoreCode.METHOD_INVALID, None, _INPUT, id="method, no"),
+            pytest.param(CoreCode.AUTH_INVALID_CREDENTIAL, None, _CONFIG, id="account, no"),
+            pytest.param(
+                CoreCode.ACCOUNT_RATE_LIMITED,
+                {"limit": 10, "window": 60},
+                ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=True),
+                id="account, yes",
+            ),
+            pytest.param(CoreCode.PROVIDER_CREDENTIAL_REFUSED, {"provider": "p"}, _CONFIG, id="operator, no"),
+            pytest.param(CoreCode.RUNTIME_UNEXPECTED, None, ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False), id="runtime, no"),
+            pytest.param(
+                CoreCode.METHOD_CHANGED_CONCURRENTLY, None, ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True), id="runtime, yes"
+            ),
+            pytest.param(
+                CoreCode.CLIENT_OUTCOME_UNKNOWN,
+                None,
+                ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False),
+                id="runtime, outcome unknown",
+            ),
+        ],
+    )
+    def test_error_verdict_of_translates_the_standard_s_domain_and_retry(
+        self, code: CoreCode, params: dict[str, object] | None, expected: ErrorVerdict
+    ) -> None:
+        problem = make_client_problem(code, params=params)
+
+        assert problem_verdict(problem) == expected
+        assert error_verdict_of(PipelineRequestError("refused", problem=problem)) == expected
+
+    def test_a_domain_and_a_retry_the_standard_does_not_know_read_by_its_own_fallbacks(self) -> None:
+        # An unknown domain reads by the code's family, else as `runtime`; an unknown retry verdict as `no`.
+        unknown = make_client_problem(CoreCode.AUTH_INVALID_CREDENTIAL).model_copy(update={"domain": "someday", "retry": "maybe"})
+
+        assert problem_verdict(unknown) == _CONFIG
+
+    def test_an_sdk_error_s_own_verdict_wins_over_its_problem_s(self) -> None:
+        # A refused base URL is the environment's to fix, though its problem names an argument the caller passed.
+        refused = RequestArgumentError("Refused before sending.", problem=_REFUSED_ARGUMENT, verdict=_CONFIG)
+
+        assert problem_verdict(refused.problem) == _INPUT
+        assert error_verdict_of(refused) == _CONFIG
+
+    @pytest.mark.parametrize(
+        ("error", "code", "params"),
+        [
+            pytest.param(
+                RequestArgumentError("execute() needs a run source"),
+                "client.argument_invalid",
+                {"argument": "arguments", "reason": "unspecified"},
+                id="RequestArgumentError",
+            ),
+            pytest.param(
+                InputPreparationError("The input is missing."),
+                "client.argument_invalid",
+                {"argument": "inputs", "reason": "unspecified"},
+                id="InputPreparationError",
+            ),
+            pytest.param(ArtifactOperationError("outputs/ is a file"), "runtime.unexpected", None, id="ArtifactOperationError"),
+        ],
+    )
+    def test_a_family_base_built_from_a_message_alone_carries_a_problem_stating_its_verdict(
+        self, error: PipelexRequestError, code: str, params: dict[str, str] | None
+    ) -> None:
+        # Templates and consumers build these from a message alone, as they did before the classes carried a problem.
+        assert error.problem.code == code
+        assert (error.problem.params.model_dump(exclude_none=True) if error.problem.params is not None else None) == params
+        assert problem_verdict(error.problem) == error_verdict_of(error)
+        assert str(error) == error.args[0]
 
     # ── Arguments refused before sending ──
 
@@ -653,7 +759,10 @@ class TestErrorVerdicts:
         cause = caught.value.__cause__
         assert isinstance(cause, PipelineRequestError)
         assert not isinstance(cause, PipelexRequestError)
-        assert str(caught.value) == str(cause)
+        # The refusal reads as the standard's message did before its base appended the problem's next step,
+        # and carries the standard's problem as it is.
+        assert str(cause) == f"{caught.value}\nNext step: {cause.problem.next_step.detail}"
+        assert caught.value.problem is cause.problem
         spy.assert_not_awaited()
 
     def test_a_base_url_that_is_not_host_only_is_config(self) -> None:

@@ -19,7 +19,10 @@
  * `make shared-files` writes at the repository's root, byte for byte identical.
  */
 
-import type { ErrorVerdict } from "./errors.js";
+import { problemDomain, problemRetry } from "mthds/protocol";
+import type { Problem, ProblemDomain, RetryVerdict } from "mthds/protocol";
+
+import type { ErrorDomain, ErrorVerdict } from "./errors.js";
 
 const INPUT: ErrorVerdict = Object.freeze({ errorDomain: "input", retryable: false });
 const CONFIG: ErrorVerdict = Object.freeze({ errorDomain: "config", retryable: false });
@@ -84,4 +87,44 @@ export function fallbackVerdict(
   if (status >= 400 && status < 500) return INPUT;
   if (status >= 500 && status < 600) return TRANSIENT;
   return FAULT;
+}
+
+/**
+ * Who can fix a failure the MTHDS standard's problem says must be acted on by its `domain`, in
+ * this SDK's vocabulary: the caller changes the request or the method it names (`input`, `method`),
+ * someone changes the environment, the credential, the plan or the deployment (`account`,
+ * `operator`), or nobody beforehand (`runtime`).
+ */
+const ERROR_DOMAIN_OF: Readonly<Record<ProblemDomain, ErrorDomain>> = Object.freeze({
+  input: "input",
+  method: "input",
+  account: "config",
+  operator: "config",
+  runtime: "runtime",
+});
+
+/**
+ * Whether asking again can succeed, by the standard's `retry`: only `yes` is retryable, since an
+ * operation whose outcome is unknown may already have taken effect, and a run that may have
+ * started is never retryable.
+ */
+const RETRYABLE_OF: Readonly<Record<RetryVerdict, boolean>> = Object.freeze({
+  yes: true,
+  no: false,
+  outcome_unknown: false,
+});
+
+/**
+ * The verdict of a problem of the MTHDS standard, in this SDK's vocabulary, so that an error of
+ * the standard's own client (`mthds`) reads with `errorVerdictOf` as this SDK's errors do. The
+ * standard's domain and retry verdict are read by its own fallbacks (`problemDomain`,
+ * `problemRetry`): a domain it does not know reads by the code's family, else as `runtime`, and
+ * a retry verdict it does not know as `no`. The Python twin, `pipelex-sdk`, applies the same
+ * mapping.
+ */
+export function problemVerdict(problem: Pick<Problem, "code" | "domain" | "retry">): ErrorVerdict {
+  return {
+    errorDomain: ERROR_DOMAIN_OF[problemDomain(problem)],
+    retryable: RETRYABLE_OF[problemRetry(problem)],
+  };
 }

@@ -121,6 +121,25 @@ _NOT_UTF8_ROUTES: list[tuple[str, _Call, str, int]] = [
     ("get_subscription", lambda client: client.get_subscription(), "GET /v1/billing/subscription", 200),
 ]
 
+# JSON-looking bodies the protocol's decoder refuses: nested deeper than its limit, far past the depth at which
+# Python's own decoder raises `RecursionError`, and numbers JSON does not define, which `json.loads` accepts.
+_BODIES_THE_PROTOCOL_REFUSES = [
+    pytest.param(b"[" * 100_000 + b"]" * 100_000, id="nested-past-the-limit"),
+    pytest.param(b'{"value": NaN}', id="nan"),
+    pytest.param(b'{"value": -Infinity}', id="infinity"),
+    pytest.param(b'{"value": 1e999}', id="past-a-double"),
+]
+
+
+def _execute(client: PipelexAPIClient) -> Coroutine[Any, Any, object]:
+    return client.execute(pipe_code="p", mthds_contents=["x"])
+
+
+# Every route under the 2xx it answers, and the blocking execute's `202`, which `execute` reads as the protocol's acknowledgement.
+_REFUSED_JSON_ROUTE_PARAMS = [pytest.param(call, route, 200, id=name) for name, call, route in _ROUTES] + [
+    pytest.param(_execute, "POST /v1/execute", 202, id="execute-202")
+]
+
 # Routes that answer no content.
 _NO_CONTENT_ROUTES: list[tuple[str, _Call, str]] = [
     ("revoke_pipelex_api_key", lambda client: client.revoke_pipelex_api_key("key-1"), "DELETE /v1/pipelex-api-keys/key-1"),
@@ -173,7 +192,7 @@ class TestClientUnreadableAnswer:
         assert unreadable.status == 200
         assert unreadable.response_body == "<html>Maintenance</html>"
         assert unreadable.request_id == _REQUEST_ID
-        assert unreadable.problem is None
+        assert unreadable.problem_document is None
         assert unreadable.server_message is None
         if route in _LINK_BEARING_ROUTES:
             assert unreadable.__cause__ is None
@@ -181,6 +200,26 @@ class TestClientUnreadableAnswer:
         else:
             assert isinstance(unreadable.__cause__, json.JSONDecodeError)
         # A 2xx is no refusal the fallback names: runtime, and nothing says a retry helps.
+        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+
+    @pytest.mark.parametrize("body", _BODIES_THE_PROTOCOL_REFUSES)
+    @pytest.mark.parametrize(("call", "route", "status"), _REFUSED_JSON_ROUTE_PARAMS)
+    def test_a_2xx_whose_json_the_protocol_refuses(self, call: _Call, route: str, status: int, body: bytes) -> None:
+        """Decoded by the base's guarded decoder, as the `mthds` client decodes it: never a bare `RecursionError`, never a `NaN` read."""
+        client = _client_answering(lambda _: httpx.Response(status, content=body, headers={"X-Request-ID": _REQUEST_ID}))
+
+        unreadable = _raised(call, client)
+
+        assert str(unreadable) == f"API {route} answered {status} with a body that is not JSON"
+        assert unreadable.status == status
+        assert unreadable.request_id == _REQUEST_ID
+        assert unreadable.problem_document is None
+        if route in _LINK_BEARING_ROUTES:
+            # The decoder's failure holds the whole document, its links among them, so none is chained.
+            assert unreadable.__cause__ is None
+            assert unreadable.__context__ is None
+        else:
+            assert isinstance(unreadable.__cause__, json.JSONDecodeError)
         assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
 
     @pytest.mark.parametrize(("call", "route"), _OBJECT_ROUTE_PARAMS)
@@ -194,7 +233,7 @@ class TestClientUnreadableAnswer:
         assert unreadable.status == 200
         assert unreadable.response_body == "null"
         assert unreadable.request_id == _REQUEST_ID
-        assert unreadable.problem is None
+        assert unreadable.problem_document is None
         assert isinstance(unreadable.__cause__, ValidationError)
         assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
 

@@ -19,6 +19,13 @@ on:
 permissions:
   contents: read
 
+# This repository's CI reports nothing: DO_NOT_TRACK silences our own tools' usage statistics, and
+# NEXT_TELEMETRY_DISABLED silences Next.js's (scripts/workflows.mjs, NO_TELEMETRY_ENV, which every
+# rendered twin sets too).
+env:
+  DO_NOT_TRACK: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
+
 jobs:
   compare:
     name: Compare each mirror with its starter's release

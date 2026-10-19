@@ -7,8 +7,17 @@
  * the family, `CodegenLockError`, declares the verdict's two members itself.
  */
 
-import { PipelineRequestError } from "mthds/protocol";
-import { fallbackVerdict } from "./error-verdicts.js";
+import {
+  PipelineRequestError,
+  buildProblem,
+  isProblem,
+  parseJsonBody,
+  readAnswer,
+  unreadableAnswer,
+} from "mthds/protocol";
+import type { AnswerHeaders, Problem } from "mthds/protocol";
+import { isPlainObject } from "./error-models.js";
+import { fallbackVerdict, problemVerdict } from "./error-verdicts.js";
 import { answerMayHaveStartedRun, transportMayHaveStartedRun } from "./run-may-have-started.js";
 import type { ValidationErrorItem } from "./models.js";
 import type { ArtifactScope, DownloadArtifactsResult } from "./artifacts.js";
@@ -112,21 +121,30 @@ export abstract class PipelexRequestError extends PipelineRequestError implement
 
 /**
  * The verdict of anything a `catch` holds: the pair from an `Error` carrying a boolean
- * `retryable` and a known `errorDomain`, and `undefined` otherwise.
+ * `retryable` and a known `errorDomain`, else the verdict of the MTHDS standard's problem an
+ * `Error` carries as `problem`, and `undefined` otherwise.
  *
  * The check is structural rather than `instanceof`, so it reads every error of this SDK, of
- * another copy of it installed beside this one, of a consumer's own subclass, and an `mthds`
- * `ApiResponseError` whose runner sent both members. `undefined` means the error carries no
- * verdict: the `RangeError` or `TypeError` the SDK raises for an argument of the wrong type or
- * range before any request is sent (a bug in the calling code), the caller's own abort, which the
- * client rethrows untouched, or anything else a `try` block threw. An argument the client refuses
- * for what it asks is a `RequestArgumentError`, which carries one.
+ * another copy of it installed beside this one, and of a consumer's own subclass. An error of the
+ * standard's own client (`mthds`) carries its verdict on its problem, as `domain` and `retry` in
+ * the standard's vocabulary, and reads as that problem's verdict in this SDK's
+ * (`problemVerdict`), whatever the runner's body held beside it. `undefined` means the error
+ * carries no verdict: the `RangeError` or `TypeError` the SDK raises for an argument of the
+ * wrong type or range before any request is sent (a bug in the calling code), the caller's own
+ * abort, which the client rethrows untouched, or anything else a `try` block threw. An argument
+ * the client refuses for what it asks is a `RequestArgumentError`, which carries one.
  */
 export function errorVerdictOf(err: unknown): ErrorVerdict | undefined {
   if (!(err instanceof Error)) return undefined;
-  const { retryable, errorDomain } = err as { retryable?: unknown; errorDomain?: unknown };
-  if (typeof retryable !== "boolean" || !isErrorDomain(errorDomain)) return undefined;
-  return { retryable, errorDomain };
+  const { retryable, errorDomain, problem } = err as {
+    retryable?: unknown;
+    errorDomain?: unknown;
+    problem?: unknown;
+  };
+  if (typeof retryable === "boolean" && isErrorDomain(errorDomain)) {
+    return { retryable, errorDomain };
+  }
+  return isProblem(problem) ? problemVerdict(problem) : undefined;
 }
 
 /**
@@ -996,15 +1014,21 @@ export type MethodErrorCode =
 export type IdempotencyErrorCode = "idempotency_key_in_use";
 
 /**
- * The last constructor argument of `ApiResponseError`: the error's `cause`, the problem
- * document's typed members, the decoded document whole, and whether the request that met the
- * answer may create a run. The same shape as `mthds`'s `ApiResponseErrorOptions`, plus
- * `problemDocument` and `mayStartRun`.
+ * The last constructor argument of `ApiResponseError`: the error's `cause`, the hosted problem
+ * document's typed members, the decoded document whole, the answer's headers, and whether the
+ * request that met the answer may create a run.
  */
 export interface ApiResponseErrorOptions {
   cause?: unknown;
-  problem?: ProblemDetails;
+  /** The hosted problem document's typed members, as the client parsed them. */
+  details?: ProblemDetails;
   problemDocument?: Record<string, unknown>;
+  /**
+   * The answer's headers, which the standard's reading takes a `Retry-After` from (see
+   * `ApiResponseError.problem`). The client passes them; a consumer building the error by hand
+   * may leave them out.
+   */
+  headers?: AnswerHeaders;
   /**
    * The request was a `start` or an `execute`, so the answer is read for whether it may have
    * started a run (see `ApiResponseError.runMayHaveStarted`). The client sets it on those two
@@ -1019,9 +1043,10 @@ export interface ApiResponseErrorOptions {
  * non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read —
  * a body that is not JSON, JSON that is not the object the route answers, or a stored method
  * whose `python` field is not the serialized file list. The second carries the answer's status
- * and raw text, no problem member, what made it unreadable as `cause` (the parse failure, or
- * `mthds`'s refusal of the `python` field), and the verdict the fallback gives a 2xx: `runtime`,
- * not retryable.
+ * and raw text, no hosted problem member, what made it unreadable as `cause` (the parse failure,
+ * or `mthds`'s refusal of the `python` field), the verdict the fallback gives a 2xx (`runtime`,
+ * not retryable), and as `problem` the standard's reading of such an answer:
+ * `client.response_unreadable`, or `client.outcome_unknown` on a request that may create a run.
  *
  * Every error the hosted API answers is an RFC 9457 `application/problem+json` document, and
  * this error carries its members as typed fields, each `undefined` when the document did not
@@ -1067,13 +1092,27 @@ export interface ApiResponseErrorOptions {
  * - **Per-item failures.** `errors` is the platform's field-level list (`field`, `code`,
  *   `detail`), and `validationErrors` the structured diagnostics of a bundle that failed
  *   validation.
+ * - **The standard's reading.** `problem` is the same answer read as the MTHDS standard reads
+ *   it, the problem `mthds`'s own `ApiResponseError` carries: the body itself when it is a core
+ *   problem document, and otherwise the problem its status reads as (`readAnswer` in
+ *   `mthds/protocol`), except on a request that may create a run, where `runMayHaveStarted`
+ *   decides: `client.outcome_unknown` for every answer that leaves a run possibly started, a core
+ *   problem document's body included. Branch on `problem.code` to handle this SDK's errors and the
+ *   standard client's alike. The hosted plane's problem documents predate the core registry, so
+ *   for them `problem` says little; the members above are read from the hosted document as they
+ *   always were, and those the standard names its own way do not collide with it: `code` is the
+ *   platform's code beside the registry's `problem.code`, and `errors` the platform's field
+ *   errors beside the problem items of `problem.errors`.
  *
  * `problemDocument` is the decoded document whole, so a member this SDK does not name stays
  * reachable without re-parsing `responseBody`, which is the raw text; it is `undefined` when
- * the body was not a JSON object. The members `mthds`'s own `ApiResponseError` carries have the
- * same names here, and the same types except the verdict, which this SDK narrows from optional
- * to decided; the rest (`code`, `errorCategory`, `model`, `provider`, `providerMetadata`,
- * `migration`, `errors`) are the Pipelex members the standard's client leaves to this SDK.
+ * the body was not a JSON object.
+ *
+ * The error is a `PipelineRequestError`, as every error of this SDK is, rather than the
+ * standard's `ProblemError`: a `ProblemError`'s `code` is the registry's and its message the
+ * problem's sentence, while this error's `code` is the platform's and its message names the
+ * route and the hosted document's `detail`, so it carries the standard's reading as `problem`
+ * instead.
  */
 export class ApiResponseError extends PipelexRequestError {
   public readonly apiUrl: string;
@@ -1149,6 +1188,15 @@ export class ApiResponseError extends PipelexRequestError {
    * populated list — fall back to `serverMessage` when this is empty.
    */
   public readonly validationErrors: ValidationErrorItem[] | undefined;
+  /**
+   * The answer read as the MTHDS standard reads it, the problem `mthds`'s own client carries,
+   * agreeing with `runMayHaveStarted`: `client.outcome_unknown` where a run may have started,
+   * whatever the body, and where none started the body when it is a core problem document,
+   * otherwise the reading of an answer to a request that creates no run.
+   * Built from the constructor's arguments, so an error a consumer builds by hand carries the
+   * reading the client would give it.
+   */
+  public readonly problem: Problem;
 
   constructor(
     message: string,
@@ -1162,7 +1210,7 @@ export class ApiResponseError extends PipelexRequestError {
     code: string | undefined,
     options?: ApiResponseErrorOptions,
   ) {
-    super(message, responseVerdict(status, errorType, code, options?.problem), {
+    super(message, responseVerdict(status, errorType, code, options?.details), {
       ...(options?.cause === undefined ? {} : { cause: options.cause }),
       runMayHaveStarted: options?.mayStartRun === true && answerMayHaveStartedRun(status, code),
     });
@@ -1175,20 +1223,72 @@ export class ApiResponseError extends PipelexRequestError {
     this.serverMessage = serverMessage;
     this.validationErrors = validationErrors;
     this.code = code;
-    const problem = options?.problem;
-    this.type = problem?.type;
-    this.title = problem?.title;
-    this.instance = problem?.instance;
-    this.requestId = problem?.requestId;
-    this.errorCategory = problem?.errorCategory;
-    this.userAction = problem?.userAction;
-    this.model = problem?.model;
-    this.provider = problem?.provider;
-    this.providerMetadata = problem?.providerMetadata;
-    this.migration = problem?.migration;
-    this.errors = problem?.errors;
+    const details = options?.details;
+    this.type = details?.type;
+    this.title = details?.title;
+    this.instance = details?.instance;
+    this.requestId = details?.requestId;
+    this.errorCategory = details?.errorCategory;
+    this.userAction = details?.userAction;
+    this.model = details?.model;
+    this.provider = details?.provider;
+    this.providerMetadata = details?.providerMetadata;
+    this.migration = details?.migration;
+    this.errors = details?.errors;
     this.problemDocument = options?.problemDocument;
+    this.problem = standardReading(
+      status,
+      responseBody,
+      options?.headers ?? {},
+      options?.mayStartRun === true,
+      code,
+    );
   }
+}
+
+/**
+ * An answer read as the MTHDS standard reads it, as `mthds`'s own client does, agreeing with the
+ * error's `runMayHaveStarted`: on a request that may create a run, the SDK's own reading of
+ * whether a run may have started (`answerMayHaveStartedRun`) decides, as an
+ * `ApiUnreachableError`'s does for a request that got no answer, so that `problem` never says a
+ * run may exist where `runMayHaveStarted` says none started, nor the reverse.
+ *
+ * - Where a run may have started, the answer reads as `client.outcome_unknown`, naming the run
+ *   when the body names one (the platform's `bad_gateway` does when it lost a start's
+ *   acknowledgement), whatever the body: a `408`, which a proxy may answer for a request it
+ *   forwarded, every `5xx` but a `501` and a `503` carrying the platform's code
+ *   `pipeline_start_unavailable`, and a `2xx` the SDK could not read, since the server accepted
+ *   the request. A core problem document in such a body is not kept, since one inviting a retry
+ *   would contradict `runMayHaveStarted`.
+ * - Where none started, which is every answer to a request that creates no run, a status outside
+ *   `2xx` whose body is a core problem document reads as that document, and any other as the
+ *   answer to a request that creates none: the code its status names (`runtime.unavailable` for
+ *   that `503`), else `client.response_unreadable` naming the status (that `501`). A `2xx` the SDK
+ *   could not read is `client.response_unreadable`.
+ */
+function standardReading(
+  status: number,
+  body: string,
+  headers: AnswerHeaders,
+  mayStartRun: boolean,
+  code: string | undefined,
+): Problem {
+  const runMayHaveStarted = mayStartRun && answerMayHaveStartedRun(status, code);
+  if (!runMayHaveStarted) {
+    if (status >= 200 && status < 300) return unreadableAnswer(status);
+    return readAnswer({ status, headers, body }, { createsRun: false }).problem;
+  }
+  const reading = parseJsonBody(body);
+  const runId =
+    reading.ok && isPlainObject(reading.value) ? reading.value.pipeline_run_id : undefined;
+  if (typeof runId !== "string" || runId === "") {
+    return buildProblem("client.outcome_unknown", {});
+  }
+  return buildProblem(
+    "client.outcome_unknown",
+    { pipeline_run_id: runId },
+    { pipeline_run_id: runId },
+  );
 }
 
 /**

@@ -9,7 +9,8 @@ surface, and `health`.
 
 This module holds construction, the `_send` override that every route sends through, which
 maps a request that got no answer to `ApiUnreachableError`, the product-route helper
-(`_request_product`), the `_raise_api_response_error` override that every `/v1` route raises
+(`_request_product`), the `_parse_answer` override that reads every inherited route's answer as
+this client reads its own, the `_raise_api_response_error` override that every `/v1` route raises
 through, the `execute` override (hosted gateway-timeout translation),
 the `start` override (bare-runner 404 translation), the durable run lifecycle, the
 `validate` override (markdown-render injection + `validate_files`), the Pipelex product
@@ -29,7 +30,7 @@ from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, Protocol, TypeVar, cast
 from urllib.parse import quote, urlencode, urlparse, urlsplit
 
 import httpx
@@ -39,14 +40,18 @@ from mthds.method_tree.models import MethodTree, TreeLimits
 from mthds.method_tree.tree_path import path_collisions, tree_path_violation
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import RunResultStart
+from mthds.protocol.problem.client_problems import make_client_problem
+from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.client import MthdsAPIClient
 from mthds.runners.api.exceptions import BlobUploadError as _MthdsBlobUploadError
+from mthds.runners.api.exceptions import ClientNotConfiguredError
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
-from mthds.runners.api.problem import ProblemDocument
+from mthds.runners.api.problem import REQUEST_ID_HEADER, lower_case_headers
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import InitErrorDetails, to_json
 from typing_extensions import override
 
+from pipelex_sdk._answer_json import decode_json_as_written
 from pipelex_sdk.artifact_models import (
     BulkResolvedStorageUrls,
     DownloadArtifactsOptions,
@@ -70,7 +75,7 @@ from pipelex_sdk.crate_models import (
     ResolveResponse,
     ResolveResponseAdapter,
 )
-from pipelex_sdk.error_models import FieldError
+from pipelex_sdk.error_models import HostedProblemMembers
 from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
 from pipelex_sdk.errors import (
     ABORT_TIMEOUT_CODE,
@@ -88,6 +93,8 @@ from pipelex_sdk.errors import (
     RunLifecycleUnavailableError,
     RunStillRunningError,
     RunTimeoutError,
+    answer_reading,
+    argument_invalid_problem,
     method_file_transfer_code_of_status,
 )
 from pipelex_sdk.execute_result import PipelexExecuteResult, results_from_execute
@@ -141,17 +148,18 @@ from pipelex_sdk.runs import (
 from pipelex_sdk.upload import UploadRecord, UploadSource
 from pipelex_sdk.upload import upload_file as _upload_file_impl
 from pipelex_sdk.user_agent import AppInfo, build_user_agent
-from pipelex_sdk.validation_models import PipelexValidationResultAdapter, ValidationErrorItem
+from pipelex_sdk.validation_models import PipelexValidationResultAdapter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Sequence
     from contextlib import AbstractAsyncContextManager
 
     from mthds.method_tree.file_entry import FileEntry, MethodFiles
-    from mthds.method_tree.models import TreeFile
-    from mthds.protocol.models import BlobRef, MissingBlob, MissingBlobsResult, ModelCategory, ModelDeck, ValidationDiagnostic, VersionInfo
+    from mthds.protocol.models import ModelCategory, ModelDeck, VersionInfo
     from mthds.protocol.pipe_output import VariableMultiplicity
     from mthds.protocol.pipeline_inputs import PipelineInputs
+    from mthds.protocol.problem.answers import AnswerReading
+    from mthds.protocol.problem.models import Problem
     from mthds.protocol.stuff import StuffType
     from mthds.protocol.working_memory import WorkingMemoryAbstract
 
@@ -203,7 +211,7 @@ _GATEWAY_TIMEOUT_THRESHOLD_SECONDS = 28.0
 _REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEOUT_OVERRIDE", default=None)
 
 # Whether the request in flight may create a run: `start`, `execute` and the blocking path's lift of an
-# execute set it (`_creating_run`), and `_send`, `_api_response_error` and `_unreadable_answer` read it when
+# execute set it (`_creating_run`), and `_send`, `_raise_v1_refusal`, `_api_response_error` and `_unreadable_answer` read it when
 # they build an error, so that the error says whether the run may have started (`run_may_have_started`).
 # The inherited routes build their requests and their errors deep inside the base, which is why the choice
 # travels as a context variable, kept to the task that made it as the time limit above is.
@@ -262,10 +270,9 @@ class _AnswerSeen:
 # (`_reading_inherited_answer`). A context variable keeps the record to the task that asked, as above.
 _INHERITED_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_INHERITED_ANSWER", default=None)
 
-# Where the `missing_blobs` override records the answer of `POST /v1/blobs/missing` while the base prepares a
-# tree (`_prepare_files`), so the `_upload_missing` override can report an answer asking for blobs the tree
-# does not hold as an answer the SDK cannot read, carrying that answer's status and headers.
-_MISSING_BLOBS_ANSWER: ContextVar[_AnswerSeen | None] = ContextVar("_MISSING_BLOBS_ANSWER", default=None)
+# The endpoint whose answer holds signed links, the upload target of every blob it names, which an error
+# reports redacted (`_carries_links`).
+_MISSING_BLOBS = "blobs/missing"
 
 # What stands in for a signed link in an error: its query is a bearer credential, valid until it expires.
 _REDACTED = "[redacted]"
@@ -277,10 +284,6 @@ _LINK_QUERY = re.compile(r"(\bhttps?://[^\s\"'<>?#]*)\?[^\s\"'<>]*", re.IGNORECA
 # What reads a 2xx answer into the type a route returns: a model's `model_validate`, an adapter's
 # `validate_python`, or a function of the route's own.
 _AnswerT = TypeVar("_AnswerT")
-
-# The response header the platform and its gateway set to correlate a request with their logs, read for
-# an answer the SDK cannot read, which carries no problem document to read it from.
-_REQUEST_ID_HEADER = "x-request-id"
 
 # The answers this client reads that are not objects of a model of its own: the liveness probe's
 # free-form object, and the plans and invoices the billing routes list.
@@ -307,25 +310,6 @@ def _refuses_a_non_object(failure: ValidationError) -> bool:
     union's `union_tag_not_found`), so it is not one.
     """
     return any(error["loc"] == () and error["type"] in _NOT_AN_OBJECT_ERROR_TYPES for error in failure.errors(include_url=False))
-
-
-def _unreadable_what(failure: json.JSONDecodeError | UnicodeDecodeError | ValidationError, response: httpx.Response) -> str:
-    """What a 2xx answer that failed to parse is, as `_unreadable_answer`'s message names it.
-
-    A body that is not UTF-8, a body that is not JSON, an empty body where JSON was expected, a body
-    that is not an object where the route answers one (`null`, a number, a string, a list), worded as
-    `@pipelex/sdk` words it, or a body that is not the answer the route returns: an object of the wrong
-    shape, or anything but a list where the route answers a list.
-    """
-    what: str
-    match failure:
-        case UnicodeDecodeError():
-            what = "a body that is not UTF-8"
-        case json.JSONDecodeError():
-            what = "a body that is not JSON" if response.content else "an empty body where JSON was expected"
-        case ValidationError():
-            what = "a body that is not an object" if _refuses_a_non_object(failure) else "a body that is not the answer the route returns"
-    return what
 
 
 def _raise_with_cause_alone(error: BaseException, *, cause: BaseException | None) -> NoReturn:
@@ -487,7 +471,8 @@ class PipelexAPIClient(MthdsAPIClient):
     return `401`. The base URL resolves from the `base_url` argument, then
     `PIPELEX_BASE_URL`, then the hosted default (`https://api.pipelex.com`). Both chains
     match the JS SDK exactly. The base URL is validated host-only (no
-    path/query/fragment/credentials; http/https only). `request_timeout_seconds` (default 20 min)
+    path/query/fragment/credentials; http/https only), and one httpx cannot make a URL of is refused
+    too, as `@pipelex/sdk`'s URL parser refuses it. `request_timeout_seconds` (default 20 min)
     is the time limit of the routes that can take long: the blocking `execute`, `validate`,
     `models`, and a `start` carrying a bundle (`mthds_contents`, `files` or `bundle_b64`) or a
     `method_ref`. `version` and any other `start` answer fast, so they take it capped at the
@@ -547,7 +532,11 @@ class PipelexAPIClient(MthdsAPIClient):
                 "(http/https, no path, query, fragment, or credentials). "
                 "Endpoints compose as {base}/v1/{endpoint}."
             )
-            raise RequestArgumentError(msg, verdict=ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False))
+            raise RequestArgumentError(
+                msg,
+                verdict=ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False),
+                problem=make_client_problem(CoreCode.CLIENT_NOT_CONFIGURED, params={"setting": "base_url"}),
+            )
         self.base_url: str = normalized_base_url
         #: Origin root derived from the base URL — `/health` lives here, not under `/v1`.
         self.origin_url: str = _origin_of(normalized_base_url)
@@ -556,10 +545,13 @@ class PipelexAPIClient(MthdsAPIClient):
         #: `start` take it capped at `_POLL_REQUEST_TIMEOUT_SECONDS`. The default is the base's
         #: `_DEFAULT_REQUEST_TIMEOUT_SECONDS` ClassVar (20 min, the runner's blocking-execute
         #: ceiling — part of the documented protected extension surface). The SDK's own poll and
-        #: product GETs pass `_POLL_REQUEST_TIMEOUT_SECONDS` instead.
-        self.request_timeout_seconds: float = (
-            request_timeout_seconds if request_timeout_seconds is not None else self._DEFAULT_REQUEST_TIMEOUT_SECONDS
-        )
+        #: product GETs pass `_POLL_REQUEST_TIMEOUT_SECONDS` instead. The base's setter refuses a limit that
+        #: is not a finite number of seconds, never negative, which this client raises again as its own
+        #: refusal of the argument.
+        try:
+            self.request_timeout_seconds = request_timeout_seconds if request_timeout_seconds is not None else self._DEFAULT_REQUEST_TIMEOUT_SECONDS
+        except ClientNotConfiguredError as exc:
+            raise RequestArgumentError(_message_of(exc), problem=exc.problem) from exc
         #: The integrator's own name, placed before this SDK's tokens in the `User-Agent`.
         # Since `mthds` 0.16.0 the base declares `app_info` as its own `AppInfo`, which it only ever
         # writes (in `init_user_agent`, never called here). This SDK keeps its own model and builder
@@ -625,13 +617,29 @@ class PipelexAPIClient(MthdsAPIClient):
                 )
         except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
             msg = f"Could not reach Pipelex API at {self.base_url} (timeout)"
-            raise ApiUnreachableError(msg, api_url=self.base_url, code=ABORT_TIMEOUT_CODE, may_start_run=_MAY_START_RUN.get(), failure=exc) from exc
+            raise ApiUnreachableError(
+                msg,
+                api_url=self.base_url,
+                code=ABORT_TIMEOUT_CODE,
+                may_start_run=_MAY_START_RUN.get(),
+                failure=exc,
+                request_url=url,
+                timeout_seconds=effective_timeout,
+            ) from exc
         except (httpx.TransportError, httpx.DecodingError) as exc:
             # A body httpx cannot decode, a broken gzip stream for one, is lost on the way as surely as a
             # dropped connection, and `@pipelex/sdk` reports it the same way (`Z_DATA_ERROR`).
             code = type(exc).__name__
             msg = f"Could not reach Pipelex API at {self.base_url} ({code})"
-            raise ApiUnreachableError(msg, api_url=self.base_url, code=code, may_start_run=_MAY_START_RUN.get(), failure=exc) from exc
+            raise ApiUnreachableError(
+                msg,
+                api_url=self.base_url,
+                code=code,
+                may_start_run=_MAY_START_RUN.get(),
+                failure=exc,
+                request_url=url,
+                timeout_seconds=effective_timeout,
+            ) from exc
         seen = _INHERITED_ANSWER.get()
         if seen is not None:
             seen.response = response
@@ -700,7 +708,7 @@ class PipelexAPIClient(MthdsAPIClient):
         effective_timeout = request_timeout if request_timeout is not None else _POLL_REQUEST_TIMEOUT_SECONDS
         response = await self._send(method, self._url(endpoint), content=content, request_timeout=effective_timeout)
         if not 200 <= response.status_code < 300:
-            self._raise_api_response_error(method=method, endpoint=endpoint, response=response)
+            self._raise_v1_refusal(method=method, endpoint=endpoint, response=response)
         return response
 
     def _read_v1_answer(
@@ -726,7 +734,9 @@ class PipelexAPIClient(MthdsAPIClient):
 
         `read` is what takes the decoded body: a model's `model_validate`, an adapter's
         `validate_python`, or a function of the route's own, which may raise an error of its own that
-        passes through. A body that is not UTF-8 or not JSON, an empty one included, and JSON that `read`
+        passes through. The body is decoded by the protocol's rules (`_decoded_answer`). A body that is
+        not UTF-8 or not JSON, an empty one included, JSON the protocol refuses (nested deeper than its
+        limit, or holding `NaN`, `Infinity` or a number past the range of a double), and JSON that `read`
         refuses with a pydantic `ValidationError`, are an answer the SDK cannot read, raised as the
         `ApiResponseError` `_unreadable_answer` builds, the parse failure as its `__cause__`.
 
@@ -749,14 +759,14 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiResponseError: The answer cannot be read; its verdict is `runtime`, not retryable.
         """
         try:
-            return read(response.json())
+            return read(_decoded_answer(response))
         except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
             error = self._unreadable_answer(
                 method=method,
                 path=path,
                 request_url=request_url,
                 response=response,
-                what=_unreadable_what(exc, response),
+                what=_what_could_not_be_read(exc, response=response),
                 carries_links=carries_links,
             )
             if carries_links:
@@ -768,10 +778,11 @@ class PipelexAPIClient(MthdsAPIClient):
         """Run an inherited protocol route so that a 2xx answer it cannot read raises this SDK's
         `ApiResponseError`, as every other route's does.
 
-        The base's `execute`, `start`, `models`, `version` and `missing_blobs` parse the answer `_send`
-        handed them themselves, with `response.json()` and a pydantic model, so a body that is not UTF-8,
-        not JSON or not the route's object raises a bare `UnicodeDecodeError`, `json.JSONDecodeError` or
-        `ValidationError` there. Inside this block `_send` records the answer it receives, and such a
+        Parts of an inherited route parse the answer `_send` handed them outside `_parse_answer`, such as
+        the `202` acknowledgement `_raise_if_execute_degraded` reads, with `_decoded_answer` and a
+        pydantic model, so a body that is not UTF-8, not JSON or not the route's object raises a bare
+        `UnicodeDecodeError`, `json.JSONDecodeError` or `ValidationError` there. Inside this block `_send`
+        records the answer it receives, and such a
         failure met after a 2xx answer is raised again as the error `_unreadable_answer` builds, the
         parse failure as its `__cause__`. One met before any answer, while the base built the request
         from the caller's arguments, is the caller's and passes through untouched, as does one met after
@@ -803,7 +814,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 path=f"/{_API_PREFIX}/{endpoint}",
                 request_url=self._url(endpoint),
                 response=response,
-                what=_unreadable_what(exc, response),
+                what=_what_could_not_be_read(exc, response=response),
                 carries_links=carries_links,
             )
             if carries_links:
@@ -813,21 +824,35 @@ class PipelexAPIClient(MthdsAPIClient):
             _INHERITED_ANSWER.reset(token)
 
     def _unreadable_answer(
-        self, *, method: str, path: str, request_url: str, response: httpx.Response, what: str, carries_links: bool = False
+        self,
+        *,
+        method: str,
+        path: str,
+        request_url: str,
+        response: httpx.Response,
+        what: str,
+        problem: Problem | None = None,
+        carries_links: bool = False,
     ) -> ApiResponseError:
         """The `ApiResponseError` of a 2xx answer the SDK cannot read, `@pipelex/sdk`'s `unreadableAnswer`.
 
-        Its message is `API <method> <path> answered <status> with <what>`, `what` naming why the answer
-        cannot be read: the parse failure as `_unreadable_what` words it, or a fault of the answer's
-        meaning, such as `blobs/missing` asking for blobs the tree does not hold. It carries the answer's
-        status, its raw text as `response_body`, its links redacted when it `carries_links`, its headers,
-        and the `X-Request-ID` header as `request_id`, but no problem member, since a success body is no
-        problem document; its verdict is the fallback's for a status no refusal carries, `runtime` and
-        not retryable, since no change to the call fixes the answer. Inside `_creating_run`, the run may
-        have started: the server accepted the request. The caller raises it `from` the failure, which
-        becomes its `__cause__`, or, for an answer that carries links, with a redacted copy of it or none.
+        Its message is `API <method> <path> answered <status> with <what>`, `what` naming the failure
+        (`_what_could_not_be_read`, `_what_the_body_is`): a body that is not UTF-8, a body that is not
+        JSON, an empty body where JSON was expected, a body that is not an object where the route answers
+        one (`null`, a number, a string, a list), worded as `@pipelex/sdk` words it, or a body that is not
+        the answer the route returns: an object of the wrong shape, or anything but a list where the route
+        answers a list, such as a `blobs/missing` answer asking for a blob the request did not list. It
+        carries the answer's status, its raw text as `response_body`, its links redacted when it
+        `carries_links`, its headers, and the `X-Request-ID` header as `request_id`, but no hosted problem
+        member, since a success body is no problem document; its verdict is the fallback's for a status no
+        refusal carries, `runtime` and not retryable, since no change to the call fixes the answer. Its
+        `problem` is the standard's reading, `client.response_unreadable`, or `client.outcome_unknown`
+        inside `_creating_run`, where the run may have started: the server accepted the request. A caller
+        that has the standard's reading already passes it as `problem`. A caller that met a parse failure
+        raises it `from` the failure, which becomes its `__cause__`, or, for an answer that carries links,
+        with a redacted copy of it or none.
         """
-        request_id = response.headers.get(_REQUEST_ID_HEADER)
+        request_id = response.headers.get(REQUEST_ID_HEADER)
         return ApiResponseError(
             f"API {method} {path} answered {response.status_code} with {what}",
             api_url=self.base_url,
@@ -837,6 +862,7 @@ class PipelexAPIClient(MthdsAPIClient):
             headers=dict(response.headers),
             request_url=request_url,
             request_id=request_id or None,
+            problem=problem,
             may_start_run=_MAY_START_RUN.get(),
         )
 
@@ -852,51 +878,130 @@ class PipelexAPIClient(MthdsAPIClient):
         `@pipelex/sdk`'s `throwIfExecuteDegraded` reads the same answers the same way.
         """
         if response.status_code == 202:
-            _ExecuteAcceptance.model_validate(response.json())
+            _ExecuteAcceptance.model_validate(_decoded_answer(response))
         super()._raise_if_execute_degraded(response)
 
     @override
-    def _raise_api_response_error(self, *, method: str, endpoint: str, response: httpx.Response) -> NoReturn:
-        """Raise this SDK's `ApiResponseError` for a non-2xx answer to a `/v1` route.
+    def _parse_answer(
+        self,
+        *,
+        method: str,
+        endpoint: str,
+        response: httpx.Response,
+        creates_run: bool,
+        parse: Callable[[Any], _AnswerT],
+    ) -> _AnswerT:
+        """Read an inherited route's answer as this client reads its own routes' answers.
+
+        Overrides the protected seam the `mthds` base parses every protocol route's answer through
+        (`execute`, `start`, `validate`, `models`, `version`). A non-2xx raises through
+        `_raise_api_response_error` with the problem the base reads it as, except that on a request that
+        may create a run it agrees with the error's `run_may_have_started` (`_refusal_reading`). A
+        2xx is read by `_read_v1_answer`, the one reader of this client's own routes, so a body it cannot
+        read raises the `ApiResponseError` `_unreadable_answer` builds, naming what could not be read, with
+        the parse failure as its `__cause__`, as on every other route.
+
+        Args:
+            method: The HTTP method of the request, for the message.
+            endpoint: The endpoint below `/v1`, query included.
+            response: The API's answer.
+            creates_run: Whether the request may have created a run, which the reading of a non-2xx
+                takes.
+            parse: What turns the decoded body into the route's answer.
+
+        Returns:
+            The route's answer.
+
+        Raises:
+            ApiResponseError: If the answer is a non-2xx, or a 2xx the client cannot read.
+        """
+        if not response.is_success:
+            reading = _refusal_reading(response, may_start_run=creates_run)
+            self._raise_api_response_error(
+                method=method, endpoint=endpoint, response=response, problem=reading.problem, problem_from_body=reading.from_body
+            )
+        return self._read_v1_answer(parse, method=method, endpoint=endpoint, response=response, carries_links=_carries_links(endpoint))
+
+    @override
+    def _raise_api_response_error(
+        self, *, method: str, endpoint: str, response: httpx.Response, problem: Problem, problem_from_body: bool
+    ) -> NoReturn:
+        """Raise this SDK's `ApiResponseError` for an answer to a `/v1` route that is a failure.
 
         Overrides the protected seam of the `mthds` base, so every inherited protocol route
         (`execute`, `start`, `validate`, `models`, `version`) raises this SDK's subclass, as do the
-        run status and results reads and the product routes, which call it directly. The error is
-        built by `_api_response_error`, which `health` shares.
+        run status and results reads and the product routes, which reach it through
+        `_raise_v1_refusal`. A non-2xx is built by `_api_response_error`, which `health` shares. A 2xx
+        the base cannot use, such as a `start` acknowledgement naming no run, is built by
+        `_unreadable_answer`, naming what the body is.
 
         Args:
             method: The HTTP method of the request, for the message (`POST`).
             endpoint: The endpoint below `/v1`, query included, exactly as the route sent it: it
                 names the request in the message and gives `request_url`.
-            response: The API's non-2xx answer.
+            response: The API's answer.
+            problem: The standard's reading of the answer, which the error carries as `problem`.
+            problem_from_body: Whether `problem` is the body's own problem document. The error's
+                message is the SDK's own, which reads the hosted members rather than quoting the body
+                by this flag, so it is not read here.
 
         Raises:
             ApiResponseError: Always.
         """
-        raise self._api_response_error(method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response)
+        path = f"/{_API_PREFIX}/{endpoint}"
+        if response.is_success:
+            raise self._unreadable_answer(
+                method=method,
+                path=path,
+                request_url=self._url(endpoint),
+                response=response,
+                what=_what_the_body_is(response),
+                problem=problem,
+                carries_links=_carries_links(endpoint),
+            )
+        raise self._api_response_error(method=method, path=path, request_url=self._url(endpoint), response=response, problem=problem)
 
-    def _api_response_error(self, *, method: str, path: str, request_url: str, response: httpx.Response) -> ApiResponseError:
-        """Build this SDK's `ApiResponseError` for a non-2xx answer — the one place an answer becomes an error.
+    def _raise_v1_refusal(self, *, method: str, endpoint: str, response: httpx.Response) -> NoReturn:
+        """Raise this SDK's `ApiResponseError` for a non-2xx answer to one of this client's own `/v1` routes.
 
-        The members both clients share are read through the base's own parse (`ProblemDocument`), so
-        they read the same from either client; this adds the Pipelex members the standard's client
-        leaves out — the platform's `code`, the runner's `error_category` and the platform's field-level
-        `errors[]` — and narrows `validation_errors` to `ValidationErrorItem`. The error decides its
-        verdict from what the server sent and the fallback table, and, inside `_creating_run`, whether the
-        run the request may create may have started.
+        The standard's reading of the answer is the one an inherited route's takes (`_refusal_reading`),
+        a request inside `_creating_run` reading as one that may create a run.
+
+        Raises:
+            ApiResponseError: Always.
+        """
+        reading = _refusal_reading(response, may_start_run=_MAY_START_RUN.get())
+        self._raise_api_response_error(
+            method=method, endpoint=endpoint, response=response, problem=reading.problem, problem_from_body=reading.from_body
+        )
+
+    def _api_response_error(
+        self, *, method: str, path: str, request_url: str, response: httpx.Response, problem: Problem | None = None
+    ) -> ApiResponseError:
+        """Build this SDK's `ApiResponseError` for a non-2xx answer — the one place a refusal becomes an error.
+
+        The hosted members are read as the hosted plane sends them (`HostedProblemMembers`): the
+        RFC 9457 members, the runner's `error_type`, `error_domain`, `retryable`, `user_action`,
+        `error_category` and `validation_errors[]`, and the platform's own `code` and field-level
+        `errors[]`, whose names the standard's problem also uses and which are never read through it.
+        The standard's reading of the same answer rides beside them as `problem`: the one the caller
+        passes, else `_refusal_reading`'s done here. The error decides its verdict
+        from what the server sent and the fallback table, and, inside `_creating_run`, whether the run
+        the request may create may have started.
 
         Args:
             method: The HTTP method of the request, for the message (`POST`).
             path: The path the message names (`/v1/start`, or `/health` at the origin).
             request_url: The URL the request was sent to.
             response: The API's non-2xx answer.
+            problem: The standard's reading of the answer, when the caller has it.
 
         Returns:
             The error, for the caller to raise.
         """
-        document = ProblemDocument.make_from_response(response)
-        members = document.members or {}
-        msg = f"API {method} {path} failed ({response.status_code}): {_failure_reason(document, response)}"
+        may_start_run = _MAY_START_RUN.get()
+        members = HostedProblemMembers.make_from_response(response)
+        msg = f"API {method} {path} failed ({response.status_code}): {_failure_reason(members, response)}"
         return ApiResponseError(
             msg,
             api_url=self.base_url,
@@ -905,21 +1010,22 @@ class PipelexAPIClient(MthdsAPIClient):
             response_body=response.text,
             headers=dict(response.headers),
             request_url=request_url,
-            error_type=document.error_type,
-            server_message=document.server_message,
-            validation_errors=_narrowed_validation_errors(document.validation_errors),
-            type_uri=document.type_uri,
-            title=document.title,
-            instance=document.instance,
-            request_id=document.request_id,
-            error_domain=document.error_domain,
-            retryable=document.retryable,
-            user_action=document.user_action,
-            problem=document.members,
-            code=_non_empty_string_member(members, "code"),
-            error_category=_non_empty_string_member(members, "error_category"),
-            errors=_field_errors_of(members.get("errors")),
-            may_start_run=_MAY_START_RUN.get(),
+            error_type=members.error_type,
+            server_message=members.server_message,
+            validation_errors=members.validation_errors,
+            type_uri=members.type_uri,
+            title=members.title,
+            instance=members.instance,
+            request_id=members.request_id,
+            error_domain=members.error_domain,
+            retryable=members.retryable,
+            user_action=members.user_action,
+            problem=problem or _refusal_reading(response, may_start_run=may_start_run).problem,
+            problem_document=members.members,
+            code=members.code,
+            error_category=members.error_category,
+            errors=members.errors,
+            may_start_run=may_start_run,
         )
 
     def _raise_if_lifecycle_unavailable(
@@ -1282,13 +1388,13 @@ class PipelexAPIClient(MthdsAPIClient):
         selector_count = sum(1 for present in (bool(mthds_contents), selected_method_ref is not None, selected_method_id is not None) if present)
         if selector_count != 1:
             msg = "validate() takes exactly one method selector: inline mthds_contents, method_ref, or method_id."
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="mthds_contents", reason="not_exactly_one_selector"))
         if mthds_sources is not None and not mthds_contents:
             msg = (
                 "mthds_sources labels inline mthds_contents; a method_ref / method_id validation gets "
                 "its source labels from the package's (or the stored method's) real file names."
             )
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="mthds_sources", reason="without_inline_contents"))
 
         # The body is built here, on the inherited `_send` transport seam, rather than through the
         # base's `_post_validate`, which sends a method as its `files` tree: `mthds_contents` is the
@@ -1307,7 +1413,7 @@ class PipelexAPIClient(MthdsAPIClient):
             body["method_id"] = selected_method_id
         response = await self._send("POST", self._url("validate"), content=to_json(body), request_timeout=self.request_timeout_seconds)
         if not response.is_success:
-            self._raise_api_response_error(method="POST", endpoint="validate", response=response)
+            self._raise_v1_refusal(method="POST", endpoint="validate", response=response)
         return self._read_v1_answer(PipelexValidationResultAdapter.validate_python, method="POST", endpoint="validate", response=response)
 
     async def validate_files(
@@ -1335,7 +1441,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         if not files:
             msg = "At least one MTHDS file must be provided to validate_files()."
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="files", reason="empty"))
 
         mthds_contents = [mthds_file.content for mthds_file in files]
         has_any_uri = any(mthds_file.uri is not None for mthds_file in files)
@@ -1379,7 +1485,7 @@ class PipelexAPIClient(MthdsAPIClient):
         response = await self._send("GET", url, content=None, request_timeout=_POLL_REQUEST_TIMEOUT_SECONDS)
         self._raise_if_lifecycle_unavailable(status=response.status_code, body=response.text, url=url)
         if not response.is_success:
-            self._raise_api_response_error(method="GET", endpoint=endpoint, response=response)
+            self._raise_v1_refusal(method="GET", endpoint=endpoint, response=response)
         run = self._read_v1_answer(RunRead.model_validate, method="GET", endpoint=endpoint, response=response)
         retry_after = _parse_retry_after(response.headers)
         if retry_after is not None:
@@ -1420,7 +1526,7 @@ class PipelexAPIClient(MthdsAPIClient):
             explanation="the server is a bare runner, or a hosted API older than the progress route.",
         )
         if not response.is_success:
-            self._raise_api_response_error(method="GET", endpoint=endpoint, response=response)
+            self._raise_v1_refusal(method="GET", endpoint=endpoint, response=response)
         return self._read_v1_answer(RunProgress.model_validate, method="GET", endpoint=endpoint, response=response)
 
     async def get_run_result(self, run_id: str, *, artifacts: Sequence[RunArtifact] | None = None) -> RunResultState:
@@ -1471,7 +1577,7 @@ class PipelexAPIClient(MthdsAPIClient):
 
         self._raise_if_lifecycle_unavailable(status=response.status_code, body=response.text, url=url)
         if not response.is_success:
-            self._raise_api_response_error(method="GET", endpoint=endpoint, response=response)
+            self._raise_v1_refusal(method="GET", endpoint=endpoint, response=response)
         wants_main_stuff = selection is None or RunArtifact.MAIN_STUFF in selection
 
         def read_results(payload: Any) -> RunResults:
@@ -2064,37 +2170,35 @@ class PipelexAPIClient(MthdsAPIClient):
     async def _prepared_tree_files(self, prepare: Callable[[], Awaitable[dict[str, FileEntry]]]) -> dict[str, FileEntry]:
         """Run `mthds`'s tree preparation, its failures raised as this SDK's errors, each carrying a verdict.
 
-        An upload target's refusal becomes a `MethodFileTransferError` whose message and members name
-        the blob and the status, never the target's link or storage's error body, which can echo the
-        signed request: so neither the standard's error, which quotes that body, nor httpx's, which holds
-        the request, is kept as the cause or the context. The API's own refusals and failures already
-        carry a verdict, and the standard client's bare refusals become a `RequestArgumentError`.
+        A failed upload, which the standard's client raises as its `BlobUploadError`, becomes a
+        `MethodFileTransferError` carrying that error's problem, whose message and members name the blob
+        and the status, never the target's link or storage's error body, which can echo the signed
+        request, so the standard's error, which keeps that body, is kept as neither the cause nor the
+        context. An upload that got no usable answer has no status: one that got no answer at all reads
+        `client.unreachable` or `client.timeout` and is `unreachable`, and a target the client cannot
+        send to reads `client.response_unreadable` and is `refused`. The API's own refusals and failures
+        already carry a verdict, and the standard client's bare refusals become a `RequestArgumentError`.
         """
         transfer_error: MethodFileTransferError
         try:
             return await prepare()
         except _MthdsBlobUploadError as exc:
             upload_host = urlsplit(exc.upload_url).hostname or "storage"
-            status_line = f"{exc.status} {exc.status_text}".rstrip()
-            msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed ({status_line}), so the method was not saved."
+            if exc.status is not None:
+                status_line = f"{exc.status} {exc.status_text or ''}".rstrip()
+                msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed ({status_line}), so the method was not saved."
+                code = method_file_transfer_code_of_status(exc.status)
+            elif exc.problem.code in {CoreCode.CLIENT_UNREACHABLE, CoreCode.CLIENT_TIMEOUT}:
+                msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed: no answer came back, so the method was not saved."
+                code = MethodFileTransferCode.UNREACHABLE
+            else:
+                msg = (
+                    f"Uploading the file with SHA-256 {exc.sha256} failed: the API named an upload target the client cannot send to, "
+                    "so the method was not saved."
+                )
+                code = MethodFileTransferCode.REFUSED
             transfer_error = MethodFileTransferError(
-                msg,
-                operation=MethodFileTransferOperation.UPLOAD,
-                code=method_file_transfer_code_of_status(exc.status),
-                sha256=exc.sha256,
-                status=exc.status,
-            )
-        except (httpx.HTTPError, httpx.InvalidURL) as exc:
-            # The API's own requests go through `_send`, which raises `ApiUnreachableError`, so an httpx
-            # failure reaching here is an upload's, sent straight to storage: no answer, or one whose body
-            # could not be decoded. httpx's error holds the request, whose URL is the signed target, so
-            # only its class name travels.
-            msg = (
-                f"A file the organization lacks could not be uploaded to storage: no answer came back ({type(exc).__name__}), "
-                "so the method was not saved."
-            )
-            transfer_error = MethodFileTransferError(
-                msg, operation=MethodFileTransferOperation.UPLOAD, code=MethodFileTransferCode.UNREACHABLE, sha256=None
+                msg, operation=MethodFileTransferOperation.UPLOAD, code=code, sha256=exc.sha256, status=exc.status, problem=exc.problem
             )
         except PipelineRequestError as exc:
             refined = _with_verdict(exc)
@@ -2103,70 +2207,6 @@ class PipelexAPIClient(MthdsAPIClient):
             raise refined from exc
         # Raised outside the handler, so the failure it replaces is not even its context.
         raise transfer_error
-
-    @override
-    async def _prepare_files(
-        self, *, tree_files: list[TreeFile], digest: str, read: Callable[[TreeFile], bytes], inline_max_bytes: int
-    ) -> dict[str, FileEntry]:
-        """Prepare a tree's files as the base does, keeping the answer of `POST /v1/blobs/missing` for `_upload_missing`.
-
-        The base's `prepare_files` and `prepare_files_from_contents` both prepare through here, so a
-        caller of either reads an answer asking for blobs the tree does not hold as every save does.
-        """
-        token = _MISSING_BLOBS_ANSWER.set(_AnswerSeen())
-        try:
-            return await super()._prepare_files(tree_files=tree_files, digest=digest, read=read, inline_max_bytes=inline_max_bytes)
-        finally:
-            _MISSING_BLOBS_ANSWER.reset(token)
-
-    @override
-    async def missing_blobs(self, blobs: Sequence[BlobRef], digest: str | None = None) -> MissingBlobsResult:
-        """Which of these blobs the platform lacks, and where to upload each — `POST /v1/blobs/missing`.
-
-        The base's route, so that a `200` whose body is not JSON or not the route's answer raises this
-        SDK's `ApiResponseError` of an answer it cannot read, as every other route's does: its upload
-        targets are signed links, so the error carries the body redacted and no parse failure.
-
-        Raises:
-            ApiResponseError: The platform answers non-2xx, or a 2xx this SDK cannot read.
-            ApiUnreachableError: No answer came back.
-        """
-        with self._reading_inherited_answer(method="POST", endpoint="blobs/missing", carries_links=True) as seen:
-            answer = await super().missing_blobs(blobs, digest=digest)
-        preparing = _MISSING_BLOBS_ANSWER.get()
-        if preparing is not None:
-            preparing.response = seen.response
-        return answer
-
-    @override
-    async def _upload_missing(self, missing: list[MissingBlob], *, file_of_blob: dict[str, TreeFile], read: Callable[[TreeFile], bytes]) -> None:
-        """Upload what `missing_blobs` asked for as the base does, once its answer asks only for blobs the tree holds.
-
-        A blob is named by its hash and its size, so one the tree holds under the same hash at another
-        size is a blob the tree does not hold. An answer asking for one is the platform's fault, not the
-        caller's: it is raised as an answer this SDK cannot read, carrying that answer redacted, rather
-        than the base's bare refusal, and nothing is uploaded.
-
-        Raises:
-            ApiResponseError: The answer asks for a blob the tree does not hold; its verdict is `runtime`.
-        """
-        strangers: set[str] = set()
-        for blob in missing:
-            tree_file = file_of_blob.get(blob.sha256)
-            if tree_file is None or tree_file.size != blob.size:
-                strangers.add(blob.sha256)
-        preparing = _MISSING_BLOBS_ANSWER.get()
-        response = preparing.response if preparing is not None else None
-        if strangers and response is not None:
-            raise self._unreadable_answer(
-                method="POST",
-                path=f"/{_API_PREFIX}/blobs/missing",
-                request_url=self._url("blobs/missing"),
-                response=response,
-                what=f"a body asking for blobs this tree does not hold: {', '.join(sorted(strangers))}",
-                carries_links=True,
-            )
-        await super()._upload_missing(missing, file_of_blob=file_of_blob, read=read)
 
     async def method_tree_limits(self) -> TreeLimits:
         """The limits the deployment holds a method's tree to, as `mthds`'s lister takes them — `GET /v1/version`.
@@ -2434,7 +2474,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 "publish_method() needs expected_draft_updated_at: the draft token (the method's updated_at) the caller "
                 f"last saw, so a publish never takes a draft it has not seen; got {type(token).__name__}."
             )
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="expected_draft_updated_at", reason="not_a_string"))
         body = {"expected_draft_updated_at": token}
         endpoint = f"{_method_path(method_id, call='publish_method')}/publish"
         return await self._request_product("POST", endpoint, body=body, read=MethodPublishResultAdapter.validate_python)
@@ -2486,7 +2526,7 @@ class PipelexAPIClient(MthdsAPIClient):
         candidate = cast("object", version)
         if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 1:
             msg = f"get_method_version() takes a version number, a positive integer; got {version!r}."
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="version", reason="not_a_positive_integer"))
         endpoint = f"{_method_path(method_id, call='get_method_version')}/versions/{version}"
         return await self._request_product("GET", endpoint, read=MethodVersion.model_validate, carries_links=True)
 
@@ -2568,7 +2608,8 @@ class PipelexAPIClient(MthdsAPIClient):
             got = "no inputs"
         if got is not None:
             msg = f"create_method_example() needs the example's name and its inputs; got {got}."
-            raise RequestArgumentError(msg)
+            missing_argument = "name" if name_missing else "inputs"
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument=missing_argument, reason="missing"))
         body: dict[str, Any] = {"name": name, "inputs": inputs}
         if run_id is not None:
             # Checked as an `object`, as the latest-run write checks its run id: the annotation is a
@@ -2676,7 +2717,7 @@ class PipelexAPIClient(MthdsAPIClient):
             body["inputs"] = inputs
         if not body:
             msg = "update_method_example() needs a new name, new inputs, or both; got neither."
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="name", reason="nothing_to_update"))
         return await self._request_product("PATCH", endpoint, body=body, read=MethodExample.model_validate)
 
     async def record_method_example_latest_run(
@@ -2723,8 +2764,7 @@ class PipelexAPIClient(MthdsAPIClient):
         checked_run_id = _require_non_empty_id(run_id, call=call, what=_RECORD_RUN_ID_ARGUMENT)
         candidate_revision = cast("object", input_revision)
         if isinstance(candidate_revision, bool) or not isinstance(candidate_revision, int) or candidate_revision < 1:
-            what = "an input_revision, the example's revision whose inputs the run used, a positive integer"
-            raise _argument_refusal(call, what, repr(input_revision))
+            raise _argument_refusal(call, _INPUT_REVISION_ARGUMENT, repr(input_revision), reason="not_a_positive_integer")
         body = {"run_id": checked_run_id, "input_revision": candidate_revision}
         return await self._request_product("PUT", endpoint, body=body, read=MethodExampleLatestRunResultAdapter.validate_python)
 
@@ -3223,16 +3263,25 @@ def _with_verdict(exc: PipelineRequestError) -> PipelineRequestError:
 
     The base client raises errors of the standard's own classes, which carry none: a bare
     `PipelineRequestError` refusing the arguments before any request (nothing to run was named, or
-    `extra` carries a protocol arg), answered here with a `RequestArgumentError` of the same message, and
-    `mthds`'s `RunStillRunningError` on the protocol's 202 degrade, answered with this SDK's subclass of it,
-    the same members carried over. An error that already carries a verdict, such as the
-    `ApiUnreachableError` the `_send` override raises, is returned as it is.
+    `extra` carries a protocol arg), answered here with a `RequestArgumentError` of the same message and
+    problem, and `mthds`'s `RunStillRunningError` on the protocol's 202 degrade, answered with this SDK's
+    subclass of it, the same members and problem carried over. The message is the base's without the
+    next step it appends, as this SDK's messages are (`_message_of`). An error that already carries a
+    verdict, such as the `ApiUnreachableError` the `_send` override raises, is returned as it is.
     """
     if isinstance(exc, PipelexRequestError):
         return exc
+    message = _message_of(exc)
     if isinstance(exc, _MthdsRunStillRunningError):
-        return RunStillRunningError(str(exc), run_id=exc.run_id, retry_after_seconds=exc.retry_after_seconds, location=exc.location)
-    return RequestArgumentError(str(exc))
+        return RunStillRunningError(
+            message, run_id=exc.run_id, retry_after_seconds=exc.retry_after_seconds, location=exc.location, problem=exc.problem
+        )
+    return RequestArgumentError(message, problem=exc.problem)
+
+
+def _message_of(exc: PipelineRequestError) -> str:
+    """A standard error's message as it was given, without the problem's next step its base appends on its own line."""
+    return str(exc).removesuffix(f"\nNext step: {exc.problem.next_step.detail}")
 
 
 def _normalized_selector(*, name: str, value: object) -> str | None:
@@ -3256,7 +3305,7 @@ def _normalized_selector(*, name: str, value: object) -> str | None:
         return None
     if not isinstance(value, str):
         msg = f"{name} must be a string, received {type(value).__name__}."
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument=name, reason="not_a_string"))
     return value or None
 
 
@@ -3297,7 +3346,7 @@ def _merge_run_extensions(
     reserved_overlap = extensions.keys() & _RESERVED_RUN_ARGS
     if reserved_overlap:
         msg = f"extra carries reserved request args {sorted(reserved_overlap)} — pass them as named parameters instead."
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="extra", reason="reserved_argument"))
     selected_method_ref = _normalized_selector(name="method_ref", value=method_ref)
     if selected_method_ref is not None:
         extensions["method_ref"] = selected_method_ref
@@ -3352,23 +3401,32 @@ def _idempotency_key_of(value: object) -> str | None:
     fault = _idempotency_key_fault(value)
     if fault is None and isinstance(value, str):
         return value
+    words = fault.words if fault is not None else "is not a string"
+    reason = fault.reason if fault is not None else "not_a_string"
     msg = (
         f"The idempotency key must be 1 to {_MAX_IDEMPOTENCY_KEY_LENGTH} visible ASCII characters (`!` to `~`), "
-        f"and this one {fault or 'is not a string'}. Leave it out to start the run without one."
+        f"and this one {words}. Leave it out to start the run without one."
     )
-    raise RequestArgumentError(msg)
+    raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="idempotency_key", reason=reason))
 
 
-def _idempotency_key_fault(value: object) -> str | None:
+class _KeyFault(NamedTuple):
+    """What is wrong with an idempotency key: in words for the message, and as the problem's reason."""
+
+    words: str
+    reason: str
+
+
+def _idempotency_key_fault(value: object) -> _KeyFault | None:
     """What is wrong with an idempotency key, or `None` when it is a valid one."""
     if not isinstance(value, str):
-        return "is not a string"
+        return _KeyFault(words="is not a string", reason="not_a_string")
     if not value:
-        return "is empty"
+        return _KeyFault(words="is empty", reason="empty")
     if not _VISIBLE_ASCII.fullmatch(value):
-        return "holds a character outside visible ASCII"
+        return _KeyFault(words="holds a character outside visible ASCII", reason="not_visible_ascii")
     if len(value) > _MAX_IDEMPOTENCY_KEY_LENGTH:
-        return f"is {len(value)} characters long"
+        return _KeyFault(words=f"is {len(value)} characters long", reason="too_long")
     return None
 
 
@@ -3393,16 +3451,16 @@ def _assert_method_ref_pairs_with_nothing(*, mthds_contents: list[str] | None, c
         return
     if mthds_contents:
         msg = "method_ref and inline mthds_contents are mutually exclusive; send one or the other."
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="method_ref", reason="mutually_exclusive"))
     if carries_files:
         msg = "method_ref and a method bundle (bundle_b64 / files) are mutually exclusive; send one or the other."
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="method_ref", reason="mutually_exclusive"))
     if "method_id" in merged_extra:
         msg = (
             "method_ref and method_id are mutually exclusive: an address run carries its own provenance "
             "and takes no run-history linkage id. Send exactly one method selector."
         )
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="method_ref", reason="mutually_exclusive"))
 
 
 def _assert_linkage_method_id_is_bare(*, has_inline_source: bool, merged_extra: dict[str, Any] | None) -> None:
@@ -3431,7 +3489,7 @@ def _assert_linkage_method_id_is_bare(*, has_inline_source: bool, merged_extra: 
         "inline source is what runs, so a version suffix would claim a version that did not. Send the bare id "
         "(parse_method_selector(...).method_id), or drop the inline source to run the version the selector names."
     )
-    raise RequestArgumentError(msg)
+    raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="method_id", reason="version_suffix_beside_inline_source"))
 
 
 def _quick_request_timeout_seconds(request_timeout_seconds: float) -> float:
@@ -3577,36 +3635,49 @@ def _status_filter(status: Sequence[RunStatus] | None) -> tuple[RunStatus, ...] 
     requested = set(status)
     if not requested:
         msg = f'"status" must name one or more of {", ".join(RunStatus)}; pass status=None to list every status.'
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="status", reason="empty"))
     unknown = sorted(f"{name}" for name in requested if name not in _RUN_STATUSES)
     if unknown:
         msg = f"Unknown run status(es) {', '.join(unknown)}; valid statuses are: {', '.join(RunStatus)}."
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="status", reason="unknown_value"))
     return tuple(run_status for run_status in RunStatus if run_status in requested)
 
 
+class _Argument(NamedTuple):
+    """An argument a call refuses: its parameter's name, which the refusal's problem names, and what it is, as its message says."""
+
+    name: str
+    what: str
+
+
 #: What each id a route puts in its path is, as a refusal of it names it.
-_METHOD_ID_ARGUMENT = "a method id, the method's non-empty bare catalog id"
-_EXAMPLE_ID_ARGUMENT = "an example id, the example's non-empty `example_id`"
-_RUN_ID_ARGUMENT = "a run id, the run's non-empty `pipeline_run_id`"
-_ORG_ID_ARGUMENT = "an organization id, the organization's non-empty `org_id`"
-_API_KEY_ID_ARGUMENT = "an API key id, the key's non-empty `id`"
+_METHOD_ID_ARGUMENT = _Argument(name="method_id", what="a method id, the method's non-empty bare catalog id")
+_EXAMPLE_ID_ARGUMENT = _Argument(name="example_id", what="an example id, the example's non-empty `example_id`")
+_RUN_ID_ARGUMENT = _Argument(name="run_id", what="a run id, the run's non-empty `pipeline_run_id`")
+_ORG_ID_ARGUMENT = _Argument(name="org_id", what="an organization id, the organization's non-empty `org_id`")
+_API_KEY_ID_ARGUMENT = _Argument(name="key_id", what="an API key id, the key's non-empty `id`")
 
 #: What the run id of each example write is, as a refusal of it names it.
-_CREATE_RUN_ID_ARGUMENT = "a run_id naming a run of this method that used these inputs, a non-empty string, or none"
-_RECORD_RUN_ID_ARGUMENT = "a run_id naming a run of this method that used the example's inputs, a non-empty string"
+_CREATE_RUN_ID_ARGUMENT = _Argument(name="run_id", what="a run_id naming a run of this method that used these inputs, a non-empty string, or none")
+_RECORD_RUN_ID_ARGUMENT = _Argument(name="run_id", what="a run_id naming a run of this method that used the example's inputs, a non-empty string")
+_INPUT_REVISION_ARGUMENT = _Argument(
+    name="input_revision", what="an input_revision, the example's revision whose inputs the run used, a positive integer"
+)
 
 #: The ids that are dot segments, which the URL resolves before the request leaves.
 _DOT_SEGMENTS = frozenset({".", ".."})
 
 
-def _argument_refusal(call: str, what: str, got: str) -> RequestArgumentError:
-    """The refusal of an argument a call cannot take, worded as every such refusal is: `<call>() takes <what>; got <got>.`"""
-    msg = f"{call}() takes {what}; got {got}."
-    return RequestArgumentError(msg)
+def _argument_refusal(call: str, argument: _Argument, got: str, *, reason: str) -> RequestArgumentError:
+    """The refusal of an argument a call cannot take, worded as every such refusal is: `<call>() takes <what>; got <got>.`
+
+    Its problem is `client.argument_invalid`, naming the argument and `reason`.
+    """
+    msg = f"{call}() takes {argument.what}; got {got}."
+    return RequestArgumentError(msg, problem=argument_invalid_problem(argument=argument.name, reason=reason))
 
 
-def _require_non_empty_id(value: object, *, call: str, what: str) -> str:
+def _require_non_empty_id(value: object, *, call: str, what: _Argument) -> str:
     """A caller's id, checked to be a non-empty `str`: the one check every id a call takes goes through.
 
     Whether the id enters a path (`_id_path_segment`) or a body (a run id an example write records),
@@ -3625,10 +3696,10 @@ def _require_non_empty_id(value: object, *, call: str, what: str) -> str:
         got = "None"
     else:
         got = type(value).__name__
-    raise _argument_refusal(call, what, got)
+    raise _argument_refusal(call, what, got, reason="empty" if isinstance(value, str) else "not_a_string")
 
 
-def _id_path_segment(value: object, *, call: str, what: str) -> str:
+def _id_path_segment(value: object, *, call: str, what: _Argument) -> str:
     """A caller's id as one segment of a route's path, percent-encoded: the one place an id enters a path.
 
     `quote(safe='')` escapes every character a path gives meaning to but the dot, so an id of `.` or `..`
@@ -3646,11 +3717,13 @@ def _id_path_segment(value: object, *, call: str, what: str) -> str:
     """
     id_value = _require_non_empty_id(value, call=call, what=what)
     if id_value in _DOT_SEGMENTS:
-        raise _argument_refusal(call, what, f'"{id_value}", a dot segment, which the URL would resolve into another route\'s path')
+        raise _argument_refusal(
+            call, what, f'"{id_value}", a dot segment, which the URL would resolve into another route\'s path', reason="dot_segment"
+        )
     try:
         return quote(id_value, safe="")
     except UnicodeEncodeError as exc:
-        raise _argument_refusal(call, what, "a string holding a lone surrogate, which a URL cannot carry") from exc
+        raise _argument_refusal(call, what, "a string holding a lone surrogate, which a URL cannot carry", reason="lone_surrogate") from exc
 
 
 # How many files of a saved tree `write_method_tree` downloads at once, as many as `mthds` uploads at once.
@@ -3805,7 +3878,7 @@ def _method_path(method_id: str, *, call: str) -> str:
             "itself, never one of its versions. Strip the suffix with parse_method_selector, and read a published version "
             "with get_method_version."
         )
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="method_id", reason="version_suffix"))
     return f"methods/{segment}"
 
 
@@ -3850,11 +3923,11 @@ def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArt
     requested = set(artifacts)
     if not requested:
         msg = "An artifact selection must name at least one RunArtifact; pass artifacts=None to read them all."
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="artifacts", reason="empty"))
     unknown = sorted(f"{name}" for name in requested if name not in _RUN_ARTIFACTS)
     if unknown:
         msg = f"Unknown result artifact(s) {', '.join(unknown)}; valid artifacts are: {', '.join(RunArtifact)}."
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="artifacts", reason="unknown_value"))
     return tuple(artifact for artifact in RunArtifact if artifact in requested)
 
 
@@ -3910,7 +3983,7 @@ def _is_missing_route_404(body: str) -> bool:
     neither. An empty, non-JSON or non-object body is no answer either. `type` is deliberately not read:
     a generic RFC 9457 renderer puts `type: "about:blank"` on an unmatched route too.
     """
-    members = ProblemDocument.make_from_body(body).members
+    members = HostedProblemMembers.make_from_body(body).members
     return members is None or _ANSWERED_404_MEMBERS.isdisjoint(members)
 
 
@@ -3937,7 +4010,7 @@ def _run_result_failed(run_id: str, response: httpx.Response) -> RunResultFailed
     stored result it refuses to read, or one from a platform that predates the member) or with a
     status this SDK does not know reads as `FAILED`, and its `detail` still says what happened.
     """
-    document = ProblemDocument.make_from_body(response.text)
+    document = HostedProblemMembers.make_from_body(response.text)
     body = document.members or {}
     message = document.server_message or "Run finished without a result."
     raw_status = body.get("run_status")
@@ -3949,9 +4022,9 @@ def _run_result_failed(run_id: str, response: httpx.Response) -> RunResultFailed
 
 def _is_valid_base_url(value: str) -> bool:
     """Whether a base URL is host-only — http/https, no path, query, fragment, or
-    embedded credentials (auth travels in the Authorization header, never the URL).
-    Endpoints compose as `{base}/v1/{endpoint}`, so a path-prefixed base would double
-    the prefix.
+    embedded credentials (auth travels in the Authorization header, never the URL) — and one httpx
+    can make a URL of. Endpoints compose as `{base}/v1/{endpoint}`, so a path-prefixed base would
+    double the prefix.
     """
     # `urlsplit`, never `urlparse`: `urlparse` moves `;params` out of the path, so
     # `https://api.example.com/;token=…` would pass as host-only and send its token in every request
@@ -3968,7 +4041,15 @@ def _is_valid_base_url(value: str) -> bool:
         return False
     if parsed.username or parsed.password:
         return False
-    return not parsed.query and not parsed.fragment
+    if parsed.query or parsed.fragment:
+        return False
+    # A value httpx cannot make a URL of, such as one whose host holds a control character, would fail every
+    # request; `@pipelex/sdk`'s WHATWG parser refuses it here too.
+    try:
+        httpx.URL(value)
+    except httpx.InvalidURL:
+        return False
+    return True
 
 
 # The default port of each scheme a base URL may carry, which a URL shown in a refusal leaves out,
@@ -3999,6 +4080,12 @@ def _describe_refused_base_url(value: str) -> str:
         return "(not shown: it is not an http or https URL)"
     if not hostname:
         return "(not shown: it is not an absolute URL)"
+    # A host httpx cannot make a URL of is one WHATWG's parser refuses too, and `@pipelex/sdk` shows
+    # such a value as no URL at all.
+    try:
+        httpx.URL(value)
+    except httpx.InvalidURL:
+        return "(not shown: it is not an absolute URL)"
     host = f"[{hostname}]" if ":" in hostname else hostname
     if port is not None and port != _DEFAULT_PORTS[parsed.scheme]:
         host = f"{host}:{port}"
@@ -4027,12 +4114,12 @@ def _origin_of(base_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
-def _failure_reason(document: ProblemDocument, response: httpx.Response) -> str:
+def _failure_reason(document: HostedProblemMembers, response: httpx.Response) -> str:
     """The reason a non-2xx answer gives, in the order a person is best served by.
 
     The problem's `detail`, else its `title`, else the raw body (cut short, since a gateway's HTML
-    page can be long), else the status text — the order the `mthds` base client's own message uses,
-    kept identical so a refusal reads the same whichever client raised it.
+    page can be long), else the status text — the order `@pipelex/sdk`'s message uses, so a refusal
+    reads the same from either SDK.
     """
     for candidate in (document.server_message, document.title):
         if candidate and candidate.strip():
@@ -4043,41 +4130,70 @@ def _failure_reason(document: ProblemDocument, response: httpx.Response) -> str:
     return response.reason_phrase or "no reason given"
 
 
-# The Pipelex members below are read leniently, like the shared ones `ProblemDocument` reads: an odd
-# shape reads as `None` and never masks the underlying failure, which `server_message` and the raw
-# `problem` still carry. `validation_errors` items are a closed shape, so the list is narrowed whole; a
-# `FieldError` reads each field leniently, so only a non-object item sets `errors` to `None`.
-_VALIDATION_ERRORS_ADAPTER: TypeAdapter[list[ValidationErrorItem]] = TypeAdapter(list[ValidationErrorItem])
-_FIELD_ERRORS_ADAPTER: TypeAdapter[list[FieldError]] = TypeAdapter(list[FieldError])
+def _what_could_not_be_read(failure: json.JSONDecodeError | UnicodeDecodeError | ValidationError, *, response: httpx.Response) -> str:
+    """What a 2xx answer's body is, named by the failure its read met, for `_unreadable_answer`'s message."""
+    match failure:
+        case UnicodeDecodeError():
+            return "a body that is not UTF-8"
+        case json.JSONDecodeError():
+            return "a body that is not JSON" if response.content else "an empty body where JSON was expected"
+        case ValidationError():
+            return "a body that is not an object" if _refuses_a_non_object(failure) else "a body that is not the answer the route returns"
 
 
-def _narrowed_validation_errors(diagnostics: list[ValidationDiagnostic] | None) -> list[ValidationErrorItem] | None:
-    """Narrow the protocol's neutral diagnostics to this SDK's `ValidationErrorItem`, or `None`.
+def _what_the_body_is(response: httpx.Response) -> str:
+    """What a 2xx answer's body is, for `_unreadable_answer`'s message, when the base refused it without a read failure.
 
-    `ProblemDocument` keeps the list only when every item is a diagnostic, and carries the runner's
-    locators (`pipe_code`, `field_path`, …) on each item's extras; the narrowing types them. A list
-    whose items do not all fit — a category this SDK does not know — reads as `None`, the raw list
-    staying on the error's `problem`.
+    The base refuses a 2xx it parsed, such as a `start` acknowledgement naming no run, so the body is read
+    once more here only to name it in the words a failed read would: one that does read as a JSON object is
+    not the answer the route returns.
     """
-    if diagnostics is None:
-        return None
     try:
-        return _VALIDATION_ERRORS_ADAPTER.validate_python([diagnostic.model_dump() for diagnostic in diagnostics])
-    except ValidationError:
-        return None
+        decoded = _decoded_answer(response)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return _what_could_not_be_read(exc, response=response)
+    return "a body that is not the answer the route returns" if isinstance(decoded, dict) else "a body that is not an object"
 
 
-def _field_errors_of(value: Any) -> list[FieldError] | None:
-    """The platform's field-level `errors[]`, or `None` when it is absent or not a list of objects."""
-    if not isinstance(value, list):
-        return None
-    try:
-        return _FIELD_ERRORS_ADAPTER.validate_python(value)
-    except ValidationError:
-        return None
+def _decoded_answer(response: httpx.Response) -> Any:
+    """A 2xx answer's body decoded as JSON by the rules the protocol decodes every body by.
+
+    The bytes are read as text in the encoding JSON's own detection finds (`json.detect_encoding`, UTF-8
+    unless the body is UTF-16 or UTF-32), as `response.json()` reads them, and the text is decoded by
+    `decode_json_as_written` (`pipelex_sdk._answer_json`): the guards of the base's problem decoder,
+    `mthds.protocol.problem.answers.decode_json`, with the numbers kept as written, as the base keeps a
+    success body's. It refuses a body nested deeper than `MAX_BODY_NESTING`,
+    the constants `NaN` and `Infinity` and a number past the range of a double, all of which
+    `response.json()` accepts or, for the nesting, fails on with a `RecursionError`. A body it refuses is
+    raised as the `json.JSONDecodeError` of a body that is not JSON, so every reader names it so;
+    `@pipelex/sdk` reads its answers by the same rules.
+
+    Raises:
+        UnicodeDecodeError: The body is not text in the encoding detected.
+        json.JSONDecodeError: The body is not JSON the protocol reads, an empty one included.
+    """
+    content = response.content
+    text = content.decode(json.detect_encoding(content), "surrogatepass")
+    decoded = decode_json_as_written(text)
+    if not decoded.is_json:
+        msg = "The body is not JSON the protocol reads: it does not parse, nests too deeply, or holds a number JSON does not define"
+        raise json.JSONDecodeError(msg, text, 0)
+    return decoded.value
 
 
-def _non_empty_string_member(members: dict[str, Any], key: str) -> str | None:
-    """A non-empty string member of a decoded body, or `None` when it is absent, empty or not a string."""
-    value = members.get(key)
-    return value if isinstance(value, str) and value else None
+def _refusal_reading(response: httpx.Response, *, may_start_run: bool) -> AnswerReading:
+    """The standard's reading of a non-2xx answer, agreeing with the `run_may_have_started` of the error it becomes.
+
+    It is `pipelex_sdk.errors.answer_reading` given the answer and the platform code its body carries,
+    which decides a `503`: the reading the `mthds` client gives, but for a request that may create a run,
+    where it follows the SDK's own reading of whether one may have started.
+    """
+    code = HostedProblemMembers.make_from_body(response.text).code
+    return answer_reading(
+        status=response.status_code, body=response.text, headers=lower_case_headers(response.headers), may_start_run=may_start_run, code=code
+    )
+
+
+def _carries_links(endpoint: str) -> bool:
+    """Whether an answer of the `/v1` endpoint `endpoint`, query included, holds signed links: `POST /v1/blobs/missing`'s upload targets."""
+    return endpoint.partition("?")[0] == _MISSING_BLOBS

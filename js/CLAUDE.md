@@ -35,7 +35,7 @@ Flat `src/` — the SDK has one client, so there is no runner/registry abstracti
 ```
 src/
 ├── index.ts        # Public barrel: re-exports mthds/protocol + the client/models/runs/errors
-├── client.ts       # PipelexApiClient — request pipeline + all routes (implements MTHDSProtocol)
+├── client.ts       # PipelexApiClient — request pipeline + all routes (implements MTHDSProtocol, all but validate)
 ├── models.ts       # Dict concretes, /v1/validate surface, tools + crate route req/resp models
 ├── runs.ts         # Run-lifecycle types + the single poll loop (pollUntilResult)
 └── errors.ts       # Typed errors (derive from PipelineRequestError from mthds/protocol)

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
+from mthds.runners.api.exceptions import ApiTransportError
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
@@ -108,6 +109,28 @@ class TestClientTransport:
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client._request_product("GET", "me", read=_as_is))
         assert exc_info.value.code == "ConnectTimeout"
+
+    @pytest.mark.parametrize(
+        ("failure", "code"),
+        [
+            pytest.param(httpx.ConnectError, "client.unreachable", id="a refused connection"),
+            pytest.param(httpx.ConnectTimeout, "client.unreachable", id="a connection that never opened in time"),
+            pytest.param(httpx.ReadTimeout, "client.timeout", id="an answer that never came in time"),
+        ],
+    )
+    def test_a_request_that_got_no_answer_is_the_standard_s_transport_error_carrying_its_problem(
+        self, unreachable_client: UnreachableClientBuilder, failure: type[httpx.TransportError], code: str
+    ) -> None:
+        client = unreachable_client(failure)
+        with pytest.raises(ApiUnreachableError) as exc_info:
+            asyncio.run(client._request_product("GET", "me", read=_as_is))
+        err = exc_info.value
+        # A handler written against the standard's client catches it, and reads the standard's problem.
+        assert isinstance(err, ApiTransportError)
+        assert err.problem.code == code
+        assert err.request_url == f"{_BASE_URL}/v1/me"
+        # The message is the one this SDK has always given, with no next step appended.
+        assert "Next step" not in str(err)
 
     def test_a_body_that_does_not_decode_maps_to_unreachable(self) -> None:
         """A gzip answer whose bytes are not gzip is lost on the way, as `@pipelex/sdk` reports it (`Z_DATA_ERROR`)."""

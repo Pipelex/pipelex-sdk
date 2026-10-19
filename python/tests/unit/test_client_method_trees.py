@@ -379,7 +379,9 @@ class TestClientMethodTrees:
         assert not platform.api_requests
 
     def test_an_answer_asking_for_a_blob_the_tree_does_not_hold_is_one_the_sdk_cannot_read(self, mocker: MockerFixture) -> None:
-        """The platform's fault, not the caller's: nothing is uploaded, and the answer travels redacted."""
+        """The platform's fault, not the caller's: the standard's client refuses an answer naming a blob it did not
+        ask about, nothing is uploaded, and the answer travels redacted.
+        """
         platform = _Platform(extra_missing=("0" * 64,))
         client = _client(platform, mocker)
 
@@ -387,7 +389,7 @@ class TestClientMethodTrees:
             asyncio.run(client.create_method(MethodWriteInput(name="Receipts", contents={"data/big.txt": _LARGE})))
 
         error = _unreadable(caught, signature="fixture-signature")
-        assert str(error) == f"API POST /v1/blobs/missing answered 200 with a body asking for blobs this tree does not hold: {'0' * 64}"
+        assert str(error) == "API POST /v1/blobs/missing answered 200 with a body that is not the answer the route returns"
         assert error.status == 200
         assert error.__cause__ is None
         assert json.loads(error.response_body)["missing"][0]["upload"]["url"] == "[redacted]"
@@ -472,10 +474,11 @@ class TestClientMethodTrees:
             asyncio.run(client.create_method(MethodWriteInput(name="Receipts", contents={"data/big.txt": _LARGE})))
 
         error = _transfer_error(caught)
+        # The standard's client names the blob whose upload got no answer.
         assert (error.operation, error.code, error.sha256, error.status) == (
             MethodFileTransferOperation.UPLOAD,
             MethodFileTransferCode.UNREACHABLE,
-            None,
+            _sha256(_LARGE),
             None,
         )
         assert error_verdict_of(error) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)

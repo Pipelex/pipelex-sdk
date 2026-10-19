@@ -26,6 +26,7 @@ instead of a returned `Response` (an httpx stream is only live inside its own bl
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import math
 import os
@@ -40,6 +41,9 @@ from urllib.parse import unquote, urlsplit
 import httpx
 from httpx._decoders import SUPPORTED_DECODERS  # ruff: ignore[import-private-name]
 from mthds.protocol.exceptions import PipelineRequestError
+from mthds.protocol.problem.client_problems import make_client_problem
+from mthds.protocol.problem.registry import CoreCode
+from mthds.runners.api.problem import transport_failure_problem
 from pydantic import BaseModel, ValidationError
 
 from pipelex_sdk.artifact_models import (
@@ -65,6 +69,8 @@ from pipelex_sdk.errors import (
     RunFailedError,
     RunStillRunningError,
     ScopeUnavailableError,
+    argument_invalid_problem,
+    response_unreadable_problem,
 )
 from pipelex_sdk.runs import RunArtifact, RunResultCompleted, RunResultFailed, RunResultRunning, RunResults
 
@@ -75,6 +81,8 @@ _ARGUMENT_REFUSED = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Sequence
     from contextlib import AbstractAsyncContextManager
+
+    from mthds.protocol.problem.models import Problem
 
     from pipelex_sdk.runs import RunResultState
 
@@ -157,7 +165,13 @@ class BulkResolveClient(Protocol):
 
 
 class ArtifactCapableClient(BulkResolveClient, Protocol):
-    """What `download_artifacts` needs on top: the single-shot result lookup, for the `run_id` arm."""
+    """What `download_artifacts` needs on top: the single-shot result lookup, for the `run_id` arm,
+    and the API key the client sends, empty for a client that sends none, which decides the problem
+    of a refused credential (`ArtifactAuthenticationError`).
+    """
+
+    @property
+    def api_key(self) -> str: ...
 
     async def get_run_result(self, run_id: str, *, artifacts: Sequence[RunArtifact] | None = None) -> RunResultState: ...
 
@@ -360,12 +374,12 @@ def artifact_filename(location: ArtifactLocation, content_type: str | None, scop
     loose = cast("object", location)
     if not isinstance(loose, ArtifactLocation):
         msg = f"artifact_filename needs an ArtifactLocation, as locate_artifacts answers; got a {type(loose).__name__}."
-        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED)
+        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED, problem=argument_invalid_problem(argument="location", reason="not_a_location"))
     first = loose.found_at[0] if loose.found_at else None
     segments = _parse_path(first) if first is not None else None
     if segments is None:
         msg = f'artifact_filename needs a location whose first "found_at" entry is a path such as "$.items[0].url"; got {first!r}.'
-        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED)
+        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED, problem=argument_invalid_problem(argument="location", reason="not_a_path"))
     return _filename_for(segments, loose.uri, content_type, checked_scope)
 
 
@@ -451,7 +465,9 @@ def _require_scope(scope: ArtifactScope) -> ArtifactScope:
         return ArtifactScope(scope)
     except ValueError as exc:
         msg = f'"scope" must be "main_stuff" or "working_memory", got {scope!r}.'
-        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED) from exc
+        raise ArtifactOperationError(
+            msg, verdict=_ARGUMENT_REFUSED, problem=argument_invalid_problem(argument="scope", reason="unknown_value")
+        ) from exc
 
 
 # ── resolve_artifacts ────────────────────────────────────────────────
@@ -476,7 +492,7 @@ async def resolve_artifacts(client: BulkResolveClient, uris: list[str]) -> list[
                 f"The bulk resolve route answered {len(answer.items)} item(s) for {len(chunk)} reference(s) — "
                 "a malformed answer, so no reference can be matched to its verdict."
             )
-            raise ArtifactOperationError(msg)
+            raise ArtifactOperationError(msg, problem=response_unreadable_problem(status=200))
         items.extend(answer.items)
     return items
 
@@ -521,7 +537,7 @@ class ArtifactStream:
             total += len(chunk)
             if total > self._max_bytes:
                 msg = f"The artifact crossed the {_format_mib(self._max_bytes)} cap mid-stream."
-                raise ArtifactFetchError(msg, uri=self.uri, code="too_large", status=self.status_code)
+                raise ArtifactFetchError(msg, uri=self.uri, code="too_large", status=self.status_code, problem=_over_the_cap(self._max_bytes))
             yield chunk
 
     async def read(self) -> bytes:
@@ -564,7 +580,7 @@ async def _stream_resolved_url(
                     declared = _declared_length(response.headers)
                     if declared is not None and declared > bounds.max_bytes:
                         msg = f"The artifact is {_format_mib(declared)}, over the {_format_mib(bounds.max_bytes)} cap."
-                        raise ArtifactFetchError(msg, uri=uri, code="too_large", status=response.status_code)
+                        raise ArtifactFetchError(msg, uri=uri, code="too_large", status=response.status_code, problem=_over_the_cap(bounds.max_bytes))
                     yield ArtifactStream(uri, response, bounds.max_bytes)
             except httpx.InvalidURL as exc:
                 # Not an `HTTPError`: httpx refuses the link at request build, before any transport.
@@ -572,13 +588,45 @@ async def _stream_resolved_url(
                 raise ArtifactFetchError(msg, uri=uri, code="unsupported_url") from exc
             except httpx.TimeoutException as exc:
                 msg = f"Fetching the artifact timed out after {bounds.timeout_seconds}s."
-                raise ArtifactFetchError(msg, uri=uri, code="timeout") from exc
+                raise ArtifactFetchError(msg, uri=uri, code="timeout", problem=_out_of_time(bounds.timeout_seconds)) from exc
+            except (httpx.TransportError, httpx.DecodingError) as exc:
+                msg = f"The artifact could not be fetched: {exc}."
+                problem = _unreachable_store(exc, link=checked_url, timeout_seconds=bounds.timeout_seconds)
+                raise ArtifactFetchError(msg, uri=uri, code="network", problem=problem) from exc
             except httpx.HTTPError as exc:
                 msg = f"The artifact could not be fetched: {exc}."
                 raise ArtifactFetchError(msg, uri=uri, code="network") from exc
     except TimeoutError as exc:
         msg = f"Fetching the artifact timed out after {bounds.timeout_seconds}s."
-        raise ArtifactFetchError(msg, uri=uri, code="timeout") from exc
+        raise ArtifactFetchError(msg, uri=uri, code="timeout", problem=_out_of_time(bounds.timeout_seconds)) from exc
+
+
+def _over_the_cap(max_bytes: int) -> Problem:
+    """`client.download_limit_exceeded`, naming the byte cap a fetch crossed."""
+    return make_client_problem(CoreCode.CLIENT_DOWNLOAD_LIMIT_EXCEEDED, params={"limit": max_bytes})
+
+
+def _out_of_time(timeout_seconds: float) -> Problem:
+    """`client.timeout`, naming the budget a fetch ran out of."""
+    return make_client_problem(CoreCode.CLIENT_TIMEOUT, params={"seconds": timeout_seconds})
+
+
+def _unreachable_store(failure: httpx.TransportError | httpx.DecodingError, *, link: str, timeout_seconds: float) -> Problem:
+    """The transport's problem of a fetch that got no usable answer: `client.unreachable`, naming the store by its origin.
+
+    It is the base's reading of a request that got no answer (`transport_failure_problem`), for a request
+    that creates nothing; a timeout is read before it, as `client.timeout`. The store is named by the
+    link's scheme and host alone, since the link's query string carries its authorization.
+    """
+    parsed = urlsplit(link)
+    return transport_failure_problem(failure, creates_run=False, base_url=f"{parsed.scheme}://{parsed.netloc}", timeout_seconds=timeout_seconds)
+
+
+def _os_error_reason(exc: OSError) -> str:
+    """Why the system refused a file operation, as its error code (`EACCES`, `ENOTDIR`, …), else its class name."""
+    if exc.errno is not None and exc.errno in errno.errorcode:
+        return errno.errorcode[exc.errno]
+    return type(exc).__name__
 
 
 def fetch_artifact(
@@ -623,7 +671,7 @@ async def _fetch_artifact(
         raise ArtifactFetchError(entry.error.detail, uri=uri, code=entry.error.code)
     if entry.url is None:
         msg = "The bulk resolve route answered an item with neither a link nor an error."
-        raise ArtifactOperationError(msg)
+        raise ArtifactOperationError(msg, problem=response_unreadable_problem(status=200))
     storage_client = _new_storage_client(bounds.timeout_seconds)
     try:
         async with _stream_resolved_url(storage_client, uri, entry.url, bounds) as stream:
@@ -643,7 +691,7 @@ def _require_positive(name: str, value: float) -> None:
     """Refuse a bound that is not a positive, finite number."""
     if not math.isfinite(value) or value <= 0:
         msg = f'"{name}" must be a positive number, got {value}.'
-        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED)
+        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED, problem=argument_invalid_problem(argument=name, reason="not_positive"))
 
 
 def _checked_url(uri: str, download_url: str, *, allow_http: bool) -> str:
@@ -782,14 +830,16 @@ async def download_artifacts(
     bounds = _validated_bounds(opts)
     if opts.concurrency < 1:
         msg = f'"concurrency" must be a positive integer, got {opts.concurrency}.'
-        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED)
+        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED, problem=argument_invalid_problem(argument="concurrency", reason="not_positive"))
     _require_positive("max_total_bytes", opts.max_total_bytes)
 
     # An empty `run_id` is no selector at all, and is refused here rather than sent to the results
     # read, which would answer a 404 about a run nobody named.
     if bool(run_id) == (results is not None):
         msg = "download_artifacts takes exactly one of `run_id` (the results are re-read) or `results` (a RunResults in hand)."
-        raise ArtifactOperationError(msg, verdict=_ARGUMENT_REFUSED)
+        raise ArtifactOperationError(
+            msg, verdict=_ARGUMENT_REFUSED, problem=argument_invalid_problem(argument="run_id", reason="not_exactly_one_selector")
+        )
     read_results = results if results is not None else await _read_completed_results(client, cast("str", run_id), scope)
     walked = _scope_value(read_results, scope, read_here=results is None)
 
@@ -806,7 +856,8 @@ async def download_artifacts(
     except OSError as exc:
         msg = f'The download directory "{target_dir}" cannot be created or used: {exc}.'
         # The environment refuses the download, not the run: someone fixes the directory.
-        raise ArtifactOperationError(msg, verdict=ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False)) from exc
+        problem = make_client_problem(CoreCode.CLIENT_WRITE_FAILED, params={"path": str(target_dir), "reason": _os_error_reason(exc)})
+        raise ArtifactOperationError(msg, verdict=ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False), problem=problem) from exc
 
     budget = _DownloadBudget(max_total_bytes=opts.max_total_bytes)
     try:
@@ -816,7 +867,7 @@ async def download_artifacts(
             raise
         verdict = _assemble_verdict(scope, [_item_error(location, None, "aborted", _SKIPPED_CREDENTIAL) for location in locations])
         msg = f"The resolve route refused the credential ({exc.status}); no artifact was downloaded."
-        raise ArtifactAuthenticationError(msg, status=exc.status, verdict=verdict) from exc
+        raise ArtifactAuthenticationError(msg, status=exc.status, verdict=verdict, credential_sent=bool(client.api_key)) from exc
 
     semaphore = asyncio.Semaphore(opts.concurrency)
     storage_client = _new_storage_client(bounds.timeout_seconds)
@@ -845,7 +896,7 @@ async def download_artifacts(
     if budget.credential_failure is not None:
         status = budget.credential_failure.status
         msg = f"The resolve route refused the credential ({status}) part-way through the download; the verdict so far is on this error."
-        raise ArtifactAuthenticationError(msg, status=status, verdict=verdict) from budget.credential_failure
+        raise ArtifactAuthenticationError(msg, status=status, verdict=verdict, credential_sent=bool(client.api_key)) from budget.credential_failure
     return verdict
 
 
@@ -879,7 +930,9 @@ def _scope_value(results: RunResults, scope: ArtifactScope, *, read_here: bool) 
     field_name = scope.results_field
     if field_name not in results.model_fields_set:
         if read_here:
-            raise FieldNotIncludedError(field_name, verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False))
+            raise FieldNotIncludedError(
+                field_name, verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False), problem=response_unreadable_problem(status=200)
+            )
         raise FieldNotIncludedError(field_name)
     value = getattr(results, field_name, None)
     if value is None:
