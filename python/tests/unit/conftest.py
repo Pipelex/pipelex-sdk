@@ -17,7 +17,16 @@ from pipelex_sdk.client import PipelexAPIClient
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture, MockType
 
+    from pipelex_sdk.errors import PipelexRequestError
+
 BASE_URL = "http://localhost:8081"
+
+
+def refused_argument(error: PipelexRequestError) -> dict[str, object]:
+    """The argument and the reason an argument refusal names, as its `client.argument_invalid` problem carries them."""
+    assert error.problem.code == "client.argument_invalid"
+    assert error.problem.params is not None
+    return error.problem.params.model_dump(exclude_none=True)
 
 
 class ResponseBuilder(Protocol):

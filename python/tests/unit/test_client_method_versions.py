@@ -37,7 +37,7 @@ from pipelex_sdk.product_models import (
 )
 from pipelex_sdk.runs import PipelexRunResultStart, RunRead
 from pipelex_sdk.validation_models import PipelexInvalidReport, PipelexValidationReport
-from tests.unit.conftest import BASE_URL
+from tests.unit.conftest import BASE_URL, refused_argument
 from tests.unit.test_data import MethodVersionBodies
 
 if TYPE_CHECKING:
@@ -196,6 +196,7 @@ class TestClientMethodVersions:
             asyncio.run(api_client.write_draft("mt_receipts01", MethodDraftInput(input_data={"total": 2})))
 
         assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert refused_argument(exc_info.value) == {"argument": "files", "reason": "missing"}
         send.assert_not_called()
 
     def test_write_draft_sends_an_explicit_none_input_data_to_clear_it(

@@ -2128,7 +2128,7 @@ class PipelexAPIClient(MthdsAPIClient):
         files_given = "files" in draft.model_fields_set
         if not files_given and draft.tree is None and draft.contents is None:
             msg = "write_draft() replaces the draft's whole tree: give it as files (files=None empties the draft), tree or contents."
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="files", reason="missing"))
         files = await self._method_tree_files(
             call="write_draft", files=draft.files, files_given=files_given, tree=draft.tree, contents=draft.contents
         )
@@ -2158,7 +2158,7 @@ class PipelexAPIClient(MthdsAPIClient):
         given = [name for name, present in (("files", files_given), ("tree", tree is not None), ("contents", contents is not None)) if present]
         if len(given) > 1:
             msg = f"{call}() takes the method's tree in one form, files, tree or contents; got {' and '.join(given)}."
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="files", reason="mutually_exclusive"))
         if tree is not None:
             listed_tree = tree
             return await self._prepared_tree_files(lambda: self.prepare_files(listed_tree))
@@ -2280,7 +2280,7 @@ class PipelexAPIClient(MthdsAPIClient):
         target = Path(os.path.normpath(destination.absolute()))
         if not target.name:
             msg = f"Cannot write a method tree at '{destination}': it is the root of a filesystem, and a tree is written as a directory of its own."
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="destination", reason="filesystem_root"))
         staging = await asyncio.to_thread(_make_staging_directory, target)
         is_in_place = False
         try:
@@ -3379,7 +3379,7 @@ def _assert_run_source_named(
     if mthds_contents is None or pipe_code or has_inline_source or merged_extra:
         return
     msg = f"Either pipe_code, files, mthds_contents or a server-specific extension arg (extra) must be provided to the API {route}."
-    raise RequestArgumentError(msg)
+    raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="mthds_contents", reason="empty"))
 
 
 def _idempotency_key_of(value: object) -> str | None:
@@ -3739,7 +3739,7 @@ def _contents_as_bytes(contents: dict[str, bytes | str], *, call: str) -> dict[s
     """
     if not contents:
         msg = f"{call}() got contents holding no file, and a method tree holds at least one; give files=None for an empty draft."
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="contents", reason="empty"))
     data: dict[str, bytes] = {}
     for tree_path, content in contents.items():
         if isinstance(content, bytes):
@@ -3749,7 +3749,7 @@ def _contents_as_bytes(contents: dict[str, bytes | str], *, call: str) -> dict[s
             data[tree_path] = content.encode("utf-8")
         except UnicodeEncodeError as exc:
             msg = f"{call}() got contents['{tree_path}'] holding a lone surrogate, which is no text a file can hold: give its bytes instead."
-            raise RequestArgumentError(msg) from exc
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="contents", reason="lone_surrogate")) from exc
     return data
 
 
@@ -3785,15 +3785,15 @@ def _refuse_unwritable_listing(files: Sequence[SavedMethodFile]) -> None:
         violation = tree_path_violation(saved_file.path)
         if violation is not None:
             msg = f"The listing holds '{saved_file.path}', which is not a tree path ({violation}), so the tree cannot be written."
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="files", reason="not_a_tree_path"))
         if saved_file.path in seen:
             msg = f"The listing holds '{saved_file.path}' twice, so the tree cannot be written."
-            raise RequestArgumentError(msg)
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="files", reason="duplicate_path"))
         seen.add(saved_file.path)
     colliding = path_collisions(seen)
     if colliding:
         msg = f"The listing holds paths that collide once case-folded, or where one names a directory of another: {', '.join(colliding)}."
-        raise RequestArgumentError(msg)
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="files", reason="colliding_paths"))
 
 
 def _refuse_occupied_destination(destination: Path) -> None:
@@ -3810,7 +3810,7 @@ def _refuse_occupied_destination(destination: Path) -> None:
         f"Cannot write a method tree at '{destination}': it already exists and is not an empty directory, "
         "and a written tree holds nothing but its files."
     )
-    raise RequestArgumentError(msg)
+    raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="destination", reason="not_empty"))
 
 
 def _write_new_file(target: Path, data: bytes) -> None:

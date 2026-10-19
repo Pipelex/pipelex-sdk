@@ -38,7 +38,7 @@ from pipelex_sdk.errors import (
     RequestArgumentError,
 )
 from pipelex_sdk.product_models import MethodDraftInput, MethodWriteInput, SavedMethodFile
-from tests.unit.conftest import BASE_URL
+from tests.unit.conftest import BASE_URL, refused_argument
 from tests.unit.test_data import MethodVersionBodies
 
 if TYPE_CHECKING:
@@ -349,6 +349,7 @@ class TestClientMethodTrees:
             asyncio.run(client.write_draft("mt_receipts01", MethodDraftInput(**forms)))
 
         assert error_verdict_of(caught.value) == _ARGUMENT_VERDICT
+        assert refused_argument(caught.value) == {"argument": "files", "reason": "mutually_exclusive"}
         assert not platform.api_requests
 
     def test_a_tree_and_contents_together_are_refused_before_sending(self, mocker: MockerFixture, tmp_path: Path) -> None:
@@ -357,24 +358,30 @@ class TestClientMethodTrees:
         tree = asyncio.run(client.list_method_tree(_tree_dir(tmp_path, {"main.mthds": _MAIN.encode()})))
         platform.api_requests.clear()
 
-        with pytest.raises(RequestArgumentError, match="got tree and contents"):
+        with pytest.raises(RequestArgumentError, match="got tree and contents") as caught:
             asyncio.run(client.create_method(MethodWriteInput(name="Receipts", tree=tree, contents={"main.mthds": _MAIN})))
+
+        assert refused_argument(caught.value) == {"argument": "files", "reason": "mutually_exclusive"}
 
         assert not platform.api_requests
 
     @pytest.mark.parametrize(
-        ("contents", "refusal"),
+        ("contents", "refusal", "reason"),
         [
-            ({}, "holding no file"),
-            ({"main.mthds": "lone \ud800 surrogate"}, "lone surrogate"),
+            ({}, "holding no file", "empty"),
+            ({"main.mthds": "lone \ud800 surrogate"}, "lone surrogate", "lone_surrogate"),
         ],
     )
-    def test_contents_no_tree_can_hold_are_refused_before_sending(self, mocker: MockerFixture, contents: dict[str, str], refusal: str) -> None:
+    def test_contents_no_tree_can_hold_are_refused_before_sending(
+        self, mocker: MockerFixture, contents: dict[str, str], refusal: str, reason: str
+    ) -> None:
         platform = _Platform()
         client = _client(platform, mocker)
 
-        with pytest.raises(RequestArgumentError, match=refusal):
+        with pytest.raises(RequestArgumentError, match=refusal) as caught:
             asyncio.run(client.create_method(MethodWriteInput(name="Receipts", contents=dict(contents))))
+
+        assert refused_argument(caught.value) == {"argument": "contents", "reason": reason}
 
         assert not platform.api_requests
 
@@ -630,24 +637,26 @@ class TestClientMethodTrees:
             destination.mkdir()
             (destination / "notes.txt").write_text("mine")
 
-        with pytest.raises(RequestArgumentError, match="already exists"):
+        with pytest.raises(RequestArgumentError, match="already exists") as caught:
             asyncio.run(client.write_method_tree(_listing({"main.mthds": _MAIN.encode()}), destination=destination))
+
+        assert refused_argument(caught.value) == {"argument": "destination", "reason": "not_empty"}
 
         assert not platform.storage_requests
 
     @pytest.mark.parametrize(
-        ("paths", "refusal"),
+        ("paths", "refusal", "reason"),
         [
-            (["../escape.txt"], "not a tree path"),
-            (["/etc/passwd"], "not a tree path"),
-            (["lib//helper.py"], "not a tree path"),
-            (["main.mthds", "main.mthds"], "twice"),
-            (["Main.mthds", "main.mthds"], "collide"),
-            (["lib", "lib/helper.py"], "collide"),
+            (["../escape.txt"], "not a tree path", "not_a_tree_path"),
+            (["/etc/passwd"], "not a tree path", "not_a_tree_path"),
+            (["lib//helper.py"], "not a tree path", "not_a_tree_path"),
+            (["main.mthds", "main.mthds"], "twice", "duplicate_path"),
+            (["Main.mthds", "main.mthds"], "collide", "colliding_paths"),
+            (["lib", "lib/helper.py"], "collide", "colliding_paths"),
         ],
     )
     def test_a_listing_that_cannot_be_written_is_refused_before_downloading(
-        self, mocker: MockerFixture, tmp_path: Path, paths: list[str], refusal: str
+        self, mocker: MockerFixture, tmp_path: Path, paths: list[str], refusal: str, reason: str
     ) -> None:
         platform = _Platform()
         client = _client(platform, mocker)
@@ -657,6 +666,7 @@ class TestClientMethodTrees:
             asyncio.run(client.write_method_tree(listing, destination=tmp_path / "receipts"))
 
         assert error_verdict_of(caught.value) == _ARGUMENT_VERDICT
+        assert refused_argument(caught.value) == {"argument": "files", "reason": reason}
         assert not platform.storage_requests
         assert not any(tmp_path.iterdir())
 
@@ -825,8 +835,10 @@ class TestClientMethodTrees:
         platform = _Platform()
         client = _client(platform, mocker)
 
-        with pytest.raises(RequestArgumentError, match="root of a filesystem"):
+        with pytest.raises(RequestArgumentError, match="root of a filesystem") as caught:
             asyncio.run(client.write_method_tree(_listing({"main.mthds": _MAIN.encode()}), destination=Path("/")))
+
+        assert refused_argument(caught.value) == {"argument": "destination", "reason": "filesystem_root"}
 
         assert not platform.storage_requests
 
