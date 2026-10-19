@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.46.0] - 2026-10-19
 
 ### Added
 
@@ -17,6 +17,7 @@
 - **The validate verdict's types stand alone (Breaking)**: `PipelexValidationReport` and `PipelexInvalidReport` no longer subclass the standard's `ValidationReport` and `InvalidValidationReport`, which list problem items since protocol 2.0.0 while the hosted plane still sends `validation_errors`, and `ValidationErrorItem` no longer subclasses the standard's `ValidationDiagnostic`; every field they carried stays.
 - **`error_verdict_of` reads an `mthds` error by its problem, and `problem_verdict` translates the standard's verdict**: the standard's client now carries its verdict on its problem, as `domain` and `retry`, so `error_verdict_of` reads an `mthds` error as that problem's verdict in this SDK's vocabulary rather than from the `error_domain` and `retryable` a runner sent: `input` and `method` read as `input`, `account` and `operator` as `config`, `runtime` as `runtime`, and only a `retry` of `yes` is retryable. `problem_verdict` in `pipelex_sdk.error_verdicts` applies the same mapping to any problem of the standard.
 - **A `request_timeout_seconds` that is not a finite number of seconds is refused (Breaking)**: the standard's client now refuses a time limit that is not finite or is negative, and the constructor raises it as a `RequestArgumentError` carrying the standard's problem, where such a limit used to be accepted.
+- **Requires `mthds` 0.22.1, the release that carries the problem document (Breaking)**: the exact pin moves from `mthds==0.22.0` to `mthds==0.22.1`, so every environment holding this `pipelex-sdk` installs exactly that `mthds`, and a project that also pins `mthds` itself has to move with it. `mthds` 0.22.1 makes every error it raises carry a problem coded from the MTHDS core error registry 8.0.0 while a method still travels as `mthds_contents`, the reading this SDK's errors and verdicts now follow; code of your own that calls `mthds`'s client directly follows `mthds`'s changelog, where `ClientNotConfiguredError` replaces `ClientAuthenticationError` and a validate verdict lists its faults in `errors`.
 
 ### Fixed
 

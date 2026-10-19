@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.46.0] - 2026-10-19
 
 ### Added
 
@@ -11,6 +11,7 @@
 - **`ApiResponseErrorOptions.problem` is now `details` (Breaking)**: an `ApiResponseError` built by hand passes the hosted problem document's typed members as `details`, and may pass the answer's `headers`, from which the standard's reading takes a `Retry-After`.
 - **The validate verdict's types stand alone (Breaking)**: `PipelexValidationReport` and `PipelexInvalidReport` no longer extend the standard's `ValidationReport` and `InvalidValidationReport`, which list problem items since protocol 2.0.0 while the hosted plane still sends `validation_errors`, so `PipelexApiClient` implements `MTHDSProtocol` for every route but `validate`, and a `PipelexValidationResult` is no longer assignable to the standard's `ValidationResult`. `ValidationErrorItem` and `SuggestedFix` keep the hosted shape, no longer pinned to the standard's, whose fix shares only its operation kinds, safeties and values.
 - **`errorVerdictOf` reads an `mthds` error by its problem, and `problemVerdict` translates the standard's verdict**: the standard's client now carries its verdict on its problem, as `domain` and `retry`, so `errorVerdictOf` reads an `mthds` error as that problem's verdict in this SDK's vocabulary rather than from the `error_domain` and `retryable` a runner sent: `input` and `method` read as `input`, `account` and `operator` as `config`, `runtime` as `runtime`, and only a `retry` of `yes` is retryable. `problemVerdict` applies the same mapping to any problem of the standard.
+- **The `mthds` floor moves from `^0.30.0` to `^0.32.1` (Breaking)**: `mthds` 0.32.1 is the release that reads every answer as a problem document coded from the MTHDS core error registry 8.0.0 and moves the protocol to 2.0.0, the reading this SDK's errors and verdicts now follow. A project that also imports `mthds` itself moves to 0.32 with it, so that one copy is installed; 0.32.1 is published under the `maint-0.32` dist-tag, so install it as `mthds@^0.32.1`, since `latest` names a release outside this range.
 
 ### Fixed
 
