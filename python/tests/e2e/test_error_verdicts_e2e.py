@@ -94,8 +94,8 @@ class TestPlatformRefusalVerdictLive:
         # The authorizer refused the key before the platform saw it: the body is API Gateway's, with no
         # `code` and no verdict, so the verdict above is the fallback's reading of the 403.
         assert refusal.code is None
-        assert refusal.problem is not None
-        assert _sent_verdict(refusal.problem) == {}
+        assert refusal.problem_document is not None
+        assert _sent_verdict(refusal.problem_document) == {}
 
     def test_reads_a_run_of_an_unknown_method_id_as_input_as_the_platform_sent_it(self) -> None:
         refusal = _refusal_of(lambda client: client.start(method_id=_UNKNOWN_METHOD_ID))
@@ -104,7 +104,7 @@ class TestPlatformRefusalVerdictLive:
         assert refusal.code == "not_found"
         assert refusal.retryable is False
         assert refusal.error_domain == "input"
-        assert _sent_verdict(refusal.problem) == {"retryable": False, "error_domain": "input"}
+        assert _sent_verdict(refusal.problem_document) == {"retryable": False, "error_domain": "input"}
 
     def test_reads_a_body_the_platforms_validation_refuses_as_input_as_the_platform_sent_it(self) -> None:
         refusal = _refusal_of(lambda client: client.resolve_storage_url(_OVERLONG_STORAGE_URI))
@@ -115,4 +115,4 @@ class TestPlatformRefusalVerdictLive:
         assert [item.field for item in refusal.errors or []] == ["uri"]
         assert refusal.retryable is False
         assert refusal.error_domain == "input"
-        assert _sent_verdict(refusal.problem) == {"retryable": False, "error_domain": "input"}
+        assert _sent_verdict(refusal.problem_document) == {"retryable": False, "error_domain": "input"}

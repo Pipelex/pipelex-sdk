@@ -212,7 +212,7 @@ wheels = [
 
 [[package]]
 name = "mthds"
-version = "0.24.0"
+version = "0.25.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -221,9 +221,9 @@ dependencies = [
     { name = "tomlkit" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/d6/fc4ba6c6ef1fd1c96be56e1d44743b6cf69d674b3fbbbfc8980207069488/mthds-0.24.0.tar.gz", hash = "sha256:a491838a0c1d2710dcabba2b7cb81cce687e0c4c4943f37a0e39fdc768f08bb3", size = 398141, upload-time = "2026-10-17T04:43:51.546Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/ce/436c4dc0a14e92dda0be376487b6c59ccb5df8f1bdd237d269dba7267f2d/mthds-0.25.0.tar.gz", hash = "sha256:924aa73e4bccbc29859048468d7a68f4fa8c61f738fda13fd857775893ef4187", size = 517806, upload-time = "2026-10-18T19:46:53.986Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/04/d6/a3d25c1df91764b97a3efdcfda70603cd4af4cfcc76b1166c54af2546402/mthds-0.24.0-py3-none-any.whl", hash = "sha256:187c894a47184fd793b37282a5c70790a25c111f9369640bdbd9e3aa35093fcb", size = 160129, upload-time = "2026-10-17T04:43:49.857Z" },
+    { url = "https://files.pythonhosted.org/packages/44/d6/9ac2510bb6aaee2d8768371af85e13e4dd584ac2ffb445ccd349494c7dd5/mthds-0.25.0-py3-none-any.whl", hash = "sha256:86e865a74498ce2baffc8426522afe96ceccc493d1fc334f4c47e61758b41714", size = 210461, upload-time = "2026-10-18T19:46:52.295Z" },
 ]
 
 [[package]]
@@ -303,7 +303,7 @@ wheels = [
 
 [[package]]
 name = "pipelex-sdk"
-version = "0.45.0"
+version = "0.46.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -326,7 +326,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.23.0,<1.0.0" },
-    { name = "mthds", specifier = "==0.24.0" },
+    { name = "mthds", specifier = "==0.25.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = "==1.19.1" },
     { name = "pydantic", specifier = ">=2.10.6,<3.0.0" },
     { name = "pylint", marker = "extra == 'dev'", specifier = "==4.0.4" },

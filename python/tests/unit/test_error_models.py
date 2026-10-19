@@ -2,7 +2,10 @@
 
 from typing import Any
 
-from pipelex_sdk.error_models import RunErrorReport
+import pytest
+
+from pipelex_sdk._answer_json import decode_json_as_written
+from pipelex_sdk.error_models import HostedProblemMembers, RunErrorReport
 from pipelex_sdk.product_models import RunPage
 
 # A configuration failure carrying the migration block, the one report field the recorded run
@@ -88,3 +91,40 @@ class TestErrorModels:
         report = RunErrorReport.model_validate({})
 
         assert report.model_dump(exclude_none=True) == {}
+
+    def test_a_body_the_protocol_reads_keeps_its_numbers_as_written(self) -> None:
+        """An integral float stays a float, where the base's own `decode_json` reads `10.0` as `10`."""
+        decoded = decode_json_as_written('{"score": 10.0, "count": 2, "ratio": 0.5, "big": 9007199254740993}')
+
+        assert decoded.is_json is True
+        assert decoded.value == {"score": 10.0, "count": 2, "ratio": 0.5, "big": 9007199254740993}
+        assert type(decoded.value["score"]) is float
+        assert type(decoded.value["count"]) is int
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param("[" * 600 + "]" * 600, id="nested-past-the-limit"),
+            pytest.param('{"value": NaN}', id="nan"),
+            pytest.param('{"value": -Infinity}', id="infinity"),
+            pytest.param('{"value": 1e999}', id="float-past-a-double"),
+            pytest.param('{"value": 1' + "0" * 400 + "}", id="integer-past-a-double"),
+            pytest.param("", id="empty"),
+            pytest.param("<html>bad gateway</html>", id="not-json"),
+        ],
+    )
+    def test_a_body_the_protocol_refuses_is_no_json(self, body: str) -> None:
+        """The base's guards decide what is JSON: nesting past the limit, the constants and numbers past a double are not."""
+        decoded = decode_json_as_written(body)
+
+        assert decoded.is_json is False
+        assert decoded.value is None
+
+    def test_a_refusal_keeps_its_members_numbers_as_written(self) -> None:
+        """A refusal's members are the body's object, its integral floats still floats."""
+        members = HostedProblemMembers.make_from_body('{"code": "conflict", "detail": "x", "attempt": 2.0}')
+
+        assert members.code == "conflict"
+        assert members.members == {"code": "conflict", "detail": "x", "attempt": 2.0}
+        assert members.members is not None
+        assert type(members.members["attempt"]) is float

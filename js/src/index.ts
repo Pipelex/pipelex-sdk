@@ -306,7 +306,9 @@ export type {
 
 // ── Typed errors (PipelineRequestError rides the protocol re-export above) ──
 // Every one carries a verdict — `retryable` and `errorDomain` — read with `errorVerdictOf`, and
-// `runMayHaveStarted`, read with `runMayHaveStartedOf`.
+// `runMayHaveStarted`, read with `runMayHaveStartedOf`. `problemVerdict` reads the standard's
+// problem in the same vocabulary, as `errorVerdictOf` reads an `mthds` error.
+export { problemVerdict } from "./error-verdicts.js";
 export {
   PipelexRequestError,
   errorVerdictOf,

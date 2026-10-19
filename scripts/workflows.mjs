@@ -20,15 +20,21 @@
  * - The next-SDK twin, `<slug>-next-sdk-<file>`, runs the same jobs on a
  *   pull-request trigger of its own, and after the template's install step it
  *   installs the SDK the template depends on, built from the same commit, over
- *   the registry's copy. It is reported, not required. A template that depends
- *   on no SDK, and a workflow with no install step, get none.
+ *   the registry's copy, with the base the SDK's own lockfile resolves: a
+ *   Python wheel names its base by version alone, so the `mthds` of the SDK's
+ *   `uv.lock` is installed beside it, which is a git commit while the lock pins
+ *   one and the registry's release otherwise. It is reported, not required. A
+ *   template that depends on no SDK, and a workflow with no install step, get
+ *   none.
  *
  *   node scripts/workflows.mjs <template>...          write every twin
  *   node scripts/workflows.mjs --check <template>...  exit 1 on a missing, stale or orphaned twin
  *
  * The rendering is a text transform, not a YAML round trip, so a twin keeps
  * the source's comments and layout, and the same source always renders the
- * same twin. It replaces the top-level `on:` block whole, adds the template to
+ * same twin. It replaces the top-level `on:` block whole, gives the workflow
+ * the `env` of `NO_TELEMETRY_ENV`, joining the source's own workflow-level
+ * `env` when it has one, adds the template to
  * the workflow's name and to each job's, and changes nothing in a job that
  * does not check out, such as an aggregator reading only `needs`. In a job
  * that checks out, it sets the job's run steps to the extracted folder, adds
@@ -54,7 +60,9 @@
  * repository root rather than from the template's directory — a key named for
  * a path, a file, a directory or a glob, a local action, and `hashFiles`. For
  * a next-SDK twin, it also refuses a job with more than one install step, and
- * an install written inside a multi-line `run:`. An
+ * an install written inside a multi-line `run:`. It refuses a workflow-level
+ * `env` written on its line, which the twin's variables cannot join, and any
+ * line that names one of those variables, which would repeat or override it. An
  * action input that holds a path under any other name is not recognised, so a
  * new workflow's twins are read before they are committed. It also refuses to
  * write over a hand-written root workflow that has a twin's name.
@@ -75,12 +83,36 @@ export const TWIN_MARKER = "# Rendered by `make workflows` from ";
 
 /**
  * The SDKs a template can depend on, each with the directory it is built from.
- * A template's next-SDK twin installs the one it depends on.
+ * A template's next-SDK twin installs the one it depends on. A Python SDK names
+ * its `lockedBase`, the package its wheel requires by version alone, which the
+ * twin installs as the SDK's `uv.lock` resolves it, so that the template runs
+ * the SDK with the base it was locked against, a git commit included. An npm
+ * SDK's tarball carries its dependencies' specifiers as written, a `github:`
+ * one included, which npm installs and builds itself.
  */
 export const SDKS = [
   { package: "@pipelex/sdk", ecosystem: "npm", dir: "js" },
-  { package: "pipelex-sdk", ecosystem: "pypi", dir: "python" },
+  { package: "pipelex-sdk", ecosystem: "pypi", dir: "python", lockedBase: "mthds" },
 ];
+
+/**
+ * The workflow-level variables every workflow of this repository sets, twins
+ * included, so that its CI reports nothing: `DO_NOT_TRACK` silences the usage
+ * statistics of our own tools, as rule R8 of the usage-statistics
+ * specification asks of every repository's CI, and `NEXT_TELEMETRY_DISABLED`
+ * silences Next.js's, which `next build` sends from CI unless told not to. A
+ * template's own workflow leaves them out: it runs in a person's project, and
+ * what that project's CI reports is the person's call.
+ */
+export const NO_TELEMETRY_ENV = [
+  ["DO_NOT_TRACK", "1"],
+  ["NEXT_TELEMETRY_DISABLED", "1"],
+];
+
+/** A line naming a variable of `NO_TELEMETRY_ENV`. */
+const NAMES_NO_TELEMETRY = new RegExp(
+  `\\b(${NO_TELEMETRY_ENV.map(([name]) => name).join("|")})\\b`,
+);
 
 export class TwinError extends Error {
   constructor(message) {
@@ -144,7 +176,8 @@ function isInstall(command) {
 
 /**
  * Read a workflow into what the rendering needs: its lines, where its
- * top-level name and `on:` block are, and, for each job, its name line, its
+ * top-level name, `on:` block and `env:` block are, the column of that
+ * `env`'s entries, and, for each job, its name line, its
  * `runs-on` line, its steps with the lines each spans, and its `cache:` inputs.
  * It throws a TwinError on a line no twin could carry faithfully.
  */
@@ -157,6 +190,8 @@ function parseWorkflow(origin, source) {
   const workspace = [];
   const jobs = [];
   let on = null;
+  // The workflow-level `env:` line, and the column its entries start at once the first is read.
+  let env = null;
   let top = null;
   let job = null;
   // The job's steps list, once its `steps:` key is read: the key's column,
@@ -188,6 +223,12 @@ function parseWorkflow(origin, source) {
   };
 
   for (const [at, line] of lines.entries()) {
+    if (!/^\s*#/.test(line) && NAMES_NO_TELEMETRY.test(line)) {
+      refuse(
+        line,
+        "the twin turns telemetry off for the whole workflow, which this would repeat or override",
+      );
+    }
     const indent = /^ */.exec(line)[0].length;
     const blank = /^\s*$/.test(line);
     // A block scalar's text: every blank line, and every line deeper than its key.
@@ -220,6 +261,16 @@ function parseWorkflow(origin, source) {
         if (/^["']/.test(key[2] ?? "")) refuse(line, "a quoted name");
         names.push(at);
       }
+      if (top === "env") {
+        if (env) refuse(line, "a second env: block");
+        if (scalar(key[2] ?? "") !== "") {
+          refuse(
+            line,
+            "a workflow-level env written on its line, which the twin's own variables cannot join",
+          );
+        }
+        env = { start: at, column: null };
+      }
       if (BLOCK_SCALAR.test(key[2] ?? "")) block = 0;
       continue;
     }
@@ -241,6 +292,7 @@ function parseWorkflow(origin, source) {
     }
     const key = keyOf(line);
     if (key && BLOCK_SCALAR.test(key.value)) block = key.column;
+    if (top === "env" && key) env.column ??= key.column;
     if (top !== "jobs") continue;
 
     if (indent === 2 && key && !key.dash) {
@@ -338,7 +390,7 @@ function parseWorkflow(origin, source) {
       each.checkout = candidate;
     }
   }
-  return { lines, names, on, jobs, workspace };
+  return { lines, names, on, env, jobs, workspace };
 }
 
 /** The step that extracts the template as the export ships it, at a steps list's dash column. */
@@ -361,7 +413,10 @@ function extractionStep(template, dash) {
 /**
  * The step that installs the SDK built from this commit over the registry's copy. The SDK is
  * installed the way its own CI job installs it, `make install` in its directory, rather than
- * with `npm ci`, which the runner's bundled npm refuses on the SDK's lockfile.
+ * with `npm ci`, which the runner's bundled npm refuses on the SDK's lockfile. A Python SDK's
+ * locked base is exported from its `uv.lock` and reinstalled with the wheel, since the template's
+ * environment already holds the registry's release of that version, which the wheel's metadata
+ * alone would keep.
  */
 function nextSdkStep(sdk, dash) {
   const at = " ".repeat(dash);
@@ -375,18 +430,20 @@ function nextSdkStep(sdk, dash) {
       `${at}    npm install --no-save "$RUNNER_TEMP"/next-sdk/*.tgz`,
     ];
   }
+  const base = sdk.lockedBase;
   return [
     name,
     `${at}  run: |`,
     `${at}    uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/${sdk.dir}"`,
-    `${at}    uv pip install --python .venv/bin/python --reinstall-package ${sdk.package} "$RUNNER_TEMP"/next-sdk/*.whl`,
+    `${at}    uv export --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project --project "$GITHUB_WORKSPACE/${sdk.dir}" | grep -E '^${base}( |=|@)' > "$RUNNER_TEMP/next-sdk/${base}.txt"`,
+    `${at}    uv pip install --python .venv/bin/python --reinstall-package ${sdk.package} --reinstall-package ${base} -r "$RUNNER_TEMP/next-sdk/${base}.txt" "$RUNNER_TEMP"/next-sdk/*.whl`,
   ];
 }
 
 /** Render one twin; `sdk` is null for the standalone twin. */
 function render(template, file, source, sdk) {
   const origin = `${template}/${WORKFLOWS_DIR}/${file}`;
-  const { lines, names, on, jobs, workspace } = parseWorkflow(origin, source);
+  const { lines, names, on, env, jobs, workspace } = parseWorkflow(origin, source);
   const refuse = (at, why) => {
     throw new TwinError(`${origin}: cannot render "${lines[at].trim()}": ${why}`);
   };
@@ -423,6 +480,11 @@ function render(template, file, source, sdk) {
       : ["on:", "  workflow_call:"]
   ).join("\n");
   for (let at = on.start + 1; at <= on.end; at += 1) dropped.add(at);
+  // The source's own workflow-level env is joined, since a second env: key would be invalid.
+  const noTelemetry = (column) =>
+    NO_TELEMETRY_ENV.map(([name, value]) => `${" ".repeat(column)}${name}: "${value}"`);
+  if (env) after[env.start].push(...noTelemetry(env.column ?? 2));
+  else text[on.start] += ["", "", "env:", ...noTelemetry(2)].join("\n");
 
   let installs = 0;
   for (const job of checkingOut) {
@@ -491,6 +553,9 @@ function render(template, file, source, sdk) {
         `# It runs ${template} extracted exactly as the export ships it, installed from the registry`,
         "# with its own lockfile, as a project made from it would be. The root CI calls it.",
       ];
+  header.push(
+    "# Unlike its source, it turns telemetry off with its env, as every workflow of this repository does.",
+  );
   const out = [...header];
   for (const [at, line] of text.entries()) {
     if (!dropped.has(at)) out.push(line);

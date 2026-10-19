@@ -167,6 +167,8 @@ build: env
 # its own, from a directory outside this package, so neither this checkout nor its virtual
 # environment can stand in for what the wheel holds. The help must name `run`, and `--version` must
 # print the version in pyproject.toml, which the command reads from the installed package's metadata.
+# The wheel names `mthds` by version alone, so the command runs with the `mthds` uv.lock resolves,
+# exported beside it: a git commit while the lock pins one, the registry's release otherwise.
 test-package: check-uv
 	$(call PRINT_TITLE,"Testing the built pipelex-sdk command")
 	@set -e; \
@@ -174,11 +176,12 @@ test-package: check-uv
 	dest=$$(mktemp -d); trap 'rm -rf "$$dest"' EXIT; \
 	uv build --quiet --wheel --out-dir "$$dest"; \
 	wheel=$$(ls "$$dest"/*.whl); \
+	uv export --quiet --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project | grep -E '^mthds( |=|@)' > "$$dest/mthds.txt"; \
 	cd "$$dest"; \
-	help=$$(uvx --quiet --isolated --from "$$wheel" pipelex-sdk --help); \
+	help=$$(uvx --quiet --isolated --from "$$wheel" --with-requirements "$$dest/mthds.txt" pipelex-sdk --help); \
 	case "$$help" in *"pipelex-sdk run --method"*) ;; \
 		*) echo "✗ uvx --from <wheel> pipelex-sdk --help did not print the help"; exit 1 ;; esac; \
-	got=$$(uvx --quiet --isolated --from "$$wheel" pipelex-sdk --version); \
+	got=$$(uvx --quiet --isolated --from "$$wheel" --with-requirements "$$dest/mthds.txt" pipelex-sdk --version); \
 	[ "$$got" = "$$expected" ] \
 		|| { echo "✗ uvx --from <wheel> pipelex-sdk --version printed '$$got', not $$expected"; exit 1; }; \
 	echo "✓ The built pipelex-sdk command answers --help and --version ($$expected)"

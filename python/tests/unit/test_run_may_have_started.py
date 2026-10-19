@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 import httpx
 import pytest
+from mthds.protocol.problem.answers import read_answer
 from mthds.runners.api.exceptions import ApiResponseError as MthdsApiResponseError
 
 from pipelex_sdk.client import PipelexAPIClient
@@ -338,13 +339,15 @@ class TestRunMayHaveStarted:
             code="service_unavailable",
             error_domain="runtime",
             retryable=True,
-            problem=sent,
+            problem_document=sent,
             may_start_run=True,
         )
 
         assert err.run_may_have_started is True
         assert err.retryable is False
-        assert err.problem == sent
+        assert err.problem_document == sent
+        # The standard's reading of the same answer stands beside it, reading a run that may have started.
+        assert err.problem.code == "client.outcome_unknown"
 
     # ── run_may_have_started_of ──
 
@@ -358,7 +361,14 @@ class TestRunMayHaveStarted:
         assert run_may_have_started_of(mistyped) is False
 
     def test_run_may_have_started_of_is_false_for_an_mthds_error_a_plain_one_and_what_is_not_an_exception(self) -> None:
-        mthds = MthdsApiResponseError("refused", api_url=_BASE_URL, status=500, status_text="", response_body="")
+        mthds = MthdsApiResponseError(
+            "refused",
+            problem=read_answer(status=500, body="", headers={}, creates_run=False).problem,
+            api_url=_BASE_URL,
+            status=500,
+            status_text="",
+            response_body="",
+        )
 
         class _Shaped:
             run_may_have_started = True

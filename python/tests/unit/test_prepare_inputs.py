@@ -47,6 +47,12 @@ _FILES: dict[str, FileEntry] = {"main.mthds": 'domain = "demo"'}
 _PIPE_REF = "demo.main"
 
 
+def _refused_argument(error: InputPreparationError) -> dict[str, object] | None:
+    """The argument and the reason a refusal's `client.argument_invalid` problem names."""
+    assert error.problem.code == "client.argument_invalid"
+    return error.problem.params.model_dump(exclude_none=True) if error.problem.params is not None else None
+
+
 def _required(**kwargs: Any) -> dict[str, Any]:
     """The pipe-slot facts every TOP-LEVEL field must state (`required` restates `presence`)."""
     return {"required": True, "presence": PresenceMarker.PLAIN, "gating": True, **kwargs}
@@ -80,7 +86,7 @@ def _api_error(status: int, body: dict[str, Any]) -> ApiResponseError:
     client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
     response = httpx.Response(status, json=body, request=httpx.Request("POST", f"{_BASE_URL}/v1/pipe-io"))
     with pytest.raises(ApiResponseError) as exc_info:
-        client._raise_api_response_error(method="POST", endpoint="pipe-io", response=response)
+        client._raise_v1_refusal(method="POST", endpoint="pipe-io", response=response)
     return exc_info.value
 
 
@@ -94,6 +100,7 @@ class _FakePrepareClient:
         pipe_io_error: ApiResponseError | None = None,
         upload_error: Exception | None = None,
     ) -> None:
+        self.api_key = "test-token"
         self._result = result
         self._pipe_io_error = pipe_io_error
         self._upload_error = upload_error
@@ -157,8 +164,9 @@ class TestPrepareInputs:
     def test_two_forms_of_the_tree_are_refused_before_any_request(self) -> None:
         client = _image_client()
 
-        with pytest.raises(InputPreparationError, match="given as `files` and `contents`"):
+        with pytest.raises(InputPreparationError, match="given as `files` and `contents`") as caught:
             asyncio.run(prepare_inputs(client, files=_FILES, contents={"main.mthds": "a"}, inputs={}))
+        assert _refused_argument(caught.value) == {"argument": "files", "reason": "mutually_exclusive"}
         assert client.pipe_io_calls == []
 
     def test_the_retired_list_of_files_is_refused_not_read_as_absent(self) -> None:
@@ -168,51 +176,59 @@ class TestPrepareInputs:
         with pytest.raises(InputPreparationError) as caught:
             asyncio.run(prepare_inputs(client, files=retired, inputs={}))
         assert str(caught.value) == ("Cannot prepare inputs: `files` must be the method's tree as a map from tree path to file entry, got a list.")
+        assert _refused_argument(caught.value) == {"argument": "files", "reason": "not_a_map"}
         assert client.pipe_io_calls == []
 
     @pytest.mark.parametrize(
-        ("selector", "message"),
+        ("selector", "message", "named"),
         [
             pytest.param(
                 {"contents": [("demo.mthds", 'domain = "demo"')]},
                 "`contents` must be the method's files as a map from tree path to bytes or text, got a list.",
+                {"argument": "contents", "reason": "not_a_map"},
                 id="contents-list",
             ),
             pytest.param(
                 {"contents": {"demo.mthds": 42}},
                 '`contents` must be the method\'s files as a map from tree path to bytes or text, and "demo.mthds" holds int.',
+                {"argument": "contents", "reason": "entry_mistyped"},
                 id="contents-value",
             ),
             pytest.param(
                 {"files": {"main.mthds": "a"}, "dependencies": ["github.com/acme/scoring"]},
                 "`dependencies` must be the method packages as a map from package address to its map of file entries, got a list.",
+                {"argument": "dependencies", "reason": "not_a_map"},
                 id="dependencies-list",
             ),
             pytest.param(
                 {"files": {"main.mthds": "a"}, "dependencies": {"github.com/acme/scoring": "scoring.mthds"}},
                 "`dependencies` must be the method packages as a map from package address to its map of file entries, "
                 'and "github.com/acme/scoring" holds str.',
+                {"argument": "dependencies", "reason": "entry_mistyped"},
                 id="dependency-value",
             ),
             pytest.param(
                 {"tree": "./method"},
                 "`tree` must be a listed method tree, a `MethodTree` such as the client's `list_method_tree` returns, got str.",
+                {"argument": "tree", "reason": "not_a_tree"},
                 id="tree-string",
             ),
             pytest.param(
                 {"tree": MethodTree(files=[], digest=f"sha256:{'0' * 64}")},
                 "`tree` holds no file, and a method tree holds at least one.",
+                {"argument": "tree", "reason": "empty"},
                 id="tree-empty",
             ),
         ],
     )
-    def test_a_mistyped_selector_is_refused_before_any_request(self, selector: dict[str, Any], message: str) -> None:
-        """Each is refused with the wording `@pipelex/sdk` uses, never as pydantic's `ValidationError`."""
+    def test_a_mistyped_selector_is_refused_before_any_request(self, selector: dict[str, Any], message: str, named: dict[str, str]) -> None:
+        """Each is refused with the wording `@pipelex/sdk` uses, never as pydantic's `ValidationError`, its problem naming the argument."""
         client = _image_client()
 
         with pytest.raises(InputPreparationError) as caught:
             asyncio.run(prepare_inputs(client, **selector, inputs={}))
         assert str(caught.value) == f"Cannot prepare inputs: {message}"
+        assert _refused_argument(caught.value) == named
         assert client.pipe_io_calls == []
 
     def test_a_files_entry_the_request_refuses_is_an_input_preparation_error(self) -> None:
@@ -222,16 +238,18 @@ class TestPrepareInputs:
 
         with pytest.raises(
             InputPreparationError, match=r"^Cannot prepare inputs: the method selector does not form a pipe I/O request: files\.main\.mthds"
-        ):
+        ) as caught:
             asyncio.run(prepare_inputs(client, files=files, inputs={}))
+        assert _refused_argument(caught.value) == {"argument": "files", "reason": "invalid"}
         assert client.pipe_io_calls == []
 
     @pytest.mark.parametrize("selector", [{"method_ref": "github.com/o/r"}, {"method_id": "mt_1"}])
     def test_dependencies_beside_a_published_or_stored_method_are_refused(self, selector: dict[str, Any]) -> None:
         client = _image_client()
 
-        with pytest.raises(InputPreparationError, match="`dependencies` accompany the method's own tree"):
+        with pytest.raises(InputPreparationError, match="`dependencies` accompany the method's own tree") as caught:
             asyncio.run(prepare_inputs(client, dependencies={"github.com/acme/helpers": {"main.mthds": "x"}}, inputs={}, **selector))
+        assert _refused_argument(caught.value) == {"argument": "dependencies", "reason": "without_a_tree"}
         assert client.pipe_io_calls == []
 
     def test_method_ref_is_a_server_side_pass_through(self) -> None:

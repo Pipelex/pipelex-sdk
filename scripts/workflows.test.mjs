@@ -8,6 +8,7 @@ import path from "node:path";
 import { after, describe, it } from "node:test";
 
 import {
+  NO_TELEMETRY_ENV,
   ROOT,
   SDKS,
   TWIN_MARKER,
@@ -140,6 +141,9 @@ const extraction = (template, slug) => `      - name: Extract ${template} as the
 const defaults = (slug) =>
   `    defaults:\n      run:\n        working-directory: ../standalone/${slug}\n`;
 
+/** The workflow-level env every twin sets, as a twin of a source with none writes it. */
+const NO_TELEMETRY = 'env:\n  DO_NOT_TRACK: "1"\n  NEXT_TELEMETRY_DISABLED: "1"\n';
+
 const roots = [];
 after(() => {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
@@ -176,7 +180,7 @@ describe("renderStandaloneTwin", () => {
   });
 
   it("is a reusable workflow, whatever the source's triggers", () => {
-    assert.match(twin, /\non:\n {2}workflow_call:\n\njobs:\n/);
+    assert.ok(twin.includes(`\non:\n  workflow_call:\n\n${NO_TELEMETRY}\njobs:\n`));
     for (const on of [
       "on: pull_request",
       "on: [push, pull_request]",
@@ -187,9 +191,54 @@ describe("renderStandaloneTwin", () => {
         "lint-check.yml",
         SOURCE.replace("on:\n  pull_request:", on),
       );
-      assert.match(rendered, /\non:\n {2}workflow_call:\n\njobs:\n/, on);
+      assert.ok(rendered.includes(`\non:\n  workflow_call:\n\n${NO_TELEMETRY}\njobs:\n`), on);
       assert.doesNotMatch(rendered, /pull_request|push|branches|paths/, on);
     }
+  });
+
+  it("turns telemetry off for the whole workflow, and says so in its header", () => {
+    assert.deepEqual(
+      NO_TELEMETRY_ENV.map(([name]) => name),
+      ["DO_NOT_TRACK", "NEXT_TELEMETRY_DISABLED"],
+    );
+    assert.match(twin.split("\n")[3], /^# Unlike its source, it turns telemetry off with its env/);
+    assert.equal(twin.match(/^env:$/gm).length, 1);
+  });
+
+  it("joins the source's own workflow-level env, at the column its entries use", () => {
+    for (const column of [2, 4]) {
+      const at = " ".repeat(column);
+      const rendered = renderStandaloneTwin(
+        "app-js",
+        "lint-check.yml",
+        SOURCE.replace("jobs:", `env:\n${at}FORCE_COLOR: "1"\n\njobs:`),
+      );
+      assert.ok(
+        rendered.includes(
+          `\non:\n  workflow_call:\n\nenv:\n${at}DO_NOT_TRACK: "1"\n${at}NEXT_TELEMETRY_DISABLED: "1"\n${at}FORCE_COLOR: "1"\n\njobs:\n`,
+        ),
+        `entries at column ${column}`,
+      );
+      assert.equal(rendered.match(/^env:$/gm).length, 1);
+    }
+    const empty = renderStandaloneTwin(
+      "app-js",
+      "lint-check.yml",
+      SOURCE.replace("jobs:", "env: # nothing yet\n\njobs:"),
+    );
+    assert.ok(
+      empty.includes(
+        'env: # nothing yet\n  DO_NOT_TRACK: "1"\n  NEXT_TELEMETRY_DISABLED: "1"\n\njobs:\n',
+      ),
+    );
+  });
+
+  it("leaves a comment naming a telemetry variable alone", () => {
+    const commented = SOURCE.replace(
+      "      - name: Run check",
+      "      # DO_NOT_TRACK is the project's call.\n      - name: Run check",
+    );
+    assert.doesNotThrow(() => renderStandaloneTwin("app-js", "lint-check.yml", commented));
   });
 
   it("extracts the template right after the checkout, and runs every step there", () => {
@@ -234,10 +283,10 @@ describe("renderStandaloneTwin", () => {
   });
 
   it("keeps everything else as it was", () => {
-    const body = twin.split("\n").slice(3).join("\n");
+    const body = twin.split("\n").slice(4).join("\n");
     const restored = body
       .replace(/ \(app-js\)$/gm, "")
-      .replace("on:\n  workflow_call:", "on:\n  pull_request:")
+      .replace(`on:\n  workflow_call:\n\n${NO_TELEMETRY}`, "on:\n  pull_request:\n")
       .replace(defaults("app-js"), "")
       .replace(`\n${extraction("app-js", "app-js")}`, "")
       .replace(/\n {10}cache-dependency-path: app-js\/package-lock\.json/, "");
@@ -425,6 +474,26 @@ describe("renderStandaloneTwin", () => {
         "jobs:",
         "env:\n  CACHE: ${{ github.workspace }}/.cache\n\njobs:",
       ),
+      "a workflow-level env as a flow mapping": SOURCE.replace(
+        "jobs:",
+        'env: { FORCE_COLOR: "1" }\n\njobs:',
+      ),
+      "a workflow-level env as an expression": SOURCE.replace(
+        "jobs:",
+        "env: ${{ fromJSON(vars.CI_ENV) }}\n\njobs:",
+      ),
+      "a telemetry variable set at workflow level": SOURCE.replace(
+        "jobs:",
+        'env:\n  DO_NOT_TRACK: "1"\n\njobs:',
+      ),
+      "a telemetry variable set back in a job": SOURCE.replace(
+        "    runs-on: ubuntu-latest",
+        '    runs-on: ubuntu-latest\n    env:\n      NEXT_TELEMETRY_DISABLED: "0"',
+      ),
+      "a telemetry variable set back in a script": SOURCE.replace(
+        "        run: make check",
+        "        run: |\n          export DO_NOT_TRACK=0\n          make check",
+      ),
     };
     for (const [label, source] of Object.entries(cases)) {
       assert.notEqual(source, SOURCE, label);
@@ -463,7 +532,7 @@ describe("renderNextSdkTwin", () => {
   it("runs on a pull request touching the template, the SDK or the twin itself", () => {
     assert.ok(
       twin.includes(
-        'on:\n  pull_request:\n    paths:\n      - "app-js/**"\n      - "js/**"\n      - ".github/workflows/app-js-next-sdk-tests-check.yml"\n\njobs:\n',
+        `on:\n  pull_request:\n    paths:\n      - "app-js/**"\n      - "js/**"\n      - ".github/workflows/app-js-next-sdk-tests-check.yml"\n\n${NO_TELEMETRY}\njobs:\n`,
       ),
     );
     const python = renderNextSdkTwin("app-py", "lint-check.yml", PY_SOURCE, PYPI);
@@ -487,7 +556,7 @@ describe("renderNextSdkTwin", () => {
     );
   });
 
-  it("installs the Python SDK built from this commit right after the template's install", () => {
+  it("installs the Python SDK built from this commit, with the base its lock resolves, right after the template's install", () => {
     const python = renderNextSdkTwin("app-py", "lint-check.yml", PY_SOURCE, PYPI);
     assert.ok(
       python.includes(`      - name: Install dependencies
@@ -496,7 +565,8 @@ describe("renderNextSdkTwin", () => {
       - name: Install pipelex-sdk built from this commit
         run: |
           uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/python"
-          uv pip install --python .venv/bin/python --reinstall-package pipelex-sdk "$RUNNER_TEMP"/next-sdk/*.whl
+          uv export --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project --project "$GITHUB_WORKSPACE/python" | grep -E '^mthds( |=|@)' > "$RUNNER_TEMP/next-sdk/mthds.txt"
+          uv pip install --python .venv/bin/python --reinstall-package pipelex-sdk --reinstall-package mthds -r "$RUNNER_TEMP/next-sdk/mthds.txt" "$RUNNER_TEMP"/next-sdk/*.whl
 
       - name: Run ruff lint merge check
 `),
@@ -682,6 +752,23 @@ describe("this repository", () => {
     }
     for (const file of called) {
       assert.ok(fs.existsSync(path.join(ROOT, WORKFLOWS_DIR, file)), `ci.yml calls ${file}`);
+    }
+  });
+
+  it("turns telemetry off at workflow level in every workflow, and never sets it back", () => {
+    const files = fs.readdirSync(path.join(ROOT, WORKFLOWS_DIR)).filter((f) => /\.ya?ml$/.test(f));
+    assert.ok(files.length > 0);
+    for (const file of files) {
+      const text = fs.readFileSync(path.join(ROOT, WORKFLOWS_DIR, file), "utf8");
+      const env = /^env:[^\n]*\n((?:[ \t]+[^\n]*\n|[ \t]*\n)*)/m.exec(text);
+      assert.ok(env, `${file} has no workflow-level env`);
+      for (const [name, value] of NO_TELEMETRY_ENV) {
+        assert.match(env[1], new RegExp(`^ +${name}: "${value}"$`, "m"), `${file}: ${name}`);
+        const naming = text
+          .split("\n")
+          .filter((line) => !/^\s*#/.test(line) && new RegExp(`\\b${name}\\b`).test(line));
+        assert.equal(naming.length, 1, `${file} names ${name} outside its workflow-level env`);
+      }
     }
   });
 });

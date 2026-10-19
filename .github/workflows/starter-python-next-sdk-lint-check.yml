@@ -1,6 +1,7 @@
 # Rendered by `make workflows` from starter-python/.github/workflows/lint-check.yml — edit that file and re-render.
 # It tests starter-python, extracted as the export ships it, against pipelex-sdk built from the
 # same commit, installed over the registry's copy. It is reported, not required.
+# Unlike its source, it turns telemetry off with its env, as every workflow of this repository does.
 name: Lint check (starter-python, next SDK)
 
 on:
@@ -9,6 +10,10 @@ on:
       - "starter-python/**"
       - "python/**"
       - ".github/workflows/starter-python-next-sdk-lint-check.yml"
+
+env:
+  DO_NOT_TRACK: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
 # --------------------------------------------------------------------------
@@ -57,7 +62,8 @@ jobs:
       - name: Install pipelex-sdk built from this commit
         run: |
           uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/python"
-          uv pip install --python .venv/bin/python --reinstall-package pipelex-sdk "$RUNNER_TEMP"/next-sdk/*.whl
+          uv export --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project --project "$GITHUB_WORKSPACE/python" | grep -E '^mthds( |=|@)' > "$RUNNER_TEMP/next-sdk/mthds.txt"
+          uv pip install --python .venv/bin/python --reinstall-package pipelex-sdk --reinstall-package mthds -r "$RUNNER_TEMP/next-sdk/mthds.txt" "$RUNNER_TEMP"/next-sdk/*.whl
 
       - name: Run ruff format merge check
         run: make merge-check-ruff-format

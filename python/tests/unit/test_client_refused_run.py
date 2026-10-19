@@ -122,7 +122,7 @@ class TestClientRefusedRun:
         assert exc.user_action.detail == next_step
         assert exc.error_domain == "input"
         assert exc.response_body == body
-        assert exc.problem == json.loads(body)
+        assert exc.problem_document == json.loads(body)
 
     def test_a_bundle_refused_at_load_names_the_failing_pipe_in_typed_diagnostics(self, mocker: MockerFixture) -> None:
         exc = self._raised(mocker, RefusedRunBodies.UNKNOWN_MODEL_AT_LOAD, _start)
@@ -170,8 +170,8 @@ class TestClientRefusedRun:
         assert exc.error_category is None
         assert exc.validation_errors is None
         # It carries no `retryable` either, and the `input` domain it sends decides it: not retryable.
-        assert exc.problem is not None
-        assert "retryable" not in exc.problem
+        assert exc.problem_document is not None
+        assert "retryable" not in exc.problem_document
         assert exc.retryable is False
 
     def test_a_run_failed_on_an_unserved_model_advises_changing_the_model(self, mocker: MockerFixture) -> None:
