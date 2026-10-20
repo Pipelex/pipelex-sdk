@@ -18,7 +18,7 @@ import type {
   RunResultExecute,
   RunResultStart,
 } from "mthds/protocol";
-import type { MethodTreeForms } from "./method-trees.js";
+import type { MethodTreeForm, NoMethodTree } from "./method-trees.js";
 
 export interface DictStuff {
   concept: string;
@@ -158,23 +158,21 @@ export type ValidateMethodSelector =
   { method_ref: string; method_id?: never } | { method_id: string; method_ref?: never };
 
 /**
- * What `validate()` judges: the method's tree, in one of the four forms of `MethodTreeForms`
- * (a `directory`, `contents`, a `tree` or the `files` map), or one of the two selectors of
- * `ValidateMethodSelector`. Exactly one is given; the client refuses none, or more than one, with
- * a `RequestArgumentError` before any request, as the route itself would refuse a second selector
- * with a `422`. A `null` member, an empty `directory` and an empty selector string are absent;
- * a `files` map or `contents` holding no file is refused, as the MTHDS standard refuses a tree
- * holding no file.
+ * What `validate()` judges: the method's tree, in exactly one of the four forms of
+ * `MethodTreeForm` (a `directory`, `contents`, a `tree` or the `files` map), or one of the two
+ * selectors of `ValidateMethodSelector`. Each arm pins the others to `never`, so naming two is a
+ * compile error; an untyped caller naming none, or more than one, is refused with a
+ * `RequestArgumentError` before any request, as the route itself would refuse a second selector
+ * with a `422`. At run time a `null` member, an empty `directory` and an empty selector string
+ * are absent, and a `files` map or `contents` holding no file is refused, as the MTHDS standard
+ * refuses a tree holding no file.
  *
  * It widens the protocol's own `ValidateSource` (`{ files }` or `{ tree }`) with the two forms
  * this client lists or encodes itself and the two selectors the Pipelex API resolves.
  */
-export interface PipelexValidateSource extends MethodTreeForms {
-  /** A published method's address, resolved by the runner. */
-  method_ref?: string | null;
-  /** A stored method's catalog id (`mt_…`, `mt_…@<n>`, `mt_…@draft`), resolved by the platform. */
-  method_id?: string | null;
-}
+export type PipelexValidateSource =
+  | (MethodTreeForm & { method_ref?: never; method_id?: never })
+  | (ValidateMethodSelector & NoMethodTree);
 
 /** Per-pipe dry-run verdict in `validated_pipes[]` — mirror of pipelex's `DryRunStatus`. */
 export type DryRunStatus = "SUCCESS" | "FAILURE" | "SKIPPED";

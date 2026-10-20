@@ -55,6 +55,8 @@ import type {
   PipeIOResponse,
   PipeIOValidReport,
 } from "./models.js";
+import { treeShapeFault } from "./method-trees.js";
+import type { MethodTreeForm } from "./method-trees.js";
 import type { UploadCapableClient, UploadRecord } from "./upload.js";
 import { uploadFile } from "./upload.js";
 
@@ -139,16 +141,7 @@ export interface PrepareInputsBase {
  * file entries, sent as given. The client sends a `directory`, `contents` or `tree` inline when
  * small and by hash otherwise.
  */
-export type PrepareInputsTree =
-  | { directory: string; contents?: never; tree?: never; files?: never }
-  | {
-      contents: Readonly<Record<string, Uint8Array | string>>;
-      directory?: never;
-      tree?: never;
-      files?: never;
-    }
-  | { tree: MethodTreeSource; directory?: never; contents?: never; files?: never }
-  | { files: MethodFiles; directory?: never; contents?: never; tree?: never };
+export type PrepareInputsTree = MethodTreeForm;
 
 /** What a published or stored method cannot carry: its tree is its own. */
 interface NoTree {
@@ -585,16 +578,12 @@ function refuseNonMap(
  */
 function checkedTree(value: unknown): MethodTreeSource | undefined {
   if (value === undefined || value === null) return undefined;
-  if (
-    typeof value !== "object" ||
-    !Array.isArray((value as { files?: unknown }).files) ||
-    typeof (value as { digest?: unknown }).digest !== "string" ||
-    typeof (value as { readFile?: unknown }).readFile !== "function"
-  ) {
+  const fault = treeShapeFault(value);
+  if (fault !== undefined) {
     throw new InputPreparationError(
       "Cannot prepare inputs: `tree` must be a listed method tree — its `files`, its `digest` and " +
         "a `readFile` — such as the `MethodTree` the client's `listMethodTree` returns, got " +
-        `${Array.isArray(value) ? "a list" : typeof value === "object" ? "an object without them" : typeof value}.`,
+        `${fault}.`,
     );
   }
   const tree = value as MethodTreeSource;

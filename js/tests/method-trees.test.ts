@@ -549,7 +549,7 @@ describe("saving a method's tree", () => {
 
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toMatch(
-      /^createMethod\(\) would send the method's tree inline as \d+ bytes, past the 1024 bytes the API takes inline \(its max_inline_bytes\), and the API keeps no blob store to send it by hash, so the method was not saved\.$/,
+      /^createMethod\(\) cannot send the method's tree: the API keeps no blob store, so the tree travels inline, and its files alone weigh \d+ bytes, past the 1024 bytes it takes inline \(its max_inline_bytes\), so the method was not saved\.$/,
     );
     expect(platform.sent("POST", "/v1/methods")).toEqual([]);
   });

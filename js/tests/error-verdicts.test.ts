@@ -754,11 +754,11 @@ describe("every argument the client refuses carries a verdict, before any reques
     ["validate() with no selector object", () => client().validate(null as never)],
     [
       "validate() with two method selectors",
-      () => client().validate({ method_ref: "github.com/a/b", method_id: "mt_1" }),
+      () => client().validate({ method_ref: "github.com/a/b", method_id: "mt_1" } as never),
     ],
     [
       "validate() with the method's tree beside a selector",
-      () => client().validate({ files: BUNDLE, method_id: "mt_1" }),
+      () => client().validate({ files: BUNDLE, method_id: "mt_1" } as never),
     ],
     ["validate() with no file in contents", () => client().validate({ contents: {} })],
     [

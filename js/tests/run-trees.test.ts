@@ -294,7 +294,7 @@ describe("a run given its method as a map in memory", () => {
 
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toMatch(
-      /^start\(\) would send the method's tree inline as \d+ bytes, past the 1024 bytes the API takes inline \(its max_inline_bytes\), and the API keeps no blob store to send it by hash, so the request was not sent\.$/,
+      /^start\(\) cannot send the method's tree: the API keeps no blob store, so the tree travels inline, and its files alone weigh \d+ bytes, past the 1024 bytes it takes inline \(its max_inline_bytes\), so the request was not sent\.$/,
     );
     expect(api.paths).toEqual(["/v1/version"]);
   });

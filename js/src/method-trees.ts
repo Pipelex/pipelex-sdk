@@ -16,6 +16,7 @@
  * `listDirectoryTree` need Node, which each loads when called.
  */
 
+import { parseJsonBody, readProblemBody } from "mthds/protocol";
 import type {
   BlobRef,
   FileEntry,
@@ -66,6 +67,50 @@ export interface MethodTreeForms {
 }
 
 /**
+ * A method's tree in exactly one of the four forms of `MethodTreeForms`, each pinning the other
+ * three to `never`, so giving two is a compile error. The calls that take the tree beside a
+ * selector it excludes (`validate`, `prepareInputs`) take it in this shape.
+ */
+export type MethodTreeForm =
+  | { directory: string; contents?: never; tree?: never; files?: never }
+  | {
+      contents: Readonly<Record<string, Uint8Array | string>>;
+      directory?: never;
+      tree?: never;
+      files?: never;
+    }
+  | { tree: MethodTreeSource; directory?: never; contents?: never; files?: never }
+  | { files: MethodFiles; directory?: never; contents?: never; tree?: never };
+
+/** The four forms of the tree, each pinned to `never`, for a shape that takes no tree. */
+export interface NoMethodTree {
+  directory?: never;
+  contents?: never;
+  tree?: never;
+  files?: never;
+}
+
+/**
+ * What keeps `value` from being a listed tree as far as the client reads one before any request,
+ * an object with a `files` list, a `digest` string and a `readFile` function, in words for a
+ * refusal ("a list", "an object without them", or its type); `undefined` when it is one. A tree
+ * holding no file passes here, and is refused where it would be sent.
+ */
+export function treeShapeFault(value: unknown): string | undefined {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    Array.isArray((value as { files?: unknown }).files) &&
+    typeof (value as { digest?: unknown }).digest === "string" &&
+    typeof (value as { readFile?: unknown }).readFile === "function"
+  ) {
+    return undefined;
+  }
+  if (Array.isArray(value)) return "a list";
+  return value !== null && typeof value === "object" ? "an object without them" : typeof value;
+}
+
+/**
  * The limits a deployment holds a tree to, in the shape the `mthds` package's `listMethodTree`
  * takes as its `limits` option, so a lister stops at the first breach before hashing anything. A
  * limit the deployment does not announce is absent.
@@ -104,6 +149,14 @@ export interface AnnouncedTreeLimits {
  * travels by hash. `mthds`'s clients use the same threshold.
  */
 export const INLINE_TREE_MAX_BYTES = 256 * 1024;
+
+/**
+ * How long a version handshake is trusted before the client asks again, `mthds`'s
+ * `HANDSHAKE_TTL_MS`: a deployment's blob store and tree limits change only with a deploy, so a
+ * client asks once per this span rather than before every request, and drops the answer sooner
+ * when a refusal shows it stale (`POST /v1/blobs/missing` gone, a tree refused as too large).
+ */
+export const HANDSHAKE_TTL_MS = 5 * 60_000;
 
 /** How many blobs a request or a save uploads at once, and how many files `writeMethodTree` downloads at once. */
 export const MAX_CONCURRENT_TRANSFERS = 8;
@@ -251,6 +304,24 @@ export async function readTreeBytes(
   return bytes;
 }
 
+/**
+ * Every file's bytes, by tree path, read into `read`: a file already there is not read again, so
+ * a request that weighs a tree and then uploads from it, or prepares it a second time, reads each
+ * file once. `signal` is read before each file read, as `readTreeBytes` reads it.
+ */
+export async function readTreeBytesInto(
+  tree: MethodTreeSource,
+  read: Map<string, Uint8Array>,
+  signal?: AbortSignal,
+): Promise<Map<string, Uint8Array>> {
+  for (const file of tree.files) {
+    if (read.has(file.path)) continue;
+    throwIfAborted(signal);
+    read.set(file.path, await tree.readFile(file.path));
+  }
+  return read;
+}
+
 /** The whole tree as inline entries, from bytes already read by `readTreeBytes`. */
 export function inlineFilesOf(
   tree: MethodTreeSource,
@@ -325,6 +396,76 @@ export async function forEachConcurrently<T>(
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   if (failure !== undefined) throw failure.error;
+}
+
+/**
+ * Whether an answer refuses a tree as past one of the receiver's limits, as `mthds`'s
+ * `MthdsApiClient` reads one: a `422` whose problem is the core registry's
+ * `method.package_invalid` carrying its numeric `limit` parameter, the hosted platform's
+ * `method_tree_too_large` code, or pipelex-api's `MethodTreeTooLarge` error type.
+ */
+export function isMethodTreeTooLarge(status: number, body: string): boolean {
+  if (status !== 422) return false;
+  const reading = parseJsonBody(body);
+  if (!reading.ok || !isJsonObject(reading.value)) return false;
+  const answer = reading.value;
+  if (answer["code"] === "method.package_invalid") {
+    const params = answer["params"];
+    return isJsonObject(params) && typeof params["limit"] === "number";
+  }
+  return (
+    answer["code"] === "method_tree_too_large" || answer["error_type"] === "MethodTreeTooLarge"
+  );
+}
+
+/**
+ * The blobs a `422` lists as missing, as `mthds`'s `MthdsApiClient` reads them: the
+ * `params.missing_blobs` of a problem coded `request.blobs_missing`, or `undefined` when the
+ * answer is no such problem or the list holds anything but strings.
+ */
+export function missingBlobsOf(status: number, body: string): string[] | undefined {
+  if (status !== 422) return undefined;
+  const problem = readProblemBody(body);
+  if (problem === undefined || problem.code !== "request.blobs_missing") return undefined;
+  const listed: unknown = problem.params?.["missing_blobs"];
+  if (!Array.isArray(listed) || !listed.every((entry) => typeof entry === "string")) {
+    return undefined;
+  }
+  return listed as string[];
+}
+
+/**
+ * A signal that aborts when either does, with the reason of the first to abort, and `dispose`,
+ * which detaches it from both once it is no longer needed, so a long-lived signal does not keep
+ * a listener per call. `second` absent gives `first` itself. Built by hand rather than with
+ * `AbortSignal.any`, which older browsers lack.
+ */
+export function eitherSignal(
+  first: AbortSignal,
+  second: AbortSignal | undefined,
+): { signal: AbortSignal; dispose: () => void } {
+  if (second === undefined || first.aborted) return { signal: first, dispose: () => undefined };
+  if (second.aborted) return { signal: second, dispose: () => undefined };
+  const controller = new AbortController();
+  const dispose = (): void => {
+    first.removeEventListener("abort", onFirst);
+    second.removeEventListener("abort", onSecond);
+  };
+  const onFirst = (): void => {
+    dispose();
+    controller.abort(first.reason);
+  };
+  const onSecond = (): void => {
+    dispose();
+    controller.abort(second.reason);
+  };
+  first.addEventListener("abort", onFirst, { once: true });
+  second.addEventListener("abort", onSecond, { once: true });
+  return { signal: controller.signal, dispose };
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 // ── A tree from bytes in memory ──────────────────────────────────────

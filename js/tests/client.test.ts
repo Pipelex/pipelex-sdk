@@ -1361,15 +1361,17 @@ describe("PipelexApiClient.validate method selectors", () => {
   it("rejects a both-selectors object — the tooling XOR is strict, before any fetch", async () => {
     const client = makeClient();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    // The runtime guard mirrors the route's strict XOR for every caller.
-    await expect(client.validate({ method_ref: ADDRESS, method_id: "mt_1" })).rejects.toThrow(
-      /takes exactly one of .*; got method_ref and method_id/,
-    );
+    // Two selectors are a compile error for a typed caller (each arm of `PipelexValidateSource`
+    // pins the others to `never`); the runtime guard mirrors the route's strict XOR for an
+    // untyped one.
     await expect(
-      client.validate({ files: { "main.mthds": "domain = 'x'" }, method_id: "mt_1" }),
+      client.validate({ method_ref: ADDRESS, method_id: "mt_1" } as never),
+    ).rejects.toThrow(/takes exactly one of .*; got method_ref and method_id/);
+    await expect(
+      client.validate({ files: { "main.mthds": "domain = 'x'" }, method_id: "mt_1" } as never),
     ).rejects.toThrow(/got files and method_id/);
     // An empty selector object is just as under-specified.
-    await expect(client.validate({})).rejects.toThrow(/got none/);
+    await expect(client.validate({} as never)).rejects.toThrow(/got none/);
     // An empty selector string is absent, as on the run routes.
     await expect(client.validate({ method_ref: "" })).rejects.toBeInstanceOf(RequestArgumentError);
     expect(fetchSpy).not.toHaveBeenCalled();

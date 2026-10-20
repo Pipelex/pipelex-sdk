@@ -27,11 +27,13 @@
  * Failure posture (fail-open, per the networked-hook plan):
  * - no `.mthds` in the payload / unparseable stdin → pass silently
  * - WASM engine fails to load → no file is checked; the note above is still sent
- * - validate unavailable (no `PIPELEX_API_KEY`, network error, timeout, any
- *   non-2xx, a method tree past the hook's caps, one the standard's lister
- *   refuses, such as one holding a symbolic link, an edited file the tree does
- *   not hold, or a file of the tree that failed to upload) → the local
- *   lint/format verdicts already applied; the validate stage passes silently
+ * - validate unavailable (no `PIPELEX_API_KEY`, network error, the stage's
+ *   10-second deadline over the handshake, the blob route, the uploads and the
+ *   validation together, any non-2xx, a method tree past the hook's caps, one
+ *   the standard's lister refuses, such as one holding a symbolic link, an
+ *   edited file the tree does not hold, or a file of the tree that failed to
+ *   upload) → the local lint/format verdicts already applied; the validate
+ *   stage passes silently (`validate-stage.ts`)
  *
  * The hook always exits 0; a block/deny is expressed on stdout, never via the
  * exit code.
@@ -52,13 +54,8 @@ import {
   type HookOutcome,
   type HookPlatform,
   type LintStage,
-  type ValidateStage,
 } from "./check-core.js";
-import { gatherMethodTree } from "./bundle-gather.js";
-import { createHookClient } from "./validate-client.js";
-
-/** Per-request ceiling on the one network call — well under the hook's overall timeout. */
-const VALIDATE_TIMEOUT_MS = 10_000;
+import { runValidateStage } from "./validate-stage.js";
 
 type ToolsWasmModule = typeof import("@pipelex/tools-wasm");
 
@@ -141,48 +138,6 @@ async function loadEngine(): Promise<ToolsWasmModule> {
   }
   /* eslint-enable no-console */
   return engine;
-}
-
-/**
- * Run the networked validate stage. Every no-verdict condition maps to
- * `unavailable` — a machine consumer branches on the structured verdict,
- * never on transport.
- */
-async function runValidateStage(filePath: string): Promise<ValidateStage> {
-  if (!process.env.PIPELEX_API_KEY) {
-    return { status: "unavailable" };
-  }
-  const gathered = await gatherMethodTree(filePath);
-  if (!gathered.ok) {
-    return { status: "unavailable" };
-  }
-  try {
-    const client = createHookClient();
-    // The client owns the ceiling: on timeout it aborts the fetch itself, so the
-    // request does not keep running after the hook has given up on it.
-    const result = await client.validate({ tree: gathered.tree }, true, {
-      timeoutMs: VALIDATE_TIMEOUT_MS,
-    });
-    if (result.is_valid === true) {
-      return {
-        status: "valid",
-        pendingSignatures: Array.isArray(result.pending_signatures)
-          ? result.pending_signatures
-          : [],
-      };
-    }
-    if (result.is_valid === false) {
-      return {
-        status: "invalid",
-        message: result.message,
-        validationErrors: Array.isArray(result.validation_errors) ? result.validation_errors : [],
-        renderedMarkdown: result.rendered_markdown,
-      };
-    }
-    return { status: "unavailable" }; // no discriminant — no verdict
-  } catch {
-    return { status: "unavailable" };
-  }
 }
 
 /** Synchronous fd-1 write — the process exits right after, an async write could truncate. */
