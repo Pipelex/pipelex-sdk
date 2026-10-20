@@ -19,8 +19,17 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from mthds.method_tree.exceptions import (
+    EmptyMethodTreeError,
+    MethodTreeError,
+    MethodTreeRefusedError,
+    TreeLimitError,
+    TreeRefusal,
+    TreeSourceError,
+)
 from mthds.method_tree.file_entry import Base64FileEntry, FileEntry
 from mthds.method_tree.models import MethodTree
+from mthds.method_tree.vocabulary import TreeLimitKind, TreeRefusalCode
 from mthds.protocol.input_form import (
     DocumentField,
     DocumentItem,
@@ -92,7 +101,7 @@ class _FakePrepareClient:
         self,
         result: PipeIOResponse | None = None,
         *,
-        pipe_io_error: ApiResponseError | None = None,
+        pipe_io_error: Exception | None = None,
         upload_error: Exception | None = None,
     ) -> None:
         self.api_key = "test-token"
@@ -203,10 +212,11 @@ class TestPrepareInputs:
                 id="dependency-value",
             ),
             pytest.param(
-                {"tree": "./method"},
-                "`tree` must be a listed method tree, a `MethodTree` such as the client's `list_method_tree` returns, got str.",
+                {"tree": 42},
+                "`tree` must be a listed method tree, a `MethodTree` such as the client's `list_method_tree` returns, "
+                "or the path of a directory or of a `.mthds` file, got int.",
                 {"argument": "tree", "reason": "not_a_tree"},
-                id="tree-string",
+                id="tree-int",
             ),
             pytest.param(
                 {"tree": MethodTree(files=[], digest=f"sha256:{'0' * 64}")},
@@ -225,6 +235,47 @@ class TestPrepareInputs:
         assert str(caught.value) == f"Cannot prepare inputs: {message}"
         assert refused_argument(caught.value) == named
         assert client.pipe_io_calls == []
+
+    def test_a_string_tree_reaches_pipe_io_as_the_path_it_names(self) -> None:
+        client = _image_client()
+        tree: Any = "./method"
+
+        asyncio.run(prepare_inputs(client, tree=tree, inputs={}))
+
+        assert client.pipe_io_calls == [PipeIORequest(tree=Path("./method"))]
+
+    @pytest.mark.parametrize(
+        ("error", "reason"),
+        [
+            pytest.param(
+                EmptyMethodTreeError("The tree holds no file.", root=Path("method"), excluded_files={}, excluded_directories={}, raw_paths={}),
+                "empty",
+                id="empty",
+            ),
+            pytest.param(
+                MethodTreeRefusedError("The tree holds a symbolic link.", refusal=TreeRefusal(code=TreeRefusalCode.SYMBOLIC_LINK, names=["link"])),
+                "symbolic_link",
+                id="refused",
+            ),
+            pytest.param(
+                TreeLimitError("The tree holds too many files.", root=Path("method"), kind=TreeLimitKind.FILE_COUNT, limit=1, reached=2),
+                "limit_passed",
+                id="limit",
+            ),
+            pytest.param(TreeSourceError("No such directory."), "unreadable", id="source"),
+        ],
+    )
+    def test_a_refusal_of_the_tree_listing_is_an_input_preparation_error(self, error: MethodTreeError, reason: str) -> None:
+        """The client lists a path when it sends the pipe I/O request, and the standard's refusal names `tree`, kept as the cause."""
+        client = _FakePrepareClient(pipe_io_error=error)
+
+        with pytest.raises(InputPreparationError) as caught:
+            asyncio.run(prepare_inputs(client, tree=Path("method"), inputs={}))
+
+        assert str(caught.value) == f"Cannot prepare inputs: the method's tree cannot be sent — {error.message}"
+        assert refused_argument(caught.value) == {"argument": "tree", "reason": reason}
+        assert caught.value.__cause__ is error
+        assert client.upload_calls == []
 
     def test_a_files_entry_the_request_refuses_is_an_input_preparation_error(self) -> None:
         """What the selector checks do not read is the request model's to refuse, still before any request."""
@@ -757,6 +808,29 @@ class TestPrepareInputs:
         assert first_call.args[1] == f"{_BASE_URL}/v1/pipe-io"
         assert json.loads(first_call.kwargs["content"]) == {"files": {"smoke.mthds": 'domain = "smoke"'}}
         assert first_call.kwargs["request_timeout"] == 30.0
+
+    def test_a_directory_past_an_announced_limit_is_refused_after_the_handshake_and_before_pipe_io(self, tmp_path: Path) -> None:
+        """The listing needs the limits the handshake announces, so it is refused after that request and before any other."""
+        paths: list[str] = []
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.path)
+            version = {"protocol_version": "1", "runner_version": "0.89.0", "blob_store": True, "limits": {"method_tree": {"max_files": 1}}}
+            return httpx.Response(200, json=version, request=request)
+
+        client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+        method_dir = tmp_path / "method"
+        method_dir.mkdir()
+        (method_dir / "main.mthds").write_text('domain = "smoke"\n')
+        (method_dir / "other.mthds").write_text('domain = "other"\n')
+
+        with pytest.raises(InputPreparationError) as caught:
+            asyncio.run(client.prepare_inputs(tree=method_dir, inputs={}))
+
+        assert refused_argument(caught.value) == {"argument": "tree", "reason": "limit_passed"}
+        assert isinstance(caught.value.__cause__, TreeLimitError)
+        assert paths == ["/v1/version"]
 
     def test_wires_a_method_ref_through_the_real_client(self, mocker: MockerFixture) -> None:
         client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)

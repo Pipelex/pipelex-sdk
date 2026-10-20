@@ -23,6 +23,7 @@ selector is a request-shape `422`, mirrored client-side by the construction-time
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Any, Literal, Self, TypeAlias
 
 from mthds.method_tree.file_entry import FileEntry
@@ -45,12 +46,15 @@ class CrateRequestBase(BaseModel):
 
     - `files`, the map itself, each value the file's text, `{"base64": …}` or `{"sha256": …,
       "size": …}` for bytes the runner already holds, sent as given;
-    - `tree`, a tree listed from a directory (`PipelexAPIClient.list_method_tree`);
+    - `tree`, a tree listed from a directory (`PipelexAPIClient.list_method_tree`), or the `Path`
+      of a directory or of a `.mthds` file, which the client lists the same way when it sends the
+      request;
     - `contents`, each file's bytes or text by tree path.
 
-    The client sends a `tree` or `contents` inline when its inline map weighs 256 KiB or less, or
-    when the API keeps no blob store, and otherwise every file by hash, after uploading the files
-    the API lacks (`mthds`'s `prepare_files`), exactly as a save does. Every `.mthds` file of the
+    The client sends a `tree` or `contents` inline when its inline map weighs 256 KiB or less, and
+    for a `tree` no more than the API's version handshake announces it takes inline, or when the API
+    keeps no blob store, and otherwise every file by hash, after uploading the files the API lacks
+    (`mthds`'s `prepare_files`), exactly as a save does. Every `.mthds` file of the
     tree is one of the method's bundles, named by its tree path in diagnostics and in the crate's
     `source_map`, and every other file is one a step may read, such as a `PipeDocGen` template.
 
@@ -79,14 +83,14 @@ class CrateRequestBase(BaseModel):
 
     A member this model does not declare is refused at construction rather than dropped, so a
     request never reaches the wire without something the caller gave it. `resources`, which
-    `@pipelex/sdk`'s crate requests carry, is one: this SDK sends a step's files in the tree
-    itself until it carries them as `@pipelex/sdk` does (L-261012-992a34).
+    `@pipelex/sdk`'s crate requests carry, is one: this SDK sends a step's files in the method's
+    tree itself, as the protocol sends them.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     files: dict[str, FileEntry] | None = None
-    tree: MethodTree | None = None
+    tree: MethodTree | Path | None = None
     contents: dict[str, bytes | str] | None = None
     dependencies: dict[str, dict[str, FileEntry]] | None = None
     method_ref: str | None = None

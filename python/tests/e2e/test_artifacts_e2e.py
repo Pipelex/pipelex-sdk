@@ -83,7 +83,7 @@ class TestArtifactRoundTripLive:
                 # Across: a pass-through run echoes the input in its working memory.
                 results = await client.start_and_wait(
                     pipe_code="smoke_artifacts.echo_note",
-                    mthds_contents=[_PASS_THROUGH_BUNDLE],
+                    files=files,
                     inputs=prepared.inputs,
                 )
                 assert results.main_stuff == {"text": "round trip"}

@@ -33,11 +33,11 @@ _HOSTED_VERSION = {"protocol_version": "0.6.0", "implementation": "pipelex-hoste
 
 
 def _start(client: PipelexAPIClient) -> Coroutine[Any, Any, object]:
-    return client.start(pipe_code="pitch_product", mthds_contents=['domain = "sales_copy"'])
+    return client.start(pipe_code="pitch_product", files={"main.mthds": 'domain = "sales_copy"'})
 
 
 def _execute(client: PipelexAPIClient) -> Coroutine[Any, Any, object]:
-    return client.execute(pipe_code="pitch_product", mthds_contents=['domain = "sales_copy"'])
+    return client.execute(pipe_code="pitch_product", files={"main.mthds": 'domain = "sales_copy"'})
 
 
 # Each run route, called with arguments that name something to run: (route, call).
@@ -192,7 +192,7 @@ class TestClientRefusedRun:
         )
 
         with pytest.raises(ApiResponseError) as exc_info:
-            asyncio.run(client.start_and_wait(pipe_code="pitch_product", mthds_contents=['domain = "sales_copy"']))
+            asyncio.run(client.start_and_wait(pipe_code="pitch_product", files={"main.mthds": 'domain = "sales_copy"'}))
 
         exc = exc_info.value
         assert str(exc) == (

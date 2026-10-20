@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, assert_never, cast
 from urllib.parse import unquote_to_bytes
 
+from mthds.method_tree.exceptions import EmptyMethodTreeError, MethodTreeError, MethodTreeRefusedError, TreeLimitError, TreeSourceError
 from mthds.method_tree.models import MethodTree
 from mthds.protocol.input_form import (
     BooleanItem,
@@ -188,14 +189,23 @@ def _caller_map(value: object, *, argument: str, holds: str, value_ok: Callable[
     return mapping or None
 
 
-def _caller_tree(value: object) -> MethodTree | None:
-    """The caller's `tree` — `None` when absent, refused when it is not a listed tree or holds no file."""
+def _caller_tree(value: object) -> MethodTree | Path | None:
+    """The caller's `tree` — `None` when absent, refused when it is neither a listed tree nor a path, or holds no file.
+
+    A path is listed when the pipe I/O request is sent, under the limits the deployment announces, and
+    `_fetch_signature` turns a refusal of that listing into an `InputPreparationError`. A `str` is read
+    as the `Path` it names, as the client's calls and `PipeIORequest.tree` read one.
+    """
     if value is None:
         return None
+    if isinstance(value, Path):
+        return value
+    if isinstance(value, str):
+        return Path(value)
     if not isinstance(value, MethodTree):
         msg = (
             "Cannot prepare inputs: `tree` must be a listed method tree, a `MethodTree` such as the client's "
-            f"`list_method_tree` returns, got {_kind_of(value)}."
+            f"`list_method_tree` returns, or the path of a directory or of a `.mthds` file, got {_kind_of(value)}."
         )
         raise InputPreparationError(msg, problem=argument_invalid_problem(argument="tree", reason="not_a_tree"))
     if not value.files:
@@ -433,7 +443,7 @@ class _MethodSelection(NamedTuple):
     """The method selector `prepare_inputs` sends, normalized: exactly one of the tree, `method_ref` and `method_id`."""
 
     files: dict[str, FileEntry] | None
-    tree: MethodTree | None
+    tree: MethodTree | Path | None
     contents: dict[str, bytes | str] | None
     dependencies: dict[str, dict[str, FileEntry]] | None
     method_ref: str | None
@@ -443,7 +453,7 @@ class _MethodSelection(NamedTuple):
 def _resolve_selector(
     *,
     files: dict[str, FileEntry] | None,
-    tree: MethodTree | None,
+    tree: MethodTree | Path | None,
     contents: dict[str, bytes | str] | None,
     dependencies: dict[str, dict[str, FileEntry]] | None,
     method_ref: str | None,
@@ -456,8 +466,8 @@ def _resolve_selector(
     a real one without tripping the XOR. The tree counts as one selector, given in exactly one of
     `files`, `tree` and `contents`, and the `dependencies` it calls accompany it alone. A `files`
     that is not a map is refused rather than read as absent, and so are a `contents` that is not a
-    map of bytes or text, a `dependencies` that is not a map of file maps, and a `tree` that is not
-    a `MethodTree` or holds no file. A
+    map of bytes or text, a `dependencies` that is not a map of file maps, and a `tree` that is
+    neither a `MethodTree` nor a `Path`, or is a `MethodTree` holding no file. A
     non-string `method_ref` / `method_id` is NOT absent but refused, so a mistyped selector cannot
     slip past the XOR as a silent `None`. The check lives here, rather than in `PipeIORequest`'s
     own validator, so that it raises the `InputPreparationError` this module owes, and it runs
@@ -575,6 +585,25 @@ def _is_pipe_selection_refusal(exc: ApiResponseError) -> bool:
     return exc.status == _HTTP_UNPROCESSABLE_ENTITY and exc.error_type in _PIPE_SELECTION_ERROR_TYPES
 
 
+def _tree_refusal_reason(exc: MethodTreeError) -> str:
+    """The reason an `InputPreparationError` refusing `tree` names for `mthds`'s refusal of the tree it lists or reads.
+
+    A tree the membership rule leaves empty is `empty`, as a `MethodTree` holding no file is refused
+    before any request; any other refusal the standard defines is its own code (`TreeRefusalCode`); a
+    listing stopped at one of the deployment's limits is `limit_passed`, and a path or a file that
+    cannot be read, or changed since it was listed, is `unreadable`.
+    """
+    if isinstance(exc, EmptyMethodTreeError):
+        return "empty"
+    if isinstance(exc, MethodTreeRefusedError):
+        return exc.refusal.code
+    if isinstance(exc, TreeLimitError):
+        return "limit_passed"
+    if isinstance(exc, TreeSourceError):
+        return "unreadable"
+    return "invalid"
+
+
 async def _fetch_signature(client: _PrepareClient, *, request: PipeIORequest) -> PipeIOValidReport:
     """Ask `pipe_io` for the selected pipe's signature and hand back the valid report.
 
@@ -594,6 +623,12 @@ async def _fetch_signature(client: _PrepareClient, *, request: PipeIORequest) ->
     `detail`, which names the candidates where there are any, with the `ApiResponseError` kept as
     its `__cause__` for a caller who needs the whole problem document. Every other non-2xx
     propagates as the `ApiResponseError` it is.
+
+    A `tree` given as a `Path` is listed by the client as it sends the request, after the version
+    handshake that announces the limits the listing is held to, so a tree the standard or those
+    limits refuse, or one that cannot be read, fails there, before the pipe I/O request itself is
+    sent: `mthds`'s `MethodTreeError` becomes an `InputPreparationError` refusing `tree`
+    (`_tree_refusal_reason`), the standard's error kept as its `__cause__`.
     """
     try:
         response = await client.pipe_io(request)
@@ -603,6 +638,9 @@ async def _fetch_signature(client: _PrepareClient, *, request: PipeIORequest) ->
         reason = exc.server_message or exc.title or exc.response_body or exc.status_text
         msg = f"Cannot prepare inputs: the pipe could not be selected — {reason}"
         raise InputPreparationError(msg, problem=exc.problem) from exc
+    except MethodTreeError as exc:
+        msg = f"Cannot prepare inputs: the method's tree cannot be sent — {exc.message}"
+        raise InputPreparationError(msg, problem=argument_invalid_problem(argument="tree", reason=_tree_refusal_reason(exc))) from exc
 
     if isinstance(response, CrateInvalidReport):
         first = response.validation_errors[0].message if response.validation_errors else response.message
@@ -615,7 +653,7 @@ async def prepare_inputs(
     client: _PrepareClient,
     *,
     files: dict[str, FileEntry] | None = None,
-    tree: MethodTree | None = None,
+    tree: MethodTree | Path | None = None,
     contents: dict[str, bytes | str] | None = None,
     dependencies: dict[str, dict[str, FileEntry]] | None = None,
     method_ref: str | None = None,
@@ -637,8 +675,10 @@ async def prepare_inputs(
         files: The method's tree as the protocol's map of file entries, sent as given. The tree
             is given in at most one of `files`, `tree` and `contents`, and is exactly one of the
             three selectors with `method_ref` and `method_id`.
-        tree: The method's tree, listed from a directory (`PipelexAPIClient.list_method_tree`),
-            sent inline when small and by hash otherwise, as `pipe_io` sends it.
+        tree: The method's tree, listed from a directory (`PipelexAPIClient.list_method_tree`), or
+            the path of a directory or of a `.mthds` file, a `Path` or a `str`, which the client lists
+            after the version handshake and before the pipe I/O request, sent inline when small and
+            by hash otherwise, as `pipe_io` sends it.
         contents: The method's files, each one's bytes or text by tree path, sent as `tree` is.
         dependencies: The method packages the tree calls by address, each a map of file entries
             keyed by its address, sent as given; they accompany the tree alone.
@@ -669,8 +709,12 @@ async def prepare_inputs(
     Raises:
         InputPreparationError: No selector or several; a selector or `pipe_ref` that is not a
             string; a `files`, `contents` or `dependencies` that is not a map of what it holds, a
-            `tree` that is not a `MethodTree` or holds no file, or any other selector the pipe I/O
-            request refuses, each before any request; a bare `pipe_ref`, or one naming a dependency package's pipe
+            `tree` that is neither a `MethodTree` nor a path, or holds no file, or any other selector the pipe I/O
+            request refuses, each before any request; a `tree` given as a path that the standard
+            refuses, that passes a limit the deployment announces or that cannot be read, refused as
+            the client lists it, which needs the limits and so comes after the version handshake
+            (`GET /v1/version`) and before the pipe I/O request, `mthds`'s `MethodTreeError` as its
+            `__cause__`; a bare `pipe_ref`, or one naming a dependency package's pipe
             (`alias->domain.pipe_code`); the closure did not resolve; the route refused the pipe
             selection with the runner's entry-lookup `error_type` (pipelex-api >= 0.33.1) — an
             unknown `pipe_ref`, or no `pipe_ref` and a method declaring no single entry pipe —

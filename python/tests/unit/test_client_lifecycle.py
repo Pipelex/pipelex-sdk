@@ -152,7 +152,7 @@ class TestClientLifecycle:
         """
         client = self._client()
         with pytest.raises(PipelineRequestError, match="pipe_code"):
-            asyncio.run(client.start(mthds_contents=['domain = "answer"'], extra={"pipe_code": "smuggled"}))
+            asyncio.run(client.start(files={"main.mthds": 'domain = "answer"'}, extra={"pipe_code": "smuggled"}))
 
     def test_start_bare_runner_missing_route_404_is_lifecycle_unavailable(self, mocker: MockerFixture) -> None:
         """A bare-runner 404 with Starlette's default body (no `code`) becomes RunLifecycleUnavailableError."""

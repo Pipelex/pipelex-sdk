@@ -143,7 +143,7 @@ class TestClientRunFallback:
             ),
         )
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
         assert result.pipeline_run_id == "run-1"
         assert result.main_stuff == {"answer": 42}
         assert result.graph_spec == {"n": 1}
@@ -254,7 +254,7 @@ class TestClientRunFallback:
         )
         on_started = mocker.Mock()
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"], on_started=on_started))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}, on_started=on_started))
         assert result.main_stuff == {"text": "hello"}
         on_started.assert_not_called()
 
@@ -311,7 +311,7 @@ class TestClientRunFallback:
             mocker.AsyncMock(side_effect=[_response(200, json=_BARE_VERSION), _response(200, json=_EXECUTE_BODY)]),
         )
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
         assert result.pipeline_run_id == "run-x"
         # The SDK resolves `main_stuff` out of the working memory via `main_stuff_name` ("result") —
         # its content, the same shape the hosted path relays; the full working memory rides pipe_output.
@@ -360,7 +360,7 @@ class TestClientRunFallback:
             mocker.AsyncMock(side_effect=[_response(200, json=_BARE_VERSION), _response(200, json=usage_body)]),
         )
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
         assert result.tokens_usages is not None
         record = result.tokens_usages[0]
         # Same typed record the durable path yields — the pair is validated, not passed through raw.
@@ -382,7 +382,7 @@ class TestClientRunFallback:
             mocker.AsyncMock(side_effect=[_response(200, json=_BARE_VERSION), _response(200, json=_EXECUTE_BODY)]),
         )
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
         assert result.tokens_usages is None
         assert result.usage_assembly_error is None
 
@@ -398,7 +398,7 @@ class TestClientRunFallback:
             mocker.AsyncMock(side_effect=[_response(200, json=_BARE_VERSION), _response(200, json=_EXECUTE_BODY)]),
         )
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
         assert result.working_memory is not None
         assert "working_memory" in result.model_fields_set
         assert result.working_memory.root["result"].content == {"text": "hello"}
@@ -425,7 +425,7 @@ class TestClientRunFallback:
             ),
         )
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
         assert result.graph_spec == _GRAPH_SPEC
         assert result.graph_assembly_error is None
 
@@ -445,7 +445,7 @@ class TestClientRunFallback:
             ),
         )
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
         assert result.graph_spec is None
         assert result.graph_assembly_error == "failed to assemble the graph for the run"
 
@@ -466,7 +466,7 @@ class TestClientRunFallback:
             ),
         )
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
         assert result.pipe_io_contracts is not None
         assert isinstance(result.pipe_io_contracts["x.greet"], PipeIOContract)
         assert result.pipe_io_contracts["x.greet"].output.concept_ref == "native.Text"
@@ -503,7 +503,7 @@ class TestClientRunFallback:
             ),
         )
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
         assert result.pipe_io_contracts is None
         assert result.input_form is None
         assert result.output_form is None
@@ -522,7 +522,7 @@ class TestClientRunFallback:
             mocker.AsyncMock(side_effect=[_response(200, json=_BARE_VERSION), _response(200, json=_EXECUTE_BODY)]),
         )
 
-        result = asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+        result = asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
         assert result.graph_spec is None
         assert result.graph_assembly_error is None
         assert result.pipe_io_contracts is None
@@ -557,7 +557,7 @@ class TestClientRunFallback:
         )
 
         with pytest.raises(MissingMainStuffError):
-            asyncio.run(client.start_and_wait(pipe_code="p", mthds_contents=["x"]))
+            asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
 
     def test_fallback_forwards_extra_extension_args(self, mocker: MockerFixture) -> None:
         """An `extra` extension arg rides the blocking execute body as a top-level field — not dropped."""
@@ -668,11 +668,12 @@ class TestClientRunFallback:
         "selection",
         [
             {"method_ref": "github.com/acme/methods/receipt-review@v1.0.0"},
-            {"pipe_code": "p", "mthds_contents": ['domain = "d"']},
+            {"pipe_code": "p", "extra": {"mthds_contents": ['domain = "d"']}},
             {"pipe_code": "p", "files": {"main.mthds": 'domain = "d"'}},
+            {"pipe_code": "p", "contents": {"main.mthds": 'domain = "d"'}},
             {"pipe_code": "p", "extra": {"bundle_b64": "UEsDBA=="}},
         ],
-        ids=["method_ref", "mthds_contents", "files", "bundle_b64"],
+        ids=["method_ref", "mthds_contents", "files", "contents", "bundle_b64"],
     )
     def test_a_start_that_fetches_or_uploads_a_method_takes_the_blocking_ceiling(self, selection: dict[str, Any]) -> None:
         """A `method_ref` start makes the server fetch the package before it answers, and a bundle can make the body
@@ -712,7 +713,7 @@ class TestClientRunFallback:
         async def scenario() -> None:
             await client.version()
             await client.start(pipe_code="p")
-            await client.start(pipe_code="p", mthds_contents=['domain = "d"'])
+            await client.start(pipe_code="p", files={"main.mthds": 'domain = "d"'})
 
         asyncio.run(scenario())
 
