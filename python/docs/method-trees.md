@@ -1,6 +1,6 @@
-# A saved method's tree
+# A method's tree
 
-A saved method holds a **method tree**: the files a method is made of, each at its tree path, the same tree a run takes as `files`. The draft holds one, and each published version holds the one it was published from. A tree is named by its **tree digest**, `sha256:` and the SHA-256 of its listing, so two methods holding the same files hold the same digest. Both are defined by the MTHDS standard (`mthds/docs/spec/method-tree.md`), and this SDK reads and writes them through `mthds`'s own library, `mthds.method_tree`, so the tree a save sends is the tree a run or a validate would send.
+A saved method holds a **method tree**: the files a method is made of, each at its tree path, the same tree a run and a validation take as `files`. The draft holds one, and each published version holds the one it was published from. A tree is named by its **tree digest**, `sha256:` and the SHA-256 of its listing, so two methods holding the same files hold the same digest. Both are defined by the MTHDS standard (`mthds/docs/spec/method-tree.md`), and this SDK reads and writes them through `mthds`'s own library, `mthds.method_tree`, so the tree a save sends is the tree a run or a validate would send.
 
 The platform keeps each file once per organization, as a blob named by its SHA-256, so a save sends only the files the organization does not hold yet, and a read lists the files with a short-lived link to each one's bytes.
 
@@ -11,7 +11,7 @@ The platform keeps each file once per organization, as a blob named by its SHA-2
 | Form | What it is | How it is sent |
 |---|---|---|
 | `files` | The standard's map of file entries (`mthds.method_tree.file_entry.FileEntry`): a text, `{"base64": …}`, or `{"sha256": …, "size": …}` for bytes the organization already holds. | As given. |
-| `tree` | A tree listed from a directory or a `.mthds` file, by `list_method_tree`. | Inline when small, by hash otherwise (below). |
+| `tree` | A tree listed from a directory or a `.mthds` file by `list_method_tree`, or the `Path` of that directory or file, which the client lists the same way. | Inline when small, by hash otherwise (below). |
 | `contents` | Each file's bytes, or its text, by tree path. | Inline when small, by hash otherwise (below). |
 
 A tree given as `tree` or `contents` is sent **inline** when its inline map weighs 256 KiB or less, written as JSON with no whitespace, or when the platform keeps no blob store, which its version handshake says (`blob_store`). Otherwise the client asks `POST /v1/blobs/missing` which files the organization lacks, naming the tree's digest, uploads each one it lacks once, straight to the upload target the platform names, and sends every file by hash. This is `mthds`'s `prepare_files` and `prepare_files_from_contents`, run before the save. A file uploaded once is never uploaded again, by this method or any other of the organization.
@@ -49,6 +49,20 @@ The save is refused, with the `ApiResponseError` of its problem, when the platfo
 An upload that fails raises `MethodFileTransferError` with `operation` `upload`, and the method is not saved (below).
 
 The crate routes, `resolve`, `codegen` and `pipe_io`, and `prepare_inputs`, which reads `pipe_io`, take the method's tree in the same three forms and send a `tree` or `contents` by the same rules, so a tree too large to send inline is uploaded once and then read by hash. There an upload that fails means the request was not sent ([architecture.md](architecture.md), "Crate routes").
+
+## Running and validating a tree
+
+`execute`, `start`, `start_and_wait` and `validate` take the method's tree in the same three forms, `files` second as in the protocol client and `tree` and `contents` by name, and send a `tree` or `contents` by the same rules before the run's request, so a run of a large method sends a small request and uploads only the files the organization does not hold yet. A directory is listed with the standard's lister, under the deployment's limits, so a run's `inputs.json` or `inputs.toml`, at any depth, is never sent. The tree is given in one form, never beside a `method_ref`, and a refused call lists, uploads and sends nothing. An upload that fails raises `MethodFileTransferError`, and no run is started (for `validate`, the request is not sent). `start_and_wait` prepares the tree once and hands the same map to the start and, against a runner with no run store, to the blocking execute. The platform refuses a run's tree with the `422`s of the table above, and validates a tree only for a caller acting in an organization.
+
+```python
+from pathlib import Path
+
+method_dir = Path("methods/receipts")
+report = await client.validate(tree=method_dir)
+results = await client.start_and_wait(tree=method_dir, inputs={"topic": "quantum computing"})
+```
+
+To send one tree to several calls, a validation, a pipe I/O read and a run for instance, prepare it once with the base client's own calls, `files = await client.prepare_files(await client.list_method_tree(method_dir))`, and pass `files=files` to each: the map is then sent as given, with no further listing or round trip. A failed upload there raises `mthds`'s `BlobUploadError`, the call being the standard client's own.
 
 ## The deployment's limits
 
@@ -89,7 +103,7 @@ Each file is downloaded through its link, at most eight at a time, by an HTTP cl
 
 ## When a transfer fails
 
-`MethodFileTransferError` is raised when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a save or a crate request, `download` for `write_method_tree`), `code` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps neither a cause nor a context: the `mthds` error an upload refusal starts as quotes that body, and httpx's error for a request that got no answer, or whose body httpx could not decode (`DecodingError`), holds the request and its URL.
+`MethodFileTransferError` is raised when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a save, a run, a validation or a crate request, `download` for `write_method_tree`), `code` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps neither a cause nor a context: the `mthds` error an upload refusal starts as quotes that body, and httpx's error for a request that got no answer, or whose body httpx could not decode (`DecodingError`), holds the request and its URL.
 
 | `code` | When | Retryable |
 |---|---|---|

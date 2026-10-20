@@ -105,8 +105,8 @@ class TestStartIdempotencyKey:
         client = server.client()
 
         async def scenario() -> None:
-            await client.start(pipe_code="p", mthds_contents=['domain = "d"'])
-            await client.start(pipe_code="p", mthds_contents=['domain = "d"'], idempotency_key=IdempotencyKeyData.KEY)
+            await client.start(pipe_code="p", files={"main.mthds": 'domain = "d"'})
+            await client.start(pipe_code="p", files={"main.mthds": 'domain = "d"'}, idempotency_key=IdempotencyKeyData.KEY)
 
         asyncio.run(scenario())
 
@@ -244,7 +244,9 @@ class TestStartIdempotencyKey:
             }
         )
 
-        results = asyncio.run(server.client().start_and_wait(pipe_code="p", mthds_contents=['domain = "d"'], idempotency_key=IdempotencyKeyData.KEY))
+        results = asyncio.run(
+            server.client().start_and_wait(pipe_code="p", files={"main.mthds": 'domain = "d"'}, idempotency_key=IdempotencyKeyData.KEY)
+        )
 
         assert results.pipeline_run_id == "run-2"
         execute = server.requests[1]

@@ -99,14 +99,18 @@ class TestMethodRefRunOption:
         assert '"pipe_code":"documents.summarize"' in sent
         assert f'"method_ref":"{_METHOD_REF}"' in sent
 
-    def test_method_ref_and_inline_contents_are_mutually_exclusive(self, mocker: MockerFixture) -> None:
+    @pytest.mark.parametrize("form", ["files", "contents"])
+    def test_method_ref_and_the_tree_are_mutually_exclusive(self, mocker: MockerFixture, form: str) -> None:
         client = self._client()
         send = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(202, json=_START_BODY)))
+        tree = {"main.mthds": 'domain = "x"'}
+        files = tree if form == "files" else None
+        contents = tree if form == "contents" else None
 
-        with pytest.raises(PipelineRequestError, match="method_ref and inline mthds_contents are mutually exclusive"):
-            asyncio.run(client.start(mthds_contents=['domain = "x"'], method_ref=_METHOD_REF))
-        with pytest.raises(PipelineRequestError, match="method_ref and inline mthds_contents are mutually exclusive"):
-            asyncio.run(client.execute(mthds_contents=['domain = "x"'], method_ref=_METHOD_REF))
+        with pytest.raises(PipelineRequestError, match=r"method_ref and the method's tree \(files, tree or contents\) are mutually exclusive"):
+            asyncio.run(client.start(method_ref=_METHOD_REF, files=files, contents=contents))
+        with pytest.raises(PipelineRequestError, match=r"method_ref and the method's tree \(files, tree or contents\) are mutually exclusive"):
+            asyncio.run(client.execute(method_ref=_METHOD_REF, files=files, contents=contents))
 
         send.assert_not_called()
 

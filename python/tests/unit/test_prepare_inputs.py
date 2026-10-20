@@ -204,7 +204,8 @@ class TestPrepareInputs:
             ),
             pytest.param(
                 {"tree": "./method"},
-                "`tree` must be a listed method tree, a `MethodTree` such as the client's `list_method_tree` returns, got str.",
+                "`tree` must be a listed method tree, a `MethodTree` such as the client's `list_method_tree` returns, "
+                "or the `Path` of a directory or of a `.mthds` file, got str.",
                 {"argument": "tree", "reason": "not_a_tree"},
                 id="tree-string",
             ),

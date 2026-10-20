@@ -29,6 +29,7 @@ strips a suffix).
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 from mthds.method_tree.file_entry import FileEntry
@@ -225,7 +226,8 @@ class MethodWriteInput(BaseModel):
     together before anything is sent:
 
     - `files`, the MTHDS standard's map of file entries, the same `files` a run takes, sent as given;
-    - `tree`, a tree listed from a directory (`PipelexAPIClient.list_method_tree`), or
+    - `tree`, a tree listed from a directory (`PipelexAPIClient.list_method_tree`), or the `Path` of
+      a directory or of a `.mthds` file, which the client lists the same way, or
     - `contents`, each file's bytes or text by tree path,
 
     the last two sent inline when the tree is small and by hash otherwise, after uploading the files
@@ -237,7 +239,7 @@ class MethodWriteInput(BaseModel):
 
     name: str
     files: dict[str, FileEntry] | None = None
-    tree: MethodTree | None = None
+    tree: MethodTree | Path | None = None
     contents: dict[str, bytes | str] | None = None
     input_data: dict[str, Any] | None = None
 
@@ -256,8 +258,8 @@ class MethodDraftInput(BaseModel):
     files: dict[str, FileEntry] | None = None
     """The draft's tree as a map of file entries, sent as given. Set to `None`, the draft is emptied."""
 
-    tree: MethodTree | None = None
-    """The draft's tree, listed from a directory."""
+    tree: MethodTree | Path | None = None
+    """The draft's tree, listed from a directory, or the `Path` of a directory or of a `.mthds` file, which the client lists."""
 
     contents: dict[str, bytes | str] | None = None
     """The draft's files, each one's bytes or text by tree path."""

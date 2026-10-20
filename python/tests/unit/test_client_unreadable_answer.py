@@ -42,9 +42,9 @@ _ROUTES: list[tuple[str, _Call, str]] = [
     ("version", lambda client: client.version(), "GET /v1/version"),
     ("models", lambda client: client.models(), "GET /v1/models"),
     ("models-by-category", lambda client: client.models(ModelCategory.LLM), "GET /v1/models?type=llm"),
-    ("execute", lambda client: client.execute(pipe_code="p", mthds_contents=["x"]), "POST /v1/execute"),
-    ("start", lambda client: client.start(pipe_code="p", mthds_contents=["x"]), "POST /v1/start"),
-    ("validate-inline", lambda client: client.validate(["x"]), "POST /v1/validate"),
+    ("execute", lambda client: client.execute(pipe_code="p", files={"main.mthds": "x"}), "POST /v1/execute"),
+    ("start", lambda client: client.start(pipe_code="p", files={"main.mthds": "x"}), "POST /v1/start"),
+    ("validate-tree", lambda client: client.validate({"main.mthds": "x"}), "POST /v1/validate"),
     ("validate-selector", lambda client: client.validate(method_id="mt_x"), "POST /v1/validate"),
     ("get_run_status", lambda client: client.get_run_status("run-1"), "GET /v1/runs/run-1/status"),
     ("get_run_progress", lambda client: client.get_run_progress("run-1"), "GET /v1/runs/run-1/progress"),
@@ -89,16 +89,16 @@ _LIST_ROUTE_PARAMS = [pytest.param(call, route, id=name) for name, call, route i
 # A route of each way a reader refuses JSON that is not an object at the root of the body: a model (an inherited
 # protocol route), a discriminated union and the liveness probe's free-form object.
 _ROOT_REFUSAL_ROUTES: list[tuple[str, _Call, str]] = [
-    ("start", lambda client: client.start(pipe_code="p", mthds_contents=["x"]), "POST /v1/start"),
-    ("validate-inline", lambda client: client.validate(["x"]), "POST /v1/validate"),
+    ("start", lambda client: client.start(pipe_code="p", files={"main.mthds": "x"}), "POST /v1/start"),
+    ("validate-tree", lambda client: client.validate({"main.mthds": "x"}), "POST /v1/validate"),
     ("health", lambda client: client.health(), "GET /health"),
 ]
 
 # Routes answering an object that refuse one of the wrong shape: an inherited protocol route, a discriminated union,
 # a run read, a page and a product object.
 _WRONG_SHAPE_ROUTES: list[tuple[str, _Call, str]] = [
-    ("start", lambda client: client.start(pipe_code="p", mthds_contents=["x"]), "POST /v1/start"),
-    ("validate-inline", lambda client: client.validate(["x"]), "POST /v1/validate"),
+    ("start", lambda client: client.start(pipe_code="p", files={"main.mthds": "x"}), "POST /v1/start"),
+    ("validate-tree", lambda client: client.validate({"main.mthds": "x"}), "POST /v1/validate"),
     ("get_run_status", lambda client: client.get_run_status("run-1"), "GET /v1/runs/run-1/status"),
     ("get_run_progress", lambda client: client.get_run_progress("run-1"), "GET /v1/runs/run-1/progress"),
     ("list_methods", lambda client: client.list_methods(), "GET /v1/methods"),
@@ -116,7 +116,7 @@ _EMPTY_BODY_ROUTES: list[tuple[str, _Call, str]] = [
 # Routes answered with a body that is not UTF-8, under the 2xx status each takes: an inherited protocol
 # route, a run read and a product route.
 _NOT_UTF8_ROUTES: list[tuple[str, _Call, str, int]] = [
-    ("start", lambda client: client.start(pipe_code="p", mthds_contents=["x"]), "POST /v1/start", 202),
+    ("start", lambda client: client.start(pipe_code="p", files={"main.mthds": "x"}), "POST /v1/start", 202),
     ("get_run_status", lambda client: client.get_run_status("run-1"), "GET /v1/runs/run-1/status", 200),
     ("get_subscription", lambda client: client.get_subscription(), "GET /v1/billing/subscription", 200),
 ]
@@ -132,7 +132,7 @@ _BODIES_THE_PROTOCOL_REFUSES = [
 
 
 def _execute(client: PipelexAPIClient) -> Coroutine[Any, Any, object]:
-    return client.execute(pipe_code="p", mthds_contents=["x"])
+    return client.execute(pipe_code="p", files={"main.mthds": "x"})
 
 
 # Every route under the 2xx it answers, and the blocking execute's `202`, which `execute` reads as the protocol's acknowledgement.
@@ -330,7 +330,7 @@ class TestClientUnreadableAnswer:
                 return httpx.Response(200, json=_BARE_VERSION)
             return httpx.Response(200, json=_DRIFTED_EXECUTE_BODY)
 
-        unreadable = _raised(lambda client: client.start_and_wait(pipe_code="p", mthds_contents=["x"]), _client_answering(_answer))
+        unreadable = _raised(lambda client: client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}), _client_answering(_answer))
 
         assert str(unreadable) == "API POST /v1/execute answered 200 with a body that is not the answer the route returns"
         assert isinstance(unreadable.__cause__, ValidationError)

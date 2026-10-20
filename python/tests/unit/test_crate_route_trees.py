@@ -137,6 +137,18 @@ class TestCrateRouteTrees:
         assert api.body_of("/v1/resolve") == {"files": {"main.mthds": _MAIN, "templates/invoice.html": "<p>{{ total }}</p>"}}
         assert not api.uploads
 
+    def test_a_directory_path_is_listed_when_the_request_is_sent(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        """A `Path` names the tree as `list_method_tree` lists it, so the run's inputs file stays out of it."""
+        api = _Api()
+        client = _client(api, mocker)
+        method_dir = _tree_dir(tmp_path / "method", {"main.mthds": _MAIN.encode(), "inputs.json": b"{}"})
+
+        report = asyncio.run(client.pipe_io(PipeIORequest(tree=method_dir)))
+
+        assert isinstance(report, PipeIOValidReport)
+        assert api.paths() == ["/v1/version", "/v1/pipe-io"]
+        assert api.body_of("/v1/pipe-io") == {"files": {"main.mthds": _MAIN}}
+
     def test_a_large_tree_is_sent_by_hash_after_uploading_the_blobs_the_api_lacks(self, mocker: MockerFixture) -> None:
         main = _MAIN.encode()
         api = _Api(held=frozenset({_sha256(main)}))

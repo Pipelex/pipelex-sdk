@@ -7,10 +7,12 @@ Two paths produce it. Against the hosted API the SDK starts a durable run and po
 **Calling the blocking route yourself.** `execute()` returns a `PipelexExecuteResult` rather than a `RunResults`, because that model is the runner's whole typed envelope and nothing of it is thrown away. To read such a result through this page's fields, lift it: `results_from_execute(result)` (`pipelex_sdk/execute_result.py`) is the same mapping `start_and_wait` applies on its fallback, exposed for the caller who drives `execute()` directly. It is pure — no client, no network — and what it buys is everything written against `RunResults`: `summarize_usage`, `download_artifacts`, the graph pair and the three I/O artifacts, instead of re-reading `pipe_output.model_extra` by hand.
 
 ```python
+from pathlib import Path
+
 from pipelex_sdk.execute_result import results_from_execute
 from pipelex_sdk.usage import summarize_usage
 
-execute_result = await client.execute(pipe_code="my_domain.my_pipe", mthds_contents=[source])
+execute_result = await client.execute(pipe_code="my_domain.my_pipe", tree=Path("./my_method"))
 results = results_from_execute(execute_result)
 print(results.main_stuff, summarize_usage(results).total_cost_usd)
 ```

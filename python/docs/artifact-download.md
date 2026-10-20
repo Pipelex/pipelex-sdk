@@ -178,7 +178,7 @@ The two directions compose. A file uploaded by `prepare_inputs` is echoed in the
 
 ```python
 prepared = await client.prepare_inputs(files=files, inputs={"doc": "./brief.pdf", "note": "hi"})
-results = await client.start_and_wait(pipe_code=pipe_code, mthds_contents=[bundle], inputs=prepared.inputs)
+results = await client.start_and_wait(pipe_code=pipe_code, files=files, inputs=prepared.inputs)
 verdict = await download_artifacts(
     client,
     dir_path="./out",

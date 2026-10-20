@@ -36,7 +36,7 @@ The **base URL** resolves, in order: explicit `base_url` argument → `PIPELEX_B
 
 The SDK never reads the `mthds` resolver (`MTHDS_API_KEY` / `MTHDS_BASE_URL` / `~/.mthds/config`) — those settings configure the vendor-neutral `mthds` tooling and whichever runner it targets, not this Pipelex client.
 
-`request_timeout_seconds` (constructor argument, default 20 min) is the time limit of the routes that can take long: the blocking `execute`, `validate`, `models`, and a `start` carrying a bundle (`mthds_contents`, `files` or `bundle_b64`) or a `method_ref`, which the server resolves before it answers. `version` and any other `start` answer fast, so they take `request_timeout_seconds` capped at the 30-second poll budget, the hosted gateway's own cut-off. The SDK's own polls and product requests keep budgets of their own.
+`request_timeout_seconds` (constructor argument, default 20 min) is the time limit of the routes that can take long: the blocking `execute`, `validate`, `models`, and a `start` carrying the method's tree, a bundle riding `extra` (`mthds_contents` or `bundle_b64`) or a `method_ref`, which the server resolves before it answers. `version` and any other `start` answer fast, so they take `request_timeout_seconds` capped at the 30-second poll budget, the hosted gateway's own cut-off. The SDK's own polls and product requests keep budgets of their own.
 
 `app_info` (constructor argument, an `AppInfo` from `pipelex_sdk.user_agent`) puts your application's name in front of the SDK's own tokens in the `User-Agent` that every request carries — `acme-invoicer/1.4.0 pipelex-sdk-python/0.11.0 mthds-python/0.15.0 python/3.12.4 (linux; x86_64)` — which the platform uses to attribute traffic in its analytics. The header follows the spec `conformance/specs/client-identification.md`, in the `conformance` repository, where the cross-repo specs sit beside the tests that verify them; see [`docs/client-identification.md`](docs/client-identification.md).
 
@@ -45,26 +45,33 @@ The client is **async-only** (httpx `AsyncClient`) and is an async context manag
 ## Quickstart
 
 ```python
+from pathlib import Path
+
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.validation_models import VALIDATION_VIEW_INPUT_FORM
 
 
 async def main() -> None:
+    # The method is the directory holding its tree. The client lists it with the standard's
+    # lister, so a run's `inputs.json` never travels, and sends it inline when it is small and
+    # by hash otherwise, uploading only the files the API does not hold yet.
+    method_dir = Path("my_method")
     async with PipelexAPIClient() as client:
-        # 1. Validate an MTHDS bundle. The verdict is always returned (never raised):
+        # 1. Validate the method. The verdict is always returned (never raised):
         #    a 200 discriminated on `is_valid`, carrying `rendered_markdown`.
         #    Structured views are opt-in: asking for `input_form` here is what populates
         #    `report.input_form` (the per-pipe input-form descriptors); omit `views` and the
         #    request body carries no `views` key at all.
-        report = await client.validate([bundle_text], views=[VALIDATION_VIEW_INPUT_FORM])
+        report = await client.validate(tree=method_dir, views=[VALIDATION_VIEW_INPUT_FORM])
         print(report.rendered_markdown)
         if not report.is_valid:
             return
 
-        # 2. Run a method end-to-end. `start_and_wait` self-heals across runner kinds:
+        # 2. Run it end-to-end. `start_and_wait` self-heals across runner kinds:
         #    durable start+poll on the hosted API, blocking execute on a bare runner.
         result = await client.start_and_wait(
             pipe_code="my_pipe",
+            tree=method_dir,
             inputs={"topic": "quantum computing"},
         )
 
@@ -75,7 +82,7 @@ async def main() -> None:
 
 ### Run a published method by address
 
-A method reaches every method-taking call in exactly one of three forms: inline source, a `method_ref` address (`github.com/<owner>/<repo>[/<selector>][@<tag>]`, resolved by the server — pipelex-api >= 0.21.0; on `api.pipelex.com` availability follows the platform deploy that forwards it), or a hosted `method_id` (`mt_…`, resolved by the platform). A `method_ref` pairs with nothing — it is a complete run source — and its runs carry typed provenance:
+A method reaches every method-taking call in exactly one of three forms: its tree (`files`, `tree` or `contents`, as above and as a save takes it, see [`docs/method-trees.md`](docs/method-trees.md)), a `method_ref` address (`github.com/<owner>/<repo>[/<selector>][@<tag>]`, resolved by the server — pipelex-api >= 0.21.0; on `api.pipelex.com` availability follows the platform deploy that forwards it), or a hosted `method_id` (`mt_…`, resolved by the platform). A `method_ref` pairs with nothing — it is a complete run source — and its runs carry typed provenance:
 
 ```python
 ack = await client.start(method_ref="github.com/Pipelex/methods/documents@v0.1.0", inputs={...})
@@ -278,7 +285,7 @@ A program reads the same thing as fields:
 from pipelex_sdk.errors import ApiResponseError
 
 try:
-    result = await client.start_and_wait(pipe_code="pitch_product", mthds_contents=[bundle])
+    result = await client.start_and_wait(pipe_code="pitch_product", contents={"main.mthds": bundle})
 except ApiResponseError as exc:
     if exc.error_domain == "input":
         for item in exc.validation_errors or []:
@@ -341,7 +348,7 @@ When a request gets no answer — a refused connection, a host name that does no
 from pipelex_sdk.errors import ApiUnreachableError
 
 try:
-    result = await client.start_and_wait(pipe_code="pitch_product", mthds_contents=[bundle])
+    result = await client.start_and_wait(pipe_code="pitch_product", contents={"main.mthds": bundle})
 except ApiUnreachableError as exc:
     print(f"Could not reach the Pipelex API at {exc.api_url} ({exc.code}); check PIPELEX_BASE_URL and your network.")
 ```
@@ -350,7 +357,7 @@ except ApiUnreachableError as exc:
 
 There is no barrel import — package `__init__.py` files stay empty. Import each symbol from its module:
 
-- **Client & construction** — `from pipelex_sdk.client import PipelexAPIClient, DEFAULT_API_BASE_URL, MthdsFile`
+- **Client & construction** — `from pipelex_sdk.client import PipelexAPIClient, DEFAULT_API_BASE_URL`
 - **Run lifecycle types** — `from pipelex_sdk.runs import RunStatus, RunPublic, RunRead, RunResults, RunResultState, WaitForResultOptions, PollInfo`, and the progress snapshot `RunProgress`, `RunProgressStatus`, `ProgressInvocation`, `ProgressInvocationStatus`, `ProgressBatch`, `ProgressCondition`, `ProgressFailure`, `ProgressAttempt` with `is_fresher_run_progress`
 - **Error reports** — `from pipelex_sdk.error_models import RunErrorReport, UserAction, ProviderErrorMetadata, MigrationErrorBlock, FieldError, ProblemUserAction, HostedProblemMembers`
 - **Product wire models** — `from pipelex_sdk.product_models import UserProfile, MethodData, MethodDetail, SavedMethodFile, MethodWriteInput, MethodDraftInput, MethodVersion, MethodVersionSummary, MethodPublished, MethodPublishUnchanged, MethodPublishRefused, Membership, MembershipsResponse, SubscriptionResponse, PlanView, InvoiceView, OnboardingSubmission, UploadInput, UploadedFile, RunHistoryItem, RunDetail, ...`; a method's tree is `mthds`'s own, `MethodTree` and `TreeLimits` from `mthds.method_tree.models` and `FileEntry` from `mthds.method_tree.file_entry`.

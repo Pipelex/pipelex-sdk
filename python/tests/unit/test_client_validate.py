@@ -1,4 +1,4 @@
-"""Tests for the `validate` override + `validate_files` — render injection, `mthds_sources`, `views`, the union round-trip."""
+"""Tests for the `validate` override — render injection, `views`, the method selectors, the union round-trip."""
 
 import asyncio
 import json
@@ -9,11 +9,13 @@ import pytest
 from mthds.protocol.exceptions import PipelineRequestError
 from pytest_mock import MockerFixture, MockType
 
-from pipelex_sdk.client import MthdsFile, PipelexAPIClient
+from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError
 from pipelex_sdk.validation_models import VALIDATION_VIEW_INPUT_FORM, PipelexInvalidReport, PipelexValidationReport
 
 _BASE_URL = "http://localhost:8081"
+
+_FILES = {"main.mthds": "bundle"}
 
 _VALID_BODY = {"is_valid": True, "rendered_markdown": "## ok"}
 _INVALID_BODY = {
@@ -42,40 +44,26 @@ class TestClientValidate:
         client = self._client()
         send = self._mock_send(mocker, client, json_body=_VALID_BODY)
 
-        asyncio.run(client.validate(["bundle"]))
+        asyncio.run(client.validate(_FILES))
 
         body = self._sent_body(send)
         assert send.call_args.args[1] == f"{_BASE_URL}/v1/validate"
-        assert body["mthds_contents"] == ["bundle"]
-        assert body["allow_signatures"] is False
-        assert body["render"] == ["markdown"]
-        assert "mthds_sources" not in body
+        assert body == {"files": _FILES, "allow_signatures": False, "render": ["markdown"]}
 
     def test_merges_and_dedupes_caller_render(self, mocker: MockerFixture) -> None:
         client = self._client()
         send = self._mock_send(mocker, client, json_body=_VALID_BODY)
 
-        asyncio.run(client.validate(["bundle"], render=["html", "markdown"]))
+        asyncio.run(client.validate(_FILES, render=["html", "markdown"]))
 
         # Caller tokens first, markdown not duplicated (mirrors the JS Set semantics).
         assert self._sent_body(send)["render"] == ["html", "markdown"]
-
-    def test_sends_mthds_sources_when_provided(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        send = self._mock_send(mocker, client, json_body=_VALID_BODY)
-
-        asyncio.run(client.validate(["a", "b"], allow_signatures=True, mthds_sources=["x.mthds", "y.mthds"]))
-
-        body = self._sent_body(send)
-        assert body["allow_signatures"] is True
-        assert body["mthds_sources"] == ["x.mthds", "y.mthds"]
-        assert body["render"] == ["markdown"]
 
     def test_returns_valid_report_with_rendered_markdown(self, mocker: MockerFixture) -> None:
         client = self._client()
         self._mock_send(mocker, client, json_body=_VALID_BODY)
 
-        result = asyncio.run(client.validate(["bundle"]))
+        result = asyncio.run(client.validate(_FILES))
 
         assert isinstance(result, PipelexValidationReport)
         assert result.is_valid is True
@@ -85,7 +73,7 @@ class TestClientValidate:
         client = self._client()
         self._mock_send(mocker, client, json_body=_INVALID_BODY)
 
-        result = asyncio.run(client.validate(["bundle"]))
+        result = asyncio.run(client.validate(_FILES))
 
         assert isinstance(result, PipelexInvalidReport)
         assert result.is_valid is False
@@ -98,7 +86,7 @@ class TestClientValidate:
         client = self._client()
         send = self._mock_send(mocker, client, json_body=_VALID_BODY)
 
-        asyncio.run(client.validate(["bundle"]))
+        asyncio.run(client.validate(_FILES))
 
         # The opt-in stays opt-in: no `views` key at all, so the response is byte-identical
         # for consumers that never asked for a view.
@@ -108,7 +96,7 @@ class TestClientValidate:
         client = self._client()
         send = self._mock_send(mocker, client, json_body=_VALID_BODY)
 
-        asyncio.run(client.validate(["bundle"], views=[VALIDATION_VIEW_INPUT_FORM, "future_view", VALIDATION_VIEW_INPUT_FORM]))
+        asyncio.run(client.validate(_FILES, views=[VALIDATION_VIEW_INPUT_FORM, "future_view", VALIDATION_VIEW_INPUT_FORM]))
 
         # Unlike `render`, nothing is injected and nothing is de-duplicated — the server
         # resolves the tokens as a set and lenient-ignores the ones it does not know.
@@ -118,7 +106,7 @@ class TestClientValidate:
         client = self._client()
         send = self._mock_send(mocker, client, json_body=_VALID_BODY)
 
-        asyncio.run(client.validate(["bundle"], views=[]))
+        asyncio.run(client.validate(_FILES, views=[]))
 
         assert self._sent_body(send)["views"] == []
 
@@ -126,54 +114,17 @@ class TestClientValidate:
         client = self._client()
         send = self._mock_send(mocker, client, json_body=_VALID_BODY)
 
-        asyncio.run(client.validate(["bundle"], render=["html"], views=[VALIDATION_VIEW_INPUT_FORM]))
+        asyncio.run(client.validate(_FILES, render=["html"], views=[VALIDATION_VIEW_INPUT_FORM]))
 
         body = self._sent_body(send)
         assert body["render"] == ["html", "markdown"]
         assert body["views"] == ["input_form"]
 
-    def test_validate_files_threads_views_through(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        send = self._mock_send(mocker, client, json_body=_VALID_BODY)
-
-        asyncio.run(client.validate_files([MthdsFile(content="a")], views=[VALIDATION_VIEW_INPUT_FORM]))
-
-        assert self._sent_body(send)["views"] == ["input_form"]
-
-    # ── validate_files ───────────────────────────────────────────────
-
-    def test_validate_files_no_uri_omits_mthds_sources(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        send = self._mock_send(mocker, client, json_body=_VALID_BODY)
-
-        asyncio.run(client.validate_files([MthdsFile(content="a"), MthdsFile(content="b")]))
-
-        body = self._sent_body(send)
-        assert body["mthds_contents"] == ["a", "b"]
-        assert "mthds_sources" not in body
-        assert body["render"] == ["markdown"]
-
-    def test_validate_files_synthesizes_inline_labels_when_any_uri(self, mocker: MockerFixture) -> None:
-        client = self._client()
-        send = self._mock_send(mocker, client, json_body=_VALID_BODY)
-
-        asyncio.run(client.validate_files([MthdsFile(content="a", uri="file://a.mthds"), MthdsFile(content="b")]))
-
-        body = self._sent_body(send)
-        assert body["mthds_contents"] == ["a", "b"]
-        # Named file keeps its URI; the unnamed sibling gets a deterministic inline label.
-        assert body["mthds_sources"] == ["file://a.mthds", "inline://file-2.mthds"]
-
-    def test_validate_files_empty_raises(self) -> None:
-        client = self._client()
-        with pytest.raises(PipelineRequestError):
-            asyncio.run(client.validate_files([]))
-
     # ── method selectors (the strict tooling three-way XOR) ──────────
 
-    def test_method_ref_selector_rides_the_body_without_mthds_contents(self, mocker: MockerFixture) -> None:
-        """A selector validation must NOT carry the `mthds_contents` key at all — the server
-        XORs on presence, and an empty list is a request-shape 422.
+    def test_method_ref_selector_rides_the_body_without_files(self, mocker: MockerFixture) -> None:
+        """A selector validation must NOT carry the `files` key at all — the server
+        XORs on presence, and an empty map is a request-shape 422.
         """
         client = self._client()
         send = self._mock_send(mocker, client, json_body=_VALID_BODY)
@@ -183,7 +134,7 @@ class TestClientValidate:
         body = self._sent_body(send)
         assert send.call_args.args[1] == f"{_BASE_URL}/v1/validate"
         assert body["method_ref"] == "github.com/Pipelex/methods/documents@v0.1.0"
-        assert "mthds_contents" not in body
+        assert "files" not in body
         assert "method_id" not in body
         assert body["allow_signatures"] is False
         # The markdown render injection holds on the selector path too.
@@ -199,7 +150,7 @@ class TestClientValidate:
         assert body["method_id"] == "mt_1"
         assert body["allow_signatures"] is True
         assert body["views"] == ["input_form"]
-        assert "mthds_contents" not in body
+        assert "files" not in body
         # A produced invalid verdict still parses into the union's invalid arm.
         assert isinstance(result, PipelexInvalidReport)
 
@@ -217,13 +168,13 @@ class TestClientValidate:
                     "detail": "Method not found.",
                 },
             ),
-            ({"mthds_contents": ["bundle"]}, 422, {"title": "Unprocessable entity", "status": 422, "detail": "mthds_sources length mismatch."}),
+            ({"files": _FILES}, 422, {"title": "Unprocessable entity", "status": 422, "detail": "files holds an invalid tree path."}),
         ],
     )
     def test_a_no_verdict_answer_raises_api_response_error(
         self, mocker: MockerFixture, kwargs: dict[str, object], status: int, problem: dict[str, object]
     ) -> None:
-        """Both wire paths — the selector one built here and the inline one on the inherited seam — raise the typed error."""
+        """Both wire paths — the selector one built here and the tree one on the inherited seam — raise the typed error."""
         client = self._client()
         response = httpx.Response(status, json=problem, request=httpx.Request("POST", f"{_BASE_URL}/v1/validate"))
         mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=response))
@@ -238,16 +189,16 @@ class TestClientValidate:
         "kwargs",
         [
             {},
-            {"mthds_contents": []},
-            {"mthds_contents": ["bundle"], "method_ref": "github.com/x/y@v1"},
-            {"mthds_contents": ["bundle"], "method_id": "mt_1"},
+            {"files": _FILES, "method_ref": "github.com/x/y@v1"},
+            {"files": _FILES, "method_id": "mt_1"},
+            {"contents": {"main.mthds": "bundle"}, "method_ref": "github.com/x/y@v1"},
             {"method_ref": "github.com/x/y@v1", "method_id": "mt_1"},
             {"method_ref": ""},
         ],
     )
     def test_exactly_one_selector_is_enforced(self, mocker: MockerFixture, kwargs: dict[str, object]) -> None:
         """The tooling routes are stateless, so there is NO linkage exception (unlike the run
-        routes' inline+method_id): zero selectors and every pairing are refused client-side.
+        routes' tree+method_id): zero selectors and every pairing are refused client-side.
         """
         client = self._client()
         send = self._mock_send(mocker, client, json_body=_VALID_BODY)
@@ -257,15 +208,24 @@ class TestClientValidate:
 
         send.assert_not_called()
 
-    def test_mthds_sources_is_rejected_beside_a_selector(self, mocker: MockerFixture) -> None:
-        """Source labels for a selector validation come from the package's (or the stored
-        method's) real file names — `mthds_sources` labels inline contents only.
-        """
+    def test_a_tree_in_two_forms_is_refused_before_any_request(self, mocker: MockerFixture) -> None:
         client = self._client()
         send = self._mock_send(mocker, client, json_body=_VALID_BODY)
 
-        with pytest.raises(PipelineRequestError, match="mthds_sources labels inline mthds_contents"):
-            asyncio.run(client.validate(method_ref="github.com/x/y@v1", mthds_sources=["a.mthds"]))
+        with pytest.raises(
+            PipelineRequestError, match=r"validate\(\) takes the method's tree in one form, files, tree or contents; got files and contents"
+        ):
+            asyncio.run(client.validate(_FILES, contents={"main.mthds": "bundle"}))
+
+        send.assert_not_called()
+
+    def test_an_empty_files_map_is_refused_before_any_request(self, mocker: MockerFixture) -> None:
+        """An empty map is a tree holding no file, refused by the base's own seam, never sent as a 422 to be."""
+        client = self._client()
+        send = self._mock_send(mocker, client, json_body=_VALID_BODY)
+
+        with pytest.raises(PipelineRequestError, match="files holds no file"):
+            asyncio.run(client.validate({}))
 
         send.assert_not_called()
 

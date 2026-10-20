@@ -188,14 +188,20 @@ def _caller_map(value: object, *, argument: str, holds: str, value_ok: Callable[
     return mapping or None
 
 
-def _caller_tree(value: object) -> MethodTree | None:
-    """The caller's `tree` — `None` when absent, refused when it is not a listed tree or holds no file."""
+def _caller_tree(value: object) -> MethodTree | Path | None:
+    """The caller's `tree` — `None` when absent, refused when it is neither a listed tree nor a path, or holds no file.
+
+    A `Path` is listed when the pipe I/O request is sent, by the client's `list_method_tree`, whose
+    own refusals name what is wrong with it.
+    """
     if value is None:
         return None
+    if isinstance(value, Path):
+        return value
     if not isinstance(value, MethodTree):
         msg = (
             "Cannot prepare inputs: `tree` must be a listed method tree, a `MethodTree` such as the client's "
-            f"`list_method_tree` returns, got {_kind_of(value)}."
+            f"`list_method_tree` returns, or the `Path` of a directory or of a `.mthds` file, got {_kind_of(value)}."
         )
         raise InputPreparationError(msg, problem=argument_invalid_problem(argument="tree", reason="not_a_tree"))
     if not value.files:
@@ -433,7 +439,7 @@ class _MethodSelection(NamedTuple):
     """The method selector `prepare_inputs` sends, normalized: exactly one of the tree, `method_ref` and `method_id`."""
 
     files: dict[str, FileEntry] | None
-    tree: MethodTree | None
+    tree: MethodTree | Path | None
     contents: dict[str, bytes | str] | None
     dependencies: dict[str, dict[str, FileEntry]] | None
     method_ref: str | None
@@ -443,7 +449,7 @@ class _MethodSelection(NamedTuple):
 def _resolve_selector(
     *,
     files: dict[str, FileEntry] | None,
-    tree: MethodTree | None,
+    tree: MethodTree | Path | None,
     contents: dict[str, bytes | str] | None,
     dependencies: dict[str, dict[str, FileEntry]] | None,
     method_ref: str | None,
@@ -456,8 +462,8 @@ def _resolve_selector(
     a real one without tripping the XOR. The tree counts as one selector, given in exactly one of
     `files`, `tree` and `contents`, and the `dependencies` it calls accompany it alone. A `files`
     that is not a map is refused rather than read as absent, and so are a `contents` that is not a
-    map of bytes or text, a `dependencies` that is not a map of file maps, and a `tree` that is not
-    a `MethodTree` or holds no file. A
+    map of bytes or text, a `dependencies` that is not a map of file maps, and a `tree` that is
+    neither a `MethodTree` nor a `Path`, or is a `MethodTree` holding no file. A
     non-string `method_ref` / `method_id` is NOT absent but refused, so a mistyped selector cannot
     slip past the XOR as a silent `None`. The check lives here, rather than in `PipeIORequest`'s
     own validator, so that it raises the `InputPreparationError` this module owes, and it runs
@@ -615,7 +621,7 @@ async def prepare_inputs(
     client: _PrepareClient,
     *,
     files: dict[str, FileEntry] | None = None,
-    tree: MethodTree | None = None,
+    tree: MethodTree | Path | None = None,
     contents: dict[str, bytes | str] | None = None,
     dependencies: dict[str, dict[str, FileEntry]] | None = None,
     method_ref: str | None = None,
@@ -637,8 +643,9 @@ async def prepare_inputs(
         files: The method's tree as the protocol's map of file entries, sent as given. The tree
             is given in at most one of `files`, `tree` and `contents`, and is exactly one of the
             three selectors with `method_ref` and `method_id`.
-        tree: The method's tree, listed from a directory (`PipelexAPIClient.list_method_tree`),
-            sent inline when small and by hash otherwise, as `pipe_io` sends it.
+        tree: The method's tree, listed from a directory (`PipelexAPIClient.list_method_tree`), or
+            the `Path` of a directory or of a `.mthds` file, which the client lists, sent inline when
+            small and by hash otherwise, as `pipe_io` sends it.
         contents: The method's files, each one's bytes or text by tree path, sent as `tree` is.
         dependencies: The method packages the tree calls by address, each a map of file entries
             keyed by its address, sent as given; they accompany the tree alone.
@@ -669,7 +676,7 @@ async def prepare_inputs(
     Raises:
         InputPreparationError: No selector or several; a selector or `pipe_ref` that is not a
             string; a `files`, `contents` or `dependencies` that is not a map of what it holds, a
-            `tree` that is not a `MethodTree` or holds no file, or any other selector the pipe I/O
+            `tree` that is neither a `MethodTree` nor a `Path`, or holds no file, or any other selector the pipe I/O
             request refuses, each before any request; a bare `pipe_ref`, or one naming a dependency package's pipe
             (`alias->domain.pipe_code`); the closure did not resolve; the route refused the pipe
             selection with the runner's entry-lookup `error_type` (pipelex-api >= 0.33.1) — an

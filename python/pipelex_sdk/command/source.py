@@ -3,8 +3,8 @@
 A bundle read from disk travels to the pipe I/O route and the input preparation as the method's tree,
 each file's text under its name in the bundle, which is its tree path from the directory `--method`
 names: the client sends it as the `files` map, inline when it is small and by hash otherwise. It
-travels to the run as `mthds_contents`, in the bundle's order. An address travels as `method_ref` and a
-catalog id as `method_id`, both resolved by the server.
+travels to the run as the Pipelex API's `mthds_contents`, in the bundle's order, riding the client's
+`extra`. An address travels as `method_ref` and a catalog id as `method_id`, both resolved by the server.
 """
 
 from __future__ import annotations
