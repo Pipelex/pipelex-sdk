@@ -61,8 +61,8 @@ Every refusal is an `ApiResponseError`, `input` and not retryable; branch on its
 | `422` | `InvalidResourcePath` | A key that cannot name a file inside the bundle, two keys for one file, or, on a run route, two different files under one path, one sent in `resources` and one shipped in a method bundle. |
 | `422` | `BundleResourceNotNamedError` | A file no step of the bundle names, on every route, the diagnostic ones included; its detail lists the unnamed paths. A misspelled key fails here rather than leaving its step without its file. |
 | `422` | `ValidationError` | `resources` beside a `method_ref`, or on a run route with no bundle. |
+| `422` | `MethodTreeTooLarge` | The files sent in `resources`, joined to the method tree they accompany, take it past one of the runner's tree limits. An `.html` template file is counted like any other file, with no limit of its own. |
 | `413` | `PayloadTooLarge` | More files than the deployment allows (32 by default), a file over its per-file limit (5 MiB by default), or more bytes in all than its total (10 MiB by default), counting the files a method bundle ships for its steps. |
-| `413` | `BundleResourcesTooLargeError` | The `.html` template files, which travel inline with the method wherever it runs, over 512 KiB in all. An office template file is not counted, since a run handed to a remote orchestrator carries it by reference to the run's storage. |
 | `400` | `InvalidBase64` | A value that is not base64, which a request this SDK encoded never carries. |
 
 ## A step whose file was not sent

@@ -16,6 +16,10 @@
 - **A saved method is a tree, and its source fields are gone (Breaking)**: `MethodData`, `MethodVersion`, `MethodWriteInput` and `MethodDraftInput` lose `mthds` and `python`, and `MethodVersionSummary.source_digest` is now `tree_digest`, so code reading a method's source reads its `files` instead, and a draft is unchanged since its latest version when `draft_digest` is not `null` and equals `latest_published.tree_digest`. `draft_digest` is the draft's tree digest, `sha256:` and 64 hex digits, and `null` for an empty draft. A stored method or version whose `files` is not a listing is an `ApiResponseError`, and `getMethodVersion` answers a version stored before methods were trees with a `409` whose verdict is `runtime`.
 - **`writeDraft` replaces the whole tree (Breaking)**: a draft write always sends `files` and refuses a `MethodDraftInput` that gives the tree in no form, so keeping the stored files means sending them again; `files: null` empties the draft.
 
+### Fixed
+
+- **The documented size refusals of `resources`**: the doc comments of `bundle-resources.ts` and `validate`, `docs/bundle-resources.md` and `docs/crate-routes.md` no longer promise a `413` `BundleResourcesTooLargeError` for `.html` template files over 512 KiB, which pipelex-api no longer raises since 0.87.0. They now say that files taking the method tree they join past the runner's tree limits are a `422` `MethodTreeTooLarge`, an `ApiResponseError` that is `input` and not retryable, with an `.html` template file counted like any other.
+
 ### Removed
 
 - **The catalog-source readers (Breaking)**: `methodSourceToContents`, `getMethodClosure` and `EmptyMethodSourceError` are gone with the fields they read; a method's files come back as `MethodDetail.files`, and `writeMethodTree` puts them on disk.

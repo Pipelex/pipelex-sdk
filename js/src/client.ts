@@ -1741,8 +1741,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * is an `is_valid: false` verdict saying so, and a template check's findings in an
    * office template file ride the valid arm's `warnings`. A key no step names, or
    * files over the server's limits, are no-verdict refusals: a `422`
-   * `BundleResourceNotNamedError`, a `413` `PayloadTooLarge` or
-   * `BundleResourcesTooLargeError`.
+   * `BundleResourceNotNamedError`, a `413` `PayloadTooLarge`, or a `422`
+   * `MethodTreeTooLarge` for files that take the method tree they join past the
+   * runner's tree limits.
    *
    * A `{ method_ref }` source makes the server clone a repository before it
    * validates anything, and it needs no special budget here: this route already
