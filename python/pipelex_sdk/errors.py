@@ -1155,8 +1155,10 @@ class MethodFileTransferError(PipelexRequestError):
     transfer can succeed later, and `refused` is not. A download refused for an expired link succeeds
     once the method is read again, which serves fresh links.
 
-    Its `problem` is the one the standard's client read the failed upload as, when it passes one; else
-    the one the standard reads from `status` alone, or `runtime.unexpected` when storage gave no status.
+    Its `problem` is the one the standard's client stated for an upload that got no answer, when it
+    passes one; else the one the standard reads from `status` alone, or `runtime.unexpected` when
+    storage gave no status. A problem document storage answered with is never kept, since it can quote
+    the signed request.
     """
 
     def __init__(

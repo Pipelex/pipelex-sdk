@@ -460,8 +460,8 @@ export interface PipelexApiClientOptions {
   appInfo?: AppInfo;
   /**
    * The client's request ceiling, in milliseconds: the time limit of a request given no
-   * `timeoutMs` of its own, the blocking `execute` and a `start` carrying its method among them,
-   * and of each transfer of a method's file to or from storage, an upload before a save or a
+   * `timeoutMs` of its own, the blocking `execute`, a `start` carrying its method and a save
+   * carrying a method's tree (`createMethod`, `writeDraft`) among them, and of each transfer of a method's file to or from storage, an upload before a save or a
    * download by `writeMethodTree`. Defaults to 20 minutes, the runner's blocking execute ceiling.
    * A positive number no larger than 2147483647, the longest delay a timer honours, else a
    * `RangeError` at construction.
@@ -1016,8 +1016,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
     method: HttpMethod,
     endpoint: string,
     body?: unknown,
+    options: { timeoutMs?: number } = {},
   ): Promise<MethodData> {
-    const res = await this.requestProductAnswer(method, endpoint, body);
+    const res = await this.requestProductAnswer(method, endpoint, body, options);
     return this.readObjectAnswer<MethodData>(method, endpoint, res);
   }
 
@@ -1203,16 +1204,19 @@ export class PipelexApiClient implements HostedProtocolSurface {
     return value as unknown as MethodExample;
   }
 
-  /** Issue a product request and return its 2xx answer, a non-2xx thrown as `ApiResponseError`. */
+  /**
+   * Issue a product request and return its 2xx answer, a non-2xx thrown as `ApiResponseError`.
+   * The request takes the poll timeout unless `options.timeoutMs` gives another.
+   */
   private async requestProductAnswer(
     method: HttpMethod,
     endpoint: string,
     body: unknown,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<RawResponse> {
     const res = await this.requestRaw(method, this.url(endpoint), {
       body,
-      timeoutMs: POLL_REQUEST_TIMEOUT_MS,
+      timeoutMs: options.timeoutMs ?? POLL_REQUEST_TIMEOUT_MS,
       signal: options.signal,
     });
     if (res.status < 200 || res.status >= 300) {
@@ -1744,8 +1748,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * is an `is_valid: false` verdict saying so, and a template check's findings in an
    * office template file ride the valid arm's `warnings`. A key no step names, or
    * files over the server's limits, are no-verdict refusals: a `422`
-   * `BundleResourceNotNamedError`, a `413` `PayloadTooLarge` or
-   * `BundleResourcesTooLargeError`.
+   * `BundleResourceNotNamedError`, a `413` `PayloadTooLarge`, or a `422`
+   * `MethodTreeTooLarge` for files that take the method tree they join past the
+   * runner's tree limits.
    *
    * A `{ method_ref }` source makes the server clone a repository before it
    * validates anything, and it needs no special budget here: this route already
@@ -2630,7 +2635,19 @@ export class PipelexApiClient implements HostedProtocolSurface {
     const body: Record<string, unknown> = { name: input.name };
     if (files != null) body.files = files;
     if (input.input_data !== undefined) body.input_data = input.input_data;
-    return this.requestMethodData("POST", "methods", body);
+    return this.requestMethodData("POST", "methods", body, this.saveTimeout(files));
+  }
+
+  /**
+   * The time limit of a save carrying `files`: the client's request ceiling, as for a `start`
+   * carrying its method, since a tree sent inline to a deployment with no blob store has no size
+   * bound and its whole upload is charged against the limit; the poll timeout for a save sending
+   * no tree.
+   */
+  private saveTimeout(files: MethodFiles | null | undefined): { timeoutMs?: number } {
+    return files != null && Object.keys(files).length > 0
+      ? { timeoutMs: this.requestTimeoutMs }
+      : {};
   }
 
   /**
@@ -2669,7 +2686,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (input.expected_updated_at !== undefined) {
       body.expected_updated_at = input.expected_updated_at;
     }
-    return this.requestMethodData("PUT", endpoint, body);
+    return this.requestMethodData("PUT", endpoint, body, this.saveTimeout(files));
   }
 
   /**
@@ -4087,7 +4104,6 @@ function isUndecodableBody(error: ApiUnreachableError): boolean {
   return error.code !== undefined && UNDECODABLE_BODY_CODE.test(error.code);
 }
 
-/** Whether one entry of a `POST /v1/blobs/missing` answer is a blob with its upload target. */
 /** A SHA-256 as the platform names a blob: 64 lowercase hexadecimal digits. */
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
@@ -4096,6 +4112,7 @@ function withLinks(res: RawResponse): RawResponse {
   return { ...res, carriesLinks: true };
 }
 
+/** Whether one entry of a `POST /v1/blobs/missing` answer is a blob with its upload target. */
 function isMissingBlob(entry: unknown): entry is MissingBlob {
   if (!isPlainObject(entry)) return false;
   const { sha256, size, upload } = entry;
