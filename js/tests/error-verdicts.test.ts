@@ -751,26 +751,30 @@ describe("every argument the client refuses carries a verdict, before any reques
   it.each([
     ["execute() with no run source", () => client().execute({})],
     ["start() with no run source", () => client().start({})],
-    ["validate() with no selector object", () => client().validate(null as unknown as string[])],
+    ["validate() with no selector object", () => client().validate(null as never)],
     [
       "validate() with two method selectors",
-      () => client().validate({ method_ref: "github.com/a/b", method_id: "mt_1" } as never),
+      () => client().validate({ method_ref: "github.com/a/b", method_id: "mt_1" }),
     ],
     [
-      "validate() with source labels beside a selector",
-      () => client().validate({ method_id: "mt_1" }, false, ["a.mthds"]),
+      "validate() with the method's tree beside a selector",
+      () => client().validate({ files: BUNDLE, method_id: "mt_1" }),
     ],
-    ["validateFiles() with no file", () => client().validateFiles([])],
+    ["validate() with no file in contents", () => client().validate({ contents: {} })],
+    [
+      "two forms of the method's tree",
+      () => client().execute({ files: BUNDLE, contents: { "main.mthds": "x" } }),
+    ],
     [
       "a reserved key in extra",
       () => client().execute({ pipe_code: "p", extra: { method_id: "mt_1" } }),
     ],
     [
-      "method_ref beside inline contents",
-      () => client().execute({ method_ref: "github.com/a/b", mthds_contents: ["x"] }),
+      "method_ref beside contents",
+      () => client().execute({ method_ref: "github.com/a/b", contents: { "main.mthds": "x" } }),
     ],
     [
-      "method_ref beside a bundle",
+      "method_ref beside the files map",
       () => client().start({ method_ref: "github.com/a/b", files: BUNDLE }),
     ],
     [
@@ -791,13 +795,15 @@ describe("every argument the client refuses carries a verdict, before any reques
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  const TREE = {
+    files: [{ path: "bundle.mthds", size: 1, sha256: "0".repeat(64) }],
+    digest: `sha256:${"0".repeat(64)}`,
+    readFile: () => Promise.resolve(new Uint8Array([120])),
+  };
+
   it.each([
-    ["two bundle encodings", { files: BUNDLE, bundle_b64: "UEs=" }, /mutually exclusive/],
-    [
-      "a bundle beside inline contents",
-      { bundle_b64: "UEs=", mthds_contents: ["x"] },
-      /self-contained/,
-    ],
+    ["files beside a tree", { files: BUNDLE, tree: TREE }, /mutually exclusive/],
+    ["an empty files map", { pipe_code: "p", files: {} }, /holds no file/],
   ])(
     "rethrows the standard's refusal of %s as a RequestArgumentError, the original as its cause",
     async (_, options, message) => {

@@ -185,7 +185,7 @@ describe("PipelexApiClient constructor", () => {
 });
 
 describe("PipelexApiClient.execute argument validation", () => {
-  it("throws RequestArgumentError when neither pipe_code nor mthds_contents provided", async () => {
+  it("throws RequestArgumentError when neither pipe_code nor the method's tree is provided", async () => {
     const client = makeClient();
     await expect(client.execute({})).rejects.toBeInstanceOf(RequestArgumentError);
   });
@@ -223,27 +223,19 @@ describe("PipelexApiClient hosted method_id option", () => {
   it("accepts a method_id-only run — a stored method is something to run", async () => {
     const client = makeClient();
     // The precondition counts the hosted selector: the platform resolves the
-    // stored method's source, so demanding pipe_code/mthds_contents beside it
+    // stored method's tree, so demanding pipe_code or a tree beside it
     // would reject the app's own by-id runs.
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(startResponse());
     await client.start({ method_id: "mt_1" });
     expect(bodyOf(fetchSpy)).toEqual({ method_id: "mt_1" });
   });
 
-  it("sends method_id ALONGSIDE an inline source — linkage, never an exclusivity violation", async () => {
+  it("sends method_id ALONGSIDE the method's tree — linkage, never an exclusivity violation", async () => {
     const client = makeClient();
-    // The inline source is what runs (precedence); the id rides along as the
-    // run-history linkage that writes the `GET /v1/runs?method_id=` index key.
-    // Refusing the combination once orphaned every unsaved-bundle run from its
-    // method, so it must stay legal on both encodings.
-    const withContents = vi.spyOn(globalThis, "fetch").mockResolvedValue(startResponse());
-    await client.start({ method_id: "mt_1", mthds_contents: ["domain = 'x'"] });
-    expect(bodyOf(withContents)).toMatchObject({
-      method_id: "mt_1",
-      mthds_contents: ["domain = 'x'"],
-    });
-
-    vi.restoreAllMocks();
+    // The tree is what runs (precedence); the id rides along as the run-history
+    // linkage that writes the `GET /v1/runs?method_id=` index key. Refusing the
+    // combination once orphaned every unsaved-method run from its method, so it
+    // must stay legal.
     const withBundle = vi.spyOn(globalThis, "fetch").mockResolvedValue(startResponse());
     await client.start({ method_id: "mt_1", files: BUNDLE });
     expect(bodyOf(withBundle)).toMatchObject({ method_id: "mt_1", files: BUNDLE });
@@ -376,29 +368,20 @@ describe("PipelexApiClient method_ref run source", () => {
     });
   });
 
-  it("rejects method_ref beside inline mthds_contents, before any fetch", async () => {
+  it("rejects method_ref beside the method's tree in any form, before any fetch", async () => {
     const client = makeClient();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     // Mirror of the server's 422 — an address is a complete run source, so
     // exactly one source per request (no linkage exception for method_ref).
-    await expect(
-      client.start({ method_ref: ADDRESS, mthds_contents: ["domain = 'x'"] }),
-    ).rejects.toThrow(/mutually exclusive/);
-    await expect(
-      client.execute({ method_ref: ADDRESS, mthds_contents: ["domain = 'x'"] }),
-    ).rejects.toBeInstanceOf(RequestArgumentError);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("rejects method_ref beside a method bundle (files / bundle_b64), before any fetch", async () => {
-    const client = makeClient();
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
     await expect(client.start({ method_ref: ADDRESS, files: BUNDLE })).rejects.toThrow(
-      /method bundle/,
+      /method_ref and the method's tree \(files\) are mutually exclusive/,
     );
-    await expect(client.execute({ method_ref: ADDRESS, bundle_b64: "UEsDBA==" })).rejects.toThrow(
-      /method bundle/,
-    );
+    await expect(
+      client.execute({ method_ref: ADDRESS, contents: { "main.mthds": "domain = 'x'" } }),
+    ).rejects.toThrow(/method's tree \(contents\)/);
+    await expect(
+      client.execute({ method_ref: ADDRESS, directory: "/nowhere" }),
+    ).rejects.toBeInstanceOf(RequestArgumentError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -411,13 +394,13 @@ describe("PipelexApiClient method_ref run source", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("still allows inline source + method_id — the documented linkage exception is untouched", async () => {
+  it("still allows the method's tree + method_id — the documented linkage exception is untouched", async () => {
     const client = makeClient();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(startResponse());
-    await client.start({ method_id: "mt_1", mthds_contents: ["domain = 'x'"] });
+    await client.start({ method_id: "mt_1", files: { "main.mthds": "domain = 'x'" } });
     expect(bodyOf(fetchSpy)).toMatchObject({
       method_id: "mt_1",
-      mthds_contents: ["domain = 'x'"],
+      files: { "main.mthds": "domain = 'x'" },
     });
   });
 
@@ -483,53 +466,34 @@ describe("PipelexApiClient method-bundle transport", () => {
     expect(body.pipe_code).toBeUndefined();
   });
 
-  it("sends `bundle_b64` on start", async () => {
+  it("rejects two forms of the method's tree together (presence, even when one is empty)", async () => {
     const client = makeClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        jsonResponse(202, { pipeline_run_id: "run-c", state: "STARTED", created_at: "t0" }),
-      );
-    await client.start({ bundle_b64: "UEsDBA==" });
-    expect(bodyOf(fetchSpy)).toEqual({ bundle_b64: "UEsDBA==" });
-  });
-
-  it("rejects the two bundle encodings together (presence, even when one is empty)", async () => {
-    const client = makeClient();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     // Pin to the guard's own message, not just `PipelineRequestError` — a
     // transport failure (`ApiUnreachableError`) is also a `PipelineRequestError`,
     // so a bare `toBeInstanceOf` would pass even if the guard were removed and
     // the call fell through to the network.
-    await expect(client.execute({ files: BUNDLE, bundle_b64: "UEs=" })).rejects.toThrow(
-      /mutually exclusive/,
+    await expect(
+      client.execute({ files: BUNDLE, contents: { "main.mthds": "domain = 'y'" } }),
+    ).rejects.toThrow(/in one form, directory, contents, tree or files; got contents and files/);
+    await expect(client.start({ files: BUNDLE, directory: "/somewhere" })).rejects.toThrow(
+      /got directory and files/,
     );
-    await expect(client.start({ files: {}, bundle_b64: "UEs=" })).rejects.toThrow(
-      /mutually exclusive/,
-    );
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("rejects a bundle combined with non-empty mthds_contents", async () => {
+  it("refuses an empty `files` map as the standard does (a tree holds at least one file)", async () => {
     const client = makeClient();
-    await expect(
-      client.execute({ files: BUNDLE, mthds_contents: ["domain = 'y'"] }),
-    ).rejects.toThrow(/self-contained/);
-    await expect(
-      client.start({ bundle_b64: "UEs=", mthds_contents: ["domain = 'y'"] }),
-    ).rejects.toThrow(/self-contained/);
-  });
-
-  it("never ships an empty bundle encoding (an empty map carries no method)", async () => {
-    const client = makeClient();
-    // One encoding at a time — supplying both is an exclusivity violation on
-    // presence, empty or not, and is covered above.
-    const withFiles = vi.spyOn(globalThis, "fetch").mockResolvedValue(executeResponse());
-    await client.execute({ pipe_code: "p", files: {} }).catch(() => undefined);
-    expect(bodyOf(withFiles).files).toBeUndefined();
-
-    vi.restoreAllMocks();
-    const withZip = vi.spyOn(globalThis, "fetch").mockResolvedValue(executeResponse());
-    await client.execute({ pipe_code: "p", bundle_b64: "" }).catch(() => undefined);
-    expect(bodyOf(withZip).bundle_b64).toBeUndefined();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    // The standard's `assertOneMethodSource` refuses `files: {}` whatever else the
+    // request carries, rethrown as the client's own argument refusal.
+    const refusal = await client.execute({ pipe_code: "p", files: {} }).catch((e: unknown) => e);
+    expect(refusal).toBeInstanceOf(RequestArgumentError);
+    expect((refusal as Error).message).toMatch(/holds no file/);
+    await expect(client.start({ pipe_code: "p", contents: {} })).rejects.toThrow(
+      /start\(\) got contents holding no file/,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("rejects run-source fields smuggled through `extra`", async () => {
@@ -539,9 +503,18 @@ describe("PipelexApiClient method-bundle transport", () => {
     await expect(client.execute({ extra: { files: BUNDLE } })).rejects.toThrow(
       /pass them as named options/,
     );
-    await expect(client.start({ extra: { bundle_b64: "UEs=" } })).rejects.toThrow(
-      /pass them as named options/,
-    );
+    for (const key of ["directory", "contents", "tree"]) {
+      await expect(client.start({ pipe_code: "p", extra: { [key]: "x" } })).rejects.toThrow(
+        /pass them as named options/,
+      );
+    }
+  });
+
+  it("passes the runner's legacy `mthds_contents` through `extra`, as a field it no longer names", async () => {
+    const client = makeClient();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(executeResponse());
+    await client.execute({ extra: { mthds_contents: ["domain = 'x'"] } }).catch(() => undefined);
+    expect(bodyOf(fetchSpy)).toEqual({ mthds_contents: ["domain = 'x'"] });
   });
 
   it("keeps the client-only `bundleMain` hint off the wire", async () => {
@@ -1000,7 +973,7 @@ describe("PipelexApiClient.start", () => {
 
     const ack = await client.start({
       pipe_code: "my_pipe",
-      mthds_contents: ["domain = 'x'"],
+      files: { "main.mthds": "domain = 'x'" },
       inputs: { a: 1 },
     });
 
@@ -1010,7 +983,7 @@ describe("PipelexApiClient.start", () => {
     expect(init).toMatchObject({ method: "POST" });
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
       pipe_code: "my_pipe",
-      mthds_contents: ["domain = 'x'"],
+      files: { "main.mthds": "domain = 'x'" },
       inputs: { a: 1 },
     });
   });
@@ -1026,7 +999,7 @@ describe("PipelexApiClient.start", () => {
     const body = JSON.parse((fetchSpy.mock.calls[0]![1] as RequestInit).body as string);
     expect(body).toEqual({ some_vendor_selector: "sel_123", inputs: { q: "hi" } });
     expect(body.pipe_code).toBeUndefined();
-    expect(body.mthds_contents).toBeUndefined();
+    expect(body.files).toBeUndefined();
     expect(body.extra).toBeUndefined();
   });
 
@@ -1048,11 +1021,11 @@ describe("PipelexApiClient.start", () => {
   it("rejects protocol args smuggled through extra", async () => {
     const client = makeClient();
     await expect(
-      client.start({ mthds_contents: ["domain d"], extra: { pipe_code: "smuggled" } }),
+      client.start({ files: { "main.mthds": "domain d" }, extra: { pipe_code: "smuggled" } }),
     ).rejects.toBeInstanceOf(RequestArgumentError);
   });
 
-  it("throws RequestArgumentError when pipe_code, mthds_contents, and extra are all missing", async () => {
+  it("throws RequestArgumentError when pipe_code, the method's tree, and extra are all missing", async () => {
     const client = makeClient();
     await expect(client.start({})).rejects.toBeInstanceOf(RequestArgumentError);
   });
@@ -1071,7 +1044,7 @@ describe("PipelexApiClient.start", () => {
 });
 
 describe("PipelexApiClient.validate", () => {
-  it("POSTs /v1/validate with mthds_contents + allow_signatures and returns the valid report", async () => {
+  it("POSTs /v1/validate with the files map + allow_signatures and returns the valid report", async () => {
     const client = makeClient();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(200, {
@@ -1085,7 +1058,7 @@ describe("PipelexApiClient.validate", () => {
       }),
     );
 
-    const report = await client.validate(["domain = 'x'"], true);
+    const report = await client.validate({ files: { "main.mthds": "domain = 'x'" } }, true);
 
     expect(report.is_valid).toBe(true);
     if (report.is_valid === false) throw new Error("expected a valid report");
@@ -1094,7 +1067,7 @@ describe("PipelexApiClient.validate", () => {
     const [url, init] = fetchSpy.mock.calls[0]!;
     expect(url).toBe("http://localhost:8081/v1/validate");
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      mthds_contents: ["domain = 'x'"],
+      files: { "main.mthds": "domain = 'x'" },
       allow_signatures: true,
       render: ["markdown"],
     });
@@ -1105,7 +1078,7 @@ describe("PipelexApiClient.validate", () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { is_valid: true }));
-    await client.validate(["domain = 'x'"]);
+    await client.validate({ files: { "main.mthds": "domain = 'x'" } });
     const body = JSON.parse((fetchSpy.mock.calls[0]![1] as RequestInit).body as string);
     expect(body.allow_signatures).toBe(false);
   });
@@ -1168,9 +1141,9 @@ describe("PipelexApiClient.validate", () => {
     );
     // Asks for the `input_form` view, because the fixture below carries it: the server
     // gates that field on the token, so a no-`views` request would never see it.
-    const report = await client.validate(["domain = 'x'"], false, undefined, undefined, [
-      "input_form",
-    ]);
+    const report = await client.validate({ files: { "main.mthds": "domain = 'x'" } }, false, {
+      views: ["input_form"],
+    });
     expect(report.is_valid).toBe(true);
     if (report.is_valid === false) throw new Error("expected a valid report");
     expect(report.validated_pipes[0]).toEqual({ pipe_ref: "x.greet", status: "SUCCESS" });
@@ -1221,7 +1194,7 @@ describe("PipelexApiClient.validate", () => {
         mthds_contents: ["domain = 'x'"],
       }),
     );
-    const report = await client.validate(["domain = 'x'"]);
+    const report = await client.validate({ files: { "main.mthds": "domain = 'x'" } });
     if (report.is_valid === false) throw new Error("expected a valid report");
     // Advisory items never flip the verdict.
     expect(report.is_valid).toBe(true);
@@ -1237,7 +1210,7 @@ describe("PipelexApiClient.validate", () => {
     const client = makeClient();
     // The 200-diagnostic contract: an invalid bundle is a produced verdict, not a
     // transport failure. The body carries the discriminant + the structured list
-    // (the threaded `source` per the mthds_sources hook), no structural artifacts.
+    // (the threaded `source`, each bundle's tree path), no structural artifacts.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(200, {
         is_valid: false,
@@ -1286,7 +1259,7 @@ describe("PipelexApiClient.validate", () => {
         message: "MTHDS validation found errors",
       }),
     );
-    const report = await client.validate(["broken"], false, ["broken.mthds"]);
+    const report = await client.validate({ files: { "broken.mthds": "broken" } });
     expect(report.is_valid).toBe(false);
     if (report.is_valid !== false) throw new Error("expected an invalid report");
     expect(report.is_runnable).toBe(false);
@@ -1314,32 +1287,7 @@ describe("PipelexApiClient.validate", () => {
     expect(rename.new_key).toBe("output");
   });
 
-  it("sends mthds_sources parallel to mthds_contents when provided", async () => {
-    const client = makeClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { is_valid: true }));
-    await client.validate(["domain = 'x'", "domain = 'y'"], true, ["x.mthds", "y.mthds"]);
-    const body = JSON.parse((fetchSpy.mock.calls[0]![1] as RequestInit).body as string);
-    expect(body).toEqual({
-      mthds_contents: ["domain = 'x'", "domain = 'y'"],
-      allow_signatures: true,
-      mthds_sources: ["x.mthds", "y.mthds"],
-      render: ["markdown"],
-    });
-  });
-
-  it("omits mthds_sources from the body when not provided", async () => {
-    const client = makeClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { is_valid: true }));
-    await client.validate(["domain = 'x'"]);
-    const body = JSON.parse((fetchSpy.mock.calls[0]![1] as RequestInit).body as string);
-    expect("mthds_sources" in body).toBe(false);
-  });
-
-  it("throws ApiResponseError on a request-shape 422 (mthds_sources length mismatch)", async () => {
+  it("throws ApiResponseError on a request-shape 422 (a tree the route refuses)", async () => {
     const client = makeClient();
     // The no-verdict path: pipelex-api's RequestValidationError handler emits an
     // RFC 7807 problem with a top-level error_type "ValidationError" and a string
@@ -1349,12 +1297,12 @@ describe("PipelexApiClient.validate", () => {
         422,
         {
           error_type: "ValidationError",
-          detail: "mthds_sources length must match mthds_contents",
+          detail: "files: '../x.mthds' is not a tree path",
         },
         { "content-type": "application/problem+json" },
       ),
     );
-    const err = await client.validate(["x"], false, ["a", "b"]).catch((e: unknown) => e);
+    const err = await client.validate({ files: { "../x.mthds": "x" } }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiResponseError);
     expect((err as ApiResponseError).status).toBe(422);
     expect((err as ApiResponseError).errorType).toBe("ValidationError");
@@ -1403,7 +1351,7 @@ describe("PipelexApiClient.validate method selectors", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { is_valid: true }));
 
-    await client.validate({ method_ref: ADDRESS }, false, undefined, undefined, ["input_form"]);
+    await client.validate({ method_ref: ADDRESS }, false, { views: ["input_form"] });
 
     const body = JSON.parse((fetchSpy.mock.calls[0]![1] as RequestInit).body as string);
     expect(body.render).toEqual(["markdown"]);
@@ -1413,13 +1361,17 @@ describe("PipelexApiClient.validate method selectors", () => {
   it("rejects a both-selectors object — the tooling XOR is strict, before any fetch", async () => {
     const client = makeClient();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    // Type-blocked (`ValidateMethodSelector` pins the other key to `never`);
-    // the runtime guard backs it for untyped callers.
+    // The runtime guard mirrors the route's strict XOR for every caller.
+    await expect(client.validate({ method_ref: ADDRESS, method_id: "mt_1" })).rejects.toThrow(
+      /takes exactly one of .*; got method_ref and method_id/,
+    );
     await expect(
-      client.validate({ method_ref: ADDRESS, method_id: "mt_1" } as never),
-    ).rejects.toThrow(/exactly one method selector/);
+      client.validate({ files: { "main.mthds": "domain = 'x'" }, method_id: "mt_1" }),
+    ).rejects.toThrow(/got files and method_id/);
     // An empty selector object is just as under-specified.
-    await expect(client.validate({} as never)).rejects.toBeInstanceOf(RequestArgumentError);
+    await expect(client.validate({})).rejects.toThrow(/got none/);
+    // An empty selector string is absent, as on the run routes.
+    await expect(client.validate({ method_ref: "" })).rejects.toBeInstanceOf(RequestArgumentError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -1433,14 +1385,19 @@ describe("PipelexApiClient.validate method selectors", () => {
     await expect(client.validate("domain = 'x'" as never)).rejects.toBeInstanceOf(
       RequestArgumentError,
     );
+    // The retired inline-contents form is refused, not read as a selector.
+    await expect(client.validate(["domain = 'x'"] as never)).rejects.toBeInstanceOf(
+      RequestArgumentError,
+    );
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("rejects mthds_sources beside a selector — labels come from the package's real files", async () => {
+  it("refuses an empty tree as the standard does, whatever else the request carries", async () => {
     const client = makeClient();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    await expect(client.validate({ method_ref: ADDRESS }, false, ["a.mthds"])).rejects.toThrow(
-      /mthds_sources/,
+    await expect(client.validate({ files: {} })).rejects.toThrow(/holds no file/);
+    await expect(client.validate({ contents: {} })).rejects.toThrow(
+      /validate\(\) got contents holding no file/,
     );
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -1460,92 +1417,10 @@ describe("PipelexApiClient.validate method selectors", () => {
   });
 });
 
-describe("PipelexApiClient.validateFiles", () => {
-  it("sends content and sources for files that all have URIs", async () => {
-    const client = makeClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { is_valid: true }));
+describe("PipelexApiClient.validate transport", () => {
+  const SOURCE = { files: { "main.mthds": "domain = 'x'" } };
 
-    await client.validateFiles(
-      [
-        { uri: "file:///bundle/main.mthds", content: "domain = 'x'" },
-        { uri: "file:///bundle/pipes.mthds", content: "pipe x.greet" },
-      ],
-      { allowSignatures: true },
-    );
-
-    expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/validate");
-    expect(bodyOf(fetchSpy)).toEqual({
-      mthds_contents: ["domain = 'x'", "pipe x.greet"],
-      allow_signatures: true,
-      mthds_sources: ["file:///bundle/main.mthds", "file:///bundle/pipes.mthds"],
-      render: ["markdown"],
-    });
-  });
-
-  it("omits mthds_sources when no file has a URI", async () => {
-    const client = makeClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { is_valid: true }));
-
-    await client.validateFiles([{ content: "domain = 'x'" }, { content: "pipe x.greet" }]);
-
-    expect(bodyOf(fetchSpy)).toEqual({
-      mthds_contents: ["domain = 'x'", "pipe x.greet"],
-      allow_signatures: false,
-      render: ["markdown"],
-    });
-  });
-
-  it("fills deterministic inline sources for missing URIs in mixed input", async () => {
-    const client = makeClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { is_valid: true }));
-
-    await client.validateFiles([
-      { uri: "file:///bundle/main.mthds", content: "domain = 'x'" },
-      { content: "pipe x.inline" },
-      { uri: "file:///bundle/other.mthds", content: "pipe x.other" },
-    ]);
-
-    expect(bodyOf(fetchSpy)).toMatchObject({
-      mthds_contents: ["domain = 'x'", "pipe x.inline", "pipe x.other"],
-      mthds_sources: [
-        "file:///bundle/main.mthds",
-        "inline://file-2.mthds",
-        "file:///bundle/other.mthds",
-      ],
-      render: ["markdown"],
-    });
-  });
-
-  it("rejects empty files before calling the API", async () => {
-    const client = makeClient();
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-
-    await expect(client.validateFiles([])).rejects.toBeInstanceOf(RequestArgumentError);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("passes render options through to validate", async () => {
-    const client = makeClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { is_valid: true, rendered_markdown: "# ok" }));
-
-    await client.validateFiles([{ content: "domain = 'x'" }], { render: ["markdown"] });
-
-    expect(bodyOf(fetchSpy)).toEqual({
-      mthds_contents: ["domain = 'x'"],
-      allow_signatures: false,
-      render: ["markdown"],
-    });
-  });
-
-  // validate/validateFiles default to the 20-min execute ceiling; a bounded
+  // validate defaults to the 20-min execute ceiling; a bounded
   // consumer (the post-edit hook) needs a per-call ceiling that actually aborts
   // the fetch, not a Promise.race that leaves the request running.
   describe("timeout and abort options", () => {
@@ -1568,9 +1443,7 @@ describe("PipelexApiClient.validateFiles", () => {
         const fetchSpy = vi.spyOn(globalThis, "fetch");
         const client = makeClient();
 
-        const err = await client
-          .validateFiles([{ content: "domain = 'x'" }], { timeoutMs })
-          .catch((e: unknown) => e);
+        const err = await client.validate(SOURCE, false, { timeoutMs }).catch((e: unknown) => e);
 
         expect(err).toBeInstanceOf(RangeError);
         expect((err as Error).message).toContain(
@@ -1585,9 +1458,7 @@ describe("PipelexApiClient.validateFiles", () => {
       const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(hangingFetch());
       const client = makeClient();
 
-      const failure = client
-        .validateFiles([{ content: "domain = 'x'" }], { timeoutMs: 1_000 })
-        .catch((e: unknown) => e);
+      const failure = client.validate(SOURCE, false, { timeoutMs: 1_000 }).catch((e: unknown) => e);
 
       await vi.advanceTimersByTimeAsync(1_500);
       const err = await failure;
@@ -1606,7 +1477,7 @@ describe("PipelexApiClient.validateFiles", () => {
       const controller = new AbortController();
       const walkAway = new Error("caller walked away");
       const failure = client
-        .validateFiles([{ content: "domain = 'x'" }], { signal: controller.signal })
+        .validate(SOURCE, false, { signal: controller.signal })
         .catch((e: unknown) => e);
 
       controller.abort(walkAway);
@@ -1634,9 +1505,7 @@ describe("PipelexApiClient.validateFiles", () => {
       }) as typeof fetch);
       const client = makeClient();
 
-      const failure = client
-        .validateFiles([{ content: "domain = 'x'" }], { timeoutMs: 1_000 })
-        .catch((e: unknown) => e);
+      const failure = client.validate(SOURCE, false, { timeoutMs: 1_000 }).catch((e: unknown) => e);
 
       await vi.advanceTimersByTimeAsync(1_500);
       const err = await failure;
@@ -1666,7 +1535,7 @@ describe("PipelexApiClient.validateFiles", () => {
       const controller = new AbortController();
       const walkAway = new Error("caller walked away");
       const failure = client
-        .validateFiles([{ content: "domain = 'x'" }], { signal: controller.signal })
+        .validate(SOURCE, false, { signal: controller.signal })
         .catch((e: unknown) => e);
 
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1925,7 +1794,9 @@ describe("PipelexApiClient.validate render extra", () => {
       .mockResolvedValue(
         jsonResponse(200, { is_valid: true, rendered_markdown: "# Validation passed" }),
       );
-    await client.validate(["domain = 'x'"], false, undefined, ["markdown"]);
+    await client.validate({ files: { "main.mthds": "domain = 'x'" } }, false, {
+      render: ["markdown"],
+    });
     expect(bodyOf(fetchSpy).render).toEqual(["markdown"]);
   });
 
@@ -1936,7 +1807,7 @@ describe("PipelexApiClient.validate render extra", () => {
       .mockResolvedValue(
         jsonResponse(200, { is_valid: true, rendered_markdown: "# Validation passed" }),
       );
-    await client.validate(["domain = 'x'"], false);
+    await client.validate({ files: { "main.mthds": "domain = 'x'" } }, false);
     expect(bodyOf(fetchSpy).render).toEqual(["markdown"]);
   });
 
@@ -1947,7 +1818,7 @@ describe("PipelexApiClient.validate render extra", () => {
       .mockResolvedValue(
         jsonResponse(200, { is_valid: true, rendered_markdown: "# Validation passed" }),
       );
-    await client.validate(["domain = 'x'"], false, undefined, []);
+    await client.validate({ files: { "main.mthds": "domain = 'x'" } }, false, { render: [] });
     expect(bodyOf(fetchSpy).render).toEqual(["markdown"]);
   });
 
@@ -1958,7 +1829,7 @@ describe("PipelexApiClient.validate render extra", () => {
       .mockResolvedValue(
         jsonResponse(200, { is_valid: true, rendered_markdown: "# Validation passed" }),
       );
-    await client.validate(["domain = 'x'"], false, undefined, ["html"]);
+    await client.validate({ files: { "main.mthds": "domain = 'x'" } }, false, { render: ["html"] });
     expect(bodyOf(fetchSpy).render).toEqual(["html", "markdown"]);
   });
 });
@@ -1969,7 +1840,9 @@ describe("PipelexApiClient.validate views opt-in", () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { is_valid: true, input_form: {} }));
-    await client.validate(["domain = 'x'"], false, undefined, undefined, ["input_form"]);
+    await client.validate({ files: { "main.mthds": "domain = 'x'" } }, false, {
+      views: ["input_form"],
+    });
     expect(bodyOf(fetchSpy).views).toEqual(["input_form"]);
   });
 
@@ -1978,7 +1851,7 @@ describe("PipelexApiClient.validate views opt-in", () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { is_valid: true }));
-    await client.validate(["domain = 'x'"]);
+    await client.validate({ files: { "main.mthds": "domain = 'x'" } });
     // The invariant that keeps an opt-in view opt-in: no token asked, no key sent, so
     // the response stays byte-identical for every consumer that does not want it.
     expect("views" in bodyOf(fetchSpy)).toBe(false);
@@ -1989,17 +1862,8 @@ describe("PipelexApiClient.validate views opt-in", () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { is_valid: true }));
-    await client.validate(["domain = 'x'"], false, undefined, undefined, []);
+    await client.validate({ files: { "main.mthds": "domain = 'x'" } }, false, { views: [] });
     expect(bodyOf(fetchSpy).views).toEqual([]);
-  });
-
-  it("threads views through validateFiles", async () => {
-    const client = makeClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { is_valid: true, input_form: {} }));
-    await client.validateFiles([{ content: "domain = 'x'" }], { views: ["input_form"] });
-    expect(bodyOf(fetchSpy).views).toEqual(["input_form"]);
   });
 });
 

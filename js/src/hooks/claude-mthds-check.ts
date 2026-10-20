@@ -28,10 +28,10 @@
  * - no `.mthds` in the payload / unparseable stdin → pass silently
  * - WASM engine fails to load → no file is checked; the note above is still sent
  * - validate unavailable (no `PIPELEX_API_KEY`, network error, timeout, any
- *   non-2xx, bundle-gather overflow, a template file leading out of the bundle's
- *   directory, or one path naming two different template files, or a file beside
- *   one `.mthds` file and nothing beside another) → the local lint/format
- *   verdicts already applied; the validate stage passes silently
+ *   non-2xx, a method tree past the hook's caps, one the standard's lister
+ *   refuses, such as one holding a symbolic link, an edited file the tree does
+ *   not hold, or a file of the tree that failed to upload) → the local
+ *   lint/format verdicts already applied; the validate stage passes silently
  *
  * The hook always exits 0; a block/deny is expressed on stdout, never via the
  * exit code.
@@ -54,7 +54,7 @@ import {
   type LintStage,
   type ValidateStage,
 } from "./check-core.js";
-import { gatherBundle } from "./bundle-gather.js";
+import { gatherMethodTree } from "./bundle-gather.js";
 import { createHookClient } from "./validate-client.js";
 
 /** Per-request ceiling on the one network call — well under the hook's overall timeout. */
@@ -152,7 +152,7 @@ async function runValidateStage(filePath: string): Promise<ValidateStage> {
   if (!process.env.PIPELEX_API_KEY) {
     return { status: "unavailable" };
   }
-  const gathered = gatherBundle(filePath);
+  const gathered = await gatherMethodTree(filePath);
   if (!gathered.ok) {
     return { status: "unavailable" };
   }
@@ -160,9 +160,7 @@ async function runValidateStage(filePath: string): Promise<ValidateStage> {
     const client = createHookClient();
     // The client owns the ceiling: on timeout it aborts the fetch itself, so the
     // request does not keep running after the hook has given up on it.
-    const result = await client.validateFiles(gathered.files, {
-      allowSignatures: true,
-      resources: gathered.resources,
+    const result = await client.validate({ tree: gathered.tree }, true, {
       timeoutMs: VALIDATE_TIMEOUT_MS,
     });
     if (result.is_valid === true) {

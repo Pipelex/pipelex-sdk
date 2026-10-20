@@ -12,16 +12,16 @@ Three routes project a **closure** of MTHDS files into the artifacts downstream 
 
 ## The shared envelope
 
-All three take the same closure selector — the method's tree, a `method_ref`, or a hosted `method_id`, exactly one (the strict tooling XOR) — and the tree may bring its dependencies and the files its steps read:
+All three take the same closure selector — the method's tree, a `method_ref`, or a hosted `method_id`, exactly one (the strict tooling XOR) — and the tree may bring its dependencies:
 
 ```ts
 interface CrateRequestBase {
   files?: MethodFiles; // the protocol's map: tree path → text, { base64 } or { sha256, size }
+  directory?: string; // or a directory on disk, listed by the mthds package (Node only)
   tree?: MethodTreeSource; // or a listed tree, sent inline or by hash
   contents?: Readonly<Record<string, Uint8Array | string>>; // or each file's bytes or text by tree path
   dependencies?: Record<string, MethodFiles>; // beside the tree: the packages it calls by address
   method_ref?: string; // address form server-resolved; registry form reserved → 501
-  resources?: BundleResources | null; // beside the tree: the files the steps read, as bytes
   read_scope?: string; // Pipelex-API extension; the hosted platform stamps its own
 }
 
@@ -30,19 +30,20 @@ interface PipelexHostedToolingExtensions {
 }
 ```
 
-**The tree is the MTHDS protocol's `files` map**, the shape `validate`, the runs and the method catalog take: each key a tree path, each value the file's text, `{ base64 }` for bytes that are not text, or `{ sha256, size }` naming a blob the organization already holds. The runner writes the tree whole and loads it as the method's library directory, so every `.mthds` bundle is named by its tree path and every other file, a `PipeDocGen` template beside its bundle for instance, is one a step may read. The tree is given in exactly one of three forms, as a save takes it ([method-trees.md](./method-trees.md)):
+**The tree is the MTHDS protocol's `files` map**, the shape `validate`, the runs and the method catalog take: each key a tree path, each value the file's text, `{ base64 }` for bytes that are not text, or `{ sha256, size }` naming a blob the organization already holds. The runner writes the tree whole and loads it as the method's library directory, so every `.mthds` bundle is named by its tree path and every other file, a `PipeDocGen` template beside its bundle for instance, is one a step may read. The tree is given in exactly one of four forms, as a run, a validation and a save take it ([method-trees.md](./method-trees.md)):
 
 - `files`, the map, posted as given with no round trip;
+- `directory`, a directory on disk, listed by the `mthds` package's lister under the standard's membership rule and the deployment's limits, in Node only;
 - `tree`, a listed source such as the `MethodTree` the `mthds` package's `listMethodTree` returns;
 - `contents`, each file's bytes or text keyed by its tree path.
 
-A `tree` or `contents` travels as a save sends it: inline when its map weighs `INLINE_TREE_MAX_BYTES` (256 KiB) or less, and otherwise, against an API whose version handshake declares a blob store, by hash after asking `POST /v1/blobs/missing` which blobs the organization lacks and uploading each one once. A blob that fails to upload throws `MethodFileTransferError`, whose message ends "so the request was not sent", and the route is never asked. Two forms at once, and a `tree` holding no file, are refused with `RequestArgumentError` before any request. A `files` map is never checked client-side: a key or an entry the tree's rule refuses is the server's `422`.
+A `directory`, `tree` or `contents` travels as a run or a save sends it ([method-trees.md](./method-trees.md#how-a-tree-travels)): the client reads the version handshake first, then sends the tree inline when its map weighs no more than the lower of `INLINE_TREE_MAX_BYTES` (256 KiB) and the announced `max_inline_bytes`, and otherwise, against an API that declares a blob store, by hash after asking `POST /v1/blobs/missing` which blobs the organization lacks and uploading each one once; against an API with no blob store it sends the tree inline whatever its weight, refusing one past `max_inline_bytes`. A blob that fails to upload throws `MethodFileTransferError`, whose message ends "so the request was not sent", and the route is never asked. Two forms at once, a directory the lister refuses, and a `tree` holding no file, are refused with `RequestArgumentError` before any request. A `files` map is never checked client-side: a key or an entry the tree's rule refuses is the server's `422`.
 
-**An empty map is absent**, as in the Python SDK: `files: {}` or `files: null`, `contents: {}` and `dependencies: {}` are not sent, so an empty map never reaches the wire as a second selector, and `{ files: {}, method_id: "mt_…" }` posts the `method_id` alone. A value that is not a map, such as a list, is not absent: it is posted as given and refused by the server.
+**An empty map is absent**, as in the Python SDK: `files: {}` or `files: null`, `contents: {}`, `directory: ""` and `dependencies: {}` are not sent, so an empty map never reaches the wire as a second selector, and `{ files: {}, method_id: "mt_…" }` posts the `method_id` alone. A value that is not a map, such as a list, is not absent: it is posted as given and refused by the server.
 
 When the request carries a `read_scope`, the blob route is asked under it, as `POST /v1/blobs/missing?read_scope=…`, so the missing blobs are uploaded into the store the request's hash entries are read from; each upload target the runner answers is signed for that scope, so the uploads need nothing more. The hosted platform's own blob route reads the caller's organization and ignores the query, as it does the request's `read_scope`.
 
-**Stopping a call.** Each route takes a second argument, `CrateRouteOptions`, whose `signal` is read before each step a `tree` or `contents` costs — the version handshake, the blob route, each read and each upload of a missing blob — and before the request itself. Once it has aborted, nothing further starts and the call throws the abort; a request already sent runs to its end, since the routes take no transport options (a static route's budget is the client's own). `prepareInputs` passes its `signal` here, so an abort during the handshake leaves the blob route, the uploads and `POST /v1/pipe-io` unasked.
+**Stopping a call.** Each route takes a second argument, `CrateRouteOptions`, whose `signal` is read before each step a `directory`, `tree` or `contents` costs — the version handshake, the directory's listing, the blob route, each read and each upload of a missing blob — and before the request itself. Once it has aborted, nothing further starts and the call throws the abort; a request already sent runs to its end, since the routes take no transport options (a static route's budget is the client's own). `prepareInputs` passes its `signal` here, so an abort during the handshake leaves the blob route, the uploads and `POST /v1/pipe-io` unasked.
 
 When the engine can attribute a diagnostic to a file, the `validation_errors[]` item's `source` names it by its tree path. Treat that attribution as best-effort, not a guarantee — which is why `ValidationErrorItem.source` is typed optional and why the `resolve` sample below reads `err.source ?? "?"`. Some arms don't populate it: graph-level `dry_run` and `pipe_factory` items have no single owning file, and a `main_pipe` naming a nonexistent pipe currently reports its provenance in the message prose while leaving the structured field unset.
 
@@ -54,13 +55,13 @@ An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>
 
 `read_scope` is a Pipelex-API extension naming the scope the request reads the method under: a hash entry of the tree resolves in that scope's blob store. A caller of a bare runner may send it; **the hosted platform stamps it from the caller's organization and drops one the caller sent**, so a hosted caller never needs it.
 
-Supplying **no** selector or **more than one** is a request-shape `422` — the tooling routes are stateless, so there is no linkage exception; a second selector could only be ignored, which is the worst contract of the three. The SDK does not model the XOR in the type system — the union would force the overwhelmingly common `{ files }` call site to pick a branch for no gain, and the server's answer is a typed `ApiResponseError` either way. Only the three forms of the tree are checked client-side, because the client has to choose how to send it.
+Supplying **no** selector or **more than one** is a request-shape `422` — the tooling routes are stateless, so there is no linkage exception; a second selector could only be ignored, which is the worst contract of the three. The SDK does not model the XOR in the type system — the union would force the overwhelmingly common `{ files }` call site to pick a branch for no gain, and the server's answer is a typed `ApiResponseError` either way. Only the four forms of the tree are checked client-side, because the client has to choose how to send it.
 
 A caller facing a bare runner, which has no catalog to resolve an id against, expands a stored method itself: it reads the method's tree with `getMethod` or `getMethodVersion`, writes it to disk with `writeMethodTree`, and sends it from there as a `tree` ([method-trees.md](./method-trees.md)).
 
-Beside the tree, `resources` carries the files the closure's steps read, such as a `PipeDocGen` step's `template_file`, keyed by the path from the tree's root, each as its bytes. The client encodes the bytes into the wire's base64 map, after refusing a key the runner's path rule refuses. Such a file can ride the tree itself instead, which is the simpler way now that the tree carries any file. A step whose template file the tree does not hold makes the closure invalid, a `200` verdict saying so; `resources` beside a `method_ref` is the server's `422`. The rules, the limits and the refusals are in [`bundle-resources.md`](./bundle-resources.md).
+The files the closure's steps read, such as a `PipeDocGen` step's `template_file`, are files of the tree like any other, at the tree path the step names. A step whose template file the tree does not hold makes the closure invalid, a `200` verdict saying so ([method-trees.md](./method-trees.md#the-files-a-step-reads)).
 
-A `method_ref` makes the server fetch the repository before it answers, so the client gives a call carrying one a fetch-sized budget (three minutes) instead of the 30-second default. A call carrying `resources` gets the client's request ceiling (`requestTimeoutMs`, twenty minutes by default) that `start` and `validate` give the same files, because uploading them can take longer than the default on its own. On the hosted API the gateway caps every request at about 30 seconds whatever the client allows, so a cold `method_ref` clone can answer a `502`; retrying clears it once the runner has cached the clone.
+A `method_ref` makes the server fetch the repository before it answers, so the client gives a call carrying one a fetch-sized budget (three minutes) instead of the 30-second default. On the hosted API the gateway caps every request at about 30 seconds whatever the client allows, so a cold `method_ref` clone can answer a `502`; retrying clears it once the runner has cached the clone.
 
 ## `resolve` — the normalized crate
 
@@ -157,7 +158,6 @@ Only a **no-verdict** condition, as the typed `ApiResponseError` — branch on i
 | ------------- | --------------------------------------------------------------------------------------------------------- |
 | `422`         | Request shape: no closure selector or more than one, `dependencies` without the tree, an unknown `kind`/`target`, a `pipe_ref` on `kind: "types"`, a fetched package with no `.mthds` file, a stored method with no MTHDS source, a `method_id` whose version suffix is malformed. |
 | `422`         | The tree's refusals, as on `validate`: `InvalidMethodFiles` for a key or an entry the tree's rule refuses (a `files` that is not a map among them), `MissingBlobs` for a hash the server does not hold, `MethodTreeTooLarge` past the tree's limits, `InvalidBundle` for a tree holding no `.mthds` bundle. |
-| `422` / `413` / `400` | On `resources`: `InvalidResourcePath`, `BundleResourceNotNamedError` (a file no step names), `ValidationError` (beside a `method_ref`), `PayloadTooLarge`, `BundleResourcesTooLargeError`, `InvalidBase64` — see [`bundle-resources.md`](./bundle-resources.md#what-the-server-refuses). |
 | `422`         | On `pipeIo`, a pipe selection the route refuses: `errorType` `EntryPipeNotFoundError` for a `pipe_ref` that names no pipe or a method with no entry pipe, `EntryPipeAmbiguousError` for a code that matches pipes in several domains or several `main_pipe` declarations. The `serverMessage` names the candidates where there are some. |
 | `404`         | Unknown or foreign-org `method_id` (indistinguishable by design); no package at a `method_ref` address.     |
 | `404`         | `code` `method_version_not_found`: a `mt_…@<n>` naming a version the method never published.               |
@@ -170,7 +170,7 @@ Only a **no-verdict** condition, as the typed `ApiResponseError` — branch on i
 
 Note the split: a bad **closure** is a 200 verdict; a bad **request** throws.
 
-Before any request, a `tree` or `contents` can also throw: `RequestArgumentError` for two forms of the tree or a tree holding no file, and `MethodFileTransferError` for a blob that could not be uploaded, so the request was not sent ([errors.md](./errors.md)).
+Before any request, a `directory`, `tree` or `contents` can also throw: `RequestArgumentError` for two forms of the tree, a directory the lister refuses, a tree holding no file or one too heavy to send inline to an API with no blob store, and `MethodFileTransferError` for a blob that could not be uploaded, so the request was not sent ([errors.md](./errors.md)).
 
 (The offline check below is not a route and throws its own `CodegenLockError` instead — it never reaches the network.)
 

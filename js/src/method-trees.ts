@@ -1,18 +1,29 @@
 /**
- * A saved method's tree on the client side (see `docs/method-trees.md`): the source a save reads a
- * tree from, how that tree becomes the `files` map a save sends, inline or by hash, the blob routes
- * that let a large tree travel by hash (mthds/docs/spec/protocol.md, "Sending files by hash"), the
- * upload of a blob the platform lacks, and the writing of a saved tree to disk.
+ * A method's tree on the client side (see `docs/method-trees.md`): the forms a caller gives a
+ * method's tree in, the listing of a directory through the `mthds` package's own lister, how a
+ * tree becomes the `files` map a request sends, inline or by hash, the blob routes that let a
+ * large tree travel by hash (mthds/docs/spec/protocol.md, "Sending files by hash"), the upload of
+ * a blob the receiver lacks, and the writing of a saved tree to disk.
  *
- * The tree-sending part mirrors the `mthds` npm package's own helpers, which its published
- * `mthds/protocol` subpath does not export yet. This SDK imports `mthds` through that subpath alone,
- * so it carries this copy, held to the same rule: the same inline threshold, the same text-or-Base64
- * choice per file, and each file added as an own property. It needs no Node built-in: SHA-256 is Web
- * Crypto's, and Base64 is written here. Only `writeMethodTreeTo` needs Node, which it loads when
- * called.
+ * The wire types (`MethodTreeSource`, `BlobRef`, `MissingBlob` and the rest) are the standard's,
+ * imported from `mthds/protocol`. A directory is listed by `mthds`'s `listMethodTree`, the
+ * standard's lister with its membership rule, which this module loads by a dynamic import when a
+ * directory is given, so the SDK's static import graph keeps no Node built-in. The choice between
+ * inline and by hash follows `mthds`'s `MthdsApiClient` rule exactly, but its helpers are not
+ * exported on a subpath free of Node built-ins, so this module carries its own copy of them: the
+ * same threshold, the same weighing of the inline map, the same text-or-Base64 choice per file.
+ * SHA-256 is Web Crypto's, and Base64 is written here. Only `writeMethodTreeTo` and
+ * `listDirectoryTree` need Node, which each loads when called.
  */
 
-import type { FileEntry, MethodFiles } from "mthds/protocol";
+import type {
+  BlobRef,
+  FileEntry,
+  MethodFiles,
+  MethodTreeSource,
+  MethodTreeSourceFile,
+  MissingBlob,
+} from "mthds/protocol";
 
 import { fallbackVerdict } from "./error-verdicts.js";
 import {
@@ -23,30 +34,35 @@ import {
 import type { SavedMethodFile } from "./product-models.js";
 import { throwIfAborted } from "./runs.js";
 
-// ── The source of a tree ─────────────────────────────────────────────
-
-/** A file of a {@link MethodTreeSource}. */
-export interface MethodTreeSourceFile {
-  /** Its tree path. */
-  readonly path: string;
-  /** Its length in bytes. */
-  readonly size: number;
-  /** The SHA-256 of its bytes, in lowercase hexadecimal. */
-  readonly sha256: string;
-}
+// ── The forms of a method's tree ─────────────────────────────────────
 
 /**
- * A method tree a save reads from: its files, its digest, and a way to read each file's bytes. The
- * `MethodTree` the `mthds` package's `listMethodTree` returns is one, so a tree listed from a
- * directory, under the limits `methodTreeLimits` reports, is passed as it is.
+ * A method's tree, given in exactly one of four forms. Every route that takes a method's tree
+ * takes these: the runs (`execute`, `start`, `startAndWaitForResult`), `validate`, the crate
+ * routes (`resolve`, `codegen`, `pipeIo`), `prepareInputs` and the saves (`createMethod`,
+ * `writeDraft`).
+ *
+ * - `directory`, a path on disk, listed by the `mthds` package's lister under the MTHDS
+ *   standard's membership rule: rooted at the nearest `METHODS.toml` at or above it, else at the
+ *   directory itself, every file the rule keeps, a run's inputs file (`inputs.json`,
+ *   `inputs.toml`) never among them, under the limits the deployment announces. A `.mthds` file
+ *   named alone is a one-file tree unless a `METHODS.toml` above it roots a larger one. Node only.
+ * - `contents`, each file's bytes or its text by tree path, a map held in memory.
+ * - `tree`, a listed source such as the `MethodTree` `listMethodTree` returns.
+ * - `files`, the protocol's map of file entries, sent as given.
+ *
+ * A `directory`, `contents` or `tree` travels inline when small and by hash otherwise, after the
+ * files the receiver lacks are uploaded (`docs/method-trees.md`).
  */
-export interface MethodTreeSource {
-  /** Every file of the tree, each tree path once. */
-  readonly files: readonly MethodTreeSourceFile[];
-  /** The tree digest, `sha256:` and 64 lowercase hexadecimal digits. */
-  readonly digest: string;
-  /** The bytes of the file at `treePath`, which must hash to the SHA-256 the listing gives it. */
-  readFile(treePath: string): Promise<Uint8Array>;
+export interface MethodTreeForms {
+  /** The method's directory, listed by the standard's lister. Node only. */
+  directory?: string | null;
+  /** Each file's bytes or text, by tree path. */
+  contents?: Readonly<Record<string, Uint8Array | string>> | null;
+  /** A listed tree, such as the `MethodTree` `listMethodTree` returns. */
+  tree?: MethodTreeSource | null;
+  /** The protocol's map of file entries, sent as given. */
+  files?: MethodFiles | null;
 }
 
 /**
@@ -63,64 +79,38 @@ export interface MethodTreeLimits {
   readonly maxTotalSize?: number;
 }
 
-// ── The blob routes (`POST /v1/blobs/missing`) ───────────────────────
-
-/** A blob a sender is about to send by hash, named by its SHA-256 and its size. */
-export interface BlobRef {
-  sha256: string;
-  size: number;
-}
-
 /**
- * Body of `POST /v1/blobs/missing`: the blobs a sender is about to send by hash, each hash listed
- * once, and the digest of the tree they make up, which lets a platform that holds that tree whole
- * answer at once.
+ * Every limit a deployment's handshake announces for a tree under `limits.method_tree`, in bytes
+ * for the sizes, named as `mthds`'s `AnnouncedTreeLimits` names them. A limit not announced is
+ * absent.
  */
-export interface MissingBlobsRequest {
-  blobs: BlobRef[];
-  digest?: string;
-}
-
-/**
- * Where to upload one blob: its bytes as the whole body of a request with this method to this URL,
- * carrying exactly these headers. The URL is signed by storage and is a bearer credential.
- */
-export interface UploadTarget {
-  method: string;
-  url: string;
-  headers: Record<string, string>;
-  [extension: string]: unknown;
-}
-
-/** A blob the platform lacks, with where to upload it. */
-export interface MissingBlob {
-  sha256: string;
-  size: number;
-  upload: UploadTarget;
-  [extension: string]: unknown;
-}
-
-/** The `200` answer of `POST /v1/blobs/missing`; an empty `missing` means nothing to upload. */
-export interface MissingBlobsResult {
-  missing: MissingBlob[];
-  [extension: string]: unknown;
+export interface AnnouncedTreeLimits {
+  /** The files of one tree. */
+  readonly maxFiles?: number;
+  /** One file of it. */
+  readonly maxFileBytes?: number;
+  /** All its files together. */
+  readonly maxTotalBytes?: number;
+  /** The bytes a request carries inline for its tree: its text and Base64 entries. */
+  readonly maxInlineBytes?: number;
 }
 
 // ── Choosing how a tree travels ──────────────────────────────────────
 
 /**
- * The heaviest inline map, in bytes of its JSON serialization in UTF-8, that a save sends inline
- * to a deployment keeping a blob store. Below it a tree is cheaper to send whole than to check and
- * upload; above it every file travels by hash. `mthds`'s clients use the same threshold.
+ * The heaviest inline map, in bytes of its JSON serialization in UTF-8, that a request or a save
+ * sends inline to a deployment keeping a blob store, when the deployment announces no lower inline
+ * limit. Below it a tree is cheaper to send whole than to check and upload; above it every file
+ * travels by hash. `mthds`'s clients use the same threshold.
  */
 export const INLINE_TREE_MAX_BYTES = 256 * 1024;
 
-/** How many blobs a save uploads at once, and how many files `writeMethodTree` downloads at once. */
+/** How many blobs a request or a save uploads at once, and how many files `writeMethodTree` downloads at once. */
 export const MAX_CONCURRENT_TRANSFERS = 8;
 
 /**
  * What a tree is prepared for, as its refusals and its failed uploads say it: a save of a method, or
- * a request that reads one (`resolve`, `codegen`, `pipeIo`).
+ * a request that runs or reads one (a run, `validate`, `resolve`, `codegen`, `pipeIo`).
  */
 export interface TreeSending {
   /** What did not happen because an upload failed, ending its message. */
@@ -135,10 +125,10 @@ export const SAVE_SENDING: TreeSending = {
   emptyRemedy: "give files: null for an empty draft",
 };
 
-/** A crate request's: a method has at least one file, so there is nothing to give instead. */
+/** A request's: a method has at least one file, so there is nothing to give instead. */
 export const REQUEST_SENDING: TreeSending = { unsent: "the request was not sent" };
 
-/** How a crate request prepares its tree, beyond what a save needs. */
+/** How a request prepares its tree, beyond what a save needs. */
 export interface TreeSendOptions {
   /**
    * Read before each step the tree costs: each file read, the version handshake's use, the blob
@@ -190,7 +180,7 @@ export function declaresBlobStore(version: object): boolean {
  * positive safe integer is left out rather than trusted, and a limit not announced is absent, so a
  * bare runner, which announces none, yields no limit.
  */
-export function announcedTreeLimits(version: object): MethodTreeLimits {
+export function announcedTreeLimits(version: object): AnnouncedTreeLimits {
   const limits = objectMember(version, "limits");
   const tree = limits === undefined ? undefined : objectMember(limits, "method_tree");
   if (tree === undefined) return {};
@@ -200,14 +190,39 @@ export function announcedTreeLimits(version: object): MethodTreeLimits {
       ? value
       : undefined;
   };
-  const announced: { maxFileCount?: number; maxFileSize?: number; maxTotalSize?: number } = {};
-  const maxFileCount = read("max_files");
-  const maxFileSize = read("max_file_bytes");
-  const maxTotalSize = read("max_total_bytes");
-  if (maxFileCount !== undefined) announced.maxFileCount = maxFileCount;
-  if (maxFileSize !== undefined) announced.maxFileSize = maxFileSize;
-  if (maxTotalSize !== undefined) announced.maxTotalSize = maxTotalSize;
+  const announced: {
+    maxFiles?: number;
+    maxFileBytes?: number;
+    maxTotalBytes?: number;
+    maxInlineBytes?: number;
+  } = {};
+  const maxFiles = read("max_files");
+  const maxFileBytes = read("max_file_bytes");
+  const maxTotalBytes = read("max_total_bytes");
+  const maxInlineBytes = read("max_inline_bytes");
+  if (maxFiles !== undefined) announced.maxFiles = maxFiles;
+  if (maxFileBytes !== undefined) announced.maxFileBytes = maxFileBytes;
+  if (maxTotalBytes !== undefined) announced.maxTotalBytes = maxTotalBytes;
+  if (maxInlineBytes !== undefined) announced.maxInlineBytes = maxInlineBytes;
   return announced;
+}
+
+/** The announced limits as the lister takes them, so it stops at the first breach before hashing. */
+export function listerLimitsOf(announced: AnnouncedTreeLimits): MethodTreeLimits {
+  const limits: { maxFileCount?: number; maxFileSize?: number; maxTotalSize?: number } = {};
+  if (announced.maxFiles !== undefined) limits.maxFileCount = announced.maxFiles;
+  if (announced.maxFileBytes !== undefined) limits.maxFileSize = announced.maxFileBytes;
+  if (announced.maxTotalBytes !== undefined) limits.maxTotalSize = announced.maxTotalBytes;
+  return limits;
+}
+
+/**
+ * The inline threshold a tree is held to against a receiver keeping a blob store: the lower of
+ * `INLINE_TREE_MAX_BYTES` and the inline limit the receiver announces, as `mthds`'s
+ * `MthdsApiClient` reads it.
+ */
+export function inlineThreshold(announced: AnnouncedTreeLimits): number {
+  return Math.min(INLINE_TREE_MAX_BYTES, announced.maxInlineBytes ?? Number.POSITIVE_INFINITY);
 }
 
 /** What an inline map spends in a request: its JSON serialization with no whitespace, in UTF-8. */
@@ -362,6 +377,42 @@ export async function contentsTreeSource(
       return bytes;
     },
   };
+}
+
+/** A tree listed from the file system: its files, and the absolute path of its root. */
+export interface ListedMethodTree extends MethodTreeSource {
+  /** The absolute path of the root, or `null` for the one-file tree of a `.mthds` file alone. */
+  readonly root: string | null;
+}
+
+/**
+ * The tree of the method directory `directory`, listed by the `mthds` package's `listMethodTree`
+ * under the MTHDS standard's membership rule and Manifest Discovery, stopping at the first of
+ * `limits` it breaches, before any file is hashed. A run's inputs file is never in it. Node only:
+ * `mthds`'s root entry, which reads the file system, is loaded by this call alone.
+ *
+ * Throws `RequestArgumentError` naming `call` when the directory cannot be listed as a tree, the
+ * `mthds` package's `MethodTreeError` as its `cause` with its `code` (`not_found`,
+ * `symbolic_link`, `limit_exceeded`, `empty_tree` and the rest): a path that names nothing, a
+ * symbolic link or a special file in the tree, a tree past one of `limits`, a tree holding no file.
+ */
+export async function listDirectoryTree(
+  directory: string,
+  limits: MethodTreeLimits,
+  call: string,
+): Promise<ListedMethodTree> {
+  const { listMethodTree, MethodTreeError } = await import("mthds");
+  try {
+    return await listMethodTree(directory, { limits });
+  } catch (err) {
+    if (err instanceof MethodTreeError) {
+      throw new RequestArgumentError(
+        `${call}() could not list the method's tree at '${directory}': ${err.message}`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
 }
 
 /**

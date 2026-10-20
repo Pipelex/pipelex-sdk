@@ -102,23 +102,6 @@ describe("crate routes — request envelope", () => {
     });
   });
 
-  it("encodes the resources beside the tree as base64", async () => {
-    const client = makeClient();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { is_valid: true, crate: {}, message: "ok" }));
-
-    await client.resolve({
-      files: { "main.mthds": "domain = 'smoke'" },
-      resources: { "templates/invoice.docx": new Uint8Array([0x50, 0x4b, 0x03, 0x04]) },
-    });
-
-    expect(postedBody(fetchSpy)).toEqual({
-      files: { "main.mthds": "domain = 'smoke'" },
-      resources: { "templates/invoice.docx": "UEsDBA==" },
-    });
-  });
-
   it("posts codegen's two explicit axes beside the closure, and omits pipe_ref entirely when unset", async () => {
     const client = makeClient();
     const fetchSpy = vi

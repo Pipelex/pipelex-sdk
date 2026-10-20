@@ -10,10 +10,8 @@
  * consumes — not a speculative mirror of every server field.
  */
 
-import type { MethodFiles } from "mthds/protocol";
-
 import type { RunErrorReport } from "./error-models.js";
-import type { MethodTreeSource } from "./method-trees.js";
+import type { MethodTreeForms } from "./method-trees.js";
 import type { PipelexValidationResult } from "./models.js";
 import type { RunStatus } from "./runs.js";
 
@@ -258,23 +256,23 @@ export interface MethodPage {
 }
 
 /**
- * A method's tree in the three forms a save takes, of which a save gives at most one:
+ * A method's tree in the four forms a save takes, of which a save gives at most one (see
+ * `MethodTreeForms`):
  *
- * - `files`, the MTHDS standard's map of file entries, the same `files` a run takes, sent as
- *   given: a file's text, `{ base64 }`, or `{ sha256, size }` for bytes the organization holds;
+ * - `directory`, a method directory on disk, listed by the `mthds` package's lister under the
+ *   standard's membership rule and the deployment's limits (Node only);
+ * - `contents`, each file's bytes or text by tree path;
  * - `tree`, a tree whose files the client reads, such as the `MethodTree` the `mthds` package's
  *   `listMethodTree` lists from a directory;
- * - `contents`, each file's bytes or text by tree path.
+ * - `files`, the MTHDS standard's map of file entries, the same `files` a run takes, sent as
+ *   given: a file's text, `{ base64 }`, or `{ sha256, size }` for bytes the organization holds.
  *
- * A `tree` or `contents` travels inline when its inline map weighs 256 KiB or less, or when the
- * platform keeps no blob store, and otherwise by hash, after the client uploads the files the
- * organization lacks (see `docs/method-trees.md`).
+ * A `directory`, `contents` or `tree` travels inline when its inline map weighs 256 KiB or less
+ * and no more than the inline limit the platform announces, or when the platform keeps no blob
+ * store, and otherwise by hash, after the client uploads the files the organization lacks (see
+ * `docs/method-trees.md`). On a save, `files: null` empties the draft.
  */
-export interface MethodTreeInput {
-  files?: MethodFiles | null;
-  tree?: MethodTreeSource;
-  contents?: Readonly<Record<string, Uint8Array | string>>;
-}
+export type MethodTreeInput = MethodTreeForms;
 
 /**
  * The create payload — `createMethod`. A new method holds its tree as its draft and has no
@@ -827,8 +825,7 @@ export interface RunHistoryItem {
  * multiplied by the page size on one and by the poll rate on the other.
  */
 export interface RunDetail extends PipelineRun {
-  /** One entry PER `.mthds` FILE, not one bundle string — the same array shape
-   *  the protocol's validate call takes and echoes back. A single-file method
+  /** One entry PER `.mthds` FILE, not one bundle string. A single-file method
    *  is an array of one. */
   mthds_contents?: string[] | null;
   /**

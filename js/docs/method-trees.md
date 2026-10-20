@@ -1,28 +1,94 @@
-# A saved method's tree
+# A method's tree
 
-A saved method holds a **method tree**: the files a method is made of, each at its tree path, the same tree a run takes as `files`. The draft holds one, and each published version holds the one it was published from. A tree is named by its **tree digest**, `sha256:` and the SHA-256 of its listing, so two methods holding the same files hold the same digest. Both are defined by the MTHDS standard (`mthds/docs/spec/method-tree.md`), and the `mthds` package lists a tree from a directory with `listMethodTree`, whose `MethodTree` a save takes as it is.
+A method is a **method tree**: the files it is made of, each at its tree path — its bundles, its manifest when it has one, and every file a step reads or that travels with the method, such as a `PipeDocGen` step's template. A tree is named by its **tree digest**, `sha256:` and the SHA-256 of its listing, so two methods holding the same files hold the same digest. Both are defined by the MTHDS standard (`mthds/docs/spec/method-tree.md`), and on the wire a tree is the protocol's `files` map, each key a tree path and each value the file's text, `{ base64 }` for bytes that are not text, or `{ sha256, size }` for bytes the receiver already holds.
 
-The platform keeps each file once per organization, as a blob named by its SHA-256, so a save sends only the files the organization does not hold yet, and a read lists the files with a short-lived link to each one's bytes.
+Every call that takes a method takes its tree the same way: the runs (`execute`, `start`, `startAndWaitForResult`), `validate`, the crate routes (`resolve`, `codegen`, `pipeIo`), `prepareInputs`, and the saves (`createMethod`, `writeDraft`). A saved method holds one too: the draft holds one, and each published version holds the one it was published from. The platform keeps each file once per organization, as a blob named by its SHA-256, so a request sends only the files the organization does not hold yet, and a read lists the files with a short-lived link to each one's bytes.
 
-## Saving a tree
+## The four forms of a tree
 
-`createMethod(input)` and `writeDraft(methodId, input)` take the tree in one of three forms (`MethodTreeInput`):
+A call takes the tree in exactly one of four forms (`MethodTreeForms`):
 
 | Form | What it is | How it is sent |
 |---|---|---|
-| `files` | The standard's map of file entries (`MethodFiles` from `mthds/protocol`): a text, `{ base64 }`, or `{ sha256, size }` for bytes the organization already holds. | As given. |
-| `tree` | A `MethodTreeSource`: a tree's `files` (each with its `path`, `size` and `sha256`), its `digest`, and `readFile(path)` giving each file's bytes. The `MethodTree` `listMethodTree` returns is one. | Inline when small, by hash otherwise (below). |
-| `contents` | Each file's bytes (`Uint8Array`) or its text, by tree path. | Inline when small, by hash otherwise (below). |
-
-A tree given as `tree` or `contents` is sent **inline** when its inline map weighs `INLINE_TREE_MAX_BYTES` (256 KiB) or less, written as JSON with no whitespace and measured in UTF-8, or when the platform keeps no blob store, which its version handshake says (`blob_store`). Inline, a file whose bytes are UTF-8 travels as its text and any other as `{ base64 }`. Otherwise the client asks `POST /v1/blobs/missing` which files the organization lacks, naming the tree's digest, uploads each one it lacks once, at most eight at a time, straight to the upload target the platform names, under the client's request time limit (`requestTimeoutMs`, twenty minutes unless the client was built with another), and sends every file by hash. These are the rules the `mthds` package's own clients follow, so the tree a save sends is the tree a run would send. A file uploaded once is never uploaded again, by this method or any other of the organization.
-
-A text in `contents` is encoded in UTF-8, and a text a file cannot hold, one carrying a lone surrogate, is refused, as is a value that is neither a string nor a `Uint8Array`. A `MethodTree` reads a file again whenever its bytes are sent, inline or as an upload, and checks it against the hash its listing recorded, so a file changed since the listing is refused by `mthds` rather than sent as another tree than the one listed. Saving reads no Node module of its own: hashing is Web Crypto's.
+| `directory` | The method's directory on disk. **Node only.** | Listed, then inline when small and by hash otherwise (below). |
+| `contents` | Each file's bytes (`Uint8Array`) or its text, by tree path, a map held in memory. | Inline when small, by hash otherwise. |
+| `tree` | A `MethodTreeSource`: a tree's `files` (each with its `path`, `size` and `sha256`), its `digest`, and `readFile(path)` giving each file's bytes. The `MethodTree` the `mthds` package's `listMethodTree` returns is one. | Inline when small, by hash otherwise. |
+| `files` | The protocol's map of file entries (`MethodFiles` from `mthds/protocol`). | As given. |
 
 ```ts
-import { listMethodTree } from "mthds";
+// A run of the method in a directory: the client lists it, and sends what the API lacks.
+const results = await client.startAndWaitForResult({
+  directory: "methods/receipts",
+  inputs: { receipt: "https://example.com/receipt.png" },
+});
 
-const tree = await listMethodTree("methods/receipts", { limits: await client.methodTreeLimits() });
-const method = await client.createMethod({ name: "Receipts", tree });
+// The same method validated from memory, its template among its files.
+const verdict = await client.validate({
+  contents: {
+    "receipts.mthds": source,
+    "templates/receipt.docx": await readFile("methods/receipts/templates/receipt.docx"),
+  },
+});
+```
+
+**A directory is listed by the standard's lister.** The client loads the `mthds` package's `listMethodTree` when a call gives a `directory`, and lists it under the MTHDS standard's membership rule and Manifest Discovery: the tree is rooted at the nearest `METHODS.toml` at or above the directory, else at the directory itself, and holds every file the rule keeps. Hidden entries, `node_modules`, `__pycache__`, what a `.gitignore` or the manifest's `exclude` keeps out, and **a run's inputs file** (`inputs.json`, `inputs.toml`) never travel with the method. A tree holding a symbolic link or a special file is refused rather than followed. The directory is listed under the limits the deployment announces (below), so a tree the deployment would refuse for its size is refused while it is listed, before any file is hashed. Every refusal is a `RequestArgumentError` naming the call and the directory, whose `cause` is `mthds`'s `MethodTreeError`, with its `code` (`not_found`, `symbolic_link`, `limit_exceeded`, `empty_tree` and the rest). Listing needs Node: a browser gives `contents`, `tree` or `files`.
+
+**A map in memory.** A text in `contents` is encoded in UTF-8, and a text a file cannot hold, one carrying a lone surrogate, is refused, as is a value that is neither a string nor a `Uint8Array`. The keys are sent as they are, and the platform refuses one that is not a tree path with the `422` `invalid_method_files` naming it.
+
+**One form, and never an empty tree.** Two forms at once are refused with a `RequestArgumentError` before anything is read or sent. A `files` map, `contents` or a `tree` holding no file is refused too on the run routes and on `validate`, as the standard refuses it: a tree holds at least one file. On the crate routes and in `prepareInputs`, an empty map is absent instead, so it never reaches the wire as a second selector, and in a save `files: null` empties the draft. An empty `directory` string is absent everywhere.
+
+## How a tree travels
+
+A tree given as a `directory`, `contents` or `tree` is sent by the rule the `mthds` package's `MthdsApiClient` follows, so the tree a save sends is the tree a run would send. The client reads the API's version handshake first (`GET /v1/version`), once per client, keeping its answer:
+
+- **When the API keeps a blob store** (`blob_store: true`), a tree whose inline map weighs no more than the inline threshold travels **inline**, with no further round trip. The map is weighed as the request spends it, its JSON with no whitespace, in UTF-8, and the threshold is the lower of `INLINE_TREE_MAX_BYTES` (256 KiB) and the `max_inline_bytes` the handshake announces. Inline, a file whose bytes are UTF-8 travels as its text and any other as `{ base64 }`, so a binary file weighs its Base64. A heavier tree travels **by hash**: the client asks `POST /v1/blobs/missing` which files the receiver lacks, naming the tree's digest, uploads each one it lacks once, at most eight at a time, straight to the upload target the platform names, under the client's request time limit (`requestTimeoutMs`, twenty minutes unless the client was built with another), and sends every file as `{ sha256, size }`. A file uploaded once is never uploaded again, by this method or any other of the organization.
+- **When the API keeps no blob store**, which a bare runner usually does, the whole tree travels inline whatever its weight, held to the `max_inline_bytes` the handshake announces: a heavier tree is refused with a `RequestArgumentError` before anything is sent, since the API would refuse it.
+
+A `files` map is sent as given, with no handshake. A run's `start` carrying a tree, and a run that names a `method_ref`, get the client's request ceiling rather than the 30-second start budget, since an inline tree can make the body large.
+
+A `MethodTree` reads a file again whenever its bytes are sent, inline or as an upload, and checks it against the hash its listing recorded, so a file changed since the listing is refused by `mthds` rather than sent as another tree than the one listed. Apart from listing a directory, sending a tree reads no Node module: hashing is Web Crypto's, and Base64 is written by the SDK.
+
+**What is uploaded is what the listing names.** Before each upload the client hashes the bytes a tree's `readFile` gives and refuses them, with a `RequestArgumentError`, unless they have the size and the SHA-256 the tree lists for them: a blob is stored under its hash for the whole organization, so a hand-built `MethodTreeSource` whose `readFile` disagrees with its listing never stores other bytes under that hash. An answer of `POST /v1/blobs/missing` asking for a blob the tree does not hold is the platform's fault, not the caller's: it is an `ApiResponseError` of an answer the SDK cannot read, verdict `runtime` and not retryable, thrown before any upload. An upload that fails throws `MethodFileTransferError` with `operation` `upload`, and the request is not sent or the method not saved ([below](#when-a-transfer-fails)).
+
+**A blob that went missing.** A request whose hash entries name a blob the API does not hold is refused with a `422` `missing_blobs` listing them all, which also releases a start's idempotency key. A request built from a `directory`, `contents` or `tree` uploads every blob it names first, so it meets this only if a blob was removed between the upload and the request; the client does not retry it, and sending the same call again asks the blob route afresh and uploads what is missing.
+
+On the crate routes, `read_scope` is the scope the blob route is asked under, so the blobs are uploaded into the store the request's hash entries are read from; the hosted platform reads the caller's organization whatever the request says ([crate-routes.md](./crate-routes.md#the-shared-envelope)).
+
+## The files a step reads
+
+A file a step reads, such as a `PipeDocGen` step's `template_file` (the Word, Excel or PowerPoint template it fills, or the HTML template it prints as a PDF), is a file of the tree like any other, at the tree path the step names from the root. A `directory` sends it with the bundles; a `contents` or `files` map carries it under its tree path. A step that names a file the tree does not hold cannot load: on `validate`, `pipeIo`, `resolve` and `codegen` that is an `is_valid: false` verdict whose validation error says the file is missing, `prepareInputs` throws it as a `MethodLoadError`, and on `execute` and `start` it is a `422` `ValidateBundleError`, whose `validationErrors` say the same.
+
+### The template check's warnings
+
+A dry run hands an office template file of the tree to the document engine's template check. An error finding fails the step's dry run, and so the verdict, as a `dry_run` validation error on the step. A warning finding, such as a field of the template that matches no input, rides the valid verdict's `warnings` as a `template_check_warning` item:
+
+| Member | Value |
+| --- | --- |
+| `category` | `dry_run` |
+| `error_type` | `template_check_warning` |
+| `pipe_code`, `domain_code` | The `PipeDocGen` step |
+| `template_file` | The template file as the step names it; `null` for a step of the server's own library, whose path is never shown |
+| `template_location` | The place in the file the finding names, in the engine's words (a defined name, a table, a cell, a shape, a tag); `null` when it names none |
+| `message` | The finding in words |
+
+The warnings come in families, always in this order: `optional_force_redundant`, `input_presence_vacuous`, the `hint_*` lints, then `template_check_warning`. None of them flips `is_valid`.
+
+```ts
+if (verdict.is_valid) {
+  for (const warning of verdict.warnings) {
+    if (warning.error_type === "template_check_warning") {
+      console.warn(`${warning.template_file ?? "?"} ${warning.template_location ?? ""}: ${warning.message}`);
+    }
+  }
+}
+```
+
+## Saving a tree
+
+`createMethod(input)` and `writeDraft(methodId, input)` take the tree in the four forms (`MethodTreeInput`), and send it by the rule above.
+
+```ts
+const method = await client.createMethod({ name: "Receipts", directory: "methods/receipts" });
 
 const draft = await client.writeDraft(method.method_id, {
   contents: { "main.mthds": source, "helpers/fx.py": helper },
@@ -30,9 +96,7 @@ const draft = await client.writeDraft(method.method_id, {
 });
 ```
 
-**A draft write replaces the whole tree.** `writeDraft` refuses a draft that gives no tree, and `files: null` empties the draft. `createMethod` with no tree creates a method with an empty draft. The client refuses two forms at once, and a `tree` or `contents` holding no file, with a `RequestArgumentError` before anything is sent.
-
-**What is uploaded is what the listing names.** Before each upload the client hashes the bytes a tree's `readFile` gives and refuses them, with a `RequestArgumentError`, unless they have the size and the SHA-256 the tree lists for them: a blob is stored under its hash for the whole organization, so a hand-built `MethodTreeSource` whose `readFile` disagrees with its listing never stores other bytes under that hash. An answer of `POST /v1/blobs/missing` asking for a blob the tree does not hold is the platform's fault, not the caller's: it is an `ApiResponseError` of an answer the SDK cannot read, verdict `runtime` and not retryable, thrown before any upload.
+**A draft write replaces the whole tree.** `writeDraft` refuses a draft that gives no tree, and `files: null` empties the draft. `createMethod` with no tree creates a method with an empty draft. A `contents` or `tree` holding no file is refused before anything is sent.
 
 The save is refused, with the `ApiResponseError` of its problem, when the platform will not take the tree:
 
@@ -41,16 +105,21 @@ The save is refused, with the `ApiResponseError` of its problem, when the platfo
 | `422` `invalid_method_files` | The map breaks the standard's rules, a path that is not a tree path or two paths that collide among them; the problem's `tree_refusal` names the rule. |
 | `422` `method_tree_too_large` | The tree passes one of the deployment's limits, which the problem's `limit` names. |
 | `422` `blob_mismatch` | A hash entry states another size than the blob the organization holds under that hash. |
-| `422` `missing_blobs` | A hash entry names bytes the organization does not hold. A save built from `tree` or `contents` uploads every blob it names first, so it meets this only if a blob was removed between the upload and the save; the client does not retry it. |
+| `422` `missing_blobs` | A hash entry names bytes the organization does not hold (above). |
 | `413` `payload_too_large` | The method would leave no room for the summary a publish adds. |
-
-An upload that fails throws `MethodFileTransferError` with `operation` `upload`, and the method is not saved (below).
-
-The crate routes, `resolve`, `codegen` and `pipeIo`, and `prepareInputs`, which reads `pipeIo`, take the method's tree in the same three forms and send a `tree` or `contents` by the same rules, so a tree too large to send inline is uploaded once and then read by hash. There an upload that fails means the request was not sent ([crate-routes.md](./crate-routes.md#the-shared-envelope)).
 
 ## The deployment's limits
 
-`methodTreeLimits()` returns the limits the deployment holds a tree to, `{ maxFileCount, maxFileSize, maxTotalSize }`, read from `limits.method_tree` of the public version handshake (`GET /v1/version`), in the shape `listMethodTree` takes as its `limits` option. A limit the server does not announce is absent, a value that is not a positive integer is left out rather than trusted, and none is ever assumed, so a bare runner, which announces none, yields no limit. The client asks for the handshake once and keeps its answer, as it keeps the run lifecycle's availability, so `methodTreeLimits` and every save sent by hash read the same answer; a handshake that fails is asked again on the next call. Listed under those limits, a tree the platform would refuse for its size is refused while it is listed, with `mthds`'s `TreeLimitExceededError` naming the limit, before any file is hashed.
+The version handshake (`GET /v1/version`) announces the limits the deployment holds a tree to under `limits.method_tree`: `max_files`, `max_file_bytes`, `max_total_bytes` and `max_inline_bytes`. A limit the server does not announce is absent, a value that is not a positive integer is left out rather than trusted, and none is ever assumed, so a bare runner, which announces none, yields no limit. The client asks for the handshake once and keeps its answer, as it keeps the run lifecycle's availability, so every call reads the same answer; a handshake that fails is asked again on the next call.
+
+`methodTreeLimits()` returns the three listing limits, `{ maxFileCount, maxFileSize, maxTotalSize }`, in the shape `listMethodTree` takes as its `limits` option, for a caller listing a tree of its own; a `directory` given to a call is listed under them already. Listed under those limits, a tree the platform would refuse for its size is refused while it is listed, with `mthds`'s `TreeLimitExceededError` naming the limit, before any file is hashed. The inline limit, `max_inline_bytes`, is no listing limit: the client applies it when it chooses how a tree travels.
+
+```ts
+import { listMethodTree } from "mthds";
+
+const tree = await listMethodTree("methods/receipts", { limits: await client.methodTreeLimits() });
+const method = await client.createMethod({ name: "Receipts", tree });
+```
 
 ## Reading a tree
 
@@ -85,7 +154,7 @@ Each file is downloaded through its link, at most eight at a time, with no crede
 
 ## When a transfer fails
 
-`MethodFileTransferError` is thrown when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a save or a crate request, `download` for `writeMethodTree`), `code` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps no `cause`: the failure `fetch` throws for a request that got no answer can quote the URL, so only its network code (`ECONNREFUSED`, `ABORT_TIMEOUT`) reaches the message.
+`MethodFileTransferError` is thrown when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a request or a save that sends a tree by hash, `download` for `writeMethodTree`), `code` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps no `cause`: the failure `fetch` throws for a request that got no answer can quote the URL, so only its network code (`ECONNREFUSED`, `ABORT_TIMEOUT`) reaches the message.
 
 | `code` | When | Retryable |
 |---|---|---|
@@ -97,6 +166,8 @@ Each file is downloaded through its link, at most eight at a time, with no crede
 Its `errorDomain` is always `runtime`. An upload to a target that asks for a create-only write (`If-None-Match`) and answers `412` is not a failure: the bytes are already stored.
 
 ## What changed from the source fields
+
+A run and a validation used to take a method as inline `.mthds` texts (`mthds_contents`, with `mthds_sources` naming them on `validate`), a zipped bundle (`bundle_b64`), or a `files` map of texts, with the files a step reads sent beside it as `resources`. They take its tree now, as every other call does, and `validateFiles`, `MthdsFile`, `ValidateFilesOptions`, `BundleResources` and the SDK's own copy of the runner's path rule for `resources` are gone, with no alias kept. A field the client no longer names still passes through `extra` to a runner that reads it.
 
 A method used to hold its source as two strings, `mthds` (a bundle, or the JSON text of a file array) and `python` (the JSON text of the custom PipeFunc files), and a version carried `source_digest`. Both fields are gone from every read and every write, with no alias kept: a method is a tree, a version's digest is `tree_digest`, and the publish state is derived from the two digests, the draft unchanged when `draft_digest` is not `null` and equals `latest_published.tree_digest`. `methodSourceToContents`, `getMethodClosure` and `EmptyMethodSourceError` went with them.
 

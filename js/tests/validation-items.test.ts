@@ -114,7 +114,7 @@ describe("an unknown model's refusal reaches the caller whole", () => {
       }),
     );
 
-    const report = await client.validate(["domain = 'demo'"], false, ["demo.mthds"]);
+    const report = await client.validate({ files: { "demo.mthds": "domain = 'demo'" } });
 
     if (report.is_valid !== false) throw new Error("expected the invalid arm");
     expectTheModelAndItsNextStep(report.validation_errors[0]);
@@ -137,7 +137,7 @@ describe("an unknown model's refusal reaches the caller whole", () => {
     );
 
     const err = await client
-      .execute({ pipe_code: "summarize", mthds_contents: ["domain = 'demo'"] })
+      .execute({ pipe_code: "summarize", files: { "demo.mthds": "domain = 'demo'" } })
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(ApiResponseError);

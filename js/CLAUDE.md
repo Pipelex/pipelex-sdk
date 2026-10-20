@@ -46,7 +46,7 @@ docs/               # Architecture and surface documentation
 
 ## Architecture
 
-The dependency direction is strictly one-way: `@pipelex/sdk → mthds`, and only through the published `mthds/protocol` subpath — never a deep import into `mthds` internals, and `mthds` must never import from `@pipelex/sdk`. `dependency-cruiser` enforces this.
+The dependency direction is strictly one-way: `@pipelex/sdk → mthds`, and only through the published `mthds/protocol` subpath — never a deep import into `mthds` internals, and `mthds` must never import from `@pipelex/sdk`. The one exception is `src/method-trees.ts`, which loads the `mthds` root entry's tree lister by a dynamic `import("mthds")` only when a caller gives a `directory`, so nothing that imports the barrel statically loads that entry, which reads Node's file system. `dependency-cruiser` enforces both.
 
 The client re-implements the official MTHDS protocol routes using MTHDS *types* (from `mthds/protocol`); it does not delegate to the `mthds` package's protocol client. This keeps route shapes pinned to the standard so they can't silently diverge.
 

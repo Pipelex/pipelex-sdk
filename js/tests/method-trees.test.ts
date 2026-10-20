@@ -307,8 +307,10 @@ describe("saving a method's tree", () => {
       "logo.png": { base64: Buffer.from(BINARY).toString("base64") },
       "main.mthds": MAIN,
     });
-    // Inline below the threshold: neither the handshake nor the blob route is asked.
-    expect(platform.api).toHaveLength(1);
+    // Inline below the threshold: the handshake is asked, which says whether the platform
+    // keeps a blob store and how much it takes inline, and the blob route is not.
+    expect(platform.sent("GET", "/v1/version")).toHaveLength(1);
+    expect(platform.sent("POST", "/v1/blobs/missing")).toHaveLength(0);
     expect(platform.storage).toEqual([]);
   });
 
@@ -380,13 +382,13 @@ describe("saving a method's tree", () => {
           files: { "main.mthds": MAIN },
           contents: { "main.mthds": MAIN },
         }),
-      "createMethod() takes the method's tree in one form, files, tree or contents; got files and contents.",
+      "createMethod() takes the method's tree in one form, directory, contents, tree or files; got contents and files.",
     ],
     [
       "writeDraft",
       (client: PipelexApiClient) =>
         client.writeDraft("m1", { files: null, contents: { "main.mthds": MAIN } }),
-      "writeDraft() takes the method's tree in one form, files, tree or contents; got files and contents.",
+      "writeDraft() takes the method's tree in one form, directory, contents, tree or files; got contents and files.",
     ],
   ])("%s refuses two forms of the tree before sending", async (_, call, message) => {
     const platform = new Platform();
@@ -491,6 +493,65 @@ describe("saving a method's tree", () => {
     await client.writeDraft("m1", { contents: { "data/big.txt": LARGE, "main.mthds": MAIN } });
 
     expect(platform.sent("GET", "/v1/version")).toHaveLength(1);
+  });
+
+  it("saves a directory listed under the announced limits, the run's inputs file left out", async () => {
+    // An entry named `.git` stops Manifest Discovery at the scratch directory.
+    await writeFile(join(scratch, ".git"), "");
+    await writeFile(join(scratch, "main.mthds"), MAIN);
+    await writeFile(join(scratch, "inputs.json"), "{}");
+    const platform = new Platform({ limits: { method_tree: { max_files: 10 } } });
+    const client = makeClient(platform);
+
+    await client.createMethod({ name: "Receipts", directory: scratch });
+
+    expect(platform.savedFiles("POST", "/v1/methods")).toEqual({ "main.mthds": MAIN });
+  });
+
+  it("refuses a directory past an announced limit before saving", async () => {
+    await writeFile(join(scratch, ".git"), "");
+    await writeFile(join(scratch, "main.mthds"), MAIN);
+    await writeFile(join(scratch, "helper.py"), "x = 1\n");
+    const platform = new Platform({ limits: { method_tree: { max_files: 1 } } });
+    const client = makeClient(platform);
+
+    const err = await client
+      .writeDraft("m1", { directory: scratch })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).cause).toBeInstanceOf(TreeLimitExceededError);
+    expect(platform.sent("PUT", "/v1/methods/m1/draft")).toEqual([]);
+  });
+
+  it("sends by hash a small tree past the inline limit the platform announces", async () => {
+    const platform = new Platform({ limits: { method_tree: { max_inline_bytes: 16 } } });
+    const client = makeClient(platform);
+
+    await client.createMethod({ name: "M", contents: { "main.mthds": MAIN } });
+
+    expect(platform.sent("POST", "/v1/blobs/missing")).toHaveLength(1);
+    expect(platform.savedFiles("POST", "/v1/methods")).toEqual({
+      "main.mthds": { sha256: sha256(MAIN), size: ENCODER.encode(MAIN).length },
+    });
+  });
+
+  it("refuses, before saving, a tree past the inline limit of a platform keeping no blob store", async () => {
+    const platform = new Platform({
+      blobStore: false,
+      limits: { method_tree: { max_inline_bytes: 1024 } },
+    });
+    const client = makeClient(platform);
+
+    const err = await client
+      .createMethod({ name: "M", contents: { "data/big.txt": LARGE } })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).message).toMatch(
+      /^createMethod\(\) would send the method's tree inline as \d+ bytes, past the 1024 bytes the API takes inline \(its max_inline_bytes\), and the API keeps no blob store to send it by hash, so the method was not saved\.$/,
+    );
+    expect(platform.sent("POST", "/v1/methods")).toEqual([]);
   });
 
   it("asks the version handshake again after one that failed", async () => {

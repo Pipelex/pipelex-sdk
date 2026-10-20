@@ -9,7 +9,10 @@ Two paths produce it. Against the hosted API the SDK starts a durable run and po
 ```ts
 import { resultsFromExecute, summarizeUsage } from "@pipelex/sdk";
 
-const executeResult = await client.execute({ pipe_code: "my_domain.my_pipe", mthds_contents: [source] });
+const executeResult = await client.execute({
+  pipe_code: "my_domain.my_pipe",
+  contents: { "my_domain.mthds": source },
+});
 const results = resultsFromExecute(executeResult);
 console.log(results.main_stuff, summarizeUsage(results).total_cost_usd);
 ```
