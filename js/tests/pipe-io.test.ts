@@ -5,8 +5,8 @@
  * consumer gets them wrong the same way:
  *
  * 1. **The request type IS the wire body.** The envelope is posted verbatim — the closure
- *    selector, the pipe selector and the two opt-ins, each ABSENT (not `undefined`) when
- *    unset, and the selector XOR left to the server.
+ *    selector, the tree being the `files` map, the pipe selector and the two opt-ins, each
+ *    ABSENT (not `undefined`) when unset, and the selector XOR left to the server.
  * 2. **The 200 is a verdict, not a payload.** An unresolvable closure is a 200
  *    `is_valid: false`; only a no-verdict condition (a selection or request-shape 422,
  *    the reserved registry-form `method_ref` 501) throws the typed `ApiResponseError`.
@@ -105,19 +105,19 @@ describe("pipeIo — request envelope", () => {
     vi.restoreAllMocks();
   });
 
-  it("posts the files[] envelope to /v1/pipe-io, with no selector or opt-in key it was not given", async () => {
+  it("posts the files map to /v1/pipe-io, with no selector or opt-in key it was not given", async () => {
     const client = makeClient();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, VALID_ARM));
 
     await client.pipeIo({
-      files: [{ content: "domain = 'smoke'", source: "smoke.mthds" }, { content: "domain = 'b'" }],
+      files: { "smoke.mthds": "domain = 'smoke'", "b/b.mthds": "domain = 'b'" },
     });
 
     expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/pipe-io");
     // Not `pipe_ref: undefined`, `all_pipes: false`: every unset key is absent, so the
     // server's own defaults decide.
     expect(postedBody(fetchSpy)).toEqual({
-      files: [{ content: "domain = 'smoke'", source: "smoke.mthds" }, { content: "domain = 'b'" }],
+      files: { "smoke.mthds": "domain = 'smoke'", "b/b.mthds": "domain = 'b'" },
     });
   });
 
@@ -126,14 +126,14 @@ describe("pipeIo — request envelope", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, VALID_ARM));
 
     await client.pipeIo({
-      files: [{ content: "domain = 'smoke'" }],
+      files: { "smoke.mthds": "domain = 'smoke'" },
       pipe_ref: "smoke.echo",
       all_pipes: true,
       include_files: true,
     });
 
     expect(postedBody(fetchSpy)).toEqual({
-      files: [{ content: "domain = 'smoke'" }],
+      files: { "smoke.mthds": "domain = 'smoke'" },
       pipe_ref: "smoke.echo",
       all_pipes: true,
       include_files: true,
@@ -164,12 +164,12 @@ describe("pipeIo — request envelope", () => {
         problemResponse(422, "provide exactly one of `files` or `method_ref`", "ValidationError"),
       );
 
-    const failure = client.pipeIo({ files: [{ content: "x" }], method_ref: "github.com/o/r" });
+    const failure = client.pipeIo({ files: { "main.mthds": "x" }, method_ref: "github.com/o/r" });
 
     await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
     await expect(failure).rejects.toMatchObject({ status: 422, errorType: "ValidationError" });
     expect(postedBody(fetchSpy)).toEqual({
-      files: [{ content: "x" }],
+      files: { "main.mthds": "x" },
       method_ref: "github.com/o/r",
     });
   });
@@ -211,7 +211,7 @@ describe("pipeIo — a method_ref closure gets the fetch budget", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(hangingFetch());
     const client = makeClient();
 
-    const byFiles = track(client.pipeIo({ files: [{ content: "domain = 'smoke'\n" }] }));
+    const byFiles = track(client.pipeIo({ files: { "smoke.mthds": "domain = 'smoke'\n" } }));
     const byId = track(client.pipeIo({ method_id: "mt_1" }));
     const byRef = track(client.pipeIo({ method_ref: "github.com/Pipelex/methods/documents" }));
 
@@ -237,7 +237,7 @@ describe("pipeIo — the 200 verdict", () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, VALID_ARM));
 
-    const result = await client.pipeIo({ files: [{ content: "domain = 'smoke'" }] });
+    const result = await client.pipeIo({ files: { "smoke.mthds": "domain = 'smoke'" } });
 
     expect(result).toEqual(VALID_ARM);
     expect(result.is_valid).toBe(true);
@@ -247,15 +247,15 @@ describe("pipeIo — the 200 verdict", () => {
     expect("files" in report).toBe(false);
   });
 
-  it("relays the files echo and a null pipe_ref under all_pipes", async () => {
+  it("relays the files echo, a map from tree path to bundle text, and a null pipe_ref under all_pipes", async () => {
     const client = makeClient();
-    const echoed = [{ content: "domain = 'smoke'", source: "smoke.mthds" }];
+    const echoed = { "smoke.mthds": "domain = 'smoke'" };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(200, { ...VALID_ARM, pipe_ref: null, default_pipe_ref: null, files: echoed }),
     );
 
     const result = await client.pipeIo({
-      files: echoed,
+      files: { ...echoed, "assets/logo.png": { base64: "iVBORw0KGgo=" } },
       all_pipes: true,
       include_files: true,
     });
@@ -270,7 +270,10 @@ describe("pipeIo — the 200 verdict", () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, INVALID_ARM));
 
-    const result = await client.pipeIo({ files: [{ content: "!!broken" }], include_files: true });
+    const result = await client.pipeIo({
+      files: { "smoke.mthds": "!!broken" },
+      include_files: true,
+    });
 
     expect(result.is_valid).toBe(false);
     const report = result as CrateInvalidReport;
@@ -292,7 +295,7 @@ describe("pipeIo — what throws", () => {
 
     // The client relays; turning a selection refusal into a preparation error is
     // `prepareInputs`' decision, not the route method's.
-    const failure = client.pipeIo({ files: [{ content: "x" }], pipe_ref: "smoke.absent" });
+    const failure = client.pipeIo({ files: { "smoke.mthds": "x" }, pipe_ref: "smoke.absent" });
     await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
     await expect(failure).rejects.toMatchObject({
       status: 422,

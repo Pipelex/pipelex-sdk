@@ -13,12 +13,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type { InputForm, OutputForm, PipeIOContracts } from "mthds/protocol";
 
-import type {
-  CrateInvalidReport,
-  MthdsFileItem,
-  PipeIOResponse,
-  PipeIOValidReport,
-} from "../src/models.js";
+import type { CrateInvalidReport, PipeIOResponse, PipeIOValidReport } from "../src/models.js";
 
 describe("PipeIOValidReport — the standard's artifacts, imported", () => {
   it("types the three artifact maps as the standard's types, required", () => {
@@ -27,10 +22,10 @@ describe("PipeIOValidReport — the standard's artifacts, imported", () => {
     expectTypeOf<PipeIOValidReport["output_form"]>().toEqualTypeOf<OutputForm>();
   });
 
-  it("types the selection facts as nullable and the echo as optional", () => {
+  it("types the selection facts as nullable and the echo as an optional map of bundle texts", () => {
     expectTypeOf<PipeIOValidReport["pipe_ref"]>().toEqualTypeOf<string | null>();
     expectTypeOf<PipeIOValidReport["default_pipe_ref"]>().toEqualTypeOf<string | null>();
-    expectTypeOf<PipeIOValidReport["files"]>().toEqualTypeOf<MthdsFileItem[] | undefined>();
+    expectTypeOf<PipeIOValidReport["files"]>().toEqualTypeOf<Record<string, string> | undefined>();
   });
 
   it("discriminates the response on is_valid, with the crate family's invalid arm", () => {

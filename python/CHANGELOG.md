@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The crate routes take the method's tree (Breaking)**: `ResolveRequest`, `CodegenRequest` and `PipeIORequest`, and `prepare_inputs`, take the method as `files`, the MTHDS protocol's map from tree path to `FileEntry`, or as a `tree` or `contents` that `resolve`, `codegen` and `pipe_io` send inline or by hash as a save sends them, with `dependencies`, the method packages it calls by address, and `read_scope` beside it, which the hosted platform stamps itself and drops when a caller sends it (`docs/architecture.md`). A request carrying a `read_scope` asks `POST /v1/blobs/missing` under it, so its blobs land in the store its hash entries are read from; a `tree` holding no file raises `RequestArgumentError` before any request; and the three request models refuse a member they do not declare, `resources` among them, rather than dropping it from the wire. A file of the tree that could not be uploaded raises `MethodFileTransferError`, and the request is then not sent. `MthdsFileItem` and the list of `content` and `source` items are gone, so a call that sent `files=[MthdsFileItem(content=…, source=…)]` sends `files={source: content}`, `prepare_inputs` given the old list, a `contents` or `dependencies` that is not a map of what it holds, a `tree` that is not a `MethodTree` or holds no file, or any other selector the request refuses raises `InputPreparationError` before any request, and `PipeIOValidReport.files` echoes a map from tree path to bundle text.
+
 ## [v0.47.0] - 2026-10-20
 
 ### Added

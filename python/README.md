@@ -152,7 +152,14 @@ if isinstance(report, PipeIOValidReport) and report.pipe_ref is not None:
     print([field.name for field in descriptor.fields], report.is_runnable)
 ```
 
-`all_pipes=True` keys the three maps by every pipe instead, and `include_files=True` echoes the closure's `.mthds` files. `prepare_inputs` reads its signature from this route, so it needs an API that serves `POST /v1/pipe-io`.
+`all_pipes=True` keys the three maps by every pipe instead, and `include_files=True` echoes the text of the method's own `.mthds` bundles as `files`, keyed by tree path. `prepare_inputs` reads its signature from this route, so it needs an API that serves `POST /v1/pipe-io`.
+
+The crate routes take a method you hold as its tree, as a save does: `files`, the protocol's map from tree path to file entry, sent as given; `tree`, a `MethodTree` listed with `list_method_tree`; or `contents`, each file's bytes or text by tree path. A `tree` or `contents` too large to send inline is uploaded by hash first. `dependencies` carries the method packages the tree calls by address:
+
+```python
+tree = await client.list_method_tree(Path("methods/receipts"))
+report = await client.pipe_io(PipeIORequest(tree=tree, include_files=True))
+```
 
 ### Generate typed code into your project
 
@@ -349,7 +356,7 @@ There is no barrel import — package `__init__.py` files stay empty. Import eac
 - **Product wire models** — `from pipelex_sdk.product_models import UserProfile, MethodData, MethodDetail, SavedMethodFile, MethodWriteInput, MethodDraftInput, MethodVersion, MethodVersionSummary, MethodPublished, MethodPublishUnchanged, MethodPublishRefused, Membership, MembershipsResponse, SubscriptionResponse, PlanView, InvoiceView, OnboardingSubmission, UploadInput, UploadedFile, RunHistoryItem, RunDetail, ...`; a method's tree is `mthds`'s own, `MethodTree` and `TreeLimits` from `mthds.method_tree.models` and `FileEntry` from `mthds.method_tree.file_entry`.
 - **Method selectors** — `from pipelex_sdk.method_selector import parse_method_selector, ParsedMethodSelector`
 - **Validation verdict types** — `from pipelex_sdk.validation_models import PipelexValidationResult, PipelexValidationReport, PipelexInvalidReport, ValidationErrorItem, SuggestedFix, TreeFileRead, TreeFileUse, VALIDATION_VIEW_INPUT_FORM, ...`
-- **Crate routes** — `from pipelex_sdk.crate_models import ResolveRequest, CodegenRequest, PipeIORequest, PipeIOValidReport, CrateInvalidReport, MthdsFileItem, ...`, the requests and the two 200 arms of `resolve`, `codegen` and `pipe_io`
+- **Crate routes** — `from pipelex_sdk.crate_models import ResolveRequest, CodegenRequest, PipeIORequest, PipeIOValidReport, CrateInvalidReport, ...`, the requests and the two 200 arms of `resolve`, `codegen` and `pipe_io`, which take the method's tree as `files`, `tree` or `contents`
 - **Model reference check** — `from pipelex_sdk.model_reference_models import ModelReferenceVerdict, PresetReferenceVerdict, AliasReferenceVerdict, WaterfallReferenceVerdict, HandleReferenceVerdict, PresetMatch, AliasMatch, WaterfallMatch, HandleMatch, ModelCheckCategory, ModelReferenceKind, ModelReferenceResolution, ...`, the verdict of `check_model_reference`, one arm per reference kind
 - **Codegen tree** — `from pipelex_sdk.codegen_writer import write_codegen_tree, CodegenTreeWriteReport` to write one, `from pipelex_sdk.codegen_check import run_codegen_check, CodegenCheckReport, CodegenDrift, DriftCategory` to verify one, with the format primitives in `pipelex_sdk.codegen_lock` (`CodegenLock`, `parse_lock`, `load_lock`, `validate_artifact_path`, ...) and `pipelex_sdk.codegen_stamp` (`STAMPABLE_SUFFIXES`, `is_stampable_artifact_path`, `compute_content_hash`, `parse_stamped`, ...)
 - **Typed errors** — `from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, PipelineExecuteTimeoutError, PagingNotTerminatingError, RunFailedError, RunTimeoutError, RunLifecycleUnavailableError, RunStillRunningError, CodegenError, CodegenLockError, MethodErrorCode, ...`

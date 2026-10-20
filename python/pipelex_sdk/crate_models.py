@@ -1,12 +1,6 @@
 """Wire models for the crate routes — `POST /v1/resolve`, `POST /v1/codegen` and
 `POST /v1/pipe-io` — and the shared crate envelope they are built on.
 
-The envelope lives here because these are the routes that use it. `MthdsFileItem`,
-`CrateRequestBase` and `CrateInvalidReport` used to sit in a `build_models` module beside the
-inputs-template wire models; those went when `prepare_inputs` moved its signature source to
-the input-form descriptor and this SDK stopped calling the build routes. Nothing about the
-envelope changed in the move.
-
 `/v1/resolve` emits the normalized library crate, `/v1/codegen` projects that crate into stamped
 typed artifacts plus their lock, and `/v1/pipe-io` returns a method's three I/O artifacts — pipe
 I/O contracts, input form, output form — with no dry run. All three are Pipelex API extensions
@@ -16,18 +10,23 @@ brand-neutral. A produced verdict is a `200` discriminated on `is_valid`, with
 selector-resolution failure, a refused pipe selection, auth, a server fault) raises
 `ApiResponseError`.
 
-The closure arrives in exactly one of three forms — the tooling routes' strict three-way
-XOR: inline `files`, an address-form `method_ref` (server-resolved, pipelex-api >= 0.21.0;
-the registry form stays a `501`), or a hosted `method_id` (platform-resolved — meaningless
-against a bare runner, which has no catalog). The routes are stateless, so there is no
-linkage exception: a second selector is a request-shape `422`, mirrored client-side by the
-construction-time validator here.
+The method arrives in exactly one of three forms — the tooling routes' strict three-way XOR: its
+tree, an address-form `method_ref` (server-resolved, pipelex-api >= 0.21.0; the registry form
+stays a `501`), or a hosted `method_id` (platform-resolved — meaningless against a bare runner,
+which has no catalog). The tree travels as the MTHDS protocol's `files` map, one file entry per
+tree path, which the runner reads exactly as `/v1/validate` and the run routes read it; the
+caller gives it in one of the forms a save takes (`files`, `tree` or `contents`), and the client
+sends a `tree` or `contents` inline when it is small and by hash otherwise, as a save sends it
+(`docs/method-trees.md`). The routes are stateless, so there is no linkage exception: a second
+selector is a request-shape `422`, mirrored client-side by the construction-time validator here.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Self, TypeAlias
 
+from mthds.method_tree.file_entry import FileEntry
+from mthds.method_tree.models import MethodTree
 from mthds.protocol.input_form import InputForm
 from mthds.protocol.output_form import OutputForm
 from mthds.protocol.pipe_io_contracts import PipeIOContracts
@@ -36,44 +35,67 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator,
 from pipelex_sdk.validation_models import ValidationErrorItem
 
 
-class MthdsFileItem(BaseModel):
-    """One MTHDS file in a crate closure. `source` is an optional provenance label the
-    server threads onto diagnostics raised from this file.
-    """
-
-    content: str
-    source: str | None = None
-
-
 class CrateRequestBase(BaseModel):
-    """The closure selector every crate-family route shares — `/v1/resolve` and
-    `/v1/codegen` (mirror of the server's `MthdsFilesRequest` and of
-    `pipelex-sdk-js`'s `CrateRequestBase`).
+    """The method every crate route takes — `/v1/resolve`, `/v1/codegen` and `/v1/pipe-io`
+    (mirror of the runner's `MethodTreeRequest` and of `@pipelex/sdk`'s `CrateRequestBase`).
 
-    Supply the closure EITHER as inline `files` OR as a `method_ref` — never both, and
-    never neither. An **address-form** `method_ref`
-    (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is resolved by the server
-    (pipelex-api >= 0.21.0): the repository is fetched at the tag, the package is
-    located by manifest identity, and its `.mthds` files feed the closure with their
-    real relative paths as per-file sources. The **registry form** (any non-address
-    reference) stays reserved and answers `501` until a method registry exists.
+    Supply the method EITHER as its tree OR as a `method_ref` — never both, and never neither.
+    The tree is the MTHDS protocol's map of file entries, keyed by tree path, given in exactly one
+    of three forms, the forms `MethodWriteInput` takes:
 
-    An EMPTY selector is normalized to absent before the exclusivity check — `files=[]`
-    selects no closure and `method_ref=""` (or whitespace-only) no address, the same
-    empty-as-absent rule the run routes apply — so an unusable value never counts as the
-    sole selector and never reaches the wire.
+    - `files`, the map itself, each value the file's text, `{"base64": …}` or `{"sha256": …,
+      "size": …}` for bytes the runner already holds, sent as given;
+    - `tree`, a tree listed from a directory (`PipelexAPIClient.list_method_tree`);
+    - `contents`, each file's bytes or text by tree path.
+
+    The client sends a `tree` or `contents` inline when its inline map weighs 256 KiB or less, or
+    when the API keeps no blob store, and otherwise every file by hash, after uploading the files
+    the API lacks (`mthds`'s `prepare_files`), exactly as a save does. Every `.mthds` file of the
+    tree is one of the method's bundles, named by its tree path in diagnostics and in the crate's
+    `source_map`, and every other file is one a step may read, such as a `PipeDocGen` template.
+
+    An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is resolved
+    by the server (pipelex-api >= 0.21.0): the package's whole tree is fetched at the tag and read
+    as a tree sent in `files` is. The **registry form** (any non-address reference) stays reserved
+    and answers `501` until a method registry exists.
+
+    `dependencies` accompanies the tree: the method packages it calls by address that the runner
+    cannot fetch, each a map of file entries keyed by its address, sent as given. These routes load
+    a package the method calls only from what was shipped with it, so a call into one nothing
+    shipped is the invalid verdict.
+
+    `read_scope` is the Pipelex API's scope the request reads the method under: a hash entry of
+    `files` resolves in that scope's blob store, else in the caller's own. **The hosted platform
+    ignores it**: it stamps the caller's organization as the read scope of every crate request and
+    drops the one the caller sent, so it only reaches a runner called directly.
+
+    An EMPTY selector is normalized to absent before the exclusivity check — `files={}` and
+    `contents={}` select no tree and `method_ref=""` (or whitespace-only) no address, the same
+    empty-as-absent rule the run routes apply — so an unusable value never counts as the sole
+    selector and never reaches the wire. An empty `dependencies` map is not sent either.
 
     The subclass owns the exclusivity validator, because the crate routes add a third
     selector (the hosted `method_id`) this base does not know about.
+
+    A member this model does not declare is refused at construction rather than dropped, so a
+    request never reaches the wire without something the caller gave it. `resources`, which
+    `@pipelex/sdk`'s crate requests carry, is one: this SDK sends a step's files in the tree
+    itself until it carries them as `@pipelex/sdk` does (L-261012-992a34).
     """
 
-    files: list[MthdsFileItem] | None = None
-    method_ref: str | None = None
+    model_config = ConfigDict(extra="forbid")
 
-    @field_validator("files")
+    files: dict[str, FileEntry] | None = None
+    tree: MethodTree | None = None
+    contents: dict[str, bytes | str] | None = None
+    dependencies: dict[str, dict[str, FileEntry]] | None = None
+    method_ref: str | None = None
+    read_scope: str | None = None
+
+    @field_validator("files", "contents", "dependencies")
     @classmethod
-    def _empty_files_are_absent(cls, value: list[MthdsFileItem] | None) -> list[MthdsFileItem] | None:
-        # `files=[]` is not a closure — normalize to absent so the XOR counts real selectors only.
+    def _empty_maps_are_absent(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        # An empty map is no tree and no package — normalize to absent so the XOR counts real selectors only.
         return value or None
 
     @field_validator("method_ref")
@@ -84,6 +106,11 @@ class CrateRequestBase(BaseModel):
         if value is None or not value.strip():
             return None
         return value
+
+    @property
+    def tree_forms(self) -> list[str]:
+        """The forms the request gives the method's tree in, by field name: none, one, or more than one."""
+        return [name for name, value in (("files", self.files), ("tree", self.tree), ("contents", self.contents)) if value is not None]
 
 
 class CrateInvalidReport(BaseModel):
@@ -104,12 +131,12 @@ class CrateToolingRequest(CrateRequestBase):
 
     `method_id` is a stored method's catalog id (`mt_…`), a **pass-through to the hosted
     API**: the platform resolves it against the org's catalog and injects the stored
-    source before the runner sees the request — nothing is expanded client-side, and it
+    method's tree before the runner sees the request — nothing is expanded client-side, and it
     is meaningless off-platform. An unknown or foreign-org id is a `404`
     (indistinguishable by design); a stored method with no MTHDS source is a `422`.
 
     An EMPTY selector is normalized to absent before the XOR counts (the base normalizes
-    `files` / `method_ref`; `method_id` follows the same rule here), so an unusable value
+    the tree and `method_ref`; `method_id` follows the same rule here), so an unusable value
     never counts as the sole selector and never reaches the wire.
     """
 
@@ -129,16 +156,24 @@ class CrateToolingRequest(CrateRequestBase):
         # The strict tooling XOR, enforced at construction so an illegal shape fails
         # before anything hits the wire (the server 422s the same shapes). Runs after
         # the field-level empty-as-absent normalization, so it counts real selectors.
-        selector_count = sum(1 for selector in (self.files, self.method_ref, self.method_id) if selector is not None)
+        tree_forms = self.tree_forms
+        if len(tree_forms) > 1:
+            msg = f"give the method's tree in one form, `files`, `tree` or `contents`; got {' and '.join(tree_forms)}"
+            raise ValueError(msg)
+        has_tree = bool(tree_forms)
+        selector_count = sum(1 for present in (has_tree, self.method_ref is not None, self.method_id is not None) if present)
         if selector_count != 1:
-            msg = "provide exactly one of `files`, `method_ref`, or `method_id`"
+            msg = "provide exactly one of the method's tree (`files`, `tree` or `contents`), `method_ref`, or `method_id`"
+            raise ValueError(msg)
+        if self.dependencies is not None and not tree_forms:
+            msg = "`dependencies` accompany the method's own tree, given in `files`, `tree` or `contents`"
             raise ValueError(msg)
         return self
 
 
 class ResolveRequest(CrateToolingRequest):
     """Request for `POST /v1/resolve` — the crate envelope (no projection axes) plus the
-    hosted `method_id` selector. Exactly one of `files` / `method_ref` / `method_id`.
+    hosted `method_id` selector. Exactly one of the tree / `method_ref` / `method_id`.
     """
 
 
@@ -184,7 +219,7 @@ emits zod schemas plus inferred types."""
 
 class CodegenRequest(CrateToolingRequest):
     """Request for `POST /v1/codegen` — the crate envelope plus the two explicit
-    projection axes and the hosted `method_id` selector (exactly one of `files` /
+    projection axes and the hosted `method_id` selector (exactly one of the tree /
     `method_ref` / `method_id`).
 
     `pipe_ref` exists for the future per-pipe projection kinds; the concept-set-wide
@@ -244,11 +279,12 @@ CodegenResponseAdapter: TypeAdapter[CodegenResponse] = TypeAdapter(CodegenRespon
 
 class PipeIORequest(CrateToolingRequest):
     """Request for `POST /v1/pipe-io` — the crate envelope plus a pipe selector and two opt-ins,
-    with the hosted `method_id` selector (exactly one of `files` / `method_ref` / `method_id`).
+    with the hosted `method_id` selector (exactly one of the tree / `method_ref` / `method_id`).
 
     `pipe_ref` names the pipe to describe by its qualified ref (`domain.pipe_code`) and is sent
-    as given. Omitted, the server's selection chain decides: a fetched package manifest's
-    `main_pipe`, else the closure's single `main_pipe` declaration. A refused selection is a `422`
+    as given. Omitted, the server's selection chain decides: the `main_pipe` of the `METHODS.toml`
+    at the tree's root, whether the tree was sent or fetched, else the closure's single `main_pipe`
+    declaration. A refused selection is a `422`
     carrying the runner's entry-lookup `error_type` (pipelex-api >= 0.33.1): `EntryPipeNotFoundError`
     for an unknown ref or a chain that finds no entry pipe, `EntryPipeAmbiguousError` for an
     ambiguous bare code or a chain that finds several; under `all_pipes` a chain that finds none or
@@ -256,8 +292,8 @@ class PipeIORequest(CrateToolingRequest):
     refuses one before sending it.
 
     `all_pipes` describes every pipe the closure loads instead of the selected one, and never
-    refuses for want of an entry pipe. `include_files` echoes the resolved closure's `.mthds`
-    files on the valid arm.
+    refuses for want of an entry pipe. `include_files` echoes the text of the method's own `.mthds`
+    bundles on the valid arm, keyed by tree path.
     """
 
     pipe_ref: str | None = None
@@ -295,9 +331,11 @@ class PipeIOValidReport(BaseModel):
     pending_signatures: list[str]
     #: `not pending_signatures`, exactly as on `/v1/validate`. No dry run backs it.
     is_runnable: bool
-    #: The resolved closure's `.mthds` files in the request's `files` shape; `None` unless the
-    #: request set `include_files`.
-    files: list[MthdsFileItem] | None = None
+    #: The text of each `.mthds` bundle of the method's own tree, keyed by its tree path; `None`
+    #: unless the request set `include_files`. For a tree the request sent, its bundles, whatever
+    #: entry form carried them; for a `method_ref`, the fetched package's, keyed by their path from
+    #: the package root. The tree's other files and its dependencies' bundles are never included.
+    files: dict[str, str] | None = None
 
 
 # Named after the route and the JS twin's `PipeIOResponse`; pylint's alias pattern rejects the `IO` run.

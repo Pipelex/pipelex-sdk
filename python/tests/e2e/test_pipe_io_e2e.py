@@ -28,10 +28,12 @@ import pytest
 from mthds.protocol.input_form import DocumentField, ImageField, ObjectField
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.crate_models import CrateInvalidReport, MthdsFileItem, PipeIORequest, PipeIOValidReport
+from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIOValidReport
 from pipelex_sdk.errors import ApiResponseError, InputPreparationError
 
 if TYPE_CHECKING:
+    from mthds.method_tree.file_entry import FileEntry
+
     from pipelex_sdk.crate_models import PipeIOResponse
     from pipelex_sdk.prepare_inputs import PreparedInputs
 
@@ -112,12 +114,12 @@ template = "$note"
 """
 
 
-_ENTRY_FILES = [MthdsFileItem(content=_ENTRY_BUNDLE, source="smoke_pipe_io.mthds")]
-_NO_ENTRY_FILES = [MthdsFileItem(content=_NO_ENTRY_BUNDLE, source="smoke_pipe_io_open.mthds")]
-_SEVERAL_ENTRY_FILES = [
-    MthdsFileItem(content=_entry_domain_bundle("smoke_pipe_io_alpha"), source="alpha.mthds"),
-    MthdsFileItem(content=_entry_domain_bundle("smoke_pipe_io_beta"), source="beta.mthds"),
-]
+_ENTRY_FILES: dict[str, FileEntry] = {"smoke_pipe_io.mthds": _ENTRY_BUNDLE}
+_NO_ENTRY_FILES: dict[str, FileEntry] = {"smoke_pipe_io_open.mthds": _NO_ENTRY_BUNDLE}
+_SEVERAL_ENTRY_FILES: dict[str, FileEntry] = {
+    "alpha.mthds": _entry_domain_bundle("smoke_pipe_io_alpha"),
+    "beta.mthds": _entry_domain_bundle("smoke_pipe_io_beta"),
+}
 
 
 def _client() -> PipelexAPIClient:
@@ -159,10 +161,10 @@ class TestPipeIOLive:
         assert report.pipe_ref is None
         assert report.default_pipe_ref is None
         assert set(report.input_form) == {"smoke_pipe_io_open.first", "smoke_pipe_io_open.second"}
-        assert report.files == _NO_ENTRY_FILES
+        assert report.files == {"smoke_pipe_io_open.mthds": _NO_ENTRY_BUNDLE}
 
     def test_an_invalid_closure_is_the_crate_verdict(self) -> None:
-        broken = [MthdsFileItem(content=_ENTRY_BUNDLE.replace('type = "PipeCompose"', 'type = "PipeNope"'), source="broken.mthds")]
+        broken: dict[str, FileEntry] = {"broken.mthds": _ENTRY_BUNDLE.replace('type = "PipeCompose"', 'type = "PipeNope"')}
 
         report = _pipe_io(PipeIORequest(files=broken, include_files=True))
 
@@ -179,7 +181,7 @@ class TestPipeIOLive:
         assert set(report.pipe_io_contracts) == set(report.input_form) == set(report.output_form)
         assert report.pipe_ref in report.input_form
         assert report.files
-        assert all(item.source is not None and item.source.endswith(".mthds") for item in report.files)
+        assert all(tree_path.endswith(".mthds") for tree_path in report.files)
 
     # ── prepare_inputs on the route ──────────────────────────────────
 
@@ -221,7 +223,7 @@ class TestPipeIOLive:
             (_SEVERAL_ENTRY_FILES, None, "EntryPipeAmbiguousError", "smoke_pipe_io_alpha.run, smoke_pipe_io_beta.run"),
         ],
     )
-    def test_prepare_inputs_maps_a_refused_selection(self, files: list[MthdsFileItem], pipe_ref: str | None, error_type: str, named: str) -> None:
+    def test_prepare_inputs_maps_a_refused_selection(self, files: dict[str, FileEntry], pipe_ref: str | None, error_type: str, named: str) -> None:
         # Needs the runner to type the refusal with its entry-lookup `error_type` (pipelex-api >= 0.33.1),
         # and the hosted proxy to relay it unchanged. The server's `detail` names what was refused: the
         # unknown ref, the missing `main_pipe`, or the candidates when several are declared.
@@ -264,9 +266,9 @@ class TestPipeIOLive:
         assert isinstance(report, PipeIOValidReport)
         assert report.pipe_ref == report.default_pipe_ref
         assert set(report.pipe_io_contracts) == set(report.input_form) == set(report.output_form)
-        # The stored files come back under their stored names.
+        # The stored bundles come back under their tree paths.
         assert report.files
-        assert all(item.source for item in report.files)
+        assert all(tree_path.endswith(".mthds") for tree_path in report.files)
         assert len(prepared.uploads) == 1
         uploaded = prepared.uploads[0].uri
         assert uploaded.startswith("pipelex-storage://")

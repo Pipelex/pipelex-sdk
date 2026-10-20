@@ -2,7 +2,8 @@
 
 from typing import Any, ClassVar
 
-from pipelex_sdk.crate_models import MthdsFileItem
+from mthds.method_tree.file_entry import FileEntry
+
 from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
 
 
@@ -403,7 +404,7 @@ class ModelCheckBodies:
 class MalformedInputFormData:
     """What the malformed input-form cases send beside the shared case file's answer."""
 
-    FILES: ClassVar[list[MthdsFileItem]] = [MthdsFileItem(content='domain = "smoke"')]
+    FILES: ClassVar[dict[str, FileEntry]] = {"smoke.mthds": 'domain = "smoke"'}
     # The verdict the client gives a 2xx it cannot read, and `@pipelex/sdk` its `InputPreparationError`.
     UNREADABLE_VERDICT: ClassVar[ErrorVerdict] = ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
 

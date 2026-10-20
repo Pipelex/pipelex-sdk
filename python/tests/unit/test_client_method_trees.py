@@ -24,7 +24,7 @@ import httpx
 import pytest
 from mthds.method_tree.exceptions import TreeLimitError
 from mthds.method_tree.file_entry import HashFileEntry
-from mthds.method_tree.models import TreeLimits
+from mthds.method_tree.models import MethodTree, TreeLimits
 from pydantic import ValidationError
 from typing_extensions import override
 
@@ -380,6 +380,20 @@ class TestClientMethodTrees:
 
         assert refused_argument(caught.value) == {"argument": "files", "reason": "mutually_exclusive"}
 
+        assert not platform.api_requests
+
+    def test_a_tree_holding_no_file_is_refused_before_sending(self, mocker: MockerFixture) -> None:
+        platform = _Platform()
+        client = _client(platform, mocker)
+        empty = MethodTree(files=[], digest=f"sha256:{'0' * 64}")
+
+        with pytest.raises(RequestArgumentError) as caught:
+            asyncio.run(client.write_draft("mt_receipts01", MethodDraftInput(tree=empty)))
+
+        assert (
+            str(caught.value) == "write_draft() got a tree holding no file, and a method tree holds at least one; give files=None for an empty draft."
+        )
+        assert refused_argument(caught.value) == {"argument": "tree", "reason": "empty"}
         assert not platform.api_requests
 
     @pytest.mark.parametrize(

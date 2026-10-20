@@ -46,6 +46,8 @@ The save is refused, with the `ApiResponseError` of its problem, when the platfo
 
 An upload that fails throws `MethodFileTransferError` with `operation` `upload`, and the method is not saved (below).
 
+The crate routes, `resolve`, `codegen` and `pipeIo`, and `prepareInputs`, which reads `pipeIo`, take the method's tree in the same three forms and send a `tree` or `contents` by the same rules, so a tree too large to send inline is uploaded once and then read by hash. There an upload that fails means the request was not sent ([crate-routes.md](./crate-routes.md#the-shared-envelope)).
+
 ## The deployment's limits
 
 `methodTreeLimits()` returns the limits the deployment holds a tree to, `{ maxFileCount, maxFileSize, maxTotalSize }`, read from `limits.method_tree` of the public version handshake (`GET /v1/version`), in the shape `listMethodTree` takes as its `limits` option. A limit the server does not announce is absent, a value that is not a positive integer is left out rather than trusted, and none is ever assumed, so a bare runner, which announces none, yields no limit. The client asks for the handshake once and keeps its answer, as it keeps the run lifecycle's availability, so `methodTreeLimits` and every save sent by hash read the same answer; a handshake that fails is asked again on the next call. Listed under those limits, a tree the platform would refuse for its size is refused while it is listed, with `mthds`'s `TreeLimitExceededError` naming the limit, before any file is hashed.
@@ -83,7 +85,7 @@ Each file is downloaded through its link, at most eight at a time, with no crede
 
 ## When a transfer fails
 
-`MethodFileTransferError` is thrown when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a save, `download` for `writeMethodTree`), `code` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps no `cause`: the failure `fetch` throws for a request that got no answer can quote the URL, so only its network code (`ECONNREFUSED`, `ABORT_TIMEOUT`) reaches the message.
+`MethodFileTransferError` is thrown when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a save or a crate request, `download` for `writeMethodTree`), `code` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps no `cause`: the failure `fetch` throws for a request that got no answer can quote the URL, so only its network code (`ECONNREFUSED`, `ABORT_TIMEOUT`) reaches the message.
 
 | `code` | When | Retryable |
 |---|---|---|

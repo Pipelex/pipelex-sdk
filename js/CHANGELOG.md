@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`CrateRouteOptions`, a `signal` for the crate routes**: `resolve`, `codegen` and `pipeIo` take a second argument whose `signal` is read before each step a `tree` or `contents` costs — the version handshake, the blob route, each read and upload of a missing blob — and before the request, so an abort starts nothing further and a request already sent runs to its end; `prepareInputs` passes its own `signal` there.
+
+### Changed
+
+- **The crate routes take the method's tree (Breaking)**: `resolve`, `codegen`, `pipeIo` and `prepareInputs` take the method as `files`, the MTHDS protocol's map from tree path to file entry, or as a `tree` or `contents` sent inline or by hash as a save sends them, with `dependencies`, the method packages it calls by address, and `read_scope` beside it, which the hosted platform stamps itself and drops when a caller sends it (`docs/crate-routes.md`). An empty `files`, `contents` or `dependencies` map, and `files: null`, is absent and not sent, and a request carrying a `read_scope` asks `POST /v1/blobs/missing` under it, so its blobs land in the store its hash entries are read from. A file of the tree that could not be uploaded throws `MethodFileTransferError`, and the request is then not sent. `MthdsFileItem` and the list of `{ content, source }` items are gone, so a call that sent `files: [{ content, source }]` sends `files: { [source]: content }`, a `prepareInputs` given the old list, a `contents` or `dependencies` that is not a map of what it holds, or a `tree` that is not a listed tree or holds no file throws `InputPreparationError` before any request, and `PipeIOValidReport.files` echoes a map from tree path to bundle text.
+
 ## [v0.47.0] - 2026-10-20
 
 ### Added

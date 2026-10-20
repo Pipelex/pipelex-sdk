@@ -672,7 +672,9 @@ export type MethodFileTransferCode = "unreachable" | "storage_error" | "refused"
 /**
  * A file of a method's tree that could not be moved between this machine and the platform's
  * storage: thrown by `createMethod` and `writeDraft` when a file the organization lacks could not
- * be uploaded to the target `POST /v1/blobs/missing` named, so the method was not saved, and by
+ * be uploaded to the target `POST /v1/blobs/missing` named, so the method was not saved, by
+ * `resolve`, `codegen`, `pipeIo` and `prepareInputs` for the same failure, so the request was not
+ * sent, and by
  * `writeMethodTree` when a saved file could not be downloaded through its link, or its bytes are
  * not the file the listing names.
  *

@@ -71,7 +71,7 @@ describe("the artifact round trip against a live platform", () => {
 
     // Up: the Document position is uploaded and rewritten to its storage reference.
     const prepared = await client.prepareInputs({
-      files: [{ content: PASS_THROUGH_BUNDLE, source: "smoke_artifacts.mthds" }],
+      files: { "smoke_artifacts.mthds": PASS_THROUGH_BUNDLE },
       inputs: { doc: source, note: "round trip" },
     });
     expect(prepared.uploads).toHaveLength(1);

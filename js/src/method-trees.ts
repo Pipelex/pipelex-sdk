@@ -21,6 +21,7 @@ import {
   type MethodFileTransferCode,
 } from "./errors.js";
 import type { SavedMethodFile } from "./product-models.js";
+import { throwIfAborted } from "./runs.js";
 
 // ── The source of a tree ─────────────────────────────────────────────
 
@@ -117,6 +118,68 @@ export const INLINE_TREE_MAX_BYTES = 256 * 1024;
 /** How many blobs a save uploads at once, and how many files `writeMethodTree` downloads at once. */
 export const MAX_CONCURRENT_TRANSFERS = 8;
 
+/**
+ * What a tree is prepared for, as its refusals and its failed uploads say it: a save of a method, or
+ * a request that reads one (`resolve`, `codegen`, `pipeIo`).
+ */
+export interface TreeSending {
+  /** What did not happen because an upload failed, ending its message. */
+  readonly unsent: string;
+  /** What to give instead of a tree holding no file, when there is something. */
+  readonly emptyRemedy?: string;
+}
+
+/** A save's: a tree holding no file is given as `files: null`, which empties a draft. */
+export const SAVE_SENDING: TreeSending = {
+  unsent: "the method was not saved",
+  emptyRemedy: "give files: null for an empty draft",
+};
+
+/** A crate request's: a method has at least one file, so there is nothing to give instead. */
+export const REQUEST_SENDING: TreeSending = { unsent: "the request was not sent" };
+
+/** How a crate request prepares its tree, beyond what a save needs. */
+export interface TreeSendOptions {
+  /**
+   * Read before each step the tree costs: each file read, the version handshake's use, the blob
+   * route and each upload. Once it has aborted, none of them starts and the abort is thrown; a
+   * request already sent runs to its end.
+   */
+  readonly signal?: AbortSignal | undefined;
+  /**
+   * The request's `read_scope`, under which the blob route is asked which blobs are missing, so
+   * the blobs are uploaded into the store the request's hash entries are read from. The upload
+   * targets the route names are signed for that scope already.
+   */
+  readonly readScope?: string | undefined;
+}
+
+/**
+ * A map a crate request was given, or `undefined` when it selects or sends nothing: absent, `null`,
+ * or a plain object holding no key, the empty-as-absent rule of the run options and of the Python
+ * SDK. Any other value is kept as given, so the server refuses a `files` that is not a map as the
+ * shape it is rather than reading it as absent.
+ */
+export function presentMap<T>(value: T | null | undefined): T | undefined {
+  if (value === undefined || value === null) return undefined;
+  const isEmptyObject =
+    Object.prototype.toString.call(value) === "[object Object]" &&
+    Object.keys(value as object).length === 0;
+  return isEmptyObject ? undefined : value;
+}
+
+/** The refusal of a tree holding no file, `call` naming the caller's method. */
+export function emptyTreeRefusal(
+  call: string,
+  what: string,
+  sending: TreeSending,
+): RequestArgumentError {
+  const remedy = sending.emptyRemedy === undefined ? "." : `; ${sending.emptyRemedy}.`;
+  return new RequestArgumentError(
+    `${call}() got ${what} holding no file, and a method tree holds at least one${remedy}`,
+  );
+}
+
 /** Whether a version handshake declares a blob store (`blob_store: true`). */
 export function declaresBlobStore(version: object): boolean {
   return (version as Record<string, unknown>).blob_store === true;
@@ -157,10 +220,17 @@ export function treeTotalSize(tree: MethodTreeSource): number {
   return tree.files.reduce((total, file) => total + file.size, 0);
 }
 
-/** Every file's bytes, by tree path, each read and checked by the tree, one file at a time. */
-export async function readTreeBytes(tree: MethodTreeSource): Promise<Map<string, Uint8Array>> {
+/**
+ * Every file's bytes, by tree path, each read and checked by the tree, one file at a time. `signal`
+ * is read before each file: once it has aborted, no further file is read and the abort is thrown.
+ */
+export async function readTreeBytes(
+  tree: MethodTreeSource,
+  signal?: AbortSignal,
+): Promise<Map<string, Uint8Array>> {
   const bytes = new Map<string, Uint8Array>();
   for (const file of tree.files) {
+    throwIfAborted(signal);
     bytes.set(file.path, await tree.readFile(file.path));
   }
   return bytes;
@@ -250,11 +320,13 @@ export async function forEachConcurrently<T>(
  * with the `422` `invalid_method_files` naming it. `call` names the caller's method in a refusal.
  *
  * Throws `RequestArgumentError` for `contents` holding no file, for a value that is neither a
- * string nor bytes, and for a text holding a lone surrogate, which no file can hold.
+ * string nor bytes, and for a text holding a lone surrogate, which no file can hold. `sending` says
+ * what the tree is for, which the refusal of an empty one names.
  */
 export async function contentsTreeSource(
   contents: Readonly<Record<string, Uint8Array | string>>,
   call: string,
+  sending: TreeSending,
 ): Promise<MethodTreeSource> {
   const bytesByPath = new Map<string, Uint8Array>();
   for (const [treePath, content] of Object.entries(contents)) {
@@ -274,12 +346,7 @@ export async function contentsTreeSource(
       );
     }
   }
-  if (bytesByPath.size === 0) {
-    throw new RequestArgumentError(
-      `${call}() got contents holding no file, and a method tree holds at least one; give ` +
-        "files: null for an empty draft.",
-    );
-  }
+  if (bytesByPath.size === 0) throw emptyTreeRefusal(call, "contents", sending);
   const files: MethodTreeSourceFile[] = [];
   for (const [treePath, bytes] of bytesByPath) {
     files.push({ path: treePath, size: bytes.length, sha256: await sha256Hex(bytes) });
@@ -406,12 +473,13 @@ export function encodeBase64(bytes: Uint8Array): string {
  *
  * Throws `MethodFileTransferError` (`operation` `upload`) when storage gives no answer within
  * `timeoutMs` or answers any other non-2xx; neither its message nor any member carries the URL,
- * nor storage's error body, which can echo the signed request.
+ * nor storage's error body, which can echo the signed request. Its message ends with what did not
+ * happen because of it, `options.unsent`.
  */
 export async function uploadBlob(
   blob: MissingBlob,
   bytes: Uint8Array,
-  options: { timeoutMs: number; signal?: AbortSignal },
+  options: { timeoutMs: number; signal?: AbortSignal; unsent: string },
 ): Promise<void> {
   const { sha256, upload } = blob;
   const host = hostOf(upload.url);
@@ -426,7 +494,7 @@ export async function uploadBlob(
     (code) =>
       new MethodFileTransferError(
         `Uploading the file with SHA-256 ${sha256} to ${host} failed: no answer came back ` +
-          `(${code}), so the method was not saved.`,
+          `(${code}), so ${options.unsent}.`,
         { operation: "upload", code: "unreachable", sha256 },
       ),
     async (response) => {
@@ -435,7 +503,7 @@ export async function uploadBlob(
       if (response.ok || (response.status === 412 && isCreateOnly(upload.headers))) return;
       throw new MethodFileTransferError(
         `Uploading the file with SHA-256 ${sha256} to ${host} failed (${statusLine(response)}), ` +
-          "so the method was not saved.",
+          `so ${options.unsent}.`,
         {
           operation: "upload",
           code: methodFileTransferCodeOfStatus(response.status),

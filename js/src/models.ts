@@ -11,12 +11,14 @@
 
 import type {
   InputForm,
+  MethodFiles,
   OutputForm,
   PipeIOContracts,
   RunResultExecute,
   RunResultStart,
 } from "mthds/protocol";
 import type { BundleResources } from "./bundle-resources.js";
+import type { MethodTreeSource } from "./method-trees.js";
 
 export interface DictStuff {
   concept: string;
@@ -100,7 +102,7 @@ export interface PipelexRunResultStart extends RunResultStart {
  * The hosted tooling routes' own selector — the layer-3 extension the platform
  * adds on `POST /v1/validate`, `/v1/resolve`, `/v1/codegen`, and `/v1/pipe-io`: a stored
  * method's catalog id (`mt_…`), optionally naming a version, resolved server-side against
- * the org's catalog, the `.mthds` files of the version it names injected as inline source
+ * the org's catalog, the tree of the version it names injected as the method's `files`
  * before the runner sees the request. A bare `mt_…` names the latest published version,
  * `mt_…@<n>` version `n` and `mt_…@draft` the draft. A **pass-through to the hosted API**:
  * nothing is expanded client-side, and it is meaningless off-platform (a bare runner
@@ -667,51 +669,85 @@ export interface FormatResponse {
 // `CrateInvalidReport` as the shared invalid arm.
 
 /**
- * One MTHDS file in a crate closure. `source` is an optional provenance label (a
- * filename, a URI) that the server threads onto every diagnostic it raises from
- * this file, so an invalid verdict can point at the file that caused it.
+ * The method every crate route takes — `/v1/resolve`, `/v1/codegen` and `/v1/pipe-io`
+ * (mirror of the runner's `MethodTreeRequest`).
  *
- * NOT the same type as `MthdsFile` (the one `validateFiles()` takes), which the
- * client adapts into `/v1/validate`'s parallel `mthds_contents` + `mthds_sources`
- * arrays: that route spells the label `uri`, this envelope spells it `source`. The
- * two collapse into one only if `/v1/validate` ever migrates onto `files[]` — a
- * protocol-level change owned by the MTHDS standard, not ours to make here.
+ * Supply the method EITHER as its tree OR as a `method_ref` — never both, and never neither
+ * (both arms are a request-shape `422`); the hosted `method_id` joins them as a third form on
+ * each route's own request (see {@link PipelexHostedToolingExtensions}). The tree is the MTHDS
+ * protocol's map of file entries, keyed by tree path, given in exactly one of the three forms a
+ * save takes (`MethodTreeInput`):
+ *
+ * - `files`, the map itself, each value the file's text, `{ base64 }` or `{ sha256, size }` for
+ *   bytes the runner already holds, sent as given;
+ * - `tree`, a `MethodTreeSource`, such as the `MethodTree` the `mthds` package's
+ *   `listMethodTree` returns;
+ * - `contents`, each file's bytes or text by tree path.
+ *
+ * The client sends a `tree` or `contents` inline when its inline map weighs 256 KiB or less, or
+ * when the API keeps no blob store, and otherwise every file by hash, after uploading the files
+ * the API lacks, exactly as `createMethod` sends one (see `docs/method-trees.md`). Every `.mthds`
+ * file of the tree is one of the method's bundles, named by its tree path in diagnostics and in
+ * the crate's `source_map`, and every other file is one a step may read, such as a `PipeDocGen`
+ * template.
+ *
+ * An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is
+ * resolved by the server (pipelex-api >= 0.21.0): the package's whole tree is fetched at the tag
+ * and read as a tree sent in `files` is. The **registry form** (any non-address reference) stays
+ * reserved and answers `501` until a method registry exists.
+ *
+ * The XOR is a server-side invariant, not a type-level one: expressing it as a union here would
+ * make the common `{ files }` call site pick a branch for no gain, and the server rejects the
+ * illegal shapes with a typed `ApiResponseError` either way. Two forms of the tree at once are
+ * the one shape the client refuses itself, with a `RequestArgumentError`, since it prepares the
+ * tree before posting. An empty map is absent, as in the Python SDK: `files: {}`, `files: null`,
+ * `contents: {}` and `dependencies: {}` select and send nothing, so an empty one beside another
+ * selector never reaches the wire as a second selector.
+ *
+ * `dependencies` accompanies the tree: the method packages it calls by address that the runner
+ * cannot fetch, each a map of file entries keyed by its address, sent as given. These routes load
+ * a package the method calls only from what was shipped with it, so a call into one nothing
+ * shipped is the invalid verdict.
+ *
+ * `resources` accompanies the tree too: the files the closure's steps read, such as a
+ * `PipeDocGen` step's `template_file`, keyed by the path from the tree's root, each as its bytes,
+ * which the client encodes into the wire's base64 map before posting (see
+ * `docs/bundle-resources.md`). A file the tree already holds needs no `resources` entry. Beside a
+ * `method_ref` it is the server's `422`, a published method's files being its package's own.
+ *
+ * `read_scope` is the Pipelex API's scope the request reads the method under: a hash entry of
+ * `files` resolves in that scope's blob store, else in the caller's own. A `tree` or `contents`
+ * sent by hash asks `POST /v1/blobs/missing` under the same scope, so its blobs are uploaded into
+ * the store the request reads. **The hosted platform ignores it**: it stamps the caller's
+ * organization as the read scope of every crate request and drops the one the caller sent, so it
+ * only reaches a runner called directly.
  */
-export interface MthdsFileItem {
-  content: string;
-  source?: string;
+export interface CrateRequestBase {
+  /** The method's tree as the protocol's map of file entries, sent as given. */
+  files?: MethodFiles;
+  /** The method's tree as a listed source, sent inline when small and by hash otherwise. */
+  tree?: MethodTreeSource;
+  /** The method's files, each one's bytes or text by tree path, sent as `tree` is. */
+  contents?: Readonly<Record<string, Uint8Array | string>>;
+  /** The method packages the tree calls by address, each a map of file entries keyed by its address. */
+  dependencies?: Record<string, MethodFiles>;
+  method_ref?: string;
+  /** The files the closure's steps read, keyed by the path from the tree's root, each as its bytes. */
+  resources?: BundleResources | null;
+  /** The scope the runner reads the tree under; the hosted platform replaces it with the caller's organization. */
+  read_scope?: string;
 }
 
 /**
- * The closure selector every crate route shares — `/v1/resolve`, `/v1/codegen` and
- * `/v1/pipe-io` (mirror of the server's `MthdsFilesRequest`).
+ * What a crate route call — `resolve`, `codegen`, `pipeIo` — takes beside its request.
  *
- * Supply the closure EITHER as inline `files` OR as a `method_ref` — never both, and
- * never neither (both arms are a request-shape `422`); the hosted `method_id` joins
- * them as a third form on each route's own request (see
- * {@link PipelexHostedToolingExtensions}). An **address-form** `method_ref`
- * (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is resolved by the server
- * (pipelex-api >= 0.21.0): the repository is fetched at the tag, the package is
- * located by manifest identity, and its `.mthds` files feed the closure with their
- * real relative paths as per-file sources. The **registry form** (any non-address
- * reference) stays reserved and answers `501` until a method registry exists.
- *
- * The XOR is a server-side invariant, not a type-level one: expressing it as a union
- * here would make the common `{ files }` call site pick a branch for no gain, and the
- * server rejects the illegal shapes with a typed `ApiResponseError` either way.
- *
- * `resources` accompanies inline `files`: the files the closure's steps read, such as a
- * `PipeDocGen` step's `template_file`, keyed by the path the step names, each as its bytes,
- * which the client encodes into the wire's base64 map before posting (see
- * `docs/bundle-resources.md`). It is the one member the client does not post verbatim. Beside
- * a `method_ref` it is the server's `422`, a published method's files being its package's
- * own; a step whose template file was not sent makes the closure invalid.
+ * `signal` is read between the steps a `tree` or `contents` costs before the request, and before
+ * the request itself: once it has aborted, no further file of the tree is read, neither the blob
+ * route nor an upload starts, and the route is not asked, and the call throws the abort. A request
+ * already sent runs to its end, as in `prepareInputs`, which passes its own `signal` here.
  */
-export interface CrateRequestBase {
-  files?: MthdsFileItem[];
-  method_ref?: string;
-  /** The files the closure's steps read, keyed by the path a step names, each as its bytes. */
-  resources?: BundleResources | null;
+export interface CrateRouteOptions {
+  signal?: AbortSignal;
 }
 
 /**
@@ -734,7 +770,7 @@ export interface CrateInvalidReport {
 
 /**
  * `POST /v1/resolve` request — the crate envelope (no projection axes) plus the
- * hosted `method_id` selector. Exactly one of `files` / `method_ref` /
+ * hosted `method_id` selector. Exactly one of the tree / `method_ref` /
  * `method_id` — the strict tooling XOR; see {@link PipelexHostedToolingExtensions}.
  */
 export type ResolveRequest = CrateRequestBase & PipelexHostedToolingExtensions;
@@ -787,7 +823,7 @@ export type CodegenTarget = "ts-zod" | "python-pydantic" | "python-structures";
 
 /**
  * `POST /v1/codegen` request — the crate envelope plus the two explicit projection
- * axes and the hosted `method_id` selector (exactly one of `files` / `method_ref` /
+ * axes and the hosted `method_id` selector (exactly one of the tree / `method_ref` /
  * `method_id`; see {@link PipelexHostedToolingExtensions}).
  */
 export interface CodegenRequest extends CrateRequestBase, PipelexHostedToolingExtensions {
@@ -842,7 +878,7 @@ export type CodegenResponse = CodegenValidReport | CrateInvalidReport;
 
 /**
  * `POST /v1/pipe-io` request — the crate envelope plus the hosted `method_id` selector
- * (exactly one of `files` / `method_ref` / `method_id`; see
+ * (exactly one of the tree / `method_ref` / `method_id`; see
  * {@link PipelexHostedToolingExtensions}), a pipe selector, and two opt-ins.
  *
  * There is no `views` field: the valid arm always carries all three artifacts.
@@ -850,8 +886,9 @@ export type CodegenResponse = CodegenValidReport | CrateInvalidReport;
 export interface PipeIORequest extends CrateRequestBase, PipelexHostedToolingExtensions {
   /**
    * The pipe to describe, as a QUALIFIED `domain.pipe_code` ref. Omit it and the
-   * server's selection chain decides: a fetched package's manifest `main_pipe`, else
-   * the closure's single `main_pipe` declaration. A selection the server refuses is a
+   * server's selection chain decides: the `main_pipe` of the `METHODS.toml` at the tree's
+   * root, whether the tree was sent or fetched, else the closure's single `main_pipe`
+   * declaration. A selection the server refuses is a
    * `422` typed by what went wrong, with `error_domain: "input"` and the candidates, where
    * there are some, in its `detail`: `EntryPipeNotFoundError` for a ref that names no pipe
    * or (without `all_pipes`) a method with no entry pipe, `EntryPipeAmbiguousError` for a
@@ -870,9 +907,9 @@ export interface PipeIORequest extends CrateRequestBase, PipelexHostedToolingExt
    */
   all_pipes?: boolean;
   /**
-   * Echo the resolved closure's `.mthds` files on the valid arm as `files`, in the
-   * request's own `files[]` shape. Defaults to `false` server-side, and the field is then
-   * absent from the answer.
+   * Echo the text of the method's own `.mthds` bundles on the valid arm as `files`, keyed
+   * by tree path. Defaults to `false` server-side, and the field is then absent from the
+   * answer.
    */
   include_files?: boolean;
 }
@@ -905,7 +942,8 @@ export interface PipeIOValidReport {
   output_form: OutputForm;
   /**
    * The method's own entry pipe: the selection chain without the request's `pipe_ref` —
-   * the fetched manifest's `main_pipe`, else the closure's single declaration. A request
+   * the `main_pipe` of the `METHODS.toml` at the tree's root, sent or fetched, else the
+   * closure's single declaration. A request
    * that omits `pipe_ref` always answers `pipe_ref === default_pipe_ref`. A stated `null`
    * when the chain finds none or several.
    *
@@ -918,12 +956,13 @@ export interface PipeIOValidReport {
   /** `pending_signatures` is empty, as on `validate`. No dry run backs it. */
   is_runnable: boolean;
   /**
-   * The resolved closure's `.mthds` files, in the request's `files[]` shape. Present only
-   * when the request passed `include_files: true`: the request's files for inline
-   * `files`, the fetched package's `.mthds` files under their package-relative paths for
-   * a `method_ref`, the stored files under their stored names for a hosted `method_id`.
+   * The text of each `.mthds` bundle of the method's own tree, keyed by its tree path.
+   * Present only when the request passed `include_files: true`: for a tree the request
+   * sent, its bundles, whatever entry form carried them; for a `method_ref`, the fetched
+   * package's, keyed by their path from the package root; for a hosted `method_id`, the
+   * stored tree's. The tree's other files and its dependencies' bundles are never included.
    */
-  files?: MthdsFileItem[];
+  files?: Record<string, string>;
 }
 
 /** The `POST /v1/pipe-io` 200 response — pattern-match `is_valid` before reading the arm. */

@@ -29,9 +29,10 @@ import pytest
 from pipelex_sdk.artifact_models import ArtifactScope, DownloadArtifactsOptions
 from pipelex_sdk.artifacts import artifact_filename, collect_artifacts, download_artifacts, fetch_artifact
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.crate_models import MthdsFileItem
 
 if TYPE_CHECKING:
+    from mthds.method_tree.file_entry import FileEntry
+
     from pipelex_sdk.artifact_models import DownloadArtifactsResult
 
 _BASE_URL = os.environ.get("PIPELEX_E2E_BASE_URL", "")
@@ -69,7 +70,7 @@ class TestArtifactRoundTripLive:
     def test_brings_an_uploaded_input_back_down_byte_for_byte(self, tmp_path: Path) -> None:
         source = tmp_path / "brief.pdf"
         source.write_bytes(_PDF_BYTES)
-        files = [MthdsFileItem(content=_PASS_THROUGH_BUNDLE, source="smoke_artifacts.mthds")]
+        files: dict[str, FileEntry] = {"smoke_artifacts.mthds": _PASS_THROUGH_BUNDLE}
 
         async def _round_trip() -> tuple[str, DownloadArtifactsResult]:
             async with PipelexAPIClient(api_key=_API_KEY, base_url=_BASE_URL) as client:
