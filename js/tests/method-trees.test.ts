@@ -278,6 +278,41 @@ afterEach(async () => {
 });
 
 describe("saving a method's tree", () => {
+  /** The delays of the timers a save arms for its requests. */
+  async function saveTimeLimits(
+    save: (client: PipelexApiClient) => Promise<unknown>,
+  ): Promise<unknown[]> {
+    const client = makeClient(new Platform());
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    await save(client);
+    return timer.mock.calls.map(([, delay]) => delay);
+  }
+
+  it.each([
+    [
+      "createMethod",
+      (client: PipelexApiClient) =>
+        client.createMethod({ name: "Receipts", files: { "main.mthds": MAIN } }),
+    ],
+    [
+      "writeDraft",
+      (client: PipelexApiClient) => client.writeDraft("m1", { files: { "main.mthds": MAIN } }),
+    ],
+  ])("gives %s carrying a tree the client's request ceiling", async (_, save) => {
+    // A tree sent inline to a platform with no blob store has no size bound, and its whole upload is charged.
+    expect(await saveTimeLimits(save)).toEqual([1_200_000]);
+  });
+
+  it("gives a save sending no tree the poll timeout", async () => {
+    expect(await saveTimeLimits((client) => client.createMethod({ name: "Receipts" }))).toEqual([
+      30_000,
+    ]);
+    vi.restoreAllMocks();
+    expect(await saveTimeLimits((client) => client.writeDraft("m1", { files: null }))).toEqual([
+      30_000,
+    ]);
+  });
+
   it("sends files as given, with no round trip", async () => {
     const platform = new Platform();
     const client = makeClient(platform);

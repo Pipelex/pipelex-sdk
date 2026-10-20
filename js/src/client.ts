@@ -442,8 +442,8 @@ export interface PipelexApiClientOptions {
   appInfo?: AppInfo;
   /**
    * The client's request ceiling, in milliseconds: the time limit of a request given no
-   * `timeoutMs` of its own, the blocking `execute` and a `start` carrying its method among them,
-   * and of each transfer of a method's file to or from storage, an upload before a save or a
+   * `timeoutMs` of its own, the blocking `execute`, a `start` carrying its method and a save
+   * carrying a method's tree (`createMethod`, `writeDraft`) among them, and of each transfer of a method's file to or from storage, an upload before a save or a
    * download by `writeMethodTree`. Defaults to 20 minutes, the runner's blocking execute ceiling.
    * A positive number no larger than 2147483647, the longest delay a timer honours, else a
    * `RangeError` at construction.
@@ -1000,8 +1000,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
     method: HttpMethod,
     endpoint: string,
     body?: unknown,
+    options: { timeoutMs?: number } = {},
   ): Promise<MethodData> {
-    const res = await this.requestProductAnswer(method, endpoint, body);
+    const res = await this.requestProductAnswer(method, endpoint, body, options);
     return this.readObjectAnswer<MethodData>(method, endpoint, res);
   }
 
@@ -1187,16 +1188,19 @@ export class PipelexApiClient implements HostedProtocolSurface {
     return value as unknown as MethodExample;
   }
 
-  /** Issue a product request and return its 2xx answer, a non-2xx thrown as `ApiResponseError`. */
+  /**
+   * Issue a product request and return its 2xx answer, a non-2xx thrown as `ApiResponseError`.
+   * The request takes the poll timeout unless `options.timeoutMs` gives another.
+   */
   private async requestProductAnswer(
     method: HttpMethod,
     endpoint: string,
     body: unknown,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<RawResponse> {
     const res = await this.requestRaw(method, this.url(endpoint), {
       body,
-      timeoutMs: POLL_REQUEST_TIMEOUT_MS,
+      timeoutMs: options.timeoutMs ?? POLL_REQUEST_TIMEOUT_MS,
       signal: options.signal,
     });
     if (res.status < 200 || res.status >= 300) {
@@ -2650,7 +2654,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
   /**
    * Send a save carrying a method's tree (`createMethod`, `writeDraft`) through the path every
    * request sends a tree by (`postMethodRequest`), its body built by `bodyOf` from the `files`
-   * prepared, under the management timeout, and read the stored method it answers as
+   * prepared, under `saveTimeoutMs`, and read the stored method it answers as
    * `requestMethodData` reads it.
    */
   private async saveMethodTree(
@@ -2663,13 +2667,25 @@ export class PipelexApiClient implements HostedProtocolSurface {
     const res = await this.postMethodRequest(source, call, SAVE_SENDING, {}, (files) =>
       this.requestRaw(method, this.url(endpoint), {
         body: bodyOf(files),
-        timeoutMs: POLL_REQUEST_TIMEOUT_MS,
+        timeoutMs: this.saveTimeoutMs(files),
       }),
     );
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError(method, endpoint, res);
     }
     return this.readObjectAnswer<MethodData>(method, endpoint, res);
+  }
+
+  /**
+   * The time limit of a save carrying `files`: the client's request ceiling, as for a `start`
+   * carrying its method, since a tree sent inline to a deployment with no blob store weighs up to
+   * its `max_inline_bytes`, a `files` map given as is whatever it weighs, and the whole upload is
+   * charged against the limit; the poll timeout for a save sending no tree.
+   */
+  private saveTimeoutMs(files: MethodFiles | null | undefined): number {
+    return files != null && Object.keys(files).length > 0
+      ? this.requestTimeoutMs
+      : POLL_REQUEST_TIMEOUT_MS;
   }
 
   /**
@@ -4421,7 +4437,6 @@ function isUndecodableBody(error: ApiUnreachableError): boolean {
   return error.code !== undefined && UNDECODABLE_BODY_CODE.test(error.code);
 }
 
-/** Whether one entry of a `POST /v1/blobs/missing` answer is a blob with its upload target. */
 /** A SHA-256 as the platform names a blob: 64 lowercase hexadecimal digits. */
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
@@ -4430,6 +4445,7 @@ function withLinks(res: RawResponse): RawResponse {
   return { ...res, carriesLinks: true };
 }
 
+/** Whether one entry of a `POST /v1/blobs/missing` answer is a blob with its upload target. */
 function isMissingBlob(entry: unknown): entry is MissingBlob {
   if (!isPlainObject(entry)) return false;
   const { sha256, size, upload } = entry;

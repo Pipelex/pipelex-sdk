@@ -15,6 +15,7 @@ import base64
 import copy
 import hashlib
 import json
+import threading
 import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -98,7 +99,8 @@ class _Platform:
     request with, and `storage_failure` a transport failure it raises instead. `refused` names blobs
     storage refuses alone, `stalled` blobs whose body stalls after its first byte (setting `stall_started`),
     and `broken_encoding` makes storage answer a gzip body that is not gzip. `missing_answer` is the raw
-    body `POST /v1/blobs/missing` answers instead of its own.
+    body `POST /v1/blobs/missing` answers instead of its own. `problem_refusal` makes a refusal a problem
+    document quoting the signed request, as a runner signing its own upload targets answers one.
     """
 
     def __init__(
@@ -115,6 +117,7 @@ class _Platform:
         stalled: frozenset[str] | None = None,
         broken_encoding: bool = False,
         missing_answer: bytes | None = None,
+        problem_refusal: bool = False,
     ) -> None:
         self.blob_store = blob_store
         self.limits = limits
@@ -127,6 +130,7 @@ class _Platform:
         self.stalled = stalled or frozenset()
         self.broken_encoding = broken_encoding
         self.missing_answer = missing_answer
+        self.problem_refusal = problem_refusal
         self.stall_started: asyncio.Event | None = None
         self.api_requests: list[httpx.Request] = []
         self.storage_requests: list[httpx.Request] = []
@@ -166,6 +170,19 @@ class _Platform:
             raise self.storage_failure(msg, request=request)
         name = request.url.path.rsplit("/", 1)[-1]
         if self.storage_status >= 300 or name in self.refused:
+            if self.problem_refusal:
+                problem = {
+                    "type": "https://mthds.ai/problems/blob.upload_refused",
+                    "title": "Upload refused",
+                    "status": self.storage_status,
+                    "detail": f"AccessDenied for {request.url}",
+                    "instance": str(request.url),
+                    "code": "blob.upload_refused",
+                    "domain": "runtime",
+                    "retry": "never",
+                    "next_step": {"kind": "contact_support", "detail": f"Quote {request.url}."},
+                }
+                return httpx.Response(self.storage_status, json=problem, headers={"Content-Type": "application/problem+json"}, request=request)
             # Storage's error body can echo the signed request, which no message may repeat.
             refusal = f"<Error><Code>AccessDenied</Code><CanonicalRequest>{request.url}</CanonicalRequest></Error>"
             return httpx.Response(self.storage_status if self.storage_status >= 300 else 403, text=refusal, request=request)
@@ -479,6 +496,18 @@ class TestClientMethodTrees:
         assert "app-bucket.s3.amazonaws.com" in str(error)
         # The standard's error quotes storage's body, so it is kept neither as the cause nor as the context.
         assert error_verdict_of(error) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=retryable)
+        assert not platform.sent("POST", "/v1/methods")
+
+    def test_a_problem_document_an_upload_target_answers_with_is_not_kept(self, mocker: MockerFixture) -> None:
+        """A target answering a problem document of its own, which quotes the signed request, leaves only its status's reading."""
+        platform = _Platform(storage_status=403, problem_refusal=True)
+        client = _client(platform, mocker)
+
+        with pytest.raises(MethodFileTransferError) as caught:
+            asyncio.run(client.create_method(MethodWriteInput(name="Receipts", contents={"data/big.txt": _LARGE})))
+
+        error = _transfer_error(caught)
+        assert (error.code, error.status, error.problem.code) == (MethodFileTransferCode.REFUSED, 403, "client.response_unreadable")
         assert not platform.sent("POST", "/v1/methods")
 
     @pytest.mark.parametrize(
@@ -801,6 +830,33 @@ class TestClientMethodTrees:
                 await writing
 
         asyncio.run(cancel_mid_write())
+
+        assert not any(tmp_path.iterdir())
+
+    def test_a_write_cancelled_while_its_hidden_directory_is_made_leaves_nothing_behind(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        """The hidden directory a cancelled write was making when the cancellation came is removed once it is made."""
+        client = _client(_Platform(), mocker)
+        making = threading.Event()
+        proceed = threading.Event()
+        make_staging_directory = client_module._make_staging_directory
+
+        def make_when_told(target: Path, staging: Path) -> None:
+            making.set()
+            proceed.wait()
+            make_staging_directory(target, staging)
+
+        mocker.patch.object(client_module, "_make_staging_directory", side_effect=make_when_told)
+
+        async def cancel_while_making() -> None:
+            writing = asyncio.create_task(client.write_method_tree(_listing({"main.mthds": _MAIN.encode()}), destination=tmp_path / "receipts"))
+            await asyncio.to_thread(making.wait)
+            writing.cancel()
+            await asyncio.sleep(0)
+            proceed.set()
+            with pytest.raises(asyncio.CancelledError):
+                await writing
+
+        asyncio.run(cancel_while_making())
 
         assert not any(tmp_path.iterdir())
 

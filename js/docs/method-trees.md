@@ -44,7 +44,7 @@ A tree given as a `directory`, `contents` or `tree` is sent by the rule the `mth
 - **When the API keeps a blob store** (`blob_store: true`), a tree whose inline map weighs no more than the inline threshold travels **inline**, with no further round trip. The map is weighed as the request spends it, its JSON with no whitespace, in UTF-8, and the threshold is the lower of `INLINE_TREE_MAX_BYTES` (256 KiB) and the `max_inline_bytes` the handshake announces. Inline, a file whose bytes are UTF-8 travels as its text and any other as `{ base64 }`, so a binary file weighs its Base64. A heavier tree travels **by hash**: the client asks `POST /v1/blobs/missing` which files the receiver lacks, naming the tree's digest, uploads each one it lacks once, at most eight at a time, straight to the upload target the platform names, under the client's request time limit (`requestTimeoutMs`, twenty minutes unless the client was built with another), and sends every file as `{ sha256, size }`. A file uploaded once is never uploaded again, by this method or any other of the organization. A `404` from the blob route says the kept handshake is stale, the API having lost its blob store since it was read: the client forgets the handshake and prepares the tree once more on a fresh one.
 - **When the API keeps no blob store**, which a bare runner usually does, the whole tree travels inline whatever its weight, held to the `max_inline_bytes` the handshake announces: a heavier tree is refused with a `RequestArgumentError` before anything is sent, since the API would refuse it. The files' listed sizes are checked first, since the inline map weighs at least that much, so a tree whose files alone pass the limit is refused before any of them is read; the message says which was measured, the files alone or the inline map, with its weight and the limit.
 
-A `files` map is sent as given, with no handshake. A run's `start` carrying a tree, a run that names a `method_ref`, and a start whose `extra` carries a method bundle (`mthds_contents` or `bundle_b64`, as the `pipelex-sdk` command sends one) get the client's request ceiling rather than the 30-second start budget, since the body can be large. On the crate routes, a request whose `files` carry more than `INLINE_TREE_MAX_BYTES` inline, as a tree sent to an API keeping no blob store or a `files` map given as is may, gets the request ceiling too rather than the 30-second budget of a static route ([crate-routes.md](./crate-routes.md)).
+A `files` map is sent as given, with no handshake. A run's `start` carrying a tree, a run that names a `method_ref`, and a start whose `extra` carries a method bundle (`mthds_contents` or `bundle_b64`, as the `pipelex-sdk` command sends one) get the client's request ceiling rather than the 30-second start budget, since the body can be large. On the crate routes, a request whose `files` carry more than `INLINE_TREE_MAX_BYTES` inline, as a tree sent to an API keeping no blob store or a `files` map given as is may, gets the request ceiling too rather than the 30-second budget of a static route ([crate-routes.md](./crate-routes.md)). A save carrying a tree (`createMethod`, `writeDraft`), inline or by hash, gets the request ceiling as well, rather than the 30-second budget of a save sending none, since a tree sent inline to an API keeping no blob store can be large and its whole upload is charged against the budget.
 
 **A refusal of the tree's size is sent once more.** When the API refuses a tree the client prepared, a `directory`, `contents` or `tree`, as past one of its limits (a `422` coded `method_tree_too_large`, or `method.package_invalid` naming a limit, or of type `MethodTreeTooLarge`), the handshake that announced the limits may be stale: the client forgets it, prepares the tree again on a fresh one and sends the request once more, as `mthds`'s client does. A `files` map given as is was not prepared from the handshake, so it is not sent again, and neither is a `start` under an idempotency key, since the platform binds the key to the refusal it stores.
 
@@ -86,6 +86,27 @@ if (verdict.is_valid) {
   }
 }
 ```
+
+### Which step reads which file
+
+Whatever form the method was sent in, its tree in any of the four forms, a `method_ref` or a `method_id`, the valid verdict names the files of the method's tree each step reads. `tree_files_read` is keyed by the same namespaced `pipe_ref` as `pipe_io_contracts`, each entry a list of `TreeFileRead` items, and a step that reads no file, a controller included, has an empty list. `tree_file_readers` states the same facts the other way: keyed by tree path in sorted order, it lists for each file the refs of the steps that read it, each once, and a file of the tree with no entry, such as a bundle itself or a README, is read by no step.
+
+| Member | Value |
+| --- | --- |
+| `tree_path` | The file's path from the root of the method's tree, with forward slashes, never a path on the server |
+| `use` | `template` for a `PipeDocGen` step's `template_file`; `template_asset` for an image, a stylesheet or a font its HTML template names by a literal relative URL, or one a stylesheet it names refers to; `python_module` for the module holding a `PipeFunc` step's function, when that module is a file of the tree |
+
+The paths come from what each step already names, so a client can show which step uses a file, or warn before one a step reads is renamed or removed, without parsing the method.
+
+```ts
+if (verdict.is_valid && verdict.tree_file_readers) {
+  for (const [treePath, pipeRefs] of Object.entries(verdict.tree_file_readers)) {
+    console.log(`${treePath} is read by ${pipeRefs.join(", ")}`);
+  }
+}
+```
+
+`use` is typed `TreeFileUse | (string & {})`: a runner of a later version may add a use as another kind of step comes to read files of its tree, so a consumer switching on it says what a use it does not know does. Both fields are optional. A `pipelex-api` runner reports them from the first pipelex release after 0.90.0, and the hosted API once it runs such a release; an older runner sends neither, which reads as `undefined`, where an empty list says that the step reads no file.
 
 ## Saving a tree
 

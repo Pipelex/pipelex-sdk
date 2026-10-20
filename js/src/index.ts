@@ -119,6 +119,8 @@ export type {
   DryRunStatus,
   ValidatedPipeEntry,
   LiftablePipeEntry,
+  TreeFileUse,
+  TreeFileRead,
   PipelexValidationReport,
   PipelexInvalidReport,
   PipelexValidationResult,

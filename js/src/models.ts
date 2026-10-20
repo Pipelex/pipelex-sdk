@@ -202,6 +202,37 @@ export interface LiftablePipeEntry {
 }
 
 /**
+ * What a step reads a file of its method tree as — mirror of pipelex's `TreeFileUse`:
+ * `template`, the template a `PipeDocGen` step fills, named by its `template_file`;
+ * `template_asset`, an image, a stylesheet or a font that step's HTML template names by a
+ * literal relative URL, or that one of its stylesheets names; `python_module`, the module
+ * defining the function a `PipeFunc` step calls, named by the import path of its
+ * `function_name`.
+ *
+ * A report reads it open (see {@link TreeFileRead.use}): a runner of a later version may add
+ * a use as another kind of step comes to read files of its tree.
+ */
+export type TreeFileUse = "template" | "template_asset" | "python_module";
+
+/**
+ * One file of its method tree a step reads — mirror of pipelex's `TreeFileRead`, an entry of
+ * {@link PipelexValidationReport.tree_files_read}.
+ */
+export interface TreeFileRead {
+  /**
+   * The file's path from the root of the method's tree, with forward slashes, such as
+   * `templates/invoice.html`, never a path on the server.
+   */
+  tree_path: string;
+  /**
+   * What the step reads the file as. Read open: `string & {}` keeps the editor's completion
+   * on the uses this SDK knows, and a consumer that switches on this field has to say what a
+   * use it does not know does.
+   */
+  use: TreeFileUse | (string & {});
+}
+
+/**
  * Pipelex's `POST /v1/validate` 200 body for a VALID bundle — the canonical
  * `PipelexValidationReport`, carrying the `is_valid: true` discriminant of the
  * protocol's union, plus the route's wire-only extras (`message`, the
@@ -271,6 +302,27 @@ export interface PipelexValidationReport {
   output_form?: OutputForm;
   /** Pipes the runtime may skip when an optional slot resolves absent. */
   liftable_pipes: LiftablePipeEntry[];
+  /**
+   * Per step, the files of the method's tree it reads, keyed by namespaced `pipe_ref` over
+   * the same set as `pipe_io_contracts`, each file by its tree path with what the step reads
+   * it as. A `PipeDocGen` step reads its template and the images, stylesheets and fonts its
+   * HTML template names by literal relative URLs; a `PipeFunc` step reads the module of its
+   * function when that module is a file of the tree. A step that reads no file of the tree,
+   * a controller included, has an empty list. The paths come from what each step already
+   * names, so a client can show which step uses a file without parsing the method.
+   *
+   * OPTIONAL because a runner predating the field sends nothing: an absent field says the
+   * server did not report the reads, where an empty list says that step reads no file.
+   */
+  tree_files_read?: Record<string, TreeFileRead[]>;
+  /**
+   * The per-file view of `tree_files_read`: each tree path a step reads, in sorted order, to
+   * the namespaced refs of the steps that read it, each listed once. A file of the tree with
+   * no entry is read by no step: the bundles themselves, a README, a package's `__init__.py`
+   * beside its modules. Optional for the same reason as `tree_files_read`, and present
+   * whenever it is.
+   */
+  tree_file_readers?: Record<string, string[]>;
   /**
    * The qualified ref of the pipe a selector-less run of THIS request would execute —
    * the primary blueprint's declared `main_pipe` qualified by its domain and, for a
