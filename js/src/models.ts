@@ -12,13 +12,13 @@
 import type {
   InputForm,
   MethodFiles,
+  MethodTreeSource,
   OutputForm,
   PipeIOContracts,
   RunResultExecute,
   RunResultStart,
 } from "mthds/protocol";
-import type { BundleResources } from "./bundle-resources.js";
-import type { MethodTreeSource } from "./method-trees.js";
+import type { MethodTreeForm, NoMethodTree } from "./method-trees.js";
 
 export interface DictStuff {
   concept: string;
@@ -59,14 +59,15 @@ export type DictRunResultExecute = RunResultExecute<DictPipeOutput>;
 
 // ── Method-selector extensions (address form + hosted catalog id) ────────
 //
-// A method reaches any method-taking route in one of three forms: inline source
-// (the protocol's `mthds_contents` / the bundle encodings), a `method_ref`
+// A method reaches any method-taking route in one of three forms: its tree
+// (the protocol's `files` map, which the client builds from a directory, a map
+// held in memory or a listed tree — see `MethodTreeForms`), a `method_ref`
 // address (`github.com/<owner>/<repo>[/<selector>][@<tag>]` — a Pipelex-API
 // extension, resolved by the RUNNER via git fetch at the tag), or a `method_id`
 // catalog id (`mt_…` — a hosted-platform extension, resolved against the org's
 // catalog; an open-source runner has no catalog and answers a 422 naming the
 // key). The two selectors never meet in the runner: the platform resolves
-// `method_id` into inline source before any runner sees the request.
+// `method_id` into the stored tree before any runner sees the request.
 
 /**
  * Provenance of a `method_ref` run — the package's resolved full address, the
@@ -130,9 +131,8 @@ export interface PipelexHostedToolingExtensions {
 // 200, discriminated on `is_valid`. The Pipelex API answers both arms in its own
 // shape: the VALID arm is the canonical `PipelexValidationReport`; the INVALID arm
 // is `PipelexInvalidReport`, carrying a structured `validation_errors[]` list.
-// Non-2xx is reserved for no-verdict conditions (a malformed request, an
-// `mthds_sources` length mismatch, auth, a server fault), surfaced as
-// `ApiResponseError`.
+// Non-2xx is reserved for no-verdict conditions (a malformed request, a tree
+// the route refuses, auth, a server fault), surfaced as `ApiResponseError`.
 //
 // Both arms are declared here whole rather than as extensions of the protocol's
 // `ValidationReport` and `InvalidValidationReport`. Since protocol `2.0.0` those
@@ -143,11 +143,11 @@ export interface PipelexHostedToolingExtensions {
 // protocol's arms would claim members the hosted answer does not carry.
 
 /**
- * The method selector the tooling routes take in place of inline contents: a
+ * The method selector the tooling routes take in place of the method's tree: a
  * `method_ref` address (server-resolved by the runner through the same fetch
  * path as a `method_ref` run) OR a hosted `method_id` (platform-resolved) —
  * never both. The tooling routes are stateless, so the strict XOR applies:
- * exactly one of inline contents / `method_ref` / `method_id` per request.
+ * exactly one of the tree / `method_ref` / `method_id` per request.
  *
  * Lives here, beside the other wire shapes, rather than on the client: it is
  * the request's shape, and a module that composes a `validate` call of its own
@@ -156,6 +156,23 @@ export interface PipelexHostedToolingExtensions {
  */
 export type ValidateMethodSelector =
   { method_ref: string; method_id?: never } | { method_id: string; method_ref?: never };
+
+/**
+ * What `validate()` judges: the method's tree, in exactly one of the four forms of
+ * `MethodTreeForm` (a `directory`, `contents`, a `tree` or the `files` map), or one of the two
+ * selectors of `ValidateMethodSelector`. Each arm pins the others to `never`, so naming two is a
+ * compile error; an untyped caller naming none, or more than one, is refused with a
+ * `RequestArgumentError` before any request, as the route itself would refuse a second selector
+ * with a `422`. At run time a `null` member, an empty `directory` and an empty selector string
+ * are absent, and a `files` map or `contents` holding no file is refused, as the MTHDS standard
+ * refuses a tree holding no file.
+ *
+ * It widens the protocol's own `ValidateSource` (`{ files }` or `{ tree }`) with the two forms
+ * this client lists or encodes itself and the two selectors the Pipelex API resolves.
+ */
+export type PipelexValidateSource =
+  | (MethodTreeForm & { method_ref?: never; method_id?: never })
+  | (ValidateMethodSelector & NoMethodTree);
 
 /** Per-pipe dry-run verdict in `validated_pipes[]` — mirror of pipelex's `DryRunStatus`. */
 export type DryRunStatus = "SUCCESS" | "FAILURE" | "SKIPPED";
@@ -204,8 +221,7 @@ export type TreeFileUse = "template" | "template_asset" | "python_module";
 export interface TreeFileRead {
   /**
    * The file's path from the root of the method's tree, with forward slashes, such as
-   * `templates/invoice.html`, never a path on the server. A file sent in `resources` is named
-   * by its key, its `.` segments and repeated slashes collapsed as the runner collapses them.
+   * `templates/invoice.html`, never a path on the server.
    */
   tree_path: string;
   /**
@@ -429,9 +445,8 @@ export type ValidationErrorCategory =
  * not, so the same item arrives with explicit `null`s there. A truthiness check reads
  * both; an `=== undefined` check would be wrong on one of them.
  *
- * `source` is the declaring file path (CLI) or the per-content `mthds_sources` name
- * the API threads onto the in-memory load path — the owning file for cross-file
- * diagnostics.
+ * `source` is the declaring file: its path (CLI), or its tree path in the tree the
+ * request sent — the owning file for cross-file diagnostics.
  *
  * An `unknown_model` item (a model reference the runner's model deck does not know)
  * carries the reference as written, the kind of model the field takes and the close
@@ -675,20 +690,23 @@ export interface FormatResponse {
  * Supply the method EITHER as its tree OR as a `method_ref` — never both, and never neither
  * (both arms are a request-shape `422`); the hosted `method_id` joins them as a third form on
  * each route's own request (see {@link PipelexHostedToolingExtensions}). The tree is the MTHDS
- * protocol's map of file entries, keyed by tree path, given in exactly one of the three forms a
- * save takes (`MethodTreeInput`):
+ * protocol's map of file entries, keyed by tree path, given in exactly one of the four forms
+ * every route takes (`MethodTreeForms`):
  *
- * - `files`, the map itself, each value the file's text, `{ base64 }` or `{ sha256, size }` for
- *   bytes the runner already holds, sent as given;
+ * - `directory`, the method's directory on disk, listed by the `mthds` package's lister under
+ *   the standard's membership rule and the deployment's limits (Node only);
+ * - `contents`, each file's bytes or text by tree path;
  * - `tree`, a `MethodTreeSource`, such as the `MethodTree` the `mthds` package's
  *   `listMethodTree` returns;
- * - `contents`, each file's bytes or text by tree path.
+ * - `files`, the map itself, each value the file's text, `{ base64 }` or `{ sha256, size }` for
+ *   bytes the runner already holds, sent as given.
  *
- * The client sends a `tree` or `contents` inline when its inline map weighs 256 KiB or less, or
- * when the API keeps no blob store, and otherwise every file by hash, after uploading the files
- * the API lacks, exactly as `createMethod` sends one (see `docs/method-trees.md`). Every `.mthds`
- * file of the tree is one of the method's bundles, named by its tree path in diagnostics and in
- * the crate's `source_map`, and every other file is one a step may read, such as a `PipeDocGen`
+ * The client sends a `directory`, `contents` or `tree` inline when its inline map weighs 256 KiB
+ * or less and no more than the inline limit the API announces, or whatever its weight when the
+ * API keeps no blob store, and otherwise every file by hash, after uploading the files the API
+ * lacks, exactly as `createMethod` sends one (see `docs/method-trees.md`). Every `.mthds` file of
+ * the tree is one of the method's bundles, named by its tree path in diagnostics and in the
+ * crate's `source_map`, and every other file is one a step may read, such as a `PipeDocGen`
  * template.
  *
  * An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is
@@ -700,40 +718,37 @@ export interface FormatResponse {
  * make the common `{ files }` call site pick a branch for no gain, and the server rejects the
  * illegal shapes with a typed `ApiResponseError` either way. Two forms of the tree at once are
  * the one shape the client refuses itself, with a `RequestArgumentError`, since it prepares the
- * tree before posting. An empty map is absent, as in the Python SDK: `files: {}`, `files: null`,
- * `contents: {}` and `dependencies: {}` select and send nothing, so an empty one beside another
- * selector never reaches the wire as a second selector.
+ * tree before posting. An empty map or string is absent, as in the Python SDK: `files: {}`,
+ * `files: null`, `contents: {}`, `directory: ""` and `dependencies: {}` select and send nothing,
+ * so an empty one beside another selector never reaches the wire as a second selector.
  *
  * `dependencies` accompanies the tree: the method packages it calls by address that the runner
  * cannot fetch, each a map of file entries keyed by its address, sent as given. These routes load
  * a package the method calls only from what was shipped with it, so a call into one nothing
  * shipped is the invalid verdict.
  *
- * `resources` accompanies the tree too: the files the closure's steps read, such as a
- * `PipeDocGen` step's `template_file`, keyed by the path from the tree's root, each as its bytes,
- * which the client encodes into the wire's base64 map before posting (see
- * `docs/bundle-resources.md`). A file the tree already holds needs no `resources` entry. Beside a
- * `method_ref` it is the server's `422`, a published method's files being its package's own.
+ * The files the closure's steps read, such as a `PipeDocGen` step's `template_file`, are files of
+ * the tree like any other, so a directory sends them with its bundles.
  *
  * `read_scope` is the Pipelex API's scope the request reads the method under: a hash entry of
- * `files` resolves in that scope's blob store, else in the caller's own. A `tree` or `contents`
- * sent by hash asks `POST /v1/blobs/missing` under the same scope, so its blobs are uploaded into
- * the store the request reads. **The hosted platform ignores it**: it stamps the caller's
- * organization as the read scope of every crate request and drops the one the caller sent, so it
- * only reaches a runner called directly.
+ * `files` resolves in that scope's blob store, else in the caller's own. A tree sent by hash asks
+ * `POST /v1/blobs/missing` under the same scope, so its blobs are uploaded into the store the
+ * request reads. **The hosted platform ignores it**: it stamps the caller's organization as the
+ * read scope of every crate request and drops the one the caller sent, so it only reaches a
+ * runner called directly.
  */
 export interface CrateRequestBase {
-  /** The method's tree as the protocol's map of file entries, sent as given. */
-  files?: MethodFiles;
-  /** The method's tree as a listed source, sent inline when small and by hash otherwise. */
-  tree?: MethodTreeSource;
+  /** The method's directory, listed by the standard's lister and sent as `tree` is. Node only. */
+  directory?: string | null;
   /** The method's files, each one's bytes or text by tree path, sent as `tree` is. */
-  contents?: Readonly<Record<string, Uint8Array | string>>;
+  contents?: Readonly<Record<string, Uint8Array | string>> | null;
+  /** The method's tree as a listed source, sent inline when small and by hash otherwise. */
+  tree?: MethodTreeSource | null;
+  /** The method's tree as the protocol's map of file entries, sent as given. */
+  files?: MethodFiles | null;
   /** The method packages the tree calls by address, each a map of file entries keyed by its address. */
   dependencies?: Record<string, MethodFiles>;
   method_ref?: string;
-  /** The files the closure's steps read, keyed by the path from the tree's root, each as its bytes. */
-  resources?: BundleResources | null;
   /** The scope the runner reads the tree under; the hosted platform replaces it with the caller's organization. */
   read_scope?: string;
 }

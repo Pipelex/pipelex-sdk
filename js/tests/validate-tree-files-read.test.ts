@@ -73,7 +73,9 @@ const VERDICT_WITH_THE_VIEWS = {
 
 async function validateAnswering(body: unknown): Promise<PipelexValidationReport> {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
-  const verdict: PipelexValidationResult = await makeClient().validate(["domain = 'invoicing'"]);
+  const verdict: PipelexValidationResult = await makeClient().validate({
+    files: { "invoicing.mthds": "domain = 'invoicing'" },
+  });
   if (verdict.is_valid === false) throw new Error("expected a valid verdict");
   return verdict;
 }

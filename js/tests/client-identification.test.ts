@@ -143,9 +143,7 @@ describe("the mthds-check hook's identity", () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { is_valid: true, is_runnable: true }));
-    await client
-      .validateFiles([{ content: "domain = 'x'" }], { allowSignatures: true })
-      .catch(() => undefined);
+    await client.validate({ files: { "main.mthds": "domain = 'x'" } }, true).catch(() => undefined);
     expect(spy.mock.calls[0]![0]).toBe(`${BASE_URL}/v1/validate`);
     expect(headersOf(spy)["User-Agent"]).toBe(
       `pipelex-mthds-check/${SDK_VERSION} pipelex-sdk-js/${SDK_VERSION} ${RUNTIME}`,

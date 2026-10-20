@@ -265,10 +265,9 @@ describe("e2e pipe-io (/v1/pipe-io)", () => {
 
   it("answers artifacts equal to validate's views for the same closure and pipe", async () => {
     const piped = (await client.pipeIo({ files })) as PipeIOValidReport;
-    const validated = await client.validateFiles(
-      Object.entries(files).map(([treePath, content]) => ({ content, uri: treePath })),
-      { views: ["input_form", "output_form"] },
-    );
+    const validated = await client.validate({ files }, false, {
+      views: ["input_form", "output_form"],
+    });
 
     expect(validated.is_valid).toBe(true);
     const report = validated as PipelexValidationReport;

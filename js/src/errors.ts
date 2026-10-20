@@ -166,7 +166,8 @@ export function runMayHaveStartedOf(err: unknown): boolean {
 /**
  * The SDK refused a call's arguments before sending any request: no run source given to
  * `execute()` or `start()`, run sources or method selectors that exclude each other, a selector
- * rule of `validate()`, an empty `validateFiles()`, a reserved key in `extra`, a `publishMethod()`
+ * rule of `validate()`, a method's tree given in two forms or holding no file, a directory the
+ * tree lister refuses, a reserved key in `extra`, a `publishMethod()`
  * without its draft token, a `getMethodVersion()` version that is not a positive integer, a
  * selector `parseMethodSelector()` refuses, a method route given a suffixed id, an artifact
  * selection that is empty or names an unknown artifact, a start's `idempotencyKey` that is not 1

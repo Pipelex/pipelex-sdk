@@ -9,7 +9,10 @@ Two paths produce it. Against the hosted API the SDK starts a durable run and po
 ```ts
 import { resultsFromExecute, summarizeUsage } from "@pipelex/sdk";
 
-const executeResult = await client.execute({ pipe_code: "my_domain.my_pipe", mthds_contents: [source] });
+const executeResult = await client.execute({
+  pipe_code: "my_domain.my_pipe",
+  contents: { "my_domain.mthds": source },
+});
 const results = resultsFromExecute(executeResult);
 console.log(results.main_stuff, summarizeUsage(results).total_cost_usd);
 ```
@@ -72,7 +75,7 @@ const results = await client.startAndWaitForResult(
 
 It is never called on the blocking path, a bare runner's `POST /v1/execute` or the fallback to it, which has no run id to give before it answers. The acknowledgement is handed over whole, a `method_ref` run's `method_provenance` and a `method_id` run's `method_version` (the version the run runs, a number or `"draft"`) included. The callback runs synchronously and its return value is ignored; an exception it throws propagates out of `startAndWaitForResult` before anything is polled, and the run it was told about keeps going.
 
-**An abort before the run exists creates none.** The `signal` is read before the run is started as well as during the wait: a caller that aborts while the `GET /v1/version` handshake is in flight gets its abort, and neither `POST /v1/start` nor the blocking `POST /v1/execute` is sent; nor is the execute when the abort lands while a runner that looked hosted refuses the start. Once the start or the execute is sent, the abort stops only the wait, and a started run goes on, by its id.
+**An abort before the run exists creates none.** The `signal` is read before the run is started as well as during the wait: a caller that aborts while the `GET /v1/version` handshake is in flight gets its abort, and neither `POST /v1/start` nor the blocking `POST /v1/execute` is sent; nor is the execute when the abort lands while a runner that looked hosted refuses the start. The same holds while the method's tree is prepared: the signal is handed to the directory's listing, each file's read, the blob route and each upload of a missing blob, so an abort stops the one under way and no run is started ([method-trees.md](./method-trees.md#how-a-tree-travels)). The tree is prepared once, before the start, so a fallback to the blocking execute sends the files the start sent, reading and uploading none of them again. Once the start or the execute is sent, the abort stops only the wait, and a started run goes on, by its id.
 
 **Knowing whether a run may exist.** `onStarting`, the other callback `StartAndWaitForResultOptions` takes, is called right before each request that may create a run is sent: `POST /v1/start`, and the blocking `POST /v1/execute` of a bare runner or of the fallback to it, so it is called twice when a runner that looked hosted refuses the start. Until it is called no run exists, and once the `signal` has aborted it is not called and no such request is sent, so a caller that stops waiting before then can say that no run was started; from then until `onStarted`, a run may exist that the API has not yet named. It runs synchronously and its return value is ignored; an exception it throws propagates before the request is sent. The `pipelex-sdk` command words its interrupt message by it ([`cli.md`](cli.md)).
 

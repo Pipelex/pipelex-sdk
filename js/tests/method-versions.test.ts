@@ -173,8 +173,8 @@ describe("writeDraft", () => {
 
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toBe(
-      "writeDraft() replaces the draft's whole tree: give it as files (files: null empties the " +
-        "draft), tree or contents.",
+      "writeDraft() replaces the draft's whole tree: give it as directory, contents, tree or " +
+        "files (files: null empties the draft).",
     );
     expect(spy).not.toHaveBeenCalled();
   });
@@ -575,9 +575,9 @@ describe("the method routes take a bare id", () => {
 
 describe("the run routes' linkage form takes a bare id", () => {
   const INLINE_SOURCES: [string, Record<string, unknown>][] = [
-    ["mthds_contents", { mthds_contents: ['domain = "receipts"'] }],
     ["files", { files: { "main.mthds": 'domain = "receipts"' } }],
-    ["bundle_b64", { bundle_b64: "UEsDBA==" }],
+    ["contents", { contents: { "main.mthds": 'domain = "receipts"' } }],
+    ["directory", { directory: "methods/receipts" }],
   ];
   const ROUTES: [string, (client: PipelexApiClient, options: object) => Promise<unknown>][] = [
     ["start", (client, options) => client.start(options)],
@@ -602,10 +602,10 @@ describe("the run routes' linkage form takes a bare id", () => {
 
       expect(err).toBeInstanceOf(RequestArgumentError);
       expect((err as RequestArgumentError).message).toBe(
-        `method_id "${selector}" beside an inline source is run-history linkage and must be a ` +
-          "bare catalog id: the inline source is what runs, so a version suffix would claim a " +
-          "version that did not. Send the bare id (parseMethodSelector(...).method_id), or drop " +
-          "the inline source to run the version the selector names.",
+        `method_id "${selector}" beside the method's tree is run-history linkage and must be a ` +
+          "bare catalog id: the tree is what runs, so a version suffix would claim a version " +
+          "that did not. Send the bare id (parseMethodSelector(...).method_id), or drop the " +
+          "tree to run the version the selector names.",
       );
       expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
       expect(spy).not.toHaveBeenCalled();
@@ -613,11 +613,10 @@ describe("the run routes' linkage form takes a bare id", () => {
   );
 
   it.each([
-    ["mthds_contents", { mthds_contents: [] }],
-    ["files", { files: {} }],
-    ["bundle_b64", { bundle_b64: "" }],
+    ["files", { files: null }],
+    ["directory", { directory: "" }],
   ])(
-    "sends a suffixed id beside an empty %s, which carries no source to link",
+    "sends a suffixed id beside an absent %s, which carries no tree to link",
     async (_source, empty) => {
       const client = makeClient();
       const spy = vi
@@ -631,11 +630,10 @@ describe("the run routes' linkage form takes a bare id", () => {
       const body = onlyRequest(spy).body as Record<string, unknown>;
       expect(body.method_id).toBe("mt_receipts01@draft");
       expect(body.files).toBeUndefined();
-      expect(body.bundle_b64).toBeUndefined();
     },
   );
 
-  it("sends a bare id beside an inline source, the linkage the history is filed under", async () => {
+  it("sends a bare id beside the method's tree, the linkage the history is filed under", async () => {
     const client = makeClient();
     const spy = vi
       .spyOn(globalThis, "fetch")
@@ -643,9 +641,12 @@ describe("the run routes' linkage form takes a bare id", () => {
         jsonResponse(202, { pipeline_run_id: "run-9", state: "STARTED", created_at: "t0" }),
       );
 
-    await client.start({ method_id: "mt_receipts01", bundle_b64: "UEsDBA==" });
+    await client.start({ method_id: "mt_receipts01", files: { "main.mthds": "domain = 'x'" } });
 
-    expect(onlyRequest(spy).body).toEqual({ method_id: "mt_receipts01", bundle_b64: "UEsDBA==" });
+    expect(onlyRequest(spy).body).toEqual({
+      method_id: "mt_receipts01",
+      files: { "main.mthds": "domain = 'x'" },
+    });
   });
 });
 

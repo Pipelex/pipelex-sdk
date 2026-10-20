@@ -17,6 +17,13 @@
  * the legitimate subpath through. The `pathNot` protocol exclusion future-proofs
  * the rule against a depcruise version that DOES resolve the subpath to a file.
  *
+ * One module is let through, and only by a dynamic import: `src/method-trees.ts` lists a
+ * method's directory with `mthds`'s `listMethodTree`, the MTHDS standard's lister and its
+ * membership rule, which only the root entry exports. The root entry loads Node built-ins and
+ * the runner-side surface, so it is loaded by `await import("mthds")` when a caller gives a
+ * `directory`, and never by a static import: the SDK's static graph, which a browser bundle
+ * follows, keeps none of it.
+ *
  * The `pipelex-sdk` command (`src/cli.ts`, the executable, and `src/cli/`) sits at the
  * TOP of the graph, the other way round: nothing in the SDK imports it, so a library user
  * never loads it, and it reaches the SDK only through the public barrel `src/index.ts`,
@@ -31,8 +38,27 @@ module.exports = {
       severity: "error",
       comment:
         "Import the MTHDS standard's types only via the published `mthds/protocol` subpath — never bare `mthds` (pulls the runner-side surface) or a deep import into `mthds` internals.",
-      from: { path: "^src/" },
+      from: { path: "^src/", pathNot: "^src/method-trees\\.ts$" },
       to: { path: "node_modules/mthds/", pathNot: "node_modules/mthds/(dist/)?protocol/" },
+    },
+    {
+      name: "mthds-lister-only-by-dynamic-import",
+      severity: "error",
+      comment:
+        "`src/method-trees.ts` may load `mthds`'s root entry for its directory lister, and only by a dynamic `import()`, so the SDK's static graph keeps no Node built-in; never a deep import.",
+      from: { path: "^src/method-trees\\.ts$" },
+      to: {
+        path: "node_modules/mthds/",
+        pathNot: "node_modules/mthds/((dist/)?protocol/|dist/index\\.js$)",
+      },
+    },
+    {
+      name: "mthds-root-entry-never-static",
+      severity: "error",
+      comment:
+        "`src/method-trees.ts` loads `mthds`'s root entry by a dynamic `import()` alone: a static import would put Node built-ins in the SDK's static graph.",
+      from: { path: "^src/method-trees\\.ts$" },
+      to: { path: "node_modules/mthds/dist/index\\.js$", dependencyTypesNot: ["dynamic-import"] },
     },
     {
       name: "no-import-of-the-command",

@@ -199,7 +199,7 @@ describe("prepareInputs composes one pipeIo call, whatever the selector", () => 
     expect(client.pipeIoCalls).toEqual([{ files }]);
   });
 
-  it("hands a tree or contents to pipeIo as given, which sends it inline or by hash", async () => {
+  it("hands a directory, a tree or contents to pipeIo as given, which sends it inline or by hash", async () => {
     const client = makeClient([topLevel("photo", image())]);
     const contents = { "main.mthds": 'domain = "demo"', "assets/logo.png": new Uint8Array([1]) };
     const tree = {
@@ -210,18 +210,18 @@ describe("prepareInputs composes one pipeIo call, whatever the selector", () => 
 
     await prepareInputs(client, { contents, inputs: {} });
     await prepareInputs(client, { tree, inputs: {} });
+    await prepareInputs(client, { directory: "methods/demo", inputs: {} });
 
-    expect(client.pipeIoCalls).toEqual([{ contents }, { tree }]);
+    expect(client.pipeIoCalls).toEqual([{ contents }, { tree }, { directory: "methods/demo" }]);
   });
 
-  it("sends the dependencies and the resources beside the tree", async () => {
+  it("sends the dependencies beside the tree", async () => {
     const client = makeClient([topLevel("photo", image())]);
     const dependencies = { "github.com/acme/scoring": { "scoring.mthds": 'domain = "s"' } };
-    const resources = { "templates/invoice.docx": new Uint8Array([0x50, 0x4b]) };
 
-    await prepareInputs(client, { files: FILES, dependencies, resources, inputs: {} });
+    await prepareInputs(client, { files: FILES, dependencies, inputs: {} });
 
-    expect(client.pipeIoCalls).toEqual([{ files: FILES, dependencies, resources }]);
+    expect(client.pipeIoCalls).toEqual([{ files: FILES, dependencies }]);
   });
 
   it("passes a method_ref straight through, beside the qualified pipe_ref", async () => {
@@ -1482,8 +1482,8 @@ describe("prepareInputs verdicts and guards", () => {
 
     await expect(failure).rejects.toBeInstanceOf(InputPreparationError);
     await expect(failure).rejects.toThrow(
-      "Cannot prepare inputs: the method's tree was given as `files` and `contents`. Give it in " +
-        "one form — `files`, `tree` or `contents`.",
+      "Cannot prepare inputs: the method's tree was given as `contents` and `files`. Give it in " +
+        "one form — `directory`, `contents`, `tree` or `files`.",
     );
     expect(client.pipeIoCalls).toHaveLength(0);
   });
@@ -1506,6 +1506,32 @@ describe("prepareInputs verdicts and guards", () => {
         "method's packages are its own.",
     );
     expect(client.pipeIoCalls).toHaveLength(0);
+  });
+
+  it("refuses a directory that is not a path, before any request", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+
+    const failure = prepareInputs(client, {
+      directory: ["methods/demo"],
+      inputs: {},
+    } as unknown as PrepareInputsRequest);
+
+    await expect(failure).rejects.toThrow(
+      "Cannot prepare inputs: `directory` must be the method's directory as a path, got a list.",
+    );
+    expect(client.pipeIoCalls).toHaveLength(0);
+  });
+
+  it("treats an empty directory as absent beside another selector", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+
+    await prepareInputs(client, {
+      directory: "",
+      method_id: "mt_1",
+      inputs: {},
+    } as unknown as PrepareInputsRequest);
+
+    expect(client.pipeIoCalls).toEqual([{ method_id: "mt_1" }]);
   });
 
   it("treats a blank method_ref and a blank method_id as absent", async () => {

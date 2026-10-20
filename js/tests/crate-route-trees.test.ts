@@ -1,9 +1,10 @@
 /**
- * The method's tree on the crate routes: a `tree` or `contents` given to `resolve`, `codegen` or
- * `pipeIo` travels as a save sends it, inline when small and by hash otherwise, after uploading the
- * blobs the API lacks — against a fetch that plays the API and its storage, as in
+ * The method's tree on the crate routes: a `directory`, `tree` or `contents` given to `resolve`,
+ * `codegen` or `pipeIo` travels as a save sends it, inline when small and by hash otherwise, after
+ * uploading the blobs the API lacks — against a fetch that plays the API and its storage, as in
  * `method-trees.test.ts`. The route-level body, the `files` map sent as given and the budgets are
- * pinned in `crate-routes.test.ts` and `pipe-io.test.ts`.
+ * pinned in `crate-routes.test.ts` and `pipe-io.test.ts`; the run routes and `validate` in
+ * `run-trees.test.ts`.
  */
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -15,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PipelexApiClient } from "../src/client.js";
 import { errorVerdictOf, MethodFileTransferError, RequestArgumentError } from "../src/errors.js";
-import type { MethodTreeSource } from "../src/method-trees.js";
+import type { MethodTreeSource } from "mthds/protocol";
 import { prepareInputs } from "../src/prepare-inputs.js";
 
 const BASE_URL = "http://localhost:8081";
@@ -142,7 +143,7 @@ afterEach(async () => {
 });
 
 describe("the method's tree on the crate routes", () => {
-  it("sends a small tree listed from a directory inline, with no round trip", async () => {
+  it("sends a small tree listed from a directory inline, after the one handshake", async () => {
     for (const [treePath, text] of [
       ["main.mthds", MAIN],
       ["templates/invoice.html", "<p>{{ total }}</p>"],
@@ -155,11 +156,13 @@ describe("the method's tree on the crate routes", () => {
     const client = makeClient(api);
 
     await client.resolve({ tree });
+    await client.codegen({ directory: scratch, kind: "types", target: "ts-zod" });
 
-    expect(api.paths).toEqual(["/v1/resolve"]);
-    expect(api.bodies.get("/v1/resolve")).toEqual({
-      files: { "main.mthds": MAIN, "templates/invoice.html": "<p>{{ total }}</p>" },
-    });
+    // The handshake is asked once per client, and its answer kept for every later tree.
+    expect(api.paths).toEqual(["/v1/version", "/v1/resolve", "/v1/codegen"]);
+    const files = { "main.mthds": MAIN, "templates/invoice.html": "<p>{{ total }}</p>" };
+    expect(api.bodies.get("/v1/resolve")).toEqual({ files });
+    expect(api.bodies.get("/v1/codegen")).toEqual({ files, kind: "types", target: "ts-zod" });
   });
 
   it("sends large contents by hash, after uploading the blobs the API lacks", async () => {
@@ -193,7 +196,6 @@ describe("the method's tree on the crate routes", () => {
     await client.pipeIo({
       contents: { "main.mthds": MAIN, "data/big.txt": LARGE },
       dependencies,
-      resources: { "templates/invoice.docx": new Uint8Array([0x50, 0x4b, 0x03, 0x04]) },
       include_files: true,
     });
 
@@ -201,7 +203,6 @@ describe("the method's tree on the crate routes", () => {
     expect(api.bodies.get("/v1/pipe-io")).toEqual({
       files: { "data/big.txt": "x".repeat(LARGE.length), "main.mthds": MAIN },
       dependencies,
-      resources: { "templates/invoice.docx": "UEsDBA==" },
       include_files: true,
     });
   });
@@ -231,7 +232,7 @@ describe("the method's tree on the crate routes", () => {
     [
       "two forms",
       { files: { "main.mthds": MAIN }, contents: { "main.mthds": MAIN } },
-      "resolve() takes the method's tree in one form, files, tree or contents; got files and contents.",
+      "resolve() takes the method's tree in one form, directory, contents, tree or files; got contents and files.",
     ],
     [
       "no file",
@@ -285,6 +286,7 @@ describe("the method's tree on the crate routes", () => {
       { contents: {}, dependencies: {}, method_ref: "github.com/acme/methods" },
       { method_ref: "github.com/acme/methods" },
     ],
+    ['directory: ""', { directory: "", method_id: "mt_1" }, { method_id: "mt_1" }],
   ])("reads %s as absent and posts the other selector alone", async (_, request, posted) => {
     const api = new Api();
     const client = makeClient(api);

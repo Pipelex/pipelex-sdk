@@ -6,10 +6,10 @@
  * `pipelex-storage://` in `url`) plus one upload record per prepared asset.
  *
  * The method is named the same three ways every other method-taking operation
- * takes it — inline `files`, a `method_ref` address, or a stored `method_id` —
- * exactly one per call. All three are pass-throughs to `POST /v1/pipe-io`, which
- * resolves an address on the runner and an id on the platform, so nothing is
- * expanded client-side. The route also SELECTS the pipe: the caller's qualified
+ * takes it — its tree (a `directory`, `contents`, a listed `tree` or the `files`
+ * map), a `method_ref` address, or a stored `method_id` — exactly one per call.
+ * All three reach `POST /v1/pipe-io`: the tree as the `files` map `pipeIo` sends,
+ * an address resolved on the runner and an id on the platform. The route also SELECTS the pipe: the caller's qualified
  * `pipe_ref`, else the method's own entry pipe, and the ref it answers with is
  * the one prepared. It runs no dry run, so preparing inputs costs one static load.
  *
@@ -37,6 +37,7 @@ import type {
   InputFormItem,
   InputFormTopLevelField,
   MethodFiles,
+  MethodTreeSource,
   PipeInputFormDescriptor,
 } from "mthds/protocol";
 import { isValidationItem } from "./error-models.js";
@@ -48,15 +49,14 @@ import {
   MethodLoadError,
   UploadNotAllowedError,
 } from "./errors.js";
-import { hasBundleResources, isResourceMap } from "./bundle-resources.js";
-import type { BundleResources } from "./bundle-resources.js";
-import type { MethodTreeSource } from "./method-trees.js";
 import type {
   CrateRouteOptions,
   PipeIORequest,
   PipeIOResponse,
   PipeIOValidReport,
 } from "./models.js";
+import { treeShapeFault } from "./method-trees.js";
+import type { MethodTreeForm } from "./method-trees.js";
 import type { UploadCapableClient, UploadRecord } from "./upload.js";
 import { uploadFile } from "./upload.js";
 
@@ -134,23 +134,22 @@ export interface PrepareInputsBase {
 }
 
 /**
- * The method's tree, in exactly one of the forms `pipeIo` takes it (see `CrateRequestBase`): `files`,
- * the protocol's map of file entries, sent as given; `tree`, a listed source such as the `MethodTree`
- * the client's `listMethodTree` returns; or `contents`, each file's bytes or text by tree path. The
- * client sends a `tree` or `contents` inline when small and by hash otherwise.
+ * The method's tree, in exactly one of the forms `pipeIo` takes it (see `CrateRequestBase`):
+ * `directory`, the method's directory on disk, listed by the `mthds` package's lister (Node only);
+ * `contents`, each file's bytes or text by tree path; `tree`, a listed source such as the
+ * `MethodTree` the `mthds` package's `listMethodTree` returns; or `files`, the protocol's map of
+ * file entries, sent as given. The client sends a `directory`, `contents` or `tree` inline when
+ * small and by hash otherwise.
  */
-export type PrepareInputsTree =
-  | { files: MethodFiles; tree?: never; contents?: never }
-  | { tree: MethodTreeSource; files?: never; contents?: never }
-  | { contents: Readonly<Record<string, Uint8Array | string>>; files?: never; tree?: never };
+export type PrepareInputsTree = MethodTreeForm;
 
-/** What a published or stored method cannot carry: its tree and files are its own. */
+/** What a published or stored method cannot carry: its tree is its own. */
 interface NoTree {
-  files?: never;
-  tree?: never;
+  directory?: never;
   contents?: never;
+  tree?: never;
+  files?: never;
   dependencies?: never;
-  resources?: never;
 }
 
 /**
@@ -161,17 +160,15 @@ interface NoTree {
  * `method_id` resolved by the platform.
  *
  * The tree may bring `dependencies`, the method packages it calls by address, each a
- * map of file entries keyed by its address, and `resources`, the files the closure's
- * steps read, such as a `PipeDocGen` step's `template_file`, keyed by the path from the
- * tree's root, each as its bytes. The pipe I/O route loads the closure, and a step whose
- * template file was not sent, or a call into a package nothing shipped, makes it fail to
- * load. A published or stored method's files are its own, so the other two selectors
- * take neither.
+ * map of file entries keyed by its address. The files the closure's steps read, such as a
+ * `PipeDocGen` step's `template_file`, are files of the tree like any other. The pipe I/O
+ * route loads the closure, and a step whose template file is not in the tree, or a call
+ * into a package nothing shipped, makes it fail to load. A published or stored method's
+ * tree and packages are its own, so the other two selectors take no `dependencies`.
  */
 export type PrepareInputsClosure =
   | (PrepareInputsTree & {
       dependencies?: Record<string, MethodFiles>;
-      resources?: BundleResources | null;
       method_ref?: never;
       method_id?: never;
     })
@@ -523,18 +520,13 @@ async function resolveNode(
   }
 }
 
-/** Whether `resources` is a plain object with no file in it, which sends nothing. */
-function isEmptyResourceMap(resources: unknown): boolean {
-  return isResourceMap(resources) && !hasBundleResources(resources);
-}
-
 /**
  * The method selector, normalized: empty is absent, and exactly one must remain. The tree keeps
- * the `dependencies` and the `resources` sent with it, when there are any.
+ * the `dependencies` sent with it, when there are any.
  */
 type ResolvedSelector = Pick<
   PipeIORequest,
-  "files" | "tree" | "contents" | "dependencies" | "resources" | "method_ref" | "method_id"
+  "directory" | "contents" | "tree" | "files" | "dependencies" | "method_ref" | "method_id"
 >;
 
 /** A map holding at least one key, or `undefined`: an empty map selects nothing. */
@@ -586,16 +578,12 @@ function refuseNonMap(
  */
 function checkedTree(value: unknown): MethodTreeSource | undefined {
   if (value === undefined || value === null) return undefined;
-  if (
-    typeof value !== "object" ||
-    !Array.isArray((value as { files?: unknown }).files) ||
-    typeof (value as { digest?: unknown }).digest !== "string" ||
-    typeof (value as { readFile?: unknown }).readFile !== "function"
-  ) {
+  const fault = treeShapeFault(value);
+  if (fault !== undefined) {
     throw new InputPreparationError(
       "Cannot prepare inputs: `tree` must be a listed method tree — its `files`, its `digest` and " +
         "a `readFile` — such as the `MethodTree` the client's `listMethodTree` returns, got " +
-        `${Array.isArray(value) ? "a list" : typeof value === "object" ? "an object without them" : typeof value}.`,
+        `${fault}.`,
     );
   }
   const tree = value as MethodTreeSource;
@@ -609,15 +597,15 @@ function checkedTree(value: unknown): MethodTreeSource | undefined {
 
 /**
  * Normalize and check the three selectors. Empty is absent (`files: {}`, `contents: {}`,
- * `method_ref: ""`, `method_id: "  "`), mirroring the run options' rule and the
- * Python `CrateRequestBase` normalisers, and exactly one must remain — the check
- * lives here because this helper is the one that composes the `pipeIo` call. The tree
- * counts as one selector, given in exactly one of `files`, `tree` and `contents`, and a
- * `files` that is not a map, such as the retired list of `{ content, source }` items, is
- * refused rather than read as absent; so are a `contents` or `dependencies` that is not a map, and
- * a `tree` that is not a listed tree or holds no file. `dependencies`, and `resources` that carry
- * a file, accompany the tree only. The illegal shapes are compile errors for typed callers; this
- * backs them up for untyped (JS) ones with a typed `InputPreparationError`.
+ * `directory: ""`, `method_ref: ""`, `method_id: "  "`), mirroring the crate routes' rule and the
+ * Python `CrateRequestBase` normalisers, and exactly one must remain — the check lives here
+ * because this helper is the one that composes the `pipeIo` call. The tree counts as one
+ * selector, given in exactly one of `directory`, `contents`, `tree` and `files`, and a `files`
+ * that is not a map, such as the retired list of `{ content, source }` items, is refused rather
+ * than read as absent; so are a `directory` that is not a string, a `contents` or `dependencies`
+ * that is not a map, and a `tree` that is not a listed tree or holds no file. `dependencies`
+ * accompany the tree only. The illegal shapes are compile errors for typed callers; this backs
+ * them up for untyped (JS) ones with a typed `InputPreparationError`.
  */
 function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
   const raw = request as unknown as Record<string, unknown>;
@@ -640,28 +628,31 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
     "the method packages as a map from package address to its map of file entries",
     isPlainObject,
   );
+  const rawDirectory = raw["directory"];
+  if (rawDirectory !== undefined && rawDirectory !== null && typeof rawDirectory !== "string") {
+    throw new InputPreparationError(
+      "Cannot prepare inputs: `directory` must be the method's directory as a path, got " +
+        `${describeNonMap(rawDirectory)}.`,
+    );
+  }
+  const directory =
+    typeof rawDirectory === "string" && rawDirectory !== "" ? rawDirectory : undefined;
   const files = nonEmptyMap<FileEntry>(rawFiles);
   const tree = checkedTree(raw["tree"]);
   const contents = nonEmptyMap<Uint8Array | string>(raw["contents"]);
   const dependencies = nonEmptyMap<MethodFiles>(raw["dependencies"]);
   const methodRef = nonEmptyString(raw["method_ref"]);
   const methodId = nonEmptyString(raw["method_id"]);
-  // Any value goes on with the tree, so the client's encoder refuses one that is not a
-  // map of paths to bytes, as it does on every route; an empty map is not sent.
-  const rawResources = raw["resources"];
-  const resources =
-    rawResources === undefined || rawResources === null
-      ? undefined
-      : (rawResources as BundleResources);
 
   const treeForms: string[] = [];
-  if (files !== undefined) treeForms.push("`files`");
-  if (tree !== undefined) treeForms.push("`tree`");
+  if (directory !== undefined) treeForms.push("`directory`");
   if (contents !== undefined) treeForms.push("`contents`");
+  if (tree !== undefined) treeForms.push("`tree`");
+  if (files !== undefined) treeForms.push("`files`");
   if (treeForms.length > 1) {
     throw new InputPreparationError(
       `Cannot prepare inputs: the method's tree was given as ${treeForms.join(" and ")}. Give it ` +
-        "in one form — `files`, `tree` or `contents`.",
+        "in one form — `directory`, `contents`, `tree` or `files`.",
     );
   }
   const given = [...treeForms];
@@ -671,7 +662,7 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
   if (given.length === 0) {
     throw new InputPreparationError(
       "Cannot prepare inputs: no method selector. Supply exactly one of the method's tree " +
-        "(`files`, `tree` or `contents`), `method_ref` (a published method's address) or " +
+        "(`directory`, `contents`, `tree` or `files`), `method_ref` (a published method's address) or " +
         "`method_id` (a stored method's catalog id).",
     );
   }
@@ -684,11 +675,11 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
   }
   if (treeForms.length === 1) {
     return {
-      ...(files === undefined ? {} : { files }),
-      ...(tree === undefined ? {} : { tree }),
+      ...(directory === undefined ? {} : { directory }),
       ...(contents === undefined ? {} : { contents }),
+      ...(tree === undefined ? {} : { tree }),
+      ...(files === undefined ? {} : { files }),
       ...(dependencies === undefined ? {} : { dependencies }),
-      ...(resources === undefined ? {} : { resources }),
     };
   }
   // Beside the other selectors only empty maps pass, as they send nothing.
@@ -697,12 +688,6 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
     throw new InputPreparationError(
       `Cannot prepare inputs: \`dependencies\` accompany the method's own tree; a ${owner} ` +
         "method's packages are its own.",
-    );
-  }
-  if (resources !== undefined && !isEmptyResourceMap(resources)) {
-    throw new InputPreparationError(
-      `Cannot prepare inputs: \`resources\` accompany the method's own tree; a ${owner} ` +
-        "method's files are its own.",
     );
   }
   if (methodRef !== undefined) return { method_ref: methodRef };

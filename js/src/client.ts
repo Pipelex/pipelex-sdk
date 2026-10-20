@@ -6,13 +6,12 @@ import type {
   RunOptions,
   RunRequest,
   StartOptions,
-  StartRequest,
   VersionInfo,
 } from "mthds/protocol";
-// Run-source predicates come from the standard, not a local restatement: which
+// Method-source predicates come from the standard, not a local restatement: which
 // source combinations are legal is an invariant of `RunRequest` itself, so this
 // client and the MTHDS runners cannot disagree about what they reject.
-import { assertExclusiveRunSources, hasBundlePayload, parseJsonBody } from "mthds/protocol";
+import { assertOneMethodSource, parseJsonBody } from "mthds/protocol";
 import type {
   CodegenRequest,
   CodegenResponse,
@@ -27,6 +26,7 @@ import type {
   PipeIORequest,
   PipeIOResponse,
   PipelexRunResultStart,
+  PipelexValidateSource,
   PipelexValidationResult,
   ResolveRequest,
   ResolveResponse,
@@ -78,7 +78,6 @@ import type {
   MethodPublishResult,
   MethodRenameInput,
   MethodSummary,
-  MethodTreeInput,
   MethodVersion,
   MethodVersionPage,
   MethodVersionSummary,
@@ -122,6 +121,7 @@ import {
 } from "./error-models.js";
 import type { ProblemDetails, UserAction } from "./error-models.js";
 import {
+  HANDSHAKE_TTL_MS,
   INLINE_TREE_MAX_BYTES,
   MAX_CONCURRENT_TRANSFERS,
   REQUEST_SENDING,
@@ -129,36 +129,45 @@ import {
   announcedTreeLimits,
   contentsTreeSource,
   declaresBlobStore,
+  eitherSignal,
   emptyTreeRefusal,
   fileByBlob,
   forEachConcurrently,
   hashMethodFiles,
   inlineFilesOf,
   inlineMapBytes,
+  inlineThreshold,
+  isMethodTreeTooLarge,
+  listDirectoryTree,
+  listerLimitsOf,
+  missingBlobsOf,
   presentMap,
-  readTreeBytes,
+  readTreeBytesInto,
   redactSignedLinks,
   sha256Hex,
+  treeShapeFault,
   treeTotalSize,
   uniqueBlobs,
   uploadBlob,
   writeMethodTreeTo,
 } from "./method-trees.js";
 import type {
+  MethodTreeForms,
   MethodTreeLimits,
-  MethodTreeSource,
   TreeSending,
   TreeSendOptions,
+} from "./method-trees.js";
+import type {
+  MethodTreeSource,
+  MethodTreeSourceFile,
   MissingBlob,
   MissingBlobsRequest,
   MissingBlobsResult,
-} from "./method-trees.js";
+} from "mthds/protocol";
 import { buildUserAgent } from "./user-agent.js";
 import type { AppInfo } from "./user-agent.js";
 import { uploadFile as uploadFileImpl } from "./upload.js";
 import type { UploadableAsset, UploadFileOptions, UploadRecord } from "./upload.js";
-import { encodeBundleResources, hasBundleResources } from "./bundle-resources.js";
-import type { BundleResources } from "./bundle-resources.js";
 import { prepareInputs as prepareInputsImpl } from "./prepare-inputs.js";
 import type { PrepareInputsRequest, PreparedInputs } from "./prepare-inputs.js";
 import {
@@ -251,21 +260,12 @@ async function* followCursor<T>(
   }
 }
 
-export interface MthdsFile {
-  /** File contents to validate. */
-  content: string;
-  /** Optional provenance URI threaded into validation diagnostics. */
-  uri?: string;
-}
-
 /**
- * The Pipelex API's own run arguments — the layer-2 arguments the RUNNER itself
- * reads, beside the protocol's inline sources (`mthds_contents` and the bundle
- * encodings): the `method_ref` run source, served by any pipelex-api >= 0.21.0
- * deployment, bare or hosted (on `api.pipelex.com`, once the platform deploy
- * carrying it lands), and the `resources` the bundle's steps read.
+ * The Pipelex API's own run argument — the layer-2 argument the RUNNER itself
+ * reads, beside the protocol's `files` map: the `method_ref` run source, served by
+ * any pipelex-api >= 0.21.0 deployment, bare or hosted.
  *
- * Named options rather than `extra` entries, for the same reason as the hosted
+ * A named option rather than an `extra` entry, for the same reason as the hosted
  * extensions below: `extra` remains the escape hatch for an extension this
  * client does not know about, never the way to pass one it does.
  */
@@ -277,32 +277,18 @@ export interface PipelexApiRunExtensions {
    * default branch at HEAD), the package is located by manifest identity, and
    * the resolved commit SHA comes back as `method_provenance` on the response.
    *
-   * A complete run source of its own — the fetched package carries its `.mthds`
-   * and its entry pipe — so it pairs with NOTHING: exclusive with inline
-   * `mthds_contents`, with a method bundle (`files` / `bundle_b64`), and with
-   * the hosted `method_id` (an address run has its own provenance and needs no
-   * linkage id). `pipe_code` beside it is fine — it overrides the manifest's
-   * `main_pipe` to pick which pipe in the fetched package to run. This client
-   * rejects the illegal pairings before anything hits the wire, mirroring the
-   * server's own 422s.
+   * A complete run source of its own — the fetched package carries its whole
+   * tree and its entry pipe — so it pairs with NOTHING: exclusive with the
+   * method's tree in any of its forms (`directory`, `contents`, `tree`, `files`)
+   * and with the hosted `method_id` (an address run has its own provenance and
+   * needs no linkage id). `pipe_code` beside it is fine — it overrides the
+   * manifest's `main_pipe` to pick which pipe in the fetched package to run. This
+   * client rejects the illegal pairings before anything hits the wire, mirroring
+   * the server's own 422s.
    *
    * An empty string is treated as absent and is not sent.
    */
   method_ref?: string | null;
-  /**
-   * The files the bundle's steps read, such as a `PipeDocGen` step's `template_file`, keyed
-   * by the path the step names (`templates/invoice.docx`), each as its bytes (a `Uint8Array`,
-   * a Node `Buffer` included, an `ArrayBuffer` or a `Blob`). The client sends them as the
-   * wire's `resources`, each file in standard base64; see `docs/bundle-resources.md`.
-   *
-   * They accompany the bundle whose steps read them: inline `mthds_contents` or a method
-   * bundle (`files` / `bundle_b64`), or a hosted `method_id` the platform resolves. Beside a
-   * `method_ref` (whose files are its package's own), or with no source at all, they are
-   * rejected client-side, mirroring the server's `422`. A key that cannot name a file inside
-   * the bundle (absolute, a `..` segment, a backslash, a colon) is rejected client-side too.
-   * An absent, `null` or empty map is not sent.
-   */
-  resources?: BundleResources | null;
 }
 
 /**
@@ -332,14 +318,14 @@ export interface PipelexHostedRunExtensions {
    *   for a version never published; `mt_…@draft` runs the draft. The suffix
    *   rides the string untouched, any other suffix is a `422`, and the answer's
    *   `method_version` says which version runs.
-   * - **Alongside an inline source** (`mthds_contents` / `files` / `bundle_b64`)
-   *   — the inline source is what RUNS (precedence), and the id is recorded as
+   * - **Alongside the method's tree** (`directory`, `contents`, `tree` or `files`)
+   *   — the tree is what RUNS (precedence), and the id is recorded as
    *   **run-history linkage** on the Run row. That linkage is what writes the
    *   index key `GET /v1/runs?method_id=` queries, so a run started without it
    *   is absent from its method's history permanently. The id must be bare
-   *   there: the inline source is what runs, so a suffix would claim a version
-   *   that did not, and a suffixed id is rejected client-side (a `422` on the
-   *   hosted API).
+   *   there: the tree is what runs, so a suffix would claim a version that did
+   *   not, and a suffixed id is rejected client-side (a `422` on the hosted
+   *   API).
    * - **Alongside `method_ref`** — rejected client-side (and a 422 on the
    *   hosted API): an address run carries its own provenance, so it takes no
    *   linkage id.
@@ -349,8 +335,24 @@ export interface PipelexHostedRunExtensions {
   method_id?: string | null;
 }
 
-/** `execute()` options — the protocol's run arguments plus the Pipelex API and hosted extensions. */
-export type PipelexRunOptions = RunOptions & PipelexApiRunExtensions & PipelexHostedRunExtensions;
+/**
+ * `execute()` options — the protocol's run arguments, the method's tree in any of the four forms
+ * of `MethodTreeForms` (the protocol's `files` and `tree`, and this client's `directory` and
+ * `contents`), and the Pipelex API and hosted extensions.
+ *
+ * The tree is given in at most one form. `files` is sent as given; a `directory`, `contents` or
+ * `tree` is sent as the `files` map, inline when its inline map weighs 256 KiB or less and no more
+ * than the inline limit the API announces, or whatever its weight when the API keeps no blob store,
+ * and otherwise every file by hash, after uploading the files the API lacks (see
+ * `docs/method-trees.md`). A `directory` is listed by the `mthds` package's lister under the
+ * MTHDS standard's membership rule, so a run's inputs file (`inputs.json`, `inputs.toml`) never
+ * travels with the method. A `files` map, a `tree` or `contents` holding no file is refused, as
+ * the standard refuses a tree holding no file; an empty `directory` is absent.
+ */
+export type PipelexRunOptions = RunOptions &
+  MethodTreeForms &
+  PipelexApiRunExtensions &
+  PipelexHostedRunExtensions;
 
 /**
  * What a run start sends beside its body: the request's own headers, which no run argument
@@ -384,57 +386,37 @@ export interface PipelexStartRequestOptions {
  * request's own `idempotencyKey`.
  */
 export type PipelexStartOptions = StartOptions &
+  MethodTreeForms &
   PipelexApiRunExtensions &
   PipelexHostedRunExtensions &
   PipelexStartRequestOptions;
 
 /**
- * The method selector `validate()` takes in place of inline contents — declared
- * beside the other wire shapes in `./models.js` and re-exported here, the import
+ * The method selector `validate()` takes in place of the method's tree, and the whole of what it
+ * takes — declared beside the other wire shapes in `./models.js` and re-exported here, the import
  * path consumers have always used.
  */
-export type { ValidateMethodSelector };
+export type { PipelexValidateSource, ValidateMethodSelector };
 
-export interface ValidateFilesOptions {
-  /** Whether unresolved pipe signatures are accepted as pending instead of invalid. */
-  allowSignatures?: boolean;
-  /** Optional validate presentation hints, e.g. ["markdown"]. */
-  render?: string[];
-  /** Optional structured-view opt-in tokens, e.g. ["input_form", "output_form"]; sent only when given. */
-  views?: string[];
-  /**
-   * The files the bundle's steps read, such as a `PipeDocGen` step's `template_file`, keyed by
-   * the path the step names, each as its bytes; sent as `resources` (see {@link ValidateOptions}).
-   */
-  resources?: BundleResources | null;
-  /**
-   * Per-call request ceiling; defaults to the 20-min execute ceiling. A positive number
-   * no larger than 2147483647, the longest delay a timer honours, else a `RangeError`.
-   */
-  timeoutMs?: number;
-  /** Caller-driven cancellation; the abort reason propagates untouched. */
-  signal?: AbortSignal;
-}
-
-/** `validate()`'s last argument: what rides beside the method, and the call's own transport. */
+/** `validate()`'s last argument: the presentation it asks for, and the call's own transport. */
 export interface ValidateOptions {
   /**
-   * The files the bundle's steps read, such as a `PipeDocGen` step's `template_file`, keyed by
-   * the path the step names (`templates/invoice.docx`), each as its bytes (a `Uint8Array`, a
-   * Node `Buffer` included, an `ArrayBuffer` or a `Blob`). Sent as the wire's `resources`, each
-   * file in standard base64; see `docs/bundle-resources.md`. They accompany inline contents, or
-   * a hosted `{ method_id }` the platform resolves; beside a `{ method_ref }` they are rejected
-   * client-side, mirroring the server's `422`. A step whose template file was not sent makes the
-   * verdict invalid, saying so; the dry run checks an office template file it was sent and adds
-   * its findings to the valid arm's `warnings` (`template_check_warning`).
+   * Validate presentation hints, a list of view-format tokens. The client always adds
+   * `"markdown"`, so both arms carry `rendered_markdown`.
    */
-  resources?: BundleResources | null;
+  render?: string[];
+  /** Structured-view opt-in tokens, e.g. `["input_form", "output_form"]`; sent only when given. */
+  views?: string[];
   /**
    * Per-call request ceiling; defaults to the 20-min execute ceiling. A positive number
    * no larger than 2147483647, the longest delay a timer honours, else a `RangeError`.
    */
   timeoutMs?: number;
-  /** Caller-driven cancellation; the abort reason propagates untouched. */
+  /**
+   * Caller-driven cancellation; the abort reason propagates untouched. It is also read between
+   * the steps a `directory`, `contents` or `tree` costs before the request (the listing, each
+   * read, the version handshake, the blob route and each upload).
+   */
   signal?: AbortSignal;
 }
 
@@ -790,11 +772,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
   /** Cached `/v1/version` handshake outcome — whether the durable lifecycle is served. */
   private lifecycleAvailable: boolean | undefined;
   /**
-   * The first `/v1/version` handshake that answered, kept for the client's lifetime: what a save
-   * reads from it (`blob_store`) and the tree limits it announces do not change while a client
-   * lives. A handshake that failed is not kept, so the next call asks again.
+   * The last `/v1/version` handshake that answered and when it was asked, kept for
+   * `HANDSHAKE_TTL_MS` as `mthds`'s `MthdsApiClient` keeps it: what sending a tree reads from it
+   * (`blob_store`, the tree limits) changes only with a deploy. A handshake that failed is not
+   * kept, so the next call asks again, and a refusal showing it stale drops it sooner
+   * (`forgetHandshake`).
    */
-  private versionInfo: VersionInfo | undefined;
+  private versionCache: { info: VersionInfo; askedAt: number } | undefined;
   /** The client's request ceiling (`PipelexApiClientOptions.requestTimeoutMs`). */
   private readonly requestTimeoutMs: number;
   /**
@@ -1491,53 +1475,56 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * The answer is read with `parseExactJson`, so an integer past `Number.MAX_SAFE_INTEGER` in the
    * working memory, the main output included, is a `bigint` holding its exact digits.
+   *
+   * The method's tree, given as a `directory`, `contents` or `tree`, is prepared before the
+   * request: listed, read, and sent inline or by hash after uploading the files the API lacks (see
+   * `PipelexRunOptions`). A tree this client refuses (two forms, no file, a directory it cannot
+   * list) is a `RequestArgumentError`, and a file that fails to upload a `MethodFileTransferError`,
+   * each before the run is asked.
    */
   async execute(options: PipelexRunOptions): Promise<PipelexExecuteResult> {
-    const extensions = buildExtensions(options.extra);
-    const api = buildApiRunExtensions(options);
-    const hosted = buildHostedRunExtensions(options);
-    if (
-      !options.pipe_code &&
-      (!options.mthds_contents || options.mthds_contents.length === 0) &&
-      !hasBundlePayload(options) &&
-      Object.keys(api).length === 0 &&
-      Object.keys(hosted).length === 0 &&
-      Object.keys(extensions).length === 0
-    ) {
-      throw new RequestArgumentError(
-        "Either pipe_code, mthds_contents, a method bundle (files/bundle_b64), a method_ref, a hosted method_id or a server-specific extension arg (extra) must be provided to execute().",
-      );
-    }
-    assertRunSourcesExclusive(options);
-    assertMethodRefPairsWithNothing(options);
-    assertLinkageMethodIdIsBare(options);
-    assertResourcesAccompanyABundle(options);
-    // No await when there are none: a request without them leaves on the tick it always did.
-    const resources =
-      options.resources == null ? undefined : await encodeBundleResources(options.resources);
+    return this.executeRun(options);
+  }
 
-    const request: RunRequest & Record<string, unknown> = {
-      pipe_code: options.pipe_code,
-      mthds_contents: options.mthds_contents,
-      inputs: options.inputs,
-      output_name: options.output_name,
-      output_multiplicity: options.output_multiplicity,
-      dynamic_output_concept_ref: options.dynamic_output_concept_ref,
-      files: nonEmptyFiles(options.files),
-      bundle_b64: nonEmptyString(options.bundle_b64),
-      resources,
-      ...api,
-      ...hosted,
-      ...extensions,
-    };
-
-    // Timed on the monotonic clock, which a change of the system's time does not move.
-    const startedAt = performance.now();
+  /**
+   * `execute`, stopped by `signal` before each step of the tree's preparation and right before the
+   * request is sent, never during it, since a request sent may have started a run. `sending` is
+   * the tree already prepared, which the blocking fallback of `startAndWaitForResult` sends as the
+   * start sent it rather than preparing it again.
+   */
+  private async executeRun(
+    options: PipelexRunOptions,
+    signal?: AbortSignal,
+    sending?: PreparedRunTree,
+  ): Promise<PipelexExecuteResult> {
+    const parts = this.runParts("execute", options);
+    const source =
+      sending?.source ?? (await this.treeToSend("execute", parts.forms, REQUEST_SENDING, signal));
+    // Timed on the monotonic clock, which a change of the system's time does not move, from the
+    // request itself: the tree's preparation, uploads included, is no part of the gateway's cut-off.
+    // Set when the request is sent, which the answer read below always follows.
+    let sentAt = 0;
+    const res = await this.postMethodRequest(
+      source,
+      "execute",
+      REQUEST_SENDING,
+      { signal },
+      async (files) => {
+        const request = runRequestBody("execute", options, files, parts);
+        throwIfAborted(signal);
+        sentAt = performance.now();
+        try {
+          return await this.requestRaw("POST", this.url("execute"), {
+            body: request,
+            ...STARTS_RUN,
+          });
+        } catch (err) {
+          throw executeCutOff(err, sentAt);
+        }
+      },
+      sending?.initial,
+    );
     try {
-      const res = await this.requestRaw("POST", this.url("execute"), {
-        body: request,
-        ...STARTS_RUN,
-      });
       this.throwIfExecuteDegraded(res);
       if (res.status < 200 || res.status >= 300) {
         this.throwApiResponseError("POST", "execute", res, STARTS_RUN);
@@ -1564,15 +1551,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
       }
       return new PipelexExecuteResult(answer);
     } catch (err) {
-      if (err instanceof RunStillRunningError) throw err;
-      // The hosted gateway terminates synchronous requests at ~30s. A run that
-      // exceeds that comes back as a gateway 503/504 (or a client abort) —
-      // translate it into a clear, actionable error pointing at start+poll.
-      const elapsedMs = performance.now() - startedAt;
-      if (isGatewayCutOff(err, elapsedMs)) {
-        throw new PipelineExecuteTimeoutError(elapsedMs, { cause: err });
-      }
-      throw err;
+      // The hosted gateway terminates synchronous requests at ~30s. A run that exceeds that comes
+      // back as a gateway 503/504 (or a client abort) — translated into a clear, actionable error
+      // pointing at start+poll.
+      throw executeCutOff(err, sentAt);
     }
   }
 
@@ -1595,70 +1577,61 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `runMayHaveStarted` is true can be retried unchanged (see
    * `PipelexStartRequestOptions`). A malformed key is a `RequestArgumentError`
    * before anything is sent.
+   *
+   * The method's tree is prepared before the request as `execute` prepares it. The prepared body
+   * is the same for the same tree, so a start retried under its idempotency key sends the body the
+   * key was bound to. A start whose hash entries name a blob the API does not hold yet is refused
+   * with a `422` `missing_blobs`, which releases its key: send it again unchanged, which asks the
+   * blob route and uploads what is missing first.
    */
   async start(options: PipelexStartOptions): Promise<PipelexRunResultStart> {
+    return this.startRun(options);
+  }
+
+  /**
+   * `start`, stopped by `signal` as `executeRun` is, `sending` being the tree already prepared.
+   */
+  private async startRun(
+    options: PipelexStartOptions,
+    signal?: AbortSignal,
+    sending?: PreparedRunTree,
+  ): Promise<PipelexRunResultStart> {
     const idempotencyKey = idempotencyKeyOf(options);
-    const extensions = buildExtensions(options.extra);
-    const api = buildApiRunExtensions(options);
-    const hosted = buildHostedRunExtensions(options);
-    if (
-      !options.pipe_code &&
-      (!options.mthds_contents || options.mthds_contents.length === 0) &&
-      !hasBundlePayload(options) &&
-      Object.keys(api).length === 0 &&
-      Object.keys(hosted).length === 0 &&
-      Object.keys(extensions).length === 0
-    ) {
-      throw new RequestArgumentError(
-        "Either pipe_code, mthds_contents, a method bundle (files/bundle_b64), a method_ref, a hosted method_id or a server-specific extension arg (extra) must be provided to start().",
-      );
-    }
-    assertRunSourcesExclusive(options);
-    assertMethodRefPairsWithNothing(options);
-    assertLinkageMethodIdIsBare(options);
-    assertResourcesAccompanyABundle(options);
-    // No await when there are none: a request without them leaves on the tick it always did.
-    const resources =
-      options.resources == null ? undefined : await encodeBundleResources(options.resources);
-
-    // `?? undefined` so JSON.stringify drops absent fields from the wire body.
-    const request: StartRequest & Record<string, unknown> = {
-      pipe_code: options.pipe_code ?? undefined,
-      mthds_contents: options.mthds_contents ?? undefined,
-      inputs: options.inputs ?? undefined,
-      output_name: options.output_name ?? undefined,
-      output_multiplicity: options.output_multiplicity ?? undefined,
-      dynamic_output_concept_ref: options.dynamic_output_concept_ref ?? undefined,
-      files: nonEmptyFiles(options.files),
-      bundle_b64: nonEmptyString(options.bundle_b64),
-      resources,
-      ...api,
-      ...hosted,
-      ...extensions,
-    };
-
+    const parts = this.runParts("start", options);
+    const source =
+      sending?.source ?? (await this.treeToSend("start", parts.forms, REQUEST_SENDING, signal));
     const url = this.url("start");
-    // `start` returns a 202 fast, so the poll timeout normally fits — with
-    // exceptions that get the blocking-execute ceiling instead. A method bundle,
-    // inline as `mthds_contents` or in `files`/`bundle_b64`, or the files its
-    // steps read (`resources`), can make the request *body* multi-megabyte, and
-    // the whole upload is charged against this budget — the same payload must
-    // not time out on the durable path yet succeed on the fallback. And a
-    // `method_ref` start makes the server FETCH the package before the ack
-    // (provenance rides the 202), whose clone timeout runs well past 30s on a
-    // cold cache — aborting it here would surface as `ApiUnreachableError`,
-    // blaming the network for a healthy server that is still cloning.
-    const needsLongCeiling =
-      hasBundlePayload(options) ||
-      (options.mthds_contents?.length ?? 0) > 0 ||
-      resources !== undefined ||
-      nonEmptyString(options.method_ref) !== undefined;
-    const res = await this.requestRaw("POST", url, {
-      body: request,
-      timeoutMs: needsLongCeiling ? this.requestTimeoutMs : POLL_REQUEST_TIMEOUT_MS,
-      idempotencyKey,
-      ...STARTS_RUN,
-    });
+    const res = await this.postMethodRequest(
+      source,
+      "start",
+      REQUEST_SENDING,
+      // A start under a key is bound to the refusal the platform stores, so it is not sent again.
+      { signal, retryTooLarge: idempotencyKey === undefined },
+      async (files) => {
+        const request = runRequestBody("start", options, files, parts);
+        // `start` returns a 202 fast, so the poll timeout normally fits — with exceptions that get
+        // the blocking-execute ceiling instead. A method's tree sent inline can make the request
+        // *body* multi-megabyte when the API keeps no blob store, and so can a bundle riding
+        // `extra` as a runner's `mthds_contents` or `bundle_b64`, as the CLI sends one; the whole
+        // upload is charged against this budget — the same payload must not time out on the
+        // durable path yet succeed on the fallback. And a `method_ref` start makes the server FETCH
+        // the package before the ack (provenance rides the 202), whose clone timeout runs well past
+        // 30s on a cold cache — aborting it here would surface as `ApiUnreachableError`, blaming
+        // the network for a healthy server that is still cloning.
+        const needsLongCeiling =
+          files !== undefined ||
+          parts.api.method_ref !== undefined ||
+          carriesExtraBundle(parts.extensions);
+        throwIfAborted(signal);
+        return this.requestRaw("POST", url, {
+          body: request,
+          timeoutMs: needsLongCeiling ? this.requestTimeoutMs : POLL_REQUEST_TIMEOUT_MS,
+          idempotencyKey,
+          ...STARTS_RUN,
+        });
+      },
+      sending?.initial,
+    );
     // A bare runner with no run store 404s here just as it does on the result
     // routes — surface the same clear `RunLifecycleUnavailableError` (and let
     // `startAndWaitForResult` fall back to the blocking `execute`).
@@ -1684,30 +1657,38 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
-   * Parse, validate, and dry-run an MTHDS bundle — `POST /v1/validate`.
+   * Parse, validate, and dry-run a method — `POST /v1/validate`.
    *
    * `/validate` is a diagnostic endpoint: every produced verdict rides a **200**,
    * discriminated on `is_valid`. This returns the `PipelexValidationResult` union
    * verbatim — `is_valid: true` ⇒ the typed `PipelexValidationReport` (structural
    * artifacts), `is_valid: false` ⇒ a `PipelexInvalidReport` (`validation_errors[]`).
-   * An invalid bundle is NOT thrown — the caller pattern-matches `is_valid`. Only a
-   * *no-verdict* condition (a malformed request, an `mthds_sources` length mismatch,
-   * auth, a server fault) is non-2xx and surfaces as `ApiResponseError`.
+   * An invalid method is NOT thrown — the caller pattern-matches `is_valid`. Only a
+   * *no-verdict* condition (a malformed request, a tree the route refuses, auth, a
+   * server fault) is non-2xx and surfaces as `ApiResponseError`.
    *
-   * `source` selects WHAT is validated, in exactly one of three forms — the
-   * strict tooling XOR (the routes are stateless, so there is no linkage
-   * exception; a second selector is a request-shape `422`):
+   * `source` names WHAT is validated, in exactly one form — the strict tooling XOR
+   * (the routes are stateless, so there is no linkage exception; a second selector
+   * is a request-shape `422`, refused here first with a `RequestArgumentError`):
    *
-   * - **inline contents** (a `string[]`) — the protocol's own envelope;
+   * - **the method's tree**, in one of the four forms of `MethodTreeForms`: a
+   *   `directory` the `mthds` package's lister lists under the standard's
+   *   membership rule (Node only), `contents` by tree path, a listed `tree`, or the
+   *   protocol's `files` map, sent as given. A `directory`, `contents` or `tree` is
+   *   sent as the `files` map, inline or by hash, exactly as a run sends it (see
+   *   `PipelexRunOptions`). Every `.mthds` file of the tree is judged, named by its
+   *   tree path in the diagnostics' `source`, and every other file is one a step may
+   *   read, such as a `PipeDocGen` step's template file, whose template check's
+   *   findings ride the valid arm's `warnings`;
    * - **`{ method_ref }`** — a published method's address, resolved by the
    *   server (pipelex-api >= 0.21.0) through the same fetch path as a
-   *   `method_ref` run, the package's real file names feeding the diagnostics'
+   *   `method_ref` run, the package's real tree paths feeding the diagnostics'
    *   source labels;
    * - **`{ method_id }`** — a stored method's catalog id, hosted-only: the
-   *   platform resolves the version it names and injects that version's `.mthds`
-   *   files before the runner sees the request (a bare runner rejects the request
-   *   as carrying no source it understands). A bare `mt_…` validates the latest
-   *   published version, `mt_…@<n>` version `n` and `mt_…@draft` the draft.
+   *   platform resolves the version it names and sends that version's tree to the
+   *   runner (a bare runner rejects the request as carrying no source it
+   *   understands). A bare `mt_…` validates the latest published version,
+   *   `mt_…@<n>` version `n` and `mt_…@draft` the draft.
    *
    * A selector-resolution failure (fetch failure, no package at the address, an
    * unknown or foreign-org id, a bare id of a method never published, `409`
@@ -1716,41 +1697,23 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `ApiResponseError` — never an `is_valid: false` verdict, which is reserved
    * for actual MTHDS content.
    *
-   * `mthdsSources` (optional, parallel to inline contents) names each submitted
-   * content — a Pipelex-API extension threaded onto `blueprint.source`, so
-   * cross-file diagnostics name the owning file (an unnamed content yields
-   * `source: null`). The server 422s a length mismatch; this client sends the
-   * arrays verbatim and surfaces that as an `ApiResponseError`. It is an
-   * inline-contents companion only: a `method_ref` / `method_id` validation gets
-   * its source labels from the package's (or the stored method's) real file
-   * names, so supplying it beside a selector is rejected client-side.
+   * `allowSignatures` tolerates unimplemented pipe signatures, as the protocol's
+   * `validate(source, allowSignatures)` does: they surface as `pending_signatures`
+   * and `is_runnable`, never as an error.
    *
-   * `render` is the Pipelex-API presentation hint — a list of view-format tokens.
-   * This client always asks for Markdown so both valid results and produced
-   * validation-error verdicts carry `rendered_markdown`; callers may add more
-   * tokens. Unknown tokens are server-side lenient-ignored (never a 422).
+   * `options.render` is the Pipelex-API presentation hint — a list of view-format
+   * tokens. This client always asks for Markdown so both valid results and produced
+   * validation-error verdicts carry `rendered_markdown`; callers may add more tokens.
+   * Unknown tokens are server-side lenient-ignored (never a 422).
    *
-   * `views` is the sibling opt-in for *structured* views where `render` carries
-   * *rendered text*. The two lists are independent, each resolving its own tokens
-   * against its own supported set, and each supported token adds a same-named
-   * top-level field to the valid arm — `input_form` and `output_form`. Unlike `render`,
-   * this client sends `views` ONLY when the caller asks: the point of an opt-in view
-   * is that the default response stays byte-identical, and the highest-frequency
-   * consumers (hook pipelines, CI gates, agent loops) never pay for bytes they
-   * discard. `pipelex-api` gates `input_form` on this token as of 0.18.0; a 0.17.0
-   * runner resolved no token (the key is silently ignored, never a 422) and emitted
-   * the field regardless — which is why `PipelexValidationReport.input_form` is typed
-   * optional rather than required.
-   *
-   * `options.resources` sends the files the bundle's steps read, such as a
-   * `PipeDocGen` step's `template_file`, keyed by the path the step names, each as
-   * its bytes (see {@link ValidateOptions}). A step whose template file was not sent
-   * is an `is_valid: false` verdict saying so, and a template check's findings in an
-   * office template file ride the valid arm's `warnings`. A key no step names, or
-   * files over the server's limits, are no-verdict refusals: a `422`
-   * `BundleResourceNotNamedError`, a `413` `PayloadTooLarge`, or a `422`
-   * `MethodTreeTooLarge` for files that take the method tree they join past the
-   * runner's tree limits.
+   * `options.views` is the sibling opt-in for *structured* views where `render`
+   * carries *rendered text*. The two lists are independent, each resolving its own
+   * tokens against its own supported set, and each supported token adds a same-named
+   * top-level field to the valid arm — `input_form` and `output_form`. Unlike
+   * `render`, this client sends `views` ONLY when the caller asks: the point of an
+   * opt-in view is that the default response stays byte-identical, and the
+   * highest-frequency consumers (hook pipelines, CI gates, agent loops) never pay for
+   * bytes they discard.
    *
    * A `{ method_ref }` source makes the server clone a repository before it
    * validates anything, and it needs no special budget here: this route already
@@ -1761,111 +1724,59 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * would lower this one.
    */
   async validate(
-    source: string[] | ValidateMethodSelector,
+    source: PipelexValidateSource,
     allowSignatures = false,
-    mthdsSources?: string[],
-    render?: string[],
-    views?: string[],
     options: ValidateOptions = {},
   ): Promise<PipelexValidationResult> {
-    const body: Record<string, unknown> = {
-      allow_signatures: allowSignatures,
-    };
-    if (Array.isArray(source)) {
-      body.mthds_contents = source;
-      if (mthdsSources !== undefined) {
-        body.mthds_sources = mthdsSources;
-      }
-    } else {
-      // A selector object. The illegal shapes are compile errors for typed
-      // callers (`ValidateMethodSelector` pins the other key to `never`); the
-      // runtime checks back them for untyped (JS) callers — a typed
-      // `RequestArgumentError`, never a native TypeError off a null source —
-      // mirroring the server's strict tooling XOR instead of silently picking.
-      if (source === null || source === undefined || typeof source !== "object") {
-        throw new RequestArgumentError(
-          "validate() takes inline contents (a string[]) or a method selector object " +
-            "({ method_ref } or { method_id }).",
-        );
-      }
-      const methodRef = nonEmptyString(source.method_ref);
-      const methodId = nonEmptyString(source.method_id);
-      if ((methodRef === undefined) === (methodId === undefined)) {
-        throw new RequestArgumentError(
-          "validate() takes exactly one method selector: inline contents, { method_ref }, or { method_id }.",
-        );
-      }
-      if (mthdsSources !== undefined) {
-        throw new RequestArgumentError(
-          "mthds_sources labels inline mthds_contents; a method_ref / method_id validation gets " +
-            "its source labels from the package's (or the stored method's) real file names.",
-        );
-      }
-      if (methodRef !== undefined && hasBundleResources(options.resources)) {
-        throw new RequestArgumentError(
-          "resources accompany inline mthds_contents; a method_ref's files are the package's own.",
-        );
-      }
-      if (methodRef !== undefined) body.method_ref = methodRef;
-      if (methodId !== undefined) body.method_id = methodId;
+    // The illegal shapes are partly compile errors for typed callers; the runtime checks back them
+    // for untyped (JS) callers — a typed `RequestArgumentError`, never a native TypeError off a
+    // null source — mirroring the server's strict tooling XOR instead of silently picking.
+    if (source === null || typeof source !== "object" || Array.isArray(source)) {
+      throw new RequestArgumentError(
+        "validate() takes the method as an object naming exactly one of directory, contents, " +
+          "tree, files, method_ref or method_id.",
+      );
     }
-    body.render = withValidateMarkdownRender(render);
-    if (views !== undefined) {
-      body.views = views;
+    const forms = protocolTreeForms("validate", source);
+    const methodRef = nonEmptyString(source.method_ref);
+    const methodId = nonEmptyString(source.method_id);
+    const given: string[] = treeFormsGiven(forms);
+    if (methodRef !== undefined) given.push("method_ref");
+    if (methodId !== undefined) given.push("method_id");
+    if (given.length !== 1) {
+      throw new RequestArgumentError(
+        "validate() takes exactly one of the method's tree (directory, contents, tree or files), " +
+          `method_ref or method_id; got ${given.length === 0 ? "none" : given.join(" and ")}.`,
+      );
     }
-    // No await when there are none: a request without them leaves on the tick it always did.
-    const resources =
-      options.resources == null ? undefined : await encodeBundleResources(options.resources);
-    if (resources !== undefined) {
-      body.resources = resources;
-    }
-    const res = await this.requestRaw("POST", this.url("validate"), {
-      body,
-      timeoutMs: options.timeoutMs,
-      signal: options.signal,
-    });
+    const signal = options.signal;
+    const sent = await this.treeToSend("validate", forms, REQUEST_SENDING, signal);
+    const res = await this.postMethodRequest(
+      sent,
+      "validate",
+      REQUEST_SENDING,
+      { signal },
+      (files) => {
+        const body: Record<string, unknown> = { allow_signatures: allowSignatures };
+        if (files != null) body.files = files;
+        if (methodRef !== undefined) body.method_ref = methodRef;
+        if (methodId !== undefined) body.method_id = methodId;
+        body.render = withValidateMarkdownRender(options.render);
+        if (options.views !== undefined) {
+          body.views = options.views;
+        }
+        throwIfAborted(signal);
+        return this.requestRaw("POST", this.url("validate"), {
+          body,
+          timeoutMs: options.timeoutMs,
+          signal,
+        });
+      },
+    );
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", "validate", res);
     }
     return this.readObjectAnswer<PipelexValidationResult>("POST", "validate", res);
-  }
-
-  /**
-   * Validate paired MTHDS files while preserving URI attribution for diagnostics.
-   *
-   * This adapter intentionally keeps the low-level `validate(...)` payload shape
-   * intact for existing consumers. When any file has a URI, every content gets a
-   * parallel source label; inline labels are deterministic so the server never
-   * sees a length-mismatched `mthds_sources` array.
-   */
-  async validateFiles(
-    files: MthdsFile[],
-    options: ValidateFilesOptions = {},
-  ): Promise<PipelexValidationResult> {
-    if (files.length === 0) {
-      throw new RequestArgumentError(
-        "At least one MTHDS file must be provided to validateFiles().",
-      );
-    }
-
-    const mthdsContents = files.map((file) => file.content);
-    const hasAnyUri = files.some((file) => file.uri !== undefined);
-    const mthdsSources = hasAnyUri
-      ? files.map((file, index) => file.uri ?? `inline://file-${index + 1}.mthds`)
-      : undefined;
-
-    return this.validate(
-      mthdsContents,
-      options.allowSignatures ?? false,
-      mthdsSources,
-      options.render,
-      options.views,
-      {
-        resources: options.resources,
-        timeoutMs: options.timeoutMs,
-        signal: options.signal,
-      },
-    );
   }
 
   // ── Tools extensions (Pipelex API — `/v1/lint`, `/v1/format`) ─────────
@@ -1941,11 +1852,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * never on a message.
    *
    * All of these are static and inference-free, so they default to the management-call
-   * timeout. The internal raises are `crateRequestTimeoutMs`'s: the fetch-sized budget a
+   * timeout. The internal raise is `crateRequestTimeoutMs`'s: the fetch-sized budget a
    * crate route gets when its closure is a `method_ref`, because the server may clone a
-   * repository before it answers, and the execute ceiling it gets when the request
-   * carries `resources`, whose upload alone can outlast the default. Each is matched to
-   * what the request costs, not a caller-facing parameter.
+   * repository before it answers. It is matched to what the request costs, not a
+   * caller-facing parameter.
    *
    * **These routes deliberately expose no `timeoutMs` / `signal`, and that is not an
    * oversight to be "fixed" per route.** Automated reviewers have proposed adding them
@@ -1956,11 +1866,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *    ceiling and takes caller transport options; every extension route rides the
    *    static core. Giving one static route an override while its siblings lack one is
    *    the inconsistency.
-   * 2. The input is **bounded server-side** — the runner's `pipelex_api/limits.py` caps the
-   *    `.mthds` files of a request and the files sent with them in `resources`, each by a
-   *    count, a size per file and, for `resources`, a total, all configurable per
-   *    deployment — and none of these routes runs inference. The upload those limits allow
-   *    is what `crateRequestTimeoutMs` budgets for, not the server's work.
+   * 2. The input is **bounded server-side** — the deployment caps a request's tree by its
+   *    count of files, a size per file, a total and the bytes it carries inline, all
+   *    announced by its `/v1/version` handshake — and none of these routes runs inference.
+   *    The upload those limits allow is what `crateRequestTimeoutMs` budgets for, not the
+   *    server's work.
    * 3. On the hosted path an override would be **inert**: the gateway caps responses at
    *    ~30s (see `POLL_REQUEST_TIMEOUT_MS` above), so raising `timeoutMs` would still be
    *    cut off upstream, just with a less honest error.
@@ -1970,9 +1880,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * route.
    *
    * The one exception is the crate family's `signal` (`CrateRouteOptions`), given to all three
-   * crate routes at once: a `tree` or `contents` can cost the version handshake, the blob route
-   * and uploads before the request, client-side work a caller such as `prepareInputs` must be
-   * able to stop. It is read between those steps and stops nothing in flight, so it is no
+   * crate routes at once: a `directory`, `tree` or `contents` can cost the listing, the version
+   * handshake, the blob route and uploads before the request, client-side work a caller such as
+   * `prepareInputs` must be able to stop. It is read between those steps and stops nothing in flight, so it is no
    * transport option and the reasons above still hold.
    */
   private async requestExtension<T extends object>(
@@ -2044,8 +1954,14 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * The handshake for feature detection (hosted extensions or not).
    */
   async version(): Promise<VersionInfo> {
+    return this.requestVersion();
+  }
+
+  /** `GET /v1/version`, as `version` asks it, stopped by `signal`. */
+  private async requestVersion(signal?: AbortSignal): Promise<VersionInfo> {
     const res = await this.requestRaw("GET", this.url("version"), {
       timeoutMs: POLL_REQUEST_TIMEOUT_MS,
+      signal,
     });
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("GET", "version", res);
@@ -2075,7 +1991,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
   // All three are STATIC routes (no dry-run sweep), so like every static sibling they
   // take no `timeoutMs` — see the policy note on `requestExtension` before adding one
   // here. Their `signal` (`CrateRouteOptions`) is that note's one exception: it is read
-  // between the steps that prepare a `tree` or `contents`, and stops nothing in flight.
+  // between the steps that prepare a `directory`, `tree` or `contents`, and stops nothing in
+  // flight.
 
   /**
    * Resolve a closure into its normalized library crate — `POST /v1/resolve`.
@@ -2096,18 +2013,19 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * non-2xx too — never an `is_valid: false` verdict.
    *
    * The closure arrives in exactly one of three forms: the method's tree, as the
-   * protocol's `files` map or as a `tree` or `contents` the client sends inline when
-   * small and by hash otherwise (see {@link CrateRequestBase}); an address-form
-   * `method_ref` (server-resolved, pipelex-api >= 0.21.0; the registry form stays a
-   * `501`); or a hosted `method_id` (platform-resolved — see
-   * {@link PipelexHostedToolingExtensions}). An empty map is absent.
+   * protocol's `files` map or as a `directory`, `tree` or `contents` the client sends
+   * inline when small and by hash otherwise (see {@link CrateRequestBase}); an
+   * address-form `method_ref` (server-resolved, pipelex-api >= 0.21.0; the registry form
+   * stays a `501`); or a hosted `method_id` (platform-resolved — see
+   * {@link PipelexHostedToolingExtensions}). An empty map or string is absent.
    *
-   * `options.signal` stops the call between the steps a `tree` or `contents` costs before
-   * the request — the version handshake, the blob route, each read and upload of a missing
-   * blob — and before the request itself, throwing the abort; a request already sent runs
-   * to its end. A blob that fails to upload throws `MethodFileTransferError`, and a tree
-   * this client refuses to send (no file, two forms, a `contents` value that is neither
-   * text nor bytes) `RequestArgumentError`, each before the route is asked.
+   * `options.signal` stops the call between the steps a `directory`, `tree` or `contents`
+   * costs before the request — the listing, the version handshake, the blob route, each
+   * read and upload of a missing blob — and before the request itself, throwing the
+   * abort; a request already sent runs to its end. A blob that fails to upload throws
+   * `MethodFileTransferError`, and a tree this client refuses to send (no file, two
+   * forms, a directory it cannot list, a `contents` value that is neither text nor
+   * bytes) `RequestArgumentError`, each before the route is asked.
    */
   async resolve(
     request: ResolveRequest,
@@ -2156,15 +2074,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * method's own `.mthds` bundles as `files`, a map from tree path to each bundle's text,
    * in the shape of the request's `files` map.
    *
-   * Beside the method's tree, `resources` sends the files the closure's steps read, such as a
-   * `PipeDocGen` step's `template_file`, keyed by the path the step names, each as its bytes;
-   * a step whose template file was not sent makes the closure invalid. `resolve` and `codegen`
-   * take it too (see {@link CrateRequestBase}).
+   * The files the closure's steps read, such as a `PipeDocGen` step's `template_file`, are
+   * files of the method's tree like any other; a step whose template file is not in the tree
+   * makes the closure invalid (see {@link CrateRequestBase}).
    *
    * Same 200-verdict discipline, same three-form closure selector and same `options` as
-   * {@link resolve} (the request's members are posted as given, its `tree` or `contents` as
-   * the `files` map, its `resources` encoded to base64, and the selector XOR and the
-   * `resources` pairing are the server's to enforce).
+   * {@link resolve} (the request's members are posted as given, its `directory`, `tree` or
+   * `contents` as the `files` map, and the selector XOR is the server's to enforce).
    * Only a no-verdict condition throws `ApiResponseError`: a malformed selector and an
    * over-limit file are `ValidationError` `422`s; a selection the route refuses is a
    * `422` whose `errorType` is `EntryPipeNotFoundError` (an unknown `pipe_ref`, no entry
@@ -2172,19 +2088,26 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * candidates in its `serverMessage`; a registry-form `method_ref` is a `501`; a pipe
    * whose artifacts cannot be derived is a `500`.
    *
-   * A `method_ref` gets the fetch-sized budget, as on the other crate routes, and a
-   * request carrying `resources` the execute ceiling, since their upload alone can
-   * outlast the default. On the hosted API the gateway caps a request at about 30
-   * seconds whatever the client allows, so a cold `method_ref` clone can answer a `502`
-   * that a retry clears once the runner has cached the clone.
+   * A `method_ref` gets the fetch-sized budget, as on the other crate routes. On the
+   * hosted API the gateway caps a request at about 30 seconds whatever the client allows,
+   * so a cold `method_ref` clone can answer a `502` that a retry clears once the runner
+   * has cached the clone.
    */
   async pipeIo(request: PipeIORequest, options: CrateRouteOptions = {}): Promise<PipeIOResponse> {
     return this.crateRequest<PipeIOResponse>("pipe-io", "pipeIo", request, options);
   }
 
   /**
-   * Post a crate request: its body built by `crateBody`, then the route asked, unless `signal`
-   * aborted meanwhile, under the budget `crateRequestTimeoutMs` gives it.
+   * Post a crate request: its members as given, and its tree as the `files` map a save would
+   * send, each key left off when there is nothing to send. An empty map or string is absent, as in
+   * the Python SDK: `files: {}` or `null`, `contents: {}`, `directory: ""` and `dependencies: {}`
+   * are not sent, so an empty one never reaches the wire as a second selector; a `directory` that
+   * is not a string is refused, as on a run. A `directory`, `tree` or `contents` is prepared
+   * through the path every request and save sends a tree by (`postMethodRequest`), inline when
+   * small and by hash otherwise, uploading the files the API lacks first; the blob route is asked
+   * under the request's `read_scope`, the scope its hash entries are read in. `signal` is read
+   * before each step and right before the request (see `TreeSendOptions`). The request gets the
+   * budget `crateRequestTimeoutMs` gives it for the `files` it carries.
    */
   private async crateRequest<T extends object>(
     endpoint: string,
@@ -2192,47 +2115,61 @@ export class PipelexApiClient implements HostedProtocolSurface {
     request: CrateRequestBase,
     options: CrateRouteOptions,
   ): Promise<T> {
-    const body = await this.crateBody(call, request, options.signal);
-    throwIfAborted(options.signal);
-    return this.requestExtension<T>(endpoint, body, {
-      timeoutMs: crateRequestTimeoutMs(request, this.requestTimeoutMs),
-    });
+    const signal = options.signal;
+    throwIfAborted(signal);
+    if (typeof request !== "object" || request === null) {
+      return this.requestExtension<T>(endpoint, request);
+    }
+    const { directory, contents, tree, files, dependencies, ...rest } = request;
+    const source = await this.treeToSend(
+      call,
+      {
+        directory: typeof directory === "string" ? nonEmptyString(directory) : directory,
+        contents: presentMap(contents),
+        tree: tree ?? undefined,
+        files: presentMap(files),
+      },
+      REQUEST_SENDING,
+      signal,
+    );
+    const packages = presentMap(dependencies);
+    const res = await this.postMethodRequest(
+      source,
+      call,
+      REQUEST_SENDING,
+      { signal, readScope: nonEmptyString(request.read_scope) },
+      (sent) => {
+        const body: Record<string, unknown> = { ...rest };
+        if (sent != null) body.files = sent;
+        if (packages !== undefined) body.dependencies = packages;
+        throwIfAborted(signal);
+        return this.requestRaw("POST", this.url(endpoint), {
+          body,
+          timeoutMs: this.crateRequestTimeoutMs(request, sent),
+        });
+      },
+    );
+    if (res.status < 200 || res.status >= 300) {
+      this.throwApiResponseError("POST", endpoint, res);
+    }
+    return this.readObjectAnswer<T>("POST", endpoint, res);
   }
 
   /**
-   * A crate request as the wire takes it: its members as given, its tree as the `files` map a save
-   * would send, and its `resources` encoded into the base64 map, each key left off when there is
-   * nothing to send. An empty map is absent, as in the Python SDK: `files: {}` or `null`,
-   * `contents: {}` and `dependencies: {}` are not sent, so an empty one never reaches the wire as
-   * a second selector. A `tree` or `contents` is prepared here, inline when small and by hash
-   * otherwise, uploading the files the API lacks first, through the helper `createMethod` and
-   * `writeDraft` send a tree with, so the three routes and a save send one tree the same way; the
-   * blob route is asked under the request's `read_scope`, the scope its hash entries are read in.
-   * `signal` is read before each step (see `TreeSendOptions`).
+   * The request budget for a crate route's closure (`resolve`, `codegen`, `pipeIo`): the
+   * static-route default, unless the closure is a `method_ref`, which may make the server clone a
+   * repository first and gets the fetch-sized budget, or its `files` carry more inline than
+   * `INLINE_TREE_MAX_BYTES`, which gets the client's request ceiling (`requestTimeoutMs`): a tree
+   * sent to an API keeping no blob store travels inline whatever its weight, and so does a `files`
+   * map given as is, and the upload of the body is charged against the budget. A tree sent by
+   * hash keeps the default, its files uploaded before the request under the client's own ceiling.
    */
-  private async crateBody(
-    call: string,
+  private crateRequestTimeoutMs(
     request: CrateRequestBase,
-    signal: AbortSignal | undefined,
-  ): Promise<unknown> {
-    if (typeof request !== "object" || request === null) return request;
-    throwIfAborted(signal);
-    const { files, tree, contents, dependencies, resources, ...rest } = request;
-    const body: Record<string, unknown> = { ...rest };
-    const sent = await this.methodTreeFiles(
-      call,
-      { files: presentMap(files), tree: tree ?? undefined, contents: presentMap(contents) },
-      REQUEST_SENDING,
-      { signal, readScope: nonEmptyString(request.read_scope) },
-    );
-    if (sent != null) body.files = sent;
-    const packages = presentMap(dependencies);
-    if (packages !== undefined) body.dependencies = packages;
-    if (resources !== undefined) {
-      const encoded = await encodeBundleResources(resources);
-      if (encoded !== undefined) body.resources = encoded;
-    }
-    return body;
+    files: MethodFiles | null | undefined,
+  ): number {
+    if (nonEmptyString(request.method_ref) !== undefined) return METHOD_REF_FETCH_TIMEOUT_MS;
+    return carriesLargeInlineTree(files) ? this.requestTimeoutMs : POLL_REQUEST_TIMEOUT_MS;
   }
 
   // ── Hosted extension: durable run lifecycle (NOT part of the protocol) ──
@@ -2417,20 +2354,25 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * gzip stream, which `requestRaw` reports as an `ApiUnreachableError` carrying
    * the decompressor's code (see `isUndecodableBody`).
    *
+   * `signal` stops the handshake: its abort is thrown as is and nothing is cached.
+   *
    * @throws {ApiUnreachableError} The handshake got no answer. Nothing is cached,
    *   so the next call asks again, and no start is sent to a host that did not
    *   answer: sending it would wait a second time for the same silence.
    */
-  private async supportsRunLifecycle(): Promise<boolean> {
+  private async supportsRunLifecycle(signal?: AbortSignal): Promise<boolean> {
     if (this.lifecycleAvailable === undefined) {
       try {
-        const info = await this.version();
-        this.versionInfo ??= info;
+        const askedAt = Date.now();
+        const info = await this.requestVersion(signal);
+        this.versionCache = { info, askedAt };
         const impl = info.implementation;
         this.lifecycleAvailable = !(
           typeof impl === "string" && impl === BARE_RUNNER_IMPLEMENTATION
         );
       } catch (error) {
+        // The caller's abort is no answer: it propagates, and nothing is cached.
+        if (signal?.aborted === true) throw signal.reason;
         // No answer at all propagates. A body that arrived and could not be decoded is an answer,
         // and so is every other failure here: a non-2xx status, or a body that is no version.
         if (error instanceof ApiUnreachableError && !isUndecodableBody(error)) throw error;
@@ -2455,9 +2397,15 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * run, so the caller knows until then that none exists (see
    * `StartAndWaitForResultOptions`).
    *
-   * `pollOptions.signal` is also read before the run is created: a caller that aborts while the
-   * version handshake is in flight gets its abort, and neither the start nor the blocking execute
-   * is sent. Once one of them is sent, the abort stops only the wait.
+   * `pollOptions.signal` also stops everything before the run is created: the version handshake,
+   * the listing of a `directory`, and the reads, the blob route and the uploads of a tree sent by
+   * hash, each of them stopped in flight. It is read again right before the start and before the
+   * blocking execute, so a caller that aborts before then gets its abort and no run is created.
+   * Once one of them is sent, the abort stops only the wait.
+   *
+   * The method's tree is prepared once, before the start: when a runner turns out to lack the
+   * durable routes, the blocking execute sends the same `files` map, its blobs already uploaded,
+   * rather than listing, reading and hashing the tree again.
    *
    * An error from the start, or from the blocking execute, says whether that request may still
    * have started a run whose id never reached the caller (`runMayHaveStarted`); when it may have,
@@ -2481,10 +2429,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
     // Before the handshake too: a key the start would refuse is the caller's to fix, whatever runs.
     idempotencyKeyOf(options);
     const { onStarted, onStarting, ...waitOptions } = pollOptions ?? {};
-    const hosted = await this.supportsRunLifecycle();
+    const signal = waitOptions.signal;
+    const hosted = await this.supportsRunLifecycle(signal);
     // The handshake may have outlasted the caller's patience: an abort that landed during it
     // creates no run.
-    throwIfAborted(waitOptions.signal);
+    throwIfAborted(signal);
+    const sending = await this.prepareRunTree(hosted ? "start" : "execute", options, signal);
     if (hosted) {
       // A runner can look hosted yet lack the durable routes — `implementation`
       // is an extension field, so a compliant bare runner that omits it is
@@ -2494,21 +2444,41 @@ export class PipelexApiClient implements HostedProtocolSurface {
       // the durable attempt.
       let ack: PipelexRunResultStart;
       try {
+        throwIfAborted(signal);
         onStarting?.();
-        ack = await this.start(options);
+        ack = await this.startRun(options, signal, sending);
       } catch (err) {
         if (!(err instanceof RunLifecycleUnavailableError)) throw err;
         this.lifecycleAvailable = false;
-        throwIfAborted(waitOptions.signal);
+        throwIfAborted(signal);
         onStarting?.();
-        return this.executeBlocking(options);
+        return this.executeBlocking(options, signal, sending);
       }
       onStarted?.(ack);
       return this.waitForResult(ack.pipeline_run_id, waitOptions);
     }
 
+    throwIfAborted(signal);
     onStarting?.();
-    return this.executeBlocking(options);
+    return this.executeBlocking(options, signal, sending);
+  }
+
+  /**
+   * A run's tree prepared once for `startAndWaitForResult`, under `call`'s refusals: the run's
+   * arguments checked, the tree listed or read, and its `files` prepared, uploads included, under
+   * `signal`. A `files` map given as is, or no tree, needs no preparation.
+   */
+  private async prepareRunTree(
+    call: "execute" | "start",
+    options: PipelexStartOptions,
+    signal: AbortSignal | undefined,
+  ): Promise<PreparedRunTree> {
+    const parts = this.runParts(call, options);
+    const source = await this.treeToSend(call, parts.forms, REQUEST_SENDING, signal);
+    if (source === undefined || !("tree" in source)) return { source, initial: undefined };
+    const read = new Map<string, Uint8Array>();
+    const prepared = await this.prepareFiles(source, call, REQUEST_SENDING, { signal }, read);
+    return { source, initial: { prepared, read } };
   }
 
   // ── Pipelex product surface (hosted management routes) ─────────────────
@@ -2631,23 +2601,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * room for a publish.
    */
   async createMethod(input: MethodWriteInput): Promise<MethodData> {
-    const files = await this.methodTreeFiles("createMethod", input, SAVE_SENDING);
-    const body: Record<string, unknown> = { name: input.name };
-    if (files != null) body.files = files;
-    if (input.input_data !== undefined) body.input_data = input.input_data;
-    return this.requestMethodData("POST", "methods", body, this.saveTimeout(files));
-  }
-
-  /**
-   * The time limit of a save carrying `files`: the client's request ceiling, as for a `start`
-   * carrying its method, since a tree sent inline to a deployment with no blob store has no size
-   * bound and its whole upload is charged against the limit; the poll timeout for a save sending
-   * no tree.
-   */
-  private saveTimeout(files: MethodFiles | null | undefined): { timeoutMs?: number } {
-    return files != null && Object.keys(files).length > 0
-      ? { timeoutMs: this.requestTimeoutMs }
-      : {};
+    const source = await this.treeToSend("createMethod", input, SAVE_SENDING);
+    return this.saveMethodTree("POST", "methods", "createMethod", source, (files) => {
+      const body: Record<string, unknown> = { name: input.name };
+      if (files != null) body.files = files;
+      if (input.input_data !== undefined) body.input_data = input.input_data;
+      return body;
+    });
   }
 
   /**
@@ -2674,26 +2634,66 @@ export class PipelexApiClient implements HostedProtocolSurface {
    */
   async writeDraft(methodId: string, input: MethodDraftInput): Promise<MethodData> {
     const endpoint = `${methodPath(methodId, "writeDraft")}/draft`;
-    if (input.files === undefined && input.tree == null && input.contents == null) {
+    if (treeFormsGiven(input).length === 0) {
       throw new RequestArgumentError(
-        "writeDraft() replaces the draft's whole tree: give it as files (files: null empties the " +
-          "draft), tree or contents.",
+        "writeDraft() replaces the draft's whole tree: give it as directory, contents, tree or " +
+          "files (files: null empties the draft).",
       );
     }
-    const files = await this.methodTreeFiles("writeDraft", input, SAVE_SENDING);
-    const body: Record<string, unknown> = { files: files ?? null };
-    if (input.input_data !== undefined) body.input_data = input.input_data;
-    if (input.expected_updated_at !== undefined) {
-      body.expected_updated_at = input.expected_updated_at;
+    const source = await this.treeToSend("writeDraft", input, SAVE_SENDING);
+    return this.saveMethodTree("PUT", endpoint, "writeDraft", source, (files) => {
+      const body: Record<string, unknown> = { files: files ?? null };
+      if (input.input_data !== undefined) body.input_data = input.input_data;
+      if (input.expected_updated_at !== undefined) {
+        body.expected_updated_at = input.expected_updated_at;
+      }
+      return body;
+    });
+  }
+
+  /**
+   * Send a save carrying a method's tree (`createMethod`, `writeDraft`) through the path every
+   * request sends a tree by (`postMethodRequest`), its body built by `bodyOf` from the `files`
+   * prepared, under `saveTimeoutMs`, and read the stored method it answers as
+   * `requestMethodData` reads it.
+   */
+  private async saveMethodTree(
+    method: HttpMethod,
+    endpoint: string,
+    call: string,
+    source: TreeToSend,
+    bodyOf: (files: MethodFiles | null | undefined) => Record<string, unknown>,
+  ): Promise<MethodData> {
+    const res = await this.postMethodRequest(source, call, SAVE_SENDING, {}, (files) =>
+      this.requestRaw(method, this.url(endpoint), {
+        body: bodyOf(files),
+        timeoutMs: this.saveTimeoutMs(files),
+      }),
+    );
+    if (res.status < 200 || res.status >= 300) {
+      this.throwApiResponseError(method, endpoint, res);
     }
-    return this.requestMethodData("PUT", endpoint, body, this.saveTimeout(files));
+    return this.readObjectAnswer<MethodData>(method, endpoint, res);
+  }
+
+  /**
+   * The time limit of a save carrying `files`: the client's request ceiling, as for a `start`
+   * carrying its method, since a tree sent inline to a deployment with no blob store weighs up to
+   * its `max_inline_bytes`, a `files` map given as is whatever it weighs, and the whole upload is
+   * charged against the limit; the poll timeout for a save sending no tree.
+   */
+  private saveTimeoutMs(files: MethodFiles | null | undefined): number {
+    return files != null && Object.keys(files).length > 0
+      ? this.requestTimeoutMs
+      : POLL_REQUEST_TIMEOUT_MS;
   }
 
   /**
    * The limits the deployment holds a method's tree to — `GET /v1/version`, read from
    * `limits.method_tree` of the public handshake — in the shape the `mthds` package's
    * `listMethodTree` takes as its `limits` option, so a tree the platform would refuse is refused
-   * while it is listed, before any file is hashed:
+   * while it is listed, before any file is hashed. A `directory` given to any route is listed under
+   * them already; they serve a caller listing a tree of its own:
    *
    * ```ts
    * import { listMethodTree } from "mthds";
@@ -2703,19 +2703,30 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * A limit the server does not announce is absent, so a bare runner, which announces none,
    * yields no limit, and none is ever assumed. A value that is not a positive integer is left out
-   * rather than trusted.
+   * rather than trusted. The inline limit, `max_inline_bytes`, is no listing limit: the client
+   * applies it itself when it chooses how a tree travels.
    */
   async methodTreeLimits(): Promise<MethodTreeLimits> {
-    return announcedTreeLimits(await this.cachedVersion());
+    return listerLimitsOf(announcedTreeLimits(await this.cachedVersion()));
   }
 
   /**
-   * The version handshake, asked once per client: the first answer is kept (see `versionInfo`),
-   * and a failure is thrown and not kept, so the next call asks again.
+   * The version handshake, asked once per `HANDSHAKE_TTL_MS`: an answer is kept that long (see
+   * `versionCache`), and a failure is thrown and not kept, so the next call asks again. `signal`
+   * stops the ask, its abort thrown as is.
    */
-  private async cachedVersion(): Promise<VersionInfo> {
-    this.versionInfo ??= await this.version();
-    return this.versionInfo;
+  private async cachedVersion(signal?: AbortSignal): Promise<VersionInfo> {
+    const cached = this.versionCache;
+    if (cached !== undefined && Date.now() - cached.askedAt < HANDSHAKE_TTL_MS) return cached.info;
+    const askedAt = Date.now();
+    const info = await this.requestVersion(signal);
+    this.versionCache = { info, askedAt };
+    return info;
+  }
+
+  /** Drop the kept handshake, which a refusal has shown to be stale. */
+  private forgetHandshake(): void {
+    this.versionCache = undefined;
   }
 
   /**
@@ -2747,86 +2758,204 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
-   * The `files` a save or a crate request sends: `files` as given, or `tree` or `contents`
-   * prepared, uploading what the organization lacks; `undefined` when the input gives none. Two
-   * forms are refused with `RequestArgumentError` before any request, naming `call`. `sending`
-   * says what the tree is for, which a refusal or a failed upload names, and `options` how a crate
-   * request prepares it (`TreeSendOptions`).
+   * The method's tree a call was given, made ready to prepare: a `directory` listed, `contents`
+   * turned into a tree, a `tree` checked, `files` kept as given; `undefined` when the input gives
+   * none. Two forms are refused with `RequestArgumentError` before any request, naming `call`, and
+   * so are a `directory` that is not a string and a `tree` that is not a listed tree. A
+   * `directory` is listed by the `mthds` package's lister under the limits the deployment
+   * announces, so a tree past one is refused while it is listed, before any file is hashed; the
+   * handshake that announces them is asked under `signal`. It is listed once per call: a request
+   * sent again sends the tree this listing read.
    */
-  private async methodTreeFiles(
+  private async treeToSend(
     call: string,
-    input: MethodTreeInput,
+    input: MethodTreeForms,
     sending: TreeSending,
-    options: TreeSendOptions = {},
-  ): Promise<MethodFiles | null | undefined> {
-    const given = (
-      [
-        ["files", input.files !== undefined],
-        ["tree", input.tree != null],
-        ["contents", input.contents != null],
-      ] as const
-    )
-      .filter(([, present]) => present)
-      .map(([name]) => name);
+    signal?: AbortSignal,
+  ): Promise<TreeToSend> {
+    const given = treeFormsGiven(input);
     if (given.length > 1) {
       throw new RequestArgumentError(
-        `${call}() takes the method's tree in one form, files, tree or contents; got ` +
+        `${call}() takes the method's tree in one form, directory, contents, tree or files; got ` +
           `${given.join(" and ")}.`,
       );
     }
-    if (input.tree != null) return this.prepareTreeFiles(input.tree, call, sending, options);
-    if (input.contents != null) {
-      return this.prepareTreeFiles(
-        await contentsTreeSource(input.contents, call, sending),
-        call,
-        sending,
-        options,
-      );
+    if (given[0] === "directory") {
+      const directory: unknown = input.directory;
+      if (typeof directory !== "string") throw directoryRefusal(call);
+      throwIfAborted(signal);
+      const limits = listerLimitsOf(announcedTreeLimits(await this.cachedVersion(signal)));
+      throwIfAborted(signal);
+      return { tree: await listDirectoryTree(directory, limits, call) };
     }
-    return input.files;
+    if (input.tree != null) return { tree: checkedTreeSource(call, input.tree) };
+    if (input.contents != null) {
+      return { tree: await contentsTreeSource(input.contents, call, sending) };
+    }
+    return input.files === undefined ? undefined : { files: input.files };
   }
 
   /**
-   * The `files` map that sends `tree`: inline, or by hash once the organization holds every file.
+   * Post a request carrying a method's tree, by `mthds`'s `MthdsApiClient` rule: prepare the
+   * tree's `files` (`prepareFiles`), hand them to `post`, which builds the body and sends it, and
+   * answer the two refusals that call for sending the same request once more, as `mthds` does.
    *
-   * A tree whose inline map weighs `INLINE_TREE_MAX_BYTES` or less travels inline, with no round
-   * trip, measured as the request spends it, its JSON with no whitespace in UTF-8. A larger tree
-   * travels inline too when the version handshake declares no blob store; otherwise
-   * `POST /v1/blobs/missing` is asked which files the organization lacks, naming the tree's
-   * digest, each one it lacks is uploaded once, and every file travels by hash. A file read to be
-   * measured is uploaded from memory rather than read a second time. A tree holding no file is
-   * refused with `RequestArgumentError` before any request, `call` naming the caller's method.
-   * `options.readScope` is the scope the blob route is asked under, and `options.signal` is read
-   * before each read, the use of the handshake's answer, the blob route and each upload.
+   * - A `422` coded `request.blobs_missing` whose `missing_blobs` the tree sent by hash holds, such
+   *   as a blob dropped since the check: the blob route is asked again for those, they are
+   *   uploaded, and the request is sent once more (`postWithBlobRetry`).
+   * - A `422` refusing a tree the client prepared as past one of the receiver's limits
+   *   (`isMethodTreeTooLarge`): the handshake that announced the limits may be stale, so it is
+   *   forgotten, and the tree prepared again on a fresh one and sent once more. A `files` map
+   *   given as is was not prepared, so it is never sent again; nor is a request whose
+   *   `options.retryTooLarge` is `false`, a start under an idempotency key, which the platform
+   *   binds to the refusal it stores.
+   *
+   * A `422` created nothing, so the request sent again is no repeat of one whose outcome is
+   * unknown. `initial`, when given, is the tree already prepared for the first send, with the
+   * bytes it read, so a caller sending one tree on two routes prepares it once. `options.signal`
+   * is read before each step of the preparation and before each send. Answers the last answer
+   * whole, its status unread, with the `files` it carried.
    */
-  private async prepareTreeFiles(
+  private async postMethodRequest(
+    source: TreeToSend,
+    call: string,
+    sending: TreeSending,
+    options: TreeSendOptions & { readonly retryTooLarge?: boolean },
+    post: (files: MethodFiles | null | undefined) => Promise<RawResponse>,
+    initial?: PreparedTreeSend,
+  ): Promise<RawResponse> {
+    const read = initial?.read ?? new Map<string, Uint8Array>();
+    let ready = initial?.prepared;
+    const send = async (): Promise<RawResponse> => {
+      const prepared = ready ?? (await this.prepareFiles(source, call, sending, options, read));
+      ready = undefined;
+      throwIfAborted(options.signal);
+      return this.postWithBlobRetry(prepared, read, post, sending, options);
+    };
+    const res = await send();
+    if (
+      source === undefined ||
+      !("tree" in source) ||
+      options.retryTooLarge === false ||
+      !isMethodTreeTooLarge(res.status, res.body)
+    ) {
+      return res;
+    }
+    this.forgetHandshake();
+    return send();
+  }
+
+  /**
+   * Send a request whose tree may have travelled by hash. When it did and the receiver answers a
+   * `422` coded `request.blobs_missing` whose `missing_blobs` the tree holds, the client asks the
+   * blob route where to upload them, uploads them and sends the same request once more, which the
+   * refusal left uncreated; any other answer, or a list naming a blob the tree does not hold, is
+   * answered as it came.
+   */
+  private async postWithBlobRetry(
+    prepared: PreparedFiles,
+    read: Map<string, Uint8Array>,
+    post: (files: MethodFiles | null | undefined) => Promise<RawResponse>,
+    sending: TreeSending,
+    options: TreeSendOptions,
+  ): Promise<RawResponse> {
+    const res = await post(prepared.files);
+    const tree = prepared.byHashTree;
+    if (tree === undefined) return res;
+    const missing = missingBlobsOf(res.status, res.body);
+    if (missing === undefined || missing.length === 0) return res;
+    const byBlob = fileByBlob(tree);
+    const files = missing.map((sha256) => byBlob.get(sha256));
+    if (files.some((file) => file === undefined)) return res;
+    throwIfAborted(options.signal);
+    const asked = await this.findMissingBlobs(
+      { blobs: files.map((file) => ({ sha256: file!.sha256, size: file!.size })) },
+      options.readScope,
+      options.signal,
+    );
+    await this.uploadMissing(tree, asked, read, sending, options.signal);
+    throwIfAborted(options.signal);
+    return post(prepared.files);
+  }
+
+  /**
+   * The `files` a request or a save sends for `source`: a `files` map as given, a tree prepared
+   * (`prepareTree`), or none.
+   */
+  private async prepareFiles(
+    source: TreeToSend,
+    call: string,
+    sending: TreeSending,
+    options: TreeSendOptions,
+    read: Map<string, Uint8Array>,
+  ): Promise<PreparedFiles> {
+    if (source === undefined) return { files: undefined, byHashTree: undefined };
+    if ("files" in source) return { files: source.files, byHashTree: undefined };
+    return this.prepareTree(source.tree, call, sending, options, read);
+  }
+
+  /**
+   * The `files` map that sends `tree`: inline, or by hash once the receiver holds every file —
+   * `mthds`'s `MthdsApiClient` rule, read from the version handshake the client keeps.
+   *
+   * When the handshake declares a blob store, a tree whose inline map weighs no more than the
+   * inline threshold travels inline, measured as the request spends it, its JSON with no
+   * whitespace in UTF-8; the threshold is the lower of 256 KiB (`INLINE_TREE_MAX_BYTES`) and the
+   * `max_inline_bytes` the handshake announces, and a tree whose files alone pass it is not read
+   * to be weighed. A heavier tree travels by hash: `POST /v1/blobs/missing` is asked which files
+   * the receiver lacks, naming the tree's digest, each one it lacks is uploaded once, and every
+   * file travels by hash. A `404` from the blob route says the handshake that declared the store
+   * is stale, so it is forgotten and the tree prepared once more on a fresh one. When the
+   * handshake declares no blob store, the whole tree travels inline whatever its weight, held to
+   * the announced `max_inline_bytes` (`inlineWithin`). Each file is read at most once into `read`,
+   * so a file read to be weighed is uploaded from memory. A tree holding no file is refused with
+   * `RequestArgumentError` before any request, `call` naming the caller's method.
+   * `options.readScope` is the scope the blob route is asked under, and `options.signal` is read
+   * before each read, the handshake, the blob route and each upload, and is passed to each of
+   * them, so an abort also stops a request or an upload under way.
+   */
+  private async prepareTree(
     tree: MethodTreeSource,
     call: string,
     sending: TreeSending,
-    options: TreeSendOptions = {},
-  ): Promise<MethodFiles> {
+    options: TreeSendOptions,
+    read: Map<string, Uint8Array>,
+    retried = false,
+  ): Promise<PreparedFiles> {
     const { signal, readScope } = options;
     if (tree.files.length === 0) throw emptyTreeRefusal(call, "a tree", sending);
-    let read: Map<string, Uint8Array> | undefined;
+    throwIfAborted(signal);
+    const version = await this.cachedVersion(signal);
+    throwIfAborted(signal);
+    const announced = announcedTreeLimits(version);
+    if (!declaresBlobStore(version)) {
+      const files = await inlineWithin(tree, call, sending, announced.maxInlineBytes, read, signal);
+      return { files, byHashTree: undefined };
+    }
+    const threshold = inlineThreshold(announced);
     // An inline map is never smaller than the bytes it carries, so a tree whose bytes alone pass
     // the threshold is not read in full just to be measured.
-    if (treeTotalSize(tree) <= INLINE_TREE_MAX_BYTES) {
-      read = await readTreeBytes(tree, signal);
-      const inline = inlineFilesOf(tree, read);
-      if (inlineMapBytes(inline) <= INLINE_TREE_MAX_BYTES) return inline;
+    if (treeTotalSize(tree) <= threshold) {
+      const inline = inlineFilesOf(tree, await readTreeBytesInto(tree, read, signal));
+      if (inlineMapBytes(inline) <= threshold) return { files: inline, byHashTree: undefined };
     }
     throwIfAborted(signal);
-    const version = await this.cachedVersion();
-    throwIfAborted(signal);
-    if (!declaresBlobStore(version)) {
-      return inlineFilesOf(tree, read ?? (await readTreeBytes(tree, signal)));
+    let asked: { result: MissingBlobsResult; res: RawResponse };
+    try {
+      asked = await this.findMissingBlobs(
+        { blobs: uniqueBlobs(tree), digest: tree.digest },
+        readScope,
+        signal,
+      );
+    } catch (err) {
+      if (!retried && err instanceof ApiResponseError && err.status === 404) {
+        this.forgetHandshake();
+        return this.prepareTree(tree, call, sending, options, read, true);
+      }
+      throw err;
     }
-    const asked = await this.findMissingBlobs(
-      { blobs: uniqueBlobs(tree), digest: tree.digest },
-      readScope,
-    );
     await this.uploadMissing(tree, asked, read, sending, signal);
-    return hashMethodFiles(tree);
+    return { files: hashMethodFiles(tree), byHashTree: tree };
   }
 
   /**
@@ -2839,17 +2968,19 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `readScope`, a crate request's `read_scope`, is sent as the route's `read_scope` query, the
    * Pipelex API's extension naming the blob store asked, so the blobs are uploaded into the store
    * the request's hash entries are read from; each upload target is signed for that scope. The
-   * hosted platform's own route reads the caller's organization instead.
+   * hosted platform's own route reads the caller's organization instead. `signal` stops the
+   * request, its abort thrown as is.
    */
   private async findMissingBlobs(
     request: MissingBlobsRequest,
     readScope?: string,
+    signal?: AbortSignal,
   ): Promise<{ result: MissingBlobsResult; res: RawResponse }> {
     const endpoint =
       readScope === undefined
         ? "blobs/missing"
         : `blobs/missing?${new URLSearchParams({ read_scope: readScope }).toString()}`;
-    const res = withLinks(await this.requestProductAnswer("POST", endpoint, request));
+    const res = withLinks(await this.requestProductAnswer("POST", endpoint, request, { signal }));
     const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
     const missing = answer.missing;
     if (!Array.isArray(missing) || !missing.every(isMissingBlob)) {
@@ -2870,8 +3001,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * the SDK cannot read. The bytes the tree reads for a blob are checked against it before they
    * are sent, since storage keeps a blob under the hash it is named by: bytes of another hash or
    * size are refused with `RequestArgumentError`, and nothing more is uploaded. `userSignal` is
-   * read before each blob's read and before its upload: once it has aborted, no further blob is
-   * read or sent, and an upload already sent runs to its end.
+   * read before each blob's read and before its upload, and reaches each upload under way: once it
+   * has aborted, no further blob is read or sent, the uploads in flight are stopped, and the abort
+   * is thrown rather than a transfer failure.
    */
   private async uploadMissing(
     tree: MethodTreeSource,
@@ -2893,24 +3025,48 @@ export class PipelexApiClient implements HostedProtocolSurface {
         `a body asking for blobs this tree does not hold: ${[...new Set(strangers)].sort().join(", ")}`,
       );
     }
-    await forEachConcurrently(missing, MAX_CONCURRENT_TRANSFERS, async (blob, signal) => {
-      const file = byBlob.get(blob.sha256)!;
-      throwIfAborted(userSignal);
-      const bytes = read?.get(file.path) ?? (await tree.readFile(file.path));
-      const bytesSha256 = await sha256Hex(bytes);
-      if (bytes.length !== blob.size || bytesSha256 !== blob.sha256) {
-        throw new RequestArgumentError(
-          `The tree read ${bytes.length} bytes hashing to ${bytesSha256} for '${file.path}', which ` +
-            `its listing names as ${blob.size} bytes hashing to ${blob.sha256}, so they were not ` +
-            `uploaded and ${sending.unsent}.`,
-        );
-      }
-      throwIfAborted(userSignal);
-      await uploadBlob(blob, bytes, {
-        timeoutMs: this.requestTimeoutMs,
-        signal,
-        unsent: sending.unsent,
+    // The tasks share the one signal the run of uploads aborts on a failure, linked here once to
+    // the caller's and detached when the uploads are over.
+    let linked: { signal: AbortSignal; dispose: () => void } | undefined;
+    try {
+      await forEachConcurrently(missing, MAX_CONCURRENT_TRANSFERS, async (blob, signal) => {
+        linked ??= eitherSignal(signal, userSignal);
+        await this.uploadOne(tree, blob, byBlob, read, sending, linked.signal, userSignal);
       });
+    } catch (err) {
+      if (userSignal?.aborted === true) throw userSignal.reason;
+      throw err;
+    } finally {
+      linked?.dispose();
+    }
+  }
+
+  /** Read, check and upload one missing blob (see `uploadMissing`). */
+  private async uploadOne(
+    tree: MethodTreeSource,
+    blob: MissingBlob,
+    byBlob: ReadonlyMap<string, MethodTreeSourceFile>,
+    read: ReadonlyMap<string, Uint8Array> | undefined,
+    sending: TreeSending,
+    signal: AbortSignal,
+    userSignal: AbortSignal | undefined,
+  ): Promise<void> {
+    const file = byBlob.get(blob.sha256)!;
+    throwIfAborted(userSignal);
+    const bytes = read?.get(file.path) ?? (await tree.readFile(file.path));
+    const bytesSha256 = await sha256Hex(bytes);
+    if (bytes.length !== blob.size || bytesSha256 !== blob.sha256) {
+      throw new RequestArgumentError(
+        `The tree read ${bytes.length} bytes hashing to ${bytesSha256} for '${file.path}', which ` +
+          `its listing names as ${blob.size} bytes hashing to ${blob.sha256}, so they were not ` +
+          `uploaded and ${sending.unsent}.`,
+      );
+    }
+    throwIfAborted(userSignal);
+    await uploadBlob(blob, bytes, {
+      timeoutMs: this.requestTimeoutMs,
+      signal,
+      unsent: sending.unsent,
     });
   }
 
@@ -3507,8 +3663,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Name the method exactly one of three ways, all server-resolved through the
    * one `pipeIo` call this composes:
    *
-   * - `files` — the inline MTHDS closure, with the `resources` its steps read
-   *   (a `PipeDocGen` step's `template_file`), keyed by the path a step names;
+   * - the method's tree — a `directory`, `contents`, a listed `tree` or the `files`
+   *   map, sent as `pipeIo` sends it, with the files its steps read (a `PipeDocGen`
+   *   step's `template_file`) among its files;
    * - `method_ref` — a published method's address, fetched by the runner;
    * - `method_id` — a stored method's catalog id, resolved by the platform
    *   (hosted only; requires an API key).
@@ -3619,9 +3776,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
   /**
    * The whole record for one run — `GET /v1/runs/{id}`.
    *
-   * The ONLY call that returns `mthds_contents` (what the run actually
-   * executed) and `inputs`. Kept off the status read, which pollers hit every
-   * few seconds. A failed run's stored report, `error`, is checked field by
+   * The ONLY call that returns what the run actually executed and its
+   * `inputs`. Kept off the status read, which pollers hit every few seconds. A failed run's stored report, `error`, is checked field by
    * field (see `RunErrorReport`).
    *
    * Read with `parseExactJson`, so an integer past `Number.MAX_SAFE_INTEGER` in the inputs is a
@@ -3643,6 +3799,35 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
+   * A run's arguments checked before anything is listed, read or sent, `call` naming the caller's
+   * method in each refusal: the generic `extra` passthrough, the Pipelex API's and the hosted
+   * API's own selectors, and the method's tree in its forms as the standard checks them; then the
+   * "something to run" precondition, the `method_ref` pairings and the linkage form's bare
+   * `method_id`.
+   */
+  private runParts(call: "execute" | "start", options: PipelexRunOptions): RunParts {
+    const extensions = buildExtensions(options.extra);
+    const api = buildApiRunExtensions(options);
+    const hosted = buildHostedRunExtensions(options);
+    const forms = protocolTreeForms(call, options);
+    const treeForms = treeFormsGiven(forms);
+    if (
+      !options.pipe_code &&
+      treeForms.length === 0 &&
+      Object.keys(api).length === 0 &&
+      Object.keys(hosted).length === 0 &&
+      Object.keys(extensions).length === 0
+    ) {
+      throw new RequestArgumentError(
+        `Either pipe_code, the method's tree (directory, contents, tree or files), a method_ref, a hosted method_id or a server-specific extension arg (extra) must be provided to ${call}().`,
+      );
+    }
+    assertMethodRefPairsWithNothing(options, treeForms);
+    assertLinkageMethodIdIsBare(options, treeForms);
+    return { forms, extensions, api, hosted };
+  }
+
+  /**
    * Blocking `POST /v1/execute` adapted onto `RunResults` — the bare-runner
    * path. Forwards every protocol field PLUS every extension surface: the
    * runner-resolved `method_ref`, the hosted `method_id`, and the generic
@@ -3653,24 +3838,32 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * so a runner that cannot resolve it says so (Rule 4) instead of the client
    * silently dropping it.
    */
-  private async executeBlocking(options: PipelexStartOptions): Promise<RunResults> {
-    const response = await this.execute({
-      pipe_code: options.pipe_code ?? undefined,
-      mthds_contents: options.mthds_contents ?? undefined,
-      inputs: options.inputs ?? undefined,
-      output_name: options.output_name ?? undefined,
-      output_multiplicity: options.output_multiplicity ?? undefined,
-      dynamic_output_concept_ref: options.dynamic_output_concept_ref ?? undefined,
-      // The bundle must survive the fallback too — a bare runner reached through
-      // this path runs the same method as the durable one, or it runs nothing.
-      files: options.files ?? undefined,
-      bundle_b64: options.bundle_b64 ?? undefined,
-      // And so must the files its steps read, or the same method fails to load here.
-      resources: options.resources ?? undefined,
-      method_ref: options.method_ref ?? undefined,
-      method_id: options.method_id ?? undefined,
-      extra: options.extra ?? undefined,
-    });
+  private async executeBlocking(
+    options: PipelexStartOptions,
+    signal: AbortSignal | undefined,
+    sending: PreparedRunTree,
+  ): Promise<RunResults> {
+    const response = await this.executeRun(
+      {
+        pipe_code: options.pipe_code ?? undefined,
+        inputs: options.inputs ?? undefined,
+        output_name: options.output_name ?? undefined,
+        output_multiplicity: options.output_multiplicity ?? undefined,
+        dynamic_output_concept_ref: options.dynamic_output_concept_ref ?? undefined,
+        // The method's tree must survive the fallback too — a bare runner reached through this path
+        // runs the same method as the durable one, or it runs nothing. Its forms are checked here as
+        // the start checked them, and `sending` carries the tree the start prepared, sent as is.
+        directory: options.directory ?? undefined,
+        contents: options.contents ?? undefined,
+        tree: options.tree ?? undefined,
+        files: options.files ?? undefined,
+        method_ref: options.method_ref ?? undefined,
+        method_id: options.method_id ?? undefined,
+        extra: options.extra ?? undefined,
+      },
+      signal,
+      sending,
+    );
     return resultsFromExecute(response);
   }
 }
@@ -3725,27 +3918,24 @@ function describeRefusedBaseUrl(value: string): string {
 }
 
 // The protocol's own request fields — `extra` is for extension args only.
-// `files` / `bundle_b64` are reserved too: they are named run-source options,
-// so smuggling them through `extra` (which merges last into the body) would
-// overwrite the validated fields and bypass the run-source exclusivity check.
+// `files` is reserved too: it is the method's tree, a named option, so smuggling
+// it through `extra` (which merges last into the body) would overwrite the
+// prepared tree and bypass the one-form check.
 const PROTOCOL_REQUEST_KEYS: readonly string[] = [
   "pipe_code",
-  "mthds_contents",
   "inputs",
   "output_name",
   "output_multiplicity",
   "dynamic_output_concept_ref",
   "files",
-  "bundle_b64",
 ];
 
-// The PIPELEX API's own request fields — the layer-2 extensions the runner
-// reads itself (`method_ref`, a run source in its own right, and `resources`,
-// the files the bundle's steps read). Reserved on `extra` for the same reason
-// the protocol fields are: `extra` merges last, so a smuggled copy would
-// overwrite the validated named option and bypass the selector-exclusivity and
-// path checks.
-const PIPELEX_API_REQUEST_KEYS: readonly string[] = ["method_ref", "resources"];
+// The PIPELEX API's own request field — the layer-2 extension the runner reads
+// itself (`method_ref`, a run source in its own right). Reserved on `extra` for
+// the same reason the protocol fields are: `extra` merges last, so a smuggled
+// copy would overwrite the validated named option and bypass the
+// selector-exclusivity check.
+const PIPELEX_API_REQUEST_KEYS: readonly string[] = ["method_ref"];
 
 // The HOSTED API's own request fields — the layer-3 extensions this client
 // names itself. Reserved on `extra` for the same reason the protocol fields
@@ -3760,15 +3950,21 @@ const PIPELEX_API_REQUEST_KEYS: readonly string[] = ["method_ref", "resources"];
 // split is normative for the whole layered client stack.
 const HOSTED_REQUEST_KEYS: readonly string[] = ["method_id"];
 
+// The client-only options, which are never serialized as such: the three forms of
+// the method's tree the client turns into `files` (`directory`, `contents`, `tree`)
+// and the `bundleMain` hint. Reserved on `extra` so none of them reaches the wire
+// through the passthrough under its own name.
+const CLIENT_ONLY_KEYS: readonly string[] = ["directory", "contents", "tree", "bundleMain"];
+
 // Keys that must never ride `extra`: the named request options above (which
 // `extra` would overwrite — it merges last into the body) plus the client-only
-// `bundleMain` hint, which is documented as never-serialized and so must not
-// reach the wire through the passthrough either.
+// options. A field the client no longer names, such as the runner's legacy
+// `mthds_contents`, is NOT reserved: `extra` is the passthrough for exactly that.
 const RESERVED_EXTRA_KEYS: ReadonlySet<string> = new Set([
   ...PROTOCOL_REQUEST_KEYS,
   ...PIPELEX_API_REQUEST_KEYS,
   ...HOSTED_REQUEST_KEYS,
-  "bundleMain",
+  ...CLIENT_ONLY_KEYS,
 ]);
 
 // Prototype-pollution vectors. An own `__proto__` (exactly what `JSON.parse`
@@ -3815,25 +4011,181 @@ function buildExtensions(
 const METHOD_REF_FETCH_TIMEOUT_MS = 180_000; // 3 min — covers the server's clone + resolve
 
 /**
- * The internal request budget for a crate route's `CrateRequestBase` closure
- * (`resolve`, `codegen`, `pipeIo`): the static-route default, unless the request
- * is one the default would cut short through no fault of the server's.
- *
- * - **`resources`** make the request *body* as large as the runner's limits allow,
- *   about 13 MiB of base64 by default, and the whole upload is charged against
- *   this budget. They get the client's request ceiling (`requestTimeoutMs`),
- *   which `start` gives a request carrying them and `validate` carries them under
- *   by default, so the same bundle and files never time out on one route yet go
- *   through on another.
- * - **A `method_ref`** may make the server clone a repository first, which gets
- *   the fetch-sized budget.
+ * Whether a crate request's `files` carry more inline than `INLINE_TREE_MAX_BYTES`, weighed as the
+ * request spends them: a tree sent inline to an API keeping no blob store, whatever its weight, or
+ * a `files` map given as is. A map of hash entries weighs little, and a value that is not a map
+ * is not weighed.
  */
-function crateRequestTimeoutMs(
-  request: CrateRequestBase,
-  executeCeilingMs: number,
-): number | undefined {
-  if (hasBundleResources(request.resources)) return executeCeilingMs;
-  return nonEmptyString(request.method_ref) !== undefined ? METHOD_REF_FETCH_TIMEOUT_MS : undefined;
+function carriesLargeInlineTree(files: MethodFiles | null | undefined): boolean {
+  if (files === null || files === undefined || !isPlainObject(files)) return false;
+  try {
+    return inlineMapBytes(files) > INLINE_TREE_MAX_BYTES;
+  } catch {
+    // A map JSON cannot carry is refused as the caller's argument when the request is written.
+    return false;
+  }
+}
+
+/**
+ * A method's tree as a call gave it, ready to send: a tree to prepare (listed from a `directory`,
+ * built from `contents`, or given), a `files` map sent as given (`null` emptying a draft), or
+ * `undefined` for a call that gives none.
+ */
+type TreeToSend =
+  { readonly tree: MethodTreeSource } | { readonly files: MethodFiles | null } | undefined;
+
+/** A tree prepared for one send: the `files` map it carries, and the tree when it went by hash. */
+interface PreparedFiles {
+  readonly files: MethodFiles | null | undefined;
+  readonly byHashTree: MethodTreeSource | undefined;
+}
+
+/** A tree already prepared for a first send, with the bytes read while preparing it. */
+interface PreparedTreeSend {
+  readonly prepared: PreparedFiles;
+  readonly read: Map<string, Uint8Array>;
+}
+
+/**
+ * The tree `startAndWaitForResult` prepares once and hands to the start and to the blocking
+ * execute: what the call gave, and, for a tree to prepare, its first preparation.
+ */
+interface PreparedRunTree {
+  readonly source: TreeToSend;
+  readonly initial: PreparedTreeSend | undefined;
+}
+
+/** A run's arguments as `runParts` checked them. */
+interface RunParts {
+  readonly forms: MethodTreeForms;
+  readonly extensions: Record<string, unknown>;
+  readonly api: Record<string, unknown>;
+  readonly hosted: Record<string, unknown>;
+}
+
+/**
+ * A run's wire body: the protocol's arguments, the method's `files`, then the Pipelex API's and
+ * the hosted API's selectors and the `extra` passthrough. A start drops a `null` argument, as it
+ * always has; `execute` sends its arguments as given. `?? undefined` so `JSON.stringify` drops an
+ * absent field from the wire body.
+ */
+function runRequestBody(
+  call: "execute" | "start",
+  options: PipelexRunOptions,
+  files: MethodFiles | null | undefined,
+  parts: RunParts,
+): RunRequest & Record<string, unknown> {
+  const dropNull = call === "start";
+  return {
+    pipe_code: dropNull ? (options.pipe_code ?? undefined) : options.pipe_code,
+    inputs: dropNull ? (options.inputs ?? undefined) : options.inputs,
+    output_name: dropNull ? (options.output_name ?? undefined) : options.output_name,
+    output_multiplicity: dropNull
+      ? (options.output_multiplicity ?? undefined)
+      : options.output_multiplicity,
+    dynamic_output_concept_ref: dropNull
+      ? (options.dynamic_output_concept_ref ?? undefined)
+      : options.dynamic_output_concept_ref,
+    files: files ?? undefined,
+    ...parts.api,
+    ...parts.hosted,
+    ...parts.extensions,
+  };
+}
+
+/**
+ * The error a blocking execute throws for `err`: a `PipelineExecuteTimeoutError` when the hosted
+ * gateway cut the request off (see `isGatewayCutOff`), timed from `sentAt`, and `err` otherwise.
+ */
+function executeCutOff(err: unknown, sentAt: number): unknown {
+  if (err instanceof RunStillRunningError) return err;
+  const elapsedMs = performance.now() - sentAt;
+  return isGatewayCutOff(err, elapsedMs)
+    ? new PipelineExecuteTimeoutError(elapsedMs, { cause: err })
+    : err;
+}
+
+/**
+ * Whether a run's `extra` carries a method bundle a runner reads, `mthds_contents` or
+ * `bundle_b64`, as the `pipelex-sdk` command sends one: a start carrying one gets the request
+ * ceiling, as the Python SDK gives it, since the bundle can make the body large.
+ */
+function carriesExtraBundle(extensions: Record<string, unknown>): boolean {
+  const contents = extensions["mthds_contents"];
+  const carriesContents = Array.isArray(contents) ? contents.length > 0 : Boolean(contents);
+  return carriesContents || Boolean(extensions["bundle_b64"]);
+}
+
+/** The refusal of a `directory` that is not a path, `call` naming the caller's method. */
+function directoryRefusal(call: string): RequestArgumentError {
+  return new RequestArgumentError(
+    `${call}() got a directory that is not a path: give the method's directory as a string.`,
+  );
+}
+
+/**
+ * `value` as a listed tree, or the refusal of one that is not, `call` naming the caller's method:
+ * a `tree` must have its `files`, its `digest` and a `readFile`, as the `MethodTree` the `mthds`
+ * package's `listMethodTree` returns has, which the shape check `prepareInputs` applies too.
+ */
+function checkedTreeSource(call: string, value: unknown): MethodTreeSource {
+  const fault = treeShapeFault(value);
+  if (fault !== undefined) {
+    throw new RequestArgumentError(
+      `${call}() got a tree that is not a listed method tree — its files, its digest and a ` +
+        `readFile — such as the MethodTree listMethodTree returns; got ${fault}.`,
+    );
+  }
+  return value as MethodTreeSource;
+}
+
+/**
+ * The whole tree inline, for a receiver keeping no blob store, held to the inline limit it
+ * announces as `mthds`'s `MthdsApiClient` holds it: its files' declared sizes are checked before
+ * anything is read, since the inline map weighs at least that much, then the encoded map, so a
+ * tree the receiver would refuse is refused here with `RequestArgumentError`, naming the limit,
+ * without being sent. Each file is read into `read`, under `signal`.
+ */
+async function inlineWithin(
+  tree: MethodTreeSource,
+  call: string,
+  sending: TreeSending,
+  maxInlineBytes: number | undefined,
+  read: Map<string, Uint8Array>,
+  signal: AbortSignal | undefined,
+): Promise<MethodFiles> {
+  if (maxInlineBytes !== undefined && treeTotalSize(tree) > maxInlineBytes) {
+    throw inlineLimitRefusal(
+      call,
+      sending,
+      "its files alone weigh",
+      treeTotalSize(tree),
+      maxInlineBytes,
+    );
+  }
+  const inline = inlineFilesOf(tree, await readTreeBytesInto(tree, read, signal));
+  if (maxInlineBytes !== undefined) {
+    const weight = inlineMapBytes(inline);
+    if (weight > maxInlineBytes) {
+      throw inlineLimitRefusal(call, sending, "its inline map weighs", weight, maxInlineBytes);
+    }
+  }
+  return inline;
+}
+
+/** The refusal of a tree past the inline limit of a receiver keeping no blob store. */
+function inlineLimitRefusal(
+  call: string,
+  sending: TreeSending,
+  measured: string,
+  weight: number,
+  limit: number,
+): RequestArgumentError {
+  return new RequestArgumentError(
+    `${call}() cannot send the method's tree: the API keeps no blob store, so the tree travels ` +
+      `inline, and ${measured} ${weight} bytes, past the ${limit} bytes it takes inline (its ` +
+      `max_inline_bytes), so ${sending.unsent}.`,
+  );
 }
 
 /**
@@ -3864,51 +4216,82 @@ function buildHostedRunExtensions(options: PipelexHostedRunExtensions): Record<s
 }
 
 /**
- * The standard's run-source exclusivity check (`assertExclusiveRunSources`: the two bundle
- * encodings together, or a bundle beside inline contents), its refusal rethrown as a
+ * The forms of the method's tree a protocol route (a run, `validate`) was given, checked as the
+ * MTHDS standard checks them: its `assertOneMethodSource` on `files` and `tree` (both at once, or
+ * either holding no file, refused whatever else the request carries), its refusal rethrown as a
  * `RequestArgumentError` with the same message and the standard's error as `cause`, so it carries
- * a verdict like every other argument the client refuses.
+ * a verdict like every other argument the client refuses; and `contents` holding no file refused
+ * the same way. A `null` member and an empty `directory` are absent.
  */
-function assertRunSourcesExclusive(options: RunRequest): void {
+function protocolTreeForms(call: string, options: MethodTreeForms): MethodTreeForms {
+  // A `tree` the standard's check would read as a tree is checked as one first, so a value that
+  // is not one is refused as the caller's argument rather than failing as a native TypeError.
+  if (options.tree != null) checkedTreeSource(call, options.tree);
   try {
-    assertExclusiveRunSources(options);
+    assertOneMethodSource({ files: options.files ?? null, tree: options.tree ?? null });
   } catch (err) {
     if (err instanceof PipelineRequestError) {
       throw new RequestArgumentError(err.message, { cause: err });
     }
     throw err;
   }
+  const contents = options.contents ?? undefined;
+  if (
+    contents !== undefined &&
+    typeof contents === "object" &&
+    Object.keys(contents).length === 0
+  ) {
+    throw emptyTreeRefusal(call, "contents", REQUEST_SENDING);
+  }
+  return {
+    directory:
+      typeof options.directory === "string"
+        ? nonEmptyString(options.directory)
+        : (options.directory ?? undefined),
+    contents,
+    tree: options.tree ?? undefined,
+    files: options.files ?? undefined,
+  };
+}
+
+/**
+ * The names of the forms of the method's tree `input` gives, in the order the refusals name them.
+ * `files` counts when it is not `undefined`, since a save's `files: null` empties a draft; the
+ * other forms count when they are neither `undefined` nor `null`, and `directory` when it is not
+ * empty either. A route that reads `files: null` as absent normalizes it before asking.
+ */
+function treeFormsGiven(input: MethodTreeForms): string[] {
+  const given: string[] = [];
+  if (input.directory != null && input.directory !== "") given.push("directory");
+  if (input.contents != null) given.push("contents");
+  if (input.tree != null) given.push("tree");
+  if (input.files !== undefined) given.push("files");
+  return given;
 }
 
 /**
  * Enforce the run routes' `method_ref` exclusivity, mirroring the server's own
- * 422s so an illegal pairing fails before anything hits the wire. A
- * `method_ref` is a complete run source (the fetched package carries its
- * `.mthds` and its entry pipe), so it pairs with NOTHING: not with inline
- * `mthds_contents`, not with a method bundle, and not with the hosted
- * `method_id` — an address run has its own provenance and needs no linkage id.
+ * 422s so an illegal pairing fails before anything is listed, read or sent. A
+ * `method_ref` is a complete run source (the fetched package carries its whole
+ * tree and its entry pipe), so it pairs with NOTHING: not with the method's tree
+ * in any form, and not with the hosted `method_id` — an address run has its own
+ * provenance and needs no linkage id.
  *
- * The one documented run-route exception is deliberately NOT here: inline
- * source + `method_id` stays legal (the inline source runs; the id demotes to
- * run-history linkage), its one condition, a bare id, held by
- * `assertLinkageMethodIdIsBare` below. `pipe_code` beside a `method_ref` is legal too — it
- * overrides the manifest's `main_pipe`. The wording of the first two errors
- * mirrors the server's validator; presence semantics match it as well
- * (`mthds_contents` counts when non-empty, a bundle encoding counts when the
- * key is present, the selectors count when non-empty).
+ * The one documented run-route exception is deliberately NOT here: a tree +
+ * `method_id` stays legal (the tree runs; the id demotes to run-history linkage),
+ * its one condition, a bare id, held by `assertLinkageMethodIdIsBare` below.
+ * `pipe_code` beside a `method_ref` is legal too — it overrides the manifest's
+ * `main_pipe`. The selectors count when non-empty.
  */
 function assertMethodRefPairsWithNothing(
-  options: PipelexApiRunExtensions & PipelexHostedRunExtensions & RunRequest,
+  options: PipelexApiRunExtensions & PipelexHostedRunExtensions,
+  treeForms: readonly string[],
 ): void {
   if (nonEmptyString(options.method_ref) === undefined) return;
-  if (options.mthds_contents != null && options.mthds_contents.length > 0) {
+  if (treeForms.length > 0) {
     throw new RequestArgumentError(
-      "method_ref and inline mthds_contents are mutually exclusive; send one or the other.",
-    );
-  }
-  if (options.files != null || options.bundle_b64 != null) {
-    throw new RequestArgumentError(
-      "method_ref and a method bundle (bundle_b64 / files) are mutually exclusive; send one or the other.",
+      `method_ref and the method's tree (${treeForms.join(", ")}) are mutually exclusive: a ` +
+        "published method's tree is its package's own. Send one or the other.",
     );
   }
   if (nonEmptyString(options.method_id) !== undefined) {
@@ -3921,77 +4304,27 @@ function assertMethodRefPairsWithNothing(
 
 /**
  * Enforce the run routes' linkage clause, mirroring the platform's own `422` so a
- * suffixed linkage id fails before anything hits the wire. Beside an inline source
- * (`mthds_contents`, `files` or `bundle_b64`) the `method_id` is run-history linkage
- * and must be a bare catalog id: the inline source is what runs, so a version suffix
- * (`mt_…@3`, `mt_…@draft`) would claim a version that did not. A `method_id` alone
- * keeps its suffix, which names the version to run.
- *
- * An inline source counts only when it reaches the wire, as the platform counts it:
- * `mthds_contents` when non-empty and a bundle encoding when `hasBundlePayload` says
- * it carries one, since `nonEmptyFiles` and `nonEmptyString` drop an empty `files: {}`
- * or `bundle_b64: ""` from the body, and a suffixed id beside one then runs the version
- * it names. That differs on purpose from `assertMethodRefPairsWithNothing`, which
- * mirrors the platform's presence-based pairing validator. Only the suffix is checked,
- * by its `@`, since the catalog id's alphabet has none: the id itself stays a
- * pass-through the platform resolves.
+ * suffixed linkage id fails before anything is listed, read or sent. Beside the
+ * method's tree, in any form, the `method_id` is run-history linkage and must be a
+ * bare catalog id: the tree is what runs, so a version suffix (`mt_…@3`,
+ * `mt_…@draft`) would claim a version that did not. A `method_id` alone keeps its
+ * suffix, which names the version to run. Only the suffix is checked, by its `@`,
+ * since the catalog id's alphabet has none: the id itself stays a pass-through the
+ * platform resolves.
  */
-function assertLinkageMethodIdIsBare(options: PipelexHostedRunExtensions & RunRequest): void {
+function assertLinkageMethodIdIsBare(
+  options: PipelexHostedRunExtensions,
+  treeForms: readonly string[],
+): void {
   const methodId = nonEmptyString(options.method_id);
   if (methodId === undefined || !methodId.includes("@")) return;
-  const hasInlineSource =
-    (options.mthds_contents != null && options.mthds_contents.length > 0) ||
-    hasBundlePayload(options);
-  if (!hasInlineSource) return;
+  if (treeForms.length === 0) return;
   throw new RequestArgumentError(
-    `method_id "${methodId}" beside an inline source is run-history linkage and must be a bare ` +
-      "catalog id: the inline source is what runs, so a version suffix would claim a version " +
-      "that did not. Send the bare id (parseMethodSelector(...).method_id), or drop the inline " +
-      "source to run the version the selector names.",
+    `method_id "${methodId}" beside the method's tree is run-history linkage and must be a bare ` +
+      "catalog id: the tree is what runs, so a version suffix would claim a version that did " +
+      "not. Send the bare id (parseMethodSelector(...).method_id), or drop the tree to run the " +
+      "version the selector names.",
   );
-}
-
-/**
- * Enforce the run routes' `resources` pairing, mirroring the runner's own `422`s
- * so an illegal pairing fails before anything is encoded or sent. The files a
- * bundle's steps read accompany that bundle: inline `mthds_contents` or a method
- * bundle. Beside a `method_ref` they are refused, a published package's files
- * being its own, and so they are with no source at all, where no step could read
- * them. A hosted `method_id` without an inline source is left to the server: the
- * platform resolves it into the bundle the runner then reads them with.
- *
- * Presence follows the other pairing checks: `resources` counts when it carries a
- * file, `mthds_contents` when non-empty, a bundle when `hasBundlePayload` says so.
- */
-function assertResourcesAccompanyABundle(
-  options: PipelexApiRunExtensions & PipelexHostedRunExtensions & RunRequest,
-): void {
-  if (!hasBundleResources(options.resources)) return;
-  if (nonEmptyString(options.method_ref) !== undefined) {
-    throw new RequestArgumentError(
-      "resources accompany inline mthds_contents or a method bundle; a method_ref's files are the package's own.",
-    );
-  }
-  const hasInlineSource =
-    (options.mthds_contents != null && options.mthds_contents.length > 0) ||
-    hasBundlePayload(options);
-  if (!hasInlineSource && nonEmptyString(options.method_id) === undefined) {
-    throw new RequestArgumentError(
-      "resources accompany the bundle whose steps read them: send them with mthds_contents or a method bundle.",
-    );
-  }
-}
-
-/**
- * Normalize a bundle encoding for the wire: an empty map / string is NOT a
- * runnable bundle, so it must not be sent (the runner rejects a zero-file
- * bundle). Exclusivity is still checked on presence upstream, so an empty
- * encoding supplied alongside another source has already been rejected.
- */
-function nonEmptyFiles(
-  files: Record<string, string> | null | undefined,
-): Record<string, string> | undefined {
-  return files != null && Object.keys(files).length > 0 ? files : undefined;
 }
 
 function nonEmptyString(value: string | null | undefined): string | undefined {
