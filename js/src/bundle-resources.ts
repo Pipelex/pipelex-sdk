@@ -15,9 +15,10 @@
  * and two keys naming one file once `.` segments and repeated slashes collapse. Each is a
  * `RequestArgumentError` naming the key, where the runner answers a `422` `InvalidResourcePath`.
  * The sizes are left to the server, since a deployment configures them: 32 files, 5 MiB each and
- * 10 MiB in all by default, a `413` `PayloadTooLarge` beyond, and 512 KiB in all for the `.html`
- * template files, a `413` `BundleResourcesTooLargeError`. So is every rule that needs the parsed
- * bundle: a file no step names is a `422` `BundleResourceNotNamedError`.
+ * 10 MiB in all by default, a `413` `PayloadTooLarge` beyond, and a `422` `MethodTreeTooLarge`
+ * for files that take the method tree they join past the runner's tree limits, an `.html`
+ * template file counted like any other. So is every rule that needs the parsed bundle: a file no
+ * step names is a `422` `BundleResourceNotNamedError`.
  */
 
 import { RequestArgumentError } from "./errors.js";

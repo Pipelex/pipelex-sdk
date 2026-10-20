@@ -638,8 +638,8 @@ describe("the runner's refusals reach the caller typed", () => {
       "Two files submitted with the bundle name the same file 'a.docx'.",
     ],
     [422, "BundleResourceNotNamedError", "No step of the bundle names the file 'typo.docx'."],
+    [422, "MethodTreeTooLarge", "The method tree exceeds the deployment's total size limit."],
     [413, "PayloadTooLarge", "resources exceeds the 32-file limit (got 33)"],
-    [413, "BundleResourcesTooLargeError", "The .html template files exceed 512 KiB."],
     [400, "InvalidBase64", "The file 'a.docx' in resources is not valid base64"],
   ])("a %i %s is an input ApiResponseError", async (status, errorType, detail) => {
     const client = makeClient();

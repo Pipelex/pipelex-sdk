@@ -61,8 +61,8 @@ Every refusal is an `ApiResponseError`, `input` and not retryable; branch on its
 | `422` | `InvalidResourcePath` | A key that cannot name a file inside the bundle, two keys for one file, or, on a run route, two different files under one path, one sent in `resources` and one shipped in a method bundle. |
 | `422` | `BundleResourceNotNamedError` | A file no step of the bundle names, on every route, the diagnostic ones included; its detail lists the unnamed paths. A misspelled key fails here rather than leaving its step without its file. |
 | `422` | `ValidationError` | `resources` beside a `method_ref`, or on a run route with no bundle. |
+| `422` | `MethodTreeTooLarge` | The files sent in `resources`, joined to the method tree they accompany, take it past one of the runner's tree limits. An `.html` template file is counted like any other file, with no limit of its own. |
 | `413` | `PayloadTooLarge` | More files than the deployment allows (32 by default), a file over its per-file limit (5 MiB by default), or more bytes in all than its total (10 MiB by default), counting the files a method bundle ships for its steps. |
-| `413` | `BundleResourcesTooLargeError` | The `.html` template files, which travel inline with the method wherever it runs, over 512 KiB in all. An office template file is not counted, since a run handed to a remote orchestrator carries it by reference to the run's storage. |
 | `400` | `InvalidBase64` | A value that is not base64, which a request this SDK encoded never carries. |
 
 ## A step whose file was not sent
@@ -93,6 +93,27 @@ if (verdict.is_valid) {
   }
 }
 ```
+
+## Which step reads which file
+
+Whatever form the method was sent in, inline contents with their `resources`, a `files` tree, a `method_ref` or a `method_id`, the valid verdict names the files of the method's tree each step reads. `tree_files_read` is keyed by the same namespaced `pipe_ref` as `pipe_io_contracts`, each entry a list of `TreeFileRead` items, and a step that reads no file, a controller included, has an empty list. `tree_file_readers` states the same facts the other way: keyed by tree path in sorted order, it lists for each file the refs of the steps that read it, each once, and a file of the tree with no entry, such as a bundle itself or a README, is read by no step.
+
+| Member | Value |
+| --- | --- |
+| `tree_path` | The file's path from the root of the method's tree, with forward slashes, never a path on the server; a file sent in `resources` is named by its key, collapsed as the runner collapses it |
+| `use` | `template` for a `PipeDocGen` step's `template_file`; `template_asset` for an image, a stylesheet or a font its HTML template names by a literal relative URL, or one a stylesheet it names refers to; `python_module` for the module holding a `PipeFunc` step's function, when that module is a file of the tree |
+
+The paths come from what each step already names, so a client can show which step uses a file, or warn before one a step reads is renamed or removed, without parsing the method.
+
+```ts
+if (verdict.is_valid && verdict.tree_file_readers) {
+  for (const [treePath, pipeRefs] of Object.entries(verdict.tree_file_readers)) {
+    console.log(`${treePath} is read by ${pipeRefs.join(", ")}`);
+  }
+}
+```
+
+`use` is typed `TreeFileUse | (string & {})`: a runner of a later version may add a use as another kind of step comes to read files of its tree, so a consumer switching on it says what a use it does not know does. Both fields are optional. A `pipelex-api` runner reports them from the first pipelex release after 0.90.0, and the hosted API once it runs such a release; an older runner sends neither, which reads as `undefined`, where an empty list says that the step reads no file.
 
 ## Method bundles
 
