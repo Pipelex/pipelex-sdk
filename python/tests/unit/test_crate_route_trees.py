@@ -132,8 +132,9 @@ class TestCrateRouteTrees:
 
         asyncio.run(resolve())
 
-        # The listing asks the handshake for the tree limits, and the inline tree needs no other round trip.
-        assert api.paths() == ["/v1/version", "/v1/resolve"]
+        # The listing asks the handshake for the tree limits, the request asks it for the inline limit the API
+        # announces, and the inline tree needs no other round trip.
+        assert api.paths() == ["/v1/version", "/v1/version", "/v1/resolve"]
         assert api.body_of("/v1/resolve") == {"files": {"main.mthds": _MAIN, "templates/invoice.html": "<p>{{ total }}</p>"}}
         assert not api.uploads
 

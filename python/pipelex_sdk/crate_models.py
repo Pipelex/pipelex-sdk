@@ -51,9 +51,10 @@ class CrateRequestBase(BaseModel):
       request;
     - `contents`, each file's bytes or text by tree path.
 
-    The client sends a `tree` or `contents` inline when its inline map weighs 256 KiB or less, or
-    when the API keeps no blob store, and otherwise every file by hash, after uploading the files
-    the API lacks (`mthds`'s `prepare_files`), exactly as a save does. Every `.mthds` file of the
+    The client sends a `tree` or `contents` inline when its inline map weighs 256 KiB or less, and
+    for a `tree` no more than the API's version handshake announces it takes inline, or when the API
+    keeps no blob store, and otherwise every file by hash, after uploading the files the API lacks
+    (`mthds`'s `prepare_files`), exactly as a save does. Every `.mthds` file of the
     tree is one of the method's bundles, named by its tree path in diagnostics and in the crate's
     `source_map`, and every other file is one a step may read, such as a `PipeDocGen` template.
 

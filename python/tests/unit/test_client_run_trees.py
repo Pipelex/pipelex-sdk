@@ -20,11 +20,12 @@ from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.error_verdicts import run_may_have_started_of
 from pipelex_sdk.errors import MethodFileTransferCode, MethodFileTransferError, MethodFileTransferOperation, RequestArgumentError
 from pipelex_sdk.validation_models import PipelexValidationReport
-from tests.unit.conftest import BASE_URL
+from tests.unit.conftest import BASE_URL, refused_argument
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from mthds.method_tree.models import MethodTree
     from pytest_mock import MockerFixture
 
 _STORAGE = "https://app-bucket.s3.amazonaws.com"
@@ -64,11 +65,21 @@ class _Api:
     """The API and its storage: the version handshake, `POST /v1/blobs/missing`, the run routes, `validate` and the uploads.
 
     `held` names the blobs the API already holds; `storage_status` is what storage answers an upload with;
-    `start_route` is False for a runner with no run store, whose `POST /v1/start` is an unmatched route.
+    `start_route` is False for a runner with no run store, whose `POST /v1/start` is an unmatched route;
+    `max_inline_bytes`, when given, is announced under `limits.method_tree` of the handshake, as it is.
     """
 
-    def __init__(self, *, blob_store: bool = True, held: frozenset[str] | None = None, storage_status: int = 200, start_route: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        blob_store: bool = True,
+        held: frozenset[str] | None = None,
+        storage_status: int = 200,
+        start_route: bool = True,
+        max_inline_bytes: object = None,
+    ) -> None:
         self.blob_store = blob_store
+        self.max_inline_bytes = max_inline_bytes
         self.held = held or frozenset()
         self.storage_status = storage_status
         self.start_route = start_route
@@ -81,7 +92,10 @@ class _Api:
         answer: httpx.Response
         match path:
             case "/v1/version":
-                version = {"protocol_version": "1", "runner_version": "0.89.0", "implementation": "pipelex-hosted", "blob_store": self.blob_store}
+                version: dict[str, Any] = {"protocol_version": "1", "runner_version": "0.89.0", "implementation": "pipelex-hosted"}
+                version["blob_store"] = self.blob_store
+                if self.max_inline_bytes is not None:
+                    version["limits"] = {"method_tree": {"max_inline_bytes": self.max_inline_bytes}}
                 answer = httpx.Response(200, json=version, request=request)
             case "/v1/blobs/missing":
                 missing: list[dict[str, Any]] = [
@@ -172,8 +186,129 @@ class TestClientRunTrees:
 
         asyncio.run(execute())
 
-        assert api.paths() == ["/v1/version", "/v1/execute"]
+        # The listing asks the handshake for the tree limits, and the run asks it for the inline limit the API announces.
+        assert api.paths() == ["/v1/version", "/v1/version", "/v1/execute"]
         assert api.body_of("/v1/execute") == {"files": {"main.mthds": _MAIN}}
+
+    def test_a_large_directory_costs_one_handshake_for_its_listing_and_its_sending(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        """The base asks the handshake for a tree past the inline threshold, and is answered with the one the listing took."""
+        api = _Api()
+        client = _client(api, mocker)
+        method_dir = _tree_dir(tmp_path / "method", {"main.mthds": _MAIN.encode(), "data/big.txt": _LARGE})
+
+        asyncio.run(client.start(tree=method_dir))
+
+        assert api.paths() == ["/v1/version", "/v1/blobs/missing", "/v1/start"]
+        assert api.body_of("/v1/start") == {"files": _by_hash(("data/big.txt", _LARGE), ("main.mthds", _MAIN.encode()))}
+
+    @pytest.mark.parametrize("form", ["path", "listed"])
+    def test_an_announced_inline_limit_below_the_default_sends_a_small_tree_by_hash(self, mocker: MockerFixture, tmp_path: Path, form: str) -> None:
+        """A tree whose inline map passes the inline limit the API announces goes by hash, however far below 256 KiB it is."""
+        api = _Api(max_inline_bytes=64)
+        client = _client(api, mocker)
+        method_dir = _tree_dir(tmp_path / "method", {"main.mthds": _MAIN.encode(), "templates/invoice.html": _TEMPLATE.encode()})
+
+        async def execute() -> None:
+            tree: Path | MethodTree = method_dir if form == "path" else await client.list_method_tree(method_dir)
+            await client.execute(tree=tree)
+
+        asyncio.run(execute())
+
+        listing = [] if form == "path" else ["/v1/version"]
+        assert api.paths() == [*listing, "/v1/version", "/v1/blobs/missing", "/v1/execute"]
+        assert api.body_of("/v1/execute") == {"files": _by_hash(("main.mthds", _MAIN.encode()), ("templates/invoice.html", _TEMPLATE.encode()))}
+        assert len(api.uploads) == 2
+
+    @pytest.mark.parametrize("announced", [7 * 1024 * 1024, 0, -1, True, "64"], ids=["above-the-default", "zero", "negative", "bool", "string"])
+    def test_an_inline_limit_above_the_default_or_unreadable_leaves_the_default(
+        self, mocker: MockerFixture, tmp_path: Path, announced: object
+    ) -> None:
+        """The default is a ceiling the announcement only lowers, and an announcement that is no positive integer is not trusted."""
+        api = _Api(max_inline_bytes=announced)
+        client = _client(api, mocker)
+        method_dir = _tree_dir(tmp_path / "method", {"main.mthds": _MAIN.encode(), "data/big.txt": _LARGE})
+
+        asyncio.run(client.execute(tree=method_dir))
+
+        assert api.paths() == ["/v1/version", "/v1/blobs/missing", "/v1/execute"]
+        assert api.body_of("/v1/execute") == {"files": _by_hash(("data/big.txt", _LARGE), ("main.mthds", _MAIN.encode()))}
+
+    def test_small_contents_take_no_handshake_so_an_announced_inline_limit_is_not_read(self, mocker: MockerFixture) -> None:
+        """`contents` keeps the default threshold alone, so a small one costs no round trip, as the command-line cases record it."""
+        api = _Api(max_inline_bytes=16)
+        client = _client(api, mocker)
+
+        asyncio.run(client.execute(contents={"main.mthds": _MAIN}))
+
+        assert api.paths() == ["/v1/execute"]
+        assert api.body_of("/v1/execute") == {"files": {"main.mthds": _MAIN}}
+
+    def test_a_string_tree_is_read_as_the_path_it_names(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        api = _Api()
+        client = _client(api, mocker)
+        method_dir = _tree_dir(tmp_path / "method", {"main.mthds": _MAIN.encode(), "inputs.json": b"{}"})
+        tree: Any = str(method_dir)
+
+        asyncio.run(client.start(tree=tree))
+
+        assert api.paths() == ["/v1/version", "/v1/start"]
+        assert api.body_of("/v1/start") == {"files": {"main.mthds": _MAIN}}
+
+    @pytest.mark.parametrize("route", ["execute", "start", "start_and_wait", "validate"])
+    @pytest.mark.parametrize(
+        ("arguments", "message", "named"),
+        [
+            pytest.param(
+                {"tree": 42},
+                "takes tree as a listed method tree, a MethodTree such as list_method_tree returns, "
+                "or the path of a directory or of a .mthds file, got int.",
+                {"argument": "tree", "reason": "not_a_tree"},
+                id="tree-int",
+            ),
+            pytest.param(
+                {"files": [{"content": 'domain = "demo"', "source": "demo.mthds"}]},
+                "takes files as the method's tree, a map from tree path to file entry, got a list.",
+                {"argument": "files", "reason": "not_a_map"},
+                id="files-list",
+            ),
+            pytest.param(
+                {"contents": [("main.mthds", _MAIN)]},
+                "takes contents as each file's bytes or text by tree path, got a list.",
+                {"argument": "contents", "reason": "not_a_map"},
+                id="contents-list",
+            ),
+            pytest.param(
+                {"contents": {"main.mthds": 42}},
+                "takes contents as each file's bytes or text by tree path, and contents['main.mthds'] holds int.",
+                {"argument": "contents", "reason": "entry_mistyped"},
+                id="contents-value",
+            ),
+        ],
+    )
+    def test_a_form_of_the_wrong_type_is_refused_before_any_request(
+        self, mocker: MockerFixture, route: str, arguments: dict[str, Any], message: str, named: dict[str, str]
+    ) -> None:
+        """Refused as the caller's argument rather than failing deep in the preparation, naming none of them."""
+        api = _Api()
+        client = _client(api, mocker)
+
+        with pytest.raises(RequestArgumentError) as caught:
+            asyncio.run(getattr(client, route)(**arguments))
+
+        assert str(caught.value) == f"{route}() {message}"
+        assert refused_argument(caught.value) == named
+        assert not api.requests
+
+    def test_the_retired_list_of_bundles_given_to_validate_is_refused_before_any_request(self, mocker: MockerFixture) -> None:
+        api = _Api()
+        client = _client(api, mocker)
+        bundles: Any = [_MAIN]
+
+        with pytest.raises(RequestArgumentError) as caught:
+            asyncio.run(client.validate(bundles))
+
+        assert refused_argument(caught.value) == {"argument": "files", "reason": "not_a_map"}
+        assert not api.requests
 
     def test_a_large_tree_is_started_by_hash_after_uploading_only_the_blobs_the_api_lacks(self, mocker: MockerFixture) -> None:
         main = _MAIN.encode()

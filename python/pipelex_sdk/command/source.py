@@ -9,11 +9,12 @@ travels to the run as the Pipelex API's `mthds_contents`, in the bundle's order,
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
-from pydantic import ValidationError
+from mthds.protocol.input_form import PipeInputFormDescriptor
+from pydantic import BaseModel, ConfigDict, ValidationError
 
+from pipelex_sdk.command.bundle import BundleFile
 from pipelex_sdk.command.io import EXIT_FAILED, CommandError
 from pipelex_sdk.command.loop import before_request
 from pipelex_sdk.command.present import METHOD_DOES_NOT_LOAD_SENTENCE, load_failure_lines
@@ -21,29 +22,29 @@ from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIOVa
 from pipelex_sdk.errors import ApiResponseError
 
 if TYPE_CHECKING:
-    from mthds.protocol.input_form import PipeInputFormDescriptor
-
     from pipelex_sdk.client import PipelexAPIClient
-    from pipelex_sdk.command.bundle import BundleFile
 
 
-@dataclass(frozen=True)
-class BundleSource:
+class BundleSource(BaseModel):
     """A bundle read from disk."""
+
+    model_config = ConfigDict(frozen=True)
 
     files: tuple[BundleFile, ...]
 
 
-@dataclass(frozen=True)
-class AddressSource:
+class AddressSource(BaseModel):
     """A published method's address."""
+
+    model_config = ConfigDict(frozen=True)
 
     method_ref: str
 
 
-@dataclass(frozen=True)
-class CatalogSource:
+class CatalogSource(BaseModel):
     """A stored method's catalog id."""
+
+    model_config = ConfigDict(frozen=True)
 
     method_id: str
 
@@ -52,22 +53,24 @@ class CatalogSource:
 MethodSource: TypeAlias = BundleSource | AddressSource | CatalogSource
 
 
-@dataclass(frozen=True)
-class CrateSelector:
+class CrateSelector(BaseModel):
     """The method as the crate routes and the input preparation name it: exactly one is set.
 
     A bundle is its tree's `contents`, each file's text by tree path, which the client prepares as it
     prepares a save's.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     contents: dict[str, bytes | str] | None = None
     method_ref: str | None = None
     method_id: str | None = None
 
 
-@dataclass(frozen=True)
-class RunSelector:
+class RunSelector(BaseModel):
     """The method as the run routes name it: exactly one is set."""
+
+    model_config = ConfigDict(frozen=True)
 
     mthds_contents: list[str] | None = None
     method_ref: str | None = None
@@ -95,9 +98,10 @@ def run_selector(source: MethodSource) -> RunSelector:
             return RunSelector(method_id=source.method_id)
 
 
-@dataclass(frozen=True)
-class DescribedPipe:
+class DescribedPipe(BaseModel):
     """A pipe I/O answer's valid arm: the pipe it selected and that pipe's input form."""
+
+    model_config = ConfigDict(frozen=True)
 
     pipe_ref: str
     descriptor: PipeInputFormDescriptor

@@ -33,6 +33,7 @@ import os
 import re
 import secrets
 import shutil
+from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
@@ -49,7 +50,7 @@ from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import RunResultStart
 from mthds.protocol.problem.client_problems import make_client_problem
 from mthds.protocol.problem.registry import CoreCode
-from mthds.runners.api.client import MthdsAPIClient
+from mthds.runners.api.client import DEFAULT_INLINE_TREE_MAX_BYTES, MthdsAPIClient
 from mthds.runners.api.exceptions import BlobUploadError as _MthdsBlobUploadError
 from mthds.runners.api.exceptions import ClientNotConfiguredError
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
@@ -158,7 +159,7 @@ from pipelex_sdk.user_agent import AppInfo, build_user_agent
 from pipelex_sdk.validation_models import PipelexValidationResultAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Sequence
     from contextlib import AbstractAsyncContextManager
 
     from mthds.method_tree.file_entry import FileEntry, MethodFiles
@@ -285,6 +286,11 @@ _MISSING_BLOBS = "blobs/missing"
 # asks `POST /v1/blobs/missing` under, so the blobs are uploaded into the store the request's hash entries
 # are read from. A context variable, as above, because the base asks the route with no scope of its own.
 _TREE_READ_SCOPE: ContextVar[str | None] = ContextVar("_TREE_READ_SCOPE", default=None)
+
+# The version handshake `_method_tree_files` took for the tree it is preparing, which the `version` override
+# answers the base's own handshake with while the base prepares that tree, so a tree past the inline threshold
+# costs one handshake, not two. A context variable, as above, because the base asks `version()` itself.
+_TREE_HANDSHAKE: ContextVar[VersionInfo | None] = ContextVar("_TREE_HANDSHAKE", default=None)
 
 # What a failed upload of a tree's file prevented, as its error says it: a save's, a run's, and a crate
 # request's or a validation's.
@@ -1095,10 +1101,11 @@ class PipelexAPIClient(MthdsAPIClient):
 
         The method's tree is given in at most one of `files`, `tree` and `contents`. A `tree` or
         `contents` is sent as `mthds`'s `prepare_files` decides, before the run's request: inline
-        when its inline map weighs 256 KiB or less, or when the API keeps no blob store, and
-        otherwise every file by hash, after `POST /v1/blobs/missing` names the blobs the API lacks
-        and the client uploads those, so a file uploaded once is never uploaded again. An upload
-        that fails raises `MethodFileTransferError`, and no run is started.
+        when its inline map weighs 256 KiB or less, and for a `tree`, after one version handshake, no
+        more than the API announces it takes inline (`limits.method_tree.max_inline_bytes`), or when
+        the API keeps no blob store, and otherwise every file by hash, after `POST /v1/blobs/missing`
+        names the blobs the API lacks and the client uploads those, so a file uploaded once is never
+        uploaded again. An upload that fails raises `MethodFileTransferError`, and no run is started.
 
         Args:
             pipe_code: The code identifying the pipe to execute. Beside a `method_ref` it
@@ -1113,8 +1120,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 the request body as top-level properties. Protocol args and this client's own
                 named args (`method_ref`, `method_id`) must be passed as named parameters, not
                 through `extra` (raises `RequestArgumentError`).
-            tree: The method's tree: a `MethodTree` listed by `list_method_tree`, or the `Path`
-                of a directory or of a `.mthds` file, which the client lists the same way, with
+            tree: The method's tree: a `MethodTree` listed by `list_method_tree`, or the path
+                of a directory or of a `.mthds` file, a `Path` or a `str`, which the client lists the same way, with
                 `mthds`'s lister under the limits the deployment announces, so the standard's
                 membership rule decides what is sent and a run's `inputs.json` or `inputs.toml`
                 never is.
@@ -1148,7 +1155,8 @@ class PipelexAPIClient(MthdsAPIClient):
             PipelineExecuteTimeoutError: The blocking request hit the hosted gateway's ~30s
                 synchronous ceiling — use `start_and_wait` (or `start` + `wait_for_result`).
             RequestArgumentError: Nothing to run was named, the tree is given in two forms,
-                `files`, a `MethodTree` or `contents` holds no file, `contents` holds a lone
+                `files` is not a map, `tree` neither a `MethodTree` nor a path, `contents` not a map
+                of bytes or text, a `MethodTree` or `contents` holds no file, `contents` holds a lone
                 surrogate, `extra` carries a protocol arg or a reserved named arg, a selector is
                 present and is not a string, `method_ref` is combined with the tree or with
                 `method_id`, or a suffixed `method_id` is combined with the tree.
@@ -1265,14 +1273,15 @@ class PipelexAPIClient(MthdsAPIClient):
             `None` otherwise.
 
         Raises:
-            RequestArgumentError: Nothing to run was named, the tree is given in two forms,
-                `files`, a `MethodTree` or `contents` holds no file, `extra` carries a protocol arg
-                or a reserved named arg, a selector is present and is not a string, `method_ref` is
-                combined with the tree or with `method_id`, a suffixed `method_id` is combined with
-                the tree, or `idempotency_key` is not 1 to 255 visible ASCII characters.
+            RequestArgumentError: Nothing to run was named, the tree is given in two forms or in
+                one of the wrong type, as on `execute`, a `MethodTree` or `contents` holds no file,
+                `extra` carries a protocol arg or a reserved named arg, a selector is present and is
+                not a string, `method_ref` is combined with the tree or with `method_id`, a suffixed
+                `method_id` is combined with the tree, or `idempotency_key` is not 1 to 255 visible
+                ASCII characters.
             MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be
                 uploaded, so the run was not started.
-            TreeSourceError: A file of `tree` cannot be read, as on `execute`.
+            TreeSourceError: A file of `tree` cannot be read, with the listing's own refusals, as on `execute`.
             RunLifecycleUnavailableError: The configured server has no run store.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
                 `422`, its diagnostics on `validation_errors`), auth, a server fault, a key an earlier
@@ -1404,11 +1413,11 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Raises:
             RequestArgumentError: Zero or several selectors were supplied, the tree is given in
-                two forms, `files`, a `MethodTree` or `contents` holds no file, `contents` holds a
-                lone surrogate, or a selector is not a string.
+                two forms or in one of the wrong type, as on `execute`, a `MethodTree` or `contents`
+                holds no file, `contents` holds a lone surrogate, or a selector is not a string.
             MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be
                 uploaded, so the request was not sent.
-            TreeSourceError: A file of `tree` cannot be read, as on `execute`.
+            TreeSourceError: A file of `tree` cannot be read, with the listing's own refusals, as on `execute`.
             ApiResponseError: No verdict could be produced — a request-shape `422`, a selector
                 that did not resolve, auth, a server fault.
             ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
@@ -1709,10 +1718,17 @@ class PipelexAPIClient(MthdsAPIClient):
         first, and a host that accepts the connection and never answers must not hold the run for
         twenty minutes before the start is even sent.
 
+        While `_method_tree_files` prepares a tree, the handshake it took for it is the answer
+        (`_TREE_HANDSHAKE`), so the base's preparation, which asks the handshake for a tree past the
+        inline threshold, sends no second one.
+
         Raises:
             ApiResponseError: If the server answers non-2xx, or a 2xx that is not a version.
             ApiUnreachableError: No answer came back.
         """
+        held = _TREE_HANDSHAKE.get()
+        if held is not None:
+            return held
         token = _REQUEST_TIMEOUT_OVERRIDE.set(_quick_request_timeout_seconds(self.request_timeout_seconds))
         try:
             with self._reading_inherited_answer(method="GET", endpoint="version"):
@@ -2078,16 +2094,22 @@ class PipelexAPIClient(MthdsAPIClient):
         `publish_method`; its draft runs as `mt_…@draft` at once.
 
         The tree is `write_input.files`, sent as given, or `tree` or `contents`, which the client
-        sends inline when its inline map weighs 256 KiB or less, or when the platform keeps no blob
+        sends inline when its inline map weighs 256 KiB or less, and for a `tree` no more than the
+        platform's version handshake announces it takes inline, or when the platform keeps no blob
         store, and otherwise every file by hash, after asking `POST /v1/blobs/missing` which files the
         organization lacks and uploading those (`mthds`'s `prepare_files`): a file uploaded once is
         never uploaded again. With none of the three, the draft is empty.
 
         Raises:
-            RequestArgumentError: Two forms of the tree were given, or `contents` holds no file.
+            RequestArgumentError: Two forms of the tree were given, `contents` holds no file, or
+                `contents` holds a value that is neither bytes nor text.
             MethodFileTransferError: A file the organization lacks could not be uploaded.
-            TreeSourceError: A file of `tree` cannot be read, or changed since it was listed
+            TreeLimitError: A `tree` given as a path passes a limit the deployment announces
                 (`mthds.method_tree.exceptions`).
+            MethodTreeRefusedError: A `tree` given as a path breaks the standard's rules, or holds
+                no file (`EmptyMethodTreeError`).
+            TreeSourceError: A `tree` given as a path is missing, or a file of `tree` cannot be read
+                or changed since it was listed.
             ApiResponseError: `422` `invalid_method_files` for a map the standard refuses, with its
                 `tree_refusal`; `422` `method_tree_too_large` for a tree past one of the deployment's
                 limits, named in its `limit`; `422` `blob_mismatch` for a hash stated at another size
@@ -2130,10 +2152,14 @@ class PipelexAPIClient(MthdsAPIClient):
             The method, with the draft's new token (`updated_at`) and digest (`draft_digest`).
 
         Raises:
-            RequestArgumentError: The draft gives its tree in no form or in two, or `contents` holds
-                no file.
+            RequestArgumentError: The draft gives its tree in no form or in two, `contents` holds
+                no file, or `contents` holds a value that is neither bytes nor text.
             MethodFileTransferError: A file the organization lacks could not be uploaded.
-            TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
+            TreeLimitError: A `tree` given as a path passes a limit the deployment announces.
+            MethodTreeRefusedError: A `tree` given as a path breaks the standard's rules, or holds
+                no file.
+            TreeSourceError: A `tree` given as a path is missing, or a file of `tree` cannot be read
+                or changed since it was listed.
             ApiResponseError: `409` `method_update_conflict` for a draft that moved since the token;
                 `404` `not_found` for an unknown or foreign-org method; `409` `method_being_deleted`
                 while its erasure runs; the `422` refusals of a tree `create_method` lists; `413`
@@ -2170,12 +2196,24 @@ class PipelexAPIClient(MthdsAPIClient):
         """The `files` a call sends: `files` as given, or `tree` or `contents` prepared, uploading what the API lacks.
 
         Every call taking a method's tree goes through here: the runs (`execute`, `start`,
-        `start_and_wait`), `validate`, the crate requests and the saves. A `tree` given as a `Path` is
-        listed first (`list_method_tree`), under the limits the deployment announces. The preparation
-        is `mthds`'s own (`prepare_files`, `prepare_files_from_contents`): the tree is sent inline when
-        its inline map weighs `DEFAULT_INLINE_TREE_MAX_BYTES` or less, or when the API keeps no blob
-        store, and otherwise every file by hash, once the blobs `POST /v1/blobs/missing` names are
-        uploaded.
+        `start_and_wait`), `validate`, the crate requests and the saves. Each form is checked first, so
+        a wrong one is refused before any request: `files` must be a map, `tree` a `MethodTree` or a
+        path, a `str` read as the `Path` it names, and `contents` a map of bytes or text. `files` is
+        then sent as it is, with no request.
+
+        A `tree` costs one version handshake (`GET /v1/version`), which announces both the limits a
+        path's tree is listed under (`list_method_tree`'s, so the listing runs here, off the event
+        loop) and the largest inline map the API takes (`limits.method_tree.max_inline_bytes`). The
+        preparation is `mthds`'s own (`prepare_files`): the tree is sent inline when its inline map
+        weighs no more than the smaller of `DEFAULT_INLINE_TREE_MAX_BYTES` and that announced limit,
+        or when the API keeps no blob store, and otherwise every file by hash, once the blobs
+        `POST /v1/blobs/missing` names are uploaded; the base's own handshake, which it asks for a
+        tree past the threshold, is answered with the one taken here (`_TREE_HANDSHAKE`), so no
+        second one is sent. `contents` is prepared the same way
+        (`prepare_files_from_contents`) with no handshake of its own, held to
+        `DEFAULT_INLINE_TREE_MAX_BYTES` alone, so a small one costs no round trip, as `@pipelex/sdk`
+        sends one and as the command-line cases both SDKs run record it: `mthds` asks the handshake
+        only for a tree whose inline map passes that threshold.
 
         `unsent` says, in an upload's failure, what did not happen because of it: `the method was not
         saved` for a save, `the run was not started` for a run, `the request was not sent` for
@@ -2183,32 +2221,46 @@ class PipelexAPIClient(MthdsAPIClient):
         `POST /v1/blobs/missing` is asked under (see `missing_blobs`).
 
         Raises:
-            RequestArgumentError: Two forms were given, a `MethodTree` holds no file, or `contents`
-                holds no file or a text no UTF-8 encoder takes.
+            RequestArgumentError: Two forms were given, a form is of the wrong type, a `MethodTree`
+                holds no file, or `contents` holds no file, a value that is neither bytes nor text,
+                or a text no UTF-8 encoder takes.
             MethodFileTransferError: A file the API lacks could not be uploaded.
-            TreeLimitError: A `Path`'s tree passes a limit the deployment announces.
-            MethodTreeRefusedError: A `Path`'s tree breaks the standard's rules, or holds no file.
-            TreeSourceError: A `Path` is missing, or a file of the tree cannot be read or changed since it was listed.
+            TreeLimitError: A path's tree passes a limit the deployment announces.
+            MethodTreeRefusedError: A path's tree breaks the standard's rules, or holds no file.
+            TreeSourceError: A path is missing, or a file of the tree cannot be read or changed since it was listed.
+            ApiResponseError: The version handshake answered non-2xx.
+            ApiUnreachableError: The version handshake got no answer.
         """
         _tree_given(call=call, files_given=files_given, tree=tree, contents=contents)
         empty_draft = "; give files=None for an empty draft" if unsent == _METHOD_NOT_SAVED else ""
-        if isinstance(tree, MethodTree) and not tree.files:
-            msg = f"{call}() got a tree holding no file, and a method tree holds at least one{empty_draft}."
-            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="tree", reason="empty"))
+        given_tree = _given_tree(tree, call=call, remedy=empty_draft)
+        given_files = _given_files(files, call=call)
         data = _contents_as_bytes(contents, call=call, remedy=empty_draft) if contents is not None else None
-        listed_tree = await self.list_method_tree(tree) if isinstance(tree, Path) else tree
-        token = _TREE_READ_SCOPE.set(read_scope or None)
+        if given_tree is None and data is None:
+            return given_files
+        listed_tree: MethodTree | None = None
+        version_info: VersionInfo | None = None
+        inline_max_bytes = DEFAULT_INLINE_TREE_MAX_BYTES
+        if given_tree is not None:
+            version_info = await self.version()
+            inline_max_bytes = _inline_tree_max_bytes(version_info)
+            if isinstance(given_tree, Path):
+                listed_tree = await asyncio.to_thread(list_method_tree, given_tree, limits=_announced_tree_limits(version_info))
+            else:
+                listed_tree = given_tree
+        read_scope_token = _TREE_READ_SCOPE.set(read_scope or None)
+        handshake_token = _TREE_HANDSHAKE.set(version_info)
         try:
             if listed_tree is not None:
                 method_tree = listed_tree
-                return await self._prepared_tree_files(lambda: self.prepare_files(method_tree), unsent=unsent)
-            if data is not None:
-                file_bytes = data
-                return await self._prepared_tree_files(lambda: self.prepare_files_from_contents(file_bytes), unsent=unsent)
-            # A plain dict, since `to_json` serializes no other mapping.
-            return dict(files) if files is not None else None
+                return await self._prepared_tree_files(lambda: self.prepare_files(method_tree, inline_max_bytes=inline_max_bytes), unsent=unsent)
+            file_bytes = cast("dict[str, bytes]", data)
+            return await self._prepared_tree_files(
+                lambda: self.prepare_files_from_contents(file_bytes, inline_max_bytes=inline_max_bytes), unsent=unsent
+            )
         finally:
-            _TREE_READ_SCOPE.reset(token)
+            _TREE_HANDSHAKE.reset(handshake_token)
+            _TREE_READ_SCOPE.reset(read_scope_token)
 
     async def _prepared_tree_files(self, prepare: Callable[[], Awaitable[dict[str, FileEntry]]], *, unsent: str) -> dict[str, FileEntry]:
         """Run `mthds`'s tree preparation, its failures raised as this SDK's errors, each carrying a verdict.
@@ -3006,7 +3058,10 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `tree` holds no file, or `contents` holds a text no UTF-8 encoder
                 takes, refused before any request.
             MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be uploaded.
-            TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
+            TreeLimitError: A `tree` given as a path passes a limit the deployment announces.
+            MethodTreeRefusedError: A `tree` given as a path breaks the standard's rules, or holds no file.
+            TreeSourceError: A `tree` given as a path is missing, or a file of `tree` cannot be read
+                or changed since it was listed.
             ApiResponseError: No verdict could be produced.
             ApiUnreachableError: No answer came back.
         """
@@ -3038,7 +3093,10 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `tree` holds no file, or `contents` holds a text no UTF-8 encoder
                 takes, refused before any request.
             MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be uploaded.
-            TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
+            TreeLimitError: A `tree` given as a path passes a limit the deployment announces.
+            MethodTreeRefusedError: A `tree` given as a path breaks the standard's rules, or holds no file.
+            TreeSourceError: A `tree` given as a path is missing, or a file of `tree` cannot be read
+                or changed since it was listed.
             ApiResponseError: No verdict could be produced.
             ApiUnreachableError: No answer came back.
         """
@@ -3079,7 +3137,10 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `tree` holds no file, or `contents` holds a text no UTF-8 encoder
                 takes, refused before any request.
             MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be uploaded.
-            TreeSourceError: A file of `tree` cannot be read, or changed since it was listed.
+            TreeLimitError: A `tree` given as a path passes a limit the deployment announces.
+            MethodTreeRefusedError: A `tree` given as a path breaks the standard's rules, or holds no file.
+            TreeSourceError: A `tree` given as a path is missing, or a file of `tree` cannot be read
+                or changed since it was listed.
             ApiResponseError: No verdict could be produced.
             ApiUnreachableError: No answer came back.
         """
@@ -3864,24 +3925,83 @@ def _missing_blobs_endpoint() -> str:
     return f"{_MISSING_BLOBS}?{urlencode({'read_scope': read_scope})}"
 
 
-def _contents_as_bytes(contents: Mapping[str, bytes | str], *, call: str, remedy: str) -> dict[str, bytes]:
-    """A call's `contents` as each file's bytes, a text encoded in UTF-8.
+def _kind_of(value: object) -> str:
+    """How a value of the wrong type is named in a refusal: its type's name, a list named as such."""
+    return "a list" if isinstance(value, list) else type(value).__name__
 
-    `remedy` ends the refusal of an empty `contents` with what the call takes instead, a save's empty
-    draft, or nothing.
+
+def _given_tree(tree: object, *, call: str, remedy: str) -> MethodTree | Path | None:
+    """A call's `tree` as a listed tree or a path, a `str` read as the `Path` it names, refused when it is neither or holds no file.
+
+    Typed `object`, as `_normalized_selector` is, since this is the runtime boundary an untyped caller
+    reaches: a value of the wrong type would otherwise fail deep in `mthds`'s preparation, as an
+    `AttributeError` naming none of the caller's arguments. A `str` is read as a path, as
+    `MethodWriteInput.tree` and `MethodDraftInput.tree` read one. `remedy` ends the refusal of an
+    empty tree with what the call takes instead, a save's empty draft, or nothing.
 
     Raises:
-        RequestArgumentError: `contents` holds no file, or a text no UTF-8 encoder takes, one holding a
-            lone surrogate.
+        RequestArgumentError: `tree` is neither a `MethodTree` nor a path, or a `MethodTree` holding no file.
     """
-    if not contents:
+    if tree is None or isinstance(tree, Path):
+        return tree
+    if isinstance(tree, str):
+        return Path(tree)
+    if not isinstance(tree, MethodTree):
+        msg = (
+            f"{call}() takes tree as a listed method tree, a MethodTree such as list_method_tree returns, "
+            f"or the path of a directory or of a .mthds file, got {_kind_of(tree)}."
+        )
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="tree", reason="not_a_tree"))
+    if not tree.files:
+        msg = f"{call}() got a tree holding no file, and a method tree holds at least one{remedy}."
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="tree", reason="empty"))
+    return tree
+
+
+def _given_files(files: object, *, call: str) -> dict[str, FileEntry] | None:
+    """A call's `files` as a plain dict, since `to_json` serializes no other mapping, refused when it is not a map.
+
+    A `files` that is not a map, such as the retired list of bundles `validate` once took, is refused
+    before any request rather than failing in `dict()` with a `ValueError` naming none of the caller's
+    arguments.
+
+    Raises:
+        RequestArgumentError: `files` is not a map from tree path to file entry.
+    """
+    if files is None:
+        return None
+    if not isinstance(files, Mapping):
+        msg = f"{call}() takes files as the method's tree, a map from tree path to file entry, got {_kind_of(files)}."
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="files", reason="not_a_map"))
+    return dict(cast("Mapping[str, FileEntry]", files))
+
+
+def _contents_as_bytes(contents: object, *, call: str, remedy: str) -> dict[str, bytes]:
+    """A call's `contents` as each file's bytes, a text encoded in UTF-8.
+
+    Typed `object`, as `_given_tree` is, since a `contents` of the wrong type, or holding a value of
+    the wrong type, is refused here before any request. `remedy` ends the refusal of an empty
+    `contents` with what the call takes instead, a save's empty draft, or nothing.
+
+    Raises:
+        RequestArgumentError: `contents` is not a map, holds no file, holds a value that is neither
+            bytes nor text, or a text no UTF-8 encoder takes, one holding a lone surrogate.
+    """
+    if not isinstance(contents, Mapping):
+        msg = f"{call}() takes contents as each file's bytes or text by tree path, got {_kind_of(contents)}."
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="contents", reason="not_a_map"))
+    mapping = cast("Mapping[str, object]", contents)
+    if not mapping:
         msg = f"{call}() got contents holding no file, and a method tree holds at least one{remedy}."
         raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="contents", reason="empty"))
     data: dict[str, bytes] = {}
-    for tree_path, content in contents.items():
+    for tree_path, content in mapping.items():
         if isinstance(content, bytes):
             data[tree_path] = content
             continue
+        if not isinstance(content, str):
+            msg = f"{call}() takes contents as each file's bytes or text by tree path, and contents['{tree_path}'] holds {_kind_of(content)}."
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="contents", reason="entry_mistyped"))
         try:
             data[tree_path] = content.encode("utf-8")
         except UnicodeEncodeError as exc:
@@ -3890,21 +4010,38 @@ def _contents_as_bytes(contents: Mapping[str, bytes | str], *, call: str, remedy
     return data
 
 
-def _announced_tree_limits(version_info: VersionInfo) -> TreeLimits:
-    """The tree limits a version handshake announces under `limits.method_tree`, each one a positive integer or left unset."""
+def _announced_method_tree_limit(version_info: VersionInfo, name: str) -> int | None:
+    """One limit a version handshake announces under `limits.method_tree`, or `None` when absent or not a positive integer."""
     limits = (version_info.model_extra or {}).get("limits")
     announced = cast("dict[str, object]", limits).get("method_tree") if isinstance(limits, dict) else None
     if not isinstance(announced, dict):
-        return TreeLimits()
-    method_tree = cast("dict[str, object]", announced)
+        return None
+    value = cast("dict[str, object]", announced).get(name)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
-    def read(name: str) -> int | None:
-        value = method_tree.get(name)
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            return None
-        return value
 
-    return TreeLimits(max_files=read("max_files"), max_file_bytes=read("max_file_bytes"), max_total_bytes=read("max_total_bytes"))
+def _announced_tree_limits(version_info: VersionInfo) -> TreeLimits:
+    """The tree limits a version handshake announces under `limits.method_tree`, as `mthds`'s lister takes them, each one set or not."""
+    return TreeLimits(
+        max_files=_announced_method_tree_limit(version_info, "max_files"),
+        max_file_bytes=_announced_method_tree_limit(version_info, "max_file_bytes"),
+        max_total_bytes=_announced_method_tree_limit(version_info, "max_total_bytes"),
+    )
+
+
+def _inline_tree_max_bytes(version_info: VersionInfo) -> int:
+    """The largest inline map a tree is sent as without asking for a blob store: `DEFAULT_INLINE_TREE_MAX_BYTES`, or less when the API announces less.
+
+    The hosted platform announces how large an inline map it takes under `limits.method_tree.max_inline_bytes`
+    of its version handshake, so a tree whose inline map passes that limit goes by hash however small it is,
+    and the platform is never sent inline a tree it would refuse that the client could have sent by hash.
+    """
+    max_inline_bytes = _announced_method_tree_limit(version_info, "max_inline_bytes")
+    if max_inline_bytes is None:
+        return DEFAULT_INLINE_TREE_MAX_BYTES
+    return min(DEFAULT_INLINE_TREE_MAX_BYTES, max_inline_bytes)
 
 
 def _refuse_unwritable_listing(files: Sequence[SavedMethodFile]) -> None:
