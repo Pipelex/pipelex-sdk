@@ -10,14 +10,15 @@ from typing import cast
 
 import httpx
 import pytest
+from pydantic import ValidationError
 from pytest_mock import MockerFixture, MockType
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.product_models import (
     MethodDeletionState,
+    MethodDetail,
     MethodDraftInput,
-    MethodFile,
     MethodSummary,
     MethodWriteInput,
     OnboardingCurrentTool,
@@ -27,6 +28,7 @@ from pipelex_sdk.product_models import (
     OnboardingSubmission,
     OrgRole,
     RunHistoryItem,
+    SavedMethodFile,
     UpdateRunInput,
     UploadInput,
 )
@@ -34,18 +36,25 @@ from pipelex_sdk.runs import RunStatus
 
 _BASE_URL = "http://localhost:8081"
 
-# The platform's `MethodPublic` shape: `org_id` and `created_by_user_id` are required, and
-# `python` crosses the wire as one string holding a JSON `[{name, content}]` array.
+# The platform's `MethodPublic` shape: `org_id` and `created_by_user_id` are required, and the draft is
+# named by its tree digest alone.
 _METHOD_BODY: dict[str, object] = {
     "method_id": "m1",
     "name": "M",
-    "mthds": "src",
     "org_id": "org_1",
     "created_by_user_id": "u1",
-    "python": "",
     "created_at": "t",
     "updated_at": "t",
-    "draft_digest": "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+    "draft_digest": "sha256:5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47",
+}
+
+# One file of a saved tree, as `GET /v1/methods/{id}` lists it.
+_SAVED_FILE: dict[str, object] = {
+    "path": "main.mthds",
+    "sha256": "0b5c4f1f7a3c4e9d2b8a6f0e1d3c5b7a9f2e4d6c8b0a1f3e5d7c9b2a4f6e8d0c",
+    "size": 21,
+    "url": "https://bucket.s3.amazonaws.com/org_1/blobs/0b5c?X-Amz-Signature=abc",
+    "expires_at": "2026-10-12T09:15:00Z",
 }
 
 
@@ -56,12 +65,6 @@ def _response(status_code: int, *, json_body: object | None = None, content: byt
     if content is not None:
         return httpx.Response(status_code, content=content, request=request)
     return httpx.Response(status_code, request=request)
-
-
-def _sent_body(send: MockType) -> dict[str, object]:
-    """The decoded JSON request body of the single recorded `_send` call."""
-    content = send.call_args.kwargs["content"]
-    return cast("dict[str, object]", json.loads(content))
 
 
 class _Sent:
@@ -155,7 +158,7 @@ class TestClientProduct:
         client = self._client()
         latest_published = {
             "version": 3,
-            "source_digest": "a" * 64,
+            "tree_digest": "sha256:" + "a" * 64,
             "crate_fingerprint": None,
             "runner_version": "0.73.0",
             "description": "Reads invoices",
@@ -170,7 +173,7 @@ class TestClientProduct:
             "deletion_state": None,
             "latest_version": None,
             "latest_published": None,
-            "draft_digest": "b" * 64,
+            "draft_digest": "sha256:" + "b" * 64,
         }
         no_stored_digest = {
             **never_published,
@@ -179,7 +182,7 @@ class TestClientProduct:
             "latest_published": latest_published,
             "draft_digest": None,
         }
-        draft_ahead = {**no_stored_digest, "method_id": "m3", "draft_digest": "c" * 64}
+        draft_ahead = {**no_stored_digest, "method_id": "m3", "draft_digest": "sha256:" + "c" * 64}
         page = {"items": [never_published, no_stored_digest, draft_ahead], "next_cursor": None}
         self._mock_send(mocker, client, _response(200, json_body=page))
 
@@ -188,15 +191,15 @@ class TestClientProduct:
         first, second, third = result.items
         assert first.latest_version is None
         assert first.latest_published is None
-        assert first.draft_digest == "b" * 64
+        assert first.draft_digest == "sha256:" + "b" * 64
         assert second.latest_version == 3
         assert second.latest_published is not None
         assert second.latest_published.version == 3
-        assert second.latest_published.source_digest == "a" * 64
+        assert second.latest_published.tree_digest == "sha256:" + "a" * 64
         assert second.latest_published.crate_fingerprint is None
         assert second.draft_digest is None
         assert third.latest_published is not None
-        assert third.draft_digest != third.latest_published.source_digest
+        assert third.draft_digest != third.latest_published.tree_digest
         # Declared fields, so none of them lands in the extension-open overflow.
         assert second.model_extra == {}
 
@@ -214,45 +217,52 @@ class TestClientProduct:
         assert row.latest_published is None
         assert row.draft_digest is None
 
-    def test_method_data_parses_the_new_fields_and_the_python_wire_string(self, mocker: MockerFixture) -> None:
-        """`python` is one wire string; the boundary converts it so callers never see it."""
+    def test_get_method_parses_the_method_with_its_draft_files(self, mocker: MockerFixture) -> None:
+        """The read is a `MethodDetail`: the method, and the draft's tree as a listing of linked files."""
         client = self._client()
-        body = {**_METHOD_BODY, "description": "d", "python": '[{"name": "a.py", "content": "x = 1"}]'}
+        body = {**_METHOD_BODY, "description": "d", "files": [_SAVED_FILE]}
         self._mock_send(mocker, client, _response(200, json_body=body))
 
         method = asyncio.run(client.get_method("m1"))
 
+        assert isinstance(method, MethodDetail)
         assert method.org_id == "org_1"
         assert method.created_by_user_id == "u1"
         assert method.description == "d"
         assert method.deletion_state is None
-        assert method.python == [MethodFile(name="a.py", content="x = 1")]
+        assert method.draft_digest == _METHOD_BODY["draft_digest"]
+        assert method.files == [SavedMethodFile.model_validate(_SAVED_FILE)]
+        assert method.model_extra == {}
 
-    def test_method_data_reads_the_clear_sentinel_as_no_files(self, mocker: MockerFixture) -> None:
+    def test_get_method_reads_an_empty_draft(self, mocker: MockerFixture) -> None:
+        """An empty draft names no tree: its digest is null and its listing empty."""
+        client = self._client()
+        self._mock_send(mocker, client, _response(200, json_body={**_METHOD_BODY, "draft_digest": None, "files": []}))
+
+        method = asyncio.run(client.get_method("m1"))
+
+        assert method.draft_digest is None
+        assert method.files == []
+
+    def test_get_method_without_its_files_is_an_answer_it_cannot_read(self, mocker: MockerFixture) -> None:
+        """`files` is what the read is for, so a body without it is no method read."""
         client = self._client()
         self._mock_send(mocker, client, _response(200, json_body=_METHOD_BODY))
 
-        assert asyncio.run(client.get_method("m1")).python == []
+        with pytest.raises(ApiResponseError, match="a body that is not the answer the route returns"):
+            asyncio.run(client.get_method("m1"))
 
-    def test_draft_input_sends_python_three_ways(self, mocker: MockerFixture) -> None:
-        """Unset omits the key (preserve), `[]` sends the clear sentinel, a list sends the JSON text."""
-        client = self._client()
-        send = self._mock_send(mocker, client, _response(200, json_body=_METHOD_BODY))
-
-        asyncio.run(client.write_draft("m1", MethodDraftInput(mthds="src")))
-        assert "python" not in _sent_body(send)
-
-        send = self._mock_send(mocker, client, _response(200, json_body=_METHOD_BODY))
-        asyncio.run(client.write_draft("m1", MethodDraftInput(mthds="src", python=[])))
-        assert _sent_body(send)["python"] == ""
-
-        send = self._mock_send(mocker, client, _response(200, json_body=_METHOD_BODY))
-        asyncio.run(client.create_method(MethodWriteInput(name="M", mthds="src", python=[MethodFile(name="a.py", content="x = 1")])))
-        assert json.loads(cast("str", _sent_body(send)["python"])) == [{"name": "a.py", "content": "x = 1"}]
+    @pytest.mark.parametrize("retired", ["mthds", "python"])
+    def test_the_save_inputs_refuse_the_retired_source_fields(self, retired: str) -> None:
+        """No old field is kept: a caller still sending `mthds` or `python` is told so, never silently dropped."""
+        with pytest.raises(ValidationError, match=retired):
+            MethodWriteInput.model_validate({"name": "M", retired: "src"})
+        with pytest.raises(ValidationError, match=retired):
+            MethodDraftInput.model_validate({"files": None, retired: "src"})
 
     def test_get_method_encodes_id(self, mocker: MockerFixture) -> None:
         client = self._client()
-        body = {**_METHOD_BODY, "method_id": "a/b"}
+        body: dict[str, object] = {**_METHOD_BODY, "method_id": "a/b", "files": []}
         send = self._mock_send(mocker, client, _response(200, json_body=body))
 
         asyncio.run(client.get_method("a/b"))
@@ -264,21 +274,21 @@ class TestClientProduct:
         body = _METHOD_BODY
         send = self._mock_send(mocker, client, _response(200, json_body=body))
 
-        asyncio.run(client.create_method(MethodWriteInput(name="M", mthds="src", input_data={"a": 1})))
+        asyncio.run(client.create_method(MethodWriteInput(name="M", files={"main.mthds": "src"}, input_data={"a": 1})))
 
         sent = self._sent(send)
         assert sent.method == "POST"
         assert sent.url == f"{_BASE_URL}/v1/methods"
-        assert sent.body == {"name": "M", "mthds": "src", "input_data": {"a": 1}}
+        assert sent.body == {"name": "M", "files": {"main.mthds": "src"}, "input_data": {"a": 1}}
 
     def test_create_method_drops_absent_input_data(self, mocker: MockerFixture) -> None:
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body=_METHOD_BODY))
 
-        asyncio.run(client.create_method(MethodWriteInput(name="M", mthds="src")))
+        asyncio.run(client.create_method(MethodWriteInput(name="M")))
 
-        # input_data is None → dropped from the wire (matches the JS undefined-drop).
-        assert self._sent(send).body == {"name": "M", "mthds": "src"}
+        # Neither a tree nor input_data → both dropped from the wire (matches the JS undefined-drop), an empty draft.
+        assert self._sent(send).body == {"name": "M"}
 
     def test_delete_method_returns_the_202_acceptance(self, mocker: MockerFixture) -> None:
         """The erasure is asynchronous: the caller gets the CLAIM, never a "it's gone" signal.

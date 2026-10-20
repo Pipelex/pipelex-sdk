@@ -10,18 +10,23 @@ import type { MethodErrorCode } from "../src/errors.js";
 import type {
   MethodData,
   MethodDeletionState,
+  MethodDetail,
   MethodPublishResult,
   MethodSummary,
   MethodVersionSummary,
   PipelineRun,
+  RunDetail,
   RunHistoryItem,
+  SavedMethodFile,
 } from "../src/product-models.js";
 import type { PipelexRunResultStart } from "../src/models.js";
 import type { RunPublic } from "../src/runs.js";
 
 const BASE_URL = "http://localhost:8081";
-const DIGEST = "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47";
-const OTHER_DIGEST = "0d1c2b3a49586776a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f00f1e";
+const DIGEST = "sha256:5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47";
+const OTHER_DIGEST = "sha256:0d1c2b3a49586776a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f00f1e";
+/** A run's `source_digest`, the SHA-256 of the sources it sent as text: 64 hex digits, no prefix. */
+const SOURCE_DIGEST = "5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47";
 
 function makeClient(): PipelexApiClient {
   return new PipelexApiClient({ baseUrl: BASE_URL, apiKey: "test-token" });
@@ -51,7 +56,7 @@ function onlyRequest(spy: ReturnType<typeof vi.spyOn>): {
 
 const SUMMARY: MethodVersionSummary = {
   version: 3,
-  source_digest: DIGEST,
+  tree_digest: DIGEST,
   crate_fingerprint: "a1b2c3",
   runner_version: "0.80.0",
   description: "Review a receipt",
@@ -59,14 +64,30 @@ const SUMMARY: MethodVersionSummary = {
   published_by: "user_1",
 };
 
-/** A method as the platform serializes it: `python` is the catalog string. */
+/** The tree's files in tree path order, each with a presigned link to its bytes. */
+const FILES: SavedMethodFile[] = [
+  {
+    path: "helper.py",
+    sha256: "8ff436def1451285599a1b1ad70800493b8dcafde2912e1a38345633054e4c26",
+    size: 5,
+    url: "https://app-bucket.s3.amazonaws.com/org_1/blobs/8ff436def1451285599a1b1ad70800493b8dcafde2912e1a38345633054e4c26?X-Amz-Signature=abc",
+    expires_at: "2026-10-08T09:15:00+00:00",
+  },
+  {
+    path: "main.mthds",
+    sha256: "16c322ec9ceeb29cf54ef4553f087cba1683c3f20f3bf334e49ccc2ad0ecba3e",
+    size: 19,
+    url: "https://app-bucket.s3.amazonaws.com/org_1/blobs/16c322ec9ceeb29cf54ef4553f087cba1683c3f20f3bf334e49ccc2ad0ecba3e?X-Amz-Signature=def",
+    expires_at: "2026-10-08T09:15:00+00:00",
+  },
+];
+
+/** A method as the platform serializes it: the draft is named by its tree digest. */
 const WIRE_METHOD = {
   method_id: "mt_receipts01",
   org_id: "org_1",
   created_by_user_id: "user_1",
   name: "Receipt review",
-  mthds: '[{"name":"main.mthds","content":"domain = \\"receipts\\""}]',
-  python: '[{"name":"helper.py","content":"x = 1"}]',
   input_data: { total: 1 },
   pipe_output: null,
   description: "Review a receipt",
@@ -78,11 +99,11 @@ const WIRE_METHOD = {
   latest_published: SUMMARY,
 };
 
-/** The same method as the SDK hands it back: `python` parsed into `MethodFile[]`. */
-const METHOD: MethodData = {
-  ...WIRE_METHOD,
-  python: [{ name: "helper.py", content: "x = 1" }],
-} as MethodData;
+/** The same method as the SDK hands it back, unchanged. */
+const METHOD: MethodData = WIRE_METHOD as MethodData;
+
+/** The method with its draft's files, as `getMethod` reads it. */
+const METHOD_DETAIL: MethodDetail = { ...METHOD, files: FILES };
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -98,7 +119,7 @@ describe("writeDraft", () => {
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, WIRE_METHOD));
 
     const method = await client.writeDraft("mt_receipts01", {
-      mthds: "src",
+      files: { "main.mthds": "src" },
       input_data: { total: 1 },
       expected_updated_at: "2026-10-08T08:00:00.000001+00:00",
     });
@@ -107,7 +128,7 @@ describe("writeDraft", () => {
     expect(req.method).toBe("PUT");
     expect(req.url).toBe(`${BASE_URL}/v1/methods/mt_receipts01/draft`);
     expect(req.body).toEqual({
-      mthds: "src",
+      files: { "main.mthds": "src" },
       input_data: { total: 1 },
       expected_updated_at: "2026-10-08T08:00:00.000001+00:00",
     });
@@ -121,13 +142,41 @@ describe("writeDraft", () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(() => Promise.resolve(jsonResponse(200, WIRE_METHOD)));
+    const files = { "main.mthds": "src", "helper.py": { sha256: FILES[0]!.sha256, size: 5 } };
 
-    await client.writeDraft("mt_receipts01", { mthds: "src" });
-    expect(onlyRequest(spy).body).toEqual({ mthds: "src" });
+    await client.writeDraft("mt_receipts01", { files });
+    expect(onlyRequest(spy).body).toEqual({ files });
 
     spy.mockClear();
-    await client.writeDraft("mt_receipts01", { mthds: "src", input_data: null });
-    expect(onlyRequest(spy).body).toEqual({ mthds: "src", input_data: null });
+    await client.writeDraft("mt_receipts01", { files, input_data: null });
+    expect(onlyRequest(spy).body).toEqual({ files, input_data: null });
+  });
+
+  it("empties the draft with files: null", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { ...WIRE_METHOD, draft_digest: null }));
+
+    const method = await client.writeDraft("mt_receipts01", { files: null });
+
+    expect(onlyRequest(spy).body).toEqual({ files: null });
+    expect(method.draft_digest).toBeNull();
+  });
+
+  it("refuses a draft that gives no tree before sending anything", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const err = await makeClient()
+      .writeDraft("mt_receipts01", { input_data: { total: 1 } })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).message).toBe(
+      "writeDraft() replaces the draft's whole tree: give it as files (files: null empties the " +
+        "draft), tree or contents.",
+    );
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("surfaces a stale token as a 409 method_update_conflict naming the field", async () => {
@@ -144,7 +193,7 @@ describe("writeDraft", () => {
     );
 
     const err = await client
-      .writeDraft("mt_receipts01", { mthds: "src", expected_updated_at: "t0" })
+      .writeDraft("mt_receipts01", { files: { "main.mthds": "src" }, expected_updated_at: "t0" })
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
@@ -180,7 +229,7 @@ describe("renameMethod", () => {
 
     await client.renameMethod("mt_receipts01", {
       name: "Renamed",
-      mthds: "src",
+      files: { "main.mthds": "src" },
     } as unknown as { name: string });
 
     expect(onlyRequest(spy).body).toEqual({ name: "Renamed" });
@@ -220,7 +269,7 @@ describe("publishMethod", () => {
     expect(result.outcome).toBe("unchanged");
     if (result.outcome !== "unchanged") throw new Error("narrowed above");
     expect(result.version.version).toBe(3);
-    expect(result.method.python).toEqual([{ name: "helper.py", content: "x = 1" }]);
+    expect(result.version.tree_digest).toBe(result.method.draft_digest);
   });
 
   it.each([
@@ -375,20 +424,35 @@ describe("listMethodVersions", () => {
 });
 
 describe("getMethodVersion", () => {
-  it("GETs /v1/methods/{id}/versions/{n} and parses the version's python", async () => {
+  it("GETs /v1/methods/{id}/versions/{n} and reads the version with its files", async () => {
     const client = makeClient();
-    const wire = {
-      ...SUMMARY,
-      method_id: "mt_receipts01",
-      mthds: "domain = 'receipts'",
-      python: '[{"name":"helper.py","content":"x = 1"}]',
-    };
+    const wire = { ...SUMMARY, method_id: "mt_receipts01", files: FILES };
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, wire));
 
     const version = await client.getMethodVersion("mt_receipts01", 3);
 
     expect(onlyRequest(spy).url).toBe(`${BASE_URL}/v1/methods/mt_receipts01/versions/3`);
-    expect(version).toEqual({ ...wire, python: [{ name: "helper.py", content: "x = 1" }] });
+    expect(version).toEqual(wire);
+    expect(version.files.map((file) => file.path)).toEqual(["helper.py", "main.mthds"]);
+  });
+
+  it("surfaces a version stored before methods were trees as a 409 conflict, runtime", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(409, {
+        code: "conflict",
+        detail: "Version 3 names no tree.",
+        error_domain: "runtime",
+        retryable: false,
+      }),
+    );
+
+    const err = await makeClient()
+      .getMethodVersion("mt_receipts01", 3)
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).code).toBe("conflict");
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
   });
 
   it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
@@ -440,19 +504,38 @@ describe("getMethodVersion", () => {
     expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
   });
 
-  it("throws a typed ApiResponseError for a version whose python it cannot read", async () => {
-    const client = makeClient();
+  it.each([
+    ["no files", undefined, "is not an array"],
+    ["files that are not a list", { "main.mthds": FILES[1] }, "is not an array"],
+    [
+      "an entry that is not an object",
+      ["main.mthds"],
+      "holds an entry that is not an object, at [0]",
+    ],
+    [
+      "an entry with no link",
+      [{ ...FILES[0], url: undefined }],
+      "holds an entry whose `url` is not a string, at [0]",
+    ],
+    [
+      "an entry with a fractional size",
+      [FILES[0], { ...FILES[1], size: 1.5 }],
+      "holds an entry whose `size` is not a non-negative integer, at [1]",
+    ],
+  ])("throws a typed ApiResponseError for a version with %s", async (_label, files, fault) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(200, { ...SUMMARY, method_id: "m1", mthds: "src", python: '[{"name": 1}]' }),
+      jsonResponse(200, { ...SUMMARY, method_id: "m1", files }),
     );
 
-    const err = await client.getMethodVersion("m1", 3).catch((thrown: unknown) => thrown);
+    const err = await makeClient()
+      .getMethodVersion("m1", 3)
+      .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
     expect((err as ApiResponseError).message).toBe(
-      "API GET /v1/methods/m1/versions/3 answered 200 with a published version whose " +
-        "`python` field could not be read",
+      `API GET /v1/methods/m1/versions/3 answered 200 with a published version whose \`files\` ${fault}`,
     );
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
   });
 });
 
@@ -460,8 +543,7 @@ describe("the method routes take a bare id", () => {
   const SELECTOR = "mt_receipts01@3";
   const calls: [string, (client: PipelexApiClient) => Promise<unknown>][] = [
     ["getMethod", (client) => client.getMethod(SELECTOR)],
-    ["getMethodClosure", (client) => client.getMethodClosure(SELECTOR)],
-    ["writeDraft", (client) => client.writeDraft(SELECTOR, { mthds: "src" })],
+    ["writeDraft", (client) => client.writeDraft(SELECTOR, { files: { "main.mthds": "src" } })],
     ["renameMethod", (client) => client.renameMethod(SELECTOR, { name: "Receipts" })],
     [
       "publishMethod",
@@ -586,12 +668,79 @@ describe("the method resource", () => {
   it("hands back the deletion_state a method read carries", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(200, { ...WIRE_METHOD, deletion_state: "pending" }),
+      jsonResponse(200, { ...WIRE_METHOD, files: FILES, deletion_state: "pending" }),
     );
 
     const method = await client.getMethod("mt_receipts01");
 
     expect(method.deletion_state).toBe("pending");
+  });
+
+  it("carries no source field: a method is a tree", () => {
+    expectTypeOf<MethodData>().not.toHaveProperty("mthds");
+    expectTypeOf<MethodData>().not.toHaveProperty("python");
+    expectTypeOf<MethodVersionSummary>().not.toHaveProperty("source_digest");
+    expectTypeOf<MethodData["draft_digest"]>().toEqualTypeOf<string | null>();
+    expectTypeOf<MethodVersionSummary["tree_digest"]>().toEqualTypeOf<string | null>();
+  });
+});
+
+describe("getMethod", () => {
+  it("GETs /v1/methods/{id} and reads the method with its draft's files", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { ...WIRE_METHOD, files: FILES }));
+
+    const method = await client.getMethod("mt_receipts01");
+
+    expect(onlyRequest(spy).url).toBe(`${BASE_URL}/v1/methods/mt_receipts01`);
+    expect(method).toEqual(METHOD_DETAIL);
+    // The draft is unchanged since its latest version: both digests name the same tree.
+    expect(method.draft_digest).toBe(method.latest_published?.tree_digest);
+  });
+
+  it("reads an empty draft: no files, and no digest", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...WIRE_METHOD, files: [], draft_digest: null }),
+    );
+
+    const method = await makeClient().getMethod("mt_receipts01");
+
+    expect(method.files).toEqual([]);
+    expect(method.draft_digest).toBeNull();
+  });
+
+  it("throws a typed ApiResponseError for a method read with no files", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, WIRE_METHOD));
+
+    const err = await makeClient()
+      .getMethod("mt_receipts01")
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      "API GET /v1/methods/mt_receipts01 answered 200 with a stored method whose `files` is not " +
+        "an array",
+    );
+  });
+
+  it("surfaces a draft naming a tree the platform holds no record of as a 409, runtime", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(409, {
+        code: "conflict",
+        detail: "The method names a tree the organization holds no record of.",
+        error_domain: "runtime",
+        retryable: false,
+      }),
+    );
+
+    const err = await makeClient()
+      .getMethod("mt_receipts01")
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
   });
 });
 
@@ -628,6 +777,11 @@ describe("the method error codes", () => {
 });
 
 describe("which version a run ran", () => {
+  it("types tree_digest and crate_fingerprint on the run detail, optional", () => {
+    expectTypeOf<RunDetail["tree_digest"]>().toEqualTypeOf<string | null | undefined>();
+    expectTypeOf<RunDetail["crate_fingerprint"]>().toEqualTypeOf<string | null | undefined>();
+  });
+
   it("types method_version and source_digest on every run record, optional", () => {
     expectTypeOf<RunPublic["method_version"]>().toEqualTypeOf<
       number | "draft" | null | undefined
@@ -675,7 +829,9 @@ describe("which version a run ran", () => {
           status: "COMPLETED",
           created_at: "t0",
           method_version: "draft",
-          source_digest: DIGEST,
+          source_digest: SOURCE_DIGEST,
+          tree_digest: DIGEST,
+          crate_fingerprint: "a1b2c3",
         }),
       )
       .mockResolvedValueOnce(
@@ -686,7 +842,7 @@ describe("which version a run ran", () => {
               status: "COMPLETED",
               created_at: "t1",
               method_version: 3,
-              source_digest: DIGEST,
+              source_digest: SOURCE_DIGEST,
             },
             { pipeline_run_id: "run-3", status: "FAILED", created_at: "t2" },
           ],
@@ -698,7 +854,9 @@ describe("which version a run ran", () => {
     const page = await client.listRuns("mt_receipts01");
 
     expect(detail.method_version).toBe("draft");
-    expect(detail.source_digest).toBe(DIGEST);
+    expect(detail.source_digest).toBe(SOURCE_DIGEST);
+    expect(detail.tree_digest).toBe(DIGEST);
+    expect(detail.crate_fingerprint).toBe("a1b2c3");
     expect(page.items[0]?.method_version).toBe(3);
     // A row a platform recorded before versions existed carries neither, and still reads.
     expect(page.items[1]?.method_version).toBeUndefined();

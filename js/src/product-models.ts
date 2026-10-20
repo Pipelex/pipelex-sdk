@@ -10,9 +10,10 @@
  * consumes — not a speculative mirror of every server field.
  */
 
-import type { MethodFile } from "mthds/protocol";
+import type { MethodFiles } from "mthds/protocol";
 
 import type { RunErrorReport } from "./error-models.js";
+import type { MethodTreeSource } from "./method-trees.js";
 import type { PipelexValidationResult } from "./models.js";
 import type { RunStatus } from "./runs.js";
 
@@ -28,27 +29,48 @@ export interface UserProfile {
 
 // ── Methods catalog (`/v1/methods`) ──────────────────────────────────────
 //
-// A saved method has a draft and published versions. The method's content fields
-// (`mthds`, `python`, `input_data`) are its DRAFT: written freely by `writeDraft`, never
-// validated on write. A VERSION is an immutable copy of the draft, numbered from 1 and
-// never reused, written only by `publishMethod` and only when the draft validates and
-// runs. A bare `method_id` runs the latest published version, `mt_…@<n>` a fixed
-// version and `mt_…@draft` the draft; the method routes themselves take a bare id
-// (`parseMethodSelector` strips a suffix).
+// A saved method has a draft and published versions. Its DRAFT is a method tree, the same
+// files a run takes, with the editor's `input_data`: written freely by `writeDraft`, never
+// validated on write. A VERSION is an immutable copy of the draft's tree, numbered from 1
+// and never reused, written only by `publishMethod` and only when the draft validates and
+// runs. Each names its tree by its digest, and a read lists the tree's files with a link to
+// each one's bytes (see `docs/method-trees.md`). A bare `method_id` runs the latest
+// published version, `mt_…@<n>` a fixed version and `mt_…@draft` the draft; the method
+// routes themselves take a bare id (`parseMethodSelector` strips a suffix).
 
 /**
- * One published version without its sources — what `listMethodVersions` lists, what a
+ * One file of a saved method's tree, as `getMethod` and `getMethodVersion` list it, in tree path
+ * order. `writeMethodTree` downloads and writes a listing.
+ */
+export interface SavedMethodFile {
+  /** Its tree path. */
+  path: string;
+  /** The SHA-256 of its bytes, 64 lowercase hex characters. */
+  sha256: string;
+  /** Its size in bytes. */
+  size: number;
+  /**
+   * A link to its bytes, signed by storage, which any HTTP client reads with no credential. It is
+   * a bearer credential until it expires: keep it out of logs, messages and stored records.
+   */
+  url: string;
+  /** ISO-8601 UTC instant the link stops working, about fifteen minutes after the read. */
+  expires_at: string;
+}
+
+/**
+ * One published version without its files — what `listMethodVersions` lists, what a
  * method read carries as `latest_published`, and what a publish answers as `version`.
  */
 export interface MethodVersionSummary {
   /** The version number, from 1, never reused and never renumbered. */
   version: number;
   /**
-   * SHA-256 of the canonical form of the version's two file sets (`.mthds` and Python), as 64
-   * lowercase hex characters — the same function as the method's `draft_digest`, so equal
-   * digests mean the same sources would run.
+   * The digest of the version's tree, `sha256:` and 64 lowercase hex characters — the same
+   * function as the method's `draft_digest`, so equal digests mean the same files would run.
+   * `null` for a version stored before methods were trees and never rewritten as one.
    */
-  source_digest: string;
+  tree_digest: string | null;
   /**
    * The runner's `crate.fingerprint` for the bundle (`POST /v1/resolve`), which covers its
    * meaning rather than its bytes and is what generated client code is checked against.
@@ -70,46 +92,32 @@ export interface MethodVersionSummary {
 }
 
 /**
- * One published version with its sources — `getMethodVersion`. It carries no `name`, which
+ * One published version with its files — `getMethodVersion`. It carries no `name`, which
  * belongs to the method and changes without a publish, and no `input_data`, which is the
  * editor's form state and not part of what a caller runs.
  */
 export interface MethodVersion extends MethodVersionSummary {
   method_id: string;
-  /** The version's `.mthds` source, in the same stored form as `MethodData.mthds`. */
-  mthds: string;
-  /**
-   * The version's custom-PipeFunc Python, as `MethodFile[]`, parsed from the wire string
-   * exactly as `MethodData.python` is. Empty array when the version has no custom Python.
-   */
-  python?: MethodFile[];
+  /** The version's tree, one entry per file in tree path order, each with a link to its bytes. */
+  files: SavedMethodFile[];
 }
 
 /**
- * A saved method — `getMethod`, `createMethod`, `writeDraft`, `renameMethod`, and the
- * `method` of every publish outcome. Its content fields ARE the draft; the latest
- * published version is summarized in `latest_published`.
+ * A saved method — `createMethod`, `writeDraft`, `renameMethod`, and the `method` of every
+ * publish outcome; `getMethod` answers it with the draft's files (`MethodDetail`). Its draft is
+ * named by `draft_digest`; the latest published version is summarized in `latest_published`.
  *
  * The publish state a client shows is derived, never stored: never published
- * (`latest_version` is `null`), published with the draft unchanged (`draft_digest ===
- * latest_published.source_digest`), or published with the draft ahead (they differ).
+ * (`latest_version` is `null`), published with the draft unchanged (`draft_digest` is not
+ * `null` and equals `latest_published.tree_digest`), or published with the draft ahead (they
+ * differ).
  */
 export interface MethodData {
   method_id: string;
   org_id: string;
   created_by_user_id: string;
   name: string;
-  /** The draft's `.mthds` bundle source. */
-  mthds: string;
-  /**
-   * The draft's custom-PipeFunc Python sources, as `MethodFile[]` (`{ name, content }`). On
-   * the wire this is the serialized `[{ name, content }]` catalog string (empty
-   * `""` when the method has no custom Python); the client (de)serializes it via
-   * `mthds/protocol`'s `parseMethodFiles`/`serializeMethodFiles`, so callers work
-   * with the typed array. Empty array when the method has no custom Python.
-   */
-  python?: MethodFile[];
-  /** The editor's form inputs, saved with the draft and outside both digests. */
+  /** The editor's form inputs, saved with the draft and outside its digest. */
   input_data?: Record<string, unknown> | null;
   /** Legacy persisted output spec; optional. */
   pipe_output?: Record<string, unknown> | null;
@@ -129,11 +137,11 @@ export interface MethodData {
    */
   updated_at: string;
   /**
-   * The draft's digest: SHA-256 of the canonical form of its two file sets, 64 lowercase hex
-   * characters. `input_data` is outside it, so saving only the form inputs moves the token and
-   * leaves the digest as it was.
+   * The draft's tree digest, `sha256:` and 64 lowercase hex characters; `null` for an empty
+   * draft. `input_data` is outside it, so saving only the form inputs moves the token and leaves
+   * the digest as it was.
    */
-  draft_digest: string;
+  draft_digest: string | null;
   /** The number of the latest published version; `null` when the method was never published. */
   latest_version: number | null;
   /** The latest published version's summary; `null` when the method was never published. */
@@ -145,6 +153,15 @@ export interface MethodData {
    * same field on the list, where a method mid-erasure stays listed.
    */
   deletion_state?: MethodDeletionState | null;
+}
+
+/**
+ * A saved method with its draft's files — what `getMethod` answers. `files` lists the draft's
+ * tree in tree path order, each file with its SHA-256, its size and a link to its bytes valid for
+ * about fifteen minutes, and is empty for an empty draft; `writeMethodTree` brings it to disk.
+ */
+export interface MethodDetail extends MethodData {
+  files: SavedMethodFile[];
 }
 
 /** Where a method is in the erasure cascade; absent on a normal method. */
@@ -167,12 +184,11 @@ export interface MethodDeletionAccepted {
 /**
  * One row of the method LIST — deliberately much smaller than `MethodData`.
  *
- * The list is served from a narrow DynamoDB index projection, so `mthds` and
- * `python` are **not here and never will be**. That is the whole point: the
- * previous list returned every method's full bundle, hit DynamoDB's 1 MB page
- * cap at a couple hundred methods and silently returned a SHORT ARRAY —
- * methods vanished from the UI with no error at all. Use `getMethod(id)` when
- * you need the bundle.
+ * The list is served from a narrow DynamoDB index projection, so a method's files
+ * are **not here and never will be**. That is the whole point: a list that returned
+ * every method's full bundle hit DynamoDB's 1 MB page cap at a couple hundred methods
+ * and silently returned a SHORT ARRAY — methods vanished from the UI with no error at
+ * all. Use `getMethod(id)` when you need the files.
  *
  * `updated_at` is absent by design too. The catalog is ordered by `created_at`
  * (immutable — over a mutable sort key a cursor duplicates and skips rows), and
@@ -181,8 +197,9 @@ export interface MethodDeletionAccepted {
  *
  * The row carries the method's publish state, so a list tells its methods apart without
  * reading each one: never published (`latest_version` is `null`), published with the draft
- * unchanged (`draft_digest === latest_published.source_digest`), or published with the draft
- * ahead (they differ). The three fields are absent from a platform that does not serve them.
+ * unchanged (`draft_digest` is not `null` and equals `latest_published.tree_digest`), or
+ * published with the draft ahead (they differ). The three fields are absent from a platform that
+ * does not serve them.
  */
 export interface MethodSummary {
   method_id: string;
@@ -199,12 +216,7 @@ export interface MethodSummary {
   latest_version?: number | null;
   /** The latest published version's summary; `null` when the method was never published. */
   latest_published?: MethodVersionSummary | null;
-  /**
-   * The digest the last draft write stored, in the form of `MethodData.draft_digest`. Unlike on
-   * `MethodData` it can be `null` here: the list reads an index that holds no bundle to digest,
-   * so a row that never stored a digest carries `null` until its next draft write stores one.
-   * Compare it with `latest_published.source_digest` only when both are strings.
-   */
+  /** The draft's tree digest, as `MethodData.draft_digest`; `null` for an empty draft. */
   draft_digest?: string | null;
 }
 
@@ -246,35 +258,43 @@ export interface MethodPage {
 }
 
 /**
- * The create payload — `createMethod`. A new method holds this as its draft and has no
- * version yet. Its draft is then written with `writeDraft` and its name changed with
- * `renameMethod`.
+ * A method's tree in the three forms a save takes, of which a save gives at most one:
+ *
+ * - `files`, the MTHDS standard's map of file entries, the same `files` a run takes, sent as
+ *   given: a file's text, `{ base64 }`, or `{ sha256, size }` for bytes the organization holds;
+ * - `tree`, a tree whose files the client reads, such as the `MethodTree` the `mthds` package's
+ *   `listMethodTree` lists from a directory;
+ * - `contents`, each file's bytes or text by tree path.
+ *
+ * A `tree` or `contents` travels inline when its inline map weighs 256 KiB or less, or when the
+ * platform keeps no blob store, and otherwise by hash, after the client uploads the files the
+ * organization lacks (see `docs/method-trees.md`).
  */
-export interface MethodWriteInput {
+export interface MethodTreeInput {
+  files?: MethodFiles | null;
+  tree?: MethodTreeSource;
+  contents?: Readonly<Record<string, Uint8Array | string>>;
+}
+
+/**
+ * The create payload — `createMethod`. A new method holds its tree as its draft and has no
+ * version yet; with no tree, the draft is empty. Its draft is then written with `writeDraft`
+ * and its name changed with `renameMethod`.
+ */
+export interface MethodWriteInput extends MethodTreeInput {
   name: string;
-  mthds: string;
-  /**
-   * Custom-PipeFunc Python as `MethodFile[]`, serialized to the catalog string on the wire;
-   * omitted or an empty array, the method has none.
-   */
-  python?: MethodFile[];
   input_data?: Record<string, unknown> | null;
 }
 
 /**
  * The draft write — `writeDraft`, `PUT /v1/methods/{id}/draft`. It never validates: a draft
  * may be invalid, and an autosave of work in progress often is.
+ *
+ * The write replaces the draft's whole tree, given in exactly one form (see `MethodTreeInput`):
+ * `files: null` empties the draft, and a draft giving no tree is refused, so keeping the stored
+ * files means sending them again.
  */
-export interface MethodDraftInput {
-  /** The draft's `.mthds` files, in the stored serialized form. Required. */
-  mthds: string;
-  /**
-   * Custom-PipeFunc Python as `MethodFile[]`. Three-way: **omit** (`undefined`) keeps the
-   * stored Python (the client sends nothing); an **empty array** `[]` clears it (the client
-   * serializes it to `""`); a **non-empty array** replaces it. It is a replace, not a merge —
-   * send the full set on a write that intends to change it.
-   */
-  python?: MethodFile[];
+export interface MethodDraftInput extends MethodTreeInput {
   /**
    * The editor's form inputs. Three-way too: **omit** keeps the stored inputs, an explicit
    * `null` clears them, and any other value replaces them.
@@ -754,10 +774,11 @@ export interface PipelineRun {
    */
   method_version?: number | "draft" | null;
   /**
-   * The digest of the files the run ran, in the canonical form of `MethodData.draft_digest`, so
-   * an inline run identical to a version records that version's `source_digest`. `null` when
-   * the platform never held the files, as on a `method_ref` run; absent on a run recorded by a
-   * platform that did not record it yet.
+   * The SHA-256 of the sources the run sent as text, 64 lowercase hex characters with no prefix —
+   * not a tree digest. `null` for a run whose method was a tree holding a Base64 or a hash entry,
+   * a stored method's included, which `RunDetail.tree_digest` names instead, and when the platform
+   * never held the files, as on a `method_ref` run; absent on a run recorded by a platform that
+   * did not record it yet.
    */
   source_digest?: string | null;
 }
@@ -790,7 +811,7 @@ export interface RunHistoryItem {
    * and of the draft together, so this is how a row says which one it was.
    */
   method_version?: number | "draft" | null;
-  /** The digest of the files the run ran (see `PipelineRun.source_digest`). */
+  /** The SHA-256 of the sources the run sent as text (see `PipelineRun.source_digest`). */
   source_digest?: string | null;
 }
 
@@ -824,6 +845,13 @@ export interface RunDetail extends PipelineRun {
    * read does, as `RunRead.request_id`.
    */
   request_id?: string | null;
+  /**
+   * The digest of the method tree the run sent as `files`, `sha256:` and 64 lowercase hex
+   * characters, a stored method's run included; `null` for a run that recorded none.
+   */
+  tree_digest?: string | null;
+  /** The runner's fingerprint of the crate it loaded the tree into; `null` when it reported none. */
+  crate_fingerprint?: string | null;
 }
 
 /** Query for one page of run history. */

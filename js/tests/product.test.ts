@@ -174,11 +174,10 @@ describe("methods catalog", () => {
 
   it("hands back each row's publish state as the platform serves it", async () => {
     // Three rows, the three states a list tells apart from the row alone: never published,
-    // published with a digest the list has not stored yet (`draft_digest: null`), and published
-    // with the draft ahead.
+    // published with an empty draft (`draft_digest: null`), and published with the draft ahead.
     const latestPublished: MethodVersionSummary = {
       version: 3,
-      source_digest: "a".repeat(64),
+      tree_digest: `sha256:${"a".repeat(64)}`,
       crate_fingerprint: null,
       runner_version: "0.73.0",
       description: "Reads invoices",
@@ -193,9 +192,9 @@ describe("methods catalog", () => {
       deletion_state: null,
       latest_version: null,
       latest_published: null,
-      draft_digest: "b".repeat(64),
+      draft_digest: `sha256:${"b".repeat(64)}`,
     };
-    const noStoredDigest: MethodSummary = {
+    const emptyDraft: MethodSummary = {
       method_id: "m2",
       name: "Published long ago",
       description: "Reads invoices",
@@ -206,22 +205,22 @@ describe("methods catalog", () => {
       draft_digest: null,
     };
     const draftAhead: MethodSummary = {
-      ...noStoredDigest,
+      ...emptyDraft,
       method_id: "m3",
-      draft_digest: "c".repeat(64),
+      draft_digest: `sha256:${"c".repeat(64)}`,
     };
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(200, { items: [neverPublished, noStoredDigest, draftAhead], next_cursor: null }),
+      jsonResponse(200, { items: [neverPublished, emptyDraft, draftAhead], next_cursor: null }),
     );
 
     const page = await client.listMethods({ published: true });
 
-    expect(page.items).toEqual([neverPublished, noStoredDigest, draftAhead]);
+    expect(page.items).toEqual([neverPublished, emptyDraft, draftAhead]);
     expect(page.items[0]!.latest_version).toBeNull();
     expect(page.items[1]!.latest_published?.version).toBe(3);
     expect(page.items[1]!.draft_digest).toBeNull();
-    expect(page.items[2]!.draft_digest).not.toBe(page.items[2]!.latest_published?.source_digest);
+    expect(page.items[2]!.draft_digest).not.toBe(page.items[2]!.latest_published?.tree_digest);
   });
 
   it("hands back a row from a platform that serves no publish state, the fields absent", async () => {
@@ -353,7 +352,7 @@ describe("methods catalog", () => {
     const client = makeClient();
     const spy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { method_id: "a/b" }));
+      .mockResolvedValue(jsonResponse(200, { method_id: "a/b", files: [] }));
 
     await client.getMethod("a/b");
 
@@ -366,12 +365,16 @@ describe("methods catalog", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { method_id: "m1" }));
 
-    await client.createMethod({ name: "M", mthds: "src", input_data: { a: 1 } });
+    await client.createMethod({
+      name: "M",
+      files: { "main.mthds": "src" },
+      input_data: { a: 1 },
+    });
 
     const req = lastRequest(spy);
     expect(req.method).toBe("POST");
     expect(req.url).toBe("http://localhost:8081/v1/methods");
-    expect(req.body).toEqual({ name: "M", mthds: "src", input_data: { a: 1 } });
+    expect(req.body).toEqual({ name: "M", files: { "main.mthds": "src" }, input_data: { a: 1 } });
   });
 
   it("DELETEs /v1/methods/{id} and returns the 202 acceptance, not void", async () => {
@@ -426,67 +429,33 @@ describe("methods catalog", () => {
     expect((err as ApiResponseError).status).toBe(409);
   });
 
-  it("POSTs /v1/methods serializing custom-PipeFunc `python` (MethodFile[] → wire string)", async () => {
+  it("POSTs /v1/methods with no tree, creating an empty draft", async () => {
     const client = makeClient();
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { method_id: "m1" }));
 
-    await client.createMethod({
-      name: "M",
-      mthds: "src",
-      python: [{ name: "helper.py", content: "from pipelex import log\n" }],
-    });
+    await client.createMethod({ name: "M" });
 
-    // The typed array is serialized to the catalog string on the wire.
-    expect(lastRequest(spy).body).toEqual({
-      name: "M",
-      mthds: "src",
-      python: '[{"name":"helper.py","content":"from pipelex import log\\n"}]',
-    });
+    // No `files` key at all: the platform creates the method with an empty draft.
+    expect(lastRequest(spy).body).toEqual({ name: "M" });
   });
 
-  it("GETs /v1/methods/{id} parsing the wire `python` string into MethodFile[]", async () => {
-    const client = makeClient();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(200, {
-        method_id: "m1",
-        name: "M",
-        mthds: "src",
-        python: '[{"name":"helper.py","content":"x"}]',
-      }),
-    );
-
-    const method = await client.getMethod("m1");
-
-    expect(method.python).toEqual([{ name: "helper.py", content: "x" }]);
-  });
-
-  it("the draft write's `python` is three-way: omit preserves, [] clears (''), array sets", async () => {
+  it("the draft write sends the whole tree, and files: null empties it", async () => {
     const client = makeClient();
     // A fresh Response per call — the client reads the body, single-read across calls.
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(() => Promise.resolve(jsonResponse(200, { method_id: "m1" })));
 
-    // omit → the wire body carries no `python` key (server preserves stored).
-    await client.writeDraft("m1", { mthds: "src" });
-    expect("python" in (lastRequest(spy).body as object)).toBe(false);
-
-    // [] → cleared as the "" sentinel.
-    spy.mockClear();
-    await client.writeDraft("m1", { mthds: "src", python: [] });
-    expect((lastRequest(spy).body as { python?: string }).python).toBe("");
-
-    // non-empty → serialized array.
-    spy.mockClear();
-    await client.writeDraft("m1", {
-      mthds: "src",
-      python: [{ name: "a.py", content: "y" }],
+    await client.writeDraft("m1", { files: { "main.mthds": "src", "helper.py": "x = 1\n" } });
+    expect(lastRequest(spy).body).toEqual({
+      files: { "main.mthds": "src", "helper.py": "x = 1\n" },
     });
-    expect((lastRequest(spy).body as { python?: string }).python).toBe(
-      '[{"name":"a.py","content":"y"}]',
-    );
+
+    spy.mockClear();
+    await client.writeDraft("m1", { files: null });
+    expect(lastRequest(spy).body).toEqual({ files: null });
   });
 });
 

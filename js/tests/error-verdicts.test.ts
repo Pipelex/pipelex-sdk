@@ -36,10 +36,10 @@ import {
   ArtifactAuthenticationError,
   ArtifactFetchError,
   ArtifactOperationError,
-  EmptyMethodSourceError,
   InputPreparationError,
   InvalidLocalSourceError,
   InvalidInputValueError,
+  MethodFileTransferError,
   MethodLoadError,
   MissingMainStuffError,
   PagingNotTerminatingError,
@@ -61,6 +61,7 @@ import {
   runMayHaveStartedOf,
   type ErrorDomain,
   type ErrorVerdict,
+  type MethodFileTransferCode,
   type RejectedAssetCode,
   type UploadTransportCode,
 } from "../src/errors.js";
@@ -236,7 +237,14 @@ const BUILDERS: Record<string, (given: Given) => Promise<Error> | Error> = {
       "Cannot prepare inputs.",
       given.verdict === undefined ? undefined : { verdict: toVerdict(given.verdict) },
     ),
-  EmptyMethodSourceError: () => new EmptyMethodSourceError("mt_1"),
+  MethodFileTransferError: (given) =>
+    new MethodFileTransferError("The transfer failed.", {
+      operation: "download",
+      code: given.code as MethodFileTransferCode,
+      sha256: "0".repeat(64),
+      path: "main.mthds",
+      ...(given.status == null ? {} : { status: given.status }),
+    }),
   InvalidLocalSourceError: () => new InvalidLocalSourceError("No such file.", "/nope.pdf"),
   InvalidInputValueError: () =>
     new InvalidInputValueError('Input "photo" holds a malformed data URL (invalid base64).', {

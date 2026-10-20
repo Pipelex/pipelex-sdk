@@ -1,10 +1,15 @@
 # Rendered by `make workflows` from starter-python/.github/workflows/package-check.yml — edit that file and re-render.
 # It runs starter-python extracted exactly as the export ships it, installed from the registry
 # with its own lockfile, as a project made from it would be. The root CI calls it.
+# Unlike its source, it turns telemetry off with its env, as every workflow of this repository does.
 name: package-check (starter-python)
 
 on:
   workflow_call:
+
+env:
+  DO_NOT_TRACK: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
   uv-lock-check:
