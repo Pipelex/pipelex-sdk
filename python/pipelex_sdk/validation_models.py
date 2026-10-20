@@ -14,8 +14,8 @@ These shapes are **Pipelex-branded implementation envelopes**, so they live here
 `pipelex-sdk`, not in the brand-neutral `mthds` package — mirroring `pipelex-sdk-js/src/models.ts`
 and the documented brand boundary (`docs/architecture.md` → "Brand boundary"). The report/union
 types carry the `Pipelex` prefix; the supporting types (`DryRunStatus`, `ValidatedPipeEntry`,
-`ValidationErrorCategory`, `ValidationErrorItem`, `LiftablePipeEntry`, `SuggestedFix`, the
-`FixOp` variants, `FixOpKind`, `FixSafety`) stay neutrally named — branding the envelope,
+`ValidationErrorCategory`, `ValidationErrorItem`, `LiftablePipeEntry`, `TreeFileRead`,
+`TreeFileUse`, `SuggestedFix`, the `FixOp` variants, `FixOpKind`, `FixSafety`) stay neutrally named — branding the envelope,
 not the field names inside it. Fixes and lints are language-level concepts, and the runtime
 names them brand-neutrally too.
 
@@ -257,6 +257,45 @@ class LiftablePipeEntry(BaseModel):
     """Where the possible absence originates (human-readable)."""
 
 
+class TreeFileUse(StrEnum):
+    """What a step reads a file of its method tree as, mirroring pipelex's `TreeFileUse`.
+
+    A report reads it open on `TreeFileRead.use`: a runner of a later version may add a use as another
+    kind of step comes to read files of its tree, and a use this SDK does not know keeps its raw string
+    rather than failing the whole verdict.
+    """
+
+    TEMPLATE = "template"
+    """The template a `PipeDocGen` step fills, named by its `template_file`."""
+
+    TEMPLATE_ASSET = "template_asset"
+    """An image, a stylesheet or a font that a `PipeDocGen` step's HTML template names by a literal
+    relative URL, or that one of its stylesheets names."""
+
+    PYTHON_MODULE = "python_module"
+    """The module defining the function a `PipeFunc` step calls, named by the import path of its
+    `function_name`."""
+
+
+class TreeFileRead(BaseModel):
+    """One file of its method tree a step reads, an entry of `PipelexValidationReport.tree_files_read`.
+
+    A reader model, extension-open like the report's other entries, where the runtime declares its own
+    copy closed.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    tree_path: str
+    """The file's path from the root of the method's tree, with forward slashes, such as
+    `templates/invoice.html`, never a path on the server. A file sent in `resources` is named by its
+    key, its `.` segments and repeated slashes collapsed as the runner collapses them."""
+
+    use: Annotated[TreeFileUse | str, Field(union_mode="left_to_right")]
+    """What the step reads the file as: a `TreeFileUse` member, or the raw string of a use this SDK
+    does not know, so a `match` on it says what an unknown use does."""
+
+
 class ValidatedPipeEntry(BaseModel):
     """One entry of `PipelexValidationReport.validated_pipes[]`."""
 
@@ -369,6 +408,28 @@ class PipelexValidationReport(BaseModel):
     """The pipes the runtime may skip when an optional slot resolves absent.
 
     Defaults empty for the same reason as `warnings`: an older runner's body must keep parsing."""
+
+    tree_files_read: dict[str, list[TreeFileRead]] = Field(default_factory=dict)
+    """Per step, the files of the method's tree it reads, keyed by namespaced `pipe_ref` over the same
+    set as `pipe_io_contracts`, each file by its tree path with what the step reads it as.
+
+    A `PipeDocGen` step reads its template and the images, stylesheets and fonts its HTML template
+    names by literal relative URLs; a `PipeFunc` step reads the module of its function when that module
+    is a file of the tree. A step that reads no file of the tree, a controller included, has an empty
+    list. The paths come from what each step already names, so a client can show which step uses a file
+    without parsing the method.
+
+    Defaults to an empty map so a body from a runner predating the field still parses. Unlike the
+    lists' defaults, the empty map is not what a current runner says of a method with pipes, since it
+    lists every pipe it validated; a caller that must tell an older runner apart checks
+    `"tree_files_read" in report.model_fields_set`."""
+
+    tree_file_readers: dict[str, list[str]] = Field(default_factory=dict)
+    """The per-file view of `tree_files_read`: each tree path a step reads, in sorted order, to the
+    namespaced refs of the steps that read it, each listed once.
+
+    A file of the tree with no entry is read by no step: the bundles themselves, a README, a package's
+    `__init__.py` beside its modules. Defaults empty for the same reason as `tree_files_read`."""
 
     input_form: InputForm | None = None
     """Per-pipe input-form descriptors, keyed exactly like `pipe_io_contracts`, typed by importing

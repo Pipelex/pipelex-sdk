@@ -30,6 +30,8 @@ from pipelex_sdk.validation_models import (
     RemapValueOp,
     RenameTableKeyOp,
     SetKeyOp,
+    TreeFileRead,
+    TreeFileUse,
     ValidationErrorCategory,
 )
 
@@ -183,6 +185,32 @@ VALID_BODY_WITH_VIEWS: dict[str, Any] = {
                 },
             ]
         }
+    },
+}
+
+# The valid arm from a runner reporting the files each step reads: a `PipeDocGen` step reading its HTML
+# template and the stylesheet it links, a `PipeFunc` step reading its module, and a controller reading
+# nothing, with the per-file view keyed in sorted order. `VALID_BODY` is the same verdict from a runner
+# predating both views.
+VALID_BODY_WITH_TREE_FILES: dict[str, Any] = {
+    **VALID_BODY,
+    "validated_pipes": [
+        {"pipe_ref": "legal_contracts.print_summary", "status": "SUCCESS"},
+        {"pipe_ref": "legal_contracts.count_clauses", "status": "SUCCESS"},
+        {"pipe_ref": "legal_contracts.summarize", "status": "SUCCESS"},
+    ],
+    "tree_files_read": {
+        "legal_contracts.print_summary": [
+            {"tree_path": "templates/summary.html", "use": "template"},
+            {"tree_path": "templates/summary.css", "use": "template_asset"},
+        ],
+        "legal_contracts.count_clauses": [{"tree_path": "funcs/clauses.py", "use": "python_module"}],
+        "legal_contracts.summarize": [],
+    },
+    "tree_file_readers": {
+        "funcs/clauses.py": ["legal_contracts.count_clauses"],
+        "templates/summary.css": ["legal_contracts.print_summary"],
+        "templates/summary.html": ["legal_contracts.print_summary"],
     },
 }
 
@@ -551,6 +579,65 @@ class TestValidationContract:
         assert report.warnings == []
         assert report.liftable_pipes == []
         assert report.input_form is None
+
+    # ── The files each step reads: `tree_files_read` and `tree_file_readers` ──
+
+    def test_valid_arm_carries_the_files_each_step_reads(self) -> None:
+        """Both views parse into typed fields: each read a `TreeFileRead` whose `use` narrows to a `TreeFileUse` member."""
+        report = _parse(VALID_BODY_WITH_TREE_FILES)
+        assert isinstance(report, PipelexValidationReport)
+        assert report.tree_files_read == {
+            "legal_contracts.print_summary": [
+                TreeFileRead(tree_path="templates/summary.html", use=TreeFileUse.TEMPLATE),
+                TreeFileRead(tree_path="templates/summary.css", use=TreeFileUse.TEMPLATE_ASSET),
+            ],
+            "legal_contracts.count_clauses": [TreeFileRead(tree_path="funcs/clauses.py", use=TreeFileUse.PYTHON_MODULE)],
+            "legal_contracts.summarize": [],
+        }
+        template, asset = report.tree_files_read["legal_contracts.print_summary"]
+        assert template.use is TreeFileUse.TEMPLATE
+        assert asset.use is TreeFileUse.TEMPLATE_ASSET
+        assert report.tree_files_read["legal_contracts.count_clauses"][0].use is TreeFileUse.PYTHON_MODULE
+        # Keyed over the validated pipes, a controller reading nothing included.
+        assert set(report.tree_files_read) == {entry.pipe_ref for entry in report.validated_pipes}
+        assert report.tree_file_readers == {
+            "funcs/clauses.py": ["legal_contracts.count_clauses"],
+            "templates/summary.css": ["legal_contracts.print_summary"],
+            "templates/summary.html": ["legal_contracts.print_summary"],
+        }
+        assert list(report.tree_file_readers) == ["funcs/clauses.py", "templates/summary.css", "templates/summary.html"]
+        assert "tree_files_read" in report.model_fields_set
+
+    def test_valid_body_predating_the_tree_files_parses_with_empty_maps(self) -> None:
+        """A runner predating both views sends neither: the report parses, both maps empty, and the field set says they were not sent."""
+        report = _parse(VALID_BODY)
+        assert isinstance(report, PipelexValidationReport)
+        assert report.tree_files_read == {}
+        assert report.tree_file_readers == {}
+        assert "tree_files_read" not in report.model_fields_set
+        assert "tree_file_readers" not in report.model_fields_set
+
+    def test_unknown_tree_file_use_keeps_its_raw_string(self) -> None:
+        """A use a later runner adds reads as its raw string rather than failing the whole verdict."""
+        body = {
+            **VALID_BODY_WITH_TREE_FILES,
+            "tree_files_read": {
+                **VALID_BODY_WITH_TREE_FILES["tree_files_read"],
+                "legal_contracts.count_clauses": [{"tree_path": "data/rates.csv", "use": "data_table"}],
+            },
+        }
+        report = _parse(body)
+        assert isinstance(report, PipelexValidationReport)
+        file_read = report.tree_files_read["legal_contracts.count_clauses"][0]
+        assert file_read.tree_path == "data/rates.csv"
+        assert file_read.use == "data_table"
+        assert not isinstance(file_read.use, TreeFileUse)
+        # The known uses beside it still narrow.
+        assert report.tree_files_read["legal_contracts.print_summary"][0].use is TreeFileUse.TEMPLATE
+
+    def test_tree_file_use_vocabulary_is_the_runtimes(self) -> None:
+        """The uses this SDK names are exactly pipelex's `TreeFileUse` values."""
+        assert {use.value for use in TreeFileUse} == {"template", "template_asset", "python_module"}
 
     # ── The 0.17+ invalid arm: `missing_pipe_code` and the fix vocabulary ──
 
