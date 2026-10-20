@@ -6,6 +6,7 @@
 
 - **`directory`, a method's tree listed from disk**: `createMethod` and `writeDraft`, like the runs, `validate` and the crate routes, take the method's tree as `directory`, a directory on disk listed in Node by the `mthds` package's lister under the standard's membership rule and the deployment's limits, and send it as they send a `tree` (`docs/method-trees.md`).
 - **`CrateRouteOptions`, a `signal` for the crate routes**: `resolve`, `codegen` and `pipeIo` take a second argument whose `signal` is read before each step a `directory`, `tree` or `contents` costs — the version handshake, the directory's listing, the blob route, each read and upload of a missing blob — and before the request, and handed to each of those steps, so an abort stops the one under way and starts nothing further, while the route's own request, once sent, runs to its end; `prepareInputs` passes its own `signal` there.
+- **The files each validated step reads, typed**: `PipelexValidationReport` declares `tree_files_read`, mapping each validated step's `pipe_ref` to the files of the method's tree it reads, each a `TreeFileRead` with its `tree_path` and its `use`, a `TreeFileUse` (`template`, `template_asset` or `python_module`) read open so a use a later runner adds still type-checks, and `tree_file_readers`, mapping each of those files to the steps that read it. Both are optional, absent on a runner predating them, and `TreeFileRead` and `TreeFileUse` are exported (`docs/method-trees.md`).
 
 ### Changed
 
@@ -30,16 +31,11 @@
 - **`requestTimeoutMs`**: a `PipelexApiClient` option setting the client's request ceiling, twenty minutes by default as before: the time limit of a request given no `timeoutMs` of its own, the blocking `execute` and a save carrying a method's tree among them, since a tree sent inline to a platform with no blob store has no size bound, and of each upload before a save and each download by `writeMethodTree`, which it bounds whole, the body included.
 - **`MethodFileTransferError`**: thrown when a file of a method's tree could not be uploaded before a save or downloaded by `writeMethodTree`, with its `operation`, a `code` (`unreachable`, `storage_error`, `refused` or `mismatch`) deciding whether it is retryable, the file's `sha256` and `path`, and storage's `status`, and never the link, which is a bearer credential, nor a `cause`.
 - **`RunDetail.tree_digest` and `RunDetail.crate_fingerprint`**: the digest of the method tree a run sent and the crate the runner loaded it into, each `null` for a run that recorded none.
-- **The files each validated step reads, typed**: `PipelexValidationReport` declares `tree_files_read`, mapping each validated step's `pipe_ref` to the files of the method's tree it reads, each a `TreeFileRead` with its `tree_path` and its `use`, a `TreeFileUse` (`template`, `template_asset` or `python_module`) read open so a use a later runner adds still type-checks, and `tree_file_readers`, mapping each of those files to the steps that read it. Both are optional, absent on a runner predating them, and `TreeFileRead` and `TreeFileUse` are exported (`docs/bundle-resources.md`).
 
 ### Changed
 
 - **A saved method is a tree, and its source fields are gone (Breaking)**: `MethodData`, `MethodVersion`, `MethodWriteInput` and `MethodDraftInput` lose `mthds` and `python`, and `MethodVersionSummary.source_digest` is now `tree_digest`, so code reading a method's source reads its `files` instead, and a draft is unchanged since its latest version when `draft_digest` is not `null` and equals `latest_published.tree_digest`. `draft_digest` is the draft's tree digest, `sha256:` and 64 hex digits, and `null` for an empty draft. A stored method or version whose `files` is not a listing is an `ApiResponseError`, and `getMethodVersion` answers a version stored before methods were trees with a `409` whose verdict is `runtime`.
 - **`writeDraft` replaces the whole tree (Breaking)**: a draft write always sends `files` and refuses a `MethodDraftInput` that gives the tree in no form, so keeping the stored files means sending them again; `files: null` empties the draft.
-
-### Fixed
-
-- **The documented size refusals of `resources`**: the doc comments of `bundle-resources.ts` and `validate`, `docs/bundle-resources.md` and `docs/crate-routes.md` no longer promise a `413` `BundleResourcesTooLargeError` for `.html` template files over 512 KiB, which pipelex-api no longer raises since 0.87.0. They now say that files taking the method tree they join past the runner's tree limits are a `422` `MethodTreeTooLarge`, an `ApiResponseError` that is `input` and not retryable, with an `.html` template file counted like any other.
 
 ### Removed
 
