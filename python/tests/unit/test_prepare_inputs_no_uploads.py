@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mthds.method_tree.file_entry import FileEntry
 from mthds.protocol.input_form import (
     DocumentField,
     DocumentItem,
@@ -26,13 +27,13 @@ from mthds.protocol.pipe_io_contracts import PresenceMarker
 from pytest_mock import MockerFixture
 
 from pipelex_sdk import upload as upload_module
-from pipelex_sdk.crate_models import MthdsFileItem, PipeIORequest, PipeIOValidReport
+from pipelex_sdk.crate_models import PipeIORequest, PipeIOValidReport
 from pipelex_sdk.error_verdicts import ErrorDomain, error_verdict_of
 from pipelex_sdk.errors import InputPreparationError, InvalidInputValueError, UploadNotAllowedError, UploadNotAllowedKind
 from pipelex_sdk.prepare_inputs import prepare_inputs
 from pipelex_sdk.product_models import UploadedFile, UploadInput
 
-_FILES = [MthdsFileItem(content='domain = "demo"')]
+_FILES: dict[str, FileEntry] = {"main.mthds": 'domain = "demo"'}
 _PIPE_REF = "demo.main"
 
 

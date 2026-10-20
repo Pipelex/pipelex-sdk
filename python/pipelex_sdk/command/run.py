@@ -131,7 +131,9 @@ async def _run(
         await before_request()
         results = await client.start_and_wait(
             pipe_code=pipe,
-            mthds_contents=selector.mthds_contents,
+            # The bundle still travels as the Pipelex API's `mthds_contents`, riding `extra` since the
+            # client names no such argument; the case file both CLIs share holds this body.
+            extra={"mthds_contents": selector.mthds_contents} if selector.mthds_contents is not None else None,
             inputs=prepared,
             wait_options=wait_options,
             method_ref=selector.method_ref,
@@ -162,7 +164,7 @@ async def _prepare(
     selector = crate_selector(source)
     await before_request()
     prepared = await client.prepare_inputs(
-        files=selector.files,
+        contents=selector.contents,
         method_ref=selector.method_ref,
         method_id=selector.method_id,
         pipe_ref=pipe,

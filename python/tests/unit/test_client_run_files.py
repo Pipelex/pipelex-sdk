@@ -1,13 +1,15 @@
-"""Tests for a run's method given as `files`, the MTHDS standard's map of file entries, beside the inline
-`mthds_contents` the Pipelex API still reads and the selectors that pair with neither.
+"""Tests for a run's method given as its tree, in `files` (the MTHDS standard's map of file entries), `tree`
+or `contents`, and the selectors that pair with none of them.
 
 `_send` is mocked, so what each test checks is the body the client would send, or the refusal it raises
-before sending anything.
+before sending anything. How a `tree` or `contents` is prepared, inline or by hash, is pinned in
+`test_client_run_trees.py`.
 """
 
 import asyncio
 import inspect
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -62,7 +64,6 @@ class TestClientRunFiles:
         body = _sent_body(send)
         assert body["files"] == {"main.mthds": _MAIN, "helper.py": {"sha256": _HASHED.sha256, "size": 5}}
         assert body["pipe_code"] == "review_receipt"
-        assert "mthds_contents" not in body
 
     def test_files_reach_the_execute_body(self, mocker: MockerFixture) -> None:
         client = self._client()
@@ -72,11 +73,23 @@ class TestClientRunFiles:
 
         assert _sent_body(send)["files"] == {"main.mthds": _MAIN}
 
-    def test_inline_bundles_still_ride_the_body_as_mthds_contents(self, mocker: MockerFixture) -> None:
+    @pytest.mark.parametrize("route", ["start", "execute"])
+    def test_small_contents_reach_the_body_inline_with_no_other_request(self, mocker: MockerFixture, route: str) -> None:
+        client = self._client()
+        answer = _response(202, json_body=_START_BODY) if route == "start" else _response(200, json_body=_EXECUTE_BODY)
+        send = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=answer))
+
+        asyncio.run(getattr(client, route)(contents={"main.mthds": _MAIN, "data/logo.bin": b"\x89PNG"}))
+
+        send.assert_called_once()
+        assert _sent_body(send)["files"] == {"main.mthds": _MAIN, "data/logo.bin": {"base64": "iVBORw=="}}
+
+    def test_a_bundle_riding_extra_reaches_the_body_as_given(self, mocker: MockerFixture) -> None:
+        """The Pipelex API's `mthds_contents` is no argument of this client, so a caller still sending it passes it through `extra`."""
         client = self._client()
         send = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(202, json_body=_START_BODY)))
 
-        asyncio.run(client.start(mthds_contents=[_MAIN]))
+        asyncio.run(client.start(extra={"mthds_contents": [_MAIN]}))
 
         body = _sent_body(send)
         assert body["mthds_contents"] == [_MAIN]
@@ -103,61 +116,72 @@ class TestClientRunFiles:
         assert _sent_body(send)["files"] == {"main.mthds": _MAIN}
 
     @pytest.mark.parametrize("route", ["start", "execute"])
-    def test_an_empty_mthds_contents_alone_names_nothing_to_run(self, mocker: MockerFixture, route: str) -> None:
+    def test_empty_files_name_no_tree_and_are_refused(self, mocker: MockerFixture, route: str) -> None:
         client = self._client()
         send = mocker.patch.object(client, "_send", mocker.AsyncMock())
 
-        with pytest.raises(RequestArgumentError, match=f"must be provided to the API {route}") as caught:
-            asyncio.run(getattr(client, route)(mthds_contents=[]))
+        with pytest.raises(RequestArgumentError, match="files holds no file") as caught:
+            asyncio.run(getattr(client, route)(pipe_code="p", files={}))
 
         assert error_verdict_of(caught.value) == _ARGUMENT_VERDICT
-        assert refused_argument(caught.value) == {"argument": "mthds_contents", "reason": "empty"}
+        assert refused_argument(caught.value) == {"argument": "files", "reason": "empty"}
         send.assert_not_called()
 
-    @pytest.mark.parametrize("smuggled", ["mthds_contents", "files"])
-    def test_extra_cannot_carry_a_run_source(self, mocker: MockerFixture, smuggled: str) -> None:
+    @pytest.mark.parametrize("route", ["start", "execute", "start_and_wait"])
+    def test_empty_contents_are_refused_with_no_word_of_a_draft(self, mocker: MockerFixture, route: str) -> None:
+        """An empty draft is a save's, so a run's refusal names nothing it cannot take."""
         client = self._client()
         send = mocker.patch.object(client, "_send", mocker.AsyncMock())
 
-        with pytest.raises(RequestArgumentError, match=smuggled) as caught:
-            asyncio.run(client.start(pipe_code="p", extra={smuggled: [_MAIN]}))
+        with pytest.raises(RequestArgumentError) as caught:
+            asyncio.run(getattr(client, route)(pipe_code="p", contents={}))
+
+        assert str(caught.value) == f"{route}() got contents holding no file, and a method tree holds at least one."
+        assert refused_argument(caught.value) == {"argument": "contents", "reason": "empty"}
+        send.assert_not_called()
+
+    def test_extra_cannot_carry_the_protocol_files(self, mocker: MockerFixture) -> None:
+        client = self._client()
+        send = mocker.patch.object(client, "_send", mocker.AsyncMock())
+
+        with pytest.raises(RequestArgumentError, match="files") as caught:
+            asyncio.run(client.start(pipe_code="p", extra={"files": {"main.mthds": _MAIN}}))
 
         assert error_verdict_of(caught.value) == _ARGUMENT_VERDICT
-        send.assert_not_called()
-
-    @pytest.mark.parametrize("route", ["start", "execute"])
-    def test_a_method_ref_pairs_with_no_files(self, mocker: MockerFixture, route: str) -> None:
-        client = self._client()
-        send = mocker.patch.object(client, "_send", mocker.AsyncMock())
-
-        with pytest.raises(RequestArgumentError, match="method_ref and a method bundle"):
-            asyncio.run(getattr(client, route)(method_ref="github.com/Pipelex/methods/documents@v0.1.0", files={"main.mthds": _MAIN}))
-
         send.assert_not_called()
 
     @pytest.mark.parametrize(
-        ("source", "sent_as"),
+        ("forms", "named"),
         [
-            pytest.param({"pipe_code": "review_receipt"}, "pipe_code", id="pipe_code"),
-            pytest.param({"method_ref": "github.com/Pipelex/methods/documents@v0.1.0"}, "method_ref", id="method_ref"),
-            pytest.param({"method_id": "mt_receipts01"}, "method_id", id="method_id"),
-            pytest.param({"files": {"main.mthds": _MAIN}}, "files", id="files"),
+            pytest.param({"files": {"main.mthds": _MAIN}, "contents": {"main.mthds": _MAIN}}, "files and contents", id="files-contents"),
+            pytest.param({"files": {"main.mthds": _MAIN}, "tree": Path("method")}, "files and tree", id="files-tree"),
+            pytest.param({"tree": Path("method"), "contents": {"main.mthds": _MAIN}}, "tree and contents", id="tree-contents"),
         ],
     )
-    @pytest.mark.parametrize("route", ["start", "execute"])
-    def test_an_empty_mthds_contents_beside_another_source_is_not_sent(
-        self, mocker: MockerFixture, route: str, source: dict[str, Any], sent_as: str
+    @pytest.mark.parametrize("route", ["start", "execute", "start_and_wait"])
+    def test_a_tree_given_in_two_forms_is_refused_before_any_request(
+        self, mocker: MockerFixture, route: str, forms: dict[str, Any], named: str
     ) -> None:
-        """An empty list names nothing to run, so it never reaches the wire beside what does, a `method_ref` included."""
         client = self._client()
-        answer = _response(202, json_body=_START_BODY) if route == "start" else _response(200, json_body=_EXECUTE_BODY)
-        send = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=answer))
+        send = mocker.patch.object(client, "_send", mocker.AsyncMock())
 
-        asyncio.run(getattr(client, route)(mthds_contents=[], **source))
+        with pytest.raises(RequestArgumentError) as caught:
+            asyncio.run(getattr(client, route)(pipe_code="p", **forms))
 
-        body = _sent_body(send)
-        assert "mthds_contents" not in body
-        assert sent_as in body
+        assert str(caught.value) == f"{route}() takes the method's tree in one form, files, tree or contents; got {named}."
+        assert refused_argument(caught.value) == {"argument": "files", "reason": "mutually_exclusive"}
+        send.assert_not_called()
+
+    @pytest.mark.parametrize("form", ["files", "contents"])
+    @pytest.mark.parametrize("route", ["start", "execute", "start_and_wait"])
+    def test_a_method_ref_pairs_with_no_tree(self, mocker: MockerFixture, route: str, form: str) -> None:
+        client = self._client()
+        send = mocker.patch.object(client, "_send", mocker.AsyncMock())
+
+        with pytest.raises(RequestArgumentError, match="method_ref and the method's tree"):
+            asyncio.run(getattr(client, route)(method_ref="github.com/Pipelex/methods/documents@v0.1.0", **{form: {"main.mthds": _MAIN}}))
+
+        send.assert_not_called()
 
     def test_start_and_wait_takes_every_argument_but_the_pipe_by_keyword(self) -> None:
         """So no positional call reads one run source as another, as `start` and `execute` read `files` second."""
@@ -165,4 +189,12 @@ class TestClientRunFiles:
 
         assert [parameter.name for parameter in parameters[:2]] == ["self", "pipe_code"]
         assert all(parameter.kind is inspect.Parameter.KEYWORD_ONLY for parameter in parameters[2:])
-        assert {"files", "mthds_contents", "method_ref", "method_id"} <= {parameter.name for parameter in parameters[2:]}
+        assert {"files", "tree", "contents", "method_ref", "method_id"} <= {parameter.name for parameter in parameters[2:]}
+
+    @pytest.mark.parametrize("route", ["start", "execute"])
+    def test_the_tree_forms_beside_files_are_keyword_only(self, route: str) -> None:
+        """`start` and `execute` keep the protocol's positional order, and every argument they add is named."""
+        parameters = inspect.signature(getattr(PipelexAPIClient, route)).parameters
+
+        assert all(parameters[name].kind is inspect.Parameter.KEYWORD_ONLY for name in ("tree", "contents", "method_ref", "method_id"))
+        assert "mthds_contents" not in parameters

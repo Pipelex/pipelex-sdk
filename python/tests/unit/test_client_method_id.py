@@ -64,8 +64,8 @@ class TestHostedMethodIdOption:
 
         assert '"method_id":"mt_1"' in send.call_args.kwargs["content"].decode("utf-8")
 
-    def test_method_id_alongside_inline_source_is_linkage_not_a_conflict(self, mocker: MockerFixture) -> None:
-        """Inline source wins as the thing to RUN; the id rides along as run-history linkage.
+    def test_method_id_alongside_the_tree_is_linkage_not_a_conflict(self, mocker: MockerFixture) -> None:
+        """The tree wins as the thing to RUN; the id rides along as run-history linkage.
 
         Refusing the combination once orphaned every unsaved-buffer run from its method — the Run
         row's `method_id` is what writes the index key `GET /v1/runs?method_id=` queries.
@@ -73,11 +73,11 @@ class TestHostedMethodIdOption:
         client = self._client()
         send = mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(202, json=_START_BODY)))
 
-        asyncio.run(client.start(mthds_contents=['domain = "answer"'], method_id="mt_1"))
+        asyncio.run(client.start(files={"main.mthds": 'domain = "answer"'}, method_id="mt_1"))
 
         sent = send.call_args.kwargs["content"].decode("utf-8")
         assert '"method_id":"mt_1"' in sent
-        assert '"mthds_contents"' in sent
+        assert '"files":{"main.mthds":"domain = \\"answer\\""}' in sent
 
     def test_start_extra_rejects_a_smuggled_method_id(self) -> None:
         """One argument, one path: the layer that NAMES a key must also guard it on `extra`."""

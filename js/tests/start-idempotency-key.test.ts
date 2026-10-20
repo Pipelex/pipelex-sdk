@@ -307,7 +307,7 @@ describe("PipelexApiClient.startAndWaitForResult — the idempotency key", () =>
 
     const result = await makeClient().startAndWaitForResult({
       pipe_code: "p",
-      mthds_contents: ['domain = "d"\n'],
+      files: { "main.mthds": 'domain = "d"\n' },
       idempotencyKey: KEY,
     });
 

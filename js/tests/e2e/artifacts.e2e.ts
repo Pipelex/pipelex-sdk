@@ -71,7 +71,7 @@ describe("the artifact round trip against a live platform", () => {
 
     // Up: the Document position is uploaded and rewritten to its storage reference.
     const prepared = await client.prepareInputs({
-      files: [{ content: PASS_THROUGH_BUNDLE, source: "smoke_artifacts.mthds" }],
+      files: { "smoke_artifacts.mthds": PASS_THROUGH_BUNDLE },
       inputs: { doc: source, note: "round trip" },
     });
     expect(prepared.uploads).toHaveLength(1);
@@ -80,7 +80,7 @@ describe("the artifact round trip against a live platform", () => {
 
     // Across: a pass-through run echoes the input in its working memory.
     const results = await client.startAndWaitForResult({
-      mthds_contents: [PASS_THROUGH_BUNDLE],
+      files: { "smoke_artifacts.mthds": PASS_THROUGH_BUNDLE },
       pipe_code: "smoke_artifacts.echo_note",
       inputs: prepared.inputs,
     });

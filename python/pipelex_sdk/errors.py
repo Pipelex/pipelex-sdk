@@ -229,10 +229,11 @@ class PipelexRequestError(PipelineRequestError):
 class RequestArgumentError(PipelexRequestError):
     """The SDK refused a call's arguments before sending any request: no run source given to `execute()`
     or `start()`, a protocol argument or a reserved one passed through `extra`, run sources or method
-    selectors that exclude each other, a selector that is not a string, a suffixed `method_id` beside
-    inline `mthds_contents`, a selector rule of `validate()`, an empty `validate_files()`, an artifact
-    selection that is empty or names an unknown artifact, a suffixed id given to a method route, a `publish_method()` token that is not a
-    string, a `get_method_version()` version that is not a positive integer, a value
+    selectors that exclude each other, a method's tree given in two forms or holding no file, a selector
+    that is not a string, a suffixed `method_id` beside the method's tree, a selector rule of
+    `validate()`, an artifact selection that is empty or names an unknown artifact, a suffixed id given
+    to a method route, a `publish_method()` token that is not a string, a `get_method_version()`
+    version that is not a positive integer, a value
     `parse_method_selector()` refuses, a start's `idempotency_key` that is not 1 to 255 visible ASCII
     characters, or a base URL that is not host-only. Nothing reached the API, so the message says what
     to change.
@@ -1140,7 +1141,9 @@ class MethodFileTransferError(PipelexRequestError):
     """A file of a method's tree that could not be moved between this machine and the platform's storage.
 
     Raised by `create_method` and `write_draft` when a blob the platform lacks could not be uploaded to
-    the target `POST /v1/blobs/missing` named, and by `write_method_tree` when a saved file could not be
+    the target `POST /v1/blobs/missing` named, so the method was not saved, by `resolve`, `codegen`,
+    `pipe_io` and `prepare_inputs` for the same failure, so the request was not sent, and by
+    `write_method_tree` when a saved file could not be
     downloaded through its link, or its bytes are not the file the listing names. `operation` says which
     way the file was moving, `code` why it failed, `sha256` which bytes (`None` when the failure names no
     blob), `path` the tree path when one is

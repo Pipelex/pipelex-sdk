@@ -31,7 +31,7 @@ def _routes() -> dict[str, Callable[[PipelexAPIClient], Coroutine[Any, Any, Any]
     return {
         "execute": lambda client: client.execute(pipe_code="p"),
         "start": lambda client: client.start(pipe_code="p"),
-        "validate": lambda client: client.validate(["domain = 'd'"]),
+        "validate": lambda client: client.validate({"main.mthds": "domain = 'd'"}),
         "validate_by_method_ref": lambda client: client.validate(method_ref="github.com/Pipelex/methods/documents"),
         "models": lambda client: client.models(),
         "version": lambda client: client.version(),

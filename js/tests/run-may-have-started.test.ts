@@ -326,7 +326,10 @@ describe("a request that starts nothing", () => {
   it.each([
     ["getRunStatus", (client: PipelexApiClient) => client.getRunStatus("run-1")],
     ["getMe", (client: PipelexApiClient) => client.getMe()],
-    ["validate", (client: PipelexApiClient) => client.validate(["domain = 'x'"])],
+    [
+      "validate",
+      (client: PipelexApiClient) => client.validate({ files: { "main.mthds": "domain = 'x'" } }),
+    ],
   ])("%s answered a 500 is false, and keeps the fallback's retryable", async (_, call) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(500, { detail: "boom" }));
 

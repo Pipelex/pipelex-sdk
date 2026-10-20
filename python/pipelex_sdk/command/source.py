@@ -1,47 +1,50 @@
 """The method as each route names it, and the one pipe I/O call that checks it.
 
-A bundle read from disk travels to the pipe I/O route and the input preparation as `files`, each file
-under its name in the bundle, and to the run as `mthds_contents`, in the same order. An address
-travels as `method_ref` and a catalog id as `method_id`, both resolved by the server.
+A bundle read from disk travels to the pipe I/O route and the input preparation as the method's tree,
+each file's text under its name in the bundle, which is its tree path from the directory `--method`
+names: the client sends it as the `files` map, inline when it is small and by hash otherwise. It
+travels to the run as the Pipelex API's `mthds_contents`, in the bundle's order, riding the client's
+`extra`. An address travels as `method_ref` and a catalog id as `method_id`, both resolved by the server.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
-from pydantic import ValidationError
+from mthds.protocol.input_form import PipeInputFormDescriptor
+from pydantic import BaseModel, ConfigDict, ValidationError
 
+from pipelex_sdk.command.bundle import BundleFile
 from pipelex_sdk.command.io import EXIT_FAILED, CommandError
 from pipelex_sdk.command.loop import before_request
 from pipelex_sdk.command.present import METHOD_DOES_NOT_LOAD_SENTENCE, load_failure_lines
-from pipelex_sdk.crate_models import CrateInvalidReport, MthdsFileItem, PipeIORequest, PipeIOValidReport
+from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIOValidReport
 from pipelex_sdk.errors import ApiResponseError
 
 if TYPE_CHECKING:
-    from mthds.protocol.input_form import PipeInputFormDescriptor
-
     from pipelex_sdk.client import PipelexAPIClient
-    from pipelex_sdk.command.bundle import BundleFile
 
 
-@dataclass(frozen=True)
-class BundleSource:
+class BundleSource(BaseModel):
     """A bundle read from disk."""
+
+    model_config = ConfigDict(frozen=True)
 
     files: tuple[BundleFile, ...]
 
 
-@dataclass(frozen=True)
-class AddressSource:
+class AddressSource(BaseModel):
     """A published method's address."""
+
+    model_config = ConfigDict(frozen=True)
 
     method_ref: str
 
 
-@dataclass(frozen=True)
-class CatalogSource:
+class CatalogSource(BaseModel):
     """A stored method's catalog id."""
+
+    model_config = ConfigDict(frozen=True)
 
     method_id: str
 
@@ -50,18 +53,24 @@ class CatalogSource:
 MethodSource: TypeAlias = BundleSource | AddressSource | CatalogSource
 
 
-@dataclass(frozen=True)
-class CrateSelector:
-    """The method as the crate routes and the input preparation name it: exactly one is set."""
+class CrateSelector(BaseModel):
+    """The method as the crate routes and the input preparation name it: exactly one is set.
 
-    files: list[MthdsFileItem] | None = None
+    A bundle is its tree's `contents`, each file's text by tree path, which the client prepares as it
+    prepares a save's.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    contents: dict[str, bytes | str] | None = None
     method_ref: str | None = None
     method_id: str | None = None
 
 
-@dataclass(frozen=True)
-class RunSelector:
+class RunSelector(BaseModel):
     """The method as the run routes name it: exactly one is set."""
+
+    model_config = ConfigDict(frozen=True)
 
     mthds_contents: list[str] | None = None
     method_ref: str | None = None
@@ -71,7 +80,8 @@ class RunSelector:
 def crate_selector(source: MethodSource) -> CrateSelector:
     match source:
         case BundleSource():
-            return CrateSelector(files=[MthdsFileItem(content=file.content, source=file.name) for file in source.files])
+            contents: dict[str, bytes | str] = {file.name: file.content for file in source.files}
+            return CrateSelector(contents=contents)
         case AddressSource():
             return CrateSelector(method_ref=source.method_ref)
         case CatalogSource():
@@ -88,9 +98,10 @@ def run_selector(source: MethodSource) -> RunSelector:
             return RunSelector(method_id=source.method_id)
 
 
-@dataclass(frozen=True)
-class DescribedPipe:
+class DescribedPipe(BaseModel):
     """A pipe I/O answer's valid arm: the pipe it selected and that pipe's input form."""
+
+    model_config = ConfigDict(frozen=True)
 
     pipe_ref: str
     descriptor: PipeInputFormDescriptor
@@ -107,7 +118,7 @@ async def describe_pipe(client: PipelexAPIClient, source: MethodSource, pipe: st
             JSON, propagate as the SDK's `ApiResponseError`.
     """
     selector = crate_selector(source)
-    request = PipeIORequest(files=selector.files, method_ref=selector.method_ref, method_id=selector.method_id, pipe_ref=pipe)
+    request = PipeIORequest(contents=selector.contents, method_ref=selector.method_ref, method_id=selector.method_id, pipe_ref=pipe)
     await before_request()
     try:
         answer = await client.pipe_io(request)

@@ -24,7 +24,7 @@ import httpx
 import pytest
 from mthds.method_tree.exceptions import TreeLimitError
 from mthds.method_tree.file_entry import HashFileEntry
-from mthds.method_tree.models import TreeLimits
+from mthds.method_tree.models import MethodTree, TreeLimits
 from pydantic import ValidationError
 from typing_extensions import override
 
@@ -302,6 +302,16 @@ class TestClientMethodTrees:
         assert not platform.sent("POST", "/v1/blobs/missing")
         assert not platform.storage_requests
 
+    def test_a_directory_path_is_listed_and_saved(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        """A `Path` is listed as `list_method_tree` lists it, under the deployment's limits, so a run's inputs file stays out."""
+        platform = _Platform()
+        client = _client(platform, mocker)
+        method_dir = _tree_dir(tmp_path / "method", {"main.mthds": _MAIN.encode(), "inputs.toml": b'receipt = "r.pdf"\n'})
+
+        asyncio.run(client.write_draft("mt_receipts01", MethodDraftInput(tree=method_dir)))
+
+        assert platform.saved_files("PUT", "/v1/methods/mt_receipts01/draft") == {"main.mthds": _MAIN}
+
     def test_a_large_tree_is_sent_by_hash_after_uploading_the_blobs_the_platform_lacks(self, mocker: MockerFixture) -> None:
         main = _MAIN.encode()
         platform = _Platform(held=frozenset({_sha256(main)}))
@@ -380,6 +390,20 @@ class TestClientMethodTrees:
 
         assert refused_argument(caught.value) == {"argument": "files", "reason": "mutually_exclusive"}
 
+        assert not platform.api_requests
+
+    def test_a_tree_holding_no_file_is_refused_before_sending(self, mocker: MockerFixture) -> None:
+        platform = _Platform()
+        client = _client(platform, mocker)
+        empty = MethodTree(files=[], digest=f"sha256:{'0' * 64}")
+
+        with pytest.raises(RequestArgumentError) as caught:
+            asyncio.run(client.write_draft("mt_receipts01", MethodDraftInput(tree=empty)))
+
+        assert (
+            str(caught.value) == "write_draft() got a tree holding no file, and a method tree holds at least one; give files=None for an empty draft."
+        )
+        assert refused_argument(caught.value) == {"argument": "tree", "reason": "empty"}
         assert not platform.api_requests
 
     @pytest.mark.parametrize(

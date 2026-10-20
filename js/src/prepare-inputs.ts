@@ -6,10 +6,10 @@
  * `pipelex-storage://` in `url`) plus one upload record per prepared asset.
  *
  * The method is named the same three ways every other method-taking operation
- * takes it — inline `files`, a `method_ref` address, or a stored `method_id` —
- * exactly one per call. All three are pass-throughs to `POST /v1/pipe-io`, which
- * resolves an address on the runner and an id on the platform, so nothing is
- * expanded client-side. The route also SELECTS the pipe: the caller's qualified
+ * takes it — its tree (a `directory`, `contents`, a listed `tree` or the `files`
+ * map), a `method_ref` address, or a stored `method_id` — exactly one per call.
+ * All three reach `POST /v1/pipe-io`: the tree as the `files` map `pipeIo` sends,
+ * an address resolved on the runner and an id on the platform. The route also SELECTS the pipe: the caller's qualified
  * `pipe_ref`, else the method's own entry pipe, and the ref it answers with is
  * the one prepared. It runs no dry run, so preparing inputs costs one static load.
  *
@@ -33,8 +33,11 @@
 
 import type {
   FieldKind,
+  FileEntry,
   InputFormItem,
   InputFormTopLevelField,
+  MethodFiles,
+  MethodTreeSource,
   PipeInputFormDescriptor,
 } from "mthds/protocol";
 import { isValidationItem } from "./error-models.js";
@@ -46,9 +49,14 @@ import {
   MethodLoadError,
   UploadNotAllowedError,
 } from "./errors.js";
-import { hasBundleResources, isResourceMap } from "./bundle-resources.js";
-import type { BundleResources } from "./bundle-resources.js";
-import type { MthdsFileItem, PipeIORequest, PipeIOResponse, PipeIOValidReport } from "./models.js";
+import type {
+  CrateRouteOptions,
+  PipeIORequest,
+  PipeIOResponse,
+  PipeIOValidReport,
+} from "./models.js";
+import { treeShapeFault } from "./method-trees.js";
+import type { MethodTreeForm } from "./method-trees.js";
 import type { UploadCapableClient, UploadRecord } from "./upload.js";
 import { uploadFile } from "./upload.js";
 
@@ -109,7 +117,9 @@ export interface PrepareInputsBase {
   /**
    * Stops the preparation between its steps, a file's read and its upload included: once it has
    * aborted, neither the pipe I/O request nor any upload starts, and `prepareInputs` throws the
-   * abort. A request already sent runs to its end. It is not sent to the server.
+   * abort. A `tree` or `contents` sent by hash counts its steps too — the version handshake, the
+   * blob route, each read and upload of a missing blob — so an abort during the handshake starts
+   * none of the rest. A request already sent runs to its end. It is not sent to the server.
    */
   signal?: AbortSignal;
   /**
@@ -124,27 +134,46 @@ export interface PrepareInputsBase {
 }
 
 /**
+ * The method's tree, in exactly one of the forms `pipeIo` takes it (see `CrateRequestBase`):
+ * `directory`, the method's directory on disk, listed by the `mthds` package's lister (Node only);
+ * `contents`, each file's bytes or text by tree path; `tree`, a listed source such as the
+ * `MethodTree` the `mthds` package's `listMethodTree` returns; or `files`, the protocol's map of
+ * file entries, sent as given. The client sends a `directory`, `contents` or `tree` inline when
+ * small and by hash otherwise.
+ */
+export type PrepareInputsTree = MethodTreeForm;
+
+/** What a published or stored method cannot carry: its tree is its own. */
+interface NoTree {
+  directory?: never;
+  contents?: never;
+  tree?: never;
+  files?: never;
+  dependencies?: never;
+}
+
+/**
  * How the method is named — exactly one of the three selectors, each pinning the
  * other two to `never` so a second one is a compile error (the same XOR
  * `ValidateMethodSelector` states for `validate`). All three reach the
- * server as-is: `files` inline, `method_ref` resolved by the runner, `method_id`
- * resolved by the platform.
+ * server: the tree as the `files` map, `method_ref` resolved by the runner,
+ * `method_id` resolved by the platform.
  *
- * Inline `files` may bring `resources`, the files the closure's steps read, such
- * as a `PipeDocGen` step's `template_file`, keyed by the path the step names, each
- * as its bytes: the pipe I/O route loads the closure, and a step whose template file
- * was not sent makes it fail to load. A published or stored method's files are its
- * own, so the other two selectors take none.
+ * The tree may bring `dependencies`, the method packages it calls by address, each a
+ * map of file entries keyed by its address. The files the closure's steps read, such as a
+ * `PipeDocGen` step's `template_file`, are files of the tree like any other. The pipe I/O
+ * route loads the closure, and a step whose template file is not in the tree, or a call
+ * into a package nothing shipped, makes it fail to load. A published or stored method's
+ * tree and packages are its own, so the other two selectors take no `dependencies`.
  */
 export type PrepareInputsClosure =
-  | {
-      files: MthdsFileItem[];
-      resources?: BundleResources | null;
+  | (PrepareInputsTree & {
+      dependencies?: Record<string, MethodFiles>;
       method_ref?: never;
       method_id?: never;
-    }
-  | { method_ref: string; files?: never; method_id?: never; resources?: never }
-  | { method_id: string; files?: never; method_ref?: never; resources?: never };
+    })
+  | (NoTree & { method_ref: string; method_id?: never })
+  | (NoTree & { method_id: string; method_ref?: never });
 
 /** What `prepareInputs` takes: one method selector, the target pipe, the caller's inputs. */
 export type PrepareInputsRequest = PrepareInputsBase & PrepareInputsClosure;
@@ -163,7 +192,7 @@ export interface PreparedInputs {
  * `PipelexApiClient` satisfies it structurally.
  */
 export interface PrepareCapableClient extends UploadCapableClient {
-  pipeIo(request: PipeIORequest): Promise<PipeIOResponse>;
+  pipeIo(request: PipeIORequest, options?: CrateRouteOptions): Promise<PipeIOResponse>;
 }
 
 /** Mutable state threaded through one preparation walk. */
@@ -491,71 +520,174 @@ async function resolveNode(
   }
 }
 
-/** Whether `resources` is a plain object with no file in it, which sends nothing. */
-function isEmptyResourceMap(resources: unknown): boolean {
-  return isResourceMap(resources) && !hasBundleResources(resources);
+/**
+ * The method selector, normalized: empty is absent, and exactly one must remain. The tree keeps
+ * the `dependencies` sent with it, when there are any.
+ */
+type ResolvedSelector = Pick<
+  PipeIORequest,
+  "directory" | "contents" | "tree" | "files" | "dependencies" | "method_ref" | "method_id"
+>;
+
+/** A map holding at least one key, or `undefined`: an empty map selects nothing. */
+function nonEmptyMap<T>(value: unknown): Record<string, T> | undefined {
+  return isPlainObject(value) && Object.keys(value).length > 0
+    ? (value as Record<string, T>)
+    : undefined;
+}
+
+/** How a value that should have been a map is named in a refusal. */
+function describeNonMap(value: unknown): string {
+  if (Array.isArray(value)) return "a list";
+  if (value instanceof Uint8Array) return "bytes";
+  return typeof value;
 }
 
 /**
- * The method selector, normalized: empty is absent, and exactly one must remain. Inline
- * `files` keep the `resources` sent with them, when there are any.
+ * Refuse a selector member that is given but is not a map, such as a list, or whose values are not
+ * what `isValue` accepts, before any request: read as absent, a list would leave the method
+ * unselected, or select another one, without a word.
  */
-type ResolvedSelector =
-  | { files: MthdsFileItem[]; resources?: BundleResources }
-  | { method_ref: string }
-  | { method_id: string };
+function refuseNonMap(
+  name: string,
+  value: unknown,
+  holds: string,
+  isValue: (entry: unknown) => boolean,
+): void {
+  if (value === undefined || value === null) return;
+  if (!isPlainObject(value)) {
+    throw new InputPreparationError(
+      `Cannot prepare inputs: \`${name}\` must be ${holds}, got ${describeNonMap(value)}.`,
+    );
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    if (!isValue(entry)) {
+      throw new InputPreparationError(
+        `Cannot prepare inputs: \`${name}\` must be ${holds}, and "${key}" holds ` +
+          `${entry === null ? "null" : describeNonMap(entry)}.`,
+      );
+    }
+  }
+}
 
 /**
- * Normalize and check the three selectors. Empty is absent (`files: []`,
- * `method_ref: ""`, `method_id: "  "`), mirroring the run options' rule and the
- * Python `CrateRequestBase` normalisers, and exactly one must remain — the check
- * lives here because this helper is the one that composes the `pipeIo` call.
- * `resources` that carry a file accompany inline `files` only. The illegal shapes
- * are compile errors for typed callers; this backs them up for untyped (JS) ones
- * with a typed `InputPreparationError`.
+ * The caller's `tree`, checked as far as the client reads it before any request: an object with a
+ * `files` list holding at least one file, a `digest` string and a `readFile` function. A tree with
+ * no file is refused here, since a method tree holds at least one; the client's own check would
+ * name `pipeIo()` rather than the preparation.
+ */
+function checkedTree(value: unknown): MethodTreeSource | undefined {
+  if (value === undefined || value === null) return undefined;
+  const fault = treeShapeFault(value);
+  if (fault !== undefined) {
+    throw new InputPreparationError(
+      "Cannot prepare inputs: `tree` must be a listed method tree — its `files`, its `digest` and " +
+        "a `readFile` — such as the `MethodTree` the client's `listMethodTree` returns, got " +
+        `${fault}.`,
+    );
+  }
+  const tree = value as MethodTreeSource;
+  if (tree.files.length === 0) {
+    throw new InputPreparationError(
+      "Cannot prepare inputs: `tree` holds no file, and a method tree holds at least one.",
+    );
+  }
+  return tree;
+}
+
+/**
+ * Normalize and check the three selectors. Empty is absent (`files: {}`, `contents: {}`,
+ * `directory: ""`, `method_ref: ""`, `method_id: "  "`), mirroring the crate routes' rule and the
+ * Python `CrateRequestBase` normalisers, and exactly one must remain — the check lives here
+ * because this helper is the one that composes the `pipeIo` call. The tree counts as one
+ * selector, given in exactly one of `directory`, `contents`, `tree` and `files`, and a `files`
+ * that is not a map, such as the retired list of `{ content, source }` items, is refused rather
+ * than read as absent; so are a `directory` that is not a string, a `contents` or `dependencies`
+ * that is not a map, and a `tree` that is not a listed tree or holds no file. `dependencies`
+ * accompany the tree only. The illegal shapes are compile errors for typed callers; this backs
+ * them up for untyped (JS) ones with a typed `InputPreparationError`.
  */
 function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
   const raw = request as unknown as Record<string, unknown>;
-  const files =
-    Array.isArray(raw["files"]) && raw["files"].length > 0
-      ? (raw["files"] as MthdsFileItem[])
-      : undefined;
+  const rawFiles = raw["files"];
+  if (rawFiles !== undefined && rawFiles !== null && !isPlainObject(rawFiles)) {
+    throw new InputPreparationError(
+      "Cannot prepare inputs: `files` must be the method's tree as a map from tree path to file " +
+        `entry, got ${Array.isArray(rawFiles) ? "a list" : typeof rawFiles}.`,
+    );
+  }
+  refuseNonMap(
+    "contents",
+    raw["contents"],
+    "the method's files as a map from tree path to bytes or text",
+    (entry) => typeof entry === "string" || entry instanceof Uint8Array,
+  );
+  refuseNonMap(
+    "dependencies",
+    raw["dependencies"],
+    "the method packages as a map from package address to its map of file entries",
+    isPlainObject,
+  );
+  const rawDirectory = raw["directory"];
+  if (rawDirectory !== undefined && rawDirectory !== null && typeof rawDirectory !== "string") {
+    throw new InputPreparationError(
+      "Cannot prepare inputs: `directory` must be the method's directory as a path, got " +
+        `${describeNonMap(rawDirectory)}.`,
+    );
+  }
+  const directory =
+    typeof rawDirectory === "string" && rawDirectory !== "" ? rawDirectory : undefined;
+  const files = nonEmptyMap<FileEntry>(rawFiles);
+  const tree = checkedTree(raw["tree"]);
+  const contents = nonEmptyMap<Uint8Array | string>(raw["contents"]);
+  const dependencies = nonEmptyMap<MethodFiles>(raw["dependencies"]);
   const methodRef = nonEmptyString(raw["method_ref"]);
   const methodId = nonEmptyString(raw["method_id"]);
-  // Any value goes on with inline `files`, so the client's encoder refuses one that is not a
-  // map of paths to bytes, as it does on every route; an empty map is not sent.
-  const rawResources = raw["resources"];
-  const resources =
-    rawResources === undefined || rawResources === null
-      ? undefined
-      : (rawResources as BundleResources);
 
-  const given: string[] = [];
-  if (files !== undefined) given.push("`files`");
+  const treeForms: string[] = [];
+  if (directory !== undefined) treeForms.push("`directory`");
+  if (contents !== undefined) treeForms.push("`contents`");
+  if (tree !== undefined) treeForms.push("`tree`");
+  if (files !== undefined) treeForms.push("`files`");
+  if (treeForms.length > 1) {
+    throw new InputPreparationError(
+      `Cannot prepare inputs: the method's tree was given as ${treeForms.join(" and ")}. Give it ` +
+        "in one form — `directory`, `contents`, `tree` or `files`.",
+    );
+  }
+  const given = [...treeForms];
   if (methodRef !== undefined) given.push("`method_ref`");
   if (methodId !== undefined) given.push("`method_id`");
 
   if (given.length === 0) {
     throw new InputPreparationError(
-      "Cannot prepare inputs: no method selector. Supply exactly one of `files` (an inline MTHDS " +
-        "closure), `method_ref` (a published method's address) or `method_id` (a stored method's " +
-        "catalog id).",
+      "Cannot prepare inputs: no method selector. Supply exactly one of the method's tree " +
+        "(`directory`, `contents`, `tree` or `files`), `method_ref` (a published method's address) or " +
+        "`method_id` (a stored method's catalog id).",
     );
   }
   if (given.length > 1) {
     throw new InputPreparationError(
       `Cannot prepare inputs: ${given.join(" and ")} were ${given.length === 2 ? "both" : "all"} ` +
         "given. Supply exactly one method " +
-        "selector — `files`, `method_ref` or `method_id`.",
+        "selector — the method's tree, `method_ref` or `method_id`.",
     );
   }
-  if (files !== undefined) return resources === undefined ? { files } : { files, resources };
-  // Beside the other selectors only an empty map passes, as it sends nothing.
-  if (resources !== undefined && !isEmptyResourceMap(resources)) {
+  if (treeForms.length === 1) {
+    return {
+      ...(directory === undefined ? {} : { directory }),
+      ...(contents === undefined ? {} : { contents }),
+      ...(tree === undefined ? {} : { tree }),
+      ...(files === undefined ? {} : { files }),
+      ...(dependencies === undefined ? {} : { dependencies }),
+    };
+  }
+  // Beside the other selectors only empty maps pass, as they send nothing.
+  const owner = methodRef !== undefined ? "published" : "stored";
+  if (dependencies !== undefined) {
     throw new InputPreparationError(
-      `Cannot prepare inputs: \`resources\` accompany inline \`files\`; a ${
-        methodRef !== undefined ? "published" : "stored"
-      } method's files are its own.`,
+      `Cannot prepare inputs: \`dependencies\` accompany the method's own tree; a ${owner} ` +
+        "method's packages are its own.",
     );
   }
   if (methodRef !== undefined) return { method_ref: methodRef };
@@ -572,8 +704,7 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
  *   selection enforces that rule; until then it would resolve a bare code across
  *   domains, and preparation does not lean on that fallback.
  * - An **`alias->domain.pipe_code`** ref is refused because the alias names a
- *   dependency package's pipe, and preparation covers the method's own pipes: the
- *   crate routes do not load an address-based dependency at all. The run route
+ *   dependency package's pipe, and preparation covers the method's own pipes. The run route
  *   takes such a ref; preparation refuses it, and that asymmetry is deliberate.
  */
 function normalizePipeRef(raw: unknown): string | undefined {
@@ -626,12 +757,13 @@ async function fetchSignature(
   client: PrepareCapableClient,
   selector: ResolvedSelector,
   pipeRef: string | undefined,
+  signal: AbortSignal | undefined,
 ): Promise<PipeIOValidReport> {
   const request: PipeIORequest =
     pipeRef === undefined ? { ...selector } : { ...selector, pipe_ref: pipeRef };
   let result: PipeIOResponse;
   try {
-    result = await client.pipeIo(request);
+    result = await client.pipeIo(request, signal === undefined ? {} : { signal });
   } catch (error) {
     if (
       error instanceof ApiResponseError &&
@@ -836,8 +968,10 @@ function described(value: unknown): string {
  * that would need either throws {@link UploadNotAllowedError}, naming them too.
  *
  * The pipe and its signature come from one `POST /v1/pipe-io`, whatever the
- * selector — inline `files`, a `method_ref` the runner resolves, or a
- * `method_id` the platform resolves. A bare or alias-qualified `pipe_ref`, a
+ * selector — the method's tree, a `method_ref` the runner resolves, or a
+ * `method_id` the platform resolves. A `tree` or `contents` too large to send
+ * inline goes by hash, and a blob that fails to upload throws
+ * `MethodFileTransferError` before the route is asked. A bare or alias-qualified `pipe_ref`, a
  * closure that does not load, and a selection the route refuses (an unknown
  * `pipe_ref`, no entry pipe, several) throw {@link InputPreparationError}. So
  * does an answer that breaks the route's contract, with a `runtime` verdict that
@@ -856,7 +990,7 @@ export async function prepareInputs(
   const pipeRef = normalizePipeRef(request.pipe_ref);
   const allowUploads = resolveAllowUploads((request as { allowUploads?: unknown }).allowUploads);
   throwIfAborted(request.signal);
-  const report = await fetchSignature(client, selector, pipeRef);
+  const report = await fetchSignature(client, selector, pipeRef, request.signal);
   throwIfAborted(request.signal);
   const descriptor = selectedDescriptor(report);
 

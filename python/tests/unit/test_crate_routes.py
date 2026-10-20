@@ -1,4 +1,4 @@
-"""The crate routes — `resolve` and `codegen` — and the three-form closure selector the family shares.
+"""The crate routes — `resolve` and `codegen` — and the three-form method selector the family shares.
 
 Ports the relevant slice of `pipelex-sdk-js/tests/crate-routes.test.ts`: verb + path + body,
 the 200-verdict discipline (branch on `is_valid`), the strict three-way XOR at request
@@ -9,6 +9,7 @@ module, `test_pipe_io_route.py`; its request joins the XOR cases here, which pin
 
 import asyncio
 import json
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
@@ -20,12 +21,14 @@ from pipelex_sdk.crate_models import (
     CodegenRequest,
     CodegenValidReport,
     CrateInvalidReport,
-    MthdsFileItem,
     PipeIORequest,
     ResolveRequest,
     ResolveValidReport,
 )
 from pipelex_sdk.errors import ApiResponseError
+
+if TYPE_CHECKING:
+    from mthds.method_tree.file_entry import FileEntry
 
 _BASE_URL = "http://localhost:8081"
 _METHOD_REF = "github.com/Pipelex/methods/documents@v0.1.0"
@@ -65,16 +68,16 @@ class TestCrateRoutes:
 
     # ── resolve ──────────────────────────────────────────────────────
 
-    def test_resolve_posts_files_and_returns_the_crate(self, mocker: MockerFixture) -> None:
+    def test_resolve_posts_the_files_map_and_returns_the_crate(self, mocker: MockerFixture) -> None:
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body=_RESOLVE_VALID))
 
-        report = asyncio.run(client.resolve(ResolveRequest(files=[MthdsFileItem(content='domain = "demo"', source="b.mthds")])))
+        report = asyncio.run(client.resolve(ResolveRequest(files={"b.mthds": 'domain = "demo"', "steps/c.mthds": 'domain = "steps"'})))
 
         call = send.call_args
         assert call.args[0] == "POST"
         assert call.args[1] == f"{_BASE_URL}/v1/resolve"
-        assert json.loads(call.kwargs["content"]) == {"files": [{"content": 'domain = "demo"', "source": "b.mthds"}]}
+        assert json.loads(call.kwargs["content"]) == {"files": {"b.mthds": 'domain = "demo"', "steps/c.mthds": 'domain = "steps"'}}
         assert isinstance(report, ResolveValidReport)
         assert report.crate["fingerprint"] == "abc"
 
@@ -115,11 +118,11 @@ class TestCrateRoutes:
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body=_CODEGEN_VALID))
 
-        report = asyncio.run(client.codegen(CodegenRequest(files=[MthdsFileItem(content="x")], target="python-pydantic")))
+        report = asyncio.run(client.codegen(CodegenRequest(files={"main.mthds": "x"}, target="python-pydantic")))
 
         call = send.call_args
         assert call.args[1] == f"{_BASE_URL}/v1/codegen"
-        assert json.loads(call.kwargs["content"]) == {"files": [{"content": "x"}], "kind": "types", "target": "python-pydantic"}
+        assert json.loads(call.kwargs["content"]) == {"files": {"main.mthds": "x"}, "kind": "types", "target": "python-pydantic"}
         assert isinstance(report, CodegenValidReport)
         assert report.artifacts[0].path == "models.py"
         assert report.lock_filename == "codegen.lock"
@@ -130,10 +133,11 @@ class TestCrateRoutes:
         "kwargs",
         [
             {},
-            {"files": [MthdsFileItem(content="x")], "method_ref": _METHOD_REF},
-            {"files": [MthdsFileItem(content="x")], "method_id": "mt_1"},
+            {"files": {"main.mthds": "x"}, "method_ref": _METHOD_REF},
+            {"files": {"main.mthds": "x"}, "method_id": "mt_1"},
+            {"contents": {"main.mthds": "x"}, "method_ref": _METHOD_REF},
             {"method_ref": _METHOD_REF, "method_id": "mt_1"},
-            {"files": [MthdsFileItem(content="x")], "method_ref": _METHOD_REF, "method_id": "mt_1"},
+            {"files": {"main.mthds": "x"}, "method_ref": _METHOD_REF, "method_id": "mt_1"},
         ],
     )
     def test_request_construction_enforces_exactly_one_selector(self, kwargs: dict[str, object]) -> None:
@@ -150,16 +154,17 @@ class TestCrateRoutes:
     @pytest.mark.parametrize(
         "kwargs",
         [
-            {"files": []},
+            {"files": {}},
+            {"contents": {}},
             {"method_ref": ""},
             {"method_ref": "   "},
             {"method_id": ""},
             {"method_id": "  \t"},
-            {"files": [], "method_ref": "", "method_id": ""},
+            {"files": {}, "contents": {}, "method_ref": "", "method_id": ""},
         ],
     )
     def test_empty_selectors_are_absent_and_fail_the_xor(self, kwargs: dict[str, object]) -> None:
-        """`files=[]` and blank strings select nothing — the same empty-as-absent rule as the
+        """`files={}`, `contents={}` and blank strings select nothing — the same empty-as-absent rule as the
         run routes — so an empty selector never counts as the sole one and never reaches the
         wire as an unusable value: alone it is zero selectors, refused at construction.
         """
@@ -174,17 +179,78 @@ class TestCrateRoutes:
         """An empty selector beside a real one is absent, not a conflict — exactly-one
         semantics stay coherent with the run boundary, and the empty key is not sent.
         """
-        request = ResolveRequest(files=[MthdsFileItem(content="x")], method_ref="", method_id="  ")
+        request = ResolveRequest(files={"main.mthds": "x"}, method_ref="", method_id="  ", dependencies={})
         assert request.method_ref is None
         assert request.method_id is None
-        pipe_io_request = PipeIORequest(method_ref=" ", method_id="mt_1", files=[])
+        assert request.dependencies is None
+        pipe_io_request = PipeIORequest(method_ref=" ", method_id="mt_1", files={})
         assert pipe_io_request.files is None
         assert pipe_io_request.method_ref is None
 
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body=_RESOLVE_VALID))
         asyncio.run(client.resolve(request))
-        assert json.loads(send.call_args.kwargs["content"]) == {"files": [{"content": "x"}]}
+        assert json.loads(send.call_args.kwargs["content"]) == {"files": {"main.mthds": "x"}}
+
+    @pytest.mark.parametrize(
+        ("kwargs", "named"),
+        [
+            ({"files": {"main.mthds": "x"}, "contents": {"main.mthds": "x"}}, "files and contents"),
+            ({"files": {"main.mthds": "x"}, "contents": {"main.mthds": "x"}, "method_id": "mt_1"}, "files and contents"),
+        ],
+    )
+    def test_two_forms_of_the_tree_are_refused_at_construction(self, kwargs: dict[str, object], named: str) -> None:
+        """The tree is one selector given in one form: two forms of it are refused before the XOR counts."""
+        with pytest.raises(ValidationError, match=f"in one form, `files`, `tree` or `contents`; got {named}"):
+            ResolveRequest.model_validate(kwargs)
+        with pytest.raises(ValidationError, match="in one form"):
+            PipeIORequest.model_validate(kwargs)
+
+    @pytest.mark.parametrize("request_model", [ResolveRequest, CodegenRequest, PipeIORequest])
+    def test_a_member_the_request_does_not_declare_is_refused_not_dropped(
+        self, request_model: type[ResolveRequest | CodegenRequest | PipeIORequest]
+    ) -> None:
+        """`resources`, which `@pipelex/sdk`'s crate requests carry, is refused at construction rather than
+        dropped from the wire without a word, until this SDK carries it too (L-261012-992a34).
+        """
+        with pytest.raises(ValidationError, match="resources\n  Extra inputs are not permitted"):
+            request_model.model_validate({"files": {"main.mthds": "x"}, "resources": {"templates/invoice.docx": b"PK"}})
+
+    @pytest.mark.parametrize("selector", [{"method_ref": _METHOD_REF}, {"method_id": "mt_1"}])
+    def test_dependencies_accompany_the_tree_alone(self, selector: dict[str, object]) -> None:
+        """`dependencies` are the packages the sent tree calls: beside a published or stored method they
+        are the runner's request-shape `422`, refused here at construction.
+        """
+        dependencies = {"github.com/acme/helpers": {"METHODS.toml": "[package]\n", "main.mthds": 'domain = "helpers"'}}
+        with pytest.raises(ValidationError, match="`dependencies` accompany the method's own tree"):
+            ResolveRequest.model_validate({**selector, "dependencies": dependencies})
+
+    def test_dependencies_and_read_scope_ride_beside_the_tree(self, mocker: MockerFixture) -> None:
+        """`dependencies` travel as given beside `files`, each package a map of file entries keyed by its
+        address, and `read_scope` is sent as given, the hosted platform replacing it with the caller's
+        organization.
+        """
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body=_RESOLVE_VALID))
+        dependencies: dict[str, dict[str, FileEntry]] = {
+            "github.com/acme/helpers": {"METHODS.toml": "[package]\n", "main.mthds": 'domain = "helpers"'}
+        }
+
+        asyncio.run(client.resolve(ResolveRequest(files={"main.mthds": "x"}, dependencies=dependencies, read_scope="org_1")))
+
+        assert json.loads(send.call_args.kwargs["content"]) == {"files": {"main.mthds": "x"}, "dependencies": dependencies, "read_scope": "org_1"}
+
+    def test_contents_are_sent_inline_as_the_files_map(self, mocker: MockerFixture) -> None:
+        """A small `contents` travels inline with no round trip: each UTF-8 file as its text, any other
+        as its Base64, in tree path order.
+        """
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body=_RESOLVE_VALID))
+
+        asyncio.run(client.resolve(ResolveRequest(contents={"main.mthds": "x", "logo.png": b"\x89PNG\xff"})))
+
+        send.assert_called_once()
+        assert json.loads(send.call_args.kwargs["content"]) == {"files": {"logo.png": {"base64": "iVBOR/8="}, "main.mthds": "x"}}
 
     # ── the fetch-sized budget ───────────────────────────────────────
 
@@ -210,7 +276,7 @@ class TestCrateRoutes:
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body=_RESOLVE_VALID))
 
-        asyncio.run(client.resolve(ResolveRequest(files=[MthdsFileItem(content="x")])))
+        asyncio.run(client.resolve(ResolveRequest(files={"main.mthds": "x"})))
         assert send.call_args.kwargs["request_timeout"] == 30.0
 
         asyncio.run(client.resolve(ResolveRequest(method_id="mt_1")))

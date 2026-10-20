@@ -83,7 +83,7 @@ describe("prepareInputs against a live runner", () => {
 
   it("prepares from inline files, the route selecting the bundle's main_pipe", async () => {
     const prepared = await client.prepareInputs({
-      files: [{ content: DOC_BUNDLE, source: "smoke_prepare.mthds" }],
+      files: { "smoke_prepare.mthds": DOC_BUNDLE },
       inputs: { doc: REMOTE_DOC, note: "a short note" },
     });
 
@@ -122,7 +122,7 @@ describe("prepareInputs against a live runner", () => {
     // refused, and the route refuses the selection the same way. Preparation stops
     // there instead of walking the only pipe declared.
     const failure = client.prepareInputs({
-      files: [{ content: NO_MAIN_BUNDLE, source: "smoke_prepare_no_main.mthds" }],
+      files: { "smoke_prepare_no_main.mthds": NO_MAIN_BUNDLE },
       inputs: { doc: REMOTE_DOC },
     });
 
@@ -132,7 +132,7 @@ describe("prepareInputs against a live runner", () => {
 
   it("refuses a pipe_ref the method does not declare, carrying the route's detail", async () => {
     const failure = client.prepareInputs({
-      files: [{ content: DOC_BUNDLE, source: "smoke_prepare.mthds" }],
+      files: { "smoke_prepare.mthds": DOC_BUNDLE },
       pipe_ref: "smoke_prepare.absent",
       inputs: { doc: REMOTE_DOC },
     });

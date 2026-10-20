@@ -408,8 +408,8 @@ _REFUSALS: list[tuple[str, _RefusedCall]] = [
     ("execute with a protocol arg in extra", lambda client: client.execute(pipe_code="summarize", extra={"inputs": {}})),
     ("execute with a reserved arg in extra", lambda client: client.execute(pipe_code="summarize", extra={"method_id": "mt_1"})),
     (
-        "execute with method_ref beside inline contents",
-        lambda client: client.execute(mthds_contents=["domain = 'demo'"], method_ref="github.com/Pipelex/methods@v0.1.0"),
+        "execute with method_ref beside the tree",
+        lambda client: client.execute(files={"main.mthds": "domain = 'demo'"}, method_ref="github.com/Pipelex/methods@v0.1.0"),
     ),
     (
         "execute with method_ref beside method_id",
@@ -419,8 +419,12 @@ _REFUSALS: list[tuple[str, _RefusedCall]] = [
     ("start with nothing to run", lambda client: client.start()),
     ("start with a protocol arg in extra", lambda client: client.start(pipe_code="summarize", extra={"pipe_code": "other"})),
     ("validate with no selector", lambda client: client.validate()),
-    ("validate with two selectors", lambda client: client.validate(mthds_contents=["domain = 'demo'"], method_id="mt_1")),
-    ("validate_files with no file", lambda client: client.validate_files([])),
+    ("validate with two selectors", lambda client: client.validate({"main.mthds": "domain = 'demo'"}, method_id="mt_1")),
+    ("validate with an empty tree", lambda client: client.validate({})),
+    (
+        "start with a tree in two forms",
+        lambda client: client.start(files={"main.mthds": "domain = 'demo'"}, contents={"main.mthds": "domain = 'demo'"}),
+    ),
     ("get_run_result with an empty selection", lambda client: client.get_run_result(_RUN_ID, artifacts=[])),
     ("wait_for_result with an empty selection", lambda client: client.wait_for_result(_RUN_ID, artifacts=[])),
 ]

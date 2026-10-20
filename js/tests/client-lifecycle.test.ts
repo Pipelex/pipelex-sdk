@@ -95,7 +95,10 @@ describe("PipelexApiClient.startAndWaitForResult (hosted — durable start+poll 
         }),
       );
 
-    const result = await client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] });
+    const result = await client.startAndWaitForResult({
+      pipe_code: "p",
+      files: { "main.mthds": "x" },
+    });
 
     expect(result.pipeline_run_id).toBe("run-1");
     expect(result.main_stuff).toEqual({ answer: 42 });
@@ -117,7 +120,7 @@ describe("PipelexApiClient.startAndWaitForResult (hosted — durable start+poll 
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     await expect(
-      client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] }, pollOptions),
+      client.startAndWaitForResult({ pipe_code: "p", files: { "main.mthds": "x" } }, pollOptions),
     ).rejects.toBeInstanceOf(RangeError);
     // Not even the handshake: a run started here would leave the caller no id to re-poll by.
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -148,7 +151,10 @@ describe("PipelexApiClient.startAndWaitForResult (hosted — durable start+poll 
         }),
       );
 
-    const result = await client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] });
+    const result = await client.startAndWaitForResult({
+      pipe_code: "p",
+      files: { "main.mthds": "x" },
+    });
 
     expect(result.working_memory).toEqual(workingMemory);
     // Typed from the declaration — reached without a cast, the concept a string.
@@ -356,7 +362,10 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       .mockResolvedValueOnce(jsonResponse(200, BARE_VERSION))
       .mockResolvedValueOnce(jsonResponse(200, executeBody("run-x")));
 
-    const result = await client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] });
+    const result = await client.startAndWaitForResult({
+      pipe_code: "p",
+      files: { "main.mthds": "x" },
+    });
 
     expect(result.pipeline_run_id).toBe("run-x");
     // The SDK resolves `main_stuff` out of the working memory via `main_stuff_name` ("result") —
@@ -400,7 +409,10 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       .mockResolvedValueOnce(jsonResponse(200, BARE_VERSION))
       .mockResolvedValueOnce(jsonResponse(200, body));
 
-    const result = await client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] });
+    const result = await client.startAndWaitForResult({
+      pipe_code: "p",
+      files: { "main.mthds": "x" },
+    });
 
     // Same accessor and same typed record as the durable path: the pair is lifted out of the
     // extension-open pipe_output.
@@ -430,7 +442,10 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       .mockResolvedValueOnce(jsonResponse(200, BARE_VERSION))
       .mockResolvedValueOnce(jsonResponse(200, body));
 
-    const result = await client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] });
+    const result = await client.startAndWaitForResult({
+      pipe_code: "p",
+      files: { "main.mthds": "x" },
+    });
 
     // Regression: this path used to write `graph_spec: null` and drop the graph the runner
     // had already returned, so the field meant different things on the two paths.
@@ -450,7 +465,10 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       .mockResolvedValueOnce(jsonResponse(200, BARE_VERSION))
       .mockResolvedValueOnce(jsonResponse(200, body));
 
-    const result = await client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] });
+    const result = await client.startAndWaitForResult({
+      pipe_code: "p",
+      files: { "main.mthds": "x" },
+    });
 
     // Regression: the error is what separates a broken assembly from a run with no graph —
     // both leave `graph_spec` null.
@@ -490,7 +508,10 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       .mockResolvedValueOnce(jsonResponse(200, BARE_VERSION))
       .mockResolvedValueOnce(jsonResponse(200, body));
 
-    const result = await client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] });
+    const result = await client.startAndWaitForResult({
+      pipe_code: "p",
+      files: { "main.mthds": "x" },
+    });
 
     // Unwrapped onto the hosted shape, so each artifact has one accessor whichever path ran.
     expect(result.pipe_io_contracts).toEqual(pipeIoArtifacts.pipe_io_contracts);
@@ -511,7 +532,10 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       .mockResolvedValueOnce(jsonResponse(200, BARE_VERSION))
       .mockResolvedValueOnce(jsonResponse(200, body));
 
-    const result = await client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] });
+    const result = await client.startAndWaitForResult({
+      pipe_code: "p",
+      files: { "main.mthds": "x" },
+    });
 
     // A null envelope leaves all three null, and the error is what separates a broken build
     // from a run that described nothing.
@@ -538,7 +562,10 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       .mockResolvedValueOnce(jsonResponse(200, BARE_VERSION))
       .mockResolvedValueOnce(jsonResponse(200, body));
 
-    const result = await client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] });
+    const result = await client.startAndWaitForResult({
+      pipe_code: "p",
+      files: { "main.mthds": "x" },
+    });
 
     // The same accessor as the hosted path, reading the same value the hosted path relays.
     expect(result.working_memory).toEqual(workingMemory);
@@ -571,7 +598,7 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       // requires: one without it is no run the SDK can read, and the blocking execute may have
       // started one, so the error says so and is not retryable.
       const err = await client
-        .startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] })
+        .startAndWaitForResult({ pipe_code: "p", files: { "main.mthds": "x" } })
         .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ApiResponseError);
       expect((err as ApiResponseError).message).toBe(
@@ -604,7 +631,7 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       );
 
     await expect(
-      client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] }),
+      client.startAndWaitForResult({ pipe_code: "p", files: { "main.mthds": "x" } }),
     ).rejects.toBeInstanceOf(MissingMainStuffError);
   });
 
@@ -643,20 +670,23 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
     expect(body.files).toEqual(files);
   });
 
-  it("forwards a bundle_b64 zip through the blocking execute fallback", async () => {
+  it("forwards a tree given as contents through the blocking execute fallback", async () => {
     const client = makeClient();
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(jsonResponse(200, BARE_VERSION))
       .mockResolvedValueOnce(jsonResponse(200, executeBody("run-z")));
 
-    // The other bundle encoding must survive the fallback too — dropping it here
-    // while keeping `files` would otherwise pass unnoticed.
-    await client.startAndWaitForResult({ bundle_b64: "UEsDBA==" });
+    // The other forms of the tree must survive the fallback too — dropping one here
+    // while keeping `files` would otherwise pass unnoticed. The lifecycle handshake's
+    // answer is the one the tree's preparation reads: a bare runner keeps no blob
+    // store, so the tree travels inline, and no second handshake is asked.
+    await client.startAndWaitForResult({ contents: { "main.mthds": "domain = 'x'" } });
 
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(fetchSpy.mock.calls[1]![0]).toBe("http://localhost:8081/v1/execute");
     const body = JSON.parse(String((fetchSpy.mock.calls[1]![1] as RequestInit).body));
-    expect(body.bundle_b64).toBe("UEsDBA==");
+    expect(body.files).toEqual({ "main.mthds": "domain = 'x'" });
   });
 
   it("self-heals when a base-only version response hides a missing run store", async () => {
@@ -931,14 +961,15 @@ describe("PipelexApiClient answers it cannot read", () => {
     ],
     [
       "start",
-      (client: PipelexApiClient) => client.start({ pipe_code: "p", mthds_contents: ["x"] }),
+      (client: PipelexApiClient) => client.start({ pipe_code: "p", files: { "main.mthds": "x" } }),
       "POST /v1/start",
       202,
       true,
     ],
     [
       "execute",
-      (client: PipelexApiClient) => client.execute({ pipe_code: "p", mthds_contents: ["x"] }),
+      (client: PipelexApiClient) =>
+        client.execute({ pipe_code: "p", files: { "main.mthds": "x" } }),
       "POST /v1/execute",
       200,
       true,
@@ -998,18 +1029,23 @@ describe("PipelexApiClient answers it cannot read", () => {
     ],
     [
       "execute",
-      (client: PipelexApiClient) => client.execute({ pipe_code: "p", mthds_contents: ["x"] }),
+      (client: PipelexApiClient) =>
+        client.execute({ pipe_code: "p", files: { "main.mthds": "x" } }),
       "POST /v1/execute",
     ],
     [
       "start",
-      (client: PipelexApiClient) => client.start({ pipe_code: "p", mthds_contents: ["x"] }),
+      (client: PipelexApiClient) => client.start({ pipe_code: "p", files: { "main.mthds": "x" } }),
       "POST /v1/start",
     ],
-    ["validate", (client: PipelexApiClient) => client.validate(["x"]), "POST /v1/validate"],
+    [
+      "validate",
+      (client: PipelexApiClient) => client.validate({ files: { "main.mthds": "x" } }),
+      "POST /v1/validate",
+    ],
     [
       "pipeIo",
-      (client: PipelexApiClient) => client.pipeIo({ files: [{ content: "x" }] }),
+      (client: PipelexApiClient) => client.pipeIo({ files: { "main.mthds": "x" } }),
       "POST /v1/pipe-io",
     ],
     ["listMethods", (client: PipelexApiClient) => client.listMethods(), "GET /v1/methods"],
@@ -1155,7 +1191,7 @@ describe("PipelexApiClient answers it cannot read", () => {
 
       const err = await client
         .prepareInputs({
-          files: [{ content: 'domain = "demo"' }],
+          files: { "main.mthds": 'domain = "demo"' },
           inputs: { photo: new Uint8Array([1]) },
         })
         .then(
@@ -1239,7 +1275,7 @@ describe("PipelexApiClient run-lifecycle delegation", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(202, { pipeline_run_id: "run-9", state: "STARTED", created_at: "t0" }),
     );
-    const ack = await client.start({ pipe_code: "p", mthds_contents: ["x"] });
+    const ack = await client.start({ pipe_code: "p", files: { "main.mthds": "x" } });
     expect(ack.pipeline_run_id).toBe("run-9");
     expect(ack.state).toBe("STARTED"); // server extension field, preserved via the index signature
   });
@@ -1266,7 +1302,7 @@ describe("PipelexApiClient run-lifecycle delegation", () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { is_valid: true, bundle_blueprint: {} }));
-    await client.validate(["domain = 'x'"]);
+    await client.validate({ files: { "main.mthds": "domain = 'x'" } });
     expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/validate");
   });
 });
@@ -1486,17 +1522,15 @@ describe("PipelexApiClient.start — the time limit of the request", () => {
   }
 
   it.each([
-    ["an inline bundle as mthds_contents", { mthds_contents: ['domain = "d"\n'] }],
-    ["a bundle in files", { files: { "main.mthds": 'domain = "d"\n' } }],
-    ["a zipped bundle", { bundle_b64: "UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==" }],
+    ["a tree in files", { files: { "main.mthds": 'domain = "d"\n' } }],
     ["a method_ref the server fetches", { method_ref: "github.com/acme/methods/x@v1.0.0" }],
   ])("gives the blocking ceiling to a start carrying %s", async (_, options) => {
     expect(await startTimeLimit(options)).toBe(BLOCKING_CEILING_MS);
   });
 
-  it("gives the poll budget to a start that carries no bundle", async () => {
+  it("gives the poll budget to a start that carries no tree", async () => {
     expect(await startTimeLimit({ pipe_code: "p" })).toBe(POLL_BUDGET_MS);
     vi.restoreAllMocks();
-    expect(await startTimeLimit({ pipe_code: "p", mthds_contents: [] })).toBe(POLL_BUDGET_MS);
+    expect(await startTimeLimit({ pipe_code: "p", directory: "" })).toBe(POLL_BUDGET_MS);
   });
 });

@@ -165,7 +165,7 @@ describe("e2e format (/v1/format)", () => {
 
 describe("e2e validate (/v1/validate)", () => {
   it("returns is_valid: true with the structural artifacts for a correct bundle", async () => {
-    const result = await client.validate([VALID_BUNDLE]);
+    const result = await client.validate({ files: { "main.mthds": VALID_BUNDLE } });
     expect(result.is_valid).toBe(true);
     const report = result as PipelexValidationReport;
     expect(report.bundle_blueprint).toBeTruthy();
@@ -180,7 +180,7 @@ describe("e2e validate (/v1/validate)", () => {
   });
 
   it("omits input_form unless the request names the view", async () => {
-    const result = await client.validate([VALID_BUNDLE]);
+    const result = await client.validate({ files: { "main.mthds": VALID_BUNDLE } });
     expect(result.is_valid).toBe(true);
     const report = result as PipelexValidationReport;
     // The gate itself, which only a live server witnesses: `input_form` is an opt-in
@@ -190,9 +190,9 @@ describe("e2e validate (/v1/validate)", () => {
   });
 
   it("attaches input_form keyed like pipe_io_contracts when the view is asked for", async () => {
-    const result = await client.validate([VALID_BUNDLE], false, undefined, undefined, [
-      "input_form",
-    ]);
+    const result = await client.validate({ files: { "main.mthds": VALID_BUNDLE } }, false, {
+      views: ["input_form"],
+    });
     expect(result.is_valid).toBe(true);
     const report = result as PipelexValidationReport;
     expect(report.input_form).toBeDefined();
@@ -203,15 +203,15 @@ describe("e2e validate (/v1/validate)", () => {
   });
 
   it("lenient-ignores an unsupported views token rather than refusing the request", async () => {
-    const result = await client.validate([VALID_BUNDLE], false, undefined, undefined, [
-      "not_a_supported_view",
-    ]);
+    const result = await client.validate({ files: { "main.mthds": VALID_BUNDLE } }, false, {
+      views: ["not_a_supported_view"],
+    });
     expect(result.is_valid).toBe(true);
     expect((result as PipelexValidationReport).input_form).toBeUndefined();
   });
 
   it("returns is_valid: false with structured validation_errors for a broken bundle", async () => {
-    const result = await client.validate([INVALID_WIRING_BUNDLE]);
+    const result = await client.validate({ files: { "main.mthds": INVALID_WIRING_BUNDLE } });
     expect(result.is_valid).toBe(false);
     const report = result as PipelexInvalidReport;
     expect(report.validation_errors.length).toBeGreaterThan(0);
@@ -222,7 +222,7 @@ describe("e2e validate (/v1/validate)", () => {
   });
 
   it("returns a parse-level failure as an is_valid: false verdict, not a thrown error", async () => {
-    const result = await client.validate([SYNTAX_BROKEN_BUNDLE]);
+    const result = await client.validate({ files: { "main.mthds": SYNTAX_BROKEN_BUNDLE } });
     expect(result.is_valid).toBe(false);
     const report = result as PipelexInvalidReport;
     // The structured-info invariant: even a parse failure carries at least one item.

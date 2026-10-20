@@ -224,7 +224,10 @@ describe("the results read's 409 — a failed run's report", () => {
       .mockResolvedValueOnce(problemResponse(409, FAILED_409));
 
     const err = await caught(
-      client.startAndWaitForResult({ pipe_code: "p", mthds_contents: ["x"] }, { intervalMs: 0 }),
+      client.startAndWaitForResult(
+        { pipe_code: "p", files: { "main.mthds": "x" } },
+        { intervalMs: 0 },
+      ),
     );
 
     expect(err).toBeInstanceOf(RunFailedError);
@@ -291,7 +294,7 @@ describe("ApiResponseError — the problem document's members", () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(problemResponse(500, RUNNER_500));
 
-    const err = await caught(client.execute({ pipe_code: "p", mthds_contents: ["x"] }));
+    const err = await caught(client.execute({ pipe_code: "p", files: { "main.mthds": "x" } }));
 
     expect(err).toBeInstanceOf(ApiResponseError);
     const e = err as ApiResponseError;
@@ -392,7 +395,7 @@ describe("ApiResponseError — the problem document's members", () => {
     );
 
     const e = (await caught(
-      client.execute({ pipe_code: "p", mthds_contents: ["x"] }),
+      client.execute({ pipe_code: "p", files: { "main.mthds": "x" } }),
     )) as ApiResponseError;
 
     expect(e).toBeInstanceOf(ApiResponseError);
@@ -500,7 +503,7 @@ describe("ApiResponseError — the standard's reading beside the hosted members"
     vi.spyOn(globalThis, "fetch").mockResolvedValue(problemResponse(500, RUNNER_500));
 
     const e = (await caught(
-      client.execute({ pipe_code: "p", mthds_contents: ["x"] }),
+      client.execute({ pipe_code: "p", files: { "main.mthds": "x" } }),
     )) as ApiResponseError;
 
     expect(e.problem).toEqual(standardProblem(500, RUNNER_500, true));
@@ -536,7 +539,7 @@ describe("ApiResponseError — the standard's reading beside the hosted members"
 
     const read = (await caught(client.models())) as ApiResponseError;
     const started = (await caught(
-      client.start({ pipe_code: "p", mthds_contents: ["x"] }),
+      client.start({ pipe_code: "p", files: { "main.mthds": "x" } }),
     )) as ApiResponseError;
 
     expect(read.problem.code).toBe("client.response_unreadable");

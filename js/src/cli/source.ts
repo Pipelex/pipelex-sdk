@@ -1,9 +1,13 @@
 /**
  * The method as each route names it, and the one pipe I/O call that checks it.
  *
- * A bundle read from disk travels to the pipe I/O route as `files`, each file under its name in the
- * bundle, and to the run as `mthds_contents`, in the same order. An address travels as
- * `method_ref` and a catalog id as `method_id`, both resolved by the server.
+ * A bundle read from disk travels to the pipe I/O route as the method's tree, given as the `files`
+ * map, each file's text under its name in the bundle, sent as given; and to the run as the runner's
+ * `mthds_contents`, in the bundle's order, through the client's `extra` passthrough, as the Python
+ * CLI sends it: the client names only the method's tree on a run. The case files both CLIs run pin
+ * both bodies, the whole bundle inline with no version handshake before it, until the command
+ * sends a method's tree as the SDKs do. An address travels as `method_ref` and a catalog id as
+ * `method_id`, both resolved by the server.
  */
 
 import type { FieldKind } from "mthds/protocol";
@@ -27,14 +31,14 @@ export type MethodSource =
 
 /** The method as the crate routes and the input preparation name it. */
 export type CrateSelector =
-  | { files: Array<{ content: string; source: string }> }
-  | { method_ref: string }
-  | { method_id: string };
+  { files: Record<string, string> } | { method_ref: string } | { method_id: string };
 
 export function crateSelector(source: MethodSource): CrateSelector {
   switch (source.kind) {
     case "bundle":
-      return { files: source.files.map((file) => ({ content: file.content, source: file.name })) };
+      return {
+        files: Object.fromEntries(source.files.map((file) => [file.name, file.content])),
+      };
     case "address":
       return { method_ref: source.methodRef };
     case "catalog":
@@ -46,7 +50,7 @@ export function crateSelector(source: MethodSource): CrateSelector {
 export function runSelector(source: MethodSource): PipelexStartOptions {
   switch (source.kind) {
     case "bundle":
-      return { mthds_contents: source.files.map((file) => file.content) };
+      return { extra: { mthds_contents: source.files.map((file) => file.content) } };
     case "address":
       return { method_ref: source.methodRef };
     case "catalog":

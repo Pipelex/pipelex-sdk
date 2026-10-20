@@ -24,33 +24,23 @@ export { PipelexApiClient, DEFAULT_API_BASE_URL, isGatewayCutOff } from "./clien
 export { buildUserAgent, validateAppInfo, MAX_USER_AGENT_LENGTH } from "./user-agent.js";
 export type { AppInfo, RuntimeInfo } from "./user-agent.js";
 export type {
-  MthdsFile,
   PipelexApiRunExtensions,
   PipelexHostedRunExtensions,
   PipelexRunOptions,
   PipelexStartOptions,
   PipelexStartRequestOptions,
+  PipelexValidateSource,
   ValidateMethodSelector,
-  ValidateFilesOptions,
   ValidateOptions,
   PipelexApiClientOptions,
 } from "./client.js";
-export type { BundleResourceBytes, BundleResources } from "./bundle-resources.js";
 
-// A saved method's tree: the source a save reads a tree from (the `mthds` package's `MethodTree`
-// is one), the limits `methodTreeLimits` reports, the blob routes a large tree travels through,
-// and the inline threshold below which a tree travels whole.
+// A method's tree: the four forms every method-taking route takes it in, the limits
+// `methodTreeLimits` reports, and the inline threshold below which a tree travels whole. The
+// standard's own tree types (`MethodTreeSource`, `BlobRef`, `MissingBlobsResult` and the rest)
+// come with the `mthds/protocol` re-export above.
 export { INLINE_TREE_MAX_BYTES } from "./method-trees.js";
-export type {
-  BlobRef,
-  MethodTreeLimits,
-  MethodTreeSource,
-  MethodTreeSourceFile,
-  MissingBlob,
-  MissingBlobsRequest,
-  MissingBlobsResult,
-  UploadTarget,
-} from "./method-trees.js";
+export type { MethodTreeForms, MethodTreeLimits } from "./method-trees.js";
 // A method selector (`mt_…`, `mt_…@<n>`, `mt_…@draft`) → its bare id and the version it names.
 export { parseMethodSelector } from "./method-selector.js";
 export type { ParsedMethodSelector } from "./method-selector.js";
@@ -129,6 +119,8 @@ export type {
   DryRunStatus,
   ValidatedPipeEntry,
   LiftablePipeEntry,
+  TreeFileUse,
+  TreeFileRead,
   PipelexValidationReport,
   PipelexInvalidReport,
   PipelexValidationResult,
@@ -148,8 +140,8 @@ export type {
   RemapValueOp,
   FixOp,
   SuggestedFix,
-  MthdsFileItem,
   CrateRequestBase,
+  CrateRouteOptions,
   CrateInvalidReport,
   GeneratedArtifact,
   ResolveRequest,

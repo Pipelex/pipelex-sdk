@@ -166,7 +166,8 @@ export function runMayHaveStartedOf(err: unknown): boolean {
 /**
  * The SDK refused a call's arguments before sending any request: no run source given to
  * `execute()` or `start()`, run sources or method selectors that exclude each other, a selector
- * rule of `validate()`, an empty `validateFiles()`, a reserved key in `extra`, a `publishMethod()`
+ * rule of `validate()`, a method's tree given in two forms or holding no file, a directory the
+ * tree lister refuses, a reserved key in `extra`, a `publishMethod()`
  * without its draft token, a `getMethodVersion()` version that is not a positive integer, a
  * selector `parseMethodSelector()` refuses, a method route given a suffixed id, an artifact
  * selection that is empty or names an unknown artifact, a start's `idempotencyKey` that is not 1
@@ -672,7 +673,9 @@ export type MethodFileTransferCode = "unreachable" | "storage_error" | "refused"
 /**
  * A file of a method's tree that could not be moved between this machine and the platform's
  * storage: thrown by `createMethod` and `writeDraft` when a file the organization lacks could not
- * be uploaded to the target `POST /v1/blobs/missing` named, so the method was not saved, and by
+ * be uploaded to the target `POST /v1/blobs/missing` named, so the method was not saved, by
+ * `resolve`, `codegen`, `pipeIo` and `prepareInputs` for the same failure, so the request was not
+ * sent, and by
  * `writeMethodTree` when a saved file could not be downloaded through its link, or its bytes are
  * not the file the listing names.
  *
