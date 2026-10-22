@@ -77,11 +77,11 @@ function recordedClient() {
   return {
     version: vi.fn().mockResolvedValue({ extensions: ["runs", "method_id", "method_ref"] }),
     getMethod: vi.fn().mockResolvedValue({ name: "Stored text stats", description: null }),
-    codegen: vi.fn(async (request: { files?: unknown }) =>
-      request.files === undefined ? TEXT_STATS_CODEGEN : RECEIPT_REVIEW_CODEGEN,
+    codegen: vi.fn(async (request: { contents?: unknown }) =>
+      request.contents === undefined ? TEXT_STATS_CODEGEN : RECEIPT_REVIEW_CODEGEN,
     ),
-    pipeIo: vi.fn(async (request: { files?: unknown }) =>
-      request.files === undefined ? TEXT_STATS_PIPE_IO : RECEIPT_REVIEW_PIPE_IO,
+    pipeIo: vi.fn(async (request: { contents?: unknown }) =>
+      request.contents === undefined ? TEXT_STATS_PIPE_IO : RECEIPT_REVIEW_PIPE_IO,
     ),
   } as unknown as Pick<PipelexApiClient, "codegen" | "pipeIo" | "version" | "getMethod">;
 }

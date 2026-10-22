@@ -811,7 +811,7 @@ describe("renderAction", () => {
     expect(source).not.toContain("pipe_code: PIPE_CODE,");
     // No bundle loader, and no hand-guard beside the gate.
     expect(source).not.toContain("loadBundle");
-    expect(source).not.toMatch(/^\s+files:/m);
+    expect(source).not.toMatch(/^\s+contents:/m);
     expect(source).toContain("const gated = gateRunInputs(CONTRACT, data);");
     for (const name of ["runTextStatsBlocking", "startTextStatsRun", "pollTextStatsRun"]) {
       expect(source).toContain(`export async function ${name}`);
@@ -872,7 +872,7 @@ describe("renderAction", () => {
     const source = renderAction({ ...RECEIPTS_PLAN, files: [], gating: true });
     expect(source).toContain('import { loadMethodBundles } from "@/lib/loadBundle";');
     expect(source).toContain('const METHOD_DIR = "receipt-review";');
-    expect(source).toContain("files: await loadMethodBundles(METHOD_DIR),");
+    expect(source).toContain("contents: await loadMethodBundles(METHOD_DIR),");
     // No manifest and no selector: the bundle is the method.
     expect(source).not.toContain("MANIFEST");
     expect(source).not.toContain("method_ref");
@@ -883,7 +883,7 @@ describe("renderAction", () => {
     const source = renderAction(RECEIPTS_PLAN);
     expect(source).toContain("const bundles = await loadMethodBundles(METHOD_DIR);");
     // The method's tree, sent as given, the same map to both.
-    expect(source.match(/files: bundles,/g)).toHaveLength(2);
+    expect(source.match(/contents: bundles,/g)).toHaveLength(2);
     expect(source).toContain('const PIPE_REF = "receipt_review.review_receipts";');
     // Read once per run: prepareInputs and the run options share the one read.
     expect(source.match(/loadMethodBundles\(/g)).toHaveLength(1);
@@ -935,7 +935,7 @@ describe("renderActionTest", () => {
   it("pins the bundle it sends when a bundle-sourced pipe gates on nothing", () => {
     const source = renderActionTest(RECEIPTS_PLAN);
     expect(source).toContain('import { loadMethodBundles } from "@/lib/loadBundle";');
-    expect(source).toContain('files: await loadMethodBundles("receipt-review"),');
+    expect(source).toContain('contents: await loadMethodBundles("receipt-review"),');
     expect(source).toContain("prepareInputs.mockResolvedValueOnce(");
     expect(source).not.toContain("MANIFEST");
   });
@@ -1414,7 +1414,7 @@ describe("runAddMethod", () => {
     );
     // Sent as the method's tree, each file under its path in the bundle, the
     // path it keeps in the method directory…
-    expect(Object.keys(client.pipeIo.mock.calls[0]![0].files)).toEqual([
+    expect(Object.keys(client.pipeIo.mock.calls[0]![0].contents)).toEqual([
       "concepts.mthds",
       "main.mthds",
     ]);
@@ -1440,7 +1440,7 @@ describe("runAddMethod", () => {
     expect(await runAddMethod([relative], { ...deps(client), cwd: REPO_ROOT })).toBe(0);
 
     // Read from there, and sent under its path in the bundle, wherever it was typed.
-    expect(Object.keys(client.pipeIo.mock.calls[0]![0].files)).toEqual([
+    expect(Object.keys(client.pipeIo.mock.calls[0]![0].contents)).toEqual([
       "concepts.mthds",
       "main.mthds",
     ]);

@@ -66,7 +66,7 @@ const DATA = { document: { url: STORED_PDF, filename: "invoice.pdf" } };
 // on output — verified live. The qualified `pipe_ref` is stated rather than
 // left to `main_pipe`; a bare pipe code is refused.
 const PREPARE_CALL = {
-  files: { "main.mthds": "DUMMY_BUNDLE_TOML" },
+  contents: { "main.mthds": "DUMMY_BUNDLE_TOML" },
   pipe_ref: "summarize_pdf.summarize_pdf",
   inputs: {
     document: {
@@ -94,7 +94,7 @@ describe("runSummarizePdfBlocking", () => {
     expect(prepareInputs).toHaveBeenCalledWith(PREPARE_CALL);
     expect(execute).toHaveBeenCalledWith({
       pipe_code: "summarize_pdf.summarize_pdf",
-      files: { "main.mthds": "DUMMY_BUNDLE_TOML" },
+      contents: { "main.mthds": "DUMMY_BUNDLE_TOML" },
       inputs: PREPARED_INPUTS,
     });
     // `toMatchObject`: these tests assert delegation + narrowed output; the `usage`
@@ -158,7 +158,7 @@ describe("startSummarizePdfRun", () => {
     expect(prepareInputs).toHaveBeenCalledWith(PREPARE_CALL);
     expect(start).toHaveBeenCalledWith({
       pipe_code: "summarize_pdf.summarize_pdf",
-      files: { "main.mthds": "DUMMY_BUNDLE_TOML" },
+      contents: { "main.mthds": "DUMMY_BUNDLE_TOML" },
       inputs: PREPARED_INPUTS,
     });
     expect(result).toEqual({ ok: true, runId: "run-1" });
@@ -271,7 +271,7 @@ describe("the paste-a-URL escape hatch", () => {
     });
     expect(result).toEqual({ ok: true, runId: "run-1" });
     expect(prepareInputs).toHaveBeenCalledWith({
-      files: { "main.mthds": "DUMMY_BUNDLE_TOML" },
+      contents: { "main.mthds": "DUMMY_BUNDLE_TOML" },
       pipe_ref: "summarize_pdf.summarize_pdf",
       inputs: {
         document: {

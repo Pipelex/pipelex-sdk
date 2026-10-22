@@ -224,6 +224,8 @@ class TestInputOptions:
         assert result.exit_code == 0, result.stderr
         assert fake_client.uploaded == ["report.pdf"]
         assert fake_client.prepared[0]["pipe_ref"] == "summarize_pdf.summarize_pdf"
+        # The preparation names the method as the run does: the bundle's tree, as `contents`.
+        assert fake_client.prepared[0]["contents"] == fake_client.started[0]["contents"] == {"main.mthds": "domain = 'greetings'\n"}
         assert fake_client.started[0]["inputs"]["document"]["content"] == {"url": "pipelex-storage://uploads/report.pdf", "filename": "report.pdf"}
         assert "Uploaded report.pdf as pipelex-storage://uploads/report.pdf" in result.stderr
 
@@ -269,14 +271,20 @@ class TestAttended:
     def test_the_run_names_the_pipe_and_sends_the_bundle(self, fake_client: FakeClient):
         invoke(make_binding(), [])
         assert fake_client.started == [
-            {"pipe_code": "greetings.greet", "inputs": {}, "files": {"main.mthds": "domain = 'greetings'\n"}, "method_id": None, "method_ref": None}
+            {
+                "pipe_code": "greetings.greet",
+                "inputs": {},
+                "contents": {"main.mthds": "domain = 'greetings'\n"},
+                "method_id": None,
+                "method_ref": None,
+            }
         ]
 
     def test_a_manifest_names_the_method_instead_of_sending_it(self, fake_client: FakeClient):
         address = "github.com/Pipelex/methods/text_stats@v0.1.1"
         invoke(make_binding(source=MethodSource(method_ref=address)), [])
         assert fake_client.started[0]["method_ref"] == address
-        assert fake_client.started[0]["files"] is None
+        assert fake_client.started[0]["contents"] is None
 
     def test_the_inputs_file_is_sent_as_it_is(self, fake_client: FakeClient, tmp_path: Path):
         inputs = {"text": "Hello", "audience": {"concept": "greetings.Audience", "content": {"name": "Marie"}}}
@@ -456,6 +464,7 @@ class TestBlocking:
         assert result.stdout == render_json(TEXT_OUTPUT) + "\n"
         assert fake_client.started == []
         assert fake_client.executed[0]["pipe_code"] == "greetings.greet"
+        assert fake_client.executed[0]["contents"] == {"main.mthds": "domain = 'greetings'\n"}
 
     def test_a_gateway_cut_off_says_to_drop_the_flag(self, fake_client: FakeClient):
         fake_client.execute_answer = PipelineExecuteTimeoutError("timed out", elapsed_seconds=31.0)

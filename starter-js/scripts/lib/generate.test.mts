@@ -345,19 +345,19 @@ describe("generateMethod", () => {
     vi.restoreAllMocks();
   });
 
-  it("sends a files source inline to both routes, describing every pipe", async () => {
+  it("sends a files source's tree to both routes as contents, describing every pipe", async () => {
     noDrifts();
     const client = fakeClient();
 
     expect(await generateMethod(client, FILES_SOURCE, outDir, "https://api.example")).toBe("ok");
     expect(client.codegen).toHaveBeenCalledWith({
-      files: { "main.mthds": "a = 1\n" },
+      contents: { "main.mthds": "a = 1\n" },
       kind: "types",
       target: "ts-zod",
     });
     // The files are here already, so the route is not asked to echo them.
     expect(client.pipeIo).toHaveBeenCalledWith({
-      files: { "main.mthds": "a = 1\n" },
+      contents: { "main.mthds": "a = 1\n" },
       all_pipes: true,
     });
     expect((await readdir(outDir)).sort()).toEqual(

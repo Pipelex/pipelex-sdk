@@ -8,7 +8,7 @@ const METHOD_NAME = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 
 /**
  * Read every `.mthds` file of one method directory, as the method's tree a run
- * sends in `files`: each file's text, keyed by its tree path.
+ * sends in `contents`: each file's text, keyed by its tree path.
  *
  * The Pipelex API takes a bundle's TOML directly, so a method authored in this
  * repo is read from disk at request time rather than inlined as a string. The

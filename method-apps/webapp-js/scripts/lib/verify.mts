@@ -175,7 +175,7 @@ async function runVerifyInner(): Promise<number> {
     try {
       const response = await client.codegen(
         method.kind === "files"
-          ? { files: method.files, kind: "types", target: "ts-zod" }
+          ? { contents: method.files, kind: "types", target: "ts-zod" }
           : { ...method.selector, kind: "types", target: "ts-zod" },
       );
       if (!response.is_valid) {

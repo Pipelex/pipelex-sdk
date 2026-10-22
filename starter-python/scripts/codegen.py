@@ -21,9 +21,9 @@ changed, and prunes stamped artifacts that dropped out of the set.
 
 A method directory names its closure in one of exactly two ways, and never both:
 
-- **`.mthds` files** — the bundle lives here, and the whole directory is sent inline as the
-  method's tree, `files`, each file keyed by its path in the directory. This is what the three
-  demos do.
+- **`.mthds` files** — the bundle lives here, and the whole directory is sent as the method's
+  tree, `contents`, each file keyed by its path in the directory, inline when small and by hash
+  otherwise. This is what the three demos do.
 - **`method.json`** — a one-line manifest holding a hosted catalog id (`method_id`) or a
   published address (`method_ref`), for a method that lives elsewhere. `make add-method`
   writes one; regenerating it is this same script, with the selector in place of the files.
@@ -47,7 +47,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
-from mthds.method_tree.file_entry import FileEntry
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.codegen_writer import write_codegen_tree
 from pipelex_sdk.crate_models import CodegenRequest, CodegenTarget, CodegenValidReport
@@ -86,12 +85,12 @@ def generated_package_dir(method_name: str) -> Path:
 
 @dataclass(frozen=True)
 class MethodSource:
-    """One method's closure — inline files or a selector — and the package its tree is written into."""
+    """One method's closure — a bundle's tree or a selector — and the package its tree is written into."""
 
     name: str
     out_dir: Path
-    #: The bundle as the method's tree: each `.mthds` file's text keyed by its path in the method's
-    #: directory, the tree's root.
+    #: The bundle as the method's tree, sent as `contents`: each `.mthds` file's text keyed by its path
+    #: in the method's directory, the tree's root.
     files: dict[str, str] | None = None
     method_id: str | None = None
     method_ref: str | None = None
@@ -110,8 +109,8 @@ class MethodSource:
 
         No `pipe_ref`: the `types` kind is concept-set-wide and rejects it with a 422.
         """
-        tree: dict[str, FileEntry] | None = dict(self.files) if self.files is not None else None
-        return CodegenRequest(files=tree, method_id=self.method_id, method_ref=self.method_ref, kind="types", target=TARGET)
+        tree: dict[str, bytes | str] | None = dict(self.files) if self.files is not None else None
+        return CodegenRequest(contents=tree, method_id=self.method_id, method_ref=self.method_ref, kind="types", target=TARGET)
 
 
 def read_method_source(method_dir: Path) -> MethodSource | None:

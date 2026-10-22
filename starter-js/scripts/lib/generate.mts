@@ -420,7 +420,7 @@ export async function fetchGenerated(
     // No `pipe_ref`: `kind: "types"` is concept-set-wide and rejects it with a 422.
     const response = await client.codegen(
       source.kind === "files"
-        ? { files: source.files, kind: "types", target: "ts-zod" }
+        ? { contents: source.files, kind: "types", target: "ts-zod" }
         : { ...source.selector, kind: "types", target: "ts-zod" },
     );
     if (!response.is_valid) {

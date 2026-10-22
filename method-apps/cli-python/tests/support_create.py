@@ -67,13 +67,13 @@ class RecordedClient:
     async def codegen(self, request: CodegenRequest) -> CodegenResponse:
         self.calls.append("codegen")
         self.requests.append(request)
-        name = "receipt-review" if request.files is not None else "text-stats"
+        name = "receipt-review" if request.contents is not None else "text-stats"
         return CodegenValidReport.model_validate_json(_recorded(f"{name}.codegen.json"))
 
     async def pipe_io(self, request: PipeIORequest) -> PipeIOResponse:
         self.calls.append("pipe_io")
         self.requests.append(request)
-        name = "receipt-review" if request.files is not None else "text-stats"
+        name = "receipt-review" if request.contents is not None else "text-stats"
         return PipeIOValidReport.model_validate_json(_recorded(f"{name}.pipe-io.json"))
 
     async def get_method(self, method_id: str) -> MethodData:

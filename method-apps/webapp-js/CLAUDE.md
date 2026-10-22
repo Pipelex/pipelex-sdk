@@ -50,7 +50,7 @@ src/
     shareUrl.ts               # "use server" — resolveShareUrl: a presigned link per click, for the copy-URL control
   lib/
     pipelexClient.ts          # PipelexApiClient singleton factory
-    loadBundle.ts             # loadMethodBundles(name) — every .mthds file under methods/<name>/, as the tree's files map
+    loadBundle.ts             # loadMethodBundles(name) — every .mthds file under methods/<name>/, as the tree's contents map
     blockingRun.ts            # executeBlockingRun — the blocking `execute` path (server)
     durableRun.ts             # startDurableRun + pollDurableRun — the durable start/poll path (server)
     wireOutput.ts             # wireOutput + wireListOutput (plural) + describeSchemaFailure (pure; `import "server-only"` build-enforces the boundary)
@@ -220,7 +220,7 @@ export async function pollTextStatsRun(runId: string): Promise<PollOutcome<TextS
 }
 ```
 
-A method whose bundle is in this repo declares `const METHOD_DIR = "<name>";` in place of the manifest import and passes `files: await loadMethodBundles(METHOD_DIR)` in place of the selector; `loadMethodBundles` (`src/lib/loadBundle.ts`) reads every `.mthds` file under `methods/<name>/` into the method's tree, each file's text keyed by its path inside that directory, in path order, the map `npm run codegen` sends the crate routes too. With a file input, `buildOptions` reads the bundle once and hands the same map to `prepareInputs` and to the run (`files: bundles`).
+A method whose bundle is in this repo declares `const METHOD_DIR = "<name>";` in place of the manifest import and passes `contents: await loadMethodBundles(METHOD_DIR)` in place of the selector; `loadMethodBundles` (`src/lib/loadBundle.ts`) reads every `.mthds` file under `methods/<name>/` into the method's tree, each file's text keyed by its path inside that directory, in path order, the map `npm run codegen` sends the crate routes too. With a file input, `buildOptions` reads the bundle once and hands the same map to `prepareInputs` and to the run (`contents: bundles`).
 
 The shared helpers in `src/lib/` own the SDK call + `classifyPipelineError` (server-side, where the SDK error classes still `instanceof`-match): `executeBlockingRun` wraps `client.execute` and **lifts its response onto `RunResults`** with the SDK's `resultsFromExecute` (the SDK-resolved `.main_stuff`, the working memory and the usage pair, off the runner's `pipe_output`) so one narrower serves both modes; `startDurableRun` wraps `client.start`; `pollDurableRun` does one `getRunStatus` (+ `getRunResult` on a terminal status) tick.
 

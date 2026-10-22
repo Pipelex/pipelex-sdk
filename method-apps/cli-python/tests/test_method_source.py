@@ -64,11 +64,11 @@ class TestKwargs:
     @pytest.mark.parametrize(
         ("source", "kwargs"),
         [
-            (MethodSource(method_ref="github.com/o/r@v1"), {"files": None, "method_id": None, "method_ref": "github.com/o/r@v1"}),
-            (MethodSource(method_id="mt_abc"), {"files": None, "method_id": "mt_abc", "method_ref": None}),
+            (MethodSource(method_ref="github.com/o/r@v1"), {"contents": None, "method_id": None, "method_ref": "github.com/o/r@v1"}),
+            (MethodSource(method_id="mt_abc"), {"contents": None, "method_id": "mt_abc", "method_ref": None}),
             (
                 MethodSource(files={"a.mthds": "a", "b.mthds": "b"}),
-                {"files": {"a.mthds": "a", "b.mthds": "b"}, "method_id": None, "method_ref": None},
+                {"contents": {"a.mthds": "a", "b.mthds": "b"}, "method_id": None, "method_ref": None},
             ),
         ],
     )

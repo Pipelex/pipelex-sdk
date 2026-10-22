@@ -1100,7 +1100,7 @@ export function renderUploads(plan: ScaffoldPlan): string {
  *
  * A selector-sourced method lives elsewhere, so `buildOptions` sends the same
  * `method_ref` / `method_id` the tree was projected from. A bundle-sourced one
- * sends the bundle itself, as the method's tree in `files`, read through the
+ * sends the bundle itself, as the method's tree in `contents`, read through the
  * one generic loader. Everything else — the gate, the file path, the exports —
  * is the same for both.
  */
@@ -1187,8 +1187,8 @@ export function renderAction(plan: ScaffoldPlan): string {
       source.kind === "files"
         ? {
             load: ["  const bundles = await loadMethodBundles(METHOD_DIR);"],
-            prepare: "    files: bundles,",
-            run: "    files: bundles,",
+            prepare: "    contents: bundles,",
+            run: "    contents: bundles,",
           }
         : {
             load: [],
@@ -1262,7 +1262,7 @@ export function renderAction(plan: ScaffoldPlan): string {
   } else {
     const run =
       source.kind === "files"
-        ? "    files: await loadMethodBundles(METHOD_DIR),"
+        ? "    contents: await loadMethodBundles(METHOD_DIR),"
         : `    ${selectorConstant(source.selector).field}: ${selectorConstant(source.selector).name},`;
     body.push(
       "/**",
@@ -1270,7 +1270,7 @@ export function renderAction(plan: ScaffoldPlan): string {
       " *",
       ...(source.kind === "files"
         ? [
-            " * The bundle travels inline as the method's tree, `files`, every file of it",
+            " * The bundle travels as the method's tree, `contents`, every file of it",
             " * keyed by its path in the method's directory, as `npm run codegen` sends it.",
           ]
         : [
@@ -1351,7 +1351,7 @@ export function renderActionTest(plan: ScaffoldPlan): string {
       : [manifestImport(names)];
   const methodField =
     source.kind === "files"
-      ? `      files: await loadMethodBundles(${JSON.stringify(names.slug)}),`
+      ? `      contents: await loadMethodBundles(${JSON.stringify(names.slug)}),`
       : `      ${selectorConstant(source.selector).field}: MANIFEST.${selectorConstant(source.selector).field},`;
 
   const head = [

@@ -77,6 +77,9 @@ class TestMethodSources:
         source = codegen.read_method_source(method_dir)
         assert source is not None
         assert source.files == {"main.mthds": "main_pipe = 'x'\n", "nested/extra.mthds": "# extra\n"}
+        # The tree is sent as `contents`, which the SDK sends inline when small and by hash otherwise.
+        request = source.codegen_request()
+        assert request.files is None and request.contents == source.files
         assert source.method_id is None and source.method_ref is None
         assert source.origin == "bundle"
 
@@ -122,7 +125,7 @@ class TestMethodSources:
         )
         request = source.codegen_request()
         assert getattr(request, expected) is not None
-        assert request.files is None
+        assert request.files is None and request.contents is None
         assert request.target == codegen.TARGET
 
     def test_dashes_become_underscores(self):

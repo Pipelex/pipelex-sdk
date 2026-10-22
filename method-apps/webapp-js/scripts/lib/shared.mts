@@ -137,7 +137,7 @@ export interface SourcesSidecar {
  */
 export function pipeIoRequest(source: MethodSource): PipeIORequest {
   return source.kind === "files"
-    ? { files: source.files, all_pipes: true }
+    ? { contents: source.files, all_pipes: true }
     : { ...source.selector, all_pipes: true, include_files: true };
 }
 
@@ -249,7 +249,7 @@ export type MethodSource = {
       /** The closure lives here: `.mthds` files under `methods/<name>/`. */
       kind: "files";
       /**
-       * The method's tree as the crate routes take it: every `.mthds` file in the
+       * The method's tree, sent to the crate routes as `contents`: every `.mthds` file in the
        * closure, keyed by its path inside `methods/<name>/` (the tree's root), in
        * sorted order, each value the file's text.
        */

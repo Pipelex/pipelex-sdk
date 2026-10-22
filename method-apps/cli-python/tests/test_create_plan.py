@@ -420,7 +420,7 @@ class TestPlanMethod:
         client = RecordedClient()
         # A relative path that climbs, as a person types it from beside the bundle.
         plan = await plan_method(MethodArgs(method="../bundles/receipt-review"), client, layout=package, root=tmp_path / "project", cwd=RECORDED)
-        sent = [list(request.files or {}) for request in client.requests]
+        sent = [list(request.contents or {}) for request in client.requests]
         write_method(plan, package)
         tree = discover_source(package)
         assert tree is not None and tree.files is not None

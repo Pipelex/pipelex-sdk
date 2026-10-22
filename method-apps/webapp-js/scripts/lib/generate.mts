@@ -413,7 +413,7 @@ async function requestCodegen(
   // No `pipe_ref`: `kind: "types"` is concept-set-wide and rejects it with a 422.
   const request: CodegenRequest =
     source.kind === "files"
-      ? { files: source.files, kind: "types", target: "ts-zod" }
+      ? { contents: source.files, kind: "types", target: "ts-zod" }
       : { ...source.selector, kind: "types", target: "ts-zod" };
   try {
     const response = await client.codegen(request);

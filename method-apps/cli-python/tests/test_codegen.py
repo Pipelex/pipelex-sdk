@@ -154,8 +154,8 @@ class TestGenerate:
         codegen_request, pipe_io_request, confirming_request = api.requests
         assert isinstance(codegen_request, CodegenRequest) and isinstance(pipe_io_request, PipeIORequest)
         # The tree's root is `method/`, so a file's tree path is its path inside it.
-        assert list(codegen_request.files or {}) == ["main.mthds"]
-        assert pipe_io_request.files == codegen_request.files
+        assert codegen_request.files is None and list(codegen_request.contents or {}) == ["main.mthds"]
+        assert pipe_io_request.contents == codegen_request.contents
         assert (codegen_request.kind, codegen_request.target, codegen_request.pipe_ref) == ("types", "python-pydantic", None)
         assert pipe_io_request.all_pipes
         assert confirming_request == codegen_request
@@ -427,9 +427,9 @@ class TestHandshake:
         assert api.calls == ["version", "codegen", "pipe_io", "codegen"]
         codegen_request, pipe_io_request, _ = api.requests
         assert codegen_request.method_ref == "github.com/Pipelex/methods/summarize_pdf@v1.0.0"
-        assert codegen_request.files is None
+        assert codegen_request.files is None and codegen_request.contents is None
         assert isinstance(pipe_io_request, PipeIORequest) and pipe_io_request.method_ref == codegen_request.method_ref
-        assert pipe_io_request.files is None and pipe_io_request.all_pipes
+        assert pipe_io_request.files is None and pipe_io_request.contents is None and pipe_io_request.all_pipes
 
     @pytest.mark.parametrize(
         "error",

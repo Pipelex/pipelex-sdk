@@ -214,7 +214,7 @@ class CodegenSource:
     """The one method of the package, as the crate routes name it, with the hashes of what it is read from."""
 
     #: The bundle as the method's tree, when the method is a bundle: each file's text keyed by its tree
-    #: path, its path inside `method/`, which is the tree's root, as a run sends it.
+    #: path, its path inside `method/`, which is the tree's root, sent as `contents` as a run sends it.
     files: dict[str, str] | None = None
     #: The catalog id or address `method.json` names, when the method lives elsewhere.
     selector: MethodSelector | None = None
@@ -231,7 +231,7 @@ class CodegenSource:
 
     def _selector_kwargs(self) -> dict[str, object]:
         if self.selector is None:
-            return {"files": dict(self.files or {})}
+            return {"contents": dict(self.files or {})}
         return {"method_id": self.selector.method_id, "method_ref": self.selector.method_ref}
 
     def codegen_request(self) -> CodegenRequest:

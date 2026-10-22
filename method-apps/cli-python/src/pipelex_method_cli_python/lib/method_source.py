@@ -2,9 +2,9 @@
 
 `method/` inside the package holds the method in one of two forms, never both:
 
-- **a bundle**, the method's own `.mthds` files, sent as the method's tree, the run's `files`: each
-  file's text keyed by its tree path, its path under the directory, which is the tree's root, in
-  the order of that path;
+- **a bundle**, the method's own `.mthds` files, sent as the method's tree, the run's `contents`:
+  each file's text keyed by its tree path, its path under the directory, which is the tree's root,
+  in the order of that path, which the SDK sends inline when it is small and by hash otherwise;
 - **a manifest**, `method.json`, naming a method that lives elsewhere: a catalog id (`method_id`) or
   a published address (`method_ref`), read by `lib/manifest.py`.
 
@@ -17,8 +17,6 @@ from dataclasses import dataclass
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from typing import TypedDict
-
-from mthds.method_tree.file_entry import FileEntry
 
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.manifest import MANIFEST_FILENAME, parse_manifest
@@ -41,7 +39,7 @@ class MethodSourceError(AppError):
 class SourceKwargs(TypedDict):
     """The keyword arguments the SDK's `start`, `execute` and `prepare_inputs` all take to name the method."""
 
-    files: dict[str, FileEntry] | None
+    contents: dict[str, bytes | str] | None
     method_id: str | None
     method_ref: str | None
 
@@ -51,8 +49,9 @@ class MethodSource:
     """The one way a run names its method; exactly one field is set.
 
     The fields are the SDK's own method sources: a bundle as the method's tree, a catalog id, or a
-    published address. `kwargs` hands them to `start`, `execute` and `prepare_inputs` as the keyword
-    arguments of the same names, so a run and its inputs' preparation name the method the same way.
+    published address. `kwargs` hands them to `start`, `execute` and `prepare_inputs` as their keyword
+    arguments, the tree as `contents`, so a run and its inputs' preparation name the method the
+    same way.
     """
 
     #: A bundle as the method's tree: each `.mthds` file's text, keyed by its path in `method/`, in the
@@ -63,8 +62,8 @@ class MethodSource:
 
     def kwargs(self) -> SourceKwargs:
         """The source as the keyword arguments of the SDK's `start`, `execute` and `prepare_inputs`."""
-        tree: dict[str, FileEntry] | None = dict(self.files) if self.files is not None else None
-        return SourceKwargs(files=tree, method_id=self.method_id, method_ref=self.method_ref)
+        tree: dict[str, bytes | str] | None = dict(self.files) if self.files is not None else None
+        return SourceKwargs(contents=tree, method_id=self.method_id, method_ref=self.method_ref)
 
 
 def method_dir() -> Traversable:

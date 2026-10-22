@@ -52,6 +52,8 @@ class TestDetachedCli:
         start_mock.assert_awaited_once()
         assert start_mock.await_args is not None
         assert start_mock.await_args.kwargs["pipe_code"] == "extract_entities.extract_entities"
+        # The bundle travels as the method's tree, `contents`, keyed by its path in the method's directory.
+        assert list(start_mock.await_args.kwargs["contents"]) == ["main.mthds"]
         assert start_mock.await_args.kwargs["inputs"] == {"text": "some text"}
         # The bare id on stdout is the contract: RUN_ID=$(widget detached extract-entities "…")
         assert result.stdout.strip() == RUN_ID
