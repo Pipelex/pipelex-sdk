@@ -27,12 +27,30 @@ export function isNodeRuntime(): boolean {
 }
 
 /**
- * The Node host, or `null` outside Node: in a runtime that is not Node, or where the package was
- * resolved for another runtime, as a bundle built for the browser resolves it. The runtime is
- * checked first, so nothing is loaded where it is not Node.
+ * The Node host, or `null` in two cases: in a runtime that is not Node, or in Node itself where
+ * the package was resolved without the `node` export condition, as a bundle built for the browser
+ * or for esbuild's `neutral` platform resolves it. A refusal tells them apart with
+ * `nodeConditionMissing()`. The runtime is checked first, so nothing is loaded where it is not
+ * Node.
  */
 export async function loadNodeHost(): Promise<NodeHost | null> {
   if (!isNodeRuntime()) return null;
   const loaded: { readonly nodeHost: NodeHost | null } = await import("#node-host");
   return loaded.nodeHost;
+}
+
+/**
+ * What a refusal says once `loadNodeHost()` has answered `null`: inside Node, that the package was
+ * resolved without the `node` export condition, and how to resolve it with it; `null` outside
+ * Node, where the operation's own "Node only" refusal is the right one.
+ */
+export function nodeConditionMissing(): string | null {
+  if (!isNodeRuntime()) return null;
+  return (
+    'this copy of @pipelex/sdk runs in Node but was resolved without the "node" export ' +
+    "condition, which selects the part of the package that reaches Node's file system. Bundle " +
+    'it for Node (esbuild platform "node", webpack target "node"), add "node" to the bundler\'s ' +
+    "conditions (esbuild conditions, webpack resolve.conditionNames, Vite resolve.conditions), " +
+    "or leave @pipelex/sdk out of the bundle."
+  );
 }

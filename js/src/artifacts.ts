@@ -39,7 +39,7 @@ import {
 } from "./errors.js";
 import type { ErrorVerdict } from "./errors.js";
 import type { GetRunResultOptions, RunResults, RunResultState } from "./runs.js";
-import { loadNodeHost } from "./node-host.js";
+import { loadNodeHost, nodeConditionMissing } from "./node-host.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -1207,9 +1207,12 @@ export async function downloadArtifacts(
 ): Promise<DownloadArtifactsResult> {
   const host = await loadNodeHost();
   if (host === null) {
+    const unresolved = nodeConditionMissing();
     throw new ArtifactOperationError(
-      "downloadArtifacts writes to a filesystem and is Node-only. In another runtime, resolve " +
-        "with resolveArtifacts or stream with fetchArtifact instead.",
+      unresolved === null
+        ? "downloadArtifacts writes to a filesystem and is Node-only. In another runtime, resolve " +
+            "with resolveArtifacts or stream with fetchArtifact instead."
+        : `downloadArtifacts cannot write to the filesystem: ${unresolved}`,
       ENVIRONMENT_REFUSED,
     );
   }

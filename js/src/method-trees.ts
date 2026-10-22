@@ -33,7 +33,7 @@ import {
   RequestArgumentError,
   type MethodFileTransferCode,
 } from "./errors.js";
-import { loadNodeHost, type NodeHost } from "./node-host.js";
+import { loadNodeHost, nodeConditionMissing, type NodeHost } from "./node-host.js";
 import type { SavedMethodFile } from "./product-models.js";
 import { throwIfAborted } from "./runs.js";
 
@@ -547,9 +547,12 @@ export async function listDirectoryTree(
 ): Promise<ListedMethodTree> {
   const host = await loadNodeHost();
   if (host === null) {
+    const unresolved = nodeConditionMissing();
     throw new RequestArgumentError(
-      `${call}() got a directory, which only Node can list. In the browser or an edge runtime, ` +
-        "give the method's tree as contents, tree or files instead.",
+      unresolved === null
+        ? `${call}() got a directory, which only Node can list. In the browser or an edge ` +
+            "runtime, give the method's tree as contents, tree or files instead."
+        : `${call}() cannot list the directory '${directory}': ${unresolved}`,
     );
   }
   const { listMethodTree, MethodTreeError } = await host.loadTreeLister();
@@ -738,9 +741,12 @@ export async function writeMethodTreeTo(
   refuseUnwritableListing(files);
   const host = await loadNodeHost();
   if (host === null) {
+    const unresolved = nodeConditionMissing();
     throw new RequestArgumentError(
-      "writeMethodTree() writes to a file system, which only Node has. In the browser or an edge " +
-        "runtime, download each file of the listing from its url instead.",
+      unresolved === null
+        ? "writeMethodTree() writes to a file system, which only Node has. In the browser or an " +
+            "edge runtime, download each file of the listing from its url instead."
+        : `writeMethodTree() cannot write to the file system: ${unresolved}`,
       { verdict: { errorDomain: "config", retryable: false } },
     );
   }

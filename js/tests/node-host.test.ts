@@ -10,10 +10,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RequestArgumentError, errorVerdictOf } from "../src/errors.js";
+import { downloadArtifacts } from "../src/artifacts.js";
+import type { ArtifactCapableClient } from "../src/artifacts.js";
+import {
+  ArtifactOperationError,
+  InvalidLocalSourceError,
+  RequestArgumentError,
+  errorVerdictOf,
+} from "../src/errors.js";
 import { listDirectoryTree, writeMethodTreeTo } from "../src/method-trees.js";
-import { loadNodeHost } from "../src/node-host.js";
+import { loadNodeHost, nodeConditionMissing } from "../src/node-host.js";
 import { nodeHost as absentHost } from "../src/node-host/unavailable.js";
+import { readLocalPath } from "../src/upload.js";
+
+/** A client the refusals must never reach. */
+const UNREACHED: ArtifactCapableClient = {
+  resolveStorageUrls: () => Promise.reject(new Error("the client was reached")),
+  getRunResult: () => Promise.reject(new Error("the client was reached")),
+};
 
 /** Run `body` as a runtime without `process.versions.node` would. */
 async function outsideNode<T>(body: () => Promise<T>): Promise<T> {
@@ -43,8 +57,13 @@ describe("loadNodeHost", () => {
     expect(typeof (await host!.loadAgent())).toBe("function");
   });
 
-  it("answers null outside Node", async () => {
+  it("answers null outside Node, where no condition is missing", async () => {
     expect(await outsideNode(() => loadNodeHost())).toBeNull();
+    expect(await outsideNode(async () => nodeConditionMissing())).toBeNull();
+  });
+
+  it("explains the missing condition in Node, for a refusal made once the host is absent", () => {
+    expect(nodeConditionMissing()).toMatch(/^this copy of @pipelex\/sdk runs in Node/);
   });
 
   it("is absent from the variant every other runtime resolves", () => {
@@ -92,5 +111,30 @@ describe("the operations that need Node, outside it", () => {
     } finally {
       await rm(destination, { recursive: true, force: true });
     }
+  });
+
+  it("refuse a path string, as Node-only", async () => {
+    const refusal = await outsideNode(() =>
+      readLocalPath("/a/report.pdf").catch((e: unknown) => e),
+    );
+
+    expect(refusal).toBeInstanceOf(InvalidLocalSourceError);
+    expect((refusal as Error).message).toBe(
+      'Cannot read the local path "/a/report.pdf" outside Node — path strings are Node-only. ' +
+        "In the browser or an edge runtime, pass the file as bytes (Blob/File/ArrayBuffer/Uint8Array).",
+    );
+  });
+
+  it("refuse to download artifacts, as Node-only", async () => {
+    const refusal = await outsideNode(() =>
+      downloadArtifacts(UNREACHED, { run_id: "run_1", dir: "/a/out" }).catch((e: unknown) => e),
+    );
+
+    expect(refusal).toBeInstanceOf(ArtifactOperationError);
+    expect((refusal as Error).message).toBe(
+      "downloadArtifacts writes to a filesystem and is Node-only. In another runtime, resolve " +
+        "with resolveArtifacts or stream with fetchArtifact instead.",
+    );
+    expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "config", retryable: false });
   });
 });
