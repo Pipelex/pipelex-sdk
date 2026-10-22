@@ -222,6 +222,19 @@
       ]
     },
     {
+      "class": "TestFileRefusedError",
+      "only_in": "js",
+      "variants": [
+        { "variant": "a wrapped role refusal", "given": { "code": "role_not_permitted", "status": 403, "cause": { "class": "ApiResponseError", "status": 403, "body": { "code": "role_not_permitted", "error_domain": "config", "retryable": false, "detail": "Your role in this organization is runner." } } }, "expected": { "error_domain": "config", "retryable": false } },
+        { "variant": "a wrapped unknown method", "given": { "code": "method_not_found", "status": 404, "cause": { "class": "ApiResponseError", "status": 404, "body": { "code": "not_found", "error_domain": "input", "retryable": false, "detail": "Item not found." } } }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a wrapped method being erased", "given": { "code": "method_being_deleted", "status": 409, "cause": { "class": "ApiResponseError", "status": 409, "body": { "code": "method_being_deleted", "error_domain": "input", "retryable": false, "detail": "Method 'mt_abc' is being deleted." } } }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a role refusal with no cause", "given": { "code": "role_not_permitted", "status": 403 }, "expected": { "error_domain": "config", "retryable": false } },
+        { "variant": "an unknown method with no cause", "given": { "code": "method_not_found", "status": 404 }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "a method being erased with no cause", "given": { "code": "method_being_deleted", "status": 409 }, "expected": { "error_domain": "input", "retryable": false } },
+        { "variant": "no cause and no code", "given": {}, "expected": { "error_domain": "input", "retryable": false } }
+      ]
+    },
+    {
       "class": "UploadTransportError",
       "variants": [
         { "variant": "a wrapped plan refusal", "given": { "cause": { "class": "ApiResponseError", "status": 402, "body": { "detail": "Insufficient credits." } } }, "expected": { "error_domain": "config", "retryable": false } },

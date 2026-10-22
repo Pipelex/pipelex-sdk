@@ -17,12 +17,15 @@ import type { UploadCapableClient } from "../src/upload.js";
 import {
   ApiResponseError,
   ApiUnreachableError,
+  InputPreparationError,
   InvalidLocalSourceError,
   RejectedAssetError,
+  TestFileRefusedError,
   UnsupportedUploadCapabilityError,
   UploadAuthenticationError,
   UploadTransportError,
 } from "../src/errors.js";
+import type { UploadFileOptions } from "../src/upload.js";
 
 interface Captured {
   filename: string;
@@ -278,5 +281,159 @@ describe("uploadFile", () => {
     await expect(uploadFile(client, new Uint8Array([1]))).rejects.toMatchObject({
       cause: original,
     });
+  });
+});
+
+/** A platform refusal as the client raises it: the problem's code and the server's verdict. */
+function platformRefusal(
+  status: number,
+  code: string,
+  errorDomain: "input" | "config",
+  detail: string,
+): ApiResponseError {
+  return new ApiResponseError(
+    `API POST /v1/upload failed (${status}): ${detail}`,
+    "https://api.pipelex.com/v1/upload",
+    status,
+    "Error",
+    JSON.stringify({ status, code, error_domain: errorDomain, retryable: false, detail }),
+    undefined,
+    detail,
+    undefined,
+    code,
+    { details: { errorDomain, retryable: false } },
+  );
+}
+
+describe("uploadFile's kind and method", () => {
+  it("sends a test file's kind and method beside the bytes", async () => {
+    const { client, calls } = capturingClient();
+
+    await uploadFile(client, new Uint8Array([1]), {
+      filename: "case.pdf",
+      kind: "test",
+      method_id: "mt_abc",
+    });
+
+    expect(calls[0]).toEqual({
+      filename: "case.pdf",
+      data: Buffer.from([1]).toString("base64"),
+      content_type: "application/pdf",
+      kind: "test",
+      method_id: "mt_abc",
+    });
+  });
+
+  it("sends an explicit kind uploaded, and reads a null member as absent", async () => {
+    const { client, calls } = capturingClient();
+
+    await uploadFile(client, new Uint8Array([1]), {
+      filename: "a.pdf",
+      kind: "uploaded",
+      method_id: null as unknown as string,
+    });
+
+    expect(calls[0]).toMatchObject({ kind: "uploaded" });
+    expect(calls[0]).not.toHaveProperty("method_id");
+  });
+
+  it.each([
+    ["a test file naming no method", { kind: "test" }, "a test file names the method"],
+    ["a method beside no kind", { method_id: "mt_abc" }, "only a test file names a method"],
+    [
+      "a method beside kind uploaded",
+      { kind: "uploaded", method_id: "mt_abc" },
+      "only a test file names a method",
+    ],
+    ["an unknown kind", { kind: "draft" }, '`kind` is "uploaded" or "test", got "draft"'],
+    ["a suffixed method id", { kind: "test", method_id: "mt_abc@3" }, "with no version suffix"],
+    ["an empty method id", { kind: "test", method_id: "" }, "is not a catalog id"],
+    [
+      "a method id that is no catalog id",
+      { kind: "test", method_id: "abc" },
+      "is not a catalog id",
+    ],
+    ["a method id that is not a string", { kind: "test", method_id: 7 }, "got number"],
+  ])("refuses %s before reading the asset", async (_case, options, words) => {
+    const { client, calls } = capturingClient();
+
+    // A path that does not exist: a refusal after reading would be an InvalidLocalSourceError.
+    const error = await uploadFile(
+      client,
+      "/no/such/file.pdf",
+      options as unknown as UploadFileOptions,
+    ).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InputPreparationError);
+    expect(error).not.toBeInstanceOf(InvalidLocalSourceError);
+    expect((error as Error).message).toContain("Cannot upload");
+    expect((error as Error).message).toContain(words);
+    expect((error as InputPreparationError).errorDomain).toBe("input");
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    [
+      "a role that may not change methods",
+      platformRefusal(403, "role_not_permitted", "config", "Your role is runner."),
+      "role_not_permitted",
+      "config",
+    ],
+    [
+      "an unknown method",
+      platformRefusal(404, "not_found", "input", "Item not found."),
+      "method_not_found",
+      "input",
+    ],
+    [
+      "a method being erased",
+      platformRefusal(409, "method_being_deleted", "input", "Method is being deleted."),
+      "method_being_deleted",
+      "input",
+    ],
+  ])(
+    "maps the refusal of a test file for %s to TestFileRefusedError",
+    async (_case, failure, code, domain) => {
+      const error = await uploadFile(throwingClient(failure), new Uint8Array([1]), {
+        filename: "case.pdf",
+        kind: "test",
+        method_id: "mt_abc",
+      }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(TestFileRefusedError);
+      expect(error).toBeInstanceOf(InputPreparationError);
+      expect(error).toMatchObject({
+        name: "TestFileRefusedError",
+        code,
+        status: failure.status,
+        filename: "case.pdf",
+        methodId: "mt_abc",
+        cause: failure,
+        errorDomain: domain,
+        retryable: false,
+      });
+    },
+  );
+
+  it("keeps the 404 of a deployment without the route unsupported, test file or not", async () => {
+    const routeMissing = platformRefusal(404, "not_found", "config", "Not Found");
+
+    const error = await uploadFile(throwingClient(routeMissing), new Uint8Array([1]), {
+      kind: "test",
+      method_id: "mt_abc",
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(UnsupportedUploadCapabilityError);
+  });
+
+  it("keeps a 403 that is not a role refusal a refused credential", async () => {
+    const forbidden = platformRefusal(403, "forbidden", "config", "Forbidden.");
+
+    const error = await uploadFile(throwingClient(forbidden), new Uint8Array([1]), {
+      kind: "test",
+      method_id: "mt_abc",
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(UploadAuthenticationError);
   });
 });
