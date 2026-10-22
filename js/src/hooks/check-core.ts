@@ -316,7 +316,7 @@ function comparedLines(addedLines: readonly string[]): string[] {
  * as a clean check.
  */
 export function uncheckedShellPatchNote(paths: readonly string[]): HookOutcome {
-  const named = paths.map((path) => `\`${path}\``);
+  const named = paths.map(pathSpan);
   const list =
     named.length === 1 ? named[0]! : `${named.slice(0, -1).join(", ")} and ${named.at(-1)!}`;
   const context =
@@ -498,15 +498,46 @@ function renderValidationErrorLine(item: ValidationErrorItem): string {
 /** How many withheld files a note names; the rest it counts. */
 const WITHHELD_LISTED = 10;
 
+/** A control character, line breaks included, and the Unicode line and paragraph separators. */
+const CONTROL_CHARACTERS = /[\p{Cc}\u2028\u2029]/gu;
+
+/** The escapes a reader knows by sight; any other control character is written `\uXXXX`. */
+const NAMED_ESCAPES: Readonly<Record<string, string>> = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+
 /**
- * The withheld files as Markdown list items, each path and why, never what the file holds: the
- * first {@link WITHHELD_LISTED}, then how many more, so a tree full of key files cannot crowd a
- * verdict out of the hook's output.
+ * A path as the hook's output shows it, a Markdown code span the agent reads as one inert token,
+ * whatever the file's name or the tree's root holds. Each control character, a line break
+ * included, is written as a visible escape (`\n`, `\u001b`), so a name cannot start a line of
+ * its own in the output; the span is fenced by a run of backticks longer than any inside the
+ * path, so a backtick in it cannot close the span; and, as CommonMark's code spans read, it is
+ * padded with a space when the path starts or ends with a backtick, which would otherwise join
+ * the fence, or starts and ends with a space, which would otherwise be stripped. A backslash is
+ * left as it is, so a Windows path reads as itself.
+ */
+export function pathSpan(path: string): string {
+  const shown = path.replace(
+    CONTROL_CHARACTERS,
+    (character) =>
+      NAMED_ESCAPES[character] ?? `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
+  );
+  const longestRun = Math.max(0, ...(shown.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longestRun + 1);
+  const padded =
+    shown.startsWith("`") ||
+    shown.endsWith("`") ||
+    (shown.startsWith(" ") && shown.endsWith(" ") && /[^ ]/.test(shown));
+  return padded ? `${fence} ${shown} ${fence}` : `${fence}${shown}${fence}`;
+}
+
+/**
+ * The withheld files as Markdown list items, each path, rendered by {@link pathSpan}, and why,
+ * never what the file holds: the first {@link WITHHELD_LISTED}, then how many more, so a tree
+ * full of key files cannot crowd a verdict out of the hook's output.
  */
 function withheldLines(withheld: readonly WithheldFile[]): string[] {
   const lines = withheld
     .slice(0, WITHHELD_LISTED)
-    .map((file) => `- \`${file.path}\` (${file.reason})`);
+    .map((file) => `- ${pathSpan(file.path)} (${file.reason})`);
   const more = withheld.length - WITHHELD_LISTED;
   return more > 0 ? [...lines, `- and ${more} more ${more === 1 ? "file" : "files"}`] : lines;
 }
@@ -549,7 +580,7 @@ function withheldNote(withheld: readonly WithheldFile[]): string {
  */
 function refusedNote(root: string, withheld: readonly WithheldFile[]): string {
   return [
-    `The .mthds hook did not validate the method at \`${root}\`: these files of its tree look ` +
+    `The .mthds hook did not validate the method at ${pathSpan(root)}: these files of its tree look ` +
       "like a secret, and every validation reads the method's bundles and its manifest, so " +
       "nothing was sent:",
     ...withheldLines(withheld),
