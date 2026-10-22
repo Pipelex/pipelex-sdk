@@ -67,7 +67,7 @@ Every member is optional, and each is sent only when given, so an empty `q`, cur
 
 ## Uploading a test file
 
-What an upload is recorded as travels with it to `POST /v1/upload`: its `kind`, `uploaded` when omitted, and for a `test` file the bare catalog id of the method it is for, `method_id`. A test file is a statement about a method, so the platform holds it to what changing that method takes. The pair is spelled the same on every surface that sends it: `UploadInput` (the raw `upload`), `UploadFileOptions` (`uploadFile`), `prepareInputs`' nested `upload` member, which applies to every file the preparation uploads, and `UploadGrantInput`. `UploadKind` names the two kinds, and `UploadKindOptions` the pair.
+What an upload is recorded as travels with it to `POST /v1/upload`: its `kind`, `uploaded` when omitted, and for a `test` file the bare catalog id of the method it is for, `method_id`. A test file is a statement about a method, so the platform holds it to what changing that method takes. The pair is spelled the same on every surface that sends it: `UploadInput` (the raw `upload`), `UploadFileOptions` (`uploadFile`) and `prepareInputs`' nested `upload` member, which applies to every file the preparation uploads. `UploadKind` names the two kinds, and `UploadKindOptions` the pair.
 
 ```ts
 // One file the build assistant made to try a method:
