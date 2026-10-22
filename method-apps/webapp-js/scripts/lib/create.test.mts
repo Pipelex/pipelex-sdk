@@ -406,11 +406,11 @@ describe("runCreate", () => {
       getMethod: vi
         .fn()
         .mockResolvedValue({ name: "Word statistics", description: "Counts words." }),
-      codegen: vi.fn(async (request: { files?: unknown }) =>
-        request.files === undefined ? TEXT_STATS_CODEGEN : RECEIPT_REVIEW_CODEGEN,
+      codegen: vi.fn(async (request: { contents?: unknown }) =>
+        request.contents === undefined ? TEXT_STATS_CODEGEN : RECEIPT_REVIEW_CODEGEN,
       ),
-      pipeIo: vi.fn(async (request: { files?: unknown }) =>
-        request.files === undefined ? TEXT_STATS_PIPE_IO : RECEIPT_REVIEW_PIPE_IO,
+      pipeIo: vi.fn(async (request: { contents?: unknown }) =>
+        request.contents === undefined ? TEXT_STATS_PIPE_IO : RECEIPT_REVIEW_PIPE_IO,
       ),
     } as unknown as Pick<PipelexApiClient, "codegen" | "pipeIo" | "version" | "getMethod"> & {
       codegen: ReturnType<typeof vi.fn>;

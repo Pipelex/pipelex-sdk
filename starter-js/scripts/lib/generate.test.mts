@@ -270,7 +270,7 @@ describe("generateMethod", () => {
   const FILES_SOURCE: MethodSource = {
     name: "demo",
     kind: "files",
-    files: [{ content: "a = 1\n", source: "methods/demo/main.mthds" }],
+    files: { "main.mthds": "a = 1\n" },
     sourceHashes: SOURCES,
   };
   const SELECTOR_SOURCE: MethodSource = {
@@ -345,19 +345,19 @@ describe("generateMethod", () => {
     vi.restoreAllMocks();
   });
 
-  it("sends a files source inline to both routes, describing every pipe", async () => {
+  it("sends a files source's tree to both routes as contents, describing every pipe", async () => {
     noDrifts();
     const client = fakeClient();
 
     expect(await generateMethod(client, FILES_SOURCE, outDir, "https://api.example")).toBe("ok");
     expect(client.codegen).toHaveBeenCalledWith({
-      files: FILES_SOURCE.kind === "files" ? FILES_SOURCE.files : [],
+      contents: { "main.mthds": "a = 1\n" },
       kind: "types",
       target: "ts-zod",
     });
     // The files are here already, so the route is not asked to echo them.
     expect(client.pipeIo).toHaveBeenCalledWith({
-      files: FILES_SOURCE.kind === "files" ? FILES_SOURCE.files : [],
+      contents: { "main.mthds": "a = 1\n" },
       all_pipes: true,
     });
     expect((await readdir(outDir)).sort()).toEqual(
@@ -600,10 +600,9 @@ describe("generateMethod", () => {
 });
 
 describe("methodProseOf", () => {
-  const CONCEPTS = { source: "concepts.mthds", content: 'domain = "review"\n' };
+  const CONCEPTS = { "concepts.mthds": 'domain = "review"\n' };
   const MAIN = {
-    source: "main.mthds",
-    content: [
+    "main.mthds": [
       'domain = "review"',
       'description = "Score a batch of CVs."',
       'main_pipe = "score"',
@@ -614,8 +613,7 @@ describe("methodProseOf", () => {
     ].join("\n"),
   };
   const HELPERS = {
-    source: "helpers.mthds",
-    content: [
+    "helpers.mthds": [
       'domain = "helpers"',
       'description = "Shared steps."',
       "",
@@ -626,11 +624,13 @@ describe("methodProseOf", () => {
   };
 
   it("takes the description from the file that declares the main pipe, wherever it sits", () => {
-    expect(methodProseOf([CONCEPTS, HELPERS, MAIN]).description).toBe("Score a batch of CVs.");
+    expect(methodProseOf({ ...CONCEPTS, ...HELPERS, ...MAIN }).description).toBe(
+      "Score a batch of CVs.",
+    );
   });
 
   it("collects every file's pipe descriptions, the primary file's first", () => {
-    const prose = methodProseOf([HELPERS, MAIN]);
+    const prose = methodProseOf({ ...HELPERS, ...MAIN });
     expect(prose.pipeDescriptions).toEqual({
       "review.score": "Score each CV.",
       "helpers.clean": "Clean each PDF.",
@@ -639,14 +639,14 @@ describe("methodProseOf", () => {
   });
 
   it("falls back to the first file when none declares a main pipe", () => {
-    expect(methodProseOf([HELPERS, CONCEPTS]).description).toBe("Shared steps.");
+    expect(methodProseOf({ ...HELPERS, ...CONCEPTS }).description).toBe("Shared steps.");
   });
 
   it("skips a file it cannot parse, and reads nothing from none", () => {
-    expect(methodProseOf([{ content: "this is = = not toml" }, MAIN]).description).toBe(
+    expect(methodProseOf({ "broken.mthds": "this is = = not toml", ...MAIN }).description).toBe(
       "Score a batch of CVs.",
     );
-    expect(methodProseOf([])).toEqual({ description: null, pipeDescriptions: {} });
+    expect(methodProseOf({})).toEqual({ description: null, pipeDescriptions: {} });
   });
 });
 
@@ -663,12 +663,10 @@ describe("fetchPipeIoArtifacts", () => {
     default_pipe_ref: "review.score",
     pending_signatures: [],
     is_runnable: true,
-    files: [
-      {
-        source: "review.mthds",
-        content: 'domain = "review"\ndescription = "Read from the echo."\nmain_pipe = "score"\n',
-      },
-    ],
+    files: {
+      "review.mthds":
+        'domain = "review"\ndescription = "Read from the echo."\nmain_pipe = "score"\n',
+    },
   };
 
   function client(answer: unknown) {
@@ -699,7 +697,7 @@ describe("fetchPipeIoArtifacts", () => {
       {
         name: "review",
         kind: "files",
-        files: [{ source: "main.mthds", content: 'domain = "review"\ndescription = "Local."\n' }],
+        files: { "main.mthds": 'domain = "review"\ndescription = "Local."\n' },
         sourceHashes: {},
       },
       "https://api.example",

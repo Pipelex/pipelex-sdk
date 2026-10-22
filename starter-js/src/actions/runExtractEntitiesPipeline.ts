@@ -11,7 +11,7 @@ import {
   type StartOutcome,
 } from "@/lib/durableRun";
 import { gateRunInputs, requireContract } from "@/lib/runInputs";
-import type { StartOptions } from "@pipelex/sdk";
+import type { PipelexStartOptions } from "@pipelex/sdk";
 
 const PIPE_CODE = "extract_entities";
 /**
@@ -26,10 +26,10 @@ const PIPE_REF = "extract_entities.extract_entities";
 const CONTRACT = requireContract(PIPE_IO_CONTRACTS, "extract_entities", PIPE_CODE);
 
 /** SDK options shared by both paths — `execute` and `start` take the same shape. */
-async function buildOptions(inputs: Record<string, unknown>): Promise<StartOptions> {
+async function buildOptions(inputs: Record<string, unknown>): Promise<PipelexStartOptions> {
   return {
     pipe_code: PIPE_REF,
-    mthds_contents: await loadMethodBundles("extract-entities"),
+    contents: await loadMethodBundles("extract-entities"),
     inputs,
   };
 }

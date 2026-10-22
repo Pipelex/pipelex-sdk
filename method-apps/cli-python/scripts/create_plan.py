@@ -11,7 +11,7 @@ the package (`lib/binding.py`): `method/`, `generated/` and `binding.py`.
 base URL serves the selector, fetches a stored method's catalog entry, and runs the codegen kit's
 `fetch_generated`, so both API calls and every guard `make codegen` holds run here
 (`scripts/codegen.py`), over the very request `make codegen` sends for the tree written from it: a
-bundle's files are labelled as the package will hold them, `method/<path>`. It then chooses the pipe,
+bundle's files are keyed by their tree path, their path inside `method/`. It then chooses the pipe,
 binds the output to a model the generated tree defines and can import, which executes the generated
 `models.py` in memory, a dry run included, checks that the pipe's inputs can be offered as options,
 derives the name the project takes when none is given, and renders `binding.py`, formatted by ruff,
@@ -36,7 +36,7 @@ import subprocess
 import sys
 import tomllib
 import unicodedata
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -44,7 +44,7 @@ from typing import Any, Protocol, cast
 
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.pipe_io_contracts import PipeIOContract, PipeIOContracts
-from pipelex_sdk.crate_models import CodegenValidReport, MthdsFileItem, PipeIOValidReport
+from pipelex_sdk.crate_models import CodegenValidReport, PipeIOValidReport
 from pipelex_sdk.method_selector import parse_method_selector
 from pipelex_sdk.product_models import MethodData
 from pydantic import BaseModel
@@ -437,19 +437,19 @@ def _table(value: object) -> dict[str, Any]:
     return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
 
 
-def method_prose_of(files: Sequence[MthdsFileItem]) -> MethodProse:
-    """Read the method's prose out of its `.mthds` files.
+def method_prose_of(files: Mapping[str, str]) -> MethodProse:
+    """Read the method's prose out of its `.mthds` files, each one's text keyed by its tree path.
 
     The domain's description is the one in the method's primary file, the first that declares a
-    `main_pipe`, else the first. Every file's pipes contribute their descriptions, the primary
-    file's first, since `method_vocabulary` keeps the first spelling it meets. A file that does not
-    parse contributes nothing: the API has just loaded it, and the prose is optional, since every
+    `main_pipe`, else the first in the map's order. Every file's pipes contribute their
+    descriptions, the primary file's first, since `method_vocabulary` keeps the first spelling it
+    meets. A file that does not parse contributes nothing: the API has just loaded it, and the prose is optional, since every
     reader of it has a fallback.
     """
     blueprints: list[dict[str, Any]] = []
-    for file in files:
+    for content in files.values():
         try:
-            blueprints.append(tomllib.loads(file.content))
+            blueprints.append(tomllib.loads(content))
         except tomllib.TOMLDecodeError:
             continue
     if not blueprints:
@@ -825,27 +825,29 @@ async def plan_method(args: MethodArgs, client: CreateClient, *, layout: Layout,
         origin = describe
     else:
         bundle = read_bundle_arg(arg.path, cwd=cwd, root=root, layout=layout)
-        # Each file is labelled as the package will hold it, `method/<path>`, which is what `make codegen`
+        # Each file is keyed by its tree path, its path inside `method/`, which is what `make codegen`
         # and `make codegen-verify` send for the tree written from it, so the request is theirs exactly.
-        placed = [(f"{METHOD_DIRNAME}/{file.relative}", file.content) for file in bundle.files]
         source = CodegenSource(
-            files=tuple(MthdsFileItem(content=content, source=label) for label, content in placed),
-            source_hashes={label: hash_source(content) for label, content in placed},
+            files={file.relative: file.content for file in bundle.files},
+            source_hashes={f"{METHOD_DIRNAME}/{file.relative}": hash_source(file.content) for file in bundle.files},
         )
         method_files = tuple((file.relative, file.content) for file in bundle.files)
         count = f"{len(bundle.files)} .mthds file{'' if len(bundle.files) == 1 else 's'}"
         describe = f"the bundle {bundle.display} ({count}, copied to {layout.describe(layout.method_dir)}/)"
         origin = f"the bundle {bundle.display}"
-        # A diagnostic names a file by its label, so a refusal says where the person's file is.
-        placed_as = f"{METHOD_DIRNAME}/" if bundle.display.endswith("/") else f"{METHOD_DIRNAME}/{bundle.files[0].relative}"
-        labels_note = f"The bundle's files are named as the package will hold them: {placed_as} is {bundle.display}"
+        # A diagnostic names a file by its tree path, its path inside the bundle as given, so a refusal
+        # says where the person's file is: the directory those paths start from, or the one file.
+        if bundle.display.endswith("/"):
+            labels_note = f"The bundle's files are named by their path inside {bundle.display}"
+        else:
+            labels_note = f"{bundle.files[0].relative} is {bundle.display}"
     try:
         fetched = await fetch_generated(client, source, layout, include_files=True)
     except GenerateFailure as exc:
         msg = str(exc) if labels_note is None else f"{exc}\n  {labels_note}"
         raise PlanError(msg) from exc
     report = fetched.pipe_io
-    prose = method_prose_of(source.files if source.files is not None else report.files or [])
+    prose = method_prose_of(source.files if source.files is not None else report.files or {})
     pipe = choose_pipe(report.pipe_io_contracts, report.default_pipe_ref, args.pipe)
     output = bind_output(report.pipe_io_contracts[pipe.ref], fetched.report)
     options = _options_for(report, pipe)

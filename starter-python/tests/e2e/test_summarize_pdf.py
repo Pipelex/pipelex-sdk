@@ -19,7 +19,7 @@ class TestSummarizePdf:
         # The attended lifecycle end to end: upload the PDF, start a durable run, poll it, narrow.
         bundle = BUNDLE_PATH.read_text()
         inputs = {"document": await upload_document_input(SAMPLE_PDF)}
-        results = await start_and_wait(pipe_code="summarize_pdf.summarize_pdf", mthds_contents=[bundle], inputs=inputs)
+        results = await start_and_wait(pipe_code="summarize_pdf.summarize_pdf", contents={"main.mthds": bundle}, inputs=inputs)
         summary = DocumentSummary.model_validate(results.main_stuff)
         assert summary.title
         assert summary.doc_type

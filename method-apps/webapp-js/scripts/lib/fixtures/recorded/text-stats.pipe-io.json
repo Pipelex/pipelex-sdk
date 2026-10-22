@@ -74,10 +74,7 @@
   "default_pipe_ref": "text_stats.analyze_text",
   "pending_signatures": [],
   "is_runnable": true,
-  "files": [
-    {
-      "content": "domain      = \"text_stats\"\ndescription = \"Deterministic text statistics: counts, vocabulary richness, most frequent words, and estimated reading and speaking times — computed by a sandboxed Python function, no LLM involved.\"\nmain_pipe   = \"analyze_text\"\n\n[pipe.analyze_text]\ntype          = \"PipeFunc\"\ndescription   = \"Compute deterministic statistics about the input text (counts, averages, top words, reading time) and format them as a Markdown report.\"\ninputs        = { text = \"Text\" }\noutput        = \"Text\"\nfunction_name = \"text_stats_report\"\n",
-      "source": "text_stats.mthds"
-    }
-  ]
+  "files": {
+    "text_stats.mthds": "domain      = \"text_stats\"\ndescription = \"Deterministic text statistics: counts, vocabulary richness, most frequent words, and estimated reading and speaking times — computed by a sandboxed Python function, no LLM involved.\"\nmain_pipe   = \"analyze_text\"\n\n[pipe.analyze_text]\ntype          = \"PipeFunc\"\ndescription   = \"Compute deterministic statistics about the input text (counts, averages, top words, reading time) and format them as a Markdown report.\"\ninputs        = { text = \"Text\" }\noutput        = \"Text\"\nfunction_name = \"text_stats_report\"\n"
+  }
 }

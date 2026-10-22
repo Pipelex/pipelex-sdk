@@ -21,17 +21,19 @@ async function put(relative: string, content: string): Promise<void> {
 }
 
 describe("loadMethodBundles", () => {
-  it("reads every .mthds file of the method, at any depth, in sorted path order", async () => {
+  it("reads every .mthds file of the method, at any depth, keyed by tree path in sorted order", async () => {
     await put("cv-screening/main.mthds", "MAIN");
     await put("cv-screening/concepts.mthds", "CONCEPTS");
     await put("cv-screening/steps/score.mthds", "SCORE");
     await put("cv-screening/README.md", "not a bundle");
 
-    await expect(loadMethodBundles("cv-screening", methodsDir)).resolves.toEqual([
-      "CONCEPTS",
-      "MAIN",
-      "SCORE",
-    ]);
+    const tree = await loadMethodBundles("cv-screening", methodsDir);
+    expect(tree).toEqual({
+      "concepts.mthds": "CONCEPTS",
+      "main.mthds": "MAIN",
+      "steps/score.mthds": "SCORE",
+    });
+    expect(Object.keys(tree)).toEqual(["concepts.mthds", "main.mthds", "steps/score.mthds"]);
   });
 
   // Codegen's walk compares `/`-joined relative paths, where `/` sorts before
@@ -40,17 +42,17 @@ describe("loadMethodBundles", () => {
     await put("cv-screening/steps2.mthds", "STEPS2");
     await put("cv-screening/steps/score.mthds", "SCORE");
 
-    await expect(loadMethodBundles("cv-screening", methodsDir)).resolves.toEqual([
-      "SCORE",
-      "STEPS2",
-    ]);
+    const tree = await loadMethodBundles("cv-screening", methodsDir);
+    expect(Object.keys(tree)).toEqual(["steps/score.mthds", "steps2.mthds"]);
   });
 
   it("reads only the named method's directory", async () => {
     await put("first/main.mthds", "FIRST");
     await put("second/main.mthds", "SECOND");
 
-    await expect(loadMethodBundles("first", methodsDir)).resolves.toEqual(["FIRST"]);
+    await expect(loadMethodBundles("first", methodsDir)).resolves.toEqual({
+      "main.mthds": "FIRST",
+    });
   });
 
   it("rejects with ENOENT when the directory is missing", async () => {
@@ -85,9 +87,9 @@ describe("loadMethodBundles", () => {
     for (const name of names) {
       const entries = await readdir(path.join(root, name), { recursive: true });
       if (!entries.some((entry) => entry.endsWith(".mthds"))) continue;
-      const bundles = await loadMethodBundles(name);
-      expect(bundles.length).toBeGreaterThan(0);
-      for (const bundle of bundles) expect(bundle).toMatch(/^domain\s*=/m);
+      const tree = await loadMethodBundles(name);
+      expect(Object.keys(tree).length).toBeGreaterThan(0);
+      for (const bundle of Object.values(tree)) expect(bundle).toMatch(/^domain\s*=/m);
     }
   });
 });

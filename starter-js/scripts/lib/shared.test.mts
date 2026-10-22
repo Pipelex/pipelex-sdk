@@ -492,6 +492,7 @@ describe("discoverMethods over the two source kinds", () => {
   async function method(name: string, files: Record<string, string>): Promise<void> {
     await mkdir(path.join(fixtureDir, name), { recursive: true });
     for (const [file, content] of Object.entries(files)) {
+      await mkdir(path.dirname(path.join(fixtureDir, name, file)), { recursive: true });
       await writeFile(path.join(fixtureDir, name, file), content);
     }
   }
@@ -511,16 +512,20 @@ describe("discoverMethods over the two source kinds", () => {
     ]);
   });
 
-  it("reads a bundle directory as a files source, unchanged", async () => {
-    await method("local", { "main.mthds": "a = 1\n" });
+  it("reads a bundle directory as a files source, keyed by tree path", async () => {
+    await method("local", { "main.mthds": "a = 1\n", "steps/score.mthds": "b = 2\n" });
 
     const methods = await discoverMethods(fixtureDir);
     expect(methods).toEqual([
       {
         name: "local",
         kind: "files",
-        files: [{ content: "a = 1\n", source: "methods/local/main.mthds" }],
-        sourceHashes: { "methods/local/main.mthds": hashSource("a = 1\n") },
+        // The method directory is the tree's root; the sidecar keys from the repo's.
+        files: { "main.mthds": "a = 1\n", "steps/score.mthds": "b = 2\n" },
+        sourceHashes: {
+          "methods/local/main.mthds": hashSource("a = 1\n"),
+          "methods/local/steps/score.mthds": hashSource("b = 2\n"),
+        },
       },
     ]);
   });

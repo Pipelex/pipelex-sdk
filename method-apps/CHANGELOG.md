@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Both templates run on the SDK 0.48.1**: `@pipelex/sdk` in the web app and `pipelex-sdk` in the CLI move from 0.45.0, with `mthds` moving from 0.22.0 to 0.25.0 in the CLI, and `npm ls mthds` lists two copies in the web app again, the form kernel's 0.30.1 and the SDK's 0.33.0, until a release of `@pipelex/mthds-form` takes the SDK's range.
+- **A bundle travels as the method's tree (Breaking)**: both templates send a bundle to the runs, the preparation of the inputs, `/v1/codegen` and `/v1/pipe-io` as `contents`, each `.mthds` file's text keyed by its path in the method's directory, `methods/<name>/` in the web app and `method/` in the CLI, and in the web app `loadMethodBundles` returns that map, which every action `make add-method` writes passes, so an action written before passes `contents` where it passed `mthds_contents`. A refusal from `make codegen`, `make add-method` or `make create` names a bundle's file by that path, where the CLI named it `method/<path>`, and `make create`'s note under it says which directory or file the paths start from.
+
 ## [v0.46.0] - 2026-10-19
 
 ### Changed

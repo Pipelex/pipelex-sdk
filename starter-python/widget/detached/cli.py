@@ -60,16 +60,17 @@ async def start_pipe(
     *,
     pipe_code: str,
     inputs: dict[str, Any],
-    mthds_contents: list[str] | None = None,
+    contents: dict[str, str] | None = None,
     method_id: str | None = None,
     method_ref: str | None = None,
 ) -> str:
     """The whole detached lifecycle: start a durable run, return its id, don't wait.
 
     Credentials come from `PIPELEX_API_KEY` / `PIPELEX_BASE_URL`. The method arrives as exactly
-    one of three selectors, which is the SDK's own rule: inline `mthds_contents` (the bundle's
-    `.mthds` files as strings — one entry for a single-file bundle, several for a multi-file
-    one), a hosted catalog id (`method_id`), or a published address (`method_ref`). The demos
+    one of three selectors, which is the SDK's own rule: `contents` (the method's tree, each
+    `.mthds` file's text keyed by its path in the method's directory — one entry for a single-file
+    bundle, several for a multi-file one — sent inline when small and by hash otherwise), a hosted
+    catalog id (`method_id`), or a published address (`method_ref`). The demos
     below send the bundle they ship; a command written by `make add-method` sends the selector
     its `method.json` holds, and the SDK refuses a request carrying more than one.
 
@@ -78,7 +79,7 @@ async def start_pipe(
     async with PipelexAPIClient() as client:
         start_result = await client.start(
             pipe_code=pipe_code,
-            mthds_contents=mthds_contents,
+            contents=contents,
             inputs=inputs,
             method_id=method_id,
             method_ref=method_ref,
@@ -126,7 +127,7 @@ def extract_entities(
     if resolved.is_sample:
         progress_console.print(f"[dim]No text given — using the sample: {resolved.text!r}. Pass your own as an argument or via --file.[/dim]")
     bundle = (METHODS_DIR / "extract-entities" / "main.mthds").read_text()
-    run_id = _run(start_pipe(pipe_code="extract_entities.extract_entities", mthds_contents=[bundle], inputs={"text": resolved.text}))
+    run_id = _run(start_pipe(pipe_code="extract_entities.extract_entities", contents={"main.mthds": bundle}, inputs={"text": resolved.text}))
     _print_run_id(run_id)
 
 
@@ -144,7 +145,7 @@ def summarize_pdf(
     bundle = (METHODS_DIR / "summarize-pdf" / "main.mthds").read_text()
     # Upload the file first (a separate step from the run) — the run request carries only its URI.
     inputs = {"document": _run(upload_document_input(document))}
-    run_id = _run(start_pipe(pipe_code="summarize_pdf.summarize_pdf", mthds_contents=[bundle], inputs=inputs))
+    run_id = _run(start_pipe(pipe_code="summarize_pdf.summarize_pdf", contents={"main.mthds": bundle}, inputs=inputs))
     _print_run_id(run_id)
 
 
@@ -162,7 +163,7 @@ def generate_image(
     if resolved.is_sample:
         progress_console.print(f"[dim]No prompt given — using the sample: {resolved.text!r}. Pass your own as an argument or via --file.[/dim]")
     bundle = (METHODS_DIR / "generate-image" / "main.mthds").read_text()
-    run_id = _run(start_pipe(pipe_code="generate_image.generate_image", mthds_contents=[bundle], inputs={"image_prompt": resolved.text}))
+    run_id = _run(start_pipe(pipe_code="generate_image.generate_image", contents={"main.mthds": bundle}, inputs={"image_prompt": resolved.text}))
     _print_run_id(run_id)
 
 

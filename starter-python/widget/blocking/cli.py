@@ -46,16 +46,17 @@ async def execute_pipe(
     *,
     pipe_code: str,
     inputs: dict[str, Any],
-    mthds_contents: list[str] | None = None,
+    contents: dict[str, str] | None = None,
     method_id: str | None = None,
     method_ref: str | None = None,
 ) -> RunResults:
     """The whole blocking lifecycle: one call, and the result comes back in the response.
 
     Credentials come from `PIPELEX_API_KEY` / `PIPELEX_BASE_URL`. The method arrives as exactly
-    one of three selectors, which is the SDK's own rule: inline `mthds_contents` (the bundle's
-    `.mthds` files as strings — one entry for a single-file bundle, several for a multi-file
-    one), a hosted catalog id (`method_id`), or a published address (`method_ref`). The demos
+    one of three selectors, which is the SDK's own rule: `contents` (the method's tree, each
+    `.mthds` file's text keyed by its path in the method's directory — one entry for a single-file
+    bundle, several for a multi-file one — sent inline when small and by hash otherwise), a hosted
+    catalog id (`method_id`), or a published address (`method_ref`). The demos
     below send the bundle they ship; a command written by `make add-method` sends the selector
     its `method.json` holds, and the SDK refuses a request carrying more than one.
 
@@ -68,7 +69,7 @@ async def execute_pipe(
         with progress_console.status("Running…"):
             result = await client.execute(
                 pipe_code=pipe_code,
-                mthds_contents=mthds_contents,
+                contents=contents,
                 inputs=inputs,
                 method_id=method_id,
                 method_ref=method_ref,
@@ -86,7 +87,7 @@ def extract_entities(
     if resolved.is_sample:
         progress_console.print(f"[dim]No text given — using the sample: {resolved.text!r}. Pass your own as an argument or via --file.[/dim]")
     bundle = (METHODS_DIR / "extract-entities" / "main.mthds").read_text()
-    results = _run(execute_pipe(pipe_code="extract_entities.extract_entities", mthds_contents=[bundle], inputs={"text": resolved.text}))
+    results = _run(execute_pipe(pipe_code="extract_entities.extract_entities", contents={"main.mthds": bundle}, inputs={"text": resolved.text}))
     # Narrow into the generated typed model (validates the concept's shape), then print it as JSON.
     entities = ExtractedEntities.model_validate(results.main_stuff)
     output_console.print_json(data=entities.model_dump())
@@ -107,7 +108,7 @@ def summarize_pdf(
     bundle = (METHODS_DIR / "summarize-pdf" / "main.mthds").read_text()
     # Upload the file first (a separate step from the run) — the run request carries only its URI.
     inputs = {"document": _run(upload_document_input(document))}
-    results = _run(execute_pipe(pipe_code="summarize_pdf.summarize_pdf", mthds_contents=[bundle], inputs=inputs))
+    results = _run(execute_pipe(pipe_code="summarize_pdf.summarize_pdf", contents={"main.mthds": bundle}, inputs=inputs))
     summary = DocumentSummary.model_validate(results.main_stuff)
     output_console.print_json(data=summary.model_dump())
     print_cost_report(progress_console, results)
@@ -128,7 +129,7 @@ def generate_image(
     if resolved.is_sample:
         progress_console.print(f"[dim]No prompt given — using the sample: {resolved.text!r}. Pass your own as an argument or via --file.[/dim]")
     bundle = (METHODS_DIR / "generate-image" / "main.mthds").read_text()
-    results = _run(execute_pipe(pipe_code="generate_image.generate_image", mthds_contents=[bundle], inputs={"image_prompt": resolved.text}))
+    results = _run(execute_pipe(pipe_code="generate_image.generate_image", contents={"main.mthds": bundle}, inputs={"image_prompt": resolved.text}))
     # On the hosted path the runtime returns a storage `url` (`pipelex-storage://…`)
     # *and* a web-renderable `public_url` (a signed URL); the model keeps both.
     image = Image.model_validate(results.main_stuff)

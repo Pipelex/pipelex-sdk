@@ -8,7 +8,7 @@ import { buildUsageReport, type UsageReport } from "@/lib/usageReport";
 // extensions — `method_ref` and `method_id`, how a scaffolded action names a
 // method that lives on the platform or in a published package rather than
 // shipping its bundle inline. Every extension is optional, so an action that
-// sends `mthds_contents` satisfies this type unchanged.
+// sends its bundle as the method's tree, `contents`, satisfies this type unchanged.
 import { resultsFromExecute, type PipelexStartOptions, type RunResults } from "@pipelex/sdk";
 
 export type BlockingOutcome<T> =

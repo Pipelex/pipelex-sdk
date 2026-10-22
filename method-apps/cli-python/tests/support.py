@@ -157,7 +157,7 @@ def make_binding(
         pipe_ref=pipe.pipe_ref,
         output_model=output_model,
         output_is_list=output_is_list,
-        source=source or MethodSource(mthds_contents=("domain = 'greetings'\n",)),
+        source=source or MethodSource(files={"main.mthds": "domain = 'greetings'\n"}),
         contracts=pipe,
     )
 

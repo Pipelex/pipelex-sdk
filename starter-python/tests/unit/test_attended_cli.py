@@ -44,6 +44,8 @@ class TestAttendedCli:
         attended_mock.assert_awaited_once()
         assert attended_mock.await_args is not None
         assert attended_mock.await_args.kwargs["pipe_code"] == "extract_entities.extract_entities"
+        # The bundle travels as the method's tree, `contents`, keyed by its path in the method's directory.
+        assert list(attended_mock.await_args.kwargs["contents"]) == ["main.mthds"]
         assert attended_mock.await_args.kwargs["inputs"] == {"text": "some text"}
         assert "Marie Curie" in result.output
 

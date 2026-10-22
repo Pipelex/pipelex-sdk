@@ -8,9 +8,8 @@ adding it, and a run still going names `--resume`.
 import io
 
 import pytest
-from mthds.runners.api.problem import UserAction as ProblemUserAction
 from pipelex_sdk.artifact_models import ArtifactScope, DownloadArtifactsResult
-from pipelex_sdk.error_models import RunErrorReport, UserAction
+from pipelex_sdk.error_models import ProblemUserAction, RunErrorReport, UserAction
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
