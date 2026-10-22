@@ -19,6 +19,7 @@ import {
   errorVerdictOf,
 } from "../src/errors.js";
 import { listDirectoryTree, writeMethodTreeTo } from "../src/method-trees.js";
+import { PipelexApiClient } from "../src/client.js";
 import { loadNodeHost } from "../src/node-host.js";
 import { nodeHost as absentHost } from "../src/node-host/unavailable.js";
 import { readLocalPath } from "../src/upload.js";
@@ -78,6 +79,22 @@ describe("the operations that need Node, outside it", () => {
         "give the method's tree as contents, tree or files instead.",
     );
     expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "input", retryable: false });
+  });
+
+  it("refuse a directory given to the client before any request, the handshake included", async () => {
+    const client = new PipelexApiClient({ baseUrl: "http://localhost:8081", apiKey: "test-token" });
+    // Answered here, so a regression fails the test rather than reaching a local server.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new TypeError("the handshake was sent"));
+
+    const refusal = await outsideNode(() =>
+      client.validate({ directory: "/a/method" }).catch((e: unknown) => e),
+    );
+
+    expect(refusal).toBeInstanceOf(RequestArgumentError);
+    expect((refusal as Error).message).toMatch(/^validate\(\) got a directory, which only Node/);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("refuse to write a tree to disk, before any download", async () => {

@@ -146,6 +146,7 @@ import {
   redactSignedLinks,
   sha256Hex,
   treeShapeFault,
+  treeListerFor,
   treeTotalSize,
   uniqueBlobs,
   uploadBlob,
@@ -2762,7 +2763,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * The method's tree a call was given, made ready to prepare: a `directory` listed, `contents`
    * turned into a tree, a `tree` checked, `files` kept as given; `undefined` when the input gives
    * none. Two forms are refused with `RequestArgumentError` before any request, naming `call`, and
-   * so are a `directory` that is not a string and a `tree` that is not a listed tree. A
+   * so are a `directory` that is not a string, a `directory` where the Node host cannot be had
+   * (outside Node, or in a toolchain that cannot load it), and a `tree` that is not a listed tree. A
    * `directory` is listed by the `mthds` package's lister under the limits the deployment
    * announces, so a tree past one is refused while it is listed, before any file is hashed; the
    * handshake that announces them is asked under `signal`. It is listed once per call: a request
@@ -2784,6 +2786,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (given[0] === "directory") {
       const directory: unknown = input.directory;
       if (typeof directory !== "string") throw directoryRefusal(call);
+      // Where the Node host cannot be had, the directory is refused before the handshake, so a
+      // failed or refused handshake cannot hide that refusal.
+      await treeListerFor(directory, call);
       throwIfAborted(signal);
       const limits = listerLimitsOf(announcedTreeLimits(await this.cachedVersion(signal)));
       throwIfAborted(signal);

@@ -3,7 +3,7 @@
  * `imports` map of `package.json` (Jest before 29.4) or a package installed in part. Every
  * operation that needs Node refuses with its own class and verdict, saying the host could not be
  * loaded and why, with the import's own error as the `cause`, never that the `node` condition was
- * missing; and `fetchArtifact`
+ * missing; a directory given to the client is refused before any request; and `fetchArtifact`
  * falls back to the platform's default dispatcher, the undici dispatcher being a Node refinement
  * (`docs/artifact-download.md`). The host is mocked to fail here, in a file of its own, so the
  * mock touches no other suite.
@@ -12,6 +12,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { downloadArtifacts, fetchArtifact } from "../src/artifacts.js";
 import type { ArtifactCapableClient, ResolvedArtifact } from "../src/artifacts.js";
+import { PipelexApiClient } from "../src/client.js";
 import {
   ArtifactOperationError,
   InvalidLocalSourceError,
@@ -85,6 +86,20 @@ describe("the Node host's import failing", () => {
     expect(refusal).toBeInstanceOf(RequestArgumentError);
     expectImportFailure(refusal, "validate() cannot list the directory '/a/method'");
     expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "input", retryable: false });
+  });
+
+  it("refuses a directory given to the client before any request", async () => {
+    const client = new PipelexApiClient({ baseUrl: "http://localhost:8081", apiKey: "test-token" });
+    // Answered here, so a regression fails the test rather than reaching a local server.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new TypeError("the handshake was sent"));
+
+    const refusal = await client.validate({ directory: "/a/method" }).catch((e: unknown) => e);
+
+    expect(refusal).toBeInstanceOf(RequestArgumentError);
+    expectImportFailure(refusal, "validate() cannot list the directory '/a/method'");
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("refuses to write a tree to disk as a config error, before any download", async () => {

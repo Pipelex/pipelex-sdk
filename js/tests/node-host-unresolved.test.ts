@@ -17,6 +17,7 @@ import {
   errorVerdictOf,
 } from "../src/errors.js";
 import { listDirectoryTree, writeMethodTreeTo } from "../src/method-trees.js";
+import { PipelexApiClient } from "../src/client.js";
 import { isNodeRuntime, loadNodeHost } from "../src/node-host.js";
 import { readLocalPath } from "../src/upload.js";
 
@@ -50,6 +51,22 @@ describe("the Node host resolved without the node condition", () => {
     expect(await reason()).toMatch(new RegExp(`^${CONDITION_MISSING}`));
     expect(await reason()).toContain('esbuild platform "node"');
     expect("cause" in loaded).toBe(false);
+  });
+
+  it("refuses a directory given to the client before any request", async () => {
+    const client = new PipelexApiClient({ baseUrl: "http://localhost:8081", apiKey: "test-token" });
+    // Answered here, so a regression fails the test rather than reaching a local server.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new TypeError("the handshake was sent"));
+
+    const refusal = await client.validate({ directory: "/a/method" }).catch((e: unknown) => e);
+
+    expect(refusal).toBeInstanceOf(RequestArgumentError);
+    expect((refusal as Error).message).toBe(
+      `validate() cannot list the directory '/a/method': ${await reason()}`,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("refuses a directory as an input error, naming the call and the condition", async () => {

@@ -531,7 +531,8 @@ export interface ListedMethodTree extends MethodTreeSource {
 /**
  * The `mthds` package's tree lister, to list `directory` for `call`, loaded through the Node host;
  * where the host could not be had, outside Node or inside it, a `RequestArgumentError` naming
- * `call` and saying why.
+ * `call` and saying why. The client asks for it before the version handshake of a call given a
+ * `directory`, so that refusal comes before any request.
  */
 export async function treeListerFor(directory: string, call: string): Promise<TreeLister> {
   const loaded = await loadNodeHost();
