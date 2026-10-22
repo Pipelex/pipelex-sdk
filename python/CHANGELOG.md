@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`--inputs -` on a detached stdin**: when the program running the command detached `sys.stdin` before it ran, the command says it cannot read stdin, with the reason `EBADF` and exit code 2, as it does for a closed one, on every supported Python; on Python 3.14.9 and later it reported an unexpected failure instead.
+
 ## [v0.48.0] - 2026-10-20
 
 ### Added
