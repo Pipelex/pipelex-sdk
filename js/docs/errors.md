@@ -317,6 +317,10 @@ A refusal about a saved method or one of its versions carries one of the platfor
 
 A malformed version suffix (`@0`, `@03`, `@Draft`, two suffixes) is a `422` `validation_failed` whose `errors` name the field `method_id`; `parseMethodSelector` refuses the same selectors locally with a `RequestArgumentError`, before anything is sent. So is any suffix on the run routes' linkage form, a `method_id` beside an inline source, which `execute` and `start` refuse locally the same way.
 
+### The branding codes
+
+A refused branding write (`updateOrganizationBranding`) names each logo or colour it refused in `errors`: the entry's `field` is the logo's slot, `square_logo` or `wide_logo`, or the colour's dotted key, such as `colors.action`, and its `detail` the sentence a settings screen shows under that control. A logo the platform read and refused is a `422` `validation_failed` with one entry per broken rule, both slots at once, each `code` one the exported type `LogoRefusalCode` names (`logo_too_large`, `logo_not_square`, `logo_too_small`, …); a logo URI refused before any read names its slot the same way, under `400` `invalid_storage_uri` or `403` `forbidden`. [organization-branding.md](./organization-branding.md#when-a-write-is-refused) lists every code with a sentence of each.
+
 ## A validation item — `ValidationErrorItem`
 
 A method refused for what it says, rather than for how its run went, comes back as a list of validation items. They ride the `/v1/validate` verdict (its invalid arm's `validation_errors[]`, and the advisory `warnings[]` of its valid arm) and the crate routes' invalid verdict (`CrateInvalidReport.validation_errors[]`), each a `200` because an invalid bundle is a produced verdict; the `422` a run route answers when the runner refuses the method for its validation errors, as `ApiResponseError.validationErrors`; and a failed run's report, as `validation_errors`. Each item has a `category` and a `message`; the other members locate the error and say what to do next, and each is present only when the runner knows it:

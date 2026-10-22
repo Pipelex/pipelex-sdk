@@ -1017,6 +1017,41 @@ export type MethodErrorCode =
 export type IdempotencyErrorCode = "idempotency_key_in_use";
 
 /**
+ * The `code` of an `errors[]` entry when `updateOrganizationBranding` refuses a logo. The entry's
+ * `field` is the slot, `square_logo` or `wide_logo`, and its `detail` the sentence to show under
+ * that slot. The refusal itself is a `422` `validation_failed` naming both slots' failures at
+ * once, one entry per broken rule, and writes nothing:
+ *
+ * - `logo_not_an_upload`: the URI names a run's or a method's file, not a standalone upload.
+ * - `logo_not_found`: no such upload in the organization.
+ * - `logo_too_large`: the file is over 1 MiB.
+ * - `logo_type_not_accepted`: its bytes are not a PNG, JPEG, WebP or SVG image, whatever type
+ *   the upload declared.
+ * - `logo_unreadable`: a damaged raster, or an SVG whose shape cannot be read or that declares
+ *   entities or refers to external resources.
+ * - `logo_not_square`: a square logo whose longer side is more than 10% longer than its shorter.
+ * - `logo_too_small`: a raster square logo under 128 px on a side.
+ * - `logo_not_wide`: a wide logo less than one and a half times as wide as it is tall.
+ * - `logo_too_short`: a raster wide logo under 64 px tall.
+ *
+ * Two refusals of a logo URI come before any file is read and name the slot the same way, with
+ * the platform's own code: `400` `invalid_storage_uri` for a URI that is not a storage URI, and
+ * `403` `forbidden` for another organization's file. A colour's refusal names its key instead
+ * (`colors.action`, `dark_colors.header`) with pydantic's code. `FieldError.code` stays a
+ * `string`, since the platform adds codes.
+ */
+export type LogoRefusalCode =
+  | "logo_not_an_upload"
+  | "logo_not_found"
+  | "logo_too_large"
+  | "logo_type_not_accepted"
+  | "logo_unreadable"
+  | "logo_not_square"
+  | "logo_too_small"
+  | "logo_not_wide"
+  | "logo_too_short";
+
+/**
  * The last constructor argument of `ApiResponseError`: the error's `cause`, the hosted problem
  * document's typed members, the decoded document whole, the answer's headers, and whether the
  * request that met the answer may create a run.
@@ -1169,7 +1204,11 @@ export class ApiResponseError extends PipelexRequestError {
   public readonly providerMetadata: ProviderErrorMetadata | undefined;
   /** The body's `migration`: a pending configuration migration that explains the failure. */
   public readonly migration: MigrationErrorBlock | undefined;
-  /** The platform's field-level `errors[]` — one item per offending request field. */
+  /**
+   * The platform's field-level `errors[]` — one item per offending request field. A refused
+   * branding write names the logo slot or the colour key each entry is about in its `field`,
+   * with a `LogoRefusalCode` for a logo the platform measured.
+   */
   public readonly errors: FieldError[] | undefined;
   /**
    * The decoded problem document whole — every member, named or not, such as a failed run's

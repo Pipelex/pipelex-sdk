@@ -380,6 +380,49 @@ class IdempotencyErrorCode(StrEnum):
     second time. On a `start`, its `run_may_have_started` is `False`: this request started nothing."""
 
 
+class LogoRefusalCode(StrEnum):
+    """The `code` of an `errors[]` entry when `update_organization_branding` refuses a logo.
+
+    The entry's `field` is the slot, `square_logo` or `wide_logo`, and its `detail` the sentence to show
+    under that slot. The refusal itself is a `422` `validation_failed` naming both slots' failures at
+    once, one entry per broken rule, and writes nothing. `FieldError.code` stays a `str`, since the
+    platform adds codes; being a `StrEnum` each member equals its string (`match entry.code:` with
+    `case LogoRefusalCode.TOO_SMALL:`).
+
+    Two refusals of a logo URI come before any file is read and name the slot the same way, with the
+    platform's own code: `400` `invalid_storage_uri` for a URI that is not a storage URI, and `403`
+    `forbidden` for another organization's file. A colour's refusal names its key instead
+    (`colors.action`, `dark_colors.header`) with pydantic's code.
+    """
+
+    NOT_AN_UPLOAD = "logo_not_an_upload"
+    """The URI names a run's or a method's file, not a standalone upload."""
+
+    NOT_FOUND = "logo_not_found"
+    """No such upload in the organization."""
+
+    TOO_LARGE = "logo_too_large"
+    """The file is over 1 MiB."""
+
+    TYPE_NOT_ACCEPTED = "logo_type_not_accepted"
+    """Its bytes are not a PNG, JPEG, WebP or SVG image, whatever type the upload declared."""
+
+    UNREADABLE = "logo_unreadable"
+    """A damaged raster, or an SVG whose shape cannot be read or that declares entities or refers to external resources."""
+
+    NOT_SQUARE = "logo_not_square"
+    """A square logo whose longer side is more than 10% longer than its shorter."""
+
+    TOO_SMALL = "logo_too_small"
+    """A raster square logo under 128 px on a side."""
+
+    NOT_WIDE = "logo_not_wide"
+    """A wide logo less than one and a half times as wide as it is tall."""
+
+    TOO_SHORT = "logo_too_short"
+    """A raster wide logo under 64 px tall."""
+
+
 class ApiResponseError(PipelexRequestError, _MthdsApiResponseError):
     """A response that DID come back from the API and that the SDK cannot hand back as a result: a
     non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read — a body

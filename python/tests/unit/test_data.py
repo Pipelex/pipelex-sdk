@@ -637,3 +637,82 @@ class RunProgressBodies:
         "summary": "Waiting to start",
         "invocations": [],
     }
+
+
+class BrandingBodies:
+    """An organization's branding and the branding write's refusals, as the platform serializes them.
+
+    `BRANDED` and `UNBRANDED` are its `BrandingResponse`, which both branding routes answer; the refusals
+    are its problem documents, the logo ones carrying one `errors[]` entry per broken rule.
+    """
+
+    ORG_ID: ClassVar[str] = "0f6c2a4e-org"
+    SQUARE_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/assets/7d1e.png"
+    WIDE_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/assets/9a3c.svg"
+
+    SQUARE_LOGO: ClassVar[dict[str, Any]] = {
+        "uri": SQUARE_URI,
+        "sha256": "9b2f6d0c1e4a7b3c5d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e",
+        "content_type": "image/png",
+        "width": 512.0,
+        "height": 512.0,
+    }
+
+    #: An SVG's size is its viewBox's, which may be fractional.
+    WIDE_SVG_LOGO: ClassVar[dict[str, Any]] = {
+        "uri": WIDE_URI,
+        "sha256": "0d1c2b3a49586776a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f00f1e",
+        "content_type": "image/svg+xml",
+        "width": 240.5,
+        "height": 64.25,
+    }
+
+    #: A branded team: one logo, a partial light set, a partial dark set.
+    BRANDED: ClassVar[dict[str, Any]] = {
+        "org_id": ORG_ID,
+        "org_name": "Acme Corp",
+        "colors": {"action": "#14213d", "accent": "#fca311", "header": None},
+        "dark_colors": {"action": None, "accent": None, "header": "#e5e5e5"},
+        "square_logo": SQUARE_LOGO,
+        "wide_logo": None,
+    }
+
+    #: A personal workspace, or a team that set nothing: every colour and logo null.
+    UNBRANDED: ClassVar[dict[str, Any]] = {
+        "org_id": ORG_ID,
+        "org_name": "Ada's workspace",
+        "colors": {"action": None, "accent": None, "header": None},
+        "dark_colors": {"action": None, "accent": None, "header": None},
+        "square_logo": None,
+        "wide_logo": None,
+    }
+
+    SQUARE_TOO_SMALL: ClassVar[str] = "The square logo is 100 × 100 px; a square logo must be at least 128 px on each side."
+    WIDE_TOO_SHORT: ClassVar[str] = "The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall."
+
+    #: Both slots refused at once: one entry per broken rule, the problem's `detail` their sentences joined.
+    LOGOS_REFUSED: ClassVar[dict[str, Any]] = {
+        "type": "https://pipelex.com/errors/validation_failed",
+        "title": "Validation failed",
+        "status": 422,
+        "code": "validation_failed",
+        "detail": f"{SQUARE_TOO_SMALL} {WIDE_TOO_SHORT}",
+        "instance": "urn:pipelex:request:a9a249b93c024bf08ac9a5fd0704ea92",
+        "request_id": "a9a249b93c024bf08ac9a5fd0704ea92",
+        "errors": [
+            {"field": "square_logo", "code": "logo_too_small", "detail": SQUARE_TOO_SMALL},
+            {"field": "wide_logo", "code": "logo_too_short", "detail": WIDE_TOO_SHORT},
+        ],
+    }
+
+    #: A colour that is not `#rrggbb`, refused by the body's validation and named by its dotted key.
+    COLOR_REFUSED: ClassVar[dict[str, Any]] = {
+        "type": "https://pipelex.com/errors/validation_failed",
+        "title": "Validation failed",
+        "status": 422,
+        "code": "validation_failed",
+        "detail": "Request body failed validation. See `errors` for the per-field breakdown.",
+        "errors": [
+            {"field": "dark_colors.header", "code": "string_pattern_mismatch", "detail": "String should match pattern '^#[0-9a-fA-F]{6}$'"},
+        ],
+    }

@@ -1,6 +1,6 @@
 /**
  * Pipelex-product wire models — the snake_case JSON shapes the hosted-product
- * routes (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/billing/*`,
+ * routes (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/branding`, `/v1/billing/*`,
  * `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
  * `/v1/resolve-storage-url`, `/v1/upload`, `/v1/upload/grant`, `/v1/runs`) speak.
  *
@@ -575,6 +575,99 @@ export interface Membership {
 export interface MembershipsResponse {
   memberships: Membership[];
   active_org_feature_flags: string[];
+}
+
+// ── Organization branding (`/v1/branding`, `/v1/organizations/{id}/branding`) ──
+//
+// An organization may set up to two logos and two colour sets of three colours, which its shared
+// method apps and the apps scaffolded from the method-app template wear. Every member and every
+// API key reads it with `getBranding`; an admin writes it with `updateOrganizationBranding`. Both
+// answer the same `OrganizationBranding`. See `docs/organization-branding.md`.
+
+/**
+ * One colour set: the button, accent and header colours, each `#rrggbb` in lower case, or `null`
+ * when not set. The platform always sends all three keys.
+ */
+export interface BrandingColors {
+  /** The button colour. */
+  action: string | null;
+  /** The accent colour: links, the active tab, the brand ink. */
+  accent: string | null;
+  /** The header band's colour. */
+  header: string | null;
+}
+
+/**
+ * What the platform recorded about a logo when it accepted it.
+ *
+ * `content_type` is the type the platform read from the file's own bytes, never the type the
+ * upload declared: `image/png`, `image/jpeg`, `image/webp` or `image/svg+xml`. `width` and
+ * `height` are the image's size in pixels for a raster, oriented as a browser draws it, and for an
+ * SVG the width and height of its `viewBox` (else of its `width` and `height` in pixels), which
+ * may be fractional. Their ratio is the logo's shape, which sizes its box before the image loads.
+ */
+export interface LogoDescriptor {
+  /**
+   * The logo's `pipelex-storage://` URI, an upload of the organization, turned into bytes through
+   * `resolveStorageUrl`.
+   */
+  uri: string;
+  /** The SHA-256 of the logo's bytes, 64 lower-case hexadecimal digits: a cache key for them. */
+  sha256: string;
+  content_type: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * An organization's branding — what `getBranding` and `updateOrganizationBranding` answer.
+ *
+ * `colors` is the light set and `dark_colors` the dark one, used in dark mode only: a dark colour
+ * that is `null` falls back to the light colour of the same role, and a light one that is `null`
+ * to Pipelex's own palette. A logo is `null` when its slot is empty. A personal workspace, or a
+ * team that set nothing, answers every colour and logo `null`.
+ */
+export interface OrganizationBranding {
+  org_id: string;
+  /** The organization's display name, the wordmark a client shows when it has no logo. */
+  org_name: string;
+  colors: BrandingColors;
+  dark_colors: BrandingColors;
+  /** The square logo, for the organization menu and small headers. */
+  square_logo: LogoDescriptor | null;
+  /** The wide logo, at least one and a half times as wide as it is tall, for an app's header. */
+  wide_logo: LogoDescriptor | null;
+}
+
+/**
+ * Changes to one colour set. A key set to a colour sets it, a key set to `null` clears it, and a
+ * key left out keeps its value. A colour is `#rrggbb` in either case, stored in lower case; the
+ * platform refuses anything else with a `422` `validation_failed` whose `errors[]` entry names the
+ * key, such as `colors.action`.
+ */
+export interface BrandingColorsUpdate {
+  action?: string | null;
+  accent?: string | null;
+  header?: string | null;
+}
+
+/**
+ * The body of `updateOrganizationBranding`: every key optional, a value sets it, `null` clears it,
+ * and a key left out keeps its value, so `{}` writes nothing and answers the branding as it
+ * stands.
+ *
+ * - `colors` and `dark_colors` take a `BrandingColorsUpdate`, or `null` to clear all three
+ *   colours of that set.
+ * - `square_logo` and `wide_logo` take the `pipelex-storage://` URI of a file the organization
+ *   uploaded on its own (`requestUploadGrant` or `upload`), never a run's or a method's file, or
+ *   `null` to remove the logo. The platform reads and measures the file before it records it, and
+ *   erases the object a write replaces or clears.
+ */
+export interface OrganizationBrandingUpdate {
+  colors?: BrandingColorsUpdate | null;
+  dark_colors?: BrandingColorsUpdate | null;
+  square_logo?: string | null;
+  wide_logo?: string | null;
 }
 
 // ── Billing (`/v1/billing/*`) ────────────────────────────────────────────
