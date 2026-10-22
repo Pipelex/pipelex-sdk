@@ -893,7 +893,7 @@ describe("the @pipelex/sdk/upload entry", () => {
   it("bundles for the browser with nothing marked external", async () => {
     // esbuild fails to resolve a Node builtin on the browser platform, and a dynamic
     // import with a literal specifier is bundled like a static one — so a reachable
-    // `node:fs/promises` (upload.ts) or `undici` (artifacts.ts) fails this build.
+    // Node builtin or `undici` fails this build.
     // Type-only imports are erased, as they are by every consumer's bundler.
     const result = await build({
       entryPoints: [entry],

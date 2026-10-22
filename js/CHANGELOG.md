@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.48.1] - 2026-10-22
+
+### Fixed
+
+- **The main entry bundles for the browser**: `@pipelex/sdk` bundles for a browser or edge target with nothing marked external, so a Next.js app whose client code imports it renders under `next dev`, where 0.48.0 made Turbopack panic on `node:fs` and answer `500`. Listing a `directory`, `writeMethodTree`, `downloadArtifacts`, reading a path string and the artifact fetch's dispatcher reach `node:fs/promises`, `node:path`, `undici` and the `mthds` package's lister through the package's own `#node-host` import, which resolves to them under the `node` condition and to nothing under a browser's, outside Node a `directory` and `writeMethodTree` are refused with `RequestArgumentError`, a `directory` before the version handshake. Inside Node, each of these refusals keeps its class and verdict but says what happened: in a bundle resolved without the `node` condition, that condition and how to bundle with it; in a toolchain that cannot load `#node-host` because it does not resolve the `imports` map of `package.json`, such as Jest before 29.4, that the host could not be loaded, with the import's own error as its `cause`.
+- **The `.mthds` check hook keeps a method's secret files home**: the hook built by `npm run build:hook` screens every file of the method's tree before its validation sends anything, by the workshop's secret-guard rule, so a file whose name is a known secret file's or whose text holds a well-known key format, such as a `key.pem`, a `secrets.yaml` holding an API key or a cloud service-account export, no longer travels with the method, while a public `id_rsa.pub` or a prompt naming a private key's header in prose still does; since 0.48.0 the hook sent every file of the tree, and a `.gitignore` above the method's directory protects nothing in it. The method is validated without such a file, and the verdict comes with a note after its text, inside the block when the verdict is invalid, that names the first files kept home and counts the rest, each with why and never quoted, each path written so that no file name can break out of it; a validation that returns no verdict passes silently as before, with no note. When the file is a bundle or the `METHODS.toml` manifest, which every validation reads, nothing is sent and a non-blocking note says so in place of a verdict (`docs/hook-bundle.md`).
+
 ## [v0.48.0] - 2026-10-20
 
 ### Added

@@ -2,7 +2,9 @@
  * The method tree the hook's validate stage sends around an edited `.mthds` file: the edited
  * file's directory listed by the `mthds` package's lister, under the MTHDS standard's membership
  * rule and Manifest Discovery, held to the hook's caps, whose breach must read as `unavailable`
- * upstream, as must a tree the lister refuses and an edited file the tree does not hold.
+ * upstream, as must a tree the lister refuses and an edited file the tree does not hold. Every
+ * file is screened by the secret guard before anything is sent: one that looks like a secret
+ * stays home, and one every validation reads keeps the whole tree home.
  */
 
 import {
@@ -18,6 +20,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_GATHER_CAPS, gatherMethodTree } from "../../src/hooks/bundle-gather.js";
+import { treeDigestOf } from "../../src/method-trees.js";
+import {
+  fake,
+  NOTICE_BUNDLE,
+  NOTICE_TEMPLATE,
+  writeReportedCase,
+} from "../helpers/fake-secrets.js";
 
 let root: string;
 
@@ -62,6 +71,7 @@ describe("gatherMethodTree", () => {
       `domain = "edited"\n`,
     );
     expect(await result.tree.readFile("templates/invoice.docx")).toEqual(Buffer.from(TEMPLATE));
+    expect(result.withheld).toEqual([]);
   });
 
   it("leaves out what the membership rule excludes, a run's inputs file among them", async () => {
@@ -180,6 +190,158 @@ describe("gatherMethodTree", () => {
     } finally {
       // Restore perms so afterEach can remove the tree.
       chmodSync(locked, 0o700);
+    }
+  });
+});
+
+describe("gatherMethodTree's secret guard", () => {
+  it("keeps every file that looks like a secret home, and sends the bundle and its template", async () => {
+    const { dir, edited } = writeReportedCase(root);
+
+    const result = await gatherMethodTree(edited);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tree.files.map((file) => file.path)).toEqual(["main.mthds", "notice.html"]);
+    expect(result.withheld).toEqual([
+      { path: join(dir, "key.pem"), reason: "it holds a private key block (PEM)" },
+      {
+        path: join(dir, "secrets.yaml"),
+        reason: "it holds an AWS access key id and an Anthropic API key",
+      },
+      { path: join(dir, "service-account.json"), reason: "it holds a private key block (PEM)" },
+    ]);
+    // The tree sent is the listing without them, its digest that listing's, and it serves the
+    // bytes screened while refusing a withheld path.
+    expect(result.tree.digest).toBe(await treeDigestOf(result.tree.files));
+    expect(new TextDecoder().decode(await result.tree.readFile("main.mthds"))).toBe(NOTICE_BUNDLE);
+    expect(new TextDecoder().decode(await result.tree.readFile("notice.html"))).toBe(
+      NOTICE_TEMPLATE,
+    );
+    await expect(result.tree.readFile("key.pem")).rejects.toThrow("The tree holds no file");
+  });
+
+  it("keeps home a file under an innocuous name whose text holds a private key block", async () => {
+    const edited = put("main.mthds", NOTICE_BUNDLE);
+    put("notice.html", NOTICE_TEMPLATE);
+    put("docs/setup-notes.txt", `Paste this into the console when asked:\n${fake.pem}\n`);
+
+    const result = await gatherMethodTree(edited);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tree.files.map((file) => file.path)).toEqual(["main.mthds", "notice.html"]);
+    expect(result.withheld).toEqual([
+      {
+        path: join(root, "docs", "setup-notes.txt"),
+        reason: "it holds a private key block (PEM)",
+      },
+    ]);
+  });
+
+  it.each([
+    { what: "the edited bundle", path: "main.mthds" },
+    { what: "another bundle of the tree", path: "shared/helpers.mthds" },
+    { what: "the manifest", path: "METHODS.toml" },
+  ])(
+    "refuses the whole tree when $what looks like a secret, naming every such file",
+    async ({ path }) => {
+      if (path === "METHODS.toml") put("METHODS.toml", `# key = "${fake.anthropic}"\n`);
+      const edited = put("main.mthds", NOTICE_BUNDLE);
+      if (path !== "METHODS.toml") {
+        put(path, `${NOTICE_BUNDLE}\n[pipe.ask]\nprompt = "Use the key ${fake.anthropic}"\n`);
+      }
+      put("notice.html", NOTICE_TEMPLATE);
+      put("key.pem", fake.pem);
+
+      const result = await gatherMethodTree(edited);
+
+      expect(result).toEqual({
+        ok: false,
+        reason: "secret",
+        root,
+        // The file every validation reads leads, so a note naming the first few names it.
+        withheld: [
+          { path: join(root, ...path.split("/")), reason: "it holds an Anthropic API key" },
+          { path: join(root, "key.pem"), reason: "it holds a private key block (PEM)" },
+        ],
+      });
+    },
+  );
+
+  it("sends a bundle whose prompt names a private key block's header in prose", async () => {
+    const header = ["-----BEGIN ", "PRIVATE KEY-----"].join("");
+    const edited = put(
+      "main.mthds",
+      `${NOTICE_BUNDLE}\n[pipe.screen]\ntype = "PipeLLM"\nprompt = "If the text holds a line reading ${header}, say that a key was pasted and never repeat it."\n`,
+    );
+
+    const result = await gatherMethodTree(edited);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tree.files.map((file) => file.path)).toEqual(["main.mthds"]);
+    expect(result.withheld).toEqual([]);
+  });
+
+  it("names the files through the link the caller reached the method's directory by", async ({
+    skip,
+  }) => {
+    skip(process.platform === "win32");
+    writeReportedCase(root);
+    const elsewhere = mkdtempSync(join(tmpdir(), "hook-gather-link-"));
+    try {
+      // A link above the tree's root: the caller's path reaches the root by the same steps.
+      const project = join(elsewhere, "project");
+      symlinkSync(root, project);
+      const shownDir = join(project, "methods", "foo");
+
+      const result = await gatherMethodTree(join(shownDir, "main.mthds"));
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.withheld.map((file) => file.path)).toEqual(
+        ["key.pem", "secrets.yaml", "service-account.json"].map((name) => join(shownDir, name)),
+      );
+
+      writeFileSync(join(root, "methods", "foo", "main.mthds"), `# ${fake.anthropic}\n`);
+      const refused = await gatherMethodTree(join(shownDir, "main.mthds"));
+      expect(refused).toMatchObject({ ok: false, reason: "secret", root: shownDir });
+      if (refused.ok || refused.reason !== "secret") return;
+      expect(refused.withheld[0]?.path).toBe(join(shownDir, "main.mthds"));
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it("names the files by their real paths when the link points into the tree", async ({ skip }) => {
+    skip(process.platform === "win32");
+    put("METHODS.toml", "");
+    put("methods/foo/main.mthds", NOTICE_BUNDLE);
+    put("methods/foo/key.pem", fake.pem);
+    const elsewhere = mkdtempSync(join(tmpdir(), "hook-gather-link-"));
+    try {
+      // The link names a directory inside the tree rooted at the manifest, so the caller's path
+      // has no spelling of that root, and the real one is shown.
+      const linked = join(elsewhere, "foo");
+      symlinkSync(join(root, "methods", "foo"), linked);
+
+      const result = await gatherMethodTree(join(linked, "main.mthds"));
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.tree.files.map((file) => file.path)).toEqual([
+        "METHODS.toml",
+        "methods/foo/main.mthds",
+      ]);
+      expect(result.withheld).toEqual([
+        {
+          path: join(root, "methods", "foo", "key.pem"),
+          reason: "it holds a private key block (PEM)",
+        },
+      ]);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
     }
   });
 });

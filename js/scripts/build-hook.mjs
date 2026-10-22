@@ -57,6 +57,25 @@ const sdkSha = (() => {
   }
 })();
 
+// The package's own subpath imports (`#node-host`), each bundled from the source of its Node
+// target: the hook runs in Node, and is bundled from `src/`, so it takes the Node host from the
+// same sources rather than from whatever `dist/` last built (`src/node-host.ts`).
+const manifest = readJson(resolve(repoRoot, "package.json"));
+const sourceImports = Object.fromEntries(
+  Object.entries(manifest.imports).map(([name, targets]) => [
+    name,
+    resolve(repoRoot, targets.node.replace(/^\.\/dist\//, "src/").replace(/\.js$/, ".ts")),
+  ]),
+);
+const sourceImportsPlugin = {
+  name: "source-imports",
+  setup(builder) {
+    builder.onResolve({ filter: /^#/ }, (args) =>
+      args.path in sourceImports ? { path: sourceImports[args.path] } : undefined,
+    );
+  },
+};
+
 const banner = `// check.mjs — .mthds PostToolUse hook (lint/format local via WASM, validate via Pipelex API)
 // GENERATED FILE — do not edit. Rebuild with \`npm run build:hook\` in the js/ directory of Pipelex/pipelex-sdk.
 // Provenance: @pipelex/sdk ${sdkVersion} (${sdkSha}) + @pipelex/tools-wasm ${toolsWasmProvenance}`;
@@ -69,9 +88,10 @@ await build({
   target: "node22",
   format: "esm",
   // `undici` is reached only by the artifact fetch path (`src/artifacts.ts`), which
-  // the hook never runs; it is loaded there by a dynamic import, so leaving it
-  // external keeps the bundle from inlining the whole HTTP client for nothing.
+  // the hook never runs; the Node host loads it there by a dynamic import, so leaving
+  // it external keeps the bundle from inlining the whole HTTP client for nothing.
   external: ["undici"],
+  plugins: [sourceImportsPlugin],
   ...(toolsWasmAlias ? { alias: toolsWasmAlias } : {}),
   banner: { js: banner },
   legalComments: "none",

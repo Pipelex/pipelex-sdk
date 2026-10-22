@@ -46,7 +46,9 @@ docs/               # Architecture and surface documentation
 
 ## Architecture
 
-The dependency direction is strictly one-way: `@pipelex/sdk → mthds`, and only through the published `mthds/protocol` subpath — never a deep import into `mthds` internals, and `mthds` must never import from `@pipelex/sdk`. The one exception is `src/method-trees.ts`, which loads the `mthds` root entry's tree lister by a dynamic `import("mthds")` only when a caller gives a `directory`, so nothing that imports the barrel statically loads that entry, which reads Node's file system. `dependency-cruiser` enforces both.
+The dependency direction is strictly one-way: `@pipelex/sdk → mthds`, and only through the published `mthds/protocol` subpath — never a deep import into `mthds` internals, and `mthds` must never import from `@pipelex/sdk`. The one exception is the Node host, `src/node-host/node.ts`, which loads the `mthds` root entry's tree lister by a dynamic `import("mthds")` only when a caller gives a `directory`. `dependency-cruiser` enforces both.
+
+**The barrel bundles for the browser with nothing marked external.** What only Node has (a Node built-in, `undici`, the `mthds` root entry) is loaded by the Node host alone, which the rest of the SDK reaches through `loadNodeHost()` (`src/node-host.ts`) and the package's own `#node-host` import, resolved by the `imports` map of `package.json` to `dist/node-host/node.js` under `node` and to `dist/node-host/unavailable.js` everywhere else, built from `src/node-host/node.ts` and `src/node-host/unavailable.ts`. Never import a Node built-in or `undici` from another module of the barrel's graph: `dependency-cruiser` refuses it, and `tests/browser-bundle.test.ts` bundles the built package for the browser and fails on it (`docs/architecture.md`, "The Node host").
 
 The client re-implements the official MTHDS protocol routes using MTHDS *types* (from `mthds/protocol`); it does not delegate to the `mthds` package's protocol client. This keeps route shapes pinned to the standard so they can't silently diverge.
 

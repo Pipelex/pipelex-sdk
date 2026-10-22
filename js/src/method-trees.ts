@@ -7,13 +7,14 @@
  *
  * The wire types (`MethodTreeSource`, `BlobRef`, `MissingBlob` and the rest) are the standard's,
  * imported from `mthds/protocol`. A directory is listed by `mthds`'s `listMethodTree`, the
- * standard's lister with its membership rule, which this module loads by a dynamic import when a
- * directory is given, so the SDK's static import graph keeps no Node built-in. The choice between
- * inline and by hash follows `mthds`'s `MthdsApiClient` rule exactly, but its helpers are not
- * exported on a subpath free of Node built-ins, so this module carries its own copy of them: the
- * same threshold, the same weighing of the inline map, the same text-or-Base64 choice per file.
+ * standard's lister with its membership rule, which the Node host (`node-host.ts`) loads when a
+ * directory is given, so the SDK's graph, static and dynamic, keeps no Node built-in for a bundler
+ * building for the browser to follow. The choice between inline and by hash follows `mthds`'s
+ * `MthdsApiClient` rule exactly, but its helpers are not exported on a subpath free of Node
+ * built-ins, so this module carries its own copy of them: the same threshold, the same weighing of
+ * the inline map, the same text-or-Base64 choice per file.
  * SHA-256 is Web Crypto's, and Base64 is written here. Only `writeMethodTreeTo` and
- * `listDirectoryTree` need Node, which each loads when called.
+ * `listDirectoryTree` need Node, which each gets from the Node host when called.
  */
 
 import { parseJsonBody, readProblemBody } from "mthds/protocol";
@@ -32,6 +33,7 @@ import {
   RequestArgumentError,
   type MethodFileTransferCode,
 } from "./errors.js";
+import { absenceCause, loadNodeHost, type NodeHost, type TreeLister } from "./node-host.js";
 import type { SavedMethodFile } from "./product-models.js";
 import { throwIfAborted } from "./runs.js";
 
@@ -527,10 +529,31 @@ export interface ListedMethodTree extends MethodTreeSource {
 }
 
 /**
+ * The `mthds` package's tree lister, to list `directory` for `call`, loaded through the Node host;
+ * where the host could not be had, outside Node or inside it, a `RequestArgumentError` naming
+ * `call` and saying why. The client asks for it before the version handshake of a call given a
+ * `directory`, so that refusal comes before any request.
+ */
+export async function treeListerFor(directory: string, call: string): Promise<TreeLister> {
+  const loaded = await loadNodeHost();
+  if (loaded.host === null) {
+    throw new RequestArgumentError(
+      loaded.reason === null
+        ? `${call}() got a directory, which only Node can list. In the browser or an edge ` +
+            "runtime, give the method's tree as contents, tree or files instead."
+        : `${call}() cannot list the directory '${directory}': ${loaded.reason}`,
+      absenceCause(loaded),
+    );
+  }
+  return loaded.host.loadTreeLister();
+}
+
+/**
  * The tree of the method directory `directory`, listed by the `mthds` package's `listMethodTree`
  * under the MTHDS standard's membership rule and Manifest Discovery, stopping at the first of
  * `limits` it breaches, before any file is hashed. A run's inputs file is never in it. Node only:
- * `mthds`'s root entry, which reads the file system, is loaded by this call alone.
+ * `mthds`'s root entry, which reads the file system, is loaded through the Node host by this call
+ * alone, and where the host could not be had the call is refused as `treeListerFor` refuses it.
  *
  * Throws `RequestArgumentError` naming `call` when the directory cannot be listed as a tree, the
  * `mthds` package's `MethodTreeError` as its `cause` with its `code` (`not_found`,
@@ -542,7 +565,7 @@ export async function listDirectoryTree(
   limits: MethodTreeLimits,
   call: string,
 ): Promise<ListedMethodTree> {
-  const { listMethodTree, MethodTreeError } = await import("mthds");
+  const { listMethodTree, MethodTreeError } = await treeListerFor(directory, call);
   try {
     return await listMethodTree(directory, { limits });
   } catch (err) {
@@ -717,7 +740,8 @@ export function methodFileTransferCodeOfStatus(status: number): MethodFileTransf
 
 /**
  * Write a saved tree to disk, each file of `files` at its tree path under `destination`; see
- * `PipelexApiClient.writeMethodTree`. Node only: the file system modules are loaded when it runs.
+ * `PipelexApiClient.writeMethodTree`. Node only: the file system comes from the Node host when it
+ * runs, and outside Node the call is refused with `RequestArgumentError` before any download.
  */
 export async function writeMethodTreeTo(
   files: readonly SavedMethodFile[],
@@ -725,8 +749,17 @@ export async function writeMethodTreeTo(
   options: { timeoutMs: number },
 ): Promise<void> {
   refuseUnwritableListing(files);
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
+  const loaded = await loadNodeHost();
+  if (loaded.host === null) {
+    throw new RequestArgumentError(
+      loaded.reason === null
+        ? "writeMethodTree() writes to a file system, which only Node has. In the browser or an " +
+            "edge runtime, download each file of the listing from its url instead."
+        : `writeMethodTree() cannot write to the file system: ${loaded.reason}`,
+      { verdict: { errorDomain: "config", retryable: false }, ...absenceCause(loaded) },
+    );
+  }
+  const { fs, path } = loaded.host;
   const target = path.resolve(destination);
   await refuseOccupiedDestination(fs, target);
   const parent = path.dirname(target);
@@ -987,7 +1020,7 @@ export function pathCollisions(treePaths: readonly string[]): string[] {
   return [...colliding].sort(compareUtf8);
 }
 
-type NodeFsPromises = typeof import("node:fs/promises");
+type NodeFsPromises = NodeHost["fs"];
 
 /** Refuse a destination that exists and is not an empty directory. Throws `RequestArgumentError`. */
 async function refuseOccupiedDestination(fs: NodeFsPromises, target: string): Promise<void> {

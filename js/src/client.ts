@@ -146,6 +146,7 @@ import {
   redactSignedLinks,
   sha256Hex,
   treeShapeFault,
+  treeListerFor,
   treeTotalSize,
   uniqueBlobs,
   uploadBlob,
@@ -2744,9 +2745,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * The links expire about fifteen minutes after the read that served them: write the tree soon
    * after reading the method, and read it again for fresh links when a download is refused.
    *
-   * Throws `RequestArgumentError` before any download when the destination exists and is not an
-   * empty directory, or the listing holds a path that is not a tree path, the same path twice, or
-   * paths that collide once case-folded or where one names a directory of another;
+   * Throws `RequestArgumentError` before any download when it runs outside Node, when the
+   * destination exists and is not an empty directory, or when the listing holds a path that is not
+   * a tree path, the same path twice, or paths that collide once case-folded or where one names a
+   * directory of another;
    * `MethodFileTransferError` when a file could not be downloaded, or its bytes are not the file
    * listed, and nothing is left under the destination.
    */
@@ -2761,7 +2763,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * The method's tree a call was given, made ready to prepare: a `directory` listed, `contents`
    * turned into a tree, a `tree` checked, `files` kept as given; `undefined` when the input gives
    * none. Two forms are refused with `RequestArgumentError` before any request, naming `call`, and
-   * so are a `directory` that is not a string and a `tree` that is not a listed tree. A
+   * so are a `directory` that is not a string, a `directory` where the Node host cannot be had
+   * (outside Node, or in a toolchain that cannot load it), and a `tree` that is not a listed tree. A
    * `directory` is listed by the `mthds` package's lister under the limits the deployment
    * announces, so a tree past one is refused while it is listed, before any file is hashed; the
    * handshake that announces them is asked under `signal`. It is listed once per call: a request
@@ -2783,6 +2786,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (given[0] === "directory") {
       const directory: unknown = input.directory;
       if (typeof directory !== "string") throw directoryRefusal(call);
+      // A request aborted already rejects with the caller's reason, whatever the runtime. Then,
+      // where the Node host cannot be had, the directory is refused before the handshake, so a
+      // failed or refused handshake cannot hide that refusal.
+      throwIfAborted(signal);
+      await treeListerFor(directory, call);
       throwIfAborted(signal);
       const limits = listerLimitsOf(announcedTreeLimits(await this.cachedVersion(signal)));
       throwIfAborted(signal);

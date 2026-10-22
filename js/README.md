@@ -225,7 +225,7 @@ const client = new PipelexApiClient({ appInfo: { name: "acme-invoicer", version:
 
 ### Uploading from a browser
 
-A browser page that holds a file but not the API key can still store it: the server that holds the key asks for an upload grant, and the page sends the file straight to storage with it. The file never crosses your server or the API gateway, so it can be as large as the service's own limit. The page imports `@pipelex/sdk/upload`, the browser-safe entry, which bundles with no Node builtin to mark external; the main `@pipelex/sdk` entry is Node-first.
+A browser page that holds a file but not the API key can still store it: the server that holds the key asks for an upload grant, and the page sends the file straight to storage with it. The file never crosses your server or the API gateway, so it can be as large as the service's own limit. The page imports `@pipelex/sdk/upload`, which carries only the grant's sender, its types and its errors. Both entries bundle for the browser with nothing marked external, so a page may also import the main entry's error classes and types, while the client itself stays on the server that holds the key.
 
 ```ts
 // On the server, which holds the key:
