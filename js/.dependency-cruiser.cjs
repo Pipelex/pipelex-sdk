@@ -34,7 +34,8 @@
  * it. Type-only imports are erased from the build, so they are let through.
  *
  * The command (`src/cli.ts`, `src/cli/`) and the hook (`src/hooks/`) are Node programs that no
- * module of the barrel imports, so they use Node directly.
+ * other module imports (`no-import-of-the-command`, `no-import-of-the-hook`), so they use Node
+ * directly.
  *
  * The `pipelex-sdk` command (`src/cli.ts`, the executable, and `src/cli/`) sits at the
  * TOP of the graph, the other way round: nothing in the SDK imports it, so a library user
@@ -106,6 +107,14 @@ module.exports = {
         "The `pipelex-sdk` command sits at the top of the graph: no module of the SDK imports `src/cli.ts` or `src/cli/`.",
       from: { path: "^src/", pathNot: "^src/cli(\\.ts$|/)" },
       to: { path: "^src/cli(\\.ts$|/)" },
+    },
+    {
+      name: "no-import-of-the-hook",
+      severity: "error",
+      comment:
+        "The `.mthds` check hook (`src/hooks/`, entered by `claude-mthds-check.ts`) sits at the top of the graph as the command does: it uses Node directly, so no module outside it imports it, or the barrel's graph would reach Node.",
+      from: { path: "^src/", pathNot: "^src/hooks/" },
+      to: { path: "^src/hooks/" },
     },
     {
       name: "command-uses-the-public-surface",
