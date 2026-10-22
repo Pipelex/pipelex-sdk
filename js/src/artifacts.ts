@@ -721,13 +721,13 @@ function requirePositive(name: string, value: number): void {
  * `bodyTimeout` — the per-stall bounds that the overall `AbortSignal` budget
  * does not give: an abort cancels the request, but a socket stalled mid-body
  * is only reclaimed by the dispatcher's own timers. Null outside Node, or when
- * `undici` cannot be loaded, in which case the fetch runs on the platform's
- * default dispatcher with only the budget applied.
+ * the Node host or `undici` cannot be loaded, in which case the fetch runs on
+ * the platform's default dispatcher with only the budget applied.
  */
 async function dispatcherFor(timeoutMs: number): Promise<Dispatcher | null> {
-  const host = await loadNodeHost();
-  if (host === null) return null;
   try {
+    const host = await loadNodeHost();
+    if (host === null) return null;
     const Agent = await host.loadAgent();
     return new Agent({ headersTimeout: timeoutMs, bodyTimeout: timeoutMs });
   } catch {
