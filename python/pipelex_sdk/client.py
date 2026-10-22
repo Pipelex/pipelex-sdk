@@ -2953,7 +2953,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 `field` being `square_logo` or `wide_logo` and its `detail` the sentence to show under that
                 slot: `400` `invalid_storage_uri` for a URI that is not a storage URI, `403` `forbidden`
                 for another organization's file, and `422` `validation_failed` with a `LogoRefusalCode` per
-                broken rule for a file the platform refused.
+                broken rule for a file the platform refused. A failure of the platform's storage while reading
+                or copying a logo is a `500` `storage_backend_failed`, retryable.
         """
         endpoint = f"organizations/{_id_path_segment(org_id, call='update_organization_branding', what=_ORG_ID_ARGUMENT)}/branding"
         body = update.model_dump(mode="json", exclude_unset=True)

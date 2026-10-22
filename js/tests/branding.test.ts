@@ -300,30 +300,79 @@ describe("updateOrganizationBranding", () => {
     expect(err.errors?.find((entry) => entry.field === "wide_logo")?.code).toBe(code);
   });
 
+  /** The platform's sentence for a URI a slot may not take (`not_an_upload_refusal`). */
+  const notAnUpload = (slot: string) =>
+    `The ${slot} must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) or the URI the ${slot} already has.`;
+
   it.each([
     [
       "an SVG carrying active content",
+      "wide_logo",
       WIDE_UPLOAD_URI,
       "logo_active_content",
-      "The wide logo is an SVG that carries active content (a <script> element), which a logo may not hold.",
+      "The wide logo is an SVG that carries active content, which a logo may not: a <script> element.",
     ],
     [
-      "a branding copy its slot does not hold",
+      "a branding copy no slot holds",
+      "wide_logo",
       `pipelex-storage://${ORG_ID}/branding/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.svg`,
       "logo_not_an_upload",
-      "The wide logo must be a file uploaded for it (pipelex-storage://<organization>/assets/<file>), not a file that belongs to a run or a method.",
+      notAnUpload("wide logo"),
     ],
-  ])("refuses %s under the wide logo's slot", async (_topic, uri, code, detail) => {
+    [
+      "the other slot's logo, which cannot move by its URI",
+      "wide_logo",
+      SQUARE_LOGO_URI,
+      "logo_not_an_upload",
+      notAnUpload("wide logo"),
+    ],
+    [
+      "a raster past the pixel cap",
+      "square_logo",
+      SQUARE_UPLOAD_URI,
+      "logo_unreadable",
+      "The square logo looks like a PNG image but cannot be read: at 5,000 × 5,000 px it has more than the 16,777,216 pixels (4096 × 4096) a logo may have.",
+    ],
+    [
+      "a raster cut short",
+      "square_logo",
+      SQUARE_UPLOAD_URI,
+      "logo_unreadable",
+      "The square logo looks like a JPEG image but cannot be read: the file is damaged or incomplete.",
+    ],
+  ])("refuses %s under its slot", async (_topic, field, uri, code, detail) => {
     const client = makeClient();
-    const errors = [{ field: "wide_logo", code, detail }];
+    const errors = [{ field, code, detail }];
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       problemResponse(422, problem("validation_failed", "Validation failed", detail, errors)),
     );
 
-    const err = await caught(client.updateOrganizationBranding(ORG_ID, { wide_logo: uri }));
+    const err = await caught(client.updateOrganizationBranding(ORG_ID, { [field]: uri }));
 
     expect(err.code).toBe("validation_failed");
     expect(err.errors).toEqual(errors);
+  });
+
+  it("hands back a storage failure while reading or copying a logo as a retryable 500", async () => {
+    const client = makeClient();
+    const detail = "Storage backend failure while storing a logo.";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse(500, {
+        ...problem("storage_backend_failed", "Storage backend failure", detail),
+        error_domain: "runtime",
+        retryable: true,
+      }),
+    );
+
+    const err = await caught(
+      client.updateOrganizationBranding(ORG_ID, { square_logo: SQUARE_UPLOAD_URI }),
+    );
+
+    expect(err.status).toBe(500);
+    expect(err.code).toBe("storage_backend_failed");
+    expect(err.errorDomain).toBe("runtime");
+    expect(err.retryable).toBe(true);
+    expect(err.errors).toBeUndefined();
   });
 
   it("names a refused colour by its dotted key", async () => {
@@ -360,7 +409,7 @@ describe("updateOrganizationBranding", () => {
       400,
       "invalid_storage_uri",
       "Invalid storage URI",
-      "The square logo is not a valid storage URI: not a pipelex-storage:// URI.",
+      "The square logo is not a valid storage URI: Storage URI must start with pipelex-storage://",
     ],
     [403, "forbidden", "Forbidden", "The square logo is a file of a different organization."],
   ])(
@@ -383,7 +432,12 @@ describe("updateOrganizationBranding", () => {
   );
 
   it.each([
-    [403, "role_not_permitted", "Role not permitted", "Only an admin can change the branding."],
+    [
+      403,
+      "role_not_permitted",
+      "Role not permitted",
+      "Your role in this organization is member: changing the organization's branding needs the admin role.",
+    ],
     [
       409,
       "conflict",

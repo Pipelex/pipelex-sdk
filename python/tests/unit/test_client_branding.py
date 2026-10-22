@@ -224,32 +224,47 @@ class TestClientBranding:
         assert under_square == [BrandingBodies.SQUARE_TOO_SMALL]
 
     @pytest.mark.parametrize(
-        ("uri", "code", "detail"),
+        ("field", "uri", "code", "detail"),
         [
-            pytest.param(BrandingBodies.WIDE_UPLOAD_URI, LogoRefusalCode.ACTIVE_CONTENT, BrandingBodies.ACTIVE_CONTENT, id="svg-active-content"),
-            pytest.param(BrandingBodies.STRAY_BRANDING_URI, LogoRefusalCode.NOT_AN_UPLOAD, BrandingBodies.NOT_AN_UPLOAD, id="stray-branding-copy"),
+            pytest.param(
+                "wide_logo", BrandingBodies.WIDE_UPLOAD_URI, LogoRefusalCode.ACTIVE_CONTENT, BrandingBodies.ACTIVE_CONTENT, id="svg-active-content"
+            ),
+            pytest.param(
+                "wide_logo", BrandingBodies.STRAY_BRANDING_URI, LogoRefusalCode.NOT_AN_UPLOAD, BrandingBodies.NOT_AN_UPLOAD, id="stray-branding-copy"
+            ),
+            # A logo cannot move between slots by its URI: the square logo's copy is refused in the wide slot.
+            pytest.param(
+                "wide_logo", BrandingBodies.SQUARE_LOGO_URI, LogoRefusalCode.NOT_AN_UPLOAD, BrandingBodies.NOT_AN_UPLOAD, id="other-slot-logo"
+            ),
+            pytest.param(
+                "square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.UNREADABLE, BrandingBodies.PIXEL_CAP, id="raster-past-pixel-cap"
+            ),
+            pytest.param(
+                "square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.UNREADABLE, BrandingBodies.CUT_SHORT, id="raster-cut-short"
+            ),
         ],
     )
-    def test_a_refused_wide_logo_is_named_under_its_slot(
+    def test_a_refused_logo_is_named_under_its_slot(
         self,
         api_client: PipelexAPIClient,
         wire_response: ResponseBuilder,
         patch_send: SendPatcher,
+        field: str,
         uri: str,
         code: LogoRefusalCode,
         detail: str,
     ) -> None:
-        errors = [{"field": "wide_logo", "code": code, "detail": detail}]
+        errors = [{"field": field, "code": code, "detail": detail}]
         patch_send(
             api_client, wire_response(422, json_body=_problem(code="validation_failed", title="Validation failed", detail=detail, errors=errors))
         )
 
         with pytest.raises(ApiResponseError) as exc_info:
-            asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(wide_logo=uri)))
+            asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate.model_validate({field: uri})))
 
         assert exc_info.value.code == "validation_failed"
         assert exc_info.value.errors is not None
-        assert [(entry.field, entry.code, entry.detail) for entry in exc_info.value.errors] == [("wide_logo", code, detail)]
+        assert [(entry.field, entry.code, entry.detail) for entry in exc_info.value.errors] == [(field, code, detail)]
 
     def test_a_refused_colour_is_named_by_its_dotted_key(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -271,7 +286,7 @@ class TestClientBranding:
                 400,
                 "invalid_storage_uri",
                 "Invalid storage URI",
-                "The square logo is not a valid storage URI: not a pipelex-storage:// URI.",
+                "The square logo is not a valid storage URI: Storage URI must start with pipelex-storage://",
                 id="invalid-storage-uri",
             ),
             pytest.param(403, "forbidden", "Forbidden", "The square logo is a file of a different organization.", id="another-organization"),
@@ -301,7 +316,13 @@ class TestClientBranding:
     @pytest.mark.parametrize(
         ("status", "code", "title", "detail"),
         [
-            pytest.param(403, "role_not_permitted", "Role not permitted", "Only an admin can change the branding.", id="not-an-admin"),
+            pytest.param(
+                403,
+                "role_not_permitted",
+                "Role not permitted",
+                "Your role in this organization is member: changing the organization's branding needs the admin role.",
+                id="not-an-admin",
+            ),
             pytest.param(
                 409,
                 "conflict",
@@ -330,4 +351,23 @@ class TestClientBranding:
         assert exc_info.value.status == status
         assert exc_info.value.code == code
         assert exc_info.value.server_message == detail
+        assert exc_info.value.errors is None
+
+    def test_a_storage_failure_while_handling_a_logo_is_a_retryable_500(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        body = {
+            **_problem(code="storage_backend_failed", title="Storage backend failure", detail="Storage backend failure while storing a logo."),
+            "error_domain": "runtime",
+            "retryable": True,
+        }
+        patch_send(api_client, wire_response(500, json_body=body))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(square_logo=BrandingBodies.SQUARE_UPLOAD_URI)))
+
+        assert exc_info.value.status == 500
+        assert exc_info.value.code == "storage_backend_failed"
+        assert exc_info.value.error_domain == "runtime"
+        assert exc_info.value.retryable is True
         assert exc_info.value.errors is None

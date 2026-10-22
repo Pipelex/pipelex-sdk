@@ -615,17 +615,19 @@ class LogoDescriptor(BaseModel):
 
     `content_type` is the type the platform read from the file's own bytes, never the type the upload
     declared: `image/png`, `image/jpeg`, `image/webp` or `image/svg+xml`. `width` and `height` are the
-    image's size in pixels for a raster, oriented as a browser draws it, and for an SVG the width and
-    height of its `viewBox` (else of its `width` and `height` in pixels), which may be fractional. Their
-    ratio is the logo's shape, which sizes its box before the image loads.
+    image's size in pixels for a raster, oriented as a browser draws it, and for an SVG its `width` and
+    `height` in pixels when both are in absolute units, which is the size a browser draws it at, else the
+    width and height of its `viewBox`; an SVG's may be fractional. Their ratio is the logo's shape, which
+    sizes its box before the image loads.
     """
 
     model_config = ConfigDict(extra="allow")
 
     uri: str
     """The platform's own copy of the logo, `pipelex-storage://<org_id>/branding/<uuid>.<ext>`, never the upload
-    URI the write sent: the platform copies a logo it accepts. Sending it back unchanged in its slot keeps the
-    logo. `resolve_storage_url` turns it into a short-lived link to its bytes."""
+    URI the write sent: the platform copies a logo it accepts, under a fresh uuid each time, so the same bytes
+    attached again get a new URI. Sending it back unchanged in its slot keeps the logo. `resolve_storage_url`
+    turns it into a short-lived link to its bytes."""
 
     sha256: str
     """The SHA-256 of the logo's bytes, 64 lower-case hexadecimal digits: a cache key for them."""
@@ -685,9 +687,11 @@ class OrganizationBrandingUpdate(BaseModel):
       that set.
     - `square_logo` and `wide_logo` take the `pipelex-storage://` URI of a file the organization
       uploaded on its own (`upload`) to set a new logo, the `uri` the branding answers for that slot to
-      keep it, or `None` to remove it. Any other URI, such as a run's or a method's file, is refused as
-      `logo_not_an_upload`. The platform reads and measures an upload before it accepts it, keeps its
-      own copy under `branding/`, whose URI it answers, and erases the logo a write replaces or clears.
+      keep it, or `None` to remove it. Any other URI, a run's or a method's file, a stale `branding/` copy
+      or the other slot's logo, is refused as `logo_not_an_upload`, so a logo cannot move between slots by
+      its URI. The platform reads and measures an upload before it accepts it, keeps its own copy under
+      `branding/`, whose URI it answers, and erases the copy a write replaces or clears; the upload is left
+      as it is.
     """
 
     model_config = ConfigDict(extra="forbid")

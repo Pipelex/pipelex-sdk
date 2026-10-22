@@ -713,10 +713,16 @@ class BrandingBodies:
         ],
     }
 
-    ACTIVE_CONTENT: ClassVar[str] = "The wide logo is an SVG that carries active content (a <script> element), which a logo may not hold."
+    #: The platform's own sentences, from `services/logo_inspection.py`.
+    ACTIVE_CONTENT: ClassVar[str] = "The wide logo is an SVG that carries active content, which a logo may not: a <script> element."
     NOT_AN_UPLOAD: ClassVar[str] = (
-        "The wide logo must be a file uploaded for it (pipelex-storage://<organization>/assets/<file>), not a file that belongs to a run or a method."
+        "The wide logo must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) or the URI the wide logo already has."
     )
+    PIXEL_CAP: ClassVar[str] = (
+        "The square logo looks like a PNG image but cannot be read: "
+        "at 5,000 × 5,000 px it has more than the 16,777,216 pixels (4096 × 4096) a logo may have."
+    )
+    CUT_SHORT: ClassVar[str] = "The square logo looks like a JPEG image but cannot be read: the file is damaged or incomplete."
 
     #: A colour that is not `#rrggbb`, refused by the body's validation and named by its dotted key.
     COLOR_REFUSED: ClassVar[dict[str, Any]] = {

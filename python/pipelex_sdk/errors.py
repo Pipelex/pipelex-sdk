@@ -396,8 +396,9 @@ class LogoRefusalCode(StrEnum):
     """
 
     NOT_AN_UPLOAD = "logo_not_an_upload"
-    """The URI is not a standalone upload of the organization, such as a run's or a method's file or a
-    `branding/` copy the branding does not answer."""
+    """The URI is neither a new upload of the organization nor the `uri` the slot already holds: a run's or a
+    method's file, a stale `branding/` copy, or the other slot's logo, since a logo cannot move between slots by
+    its URI."""
 
     NOT_FOUND = "logo_not_found"
     """No such upload in the organization."""
@@ -409,12 +410,14 @@ class LogoRefusalCode(StrEnum):
     """Its bytes are not a PNG, JPEG, WebP or SVG image, whatever type the upload declared."""
 
     UNREADABLE = "logo_unreadable"
-    """A damaged raster, or an SVG that is not well-formed, whose shape cannot be read, or that declares XML
-    entities or external references."""
+    """A raster that is damaged or cut short, every pixel of it being decoded, or that has more than 4096 × 4096
+    pixels; or an SVG that is not well-formed, whose shape cannot be read, or that declares XML entities or
+    external references."""
 
     ACTIVE_CONTENT = "logo_active_content"
-    """An SVG that carries a script, an event handler, a `foreignObject`, or an `href` that is neither a `#`
-    fragment nor a raster `data:image/` URI."""
+    """An SVG that carries a `script` or a `foreignObject` element, any element in the XHTML namespace, an `on…`
+    event handler attribute, a `set` or an `animate` that rewrites a link, or an `href` or `xlink:href` that is
+    neither a reference inside the file (`#…`) nor an embedded PNG, JPEG, GIF or WebP image (`data:image/…`)."""
 
     NOT_SQUARE = "logo_not_square"
     """A square logo whose longer side is more than 10% longer than its shorter."""

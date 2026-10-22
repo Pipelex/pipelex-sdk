@@ -1022,16 +1022,20 @@ export type IdempotencyErrorCode = "idempotency_key_in_use";
  * that slot. The refusal itself is a `422` `validation_failed` naming both slots' failures at
  * once, one entry per broken rule, and writes nothing:
  *
- * - `logo_not_an_upload`: the URI is not a standalone upload of the organization, such as a run's
- *   or a method's file or a `branding/` copy the branding does not answer.
+ * - `logo_not_an_upload`: the URI is neither a new upload of the organization nor the `uri` the
+ *   slot already holds: a run's or a method's file, a stale `branding/` copy, or the other slot's
+ *   logo, since a logo cannot move between slots by its URI.
  * - `logo_not_found`: no such upload in the organization.
  * - `logo_too_large`: the file is over 1 MiB.
  * - `logo_type_not_accepted`: its bytes are not a PNG, JPEG, WebP or SVG image, whatever type
  *   the upload declared.
- * - `logo_unreadable`: a damaged raster, or an SVG that is not well-formed, whose shape cannot
- *   be read, or that declares XML entities or external references.
- * - `logo_active_content`: an SVG that carries a script, an event handler, a `foreignObject`, or
- *   an `href` that is neither a `#` fragment nor a raster `data:image/` URI.
+ * - `logo_unreadable`: a raster that is damaged or cut short, every pixel of it being decoded,
+ *   or that has more than 4096 × 4096 pixels; or an SVG that is not well-formed, whose shape
+ *   cannot be read, or that declares XML entities or external references.
+ * - `logo_active_content`: an SVG that carries a `script` or a `foreignObject` element, any
+ *   element in the XHTML namespace, an `on…` event handler attribute, a `set` or an `animate`
+ *   that rewrites a link, or an `href` or `xlink:href` that is neither a reference inside the
+ *   file (`#…`) nor an embedded PNG, JPEG, GIF or WebP image (`data:image/…`).
  * - `logo_not_square`: a square logo whose longer side is more than 10% longer than its shorter.
  * - `logo_too_small`: a raster square logo under 128 px on a side.
  * - `logo_not_wide`: a wide logo less than one and a half times as wide as it is tall.
