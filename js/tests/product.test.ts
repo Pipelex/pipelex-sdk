@@ -821,9 +821,13 @@ describe("storage", () => {
 
   it("POSTs /v1/upload with the base64 payload", async () => {
     const client = makeClient();
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { uri: "s3://x", filename: "f.pdf" }));
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        uri: "s3://x",
+        filename: "f.pdf",
+        file_id: "fl_01a16405-12a5-757c-b44c-10c40b5a947b",
+      }),
+    );
 
     const result = await client.upload({
       filename: "f.pdf",
@@ -835,6 +839,7 @@ describe("storage", () => {
     expect(req.url).toBe("http://localhost:8081/v1/upload");
     expect(req.body).toEqual({ filename: "f.pdf", data: "Zm9v", content_type: "application/pdf" });
     expect(result.uri).toBe("s3://x");
+    expect(result.file_id).toBe("fl_01a16405-12a5-757c-b44c-10c40b5a947b");
   });
 
   it("POSTs /v1/upload/grant with the file's description and returns the grant as sent", async () => {

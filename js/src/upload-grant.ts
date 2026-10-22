@@ -53,6 +53,26 @@ const CONFLICT_RETRY_DELAYS_MS: readonly number[] = [250, 500, 1_000, 2_000];
 const CHECKSUM_HEADER = "x-amz-checksum-sha256";
 
 /**
+ * The largest file `describeUpload` hashes by default: 50 MiB, the platform's own default
+ * limit on one upload, which a grant reports as `max_bytes`.
+ */
+const DEFAULT_DESCRIBE_MAX_BYTES = 52_428_800;
+
+/** Per-call options for {@link describeUpload}. */
+export interface DescribeUploadOptions {
+  /** The file's name, replacing a `File`'s own; required for a nameless `Blob`. */
+  filename?: string;
+  /**
+   * The largest file to hash, in bytes, 52428800 (50 MiB, the platform's default limit on
+   * one upload) when omitted. Hashing reads the whole file into memory, so a larger file
+   * is described without its SHA-256 and never read: its grant request then meets the
+   * grant route's own `413` for a size past the limit. Pass a deployment's larger
+   * `max_bytes` to hash up to it. It must be a positive number.
+   */
+  maxBytes?: number;
+}
+
+/**
  * A file described for `requestUploadGrant`, as {@link describeUpload} reads it: every
  * field the grant request takes to describe a file, ready to send as is.
  */
@@ -64,11 +84,12 @@ export interface UploadDescription {
   /** The file's exact size in bytes. */
   size: number;
   /**
-   * The SHA-256 of the file's bytes, 64 lowercase hexadecimal digits. Absent only
-   * where the runtime offers no Web Crypto digest, which a browser withholds from a
-   * page served over plain `http` from any host but the local one: the grant then
-   * names a new object and asks for the bytes, as it does for every request with no
-   * hash.
+   * The SHA-256 of the file's bytes, 64 lowercase hexadecimal digits. Absent in two
+   * cases, where the grant then names a new object and asks for the bytes, as it does
+   * for every request with no hash: where the runtime offers no Web Crypto digest, which
+   * a browser withholds from a page served over plain `http` from any host but the local
+   * one, and for a file larger than `describeUpload`'s `maxBytes`, which is never read,
+   * so the grant route refuses its size with its own `413`.
    */
   sha256?: string;
 }
@@ -84,14 +105,22 @@ export interface UploadDescription {
  * description to the server that holds the key, which passes it to
  * `requestUploadGrant` unchanged; the bytes never cross that server. A nameless
  * `Blob` takes its name from `options.filename`, which also replaces a `File`'s own.
- * The whole file is read once to hash it. A file that cannot be read, such as one
- * changed on disk since it was picked, throws an `InputPreparationError` whose
- * `cause` is the runtime's error; a file with no name throws one before anything is
- * read.
+ *
+ * The whole file is read into memory once to hash it, so only a file no larger than
+ * `options.maxBytes` is, 50 MiB by default: a larger one, such as a video of several
+ * gigabytes picked by mistake, would freeze or crash a browser tab before the grant
+ * route could refuse its size. It is described without `sha256` and never read, and the
+ * grant route's `413` refuses it with its own message. Where the runtime offers no Web
+ * Crypto digest, the file is described without `sha256` too, and the upload goes on
+ * without the hash.
+ *
+ * A file that cannot be read, such as one changed on disk since it was picked, throws an
+ * `InputPreparationError` whose `cause` is the runtime's error; a file with no name and a
+ * `maxBytes` that is not a positive number throw one before anything is read.
  */
 export async function describeUpload(
   file: Blob,
-  options: { filename?: string } = {},
+  options: DescribeUploadOptions = {},
 ): Promise<UploadDescription> {
   const filename = options.filename ?? ownName(file);
   if (filename === undefined || filename.length === 0) {
@@ -100,7 +129,15 @@ export async function describeUpload(
         "filename option.",
     );
   }
+  const maxBytes = options.maxBytes ?? DEFAULT_DESCRIBE_MAX_BYTES;
+  if (!(typeof maxBytes === "number" && Number.isFinite(maxBytes) && maxBytes > 0)) {
+    throw new InputPreparationError(
+      `"maxBytes" must be a positive number, got ${String(options.maxBytes)}.`,
+    );
+  }
   const description: UploadDescription = { filename, content_type: file.type, size: file.size };
+  // A file past the bound is never read: the grant route refuses its size on its own.
+  if (file.size > maxBytes) return description;
   const digest = webCryptoDigest();
   if (digest === undefined) return description;
   let bytes: ArrayBuffer;

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The file's record on the upload answer**: `UploadedFile`, the answer of `upload` (`POST /v1/upload`), gains `file_id`, the record the platform wrote for the file, `None` from a deployment that predates file records.
+
 ## [v0.48.1] - 2026-10-22
 
 ### Fixed

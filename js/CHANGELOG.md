@@ -4,7 +4,8 @@
 
 ### Added
 
-- **`describeUpload`, a file described for its upload grant**: `describeUpload(file, { filename? })`, on `@pipelex/sdk/upload` and the main entry, reads a `File`'s or a `Blob`'s name, type and size and computes the SHA-256 of its bytes with Web Crypto, the description `requestUploadGrant` takes as is; where the runtime offers no Web Crypto digest, as on a page served over plain `http` from any host but the local one, it leaves the hash out and the grant works as before (`docs/input-preparation.md`).
+- **`describeUpload`, a file described for its upload grant**: `describeUpload(file, { filename?, maxBytes? })`, on `@pipelex/sdk/upload` and the main entry, reads a `File`'s or a `Blob`'s name, type and size and computes the SHA-256 of its bytes with Web Crypto, the description `requestUploadGrant` takes as is. It leaves the hash out, and the grant works as it does without one, for a file larger than `maxBytes`, 50 MiB by default, which it never reads so the grant route's `413` refuses it, and where the runtime offers no Web Crypto digest, as on a page served over plain `http` from any host but the local one (`docs/input-preparation.md`).
+- **The file's record on the upload answer**: `UploadedFile`, the answer of `upload` (`POST /v1/upload`), gains `file_id`, the record the platform wrote for the file, as a grant and `uploadWithGrant` now answer it.
 - **The upload grant request takes the file's hash and its kind**: `UploadGrantInput` gains `sha256`, with which the platform names the object after its bytes and holds the upload to them, and `kind` (`uploaded` or `test`) with `method_id` for a method's test file; `UploadKind` is exported.
 
 ### Changed

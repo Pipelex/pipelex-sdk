@@ -3604,7 +3604,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
-   * Upload a base64 file — `POST /v1/upload`. An answer with no non-empty string `uri` names no
+   * Upload a base64 file — `POST /v1/upload`, answering the file's `uri`, the `filename` as sent
+   * and the `file_id` of its record. An answer with no non-empty string `uri` names no
    * stored file, so it is an answer the SDK cannot read: an `ApiResponseError`, `runtime` and
    * not retryable, which `uploadFile` wraps as an `UploadTransportError` with code `unexpected`.
    */

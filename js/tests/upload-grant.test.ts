@@ -530,6 +530,48 @@ describe("describeUpload", () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  it("never reads a file past 50 MiB by default, describing it without its hash", async () => {
+    // A file of several gigabytes read whole would freeze or crash a browser tab before the
+    // grant route could refuse its size; without the hash, the route's own 413 does.
+    const tooLarge = sizedBlob(52_428_801);
+    const tooLargeRead = vi.spyOn(tooLarge, "arrayBuffer");
+    const atLimit = sizedBlob(52_428_800);
+    const atLimitRead = vi.spyOn(atLimit, "arrayBuffer").mockResolvedValue(new ArrayBuffer(0));
+
+    const skipped = await describeUpload(tooLarge, { filename: "film.mov" });
+    const hashed = await describeUpload(atLimit, { filename: "scan.pdf" });
+
+    expect(skipped).toEqual({ filename: "film.mov", content_type: "", size: 52_428_801 });
+    expect(tooLargeRead).not.toHaveBeenCalled();
+    expect(atLimitRead).toHaveBeenCalledTimes(1);
+    expect(hashed.sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("hashes up to the maxBytes a caller gives, and no further", async () => {
+    const atBound = await describeUpload(pdfFile(), { maxBytes: 5 });
+    const file = pdfFile();
+    const read = vi.spyOn(file, "arrayBuffer");
+    const pastBound = await describeUpload(file, { maxBytes: 4 });
+
+    expect(atBound.sha256).toBe(PDF_SHA256);
+    expect(pastBound).toEqual({ filename: "report.pdf", content_type: "application/pdf", size: 5 });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, "5" as unknown as number])(
+    "refuses a maxBytes of %s before reading anything",
+    async (maxBytes) => {
+      const file = pdfFile();
+      const read = vi.spyOn(file, "arrayBuffer");
+
+      const error = await describeUpload(file, { maxBytes }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(InputPreparationError);
+      expect((error as Error).message).toContain('"maxBytes" must be a positive number');
+      expect(read).not.toHaveBeenCalled();
+    },
+  );
+
   it("leaves the hash out where the runtime offers no Web Crypto digest", async () => {
     // A browser withholds `crypto.subtle` from a page served over plain http.
     vi.stubGlobal("crypto", {});

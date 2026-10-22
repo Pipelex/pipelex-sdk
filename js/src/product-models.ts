@@ -686,9 +686,14 @@ export interface UploadInput {
   content_type: string;
 }
 
+/** The answer to `POST /v1/upload`: the stored file's reference, its name and its record. */
 export interface UploadedFile {
+  /** The file's `pipelex-storage://` reference. */
   uri: string;
+  /** The name as sent. */
   filename: string;
+  /** The file's record, `fl_<uuid7>`, written `stored`, as an upload grant's `file_id` is. */
+  file_id: string;
 }
 
 /**

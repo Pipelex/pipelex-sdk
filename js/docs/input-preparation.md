@@ -39,7 +39,7 @@ The MIME type and size are known client-side, so the record is assembled without
 
 `uploadFile` needs the client, and the client needs the API key. A browser page holds the bytes but must never hold the key, so the work is split in two: the side holding the key requests a **grant** for one file, hands it to the page, and the page sends the file straight to storage with it. The bytes cross neither the credential-holding server nor the API gateway, so the gateway's request quota, which caps a base64 `/v1/upload` near 7.5 MiB, does not apply: the file may be as large as the service's own limit, which the grant reports as `max_bytes`.
 
-**Describing the file** happens where the bytes are, with the standalone `describeUpload(file, { filename? })`, which reads a `File`'s name, type and size and computes the SHA-256 of its bytes with Web Crypto:
+**Describing the file** happens where the bytes are, with the standalone `describeUpload(file, { filename?, maxBytes? })`, which reads a `File`'s name, type and size and computes the SHA-256 of its bytes with Web Crypto:
 
 ```ts
 import { describeUpload } from "@pipelex/sdk/upload";
@@ -48,7 +48,12 @@ const description = await describeUpload(file);
 // { filename, content_type, size, sha256 }
 ```
 
-A nameless `Blob` takes its name from `filename`, which also replaces a `File`'s own, and a file with no name at all is refused with an `InputPreparationError` before it is read. The whole file is read once to hash it; a file that cannot be read, such as one changed on disk since it was picked, is an `InputPreparationError` whose `cause` is the runtime's error. **Where the runtime offers no Web Crypto digest, `sha256` is left out** rather than the call failing: a browser withholds `crypto.subtle` from a page served over plain `http` from any host but the local one. The grant then works as it does for any request without a hash, below, so the upload still succeeds, only without the deduplication.
+A nameless `Blob` takes its name from `filename`, which also replaces a `File`'s own, and a file with no name at all is refused with an `InputPreparationError` before it is read. The whole file is read into memory once to hash it; a file that cannot be read, such as one changed on disk since it was picked, is an `InputPreparationError` whose `cause` is the runtime's error.
+
+`sha256` is left out, rather than the call failing, in two cases, and the grant then works as it does for any request without a hash, below:
+
+- **A file larger than `maxBytes`** is described without its hash and never read. The bound is 52428800 bytes (50 MiB) by default, the platform's own default limit on one upload, because reading a file of several gigabytes picked by mistake would freeze or crash a browser tab before the grant route could refuse its size. Without the hash, the grant request carries the size alone, and the route's `413` refuses it with its own message. A deployment whose grants report a larger `max_bytes` takes that value as `maxBytes`, and a `maxBytes` that is not a positive number is refused with an `InputPreparationError` before anything is read.
+- **Where the runtime offers no Web Crypto digest**: a browser withholds `crypto.subtle` from a page served over plain `http` from any host but the local one. The upload still succeeds, only without the deduplication.
 
 **Requesting the grant** is a client method over `POST /v1/upload/grant`, which takes the description as it is:
 

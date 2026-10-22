@@ -62,7 +62,12 @@ export type { UploadableAsset, UploadFileOptions, UploadRecord } from "./upload.
 // sender, which are standalone so the holder of the bytes needs no client. They are also the
 // browser-safe `@pipelex/sdk/upload` entry.
 export { describeUpload, uploadWithGrant } from "./upload-grant.js";
-export type { GrantedUpload, UploadDescription, UploadWithGrantOptions } from "./upload-grant.js";
+export type {
+  DescribeUploadOptions,
+  GrantedUpload,
+  UploadDescription,
+  UploadWithGrantOptions,
+} from "./upload-grant.js";
 export type {
   InputFormFault,
   PrepareInputsBase,

@@ -777,16 +777,19 @@ class UploadInput(BaseModel):
 
 
 class UploadedFile(BaseModel):
-    """An uploaded file's storage handle — `POST /v1/upload`.
+    """An uploaded file's storage handle — `POST /v1/upload`: its reference, the name as sent and
+    the `file_id` of the record the platform wrote for it.
 
     An answer with no non-empty `uri` names no stored file, so it does not validate, and `upload`
     raises the `ApiResponseError` of an answer the SDK cannot read, as `@pipelex/sdk` does.
+    `file_id` is `None` only from a deployment that predates file records, which answers none.
     """
 
     model_config = ConfigDict(extra="allow")
 
     uri: str = Field(min_length=1)
     filename: str
+    file_id: str | None = None
 
 
 # ── Run records (`/v1/runs`) ─────────────────────────────────────────────
