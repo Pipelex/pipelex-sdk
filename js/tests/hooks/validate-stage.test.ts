@@ -105,6 +105,14 @@ function client(): PipelexApiClient {
   return new PipelexApiClient({ baseUrl: BASE_URL, apiKey: "test-token" });
 }
 
+/**
+ * The deadline of the cases a held request runs into. The deadline starts before the gatherer
+ * lists the directory, so it must outlast that listing on a loaded machine, as when the whole
+ * suite runs in parallel workers, or it fires before the held request is even sent; a held
+ * request still ends at it, so it bounds how long each such case takes.
+ */
+const HELD_DEADLINE_MS = 1_000;
+
 describe("runValidateStage", () => {
   it("reads the verdict of a validation that finishes within the deadline", async () => {
     playApi(() => false);
@@ -121,7 +129,7 @@ describe("runValidateStage", () => {
     const edited = join(root, "main.mthds");
     writeFileSync(edited, MAIN);
 
-    const stage = await runValidateStage(edited, { client: client(), timeoutMs: 50 });
+    const stage = await runValidateStage(edited, { client: client(), timeoutMs: HELD_DEADLINE_MS });
 
     expect(stage).toEqual({ status: "unavailable" });
     expect(api.stopped).toEqual(["/v1/version"]);
@@ -134,7 +142,7 @@ describe("runValidateStage", () => {
     // Past the inline threshold, so the tree travels by hash and its files are uploaded.
     writeFileSync(join(root, "big.txt"), "x".repeat(300 * 1024));
 
-    const stage = await runValidateStage(edited, { client: client(), timeoutMs: 50 });
+    const stage = await runValidateStage(edited, { client: client(), timeoutMs: HELD_DEADLINE_MS });
 
     expect(stage).toEqual({ status: "unavailable" });
     expect(api.stopped.length).toBeGreaterThan(0);

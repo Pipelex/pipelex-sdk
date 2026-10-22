@@ -199,7 +199,7 @@ if (!report.isCurrent) {
 
 A `codegen()` response feeds straight in with no mapping — `GeneratedArtifact` and `CodegenTreeFile` are structurally identical on purpose, so `runCodegenCheck({ lockContent: result.lock, files: result.artifacts })` type-checks and reports `isCurrent`. That is worth doing right after a regeneration, before writing anything to disk.
 
-The function is `async` because it hashes through **WebCrypto** (`crypto.subtle`) rather than `node:crypto`, so the check adds no Node builtin to the barrel's import graph. (That is not the same as the barrel being browser-bundleable today: `upload.ts` still names `node:fs/promises`, so a browser-targeting bundler must mark `node:*` external.) One caveat that never bites a CI script but should not surprise anyone: `crypto.subtle` is secure-context-only, so a browser page must be served over https (or localhost).
+The function is `async` because it hashes through **WebCrypto** (`crypto.subtle`) rather than `node:crypto`, so the check adds no Node builtin to the barrel's import graph, which bundles for the browser with nothing marked external ([architecture.md](./architecture.md#module-format--packaging)). One caveat that never bites a CI script but should not surprise anyone: `crypto.subtle` is secure-context-only, so a browser page must be served over https (or localhost).
 
 ### The algorithm
 
