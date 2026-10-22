@@ -45,6 +45,23 @@ const SUBPATHS = Object.keys(
   (JSON.parse(readFileSync(join(PACKAGE_DIR, "package.json"), "utf8")) as Manifest).exports,
 );
 
+/**
+ * Run Node with `args` and answer what it printed. A failure carries both streams, since `tsc`
+ * prints its diagnostics to stdout, which the error `execFileSync` throws leaves out.
+ */
+function runNode(args: string[], env: NodeJS.ProcessEnv = process.env): string {
+  try {
+    return execFileSync(process.execPath, args, { encoding: "utf8", stdio: "pipe", env });
+  } catch (err) {
+    const failed = err as { status?: number | null; stdout?: string; stderr?: string };
+    throw new Error(
+      `node ${args.join(" ")} exited with status ${String(failed.status)}.\n` +
+        `--- stdout ---\n${failed.stdout ?? ""}\n--- stderr ---\n${failed.stderr ?? ""}`,
+      { cause: err },
+    );
+  }
+}
+
 /** Whether a specifier names a Node built-in, with or without the `node:` scheme. */
 function isNodeBuiltin(specifier: string): boolean {
   return specifier.startsWith("node:") || NODE_BUILTINS.has(specifier.split("/")[0]!);
@@ -113,21 +130,17 @@ describe("the package bundled for the browser", () => {
     copyFileSync(join(PACKAGE_DIR, "package.json"), join(packageDir, "package.json"));
     symlinkSync(join(PACKAGE_DIR, "node_modules"), join(packageDir, "node_modules"), "dir");
     const tsc = createRequire(import.meta.url).resolve("typescript/bin/tsc");
-    execFileSync(
-      process.execPath,
-      [
-        tsc,
-        "-p",
-        join(PACKAGE_DIR, "tsconfig.json"),
-        "--outDir",
-        join(packageDir, "dist"),
-        "--declaration",
-        "false",
-        "--sourceMap",
-        "false",
-      ],
-      { stdio: "pipe" },
-    );
+    runNode([
+      tsc,
+      "-p",
+      join(PACKAGE_DIR, "tsconfig.json"),
+      "--outDir",
+      join(packageDir, "dist"),
+      "--declaration",
+      "false",
+      "--sourceMap",
+      "false",
+    ]);
     manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")) as Manifest;
   }, 120_000);
 
@@ -194,9 +207,9 @@ describe("the package bundled for the browser", () => {
       console.log(JSON.stringify({ host: host !== null, files: tree.files.map((file) => file.path) }));
     `;
 
-    const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
-      encoding: "utf8",
-      env: { ...process.env, DO_NOT_TRACK: "1" },
+    const output = runNode(["--input-type=module", "-e", script], {
+      ...process.env,
+      DO_NOT_TRACK: "1",
     });
 
     expect(JSON.parse(output)).toEqual({ host: true, files: ["assets/logo.png", "main.mthds"] });
