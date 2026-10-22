@@ -1069,7 +1069,7 @@ export async function writeFully(writer: ChunkWriter, chunk: Uint8Array): Promis
   }
 }
 
-/** The slice of `node:fs/promises` the download needs, loaded once per call. */
+/** The slice of `node:fs/promises` the download needs, taken from the Node host. */
 interface NodeFs {
   mkdir(path: string, options: { recursive: true }): Promise<string | undefined>;
   open(path: string, flags: string): Promise<NodeFileHandle>;
