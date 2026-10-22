@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`listFiles` and `iterateFiles`, an organization's files**: `listFiles(query)` reads one page of `GET /v1/files`, a `FilePage` of `FileSummary` rows (`file_id`, `uri`, `name`, `media_type`, `format`, `size`, `kind`, `origin`, `created_at`, `created_by`), newest first, each `uri` taken by a run's inputs as any address, and `iterateFiles(query)` follows its cursor through filtered pages that come back short or empty. `ListFilesQuery` takes `q`, `kind`, `format` and `mediaType`, each of the last two sent as one repeated parameter per value and refused with `RequestArgumentError` when empty, `methodId`, `runId`, `createdBy`, `createdFrom`, `createdTo`, `limit` and `cursor`; `FileKind`, `FileOrigin`, `FilePage`, `FileSummary` and `ListFilesQuery` are exported (`docs/files.md`).
+- **An upload recorded as a method's test file**: `UploadInput` gains `kind` (`uploaded` or `test`) and `method_id`, which `upload` sends to `POST /v1/upload`, `uploadFile` takes the same pair among its options, and `prepareInputs` takes it as its nested `upload` member for every file it uploads, each checked before any file is read, `kind: "test"` requiring a bare `method_id` and only a test file naming one. The upload route's refusals of a test file, a role that may not change methods, an unknown method or one being erased, are a `TestFileRefusedError` with a `code`, rather than a refused credential or a deployment without upload; `UploadKind`, `UploadKindOptions`, `TestFileRefusedError` and `TestFileRefusalCode` are exported.
+
 ## [v0.48.1] - 2026-10-22
 
 ### Fixed
