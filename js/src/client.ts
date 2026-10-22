@@ -2786,8 +2786,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (given[0] === "directory") {
       const directory: unknown = input.directory;
       if (typeof directory !== "string") throw directoryRefusal(call);
-      // Where the Node host cannot be had, the directory is refused before the handshake, so a
+      // A request aborted already rejects with the caller's reason, whatever the runtime. Then,
+      // where the Node host cannot be had, the directory is refused before the handshake, so a
       // failed or refused handshake cannot hide that refusal.
+      throwIfAborted(signal);
       await treeListerFor(directory, call);
       throwIfAborted(signal);
       const limits = listerLimitsOf(announcedTreeLimits(await this.cachedVersion(signal)));

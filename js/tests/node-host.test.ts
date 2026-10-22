@@ -97,6 +97,23 @@ describe("the operations that need Node, outside it", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("reject an aborted directory request with the abort reason, not the Node-only refusal", async () => {
+    const client = new PipelexApiClient({ baseUrl: "http://localhost:8081", apiKey: "test-token" });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new TypeError("the handshake was sent"));
+    const reason = new Error("the caller gave up");
+
+    const refusal = await outsideNode(() =>
+      client
+        .validate({ directory: "/a/method" }, false, { signal: AbortSignal.abort(reason) })
+        .catch((e: unknown) => e),
+    );
+
+    expect(refusal).toBe(reason);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("refuse to write a tree to disk, before any download", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const destination = await mkdtemp(join(tmpdir(), "pipelex-sdk-node-host-"));
