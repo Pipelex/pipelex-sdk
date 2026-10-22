@@ -43,14 +43,16 @@ export async function runValidateStage(
   // validation makes, each stopped in flight once it fires, so nothing keeps running after the
   // hook has given up on it.
   const deadline = AbortSignal.timeout(options.timeoutMs ?? VALIDATE_TIMEOUT_MS);
-  const gathered = await gatherMethodTree(filePath);
-  if (!gathered.ok) {
-    return gathered.reason === "secret"
-      ? { status: "refused", root: gathered.root, withheld: gathered.withheld }
-      : { status: "unavailable" };
-  }
-  const withheld = gathered.withheld;
   try {
+    // Inside the try: a gather that throws fails this stage open, as any other no-verdict
+    // condition does, rather than rejecting the hook and losing the other files' outcomes.
+    const gathered = await gatherMethodTree(filePath);
+    if (!gathered.ok) {
+      return gathered.reason === "secret"
+        ? { status: "refused", root: gathered.root, withheld: gathered.withheld }
+        : { status: "unavailable" };
+    }
+    const withheld = gathered.withheld;
     const client = options.client ?? createHookClient();
     const result = await client.validate({ tree: gathered.tree }, true, { signal: deadline });
     if (result.is_valid === true) {

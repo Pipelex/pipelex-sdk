@@ -19,6 +19,7 @@ import {
   truncate,
   uncheckedShellPatchNote,
   type CodexMthdsTarget,
+  type HookOutcome,
 } from "../../src/hooks/check-core.js";
 import type { Diagnostic, ValidationErrorItem } from "../../src/models.js";
 
@@ -322,6 +323,62 @@ describe("decideAfterValidate, with files kept home", () => {
         ].join("\n"),
       ],
     });
+  });
+
+  it("cuts a long verdict carrying a note once, with the true count", () => {
+    const errors = Array.from(
+      { length: 400 },
+      (_, index) => `- pipe \`demo.step_${index}\`: the output concept is unknown to the domain`,
+    );
+    const markdown = ["# Validation failed", "", ...errors].join("\n");
+    expect(markdown.length).toBeGreaterThan(20000);
+    const merged = mergeOutcomes([
+      decideAfterValidate(FILE, {
+        status: "invalid",
+        validationErrors: [],
+        renderedMarkdown: markdown,
+        withheld,
+      }),
+    ]);
+
+    expect(merged.kind).toBe("block");
+    if (merged.kind === "pass") return;
+    const text = outcomeText(merged);
+    const markers = [...text.matchAll(/\[truncated, (\d+) chars omitted\]/g)];
+    expect(markers).toHaveLength(1);
+    const kept = text.indexOf("\n\n[truncated, ");
+    expect(text.slice(0, kept)).toBe(markdown.slice(0, kept));
+    expect(Number(markers[0]![1])).toBe(markdown.length - kept);
+    expect(text.length).toBeLessThanOrEqual(9500);
+  });
+
+  it("keeps the notes of the outcomes a block outranks", () => {
+    const lint: HookOutcome = {
+      kind: "block",
+      reason: "MTHDS lint errors in /work/c.mthds:\n\n- [syntax/error] unexpected token",
+    };
+    const refused = decideAfterValidate("/work/a.mthds", {
+      status: "refused",
+      root: "/work",
+      withheld,
+    });
+    const valid = decideAfterValidate("/other/b.mthds", {
+      status: "valid",
+      pendingSignatures: [],
+      withheld: [{ path: "/other/key.pem", reason: "it holds a private key block (PEM)" }],
+    });
+
+    const merged = mergeOutcomes([lint, refused, valid]);
+
+    expect(merged.kind).toBe("block");
+    if (merged.kind !== "block" || refused.kind === "pass" || valid.kind === "pass") return;
+    expect(merged.reason).toBe(lint.reason);
+    expect(merged.notes).toEqual([...refused.notes!, ...valid.notes!]);
+    const text = outcomeText(merged);
+    expect(
+      text.startsWith(`${lint.reason}\n\nThe .mthds hook did not validate the method at`),
+    ).toBe(true);
+    expect(text).toContain("- `/other/key.pem` (it holds a private key block (PEM))");
   });
 
   it("names a tree's note once when several of its files are merged", () => {

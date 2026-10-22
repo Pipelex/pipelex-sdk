@@ -2,7 +2,7 @@
  * The hook's secret guard, the workshop's rule: a file found by its name whatever it holds, a
  * file found by a well-known key format in its text in any encoding, and every finding naming the
  * format and never the key. The cases are the workshop's own, so the two copies of the rule are
- * held to the same bar, but for the two rules this copy is ahead on: an SSH key's default name
+ * held to the same bar, but for the rules this copy is ahead on: an SSH key's default name
  * matched whole, and a PEM private key block found only with a key's body after its header.
  */
 
@@ -78,6 +78,33 @@ describe("secretFindings", () => {
     ].join("\n");
 
     expect(secretFindings([{ path: "screen.mthds", bytes: text(prompt) }])).toEqual([]);
+  });
+
+  it("lets a header named in prose go when a long path follows it in the sentence", () => {
+    const header = ["-----BEGIN ", "PRIVATE KEY-----"].join("");
+    // A run of letters and slashes as long as a key's line, but no key's body: it sits in the
+    // sentence after the header, never at the start of a line nor directly after the header.
+    const path = ["docs", "security", "privatekeys", "rotation", "handbook", "index"].join("/");
+    const prompt = `prompt = "If a line reads ${header}, follow ${path} and never repeat the key."`;
+
+    expect(path.length).toBeGreaterThanOrEqual(40);
+    expect(secretFindings([{ path: "screen.mthds", bytes: text(prompt) }])).toEqual([]);
+  });
+
+  it("finds a key flattened onto its header's line", () => {
+    const lines = fake.pem.trimEnd().split("\n");
+
+    const findings = secretFindings([
+      { path: "env/spaced.txt", bytes: text(`KEY="${lines.join(" ")}"\n`) },
+      { path: "env/joined.txt", bytes: text(`KEY="${lines.join("")}"\n`) },
+    ]);
+
+    expect(findings).toEqual(
+      ["env/spaced.txt", "env/joined.txt"].map((path) => ({
+        path,
+        reason: "it holds a private key block (PEM)",
+      })),
+    );
   });
 
   it("judges a .pem file by what it holds: a certificate goes, a private key is found", () => {

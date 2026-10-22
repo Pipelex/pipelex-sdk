@@ -150,6 +150,29 @@ describe("runValidateStage", () => {
     expect(await runValidateStage(edited)).toEqual({ status: "unavailable" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it("is unavailable when the gather throws, rather than rejecting the hook", async () => {
+    // A fresh copy of the stage over a gatherer that throws, the mock kept to this case.
+    vi.resetModules();
+    vi.doMock("../../src/hooks/bundle-gather.js", () => ({
+      gatherMethodTree: () => Promise.reject(new Error("the gatherer failed")),
+    }));
+    try {
+      const fresh = await import("../../src/hooks/validate-stage.js");
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+      const stage = await fresh.runValidateStage(join(root, "main.mthds"), {
+        client: client(),
+        timeoutMs: 5_000,
+      });
+
+      expect(stage).toEqual({ status: "unavailable" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/hooks/bundle-gather.js");
+      vi.resetModules();
+    }
+  });
 });
 
 /** One request the client made: its method, where it went, and its body as text. */

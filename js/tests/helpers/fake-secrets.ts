@@ -73,9 +73,9 @@ export const NOTICE_TEMPLATE = "<html><body><p>{{ notice }}</p></body></html>\n"
 
 /**
  * Write the tree of the reported case under `root`: a method directory, `methods/foo`, holding a
- * bundle, the template its step fills, three secret files under ordinary names and a `.env`,
- * below a `.gitignore` at `root` listing the three, which the lister never reads since it lies
- * above the tree's root. `root` should hold an entry named `.git`, so Manifest Discovery stops
+ * bundle, the template its step fills, secret files under ordinary names and a `.env`, below a
+ * `.gitignore` at `root` listing the secret files other than the `.env`, which the lister never
+ * reads since it lies above the tree's root. `root` should hold an entry named `.git`, so Manifest Discovery stops
  * there. Returns the method directory and the bundle's path.
  */
 export function writeReportedCase(root: string): { dir: string; edited: string } {

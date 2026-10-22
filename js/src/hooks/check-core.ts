@@ -367,20 +367,28 @@ export function extractVibeMthdsFilePath(
 /**
  * Merge per-file outcomes (Codex's `apply_patch` can touch several `.mthds`
  * files in one call) into the single decision the hook emits: any block wins
- * (reasons joined), else contexts are joined, else pass. The winning
- * outcomes' notes are kept once each, so several files of one tree, whose
- * notes are the same, name its withheld files once.
+ * (reasons joined), else contexts are joined, else pass. The notes of every
+ * outcome are kept, whichever kind wins, since a tree's withheld files or its
+ * refused validation matter whatever another file's check found, and each is
+ * kept once, so several files of one tree, whose notes are the same, name its
+ * withheld files once. A merged text carrying notes is left whole, for
+ * {@link outcomeText} to make the one cut it needs, with the true count.
  */
 export function mergeOutcomes(outcomes: HookOutcome[]): HookOutcome {
+  const notes = notesOf(outcomes);
   const blocks = outcomes.filter((outcome) => outcome.kind === "block");
   if (blocks.length > 0) {
-    const reason = truncate(joinTexts(blocks.map((block) => block.reason)));
-    return withNotesOf({ kind: "block", reason }, blocks);
+    const reason = joinTexts(blocks.map((block) => block.reason));
+    return notes.length > 0
+      ? { kind: "block", reason, notes }
+      : { kind: "block", reason: truncate(reason) };
   }
   const contexts = outcomes.filter((outcome) => outcome.kind === "context");
   if (contexts.length > 0) {
-    const context = truncate(joinTexts(contexts.map((outcome) => outcome.context)));
-    return withNotesOf({ kind: "context", context }, contexts);
+    const context = joinTexts(contexts.map((outcome) => outcome.context));
+    return notes.length > 0
+      ? { kind: "context", context, notes }
+      : { kind: "context", context: truncate(context) };
   }
   return { kind: "pass" };
 }
@@ -390,13 +398,13 @@ function joinTexts(texts: readonly string[]): string {
   return texts.filter((text) => text !== "").join("\n\n");
 }
 
-/** `outcome` carrying every distinct note of `merged`, in order, or none when they have none. */
-function withNotesOf<T extends HookOutcome>(
-  outcome: T,
-  merged: readonly { notes?: string[] }[],
-): T {
-  const notes = [...new Set(merged.flatMap((each) => each.notes ?? []))];
-  return notes.length > 0 ? { ...outcome, notes } : outcome;
+/** Every distinct note of `outcomes`, in order. */
+function notesOf(outcomes: readonly HookOutcome[]): string[] {
+  return [
+    ...new Set(
+      outcomes.flatMap((outcome) => (outcome.kind === "pass" ? [] : (outcome.notes ?? []))),
+    ),
+  ];
 }
 
 /** Cap on emitted reason/context bodies — same guard as the plxt-era hook. */
@@ -590,8 +598,9 @@ export function decideAfterValidate(filePath: string, validate: ValidateStage): 
       if (nudge === "" && notes.length === 0) {
         return { kind: "pass" };
       }
+      // A text carrying notes is cut once, by `outcomeText`, which knows what the notes take.
       return notes.length > 0
-        ? { kind: "context", context: truncate(nudge), notes }
+        ? { kind: "context", context: nudge, notes }
         : { kind: "context", context: truncate(nudge) };
     }
     case "invalid": {
@@ -611,7 +620,7 @@ export function decideAfterValidate(filePath: string, validate: ValidateStage): 
         reason = lines.join("\n");
       }
       return validate.withheld.length > 0
-        ? { kind: "block", reason: truncate(reason), notes: [withheldNote(validate.withheld)] }
+        ? { kind: "block", reason, notes: [withheldNote(validate.withheld)] }
         : { kind: "block", reason: truncate(reason) };
     }
   }

@@ -3,7 +3,7 @@
  * whose NAME is a known secret file, or whose TEXT holds a well-known key format, in whatever
  * encoding the file is written, so that file never leaves the machine.
  *
- * The rule is the workshop's, pipelex-mcp's `src/capabilities/secret-guard.ts`, with two
+ * The rule is the workshop's, pipelex-mcp's `src/capabilities/secret-guard.ts`, with the
  * refinements this copy is ahead on until the workshop takes them up (L-261022-b4770f): an SSH key
  * is found by its default name only when the name is exactly that, and a PEM private key block
  * only when a key's body follows its header. Every other rule is the workshop's, and changes with
@@ -75,16 +75,18 @@ const SECRET_NAMES: readonly {
  * so that scanners can find them, with enough of the key's body after it that prose mentioning
  * the prefix does not match.
  *
- * A PEM private key block is its header followed, within a short span, by a run of Base64 as
- * long as a key's body lines: the span holds the line break, written as a real one or as the `\n`
- * of a key escaped into JSON, and the `Proc-Type` and `DEK-Info` headers of an encrypted legacy
- * key. A header named in prose, such as a prompt telling a model what a key looks like, has no
- * such run after it, so it goes.
+ * A PEM private key block is its header followed by a run of Base64 as long as a key's body
+ * lines, where a key's body sits: directly on the header's line, as in a key flattened onto one
+ * line, or at the start of a line within a short span after the header, the line break written as
+ * a real one or as the `\n` of a key escaped into JSON, its indentation allowed, the span holding
+ * the `Proc-Type` and `DEK-Info` headers of an encrypted legacy key. A header named in prose, such
+ * as a prompt telling a model what a key looks like, has no such run there, even when a long path
+ * or link follows it in the sentence, so it goes.
  */
 const KEY_FORMATS: readonly { pattern: RegExp; reason: string }[] = [
   {
     pattern:
-      /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]{0,200}?[A-Za-z0-9+/]{40,}/,
+      /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----(?:[ \t]*|[\s\S]{0,200}?(?:\n|\\n)[ \t]*)[A-Za-z0-9+/]{40,}/,
     reason: "a private key block (PEM)",
   },
   { pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/, reason: "an AWS access key id" },
