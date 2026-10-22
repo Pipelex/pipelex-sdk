@@ -26,7 +26,7 @@ const CONTRACT = requireContract(PIPE_IO_CONTRACTS, "generate_image", PIPE_CODE)
 async function buildOptions(inputs: Record<string, unknown>): Promise<StartOptions> {
   return {
     pipe_code: PIPE_REF,
-    mthds_contents: await loadMethodBundles("generate-image"),
+    files: await loadMethodBundles("generate-image"),
     inputs,
   };
 }

@@ -31,7 +31,7 @@ const CONTRACT = requireContract(PIPE_IO_CONTRACTS, "complex_form", PIPE_CODE);
 async function buildOptions(inputs: Record<string, unknown>): Promise<StartOptions> {
   return {
     pipe_code: PIPE_REF,
-    mthds_contents: await loadMethodBundles("complex-form"),
+    files: await loadMethodBundles("complex-form"),
     inputs,
   };
 }

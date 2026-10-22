@@ -95,11 +95,11 @@ export async function requestSummarizePdfUpload(request: UploadRequest): Promise
 async function buildOptions(inputs: Record<string, unknown>): Promise<StartOptions> {
   const bundles = await loadMethodBundles("summarize-pdf");
   const prepared = await getPipelexClient().prepareInputs({
-    files: bundles.map((content) => ({ content })),
+    files: bundles,
     pipe_ref: PIPE_REF,
     inputs,
   });
-  return { pipe_code: PIPE_REF, mthds_contents: bundles, inputs: prepared.inputs };
+  return { pipe_code: PIPE_REF, files: bundles, inputs: prepared.inputs };
 }
 
 /** BLOCKING path: summarize a stored PDF synchronously (`POST /v1/execute`). */

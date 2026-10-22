@@ -52,7 +52,7 @@ export function refusedStart(): ApiResponseError {
     REFUSAL_BODY.validation_errors,
     undefined,
     {
-      problem: {
+      details: {
         type: REFUSAL_BODY.type,
         title: REFUSAL_BODY.title,
         requestId: REFUSAL_BODY.request_id,

@@ -30,7 +30,7 @@ beforeEach(() => {
 
 const OPTIONS = {
   pipe_code: "fixture_pipe",
-  mthds_contents: ["BUNDLE"],
+  files: { "main.mthds": "BUNDLE" },
   inputs: { text: "x" },
 };
 const FIXTURE = { items: ["Ada"] };

@@ -29,7 +29,7 @@ const CONTRACT = requireContract(PIPE_IO_CONTRACTS, "extract_entities", PIPE_COD
 async function buildOptions(inputs: Record<string, unknown>): Promise<StartOptions> {
   return {
     pipe_code: PIPE_REF,
-    mthds_contents: await loadMethodBundles("extract-entities"),
+    files: await loadMethodBundles("extract-entities"),
     inputs,
   };
 }
