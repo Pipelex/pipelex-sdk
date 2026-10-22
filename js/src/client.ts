@@ -3510,7 +3510,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * sentence to show under that slot: `400` `invalid_storage_uri` for a URI that is not a storage
    * URI, `403` `forbidden` for another organization's file, and `422` `validation_failed` with a
    * `LogoRefusalCode` per broken rule for a file the platform refused. A failure of the platform's
-   * storage while reading or copying a logo is a `500` `storage_backend_failed`, retryable.
+   * storage while reading or copying a logo is a `500` `storage_backend_failed`, retryable, with
+   * nothing written. A `503` `service_unavailable` is a failure of its database, after which the
+   * write may have landed or not: the same input sent again is safe.
    */
   async updateOrganizationBranding(
     orgId: string,

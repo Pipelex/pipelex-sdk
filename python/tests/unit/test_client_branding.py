@@ -242,6 +242,35 @@ class TestClientBranding:
             pytest.param(
                 "square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.UNREADABLE, BrandingBodies.CUT_SHORT, id="raster-cut-short"
             ),
+            # A logo is a still image: an animated raster is refused as a type a logo may not be.
+            pytest.param(
+                "square_logo",
+                BrandingBodies.SQUARE_UPLOAD_URI,
+                LogoRefusalCode.TYPE_NOT_ACCEPTED,
+                BrandingBodies.ANIMATED_WEBP,
+                id="animated-webp",
+            ),
+            pytest.param(
+                "wide_logo", BrandingBodies.WIDE_UPLOAD_URI, LogoRefusalCode.TYPE_NOT_ACCEPTED, BrandingBodies.ANIMATED_PNG, id="animated-png"
+            ),
+            pytest.param(
+                "square_logo",
+                BrandingBodies.SQUARE_UPLOAD_URI,
+                LogoRefusalCode.UNREADABLE,
+                BrandingBodies.SVG_SIDE_OUT_OF_RANGE,
+                id="svg-side-out-of-range",
+            ),
+            pytest.param(
+                "wide_logo",
+                BrandingBodies.WIDE_UPLOAD_URI,
+                LogoRefusalCode.UNREADABLE,
+                BrandingBodies.SVG_VIEWBOX_OUT_OF_RANGE,
+                id="svg-viewbox-out-of-range",
+            ),
+            *(
+                pytest.param(field, uri, LogoRefusalCode.ACTIVE_CONTENT, detail, id=f"svg-{kind}")
+                for kind, (field, uri, detail) in BrandingBodies.STYLE_ACTIVE_CONTENT.items()
+            ),
         ],
     )
     def test_a_refused_logo_is_named_under_its_slot(

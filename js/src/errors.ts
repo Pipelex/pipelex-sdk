@@ -1028,14 +1028,22 @@ export type IdempotencyErrorCode = "idempotency_key_in_use";
  * - `logo_not_found`: no such upload in the organization.
  * - `logo_too_large`: the file is over 1 MiB.
  * - `logo_type_not_accepted`: its bytes are not a PNG, JPEG, WebP or SVG image, whatever type
- *   the upload declared.
- * - `logo_unreadable`: a raster that is damaged or cut short, every pixel of it being decoded,
+ *   the upload declared, or they are an animated PNG (an APNG) or an animated WebP, since a logo
+ *   is a still image.
+ * - `logo_unreadable`: a raster that is damaged or cut short, its one frame being decoded whole,
  *   or that has more than 4096 × 4096 pixels; or an SVG that is not well-formed, whose shape
- *   cannot be read, or that declares XML entities or external references.
+ *   cannot be read, that declares XML entities or external references, or one of whose sides
+ *   lies outside 0.001 to 1,000,000, in pixels for its `width` and `height` or in its own units
+ *   for its `viewBox`.
  * - `logo_active_content`: an SVG that carries a `script` or a `foreignObject` element, any
  *   element in the XHTML namespace, an `on…` event handler attribute, a `set` or an `animate`
- *   that rewrites a link, or an `href` or `xlink:href` that is neither a reference inside the
- *   file (`#…`) nor an embedded PNG, JPEG, GIF or WebP image (`data:image/…`).
+ *   that rewrites a link, an `xml-stylesheet` processing instruction, or a link that is neither
+ *   a reference inside the file (`#…`) nor an embedded PNG, JPEG, GIF or WebP image
+ *   (`data:image/…`), whether an `href`, an `xlink:href`, or a CSS `url()` or `src()`. Wherever
+ *   a browser reads CSS, a `<style>` element's text or an attribute such as `style` or `fill`, an
+ *   `@import`, an `image()` or `image-set()` and any CSS escape (a backslash) are refused too. A
+ *   `<style>` element itself is allowed, holding only references inside the file, such as
+ *   `fill:url(#grad)`.
  * - `logo_not_square`: a square logo whose longer side is more than 10% longer than its shorter.
  * - `logo_too_small`: a raster square logo under 128 px on a side.
  * - `logo_not_wide`: a wide logo less than one and a half times as wide as it is tall.

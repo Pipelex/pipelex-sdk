@@ -304,6 +304,14 @@ describe("updateOrganizationBranding", () => {
   const notAnUpload = (slot: string) =>
     `The ${slot} must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) or the URI the ${slot} already has.`;
 
+  /** The platform's sentence for an SVG's active content, `what` being the construct it names. */
+  const activeContent = (slot: string, what: string) =>
+    `The ${slot} is an SVG that carries active content, which a logo may not: ${what}.`;
+
+  /** The tail of the platform's sentence for a link that leaves the file, an `href` or a CSS one. */
+  const INERT_LINKS_ONLY =
+    "where only a reference inside it or an embedded PNG, JPEG, GIF or WebP image is allowed";
+
   it.each([
     [
       "an SVG carrying active content",
@@ -339,6 +347,98 @@ describe("updateOrganizationBranding", () => {
       SQUARE_UPLOAD_URI,
       "logo_unreadable",
       "The square logo looks like a JPEG image but cannot be read: the file is damaged or incomplete.",
+    ],
+    [
+      "an animated WebP, since a logo is a still image",
+      "square_logo",
+      SQUARE_UPLOAD_URI,
+      "logo_type_not_accepted",
+      "The square logo is an animated WebP; a logo must be a still image.",
+    ],
+    [
+      "an animated PNG, since a logo is a still image",
+      "wide_logo",
+      WIDE_UPLOAD_URI,
+      "logo_type_not_accepted",
+      "The wide logo is an animated PNG; a logo must be a still image.",
+    ],
+    [
+      "an SVG whose width and height lie outside the range a side may measure",
+      "square_logo",
+      SQUARE_UPLOAD_URI,
+      "logo_unreadable",
+      "The square logo is an SVG that cannot be read: its width or height lies outside the 0.001 to 1,000,000 px a logo's side may measure.",
+    ],
+    [
+      "an SVG whose viewBox lies outside the range a side may measure",
+      "wide_logo",
+      WIDE_UPLOAD_URI,
+      "logo_unreadable",
+      "The wide logo is an SVG that cannot be read: its viewBox's width or height lies outside the 0.001 to 1,000,000 units a logo's side may measure.",
+    ],
+    [
+      "an SVG with an xml-stylesheet processing instruction",
+      "square_logo",
+      SQUARE_UPLOAD_URI,
+      "logo_active_content",
+      activeContent(
+        "square logo",
+        "an xml-stylesheet processing instruction, which loads a style sheet",
+      ),
+    ],
+    [
+      "an SVG whose CSS imports a style sheet",
+      "square_logo",
+      SQUARE_UPLOAD_URI,
+      "logo_active_content",
+      activeContent("square logo", "a CSS @import, which loads a style sheet"),
+    ],
+    [
+      "an SVG whose CSS url() leaves the file",
+      "wide_logo",
+      WIDE_UPLOAD_URI,
+      "logo_active_content",
+      activeContent(
+        "wide logo",
+        `a CSS url() that links to something outside the file, ${INERT_LINKS_ONLY}`,
+      ),
+    ],
+    [
+      "an SVG whose CSS src() leaves the file",
+      "square_logo",
+      SQUARE_UPLOAD_URI,
+      "logo_active_content",
+      activeContent(
+        "square logo",
+        `a CSS src() that links to something outside the file, ${INERT_LINKS_ONLY}`,
+      ),
+    ],
+    [
+      "an SVG whose CSS holds an image-set()",
+      "square_logo",
+      SQUARE_UPLOAD_URI,
+      "logo_active_content",
+      activeContent(
+        "square logo",
+        "a CSS image-set() function, which can load an image from outside the file",
+      ),
+    ],
+    [
+      "an SVG whose CSS holds an image()",
+      "wide_logo",
+      WIDE_UPLOAD_URI,
+      "logo_active_content",
+      activeContent(
+        "wide logo",
+        "a CSS image() function, which can load an image from outside the file",
+      ),
+    ],
+    [
+      "an SVG whose CSS holds an escape",
+      "square_logo",
+      SQUARE_UPLOAD_URI,
+      "logo_active_content",
+      activeContent("square logo", "a CSS escape (a backslash), which can disguise a link"),
     ],
   ])("refuses %s under its slot", async (_topic, field, uri, code, detail) => {
     const client = makeClient();

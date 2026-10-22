@@ -723,6 +723,71 @@ class BrandingBodies:
         "at 5,000 × 5,000 px it has more than the 16,777,216 pixels (4096 × 4096) a logo may have."
     )
     CUT_SHORT: ClassVar[str] = "The square logo looks like a JPEG image but cannot be read: the file is damaged or incomplete."
+    ANIMATED_WEBP: ClassVar[str] = "The square logo is an animated WebP; a logo must be a still image."
+    ANIMATED_PNG: ClassVar[str] = "The wide logo is an animated PNG; a logo must be a still image."
+    SVG_SIDE_OUT_OF_RANGE: ClassVar[str] = (
+        "The square logo is an SVG that cannot be read: its width or height lies outside the 0.001 to 1,000,000 px a logo's side may measure."
+    )
+    SVG_VIEWBOX_OUT_OF_RANGE: ClassVar[str] = (
+        "The wide logo is an SVG that cannot be read: "
+        "its viewBox's width or height lies outside the 0.001 to 1,000,000 units a logo's side may measure."
+    )
+    #: The style an SVG logo may not carry, by kind: a style sheet's processing instruction and the CSS a browser
+    #: reads. Each is the slot, the upload sent for it, and the platform's sentence.
+    STYLE_ACTIVE_CONTENT: ClassVar[dict[str, tuple[str, str, str]]] = {
+        "xml-stylesheet": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            (
+                "The square logo is an SVG that carries active content, which a logo may not: "
+                "an xml-stylesheet processing instruction, which loads a style sheet."
+            ),
+        ),
+        "css-import": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            ("The square logo is an SVG that carries active content, which a logo may not: a CSS @import, which loads a style sheet."),
+        ),
+        "css-url": (
+            "wide_logo",
+            WIDE_UPLOAD_URI,
+            (
+                "The wide logo is an SVG that carries active content, which a logo may not: "
+                "a CSS url() that links to something outside the file, "
+                "where only a reference inside it or an embedded PNG, JPEG, GIF or WebP image is allowed."
+            ),
+        ),
+        "css-src": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            (
+                "The square logo is an SVG that carries active content, which a logo may not: "
+                "a CSS src() that links to something outside the file, "
+                "where only a reference inside it or an embedded PNG, JPEG, GIF or WebP image is allowed."
+            ),
+        ),
+        "css-image-set": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            (
+                "The square logo is an SVG that carries active content, which a logo may not: "
+                "a CSS image-set() function, which can load an image from outside the file."
+            ),
+        ),
+        "css-image": (
+            "wide_logo",
+            WIDE_UPLOAD_URI,
+            (
+                "The wide logo is an SVG that carries active content, which a logo may not: "
+                "a CSS image() function, which can load an image from outside the file."
+            ),
+        ),
+        "css-escape": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            ("The square logo is an SVG that carries active content, which a logo may not: a CSS escape (a backslash), which can disguise a link."),
+        ),
+    }
 
     #: A colour that is not `#rrggbb`, refused by the body's validation and named by its dotted key.
     COLOR_REFUSED: ClassVar[dict[str, Any]] = {
