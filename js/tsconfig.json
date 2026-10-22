@@ -16,7 +16,10 @@
     "noImplicitOverride": true,
     "noUncheckedSideEffectImports": true,
     "declaration": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "paths": {
+      "#node-host": ["./src/node-host/node.ts"]
+    }
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"]

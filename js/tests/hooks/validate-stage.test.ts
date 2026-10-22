@@ -2,15 +2,31 @@
  * The hook's networked validate stage: one deadline over the whole stage, the version handshake,
  * the blob route, the uploads and the validation together, whose expiry reads as `unavailable`,
  * as every other no-verdict condition does, so the lint and format verdicts already applied stand.
+ * And what leaves the machine: never a file of the tree that looks like a secret, which the hook's
+ * output names with why, and nothing at all when a bundle looks like one.
  */
 
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PipelexApiClient } from "../../src/client.js";
+import {
+  decideAfterValidate,
+  encodeOutcome,
+  mergeOutcomes,
+  type HookOutcome,
+} from "../../src/hooks/check-core.js";
 import { runValidateStage } from "../../src/hooks/validate-stage.js";
+import {
+  fake,
+  NOTICE_BUNDLE,
+  NOTICE_TEMPLATE,
+  REPORTED_CASE_SECRETS,
+  writeReportedCase,
+} from "../helpers/fake-secrets.js";
 
 const BASE_URL = "http://localhost:8081";
 const MAIN = 'domain = "d"\nmain_pipe = "p"\n';
@@ -89,6 +105,14 @@ function client(): PipelexApiClient {
   return new PipelexApiClient({ baseUrl: BASE_URL, apiKey: "test-token" });
 }
 
+/**
+ * The deadline of the cases a held request runs into. The deadline starts before the gatherer
+ * lists the directory, so it must outlast that listing on a loaded machine, as when the whole
+ * suite runs in parallel workers, or it fires before the held request is even sent; a held
+ * request still ends at it, so it bounds how long each such case takes.
+ */
+const HELD_DEADLINE_MS = 1_000;
+
 describe("runValidateStage", () => {
   it("reads the verdict of a validation that finishes within the deadline", async () => {
     playApi(() => false);
@@ -97,7 +121,7 @@ describe("runValidateStage", () => {
 
     const stage = await runValidateStage(edited, { client: client(), timeoutMs: 5_000 });
 
-    expect(stage).toEqual({ status: "valid", pendingSignatures: ["d.p"] });
+    expect(stage).toEqual({ status: "valid", pendingSignatures: ["d.p"], withheld: [] });
   });
 
   it("is unavailable when the handshake outlasts the deadline, which stops it", async () => {
@@ -105,7 +129,7 @@ describe("runValidateStage", () => {
     const edited = join(root, "main.mthds");
     writeFileSync(edited, MAIN);
 
-    const stage = await runValidateStage(edited, { client: client(), timeoutMs: 50 });
+    const stage = await runValidateStage(edited, { client: client(), timeoutMs: HELD_DEADLINE_MS });
 
     expect(stage).toEqual({ status: "unavailable" });
     expect(api.stopped).toEqual(["/v1/version"]);
@@ -118,7 +142,7 @@ describe("runValidateStage", () => {
     // Past the inline threshold, so the tree travels by hash and its files are uploaded.
     writeFileSync(join(root, "big.txt"), "x".repeat(300 * 1024));
 
-    const stage = await runValidateStage(edited, { client: client(), timeoutMs: 50 });
+    const stage = await runValidateStage(edited, { client: client(), timeoutMs: HELD_DEADLINE_MS });
 
     expect(stage).toEqual({ status: "unavailable" });
     expect(api.stopped.length).toBeGreaterThan(0);
@@ -133,5 +157,209 @@ describe("runValidateStage", () => {
 
     expect(await runValidateStage(edited)).toEqual({ status: "unavailable" });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("is unavailable when the gather throws, rather than rejecting the hook", async () => {
+    // A fresh copy of the stage over a gatherer that throws, the mock kept to this case.
+    vi.resetModules();
+    vi.doMock("../../src/hooks/bundle-gather.js", () => ({
+      gatherMethodTree: () => Promise.reject(new Error("the gatherer failed")),
+    }));
+    try {
+      const fresh = await import("../../src/hooks/validate-stage.js");
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+      const stage = await fresh.runValidateStage(join(root, "main.mthds"), {
+        client: client(),
+        timeoutMs: 5_000,
+      });
+
+      expect(stage).toEqual({ status: "unavailable" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/hooks/bundle-gather.js");
+      vi.resetModules();
+    }
+  });
+});
+
+/** One request the client made: its method, where it went, and its body as text. */
+interface SentRequest {
+  method: string;
+  where: string;
+  body: string;
+}
+
+/**
+ * Play an API keeping a blob store and answering `verdict` to the validation, recording every
+ * request made, the uploads to storage among them, each body read one character per byte.
+ */
+function recordApi(verdict: unknown): SentRequest[] {
+  const sent: SentRequest[] = [];
+  const asText = (body: unknown): string =>
+    typeof body === "string"
+      ? body
+      : body instanceof Uint8Array
+        ? new TextDecoder("latin1").decode(body)
+        : body == null
+          ? ""
+          : String(body);
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input);
+      const path = new URL(url).pathname;
+      const where = url.startsWith(BASE_URL) ? path : `upload ${path.slice(1)}`;
+      sent.push({ method: init.method ?? "GET", where, body: asText(init.body) });
+      if (!url.startsWith(BASE_URL)) return new Response(null, { status: 200 });
+      if (path === "/v1/version") {
+        return jsonResponse(200, {
+          protocol_version: "1",
+          runner_version: "0.90.0",
+          blob_store: true,
+        });
+      }
+      if (path === "/v1/blobs/missing") {
+        const { blobs } = JSON.parse(init.body as string) as {
+          blobs: { sha256: string; size: number }[];
+        };
+        return jsonResponse(200, {
+          missing: blobs.map((blob) => ({
+            ...blob,
+            upload: { method: "PUT", url: `https://storage.example/${blob.sha256}`, headers: {} },
+          })),
+        });
+      }
+      return jsonResponse(200, verdict);
+    },
+  );
+  return sent;
+}
+
+const VALID = { is_valid: true, pending_signatures: [], is_runnable: true };
+
+/** What the hook writes for one file's outcome, merged and encoded as it emits it, on Claude. */
+function hookOutput(outcome: HookOutcome): string {
+  const encoded = JSON.parse(encodeOutcome(mergeOutcomes([outcome]), "claude")) as {
+    reason?: string;
+    hookSpecificOutput?: { additionalContext: string };
+  };
+  return encoded.reason ?? encoded.hookSpecificOutput!.additionalContext;
+}
+
+const sha256Of = (path: string): string =>
+  createHash("sha256").update(readFileSync(path)).digest("hex");
+
+describe("runValidateStage, on a tree holding secrets", () => {
+  it("sends the reported case's bundle and template inline, and none of its secret files", async () => {
+    const { dir, edited } = writeReportedCase(root);
+    const sent = recordApi(VALID);
+
+    const stage = await runValidateStage(edited, { client: client(), timeoutMs: 5_000 });
+
+    expect(sent.map((request) => `${request.method} ${request.where}`)).toEqual([
+      "GET /v1/version",
+      "POST /v1/validate",
+    ]);
+    const body = JSON.parse(sent[1]!.body) as { files: Record<string, unknown> };
+    expect(body.files).toEqual({ "main.mthds": NOTICE_BUNDLE, "notice.html": NOTICE_TEMPLATE });
+    for (const request of sent) {
+      for (const secret of REPORTED_CASE_SECRETS) expect(request.body).not.toContain(secret);
+    }
+    expect(stage).toEqual({
+      status: "valid",
+      pendingSignatures: [],
+      withheld: [
+        { path: join(dir, "key.pem"), reason: "it holds a private key block (PEM)" },
+        {
+          path: join(dir, "secrets.yaml"),
+          reason: "it holds an AWS access key id and an Anthropic API key",
+        },
+        { path: join(dir, "service-account.json"), reason: "it holds a private key block (PEM)" },
+      ],
+    });
+  });
+
+  it("says in the hook's output which file stayed home and why, quoting none of it", async () => {
+    const { dir, edited } = writeReportedCase(root);
+    recordApi(VALID);
+
+    const outcome = decideAfterValidate(
+      edited,
+      await runValidateStage(edited, { client: client(), timeoutMs: 5_000 }),
+    );
+
+    expect(outcome.kind).toBe("context");
+    const output = hookOutput(outcome);
+    expect(output.split("\n").slice(0, 4)).toEqual([
+      "The .mthds hook kept these files of the method's tree on this machine, since each looks " +
+        "like a secret, and validated the method without them:",
+      `- \`${join(dir, "key.pem")}\` (it holds a private key block (PEM))`,
+      `- \`${join(dir, "secrets.yaml")}\` (it holds an AWS access key id and an Anthropic API key)`,
+      `- \`${join(dir, "service-account.json")}\` (it holds a private key block (PEM))`,
+    ]);
+    // `.env` never reaches the guard: the membership rule keeps a dotfile out of the tree.
+    expect(output).not.toContain(join(dir, ".env"));
+    for (const secret of [...REPORTED_CASE_SECRETS, fake.aws.slice(4), fake.anthropic.slice(7)]) {
+      expect(output).not.toContain(secret);
+    }
+  });
+
+  it("names and uploads only the files it sends when the tree travels by hash", async () => {
+    const { dir, edited } = writeReportedCase(root);
+    // Past the inline threshold, so the tree travels by hash and its files are uploaded.
+    mkdirSync(join(dir, "data"));
+    writeFileSync(join(dir, "data", "rates.csv"), "rate\n".repeat(80 * 1024));
+    const sent = recordApi(VALID);
+
+    const stage = await runValidateStage(edited, { client: client(), timeoutMs: 5_000 });
+
+    expect(stage.status).toBe("valid");
+    const kept = ["data/rates.csv", "main.mthds", "notice.html"];
+    const keptBlobs = kept.map((path) => sha256Of(join(dir, ...path.split("/")))).sort();
+    const blobRoute = sent.find((request) => request.where === "/v1/blobs/missing")!;
+    const asked = (JSON.parse(blobRoute.body) as { blobs: { sha256: string }[] }).blobs;
+    expect(asked.map((blob) => blob.sha256).sort()).toEqual(keptBlobs);
+    expect(
+      sent
+        .filter((request) => request.where.startsWith("upload "))
+        .map((request) => request.where.slice("upload ".length))
+        .sort(),
+    ).toEqual(keptBlobs);
+    const validation = sent.find((request) => request.where === "/v1/validate")!;
+    expect(Object.keys((JSON.parse(validation.body) as { files: object }).files).sort()).toEqual(
+      kept,
+    );
+    for (const request of sent) {
+      for (const secret of REPORTED_CASE_SECRETS) expect(request.body).not.toContain(secret);
+    }
+  });
+
+  it("refuses before any request when a bundle looks like a secret, and says so", async () => {
+    const { dir, edited } = writeReportedCase(root);
+    writeFileSync(edited, `${NOTICE_BUNDLE}\n# token = "${fake.anthropic}"\n`);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const stage = await runValidateStage(edited, { client: client(), timeoutMs: 5_000 });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(stage).toEqual({
+      status: "refused",
+      root: dir,
+      withheld: [
+        { path: edited, reason: "it holds an Anthropic API key" },
+        { path: join(dir, "key.pem"), reason: "it holds a private key block (PEM)" },
+        {
+          path: join(dir, "secrets.yaml"),
+          reason: "it holds an AWS access key id and an Anthropic API key",
+        },
+        { path: join(dir, "service-account.json"), reason: "it holds a private key block (PEM)" },
+      ],
+    });
+    const outcome = decideAfterValidate(edited, stage);
+    expect(outcome.kind).toBe("context");
+    const output = hookOutput(outcome);
+    expect(output).toContain(`The .mthds hook did not validate the method at \`${dir}\``);
+    expect(output).toContain(`- \`${edited}\` (it holds an Anthropic API key)`);
+    for (const secret of REPORTED_CASE_SECRETS) expect(output).not.toContain(secret);
   });
 });
