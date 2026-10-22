@@ -21,9 +21,8 @@
  * own tree and hands in the text; this module owns the verdict. That is the same
  * split pipelex draws between `build_stamped_projection` (pure) and
  * `write_stamped_projection` (local materialization). Hashing goes through WebCrypto rather
- * than `node:crypto` so this module adds no Node builtin to the barrel's import graph — which
- * is not by itself the same as the barrel being browser-bundleable, since `upload.ts` still
- * names `node:fs/promises` and a browser-targeting bundler must mark `node:*` external.
+ * than `node:crypto` so this module adds no Node builtin to the barrel's import graph, which
+ * bundles for the browser with nothing marked external (`tests/browser-bundle.test.ts`).
  *
  * @see {@link runCodegenCheck} for the caller's obligations, which are load-bearing:
  * an incomplete file list or re-encoded text produces a *wrong verdict*, not an error.

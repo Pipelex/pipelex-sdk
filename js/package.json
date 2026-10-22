@@ -34,6 +34,12 @@
       "default": "./dist/upload-grant.js"
     }
   },
+  "imports": {
+    "#node-host": {
+      "node": "./dist/node-host/node.js",
+      "default": "./dist/node-host/unavailable.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "build:hook": "node scripts/build-hook.mjs",
