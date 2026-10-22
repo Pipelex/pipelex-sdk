@@ -35,6 +35,18 @@
  *   upload) → the local lint/format verdicts already applied; the validate
  *   stage passes silently (`validate-stage.ts`)
  *
+ * Secrets stay home: with a `PIPELEX_API_KEY` set, before any request, every
+ * file of the method's tree is read and screened by the workshop's rule, as
+ * `secret-guard.ts` refines it; with none, nothing of the tree is read or sent.
+ * A file that looks like a secret is left out, never sent and never quoted.
+ * When the validation then returns a verdict, a note after the verdict's text
+ * names each such file and why; when it returns none (a network error, a
+ * non-2xx, the deadline), the stage passes silently as above and no note is
+ * shown. One that is a bundle or the manifest, which every validation reads,
+ * keeps the whole tree home, and a non-blocking note names the files instead
+ * of a verdict (`bundle-gather.ts`). The notes of several files of one tree
+ * are named once, each path a Markdown code span that no name can break out of.
+ *
  * The hook always exits 0; a block/deny is expressed on stdout, never via the
  * exit code.
  */
