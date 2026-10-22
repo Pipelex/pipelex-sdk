@@ -33,7 +33,7 @@ import {
   RequestArgumentError,
   type MethodFileTransferCode,
 } from "./errors.js";
-import { loadNodeHost, nodeConditionMissing, type NodeHost } from "./node-host.js";
+import { absenceCause, loadNodeHost, type NodeHost, type TreeLister } from "./node-host.js";
 import type { SavedMethodFile } from "./product-models.js";
 import { throwIfAborted } from "./runs.js";
 
@@ -529,11 +529,30 @@ export interface ListedMethodTree extends MethodTreeSource {
 }
 
 /**
+ * The `mthds` package's tree lister, to list `directory` for `call`, loaded through the Node host;
+ * where the host could not be had, outside Node or inside it, a `RequestArgumentError` naming
+ * `call` and saying why.
+ */
+export async function treeListerFor(directory: string, call: string): Promise<TreeLister> {
+  const loaded = await loadNodeHost();
+  if (loaded.host === null) {
+    throw new RequestArgumentError(
+      loaded.reason === null
+        ? `${call}() got a directory, which only Node can list. In the browser or an edge ` +
+            "runtime, give the method's tree as contents, tree or files instead."
+        : `${call}() cannot list the directory '${directory}': ${loaded.reason}`,
+      absenceCause(loaded),
+    );
+  }
+  return loaded.host.loadTreeLister();
+}
+
+/**
  * The tree of the method directory `directory`, listed by the `mthds` package's `listMethodTree`
  * under the MTHDS standard's membership rule and Manifest Discovery, stopping at the first of
  * `limits` it breaches, before any file is hashed. A run's inputs file is never in it. Node only:
  * `mthds`'s root entry, which reads the file system, is loaded through the Node host by this call
- * alone, and outside Node the call is refused with `RequestArgumentError` naming `call`.
+ * alone, and where the host could not be had the call is refused as `treeListerFor` refuses it.
  *
  * Throws `RequestArgumentError` naming `call` when the directory cannot be listed as a tree, the
  * `mthds` package's `MethodTreeError` as its `cause` with its `code` (`not_found`,
@@ -545,17 +564,7 @@ export async function listDirectoryTree(
   limits: MethodTreeLimits,
   call: string,
 ): Promise<ListedMethodTree> {
-  const host = await loadNodeHost();
-  if (host === null) {
-    const unresolved = nodeConditionMissing();
-    throw new RequestArgumentError(
-      unresolved === null
-        ? `${call}() got a directory, which only Node can list. In the browser or an edge ` +
-            "runtime, give the method's tree as contents, tree or files instead."
-        : `${call}() cannot list the directory '${directory}': ${unresolved}`,
-    );
-  }
-  const { listMethodTree, MethodTreeError } = await host.loadTreeLister();
+  const { listMethodTree, MethodTreeError } = await treeListerFor(directory, call);
   try {
     return await listMethodTree(directory, { limits });
   } catch (err) {
@@ -739,18 +748,17 @@ export async function writeMethodTreeTo(
   options: { timeoutMs: number },
 ): Promise<void> {
   refuseUnwritableListing(files);
-  const host = await loadNodeHost();
-  if (host === null) {
-    const unresolved = nodeConditionMissing();
+  const loaded = await loadNodeHost();
+  if (loaded.host === null) {
     throw new RequestArgumentError(
-      unresolved === null
+      loaded.reason === null
         ? "writeMethodTree() writes to a file system, which only Node has. In the browser or an " +
             "edge runtime, download each file of the listing from its url instead."
-        : `writeMethodTree() cannot write to the file system: ${unresolved}`,
-      { verdict: { errorDomain: "config", retryable: false } },
+        : `writeMethodTree() cannot write to the file system: ${loaded.reason}`,
+      { verdict: { errorDomain: "config", retryable: false }, ...absenceCause(loaded) },
     );
   }
-  const { fs, path } = host;
+  const { fs, path } = loaded.host;
   const target = path.resolve(destination);
   await refuseOccupiedDestination(fs, target);
   const parent = path.dirname(target);

@@ -16,7 +16,7 @@ import {
   UnsupportedUploadCapabilityError,
 } from "./errors.js";
 import { ApiResponseError, ApiUnreachableError } from "./errors.js";
-import { loadNodeHost, nodeConditionMissing } from "./node-host.js";
+import { absenceCause, loadNodeHost } from "./node-host.js";
 import { throwIfAborted } from "./runs.js";
 
 /** A local asset `uploadFile` accepts. A path string is Node-only (see {@link readLocalPath}). */
@@ -101,17 +101,18 @@ export function guessContentType(filename: string): string {
  * bundleable for the browser.
  */
 export async function readLocalPath(path: string): Promise<Uint8Array> {
-  const host = await loadNodeHost();
-  if (host === null) {
-    const unresolved = nodeConditionMissing();
+  const loaded = await loadNodeHost();
+  if (loaded.host === null) {
     throw new InvalidLocalSourceError(
-      unresolved === null
+      loaded.reason === null
         ? `Cannot read the local path "${path}" outside Node — path strings are Node-only. ` +
             "In the browser or an edge runtime, pass the file as bytes (Blob/File/ArrayBuffer/Uint8Array)."
-        : `Cannot read the local path "${path}": ${unresolved}`,
+        : `Cannot read the local path "${path}": ${loaded.reason}`,
       path,
+      absenceCause(loaded),
     );
   }
+  const host = loaded.host;
   try {
     return await host.fs.readFile(path);
   } catch (cause) {

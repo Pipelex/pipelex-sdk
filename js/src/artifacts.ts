@@ -39,7 +39,7 @@ import {
 } from "./errors.js";
 import type { ErrorVerdict } from "./errors.js";
 import type { GetRunResultOptions, RunResults, RunResultState } from "./runs.js";
-import { loadNodeHost, nodeConditionMissing } from "./node-host.js";
+import { absenceCause, loadNodeHost } from "./node-host.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -726,7 +726,7 @@ function requirePositive(name: string, value: number): void {
  */
 async function dispatcherFor(timeoutMs: number): Promise<Dispatcher | null> {
   try {
-    const host = await loadNodeHost();
+    const { host } = await loadNodeHost();
     if (host === null) return null;
     const Agent = await host.loadAgent();
     return new Agent({ headersTimeout: timeoutMs, bodyTimeout: timeoutMs });
@@ -1205,17 +1205,17 @@ export async function downloadArtifacts(
   client: ArtifactCapableClient,
   request: DownloadArtifactsRequest,
 ): Promise<DownloadArtifactsResult> {
-  const host = await loadNodeHost();
-  if (host === null) {
-    const unresolved = nodeConditionMissing();
+  const loaded = await loadNodeHost();
+  if (loaded.host === null) {
     throw new ArtifactOperationError(
-      unresolved === null
+      loaded.reason === null
         ? "downloadArtifacts writes to a filesystem and is Node-only. In another runtime, resolve " +
             "with resolveArtifacts or stream with fetchArtifact instead."
-        : `downloadArtifacts cannot write to the filesystem: ${unresolved}`,
-      ENVIRONMENT_REFUSED,
+        : `downloadArtifacts cannot write to the filesystem: ${loaded.reason}`,
+      { ...ENVIRONMENT_REFUSED, ...absenceCause(loaded) },
     );
   }
+  const host = loaded.host;
   const scope = request.scope ?? "main_stuff";
   requireScope(scope);
   const concurrency = request.concurrency ?? DEFAULT_DOWNLOAD_CONCURRENCY;

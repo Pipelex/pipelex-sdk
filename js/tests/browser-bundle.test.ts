@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   copyFileSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -202,7 +203,7 @@ describe("the package bundled for the browser", () => {
     const script = `
       const { loadNodeHost } = await import(${JSON.stringify(pathToFileURL(join(packageDir, "dist/node-host.js")).href)});
       const { listDirectoryTree } = await import(${JSON.stringify(pathToFileURL(join(packageDir, "dist/method-trees.js")).href)});
-      const host = await loadNodeHost();
+      const { host } = await loadNodeHost();
       const tree = await listDirectoryTree(${JSON.stringify(methodDir)}, {}, "probe");
       console.log(JSON.stringify({ host: host !== null, files: tree.files.map((file) => file.path) }));
     `;
@@ -213,5 +214,37 @@ describe("the package bundled for the browser", () => {
     });
 
     expect(JSON.parse(output)).toEqual({ host: true, files: ["assets/logo.png", "main.mthds"] });
+  }, 60_000);
+
+  it("refuses with its own error, not a raw rejection, where Node cannot resolve the import", () => {
+    // A copy of the package whose `package.json` has no `imports` map, as a toolchain that does not
+    // read one sees it. `dist/` is copied, not linked, since Node resolves `#node-host` from the
+    // `package.json` nearest the real path of the module importing it.
+    const bareDir = join(packageDir, "without-imports");
+    mkdirSync(bareDir);
+    const { imports: _imports, ...bare } = JSON.parse(
+      readFileSync(join(packageDir, "package.json"), "utf8"),
+    ) as Record<string, unknown>;
+    writeFileSync(join(bareDir, "package.json"), JSON.stringify(bare));
+    cpSync(join(packageDir, "dist"), join(bareDir, "dist"), { recursive: true });
+    symlinkSync(join(PACKAGE_DIR, "node_modules"), join(bareDir, "node_modules"), "dir");
+    const script = `
+      const { readLocalPath } = await import(${JSON.stringify(pathToFileURL(join(bareDir, "dist/upload.js")).href)});
+      const refusal = await readLocalPath("/a/report.pdf").catch((e) => e);
+      console.log(JSON.stringify({ name: refusal.name, message: refusal.message, code: refusal.cause?.code }));
+    `;
+
+    const output = runNode(["--input-type=module", "-e", script], {
+      ...process.env,
+      DO_NOT_TRACK: "1",
+    });
+
+    const refusal = JSON.parse(output) as { name: string; message: string; code: string };
+    expect(refusal.name).toBe("InvalidLocalSourceError");
+    expect(refusal.code).toBe("ERR_PACKAGE_IMPORT_NOT_DEFINED");
+    expect(refusal.message).toMatch(
+      /^Cannot read the local path "\/a\/report\.pdf": the Node host of @pipelex\/sdk could not be loaded \(.*#node-host/,
+    );
+    expect(refusal.message).toContain("Jest 29.4 or later");
   }, 60_000);
 });

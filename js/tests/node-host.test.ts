@@ -19,7 +19,7 @@ import {
   errorVerdictOf,
 } from "../src/errors.js";
 import { listDirectoryTree, writeMethodTreeTo } from "../src/method-trees.js";
-import { loadNodeHost, nodeConditionMissing } from "../src/node-host.js";
+import { loadNodeHost } from "../src/node-host.js";
 import { nodeHost as absentHost } from "../src/node-host/unavailable.js";
 import { readLocalPath } from "../src/upload.js";
 
@@ -46,7 +46,7 @@ afterEach(() => {
 
 describe("loadNodeHost", () => {
   it("answers the host in Node, with the file system and the loaders", async () => {
-    const host = await loadNodeHost();
+    const { host } = await loadNodeHost();
 
     expect(host).not.toBeNull();
     expect(typeof host!.fs.readFile).toBe("function");
@@ -57,13 +57,8 @@ describe("loadNodeHost", () => {
     expect(typeof (await host!.loadAgent())).toBe("function");
   });
 
-  it("answers null outside Node, where no condition is missing", async () => {
-    expect(await outsideNode(() => loadNodeHost())).toBeNull();
-    expect(await outsideNode(async () => nodeConditionMissing())).toBeNull();
-  });
-
-  it("explains the missing condition in Node, for a refusal made once the host is absent", () => {
-    expect(nodeConditionMissing()).toMatch(/^this copy of @pipelex\/sdk runs in Node/);
+  it("answers no host outside Node, with no reason, the operation's own refusal applying", async () => {
+    expect(await outsideNode(() => loadNodeHost())).toEqual({ host: null, reason: null });
   });
 
   it("is absent from the variant every other runtime resolves", () => {

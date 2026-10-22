@@ -17,13 +17,19 @@ import {
   errorVerdictOf,
 } from "../src/errors.js";
 import { listDirectoryTree, writeMethodTreeTo } from "../src/method-trees.js";
-import { isNodeRuntime, loadNodeHost, nodeConditionMissing } from "../src/node-host.js";
+import { isNodeRuntime, loadNodeHost } from "../src/node-host.js";
 import { readLocalPath } from "../src/upload.js";
 
 vi.mock("#node-host", async () => await import("../src/node-host/unavailable.js"));
 
 const CONDITION_MISSING =
   'this copy of @pipelex/sdk runs in Node but was resolved without the "node" export condition';
+
+/** Why the host is absent, as the refusals say it. */
+async function reason(): Promise<string | null> {
+  const loaded = await loadNodeHost();
+  return loaded.host === null ? loaded.reason : null;
+}
 
 /** A client the refusals must never reach. */
 const UNREACHED: ArtifactCapableClient = {
@@ -37,10 +43,13 @@ afterEach(() => {
 
 describe("the Node host resolved without the node condition", () => {
   it("is absent although the runtime is Node, and the refusal says why", async () => {
+    const loaded = await loadNodeHost();
+
     expect(isNodeRuntime()).toBe(true);
-    expect(await loadNodeHost()).toBeNull();
-    expect(nodeConditionMissing()).toMatch(new RegExp(`^${CONDITION_MISSING}`));
-    expect(nodeConditionMissing()).toContain('esbuild platform "node"');
+    expect(loaded.host).toBeNull();
+    expect(await reason()).toMatch(new RegExp(`^${CONDITION_MISSING}`));
+    expect(await reason()).toContain('esbuild platform "node"');
+    expect("cause" in loaded).toBe(false);
   });
 
   it("refuses a directory as an input error, naming the call and the condition", async () => {
@@ -48,7 +57,7 @@ describe("the Node host resolved without the node condition", () => {
 
     expect(refusal).toBeInstanceOf(RequestArgumentError);
     expect((refusal as Error).message).toBe(
-      `validate() cannot list the directory '/a/method': ${nodeConditionMissing()}`,
+      `validate() cannot list the directory '/a/method': ${await reason()}`,
     );
     expect((refusal as Error).message).not.toContain("only Node");
     expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "input", retryable: false });
@@ -72,7 +81,7 @@ describe("the Node host resolved without the node condition", () => {
 
     expect(refusal).toBeInstanceOf(RequestArgumentError);
     expect((refusal as Error).message).toBe(
-      `writeMethodTree() cannot write to the file system: ${nodeConditionMissing()}`,
+      `writeMethodTree() cannot write to the file system: ${await reason()}`,
     );
     expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "config", retryable: false });
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -84,7 +93,7 @@ describe("the Node host resolved without the node condition", () => {
     expect(refusal).toBeInstanceOf(InvalidLocalSourceError);
     expect((refusal as InvalidLocalSourceError).source).toBe("/a/report.pdf");
     expect((refusal as Error).message).toBe(
-      `Cannot read the local path "/a/report.pdf": ${nodeConditionMissing()}`,
+      `Cannot read the local path "/a/report.pdf": ${await reason()}`,
     );
   });
 
@@ -95,7 +104,7 @@ describe("the Node host resolved without the node condition", () => {
 
     expect(refusal).toBeInstanceOf(ArtifactOperationError);
     expect((refusal as Error).message).toBe(
-      `downloadArtifacts cannot write to the filesystem: ${nodeConditionMissing()}`,
+      `downloadArtifacts cannot write to the filesystem: ${await reason()}`,
     );
     expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "config", retryable: false });
   });

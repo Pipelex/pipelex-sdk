@@ -12,7 +12,9 @@
  * which holds none. A bundler building for the browser therefore follows no Node built-in from the
  * barrel, statically or dynamically, and `tests/browser-bundle.test.ts` bundles the built package
  * for the browser to hold it to that. Node resolves the same import under its own condition, so
- * the Node-only operations work there as they always did.
+ * the Node-only operations work there as they always did. Where the host cannot be had, outside
+ * Node, inside it without the `node` condition, or where the import itself fails, `loadNodeHost()`
+ * answers why rather than throwing, so each operation refuses with its own class and verdict.
  */
 
 import type { NodeHost } from "./node-host/node.js";
@@ -27,30 +29,73 @@ export function isNodeRuntime(): boolean {
 }
 
 /**
- * The Node host, or `null` in two cases: in a runtime that is not Node, or in Node itself where
- * the package was resolved without the `node` export condition, as a bundle built for the browser
- * or for esbuild's `neutral` platform resolves it. A refusal tells them apart with
- * `nodeConditionMissing()`. The runtime is checked first, so nothing is loaded where it is not
- * Node.
+ * The Node host could not be had: why, for a refusal to say, and the error behind it when the
+ * host's import failed.
  */
-export async function loadNodeHost(): Promise<NodeHost | null> {
-  if (!isNodeRuntime()) return null;
-  const loaded: { readonly nodeHost: NodeHost | null } = await import("#node-host");
-  return loaded.nodeHost;
+export interface NodeHostAbsence {
+  readonly host: null;
+  /**
+   * Why, as a clause a refusal puts after its own subject; `null` outside Node, where the
+   * operation's own "Node only" refusal is the right one.
+   */
+  readonly reason: string | null;
+  /** The import's own error, when the host's import failed rather than resolving to nothing. */
+  readonly cause?: unknown;
+}
+
+/** The Node host, or why it could not be had. */
+export type NodeHostLoad = { readonly host: NodeHost } | NodeHostAbsence;
+
+/**
+ * Inside Node, the package was resolved without the `node` export condition, as a bundle built
+ * for the browser or for esbuild's `neutral` platform resolves it, so `#node-host` resolved to the
+ * variant holding nothing.
+ */
+const NODE_CONDITION_MISSING =
+  'this copy of @pipelex/sdk runs in Node but was resolved without the "node" export ' +
+  "condition, which selects the part of the package that reaches Node's file system. Bundle " +
+  'it for Node (esbuild platform "node", webpack target "node"), add "node" to the bundler\'s ' +
+  "conditions (esbuild conditions, webpack resolve.conditionNames, Vite resolve.conditions), " +
+  "or leave @pipelex/sdk out of the bundle.";
+
+/**
+ * Inside Node, the import of `#node-host` itself failed: the toolchain loading the package does
+ * not resolve the `imports` map of `package.json`, as Jest before 29.4 does not, or the package is
+ * installed in part. `detail` is the import's own error message.
+ */
+function hostImportFailed(detail: string): string {
+  return (
+    `the Node host of @pipelex/sdk could not be loaded (${detail}). The SDK reaches Node's file ` +
+    'system through "#node-host", an entry of the "imports" map of its package.json, and a ' +
+    'toolchain that does not resolve package "imports", such as Jest before 29.4, cannot load ' +
+    "it: run under one that does, such as Node's own loader, Jest 29.4 or later or a current " +
+    "bundler, or reinstall @pipelex/sdk if it is installed in part."
+  );
 }
 
 /**
- * What a refusal says once `loadNodeHost()` has answered `null`: inside Node, that the package was
- * resolved without the `node` export condition, and how to resolve it with it; `null` outside
- * Node, where the operation's own "Node only" refusal is the right one.
+ * The Node host, or its absence and why, in three cases: a runtime that is not Node; Node itself
+ * where the package was resolved without the `node` export condition, so `#node-host` resolved to
+ * the variant holding nothing; and Node where the import of `#node-host` failed, as in a
+ * toolchain that does not resolve the `imports` map of `package.json`, whose error is the
+ * absence's `cause`. It never throws, so every operation needing Node refuses with its own class
+ * and verdict. The runtime is checked first, so nothing is loaded where it is not Node.
  */
-export function nodeConditionMissing(): string | null {
-  if (!isNodeRuntime()) return null;
-  return (
-    'this copy of @pipelex/sdk runs in Node but was resolved without the "node" export ' +
-    "condition, which selects the part of the package that reaches Node's file system. Bundle " +
-    'it for Node (esbuild platform "node", webpack target "node"), add "node" to the bundler\'s ' +
-    "conditions (esbuild conditions, webpack resolve.conditionNames, Vite resolve.conditions), " +
-    "or leave @pipelex/sdk out of the bundle."
-  );
+export async function loadNodeHost(): Promise<NodeHostLoad> {
+  if (!isNodeRuntime()) return { host: null, reason: null };
+  let loaded: { readonly nodeHost: NodeHost | null };
+  try {
+    loaded = await import("#node-host");
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    return { host: null, reason: hostImportFailed(detail), cause };
+  }
+  return loaded.nodeHost === null
+    ? { host: null, reason: NODE_CONDITION_MISSING }
+    : { host: loaded.nodeHost };
+}
+
+/** The `cause` option of a refusal made for `absence`: the import's own error, when there is one. */
+export function absenceCause(absence: NodeHostAbsence): { cause?: unknown } {
+  return absence.cause === undefined ? {} : { cause: absence.cause };
 }
