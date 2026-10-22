@@ -685,7 +685,7 @@ class BrandingBodies:
         "wide_logo": None,
     }
 
-    #: A personal workspace, or a team that set nothing: every colour and logo null.
+    #: A personal workspace, or a team that set nothing: every colour and logo `None`.
     UNBRANDED: ClassVar[dict[str, Any]] = {
         "org_id": ORG_ID,
         "org_name": "Ada's workspace",

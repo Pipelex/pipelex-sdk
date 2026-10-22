@@ -595,7 +595,7 @@ class MembershipsResponse(BaseModel):
 class BrandingColors(BaseModel):
     """One colour set: the button, accent and header colours, each `#rrggbb` in lower case, or `None` when not set.
 
-    The platform always sends all three keys.
+    The platform always sends all three colours.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -662,9 +662,9 @@ class OrganizationBranding(BaseModel):
 class BrandingColorsUpdate(BaseModel):
     """Changes to one colour set — part of an `OrganizationBrandingUpdate`.
 
-    A key set to a colour sets it, a key set to `None` clears it, and a key left unset keeps its value.
+    A field set to a colour sets it, a field set to `None` clears it, and a field left unset keeps its value.
     A colour is `#rrggbb` in either case, stored in lower case; the platform refuses anything else with
-    a `422` `validation_failed` whose `errors[]` entry names the key, such as `colors.action`.
+    a `422` `validation_failed` whose `errors[]` entry names the field, such as `colors.action`.
     """
 
     model_config = ConfigDict(extra="forbid")
