@@ -35,5 +35,5 @@ class TestFundamentals:
         # The verdict rides a 200 body (never raised); assert it is valid.
         bundle = bundle_path.read_text()
         async with PipelexAPIClient() as client:
-            report = await client.validate([bundle])
+            report = await client.validate(contents={bundle_path.name: bundle})
         assert report.is_valid, report.rendered_markdown

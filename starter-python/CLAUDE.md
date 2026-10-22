@@ -37,7 +37,7 @@ Run specific tests (local only): `make tp TEST=test_function_name`
 
 ## Architecture
 
-This starter calls the **hosted Pipelex API** via the `pipelex-sdk` package (`PipelexAPIClient`) — it does **not** run Pipelex as a local library. The `.mthds` bundle is read from disk and sent to the API as content (`mthds_contents`); the API runs the method and returns the output.
+This starter calls the **hosted Pipelex API** via the `pipelex-sdk` package (`PipelexAPIClient`) — it does **not** run Pipelex as a local library. The `.mthds` bundle is read from disk and sent to the API as the method's tree (`contents`, each `.mthds` file's text keyed by its path in the method's directory); the API runs the method and returns the output.
 
 - Credentials/endpoint come from `PIPELEX_BASE_URL` / `PIPELEX_API_KEY` (see `.env.example`). `python-dotenv` loads `.env` when running the CLI or tests.
 - **The execution mode is the command group, not an option.** There are exactly three, each a self-contained Typer sub-package: `widget blocking …` (`client.execute` — one call, dies at the hosted ~30s cap), `widget attended …` (`client.start` + `client.wait_for_result` — durable, you wait), `widget detached …` (`client.start` only — durable, you collect it later with `widget detached status|result|wait <id>`). Attended and detached start the *same* durable run; the axis they name is who waits. There is no default mode and no `--mode` option: `widget/cli.py` is a thin assembler (`load_dotenv` callback + three `add_typer` calls in reading order) and nothing else.

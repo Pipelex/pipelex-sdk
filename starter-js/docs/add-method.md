@@ -23,7 +23,7 @@ It is out of `make all` for the same reason `codegen` and `test-e2e` are: it nee
 
 `METHOD` is the one required argument, and it takes one of these forms:
 
-- **A bundle** — a path to a `.mthds` file, or to a directory holding several (at any depth). The files are copied into `methods/<name>/`, keeping their paths relative to what you named, and the action sends them inline as `mthds_contents`. A path inside `methods/<name>/` — the directory or any file in it — scaffolds that directory **in place**, all of its `.mthds` files, since that is what `npm run codegen` reads. A relative path is read from the directory the command was typed in (for `make`, the app's root), and `~/` is your home directory.
+- **A bundle** — a path to a `.mthds` file, or to a directory holding several (at any depth). The files are copied into `methods/<name>/`, keeping their paths relative to what you named, and the action sends them as the method's tree, `contents`, each under its path in `methods/<name>/`. A path inside `methods/<name>/` — the directory or any file in it — scaffolds that directory **in place**, all of its `.mthds` files, since that is what `npm run codegen` reads. A relative path is read from the directory the command was typed in (for `make`, the app's root), and `~/` is your home directory.
 - **A catalog id** — `mt_…`, a method saved under your key's organization on [app.pipelex.com](https://app.pipelex.com). Sent as `method_id`. A bare id runs the method's latest published version, `mt_…@3` its version 3 for good and `mt_…@draft` its draft; the suffix stays in `method.json`, so the app keeps running the version it was scaffolded against, and the slug and the label come from the method's catalog name, read by the bare id. Any other suffix (`@0`, `@03`, `@Draft`, two of them) is refused before anything is sent.
 - **An address** — `github.com/<owner>/<repo>[/<package>][@<tag>]`, a published MTHDS package, with or without an `https://` prefix. Sent as `method_ref`, normalized to the bare form.
 
@@ -72,11 +72,11 @@ For a bundle, `methods/<name>/` holds the copied `.mthds` files instead of a man
 
 ### A bundle
 
-The `.mthds` files are the method. The action reads every one of them at request time with `loadMethodBundles("<name>")` — the directory's name is the only thing it holds, never a copy of the bundle — and sends them as `mthds_contents`, sorted on each file's path inside the directory written with `/`, which is the order `npm run codegen` projects them in on every platform. **To change the method, edit the files and run `npm run codegen`**: `sources.json` hashes each file, so `make check` fails with the usual remedy until you do, and the run follows the edit on its own.
+The `.mthds` files are the method. The action reads every one of them at request time with `loadMethodBundles("<name>")` — the directory's name is the only thing it holds, never a copy of the bundle — and sends them as the method's tree, `contents`, each file's text keyed by its path inside the directory written with `/`, the tree path, in sorted order: the same map `npm run codegen` sends the crate routes, on every platform. **To change the method, edit the files and run `npm run codegen`**: `sources.json` hashes each file, so `make check` fails with the usual remedy until you do, and the run follows the edit on its own.
 
-A bundle is sent to the API under the names you gave it, so a diagnostic names the file you pointed at; the generated tree then records each file under its path in `methods/<name>/`, which is what the offline check compares. The name a file is sent under does not reach the artifacts, so the tree is exactly the one `npm run codegen` writes afterwards.
+A bundle is sent to the API as the method's tree, each file under its path inside the bundle you named, which is the path it keeps in `methods/<name>/`, so a diagnostic names a file by that path under the line naming the bundle; the generated tree then records each file under its path from the app's root, `methods/<name>/…`, which is what the offline check compares. The path a file is sent under does not reach the artifacts, so the tree is exactly the one `npm run codegen` writes afterwards.
 
-A method whose pipe takes a file hands `prepareInputs` the same bundle the run sends (`files: bundles.map((content) => ({ content }))`), read once per run — the PDF example's shape.
+A method whose pipe takes a file hands `prepareInputs` the same tree the run sends (`contents: bundles`), read once per run — the PDF example's shape.
 
 ### A manifest
 

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from mthds.runners.api.problem import UserAction
+from pipelex_sdk.error_models import ProblemUserAction
 from pipelex_sdk.errors import ApiResponseError
 
 from widget.manifest import ManifestError, MethodSelector, read_manifest, write_manifest
@@ -76,7 +76,10 @@ class TestMethodSources:
         (method_dir / "nested" / "extra.mthds").write_text("# extra\n")
         source = codegen.read_method_source(method_dir)
         assert source is not None
-        assert len(source.files) == 2
+        assert source.files == {"main.mthds": "main_pipe = 'x'\n", "nested/extra.mthds": "# extra\n"}
+        # The tree is sent as `contents`, which the SDK sends inline when small and by hash otherwise.
+        request = source.codegen_request()
+        assert request.files is None and request.contents == source.files
         assert source.method_id is None and source.method_ref is None
         assert source.origin == "bundle"
 
@@ -122,7 +125,7 @@ class TestMethodSources:
         )
         request = source.codegen_request()
         assert getattr(request, expected) is not None
-        assert request.files is None
+        assert request.files is None and request.contents is None
         assert request.target == codegen.TARGET
 
     def test_dashes_become_underscores(self):
@@ -144,7 +147,7 @@ class TestMethodSources:
             status_text="Unprocessable Entity",
             response_body="",
             server_message="method_ref is not supported here",
-            user_action=UserAction(kind="change_input", detail="Send the bundle's files instead."),
+            user_action=ProblemUserAction(kind="change_input", detail="Send the bundle's files instead."),
         )
         message = codegen.explain(exc, "https://api.example.com", route="POST /v1/validate")
         assert message == "HTTP 422 from POST /v1/validate — method_ref is not supported here\n    Next step: Send the bundle's files instead."

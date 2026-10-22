@@ -314,7 +314,7 @@ class TestAddMethod:
         assert "method_id=selector.method_id, method_ref=selector.method_ref" in source
         assert f'pipe_code="{PIPE_REF}"' in source
         assert ADDRESS not in source
-        assert "mthds_contents" not in source
+        assert "contents=" not in source and "files=" not in source
 
     @pytest.mark.parametrize(
         "manifest", [MethodSelector(method_ref="github.com/Pipelex/methods/text_stats@v0.2.0"), MethodSelector(method_id="mt_abc123")]

@@ -21,8 +21,9 @@ changed, and prunes stamped artifacts that dropped out of the set.
 
 A method directory names its closure in one of exactly two ways, and never both:
 
-- **`.mthds` files** — the bundle lives here, and the whole directory is sent as inline
-  `files`. This is what the three demos do.
+- **`.mthds` files** — the bundle lives here, and the whole directory is sent as the method's
+  tree, `contents`, each file keyed by its path in the directory, inline when small and by hash
+  otherwise. This is what the three demos do.
 - **`method.json`** — a one-line manifest holding a hosted catalog id (`method_id`) or a
   published address (`method_ref`), for a method that lives elsewhere. `make add-method`
   writes one; regenerating it is this same script, with the selector in place of the files.
@@ -48,7 +49,7 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.codegen_writer import write_codegen_tree
-from pipelex_sdk.crate_models import CodegenRequest, CodegenTarget, CodegenValidReport, MthdsFileItem
+from pipelex_sdk.crate_models import CodegenRequest, CodegenTarget, CodegenValidReport
 from pipelex_sdk.errors import ApiResponseError, CodegenError
 
 from widget.manifest import MANIFEST_FILENAME, ManifestError, read_manifest
@@ -84,11 +85,13 @@ def generated_package_dir(method_name: str) -> Path:
 
 @dataclass(frozen=True)
 class MethodSource:
-    """One method's closure — inline files or a selector — and the package its tree is written into."""
+    """One method's closure — a bundle's tree or a selector — and the package its tree is written into."""
 
     name: str
     out_dir: Path
-    files: list[MthdsFileItem] | None = None
+    #: The bundle as the method's tree, sent as `contents`: each `.mthds` file's text keyed by its path
+    #: in the method's directory, the tree's root.
+    files: dict[str, str] | None = None
     method_id: str | None = None
     method_ref: str | None = None
 
@@ -106,29 +109,18 @@ class MethodSource:
 
         No `pipe_ref`: the `types` kind is concept-set-wide and rejects it with a 422.
         """
-        return CodegenRequest(files=self.files, method_id=self.method_id, method_ref=self.method_ref, kind="types", target=TARGET)
-
-
-def source_label(path: Path) -> str:
-    """The provenance label a server diagnostic names for one file — repo-relative where it can be.
-
-    A path outside the repository keeps its own spelling rather than raising: the label is there
-    so a diagnostic names a file you can open, and a `relative_to` that refuses is not a reason to
-    fail a run.
-    """
-    try:
-        return str(path.relative_to(REPO_ROOT))
-    except ValueError:
-        return str(path)
+        tree: dict[str, bytes | str] | None = dict(self.files) if self.files is not None else None
+        return CodegenRequest(contents=tree, method_id=self.method_id, method_ref=self.method_ref, kind="types", target=TARGET)
 
 
 def read_method_source(method_dir: Path) -> MethodSource | None:
     """Read one method directory as a closure, or `None` when it holds no method at all.
 
     A bundle directory holds its whole closure, so every `.mthds` file under it is sent, nested
-    ones included — one for a single-file bundle, several for a multi-file one. Each file carries
-    its repo-relative path as `source`, so a diagnostic the server raises names a file you can
-    open. A manifest directory holds `method.json` and names a method that lives elsewhere.
+    ones included — one for a single-file bundle, several for a multi-file one. The directory is the
+    tree's root, so each file is keyed by its path in it, and a diagnostic the server raises names
+    the file by that path, under the line naming the method. A manifest directory holds
+    `method.json` and names a method that lives elsewhere.
 
     Raises:
         ManifestError: The directory holds both kinds (they would disagree about where the tree
@@ -141,7 +133,7 @@ def read_method_source(method_dir: Path) -> MethodSource | None:
         raise ManifestError(msg)
     out_dir = generated_package_dir(method_dir.name)
     if bundle_files:
-        files = [MthdsFileItem(content=path.read_text(encoding="utf-8"), source=source_label(path)) for path in bundle_files]
+        files = {path.relative_to(method_dir).as_posix(): path.read_text(encoding="utf-8") for path in bundle_files}
         return MethodSource(name=method_dir.name, out_dir=out_dir, files=files)
     if manifest_path.is_file():
         selector = read_manifest(manifest_path)

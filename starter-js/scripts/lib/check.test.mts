@@ -39,7 +39,7 @@ const INVALID_UTF8 = Buffer.from([0x68, 0x69, 0x80, 0x0a]);
 const METHOD: MethodSource = {
   name: "demo",
   kind: "files",
-  files: [{ content: "", source: "methods/demo/main.mthds" }],
+  files: { "main.mthds": "" },
   sourceHashes: { "methods/demo/main.mthds": "abc123" },
 };
 

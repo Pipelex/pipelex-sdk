@@ -32,8 +32,8 @@ class ManifestError(AppError):
 class MethodSelector(NamedTuple):
     """How a method that lives elsewhere is named: a hosted catalog id, or a published address.
 
-    Exactly one is set. The pair mirrors the SDK's own exclusive choice (`mthds_contents`,
-    `method_id`, `method_ref`) without the inline arm, which a manifest never carries.
+    Exactly one is set. The pair mirrors the SDK's own exclusive choice (`files`, `method_id`,
+    `method_ref`) without the tree, which a manifest never carries.
     """
 
     method_id: str | None = None

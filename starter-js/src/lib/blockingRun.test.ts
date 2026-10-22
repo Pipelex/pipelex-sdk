@@ -20,7 +20,7 @@ afterEach(() => vi.restoreAllMocks());
 
 const OPTIONS = {
   pipe_code: "extract_entities",
-  mthds_contents: ["BUNDLE"],
+  contents: { "main.mthds": "BUNDLE" },
   inputs: { text: "x" },
 };
 
