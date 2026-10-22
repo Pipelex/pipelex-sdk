@@ -17,12 +17,24 @@
  * the legitimate subpath through. The `pathNot` protocol exclusion future-proofs
  * the rule against a depcruise version that DOES resolve the subpath to a file.
  *
- * One module is let through, and only by a dynamic import: `src/method-trees.ts` lists a
- * method's directory with `mthds`'s `listMethodTree`, the MTHDS standard's lister and its
+ * One module is let through, and only by a dynamic import: `src/node-host/node.ts`, the Node
+ * host as Node resolves it, loads `mthds`'s `listMethodTree`, the MTHDS standard's lister and its
  * membership rule, which only the root entry exports. The root entry loads Node built-ins and
- * the runner-side surface, so it is loaded by `await import("mthds")` when a caller gives a
- * `directory`, and never by a static import: the SDK's static graph, which a browser bundle
- * follows, keeps none of it.
+ * the runner-side surface, so the host loads it by `await import("mthds")` when a caller lists a
+ * `directory`, and never by a static import.
+ *
+ * The Node host is the one module of the barrel's graph that may load what only Node has: a Node
+ * built-in, `undici` or that root entry. The rest of the SDK gets them from `loadNodeHost()`
+ * (`src/node-host.ts`), which imports `#node-host`, the package's own subpath import, resolved by
+ * condition to the host under `node` and to `src/node-host/unavailable.ts` everywhere else, so a
+ * bundler building for the browser follows none of them. dependency-cruiser reads that import
+ * through `tsconfig.json`'s `paths`, which map it to the Node variant as the type checker sees it,
+ * not through the conditions; so the rules below hold the source to the shape, and
+ * `tests/browser-bundle.test.ts` bundles the built package for the browser to hold the result to
+ * it. Type-only imports are erased from the build, so they are let through.
+ *
+ * The command (`src/cli.ts`, `src/cli/`) and the hook (`src/hooks/`) are Node programs that no
+ * module of the barrel imports, so they use Node directly.
  *
  * The `pipelex-sdk` command (`src/cli.ts`, the executable, and `src/cli/`) sits at the
  * TOP of the graph, the other way round: nothing in the SDK imports it, so a library user
@@ -38,15 +50,15 @@ module.exports = {
       severity: "error",
       comment:
         "Import the MTHDS standard's types only via the published `mthds/protocol` subpath — never bare `mthds` (pulls the runner-side surface) or a deep import into `mthds` internals.",
-      from: { path: "^src/", pathNot: "^src/method-trees\\.ts$" },
+      from: { path: "^src/", pathNot: "^src/node-host/node\\.ts$" },
       to: { path: "node_modules/mthds/", pathNot: "node_modules/mthds/(dist/)?protocol/" },
     },
     {
-      name: "mthds-lister-only-by-dynamic-import",
+      name: "mthds-lister-only-by-the-node-host",
       severity: "error",
       comment:
-        "`src/method-trees.ts` may load `mthds`'s root entry for its directory lister, and only by a dynamic `import()`, so the SDK's static graph keeps no Node built-in; never a deep import.",
-      from: { path: "^src/method-trees\\.ts$" },
+        "`src/node-host/node.ts` may load `mthds`'s root entry for its directory lister, never a deep import.",
+      from: { path: "^src/node-host/node\\.ts$" },
       to: {
         path: "node_modules/mthds/",
         pathNot: "node_modules/mthds/((dist/)?protocol/|dist/index\\.js$)",
@@ -56,9 +68,36 @@ module.exports = {
       name: "mthds-root-entry-never-static",
       severity: "error",
       comment:
-        "`src/method-trees.ts` loads `mthds`'s root entry by a dynamic `import()` alone: a static import would put Node built-ins in the SDK's static graph.",
-      from: { path: "^src/method-trees\\.ts$" },
-      to: { path: "node_modules/mthds/dist/index\\.js$", dependencyTypesNot: ["dynamic-import"] },
+        "The Node host loads `mthds`'s root entry by a dynamic `import()` alone, when a directory is listed: a static import would load the runner-side surface with every use of the host.",
+      from: { path: "^src/node-host/node\\.ts$" },
+      to: {
+        path: "node_modules/mthds/dist/index\\.js$",
+        dependencyTypesNot: ["dynamic-import", "type-only"],
+      },
+    },
+    {
+      name: "node-builtins-only-in-the-node-host",
+      severity: "error",
+      comment:
+        "Only the Node host (`src/node-host/node.ts`) imports a Node built-in, statically or dynamically; the rest of the barrel's graph gets it from `loadNodeHost()`, so a browser bundle follows none.",
+      from: { path: "^src/", pathNot: "^src/(node-host/node\\.ts$|cli(\\.ts$|/)|hooks/)" },
+      to: { dependencyTypes: ["core"], dependencyTypesNot: ["type-only"] },
+    },
+    {
+      name: "undici-only-in-the-node-host",
+      severity: "error",
+      comment:
+        "Only the Node host (`src/node-host/node.ts`) loads `undici`, which requires Node built-ins; the rest of the barrel's graph gets its `Agent` from `loadNodeHost()`.",
+      from: { path: "^src/", pathNot: "^src/(node-host/node\\.ts$|cli(\\.ts$|/)|hooks/)" },
+      to: { path: "node_modules/undici/", dependencyTypesNot: ["type-only"] },
+    },
+    {
+      name: "node-host-only-through-its-condition",
+      severity: "error",
+      comment:
+        "The Node host's two variants are reached only through `#node-host`, which `package.json` resolves by condition (`tsconfig.json` maps it to the Node variant for the type checker, as an alias); importing one by its path would put the Node variant in a browser bundle.",
+      from: { path: "^src/", pathNot: "^src/node-host/" },
+      to: { path: "^src/node-host/", dependencyTypesNot: ["type-only", "aliased-tsconfig-paths"] },
     },
     {
       name: "no-import-of-the-command",

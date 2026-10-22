@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The main entry bundles for the browser**: `@pipelex/sdk` bundles for a browser or edge target with nothing marked external, so a Next.js app whose client code imports it renders under `next dev`, where 0.48.0 made Turbopack panic on `node:fs` and answer `500`. Listing a `directory`, `writeMethodTree`, `downloadArtifacts`, reading a path string and the artifact fetch's dispatcher reach `node:fs/promises`, `node:path`, `undici` and the `mthds` package's lister through the package's own `#node-host` import, which resolves to them under the `node` condition and to nothing under a browser's, and outside Node a `directory` and `writeMethodTree` are refused with `RequestArgumentError`.
+
 ## [v0.48.0] - 2026-10-20
 
 ### Added

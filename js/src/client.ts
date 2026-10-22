@@ -2744,9 +2744,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * The links expire about fifteen minutes after the read that served them: write the tree soon
    * after reading the method, and read it again for fresh links when a download is refused.
    *
-   * Throws `RequestArgumentError` before any download when the destination exists and is not an
-   * empty directory, or the listing holds a path that is not a tree path, the same path twice, or
-   * paths that collide once case-folded or where one names a directory of another;
+   * Throws `RequestArgumentError` before any download when it runs outside Node, when the
+   * destination exists and is not an empty directory, or when the listing holds a path that is not
+   * a tree path, the same path twice, or paths that collide once case-folded or where one names a
+   * directory of another;
    * `MethodFileTransferError` when a file could not be downloaded, or its bytes are not the file
    * listed, and nothing is left under the destination.
    */

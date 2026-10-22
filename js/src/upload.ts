@@ -16,6 +16,7 @@ import {
   UnsupportedUploadCapabilityError,
 } from "./errors.js";
 import { ApiResponseError, ApiUnreachableError } from "./errors.js";
+import { loadNodeHost } from "./node-host.js";
 import { throwIfAborted } from "./runs.js";
 
 /** A local asset `uploadFile` accepts. A path string is Node-only (see {@link readLocalPath}). */
@@ -77,13 +78,6 @@ const EXTENSION_MIME: Record<string, string> = {
   json: "application/json",
 };
 
-/** True when running under Node (has `process.versions.node`). */
-export function isNodeRuntime(): boolean {
-  return (
-    typeof process !== "undefined" && process.versions != null && process.versions.node != null
-  );
-}
-
 /** Filename tail of a path, splitting on both separators (no `node:path` import needed). */
 function basename(path: string): string {
   const parts = path.split(/[\\/]/);
@@ -101,16 +95,14 @@ export function guessContentType(filename: string): string {
 /**
  * Read a filesystem path into bytes — Node only. A path string in a non-Node
  * runtime cannot be read, so it fails as an invalid local source rather than
- * being silently misread as text or a URL. `node:fs/promises` is imported
- * dynamically and guarded by `isNodeRuntime()`, so it is only *loaded* in Node.
- * Note: the dynamic import defers execution, not bundling — a browser-targeting
- * bundler still statically resolves this literal specifier, so a browser consumer
- * of the main entry must mark `node:*` external. A page that stores a file uses the
- * browser-safe `@pipelex/sdk/upload` entry (`upload-grant.ts`) instead, which never
- * reaches this module; making the main entry browser-safe as a whole stays open.
+ * being silently misread as text or a URL. The file system comes from the Node
+ * host (`node-host.ts`), which a bundler building for the browser resolves to a
+ * module holding no Node built-in, so this module keeps the main entry
+ * bundleable for the browser.
  */
 export async function readLocalPath(path: string): Promise<Uint8Array> {
-  if (!isNodeRuntime()) {
+  const host = await loadNodeHost();
+  if (host === null) {
     throw new InvalidLocalSourceError(
       `Cannot read the local path "${path}" outside Node — path strings are Node-only. ` +
         "In the browser or an edge runtime, pass the file as bytes (Blob/File/ArrayBuffer/Uint8Array).",
@@ -118,8 +110,7 @@ export async function readLocalPath(path: string): Promise<Uint8Array> {
     );
   }
   try {
-    const { readFile } = await import("node:fs/promises");
-    return await readFile(path);
+    return await host.fs.readFile(path);
   } catch (cause) {
     throw new InvalidLocalSourceError(
       `Local file cannot be read: "${path}" (${(cause as { code?: string }).code ?? "read error"}).`,

@@ -19,9 +19,10 @@
  * is minted fresh by the platform, and re-minted when it has expired by the time a
  * worker reaches it. See `docs/artifact-download.md`.
  *
- * `node:fs/promises`, `node:path` and `undici` are imported dynamically, behind
- * `isNodeRuntime()`, so the module's static import graph stays free of Node
- * builtins: the walk and `resolveArtifacts` run anywhere, `fetchArtifact`
+ * `node:fs/promises`, `node:path` and `undici` come from the Node host
+ * (`node-host.ts`), which a bundler building for the browser resolves to a module
+ * holding none of them, so the module's graph, static and dynamic, stays free of
+ * Node builtins: the walk and `resolveArtifacts` run anywhere, `fetchArtifact`
  * runs anywhere the global `fetch` does (the dispatcher is a Node refinement), and
  * only `downloadArtifacts` touches a filesystem.
  */
@@ -38,7 +39,7 @@ import {
 } from "./errors.js";
 import type { ErrorVerdict } from "./errors.js";
 import type { GetRunResultOptions, RunResults, RunResultState } from "./runs.js";
-import { isNodeRuntime } from "./upload.js";
+import { loadNodeHost } from "./node-host.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -724,9 +725,10 @@ function requirePositive(name: string, value: number): void {
  * default dispatcher with only the budget applied.
  */
 async function dispatcherFor(timeoutMs: number): Promise<Dispatcher | null> {
-  if (!isNodeRuntime()) return null;
+  const host = await loadNodeHost();
+  if (host === null) return null;
   try {
-    const { Agent } = await import("undici");
+    const Agent = await host.loadAgent();
     return new Agent({ headersTimeout: timeoutMs, bodyTimeout: timeoutMs });
   } catch {
     return null;
@@ -1203,7 +1205,8 @@ export async function downloadArtifacts(
   client: ArtifactCapableClient,
   request: DownloadArtifactsRequest,
 ): Promise<DownloadArtifactsResult> {
-  if (!isNodeRuntime()) {
+  const host = await loadNodeHost();
+  if (host === null) {
     throw new ArtifactOperationError(
       "downloadArtifacts writes to a filesystem and is Node-only. In another runtime, resolve " +
         "with resolveArtifacts or stream with fetchArtifact instead.",
@@ -1255,8 +1258,8 @@ export async function downloadArtifacts(
   const locations = located.map(renderLocation);
   const uris = located.map((reference) => reference.uri);
 
-  const fs = (await import("node:fs/promises")) as unknown as NodeFs;
-  const path = (await import("node:path")) as unknown as NodePath;
+  const fs = host.fs as unknown as NodeFs;
+  const path: NodePath = host.path;
   const dir = path.resolve(request.dir);
   try {
     await fs.mkdir(dir, { recursive: true });

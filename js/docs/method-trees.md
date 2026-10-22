@@ -31,7 +31,7 @@ const verdict = await client.validate({
 });
 ```
 
-**A directory is listed by the standard's lister.** The client loads the `mthds` package's `listMethodTree` when a call gives a `directory`, and lists it under the MTHDS standard's membership rule and Manifest Discovery: the tree is rooted at the nearest `METHODS.toml` at or above the directory, else at the directory itself, and holds every file the rule keeps. Hidden entries, `node_modules`, `__pycache__`, what a `.gitignore` or the manifest's `exclude` keeps out, and **a run's inputs file** (`inputs.json`, `inputs.toml`) never travel with the method. A tree holding a symbolic link or a special file is refused rather than followed. The directory is listed under the limits the deployment announces (below), so a tree the deployment would refuse for its size is refused while it is listed, before any file is hashed. Every refusal is a `RequestArgumentError` naming the call and the directory, whose `cause` is `mthds`'s `MethodTreeError`, with its `code` (`not_found`, `symbolic_link`, `limit_exceeded`, `empty_tree` and the rest). Listing needs Node: a browser gives `contents`, `tree` or `files`.
+**A directory is listed by the standard's lister.** The client loads the `mthds` package's `listMethodTree` when a call gives a `directory`, and lists it under the MTHDS standard's membership rule and Manifest Discovery: the tree is rooted at the nearest `METHODS.toml` at or above the directory, else at the directory itself, and holds every file the rule keeps. Hidden entries, `node_modules`, `__pycache__`, what a `.gitignore` or the manifest's `exclude` keeps out, and **a run's inputs file** (`inputs.json`, `inputs.toml`) never travel with the method. A tree holding a symbolic link or a special file is refused rather than followed. The directory is listed under the limits the deployment announces (below), so a tree the deployment would refuse for its size is refused while it is listed, before any file is hashed. Every refusal is a `RequestArgumentError` naming the call and the directory, whose `cause` is `mthds`'s `MethodTreeError`, with its `code` (`not_found`, `symbolic_link`, `limit_exceeded`, `empty_tree` and the rest). Listing needs Node: the lister comes from the Node host ([architecture.md](./architecture.md#the-node-host)), so a bundle built for the browser holds none of it, and a `directory` given outside Node is refused with `RequestArgumentError`, so a browser gives `contents`, `tree` or `files`.
 
 **A map in memory.** A text in `contents` is encoded in UTF-8, and a text a file cannot hold, one carrying a lone surrogate, is refused, as is a value that is neither a string nor a `Uint8Array`. The keys are sent as they are, and the platform refuses one that is not a tree path with the `422` `invalid_method_files` naming it.
 
@@ -166,7 +166,7 @@ A method whose draft names a tree the platform holds no record of answers `getMe
 
 ## Writing a tree to disk
 
-`writeMethodTree(files, { destination })` writes a listing to disk, each file at its tree path under `destination`. It runs in Node only, and loads Node's file system modules when it is called:
+`writeMethodTree(files, { destination })` writes a listing to disk, each file at its tree path under `destination`. It runs in Node only, with the file system of the Node host ([architecture.md](./architecture.md#the-node-host)), and is refused with `RequestArgumentError` anywhere else, before any download:
 
 ```ts
 const detail = await client.getMethod("mt_123");
