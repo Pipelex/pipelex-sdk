@@ -835,9 +835,12 @@ async def plan_method(args: MethodArgs, client: CreateClient, *, layout: Layout,
         count = f"{len(bundle.files)} .mthds file{'' if len(bundle.files) == 1 else 's'}"
         describe = f"the bundle {bundle.display} ({count}, copied to {layout.describe(layout.method_dir)}/)"
         origin = f"the bundle {bundle.display}"
-        # A diagnostic names a file by its tree path, so a refusal says where the person's file is.
-        placed_as = f"{METHOD_DIRNAME}/" if bundle.display.endswith("/") else f"{METHOD_DIRNAME}/{bundle.files[0].relative}"
-        labels_note = f"The bundle's files are named by their path in {METHOD_DIRNAME}/: {placed_as} is {bundle.display}"
+        # A diagnostic names a file by its tree path, its path inside the bundle as given, so a refusal
+        # says where the person's file is: the directory those paths start from, or the one file.
+        if bundle.display.endswith("/"):
+            labels_note = f"The bundle's files are named by their path inside {bundle.display}"
+        else:
+            labels_note = f"{bundle.files[0].relative} is {bundle.display}"
     try:
         fetched = await fetch_generated(client, source, layout, include_files=True)
     except GenerateFailure as exc:

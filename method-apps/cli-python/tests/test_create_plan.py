@@ -433,8 +433,8 @@ class TestPlanMethod:
     @pytest.mark.parametrize(
         ("method", "where"),
         [
-            (str(RECEIPT_REVIEW_BUNDLE), f"method/ is {RECEIPT_REVIEW_BUNDLE}/"),
-            (str(RECEIPT_REVIEW_BUNDLE / "main.mthds"), f"method/main.mthds is {RECEIPT_REVIEW_BUNDLE / 'main.mthds'}"),
+            (str(RECEIPT_REVIEW_BUNDLE), f"The bundle's files are named by their path inside {RECEIPT_REVIEW_BUNDLE}/"),
+            (str(RECEIPT_REVIEW_BUNDLE / "main.mthds"), f"main.mthds is {RECEIPT_REVIEW_BUNDLE / 'main.mthds'}"),
         ],
     )
     async def test_a_refusal_of_a_bundle_says_where_its_tree_paths_point(
@@ -451,7 +451,7 @@ class TestPlanMethod:
         with pytest.raises(PlanError) as caught:
             await plan_method(MethodArgs(method=method), client, layout=package, root=tmp_path / "project", cwd=tmp_path)
         assert "    main.mthds: unknown concept" in str(caught.value)
-        assert str(caught.value).endswith(f"named by their path in method/: {where}")
+        assert str(caught.value).endswith(f"main.mthds: unknown concept\n  {where}")
 
     async def test_plans_an_address_reading_its_prose_from_the_files_the_route_echoes(self, package: Layout, tmp_path: Path):
         client = RecordedClient()
