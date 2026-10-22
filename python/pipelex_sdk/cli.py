@@ -14,7 +14,7 @@ import os
 import re
 import signal
 import sys
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from pipelex_sdk.command.io import EXIT_INTERRUPTED, CommandIO
 from pipelex_sdk.command.main import run_command
@@ -65,14 +65,21 @@ def _read_stdin() -> bytes:
     stdin: TextIO | None = sys.stdin
     if stdin is None:
         return b""
-    # `None` once the stream was detached, which the stream's declared type does not say.
-    buffer = cast("BinaryIO | None", stdin.buffer)
+    if not _is_readable(stdin):
+        raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+    return stdin.buffer.read()
+
+
+def _is_readable(stream: TextIO) -> bool:
+    """Whether a text stream is still attached to its buffer and open, so a read can reach its descriptor.
+
+    A detached stream raises `ValueError` on whatever is asked of it, `closed` included, on every supported
+    Python. Its `buffer` cannot tell instead: it was `None` up to Python 3.14.8 and raises from 3.14.9 on.
+    """
     try:
-        if buffer is not None:
-            return buffer.read()
-    except ValueError as exc:  # the stream was closed
-        raise OSError(errno.EBADF, os.strerror(errno.EBADF)) from exc
-    raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+        return not stream.closed
+    except ValueError:  # the stream was detached
+        return False
 
 
 def main() -> None:
