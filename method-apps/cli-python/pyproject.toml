@@ -29,7 +29,7 @@ classifiers = [
 # range is the SDK's own, since the generated models are pydantic 2 models.
 dependencies = [
   "mthds>=0.25.0",
-  "pipelex-sdk>=0.48.0",
+  "pipelex-sdk>=0.48.1",
   "pydantic>=2.10.6,<3.0.0",
   "python-dotenv>=1.0.0",
   "rich>=13.0.0",
