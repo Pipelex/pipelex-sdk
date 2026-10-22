@@ -647,11 +647,19 @@ class BrandingBodies:
     """
 
     ORG_ID: ClassVar[str] = "0f6c2a4e-org"
-    SQUARE_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/assets/7d1e.png"
-    WIDE_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/assets/9a3c.svg"
+    #: What a write sends to set a new logo: a standalone upload of the organization.
+    SQUARE_UPLOAD_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/assets/7d1e.png"
+    WIDE_UPLOAD_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/assets/9a3c.svg"
+
+    #: What the answer names: the platform's own copy of an accepted logo, under `branding/`.
+    SQUARE_LOGO_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/3f9a1c2e-5b7d-4e8f-9a0b-1c2d3e4f5a6b.png"
+    WIDE_LOGO_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/8c7b6a5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d.svg"
+
+    #: A branding copy that no slot of the organization holds, which a write may not attach.
+    STRAY_BRANDING_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.svg"
 
     SQUARE_LOGO: ClassVar[dict[str, Any]] = {
-        "uri": SQUARE_URI,
+        "uri": SQUARE_LOGO_URI,
         "sha256": "9b2f6d0c1e4a7b3c5d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e",
         "content_type": "image/png",
         "width": 512.0,
@@ -660,7 +668,7 @@ class BrandingBodies:
 
     #: An SVG's size is its viewBox's, which may be fractional.
     WIDE_SVG_LOGO: ClassVar[dict[str, Any]] = {
-        "uri": WIDE_URI,
+        "uri": WIDE_LOGO_URI,
         "sha256": "0d1c2b3a49586776a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f00f1e",
         "content_type": "image/svg+xml",
         "width": 240.5,
@@ -704,6 +712,11 @@ class BrandingBodies:
             {"field": "wide_logo", "code": "logo_too_short", "detail": WIDE_TOO_SHORT},
         ],
     }
+
+    ACTIVE_CONTENT: ClassVar[str] = "The wide logo is an SVG that carries active content (a <script> element), which a logo may not hold."
+    NOT_AN_UPLOAD: ClassVar[str] = (
+        "The wide logo must be a file uploaded for it (pipelex-storage://<organization>/assets/<file>), not a file that belongs to a run or a method."
+    )
 
     #: A colour that is not `#rrggbb`, refused by the body's validation and named by its dotted key.
     COLOR_REFUSED: ClassVar[dict[str, Any]] = {

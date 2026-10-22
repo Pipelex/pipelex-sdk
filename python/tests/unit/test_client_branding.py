@@ -73,7 +73,7 @@ class TestClientBranding:
         assert branding.dark_colors.action is None
         assert branding.dark_colors.header == "#e5e5e5"
         assert branding.square_logo is not None
-        assert branding.square_logo.uri == BrandingBodies.SQUARE_URI
+        assert branding.square_logo.uri == BrandingBodies.SQUARE_LOGO_URI
         assert branding.square_logo.content_type == "image/png"
         assert branding.square_logo.width == pytest.approx(512.0)
         assert branding.wide_logo is None
@@ -135,15 +135,29 @@ class TestClientBranding:
         send = patch_send(api_client, wire_response(200, json_body=BrandingBodies.BRANDED))
         update = OrganizationBrandingUpdate(
             colors=BrandingColorsUpdate(action="#14213D", accent="#fca311"),
-            square_logo=BrandingBodies.SQUARE_URI,
+            square_logo=BrandingBodies.SQUARE_UPLOAD_URI,
         )
 
         branding = asyncio.run(api_client.update_organization_branding(_ORG_ID, update))
 
         assert _sent_method(send) == "PATCH"
         assert _sent_url(send) == _BRANDING_URL
-        assert _sent_body(send) == {"colors": {"action": "#14213D", "accent": "#fca311"}, "square_logo": BrandingBodies.SQUARE_URI}
+        assert _sent_body(send) == {"colors": {"action": "#14213D", "accent": "#fca311"}, "square_logo": BrandingBodies.SQUARE_UPLOAD_URI}
         assert branding.model_dump(mode="json") == BrandingBodies.BRANDED
+        # The answer names the platform's copy of the logo, never the upload the write sent.
+        assert branding.square_logo is not None
+        assert branding.square_logo.uri == BrandingBodies.SQUARE_LOGO_URI
+
+    def test_update_sends_a_logo_answered_uri_back_unchanged_to_keep_it(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=BrandingBodies.BRANDED), wire_response(200, json_body=BrandingBodies.BRANDED))
+        read = asyncio.run(api_client.get_branding())
+        assert read.square_logo is not None
+
+        asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(square_logo=read.square_logo.uri)))
+
+        assert _sent_body(send) == {"square_logo": BrandingBodies.SQUARE_LOGO_URI}
 
     def test_update_sends_an_explicit_none_and_leaves_out_what_is_unset(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -190,7 +204,7 @@ class TestClientBranding:
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
         patch_send(api_client, wire_response(422, json_body=BrandingBodies.LOGOS_REFUSED))
-        update = OrganizationBrandingUpdate(square_logo=BrandingBodies.SQUARE_URI, wide_logo=BrandingBodies.WIDE_URI)
+        update = OrganizationBrandingUpdate(square_logo=BrandingBodies.SQUARE_UPLOAD_URI, wide_logo=BrandingBodies.WIDE_UPLOAD_URI)
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.update_organization_branding(_ORG_ID, update))
@@ -208,6 +222,34 @@ class TestClientBranding:
         # What the settings screen does: one slot's sentences, read by the slot's key.
         under_square = [entry.detail for entry in error.errors if entry.field == "square_logo"]
         assert under_square == [BrandingBodies.SQUARE_TOO_SMALL]
+
+    @pytest.mark.parametrize(
+        ("uri", "code", "detail"),
+        [
+            pytest.param(BrandingBodies.WIDE_UPLOAD_URI, LogoRefusalCode.ACTIVE_CONTENT, BrandingBodies.ACTIVE_CONTENT, id="svg-active-content"),
+            pytest.param(BrandingBodies.STRAY_BRANDING_URI, LogoRefusalCode.NOT_AN_UPLOAD, BrandingBodies.NOT_AN_UPLOAD, id="stray-branding-copy"),
+        ],
+    )
+    def test_a_refused_wide_logo_is_named_under_its_slot(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+        uri: str,
+        code: LogoRefusalCode,
+        detail: str,
+    ) -> None:
+        errors = [{"field": "wide_logo", "code": code, "detail": detail}]
+        patch_send(
+            api_client, wire_response(422, json_body=_problem(code="validation_failed", title="Validation failed", detail=detail, errors=errors))
+        )
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(wide_logo=uri)))
+
+        assert exc_info.value.code == "validation_failed"
+        assert exc_info.value.errors is not None
+        assert [(entry.field, entry.code, entry.detail) for entry in exc_info.value.errors] == [("wide_logo", code, detail)]
 
     def test_a_refused_colour_is_named_by_its_dotted_key(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher

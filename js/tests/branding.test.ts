@@ -15,8 +15,12 @@ import type { OrganizationBranding, OrganizationBrandingUpdate } from "../src/in
 const BASE_URL = "http://localhost:8081";
 const ORG_ID = "0f6c2a4e-org";
 const BRANDING_URL = `${BASE_URL}/v1/organizations/${ORG_ID}/branding`;
-const SQUARE_URI = `pipelex-storage://${ORG_ID}/assets/7d1e.png`;
-const WIDE_URI = `pipelex-storage://${ORG_ID}/assets/9a3c.svg`;
+/** What a write sends to set a new logo: a standalone upload of the organization. */
+const SQUARE_UPLOAD_URI = `pipelex-storage://${ORG_ID}/assets/7d1e.png`;
+const WIDE_UPLOAD_URI = `pipelex-storage://${ORG_ID}/assets/9a3c.svg`;
+/** What the answer names: the platform's own copy of an accepted logo, under `branding/`. */
+const SQUARE_LOGO_URI = `pipelex-storage://${ORG_ID}/branding/3f9a1c2e-5b7d-4e8f-9a0b-1c2d3e4f5a6b.png`;
+const WIDE_LOGO_URI = `pipelex-storage://${ORG_ID}/branding/8c7b6a5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d.svg`;
 
 /** A branded team as both routes answer it: one logo, a partial light set, a partial dark set. */
 const BRANDED: OrganizationBranding = {
@@ -25,7 +29,7 @@ const BRANDED: OrganizationBranding = {
   colors: { action: "#14213d", accent: "#fca311", header: null },
   dark_colors: { action: null, accent: null, header: "#e5e5e5" },
   square_logo: {
-    uri: SQUARE_URI,
+    uri: SQUARE_LOGO_URI,
     sha256: "9b2f6d0c1e4a7b3c5d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e",
     content_type: "image/png",
     width: 512.0,
@@ -139,7 +143,7 @@ describe("getBranding", () => {
     const body: OrganizationBranding = {
       ...UNBRANDED,
       wide_logo: {
-        uri: WIDE_URI,
+        uri: WIDE_LOGO_URI,
         sha256: "0d1c2b3a49586776a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f00f1e",
         content_type: "image/svg+xml",
         width: 240.5,
@@ -170,7 +174,7 @@ describe("updateOrganizationBranding", () => {
 
     const branding = await client.updateOrganizationBranding(ORG_ID, {
       colors: { action: "#14213D", accent: "#fca311" },
-      square_logo: SQUARE_URI,
+      square_logo: SQUARE_UPLOAD_URI,
     });
 
     const req = lastRequest(spy);
@@ -178,9 +182,30 @@ describe("updateOrganizationBranding", () => {
     expect(req.url).toBe(BRANDING_URL);
     expect(req.body).toEqual({
       colors: { action: "#14213D", accent: "#fca311" },
-      square_logo: SQUARE_URI,
+      square_logo: SQUARE_UPLOAD_URI,
     });
     expect(branding).toEqual(BRANDED);
+    // The answer names the platform's copy of the logo, never the upload the write sent.
+    expect(branding.square_logo?.uri).toBe(SQUARE_LOGO_URI);
+  });
+
+  it("sends a logo's answered URI back unchanged, which keeps the logo", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => jsonResponse(200, BRANDED));
+    const read = await client.getBranding();
+    spy.mockClear();
+
+    await client.updateOrganizationBranding(ORG_ID, {
+      colors: { header: "#e5e5e5" },
+      square_logo: read.square_logo?.uri ?? null,
+    });
+
+    expect(lastRequest(spy).body).toEqual({
+      colors: { header: "#e5e5e5" },
+      square_logo: SQUARE_LOGO_URI,
+    });
   });
 
   it("sends a null to clear and leaves out what it keeps", async () => {
@@ -232,6 +257,7 @@ describe("updateOrganizationBranding", () => {
       | "logo_too_large"
       | "logo_type_not_accepted"
       | "logo_unreadable"
+      | "logo_active_content"
       | "logo_not_square"
       | "logo_too_small"
       | "logo_not_wide"
@@ -256,7 +282,10 @@ describe("updateOrganizationBranding", () => {
     );
 
     const err = await caught(
-      client.updateOrganizationBranding(ORG_ID, { square_logo: SQUARE_URI, wide_logo: WIDE_URI }),
+      client.updateOrganizationBranding(ORG_ID, {
+        square_logo: SQUARE_UPLOAD_URI,
+        wide_logo: WIDE_UPLOAD_URI,
+      }),
     );
 
     expect(err.status).toBe(422);
@@ -269,6 +298,32 @@ describe("updateOrganizationBranding", () => {
     expect(underSquare?.map((entry) => entry.detail)).toEqual([squareDetail]);
     const code: LogoRefusalCode = "logo_too_short";
     expect(err.errors?.find((entry) => entry.field === "wide_logo")?.code).toBe(code);
+  });
+
+  it.each([
+    [
+      "an SVG carrying active content",
+      WIDE_UPLOAD_URI,
+      "logo_active_content",
+      "The wide logo is an SVG that carries active content (a <script> element), which a logo may not hold.",
+    ],
+    [
+      "a branding copy its slot does not hold",
+      `pipelex-storage://${ORG_ID}/branding/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.svg`,
+      "logo_not_an_upload",
+      "The wide logo must be a file uploaded for it (pipelex-storage://<organization>/assets/<file>), not a file that belongs to a run or a method.",
+    ],
+  ])("refuses %s under the wide logo's slot", async (_topic, uri, code, detail) => {
+    const client = makeClient();
+    const errors = [{ field: "wide_logo", code, detail }];
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse(422, problem("validation_failed", "Validation failed", detail, errors)),
+    );
+
+    const err = await caught(client.updateOrganizationBranding(ORG_ID, { wide_logo: uri }));
+
+    expect(err.code).toBe("validation_failed");
+    expect(err.errors).toEqual(errors);
   });
 
   it("names a refused colour by its dotted key", async () => {

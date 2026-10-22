@@ -28,7 +28,7 @@ A `LogoDescriptor` is what the platform recorded when it accepted the logo:
 
 | Field | Meaning |
 |---|---|
-| `uri` | The logo's `pipelex-storage://` URI. `resolveStorageUrl` turns it into a short-lived link to its bytes; the webapp serves it through its asset proxy instead. |
+| `uri` | The platform's own copy of the logo, `pipelex-storage://<org_id>/branding/<uuid>.<ext>`, never the upload URI the write sent: the platform copies every logo it accepts. Sending it back unchanged in its slot keeps the logo ([below](#writing-it)). `resolveStorageUrl` turns it into a short-lived link to its bytes; the webapp serves it through its asset proxy instead. |
 | `sha256` | The SHA-256 of the logo's bytes, 64 lower-case hexadecimal digits, which serves as a cache key for them. |
 | `content_type` | The type the platform read from the file's own bytes: `image/png`, `image/jpeg`, `image/webp` or `image/svg+xml`. |
 | `width`, `height` | The size in pixels for a raster, oriented as a browser draws it; for an SVG, the width and height of its `viewBox`, else of its `width` and `height` in pixels, which may be fractional. Their ratio sizes the logo's box before the image loads. |
@@ -49,10 +49,10 @@ const branding = await client.updateOrganizationBranding(orgId, {
 ```
 
 - **Colours** (`BrandingColorsUpdate`): each of `action`, `accent` and `header` takes `#rrggbb` in either case, stored in lower case. `colors: null` or `dark_colors: null` clears all three colours of that set.
-- **Logos**: `square_logo` and `wide_logo` take the `pipelex-storage://` URI of a file the organization uploaded on its own, through `requestUploadGrant` or `upload`, never a run's or a method's file. The platform reads and measures the file before it records it. A URI equal to the one the slot already holds keeps its logo without reading it again. The object a write replaces or clears is erased once the write has landed.
-- **The rules a logo meets**: at most 1 MiB; a PNG, JPEG, WebP or SVG image by its bytes, whatever type the upload declared; a square logo's longer side at most 10% longer than its shorter, and a raster one at least 128 px on each side; a wide logo at least one and a half times as wide as it is tall, and a raster one at least 64 px tall. An SVG is measured from its root element and must not declare entities or refer to external resources.
+- **Logos**: `square_logo` and `wide_logo` take one of three values. The `pipelex-storage://` URI of a file the organization uploaded on its own through `requestUploadGrant` or `upload` sets a new logo: the platform reads and measures it, then keeps its own copy under `branding/`, and the answer's `uri` names that copy, not the upload. The `uri` the branding answers for that slot, sent back unchanged, keeps the logo without reading it again. `null` removes the logo. Any other URI that is not a standalone upload, such as a run's or a method's file, or a `branding/` copy the branding does not answer, is refused as `logo_not_an_upload`. The logo a write replaces or clears is erased once the write has landed.
+- **The rules a logo meets**: at most 1 MiB; a PNG, JPEG, WebP or SVG image by its bytes, whatever type the upload declared; a square logo's longer side at most 10% longer than its shorter, and a raster one at least 128 px on each side; a wide logo at least one and a half times as wide as it is tall, and a raster one at least 64 px tall. An SVG is measured from its root element, must declare no XML entities or external references, and must carry no active content: no script, no event handler, no `foreignObject`, and no `href` but a `#` fragment or a raster `data:image/` URI.
 
-The write sends no `Idempotency-Key`, as `renameOrganization` sends none: sending the same write again lands on the same branding, a logo already in its slot being kept as it is.
+The write sends no `Idempotency-Key`, as `renameOrganization` sends none. A later write that should keep a logo leaves its key out, or sends back the `uri` the branding answered.
 
 ## When a write is refused
 
@@ -77,6 +77,7 @@ A refused write changes nothing, whichever part of it was refused, and throws an
 | `logo_too_large` | The wide logo file is 2,048 KiB; a logo file can be at most 1 MiB (1,024 KiB). |
 | `logo_type_not_accepted` | The square logo file is a GIF image; a logo must be a PNG, JPEG, WebP or SVG image. |
 | `logo_unreadable` | The wide logo is an SVG that cannot be read: it is not well-formed XML. |
+| `logo_active_content` | (An SVG that carries a script, an event handler, a `foreignObject`, or an `href` that is neither a `#` fragment nor a raster `data:image/` URI.) |
 | `logo_not_square` | The square logo is 640 × 512 px, 1.25 times as wide as it is tall; a square logo's longer side can be at most 10% longer than its shorter side. |
 | `logo_too_small` | The square logo is 100 × 100 px; a square logo must be at least 128 px on each side. |
 | `logo_not_wide` | The wide logo is 600 × 500 px, 1.2 times as wide as it is tall; a wide logo must be at least 1.5 times as wide as it is tall. |

@@ -2930,9 +2930,10 @@ class PipelexAPIClient(MthdsAPIClient):
 
         An admin's write to the active organization. Only the fields `update` sets are sent: a value sets
         it, an explicit `None` clears it, and a field left unset keeps its value (`OrganizationBrandingUpdate`),
-        so an empty update writes nothing. A logo is the `pipelex-storage://` URI of a file the organization
-        uploaded on its own, which the platform reads and measures before it records it; the object a logo
-        replaces or clears is erased.
+        so an empty update writes nothing. A new logo is the `pipelex-storage://` URI of a file the organization
+        uploaded on its own, which the platform reads and measures, then copies under `branding/`: the answer's
+        `uri` is that copy, and sending it back unchanged keeps the logo. The logo a write replaces or clears
+        is erased.
 
         Args:
             org_id: The active organization's `org_id`.

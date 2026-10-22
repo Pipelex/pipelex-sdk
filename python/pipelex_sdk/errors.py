@@ -396,7 +396,8 @@ class LogoRefusalCode(StrEnum):
     """
 
     NOT_AN_UPLOAD = "logo_not_an_upload"
-    """The URI names a run's or a method's file, not a standalone upload."""
+    """The URI is not a standalone upload of the organization, such as a run's or a method's file or a
+    `branding/` copy the branding does not answer."""
 
     NOT_FOUND = "logo_not_found"
     """No such upload in the organization."""
@@ -408,7 +409,12 @@ class LogoRefusalCode(StrEnum):
     """Its bytes are not a PNG, JPEG, WebP or SVG image, whatever type the upload declared."""
 
     UNREADABLE = "logo_unreadable"
-    """A damaged raster, or an SVG whose shape cannot be read or that declares entities or refers to external resources."""
+    """A damaged raster, or an SVG that is not well-formed, whose shape cannot be read, or that declares XML
+    entities or external references."""
+
+    ACTIVE_CONTENT = "logo_active_content"
+    """An SVG that carries a script, an event handler, a `foreignObject`, or an `href` that is neither a `#`
+    fragment nor a raster `data:image/` URI."""
 
     NOT_SQUARE = "logo_not_square"
     """A square logo whose longer side is more than 10% longer than its shorter."""

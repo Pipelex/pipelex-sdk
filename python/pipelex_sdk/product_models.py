@@ -623,7 +623,9 @@ class LogoDescriptor(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     uri: str
-    """The logo's `pipelex-storage://` URI, an upload of the organization, turned into bytes through `resolve_storage_url`."""
+    """The platform's own copy of the logo, `pipelex-storage://<org_id>/branding/<uuid>.<ext>`, never the upload
+    URI the write sent: the platform copies a logo it accepts. Sending it back unchanged in its slot keeps the
+    logo. `resolve_storage_url` turns it into a short-lived link to its bytes."""
 
     sha256: str
     """The SHA-256 of the logo's bytes, 64 lower-case hexadecimal digits: a cache key for them."""
@@ -682,9 +684,10 @@ class OrganizationBrandingUpdate(BaseModel):
     - `colors` and `dark_colors` take a `BrandingColorsUpdate`, or `None` to clear all three colours of
       that set.
     - `square_logo` and `wide_logo` take the `pipelex-storage://` URI of a file the organization
-      uploaded on its own (`upload`), never a run's or a method's file, or `None` to remove the logo.
-      The platform reads and measures the file before it records it, and erases the object a write
-      replaces or clears.
+      uploaded on its own (`upload`) to set a new logo, the `uri` the branding answers for that slot to
+      keep it, or `None` to remove it. Any other URI, such as a run's or a method's file, is refused as
+      `logo_not_an_upload`. The platform reads and measures an upload before it accepts it, keeps its
+      own copy under `branding/`, whose URI it answers, and erases the logo a write replaces or clears.
     """
 
     model_config = ConfigDict(extra="forbid")

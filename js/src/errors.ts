@@ -1022,13 +1022,16 @@ export type IdempotencyErrorCode = "idempotency_key_in_use";
  * that slot. The refusal itself is a `422` `validation_failed` naming both slots' failures at
  * once, one entry per broken rule, and writes nothing:
  *
- * - `logo_not_an_upload`: the URI names a run's or a method's file, not a standalone upload.
+ * - `logo_not_an_upload`: the URI is not a standalone upload of the organization, such as a run's
+ *   or a method's file or a `branding/` copy the branding does not answer.
  * - `logo_not_found`: no such upload in the organization.
  * - `logo_too_large`: the file is over 1 MiB.
  * - `logo_type_not_accepted`: its bytes are not a PNG, JPEG, WebP or SVG image, whatever type
  *   the upload declared.
- * - `logo_unreadable`: a damaged raster, or an SVG whose shape cannot be read or that declares
- *   entities or refers to external resources.
+ * - `logo_unreadable`: a damaged raster, or an SVG that is not well-formed, whose shape cannot
+ *   be read, or that declares XML entities or external references.
+ * - `logo_active_content`: an SVG that carries a script, an event handler, a `foreignObject`, or
+ *   an `href` that is neither a `#` fragment nor a raster `data:image/` URI.
  * - `logo_not_square`: a square logo whose longer side is more than 10% longer than its shorter.
  * - `logo_too_small`: a raster square logo under 128 px on a side.
  * - `logo_not_wide`: a wide logo less than one and a half times as wide as it is tall.
@@ -1046,6 +1049,7 @@ export type LogoRefusalCode =
   | "logo_too_large"
   | "logo_type_not_accepted"
   | "logo_unreadable"
+  | "logo_active_content"
   | "logo_not_square"
   | "logo_too_small"
   | "logo_not_wide"

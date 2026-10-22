@@ -3495,9 +3495,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Set or clear an organization's branding — `PATCH /v1/organizations/{org_id}/branding`, an
    * admin's write to the active organization. Every key of `input` is optional: a value sets it,
    * `null` clears it, and a key left out keeps its value (`OrganizationBrandingUpdate`), so `{}`
-   * writes nothing. A logo is the `pipelex-storage://` URI of a file the organization uploaded on
-   * its own, which the platform reads and measures before it records it; the object a logo
-   * replaces or clears is erased. Answers the branding as the write left it.
+   * writes nothing. A new logo is the `pipelex-storage://` URI of a file the organization uploaded
+   * on its own, which the platform reads and measures, then copies under `branding/`: the answer's
+   * `uri` is that copy, and sending it back unchanged keeps the logo. The logo a write replaces or
+   * clears is erased. Answers the branding as the write left it.
    *
    * Throws `RequestArgumentError` for an organization id that is empty, `.` or `..`, before any
    * request. Throws `ApiResponseError`, refusing every change of the request when it refuses one:
