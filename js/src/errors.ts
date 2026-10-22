@@ -369,7 +369,8 @@ export class RejectedAssetError extends InputPreparationError {
 
 /**
  * The configured deployment does not support upload (no `/v1/upload` route, seen
- * as a `404`). Upload is a hosted Pipelex-product capability even though the SDK
+ * as a `404` other than a test file's unknown method, which is a {@link TestFileRefusedError}).
+ * Upload is a hosted Pipelex-product capability even though the SDK
  * can be pointed at other base URLs. Its verdict is `config`, not retryable: the base URL
  * must point at a deployment that serves upload. `filename` is the file whose upload met it, as
  * `uploadFile` sent it.
@@ -385,7 +386,8 @@ export class UnsupportedUploadCapabilityError extends InputPreparationError {
 }
 
 /**
- * Upload was not authorized — a `401`/`403` from the upload route. Its verdict is `config`, not
+ * Upload was not authorized — a `401`, or a `403` from the upload route other than a test file's
+ * `role_not_permitted`, which is a {@link TestFileRefusedError}. Its verdict is `config`, not
  * retryable: the credential must change. `filename` is the file whose upload was refused, as
  * `uploadFile` sent it.
  */
@@ -399,6 +401,69 @@ export class UploadAuthenticationError extends InputPreparationError {
     this.status = status;
     this.filename = options?.filename;
   }
+}
+
+/**
+ * Why the upload route refused a test file, in a closed vocabulary a caller branches on rather
+ * than on the message. A test file is a statement about a method, so the route holds it to what
+ * changing that method takes:
+ *
+ * - `role_not_permitted` — a `403` coded `role_not_permitted`: the caller's role in the
+ *   organization may not change methods, as a runner's may not. Upload the file as `uploaded`,
+ *   or with the credential of a member who may change methods.
+ * - `method_not_found` — a `404` coded `not_found`: the method the test file names is not one of
+ *   the organization's.
+ * - `method_being_deleted` — a `409` coded `method_being_deleted`: the method the test file names
+ *   is being erased.
+ */
+export type TestFileRefusalCode =
+  "role_not_permitted" | "method_not_found" | "method_being_deleted";
+
+/**
+ * The upload route refused a test file (`kind: "test"`) for what it claims, never for its bytes:
+ * the caller's role may not change methods, or the method it names is unknown or being erased.
+ * `code` says which; the SDK sets it on every one it raises, so it is undefined only on one a
+ * caller constructs without it. `status` is the HTTP status, `filename` the file `uploadFile` was
+ * sending and `methodId` the method it named, and the wrapped `ApiResponseError` is reachable via
+ * `cause`.
+ *
+ * Its verdict is the wrapped error's when `cause` carries one, the server's own; otherwise `code`
+ * decides: `role_not_permitted` is `config`, since the caller's role must change, and the other
+ * two are `input`, since the request must name another method; none is retryable.
+ */
+export class TestFileRefusedError extends InputPreparationError {
+  public readonly status: number | undefined;
+  public readonly code: TestFileRefusalCode | undefined;
+  public readonly filename: string | undefined;
+  public readonly methodId: string | undefined;
+
+  constructor(
+    message: string,
+    options?: {
+      cause?: unknown;
+      status?: number;
+      code?: TestFileRefusalCode;
+      filename?: string;
+      methodId?: string;
+    },
+  ) {
+    super(message, {
+      ...options,
+      verdict: errorVerdictOf(options?.cause) ?? testFileRefusalVerdict(options?.code),
+    });
+    this.name = "TestFileRefusedError";
+    this.status = options?.status;
+    this.code = options?.code;
+    this.filename = options?.filename;
+    this.methodId = options?.methodId;
+  }
+}
+
+/** The verdict of a test file's refusal that wraps no error carrying one. */
+function testFileRefusalVerdict(code: TestFileRefusalCode | undefined): ErrorVerdict {
+  // A role is changed by an admin of the organization, never by sending the request again.
+  if (code === "role_not_permitted") return makeVerdict("config", false);
+  return makeVerdict("input", false);
 }
 
 /**

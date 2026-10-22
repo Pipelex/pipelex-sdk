@@ -684,12 +684,25 @@ export interface UploadInput {
   filename: string;
   data: string;
   content_type: string;
+  /** What the upload is recorded as; `uploaded` when omitted. */
+  kind?: UploadKind;
+  /**
+   * The bare catalog id of the method a `test` file is for, required with `kind: "test"`
+   * and refused without it.
+   */
+  method_id?: string;
 }
 
 export interface UploadedFile {
   uri: string;
   filename: string;
 }
+
+/**
+ * What an upload is recorded as: `uploaded`, a person's file, or `test`, a test input
+ * made for one method, which names that method in `method_id`.
+ */
+export type UploadKind = "uploaded" | "test";
 
 /**
  * What an upload grant is requested for — `POST /v1/upload/grant`. The file is

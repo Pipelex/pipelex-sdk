@@ -9,14 +9,19 @@
  */
 
 import {
+  InputPreparationError,
   InvalidLocalSourceError,
   RejectedAssetError,
+  TestFileRefusedError,
   UploadAuthenticationError,
   UploadTransportError,
   UnsupportedUploadCapabilityError,
 } from "./errors.js";
+import type { TestFileRefusalCode } from "./errors.js";
 import { ApiResponseError, ApiUnreachableError } from "./errors.js";
+import { parseMethodSelector } from "./method-selector.js";
 import { absenceCause, loadNodeHost } from "./node-host.js";
+import type { UploadInput, UploadKind } from "./product-models.js";
 import { throwIfAborted } from "./runs.js";
 
 /** A local asset `uploadFile` accepts. A path string is Node-only (see {@link readLocalPath}). */
@@ -38,8 +43,28 @@ export interface UploadRecord {
   size: number;
 }
 
-/** Per-call options for {@link uploadFile}. Fill in a filename/MIME for nameless byte sources. */
-export interface UploadFileOptions {
+/**
+ * What an upload is recorded as, sent with it to `POST /v1/upload`: its `kind` and, for a test
+ * file, the method it is for. `uploadFile` takes these among its options and `prepareInputs` as
+ * its `upload` member, for every file it uploads. Both are checked as the upload route checks
+ * them, before any file is read: `kind: "test"` needs `method_id`, a bare catalog id, and only a
+ * test file names a method.
+ */
+export interface UploadKindOptions {
+  /** What the upload is recorded as; `uploaded` when omitted. */
+  kind?: UploadKind;
+  /**
+   * The bare catalog id of the method a `test` file is for, required with `kind: "test"`
+   * and refused without it.
+   */
+  method_id?: string;
+}
+
+/**
+ * Per-call options for {@link uploadFile}. Fill in a filename/MIME for nameless byte sources, and
+ * a `kind` with its `method_id` for a test file.
+ */
+export interface UploadFileOptions extends UploadKindOptions {
   filename?: string;
   contentType?: string;
   /**
@@ -52,10 +77,84 @@ export interface UploadFileOptions {
 
 /** The subset of the client `uploadFile` needs — the raw base64 `upload` wire call. */
 export interface UploadCapableClient {
-  upload(input: { filename: string; data: string; content_type: string }): Promise<{
+  upload(input: UploadInput): Promise<{
     uri: string;
     filename: string;
   }>;
+}
+
+/** The kinds an upload is recorded as, in the order the refusal of another one lists them. */
+const UPLOAD_KINDS: readonly UploadKind[] = ["uploaded", "test"];
+
+/** A value an upload's kind or method was given as, described for a refusal without quoting more than an id. */
+function describedArgument(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  return typeof value;
+}
+
+/**
+ * The `kind` and `method_id` an upload is sent with, checked as the upload route checks them, so
+ * a request the route would refuse with a `422` is refused before any file is read: a `kind` is
+ * `uploaded` or `test`, a `method_id` is a bare catalog id, `kind: "test"` needs one and only a
+ * test file names one. Returns the members to send, each only when given; `null` reads as
+ * absent, as it does on the route. A refusal is an `InputPreparationError` whose message opens
+ * with `refusal` and names each member as `field` prefixes it, so `prepareInputs` names its
+ * `upload.kind`.
+ */
+export function uploadKindFields(
+  given: UploadKindOptions,
+  refusal: string,
+  field = "",
+): UploadKindOptions {
+  const raw = given as { kind?: unknown; method_id?: unknown };
+  const kind = raw.kind ?? undefined;
+  const methodId = raw.method_id ?? undefined;
+  if (kind !== undefined && !(UPLOAD_KINDS as readonly unknown[]).includes(kind)) {
+    throw new InputPreparationError(
+      `${refusal}: \`${field}kind\` is "uploaded" or "test", got ${describedArgument(kind)}.`,
+    );
+  }
+  if (methodId !== undefined) {
+    if (typeof methodId !== "string") {
+      throw new InputPreparationError(
+        `${refusal}: \`${field}method_id\` names a method by its bare catalog id, got ` +
+          `${describedArgument(methodId)}.`,
+      );
+    }
+    let bare: boolean;
+    try {
+      bare = parseMethodSelector(methodId).version === null;
+    } catch (cause) {
+      throw new InputPreparationError(
+        `${refusal}: \`${field}method_id\` ${JSON.stringify(methodId)} is not a catalog id, ` +
+          "which is mt_ followed by letters, digits, _ or -.",
+        { cause },
+      );
+    }
+    if (!bare) {
+      throw new InputPreparationError(
+        `${refusal}: \`${field}method_id\` names the method a test file is for by its bare ` +
+          `catalog id, with no version suffix, got ${JSON.stringify(methodId)}.`,
+      );
+    }
+  }
+  if (kind === "test" && methodId === undefined) {
+    throw new InputPreparationError(
+      `${refusal}: a test file names the method it is for; give \`${field}method_id\` with ` +
+        `\`${field}kind: "test"\`.`,
+    );
+  }
+  if (kind !== "test" && methodId !== undefined) {
+    throw new InputPreparationError(
+      `${refusal}: only a test file names a method; give \`${field}method_id\` with ` +
+        `\`${field}kind: "test"\` alone.`,
+    );
+  }
+  return {
+    ...(kind === undefined ? {} : { kind: kind as UploadKind }),
+    ...(methodId === undefined ? {} : { method_id: methodId }),
+  };
 }
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -174,25 +273,28 @@ function assetBytesFromBuffer(bytes: Uint8Array, options: UploadFileOptions): As
 }
 
 /**
- * Upload one local asset and return its {@link UploadRecord}. Maps the raw
- * `upload()` transport errors onto the semantic input-preparation errors: a
- * `413` is a rejected asset, `401`/`403` an auth failure, `404` an unsupported
- * upload capability, an unreachable host a transport failure.
+ * Upload one local asset and return its {@link UploadRecord}. A `kind` and its `method_id` in
+ * the options are checked before the asset is read and sent with it (see
+ * {@link UploadKindOptions}). Maps the raw `upload()` transport errors onto the semantic
+ * input-preparation errors: a `413` is a rejected asset, a test file refused for its role or its
+ * method a {@link TestFileRefusedError}, any other `401`/`403` an auth failure, any other `404`
+ * an unsupported upload capability, an unreachable host a transport failure.
  */
 export async function uploadFile(
   client: UploadCapableClient,
   asset: UploadableAsset,
   options: UploadFileOptions = {},
 ): Promise<UploadRecord> {
+  const claimed = uploadKindFields(options, "Cannot upload");
   const { bytes, filename, contentType } = await toAssetBytes(asset, options);
   // A slow read, or a Blob's `arrayBuffer()`, may outlast the caller's patience.
   throwIfAborted(options.signal);
   const data = bytesToBase64(bytes);
   let uploaded: { uri: string; filename: string };
   try {
-    uploaded = await client.upload({ filename, data, content_type: contentType });
+    uploaded = await client.upload({ filename, data, content_type: contentType, ...claimed });
   } catch (error) {
-    throw mapUploadError(error, filename);
+    throw mapUploadError(error, filename, claimed.method_id);
   }
   // The record guarantees a filename: an answer that names none keeps the one sent.
   const stored: unknown = uploaded.filename;
@@ -204,8 +306,54 @@ export async function uploadFile(
   };
 }
 
+/**
+ * Which refusal of a test file an upload's error is, or `undefined` for any other. Each is read
+ * off the platform's code, never the status alone: a `403` without `role_not_permitted` is a
+ * refused credential, and a `404` is an unknown method only when the upload named one and the
+ * answer is the platform's domain miss (`not_found`, `input`), not the `404` of a deployment
+ * without the route, which the platform answers as `config` and a bare runner without a code.
+ */
+function testFileRefusalOf(
+  error: ApiResponseError,
+  methodId: string | undefined,
+): TestFileRefusalCode | undefined {
+  if (error.code === "role_not_permitted") return "role_not_permitted";
+  if (error.code === "method_being_deleted") return "method_being_deleted";
+  if (
+    error.status === 404 &&
+    error.code === "not_found" &&
+    error.errorDomain === "input" &&
+    methodId !== undefined
+  ) {
+    return "method_not_found";
+  }
+  return undefined;
+}
+
+/** The message of a test file's refusal, naming the file, the method and what to do. */
+function testFileRefusalMessage(
+  code: TestFileRefusalCode,
+  error: ApiResponseError,
+  filename: string,
+  methodId: string | undefined,
+): string {
+  const refused = `Upload of "${filename}" as a test file was refused (${error.status})`;
+  const method = methodId === undefined ? "the method it names" : `the method "${methodId}"`;
+  switch (code) {
+    case "role_not_permitted":
+      return (
+        `${refused}: ${error.serverMessage ?? "the caller's role may not change methods"}. ` +
+        'Upload it as "uploaded", or with the credential of a member who may change methods.'
+      );
+    case "method_not_found":
+      return `${refused}: ${method} is not one of the organization's methods.`;
+    case "method_being_deleted":
+      return `${refused}: ${method} is being deleted.`;
+  }
+}
+
 /** Translate a raw `upload()` transport error into the matching preparation error. */
-function mapUploadError(error: unknown, filename: string): Error {
+function mapUploadError(error: unknown, filename: string, methodId?: string): Error {
   if (error instanceof ApiResponseError) {
     // A 2xx the client could not read: storage may hold the file, but under no reference the SDK
     // can return.
@@ -215,6 +363,18 @@ function mapUploadError(error: unknown, filename: string): Error {
           "read, so whether and where the file was stored is unknown.",
         { cause: error, status: error.status, code: "unexpected", filename },
       );
+    }
+    // A test file refused for what it claims, its role or its method, before the status alone is
+    // read as a refused credential or a deployment without upload.
+    const refusal = testFileRefusalOf(error, methodId);
+    if (refusal !== undefined) {
+      return new TestFileRefusedError(testFileRefusalMessage(refusal, error, filename, methodId), {
+        cause: error,
+        status: error.status,
+        code: refusal,
+        filename,
+        ...(methodId === undefined ? {} : { methodId }),
+      });
     }
     switch (error.status) {
       case 413:

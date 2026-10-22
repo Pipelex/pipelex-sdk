@@ -3680,9 +3680,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Upload one local asset and return its {@link UploadRecord} — the single-asset
    * convenience over {@link upload}. Accepts `Blob`/`File`/`ArrayBuffer`/`Uint8Array`
    * in every runtime; a path string is Node-only (it fails instructively elsewhere).
-   * The record guarantees `uri`, `contentType`, `size`, and `filename`. Transport
-   * failures surface as the semantic input-preparation errors (rejected asset, auth,
-   * unsupported capability, transport). See `docs/input-preparation.md`.
+   * The record guarantees `uri`, `contentType`, `size`, and `filename`. A `kind` and its
+   * `method_id` in the options record the upload as a method's test file, checked before the
+   * asset is read. Transport failures surface as the semantic input-preparation errors
+   * (rejected asset, refused test file, auth, unsupported capability, transport). See
+   * `docs/input-preparation.md`.
    */
   async uploadFile(asset: UploadableAsset, options?: UploadFileOptions): Promise<UploadRecord> {
     return uploadFileImpl(this, asset, options);
