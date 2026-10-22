@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The starter runs on `pipelex-sdk` 0.48.0, with `mthds` 0.25.0, and sends a method as its tree (Breaking)**: bumped from 0.45.0 and `mthds` 0.22.0. The lifecycle helpers `execute_pipe`, `start_and_wait` and `start_pipe` take the bundle as `files`, the method's tree, each `.mthds` file's text keyed by its path in the method's directory, where they took `mthds_contents`, a list of texts, so a command of a project's own passes `files={"main.mthds": bundle}` where it passed `mthds_contents=[bundle]`. `make codegen` sends each method directory the same way, so a refusal names a file by its path inside `widget/methods/<name>/`, under the line naming the method, where it named it by its path from the repository's root. `mthds` 0.25.0 reports MTHDS standard 8.0.0 and Protocol 2.0.0, which nothing in the starter reads, and the SDK's other changes in between keep the members of its errors the starter reads.
+
 ## [v0.46.0] - 2026-10-19
 
 ### Changed

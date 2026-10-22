@@ -23,12 +23,11 @@ from pathlib import Path
 from typing import NoReturn
 
 import pytest
-from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import VersionInfo
 from pipelex_sdk.codegen_check import run_codegen_check
 from pipelex_sdk.codegen_writer import write_codegen_tree
 from pipelex_sdk.crate_models import CodegenRequest, CodegenResponse, CodegenValidReport, CrateInvalidReport, PipeIORequest, PipeIOResponse
-from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
+from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, RequestArgumentError
 
 from pipelex_method_cli_python.lib import client as client_module
 from pipelex_method_cli_python.lib.contracts import CONTRACTS_FILENAME, GENERATED_FILES, INIT_FILENAME, LOCK_FILENAME, SOURCES_SIDECAR
@@ -61,7 +60,7 @@ def _not_found(route: str) -> ApiResponseError:
 def _refused_base_url() -> NoReturn:
     """`make_client` refusing the base URL, as the SDK's client does for one that is not host-only."""
     msg = 'Invalid API base URL "https://api.example.com/v1": must be host-only'
-    raise PipelineRequestError(msg)
+    raise RequestArgumentError(msg)
 
 
 class FakeCodegenClient:
@@ -150,11 +149,13 @@ class TestGenerate:
         generate(layout)
         assert api.calls == ["codegen", "pipe_io", "codegen"]
 
-    def test_the_bundle_is_sent_with_package_relative_labels_and_the_contracts_for_every_pipe(self, api: FakeCodegenClient, layout: Layout):
+    def test_the_bundle_is_sent_as_its_tree_and_the_contracts_for_every_pipe(self, api: FakeCodegenClient, layout: Layout):
         generate(layout)
         codegen_request, pipe_io_request, confirming_request = api.requests
         assert isinstance(codegen_request, CodegenRequest) and isinstance(pipe_io_request, PipeIORequest)
-        assert [item.source for item in codegen_request.files or []] == ["method/main.mthds"]
+        # The tree's root is `method/`, so a file's tree path is its path inside it.
+        assert list(codegen_request.files or {}) == ["main.mthds"]
+        assert pipe_io_request.files == codegen_request.files
         assert (codegen_request.kind, codegen_request.target, codegen_request.pipe_ref) == ("types", "python-pydantic", None)
         assert pipe_io_request.all_pipes
         assert confirming_request == codegen_request
@@ -224,7 +225,7 @@ class TestGenerate:
         [
             pytest.param(ApiUnreachableError("connection refused", api_url=API_URL, code="ConnectError"), id="an unreachable API"),
             pytest.param(ValueError("the body is not JSON"), id="a body that is not the answer"),
-            pytest.param(PipelineRequestError("the request was refused"), id="an SDK error"),
+            pytest.param(RequestArgumentError("the request was refused"), id="an SDK error"),
         ],
     )
     def test_a_codegen_request_that_raises_is_reported_writing_nothing(

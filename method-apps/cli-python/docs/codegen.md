@@ -39,7 +39,7 @@ Nothing under `generated/` is edited by hand: ruff excludes the directory so tha
 5. `POST /v1/codegen`, asked again with the same request, confirms the revision. Each route resolves the method on its own, and only the codegen answer names the revision it resolved, its `crate_fingerprint`, so a method edited or republished between the two calls would otherwise commit the models of one revision beside the contracts of another, a tree the offline check would call current. A fingerprint that moved is refused, with nothing written: the message says the method changed while it was being generated and to run `make codegen` again. Since steps 4 and 5 come after every guard on the first answer, a failure of either leaves the tree exactly as it was.
 6. The tree is written: the models and the lock through `write_codegen_tree`, then `contracts.json` and `__init__.py`, then the sidecar, each only when its bytes changed. A stamped file the new lock does not track is removed, and what counts as such an orphan is the SDK's offline check's verdict over the tree just written, never a filename test, so a hand-written sibling module is never deleted.
 
-The bundle is sent with each file labelled by its path relative to the package, `method/<path>`, which is also the key the sidecar records it under, so a validation error names the file a person edits.
+The bundle is sent as the method's tree, `files`, with `method/` as the tree's root: each file is keyed by its path inside `method/`, which is the path a validation error names, and the sidecar records it under its path relative to the package, `method/<path>`.
 
 <!-- template-only:begin -->
 

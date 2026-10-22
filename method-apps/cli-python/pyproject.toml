@@ -28,8 +28,8 @@ classifiers = [
 # exact pin always satisfies it, so bumping the SDK never has to be matched here. The `pydantic`
 # range is the SDK's own, since the generated models are pydantic 2 models.
 dependencies = [
-  "mthds>=0.22.0",
-  "pipelex-sdk>=0.45.0",
+  "mthds>=0.25.0",
+  "pipelex-sdk>=0.48.0",
   "pydantic>=2.10.6,<3.0.0",
   "python-dotenv>=1.0.0",
   "rich>=13.0.0",

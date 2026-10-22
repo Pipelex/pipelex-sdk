@@ -269,14 +269,14 @@ class TestAttended:
     def test_the_run_names_the_pipe_and_sends_the_bundle(self, fake_client: FakeClient):
         invoke(make_binding(), [])
         assert fake_client.started == [
-            {"pipe_code": "greetings.greet", "inputs": {}, "mthds_contents": ["domain = 'greetings'\n"], "method_id": None, "method_ref": None}
+            {"pipe_code": "greetings.greet", "inputs": {}, "files": {"main.mthds": "domain = 'greetings'\n"}, "method_id": None, "method_ref": None}
         ]
 
     def test_a_manifest_names_the_method_instead_of_sending_it(self, fake_client: FakeClient):
         address = "github.com/Pipelex/methods/text_stats@v0.1.1"
         invoke(make_binding(source=MethodSource(method_ref=address)), [])
         assert fake_client.started[0]["method_ref"] == address
-        assert fake_client.started[0]["mthds_contents"] is None
+        assert fake_client.started[0]["files"] is None
 
     def test_the_inputs_file_is_sent_as_it_is(self, fake_client: FakeClient, tmp_path: Path):
         inputs = {"text": "Hello", "audience": {"concept": "greetings.Audience", "content": {"name": "Marie"}}}

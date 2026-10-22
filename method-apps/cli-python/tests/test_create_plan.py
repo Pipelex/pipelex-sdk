@@ -18,7 +18,6 @@ from pipelex_sdk.crate_models import (
     CodegenResponse,
     CodegenValidReport,
     CrateInvalidReport,
-    MthdsFileItem,
     PipeIORequest,
     PipeIOValidReport,
 )
@@ -272,17 +271,17 @@ class TestNames:
 
 class TestMethodProse:
     def test_reads_the_primary_file_s_description_and_every_pipe_s(self):
-        files = [
-            MthdsFileItem(content='domain = "shared"\ndescription = "Shared concepts."\n[pipe.helper]\ndescription = "Helps."\n'),
-            MthdsFileItem(content='domain = "cv"\ndescription = "Screen CVs."\nmain_pipe = "screen"\n[pipe.screen]\ndescription = "Screens."\n'),
-        ]
+        files = {
+            "shared.mthds": 'domain = "shared"\ndescription = "Shared concepts."\n[pipe.helper]\ndescription = "Helps."\n',
+            "cv.mthds": 'domain = "cv"\ndescription = "Screen CVs."\nmain_pipe = "screen"\n[pipe.screen]\ndescription = "Screens."\n',
+        }
         prose = method_prose_of(files)
         assert prose.description == "Screen CVs."
         assert list(prose.pipe_descriptions.items()) == [("cv.screen", "Screens."), ("shared.helper", "Helps.")]
         assert method_vocabulary(prose) == "Screen CVs. Screens. Helps."
 
     def test_a_file_that_does_not_parse_contributes_nothing(self):
-        prose = method_prose_of([MthdsFileItem(content="not = [toml")])
+        prose = method_prose_of({"broken.mthds": "not = [toml"})
         assert prose.description is None and prose.pipe_descriptions == {}
 
 
@@ -417,17 +416,17 @@ class TestPlanMethod:
         assert plan.prose.description is not None and plan.prose.description.startswith("Read a batch of receipts")
         assert list(package.package_dir.iterdir()) == []
 
-    async def test_a_bundle_is_fetched_under_the_labels_make_codegen_sends_for_the_tree_it_writes(self, package: Layout, tmp_path: Path):
+    async def test_a_bundle_is_fetched_under_the_tree_paths_make_codegen_sends_for_the_tree_it_writes(self, package: Layout, tmp_path: Path):
         client = RecordedClient()
         # A relative path that climbs, as a person types it from beside the bundle.
         plan = await plan_method(MethodArgs(method="../bundles/receipt-review"), client, layout=package, root=tmp_path / "project", cwd=RECORDED)
-        sent = [[item.source for item in request.files or ()] for request in client.requests]
+        sent = [list(request.files or {}) for request in client.requests]
         write_method(plan, package)
         tree = discover_source(package)
         assert tree is not None and tree.files is not None
-        labels = [item.source for item in tree.files]
-        assert labels == ["method/concepts.mthds", "method/main.mthds"]
-        assert sent == [labels, labels, labels]
+        paths = list(tree.files)
+        assert paths == ["concepts.mthds", "main.mthds"]
+        assert sent == [paths, paths, paths]
         # Field for field, the requests `make codegen` and `make codegen-verify` send for the tree written.
         assert client.requests == [tree.codegen_request(), tree.pipe_io_request(), tree.codegen_request()]
 
@@ -438,21 +437,21 @@ class TestPlanMethod:
             (str(RECEIPT_REVIEW_BUNDLE / "main.mthds"), f"method/main.mthds is {RECEIPT_REVIEW_BUNDLE / 'main.mthds'}"),
         ],
     )
-    async def test_a_refusal_of_a_bundle_says_where_its_labels_point(
+    async def test_a_refusal_of_a_bundle_says_where_its_tree_paths_point(
         self, method: str, where: str, package: Layout, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         client = RecordedClient()
 
         async def refuse(request: CodegenRequest) -> CodegenResponse:
             del request
-            item = {"category": "pipe_validation", "message": "unknown concept", "source": "method/main.mthds"}
+            item = {"category": "pipe_validation", "message": "unknown concept", "source": "main.mthds"}
             return CrateInvalidReport.model_validate({"is_valid": False, "message": "The bundle does not validate", "validation_errors": [item]})
 
         monkeypatch.setattr(client, "codegen", refuse)
         with pytest.raises(PlanError) as caught:
             await plan_method(MethodArgs(method=method), client, layout=package, root=tmp_path / "project", cwd=tmp_path)
-        assert "method/main.mthds: unknown concept" in str(caught.value)
-        assert str(caught.value).endswith(f"named as the package will hold them: {where}")
+        assert "    main.mthds: unknown concept" in str(caught.value)
+        assert str(caught.value).endswith(f"named by their path in method/: {where}")
 
     async def test_plans_an_address_reading_its_prose_from_the_files_the_route_echoes(self, package: Layout, tmp_path: Path):
         client = RecordedClient()

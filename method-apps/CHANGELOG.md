@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Both templates run on the SDK 0.48.0 and send a method as its tree (Breaking)**: `@pipelex/sdk` in the web app and `pipelex-sdk` in the CLI, with `mthds` 0.25.0 in the CLI, bumped from 0.45.0 and `mthds` 0.22.0. A bundle now reaches `/v1/codegen`, `/v1/pipe-io`, the preparation of the inputs and the runs as the method's tree, `files`, each `.mthds` file's text keyed by its path in the method's directory, `methods/<name>/` in the web app and `method/` in the CLI, where it went as a list of labelled files and, on a run, as `mthds_contents`. In the web app, `loadMethodBundles` returns that map and every action `make add-method` writes passes it as `files`, so an action written before passes `files` where it passed `mthds_contents`; in the CLI nothing a project wrote changes. In both, a refusal from `make codegen`, `make add-method` or `make create` names a bundle's file by its path inside the method's directory, where the CLI named it `method/<path>`. `mthds` 0.25.0 reports MTHDS standard 8.0.0 and Protocol 2.0.0, which neither template reads, the SDK's other changes in between keep the members of its errors either template reads, and `npm ls mthds` lists two copies in the web app again, the form kernel's 0.30.1 and the SDK's 0.33.0, until a release of `@pipelex/mthds-form` takes the SDK's range.
+
 ## [v0.46.0] - 2026-10-19
 
 ### Changed

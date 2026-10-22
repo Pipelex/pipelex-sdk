@@ -17,7 +17,7 @@ class TestReadMethodSource:
     def test_the_package_s_own_method_directory_names_one_method(self):
         if method_dir().is_dir():
             source = read_method_source()
-            assert sum(named is not None for named in (source.mthds_contents, source.method_id, source.method_ref)) == 1
+            assert sum(named is not None for named in (source.files, source.method_id, source.method_ref)) == 1
         # template-only:begin
         # The template ships no method, so the package's own `method/` is absent.
         assert not method_dir().is_dir()
@@ -25,12 +25,14 @@ class TestReadMethodSource:
             read_method_source()
         # template-only:end
 
-    def test_a_bundle_is_every_mthds_file_in_the_order_of_its_path(self, tmp_path: Path):
+    def test_a_bundle_is_every_mthds_file_by_its_tree_path_in_the_order_of_that_path(self, tmp_path: Path):
         _write(tmp_path / "b.mthds", "b")
         _write(tmp_path / "a.mthds", "a")
         _write(tmp_path / "sub" / "c.mthds", "c")
         _write(tmp_path / "notes.md", "not part of the bundle")
-        assert read_method_source(tmp_path) == MethodSource(mthds_contents=("a", "b", "c"))
+        source = read_method_source(tmp_path)
+        assert source == MethodSource(files={"a.mthds": "a", "b.mthds": "b", "sub/c.mthds": "c"})
+        assert list(source.files or {}) == ["a.mthds", "b.mthds", "sub/c.mthds"]
 
     def test_a_manifest_names_the_method_instead(self, tmp_path: Path):
         _write(tmp_path / "method.json", '{"method_ref": "github.com/owner/repo@v1"}')
@@ -58,14 +60,17 @@ class TestReadMethodSource:
             read_method_source(tmp_path)
 
 
-class TestRunKwargs:
+class TestKwargs:
     @pytest.mark.parametrize(
         ("source", "kwargs"),
         [
-            (MethodSource(method_ref="github.com/o/r@v1"), {"mthds_contents": None, "method_id": None, "method_ref": "github.com/o/r@v1"}),
-            (MethodSource(method_id="mt_abc"), {"mthds_contents": None, "method_id": "mt_abc", "method_ref": None}),
-            (MethodSource(mthds_contents=("a", "b")), {"mthds_contents": ["a", "b"], "method_id": None, "method_ref": None}),
+            (MethodSource(method_ref="github.com/o/r@v1"), {"files": None, "method_id": None, "method_ref": "github.com/o/r@v1"}),
+            (MethodSource(method_id="mt_abc"), {"files": None, "method_id": "mt_abc", "method_ref": None}),
+            (
+                MethodSource(files={"a.mthds": "a", "b.mthds": "b"}),
+                {"files": {"a.mthds": "a", "b.mthds": "b"}, "method_id": None, "method_ref": None},
+            ),
         ],
     )
     def test_names_the_source_as_the_sdk_keyword_arguments(self, source: MethodSource, kwargs: dict[str, object]):
-        assert source.run_kwargs() == kwargs
+        assert source.kwargs() == kwargs

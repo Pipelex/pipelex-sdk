@@ -1,10 +1,10 @@
 """What `make codegen`, `make codegen-check` and `make codegen-verify` share: where the method and its tree are, and the policies.
 
 The three gestures work on one method, the one in the package's `method/` directory, read the way a
-run reads it (`lib/method_source.py`): a bundle of `.mthds` files sent inline, or a `method.json`
-naming a catalog id (`method_id`) or a published address (`method_ref`) for the API to resolve. They
-write and read the package's `generated/` directory, whose files are named in `lib/contracts.py` so
-that the CLI and these scripts cannot disagree about them:
+run reads it (`lib/method_source.py`): a bundle of `.mthds` files sent inline as the method's tree,
+or a `method.json` naming a catalog id (`method_id`) or a published address (`method_ref`) for the
+API to resolve. They write and read the package's `generated/` directory, whose files are named in
+`lib/contracts.py` so that the CLI and these scripts cannot disagree about them:
 
 - the codegen tree, written verbatim from `POST /v1/codegen` by the SDK's `write_codegen_tree`:
   the typed models and `codegen.lock`, which signs them;
@@ -38,7 +38,7 @@ from urllib.parse import urlparse
 from mthds.protocol.input_form import InputForm
 from mthds.protocol.output_form import OutputForm
 from mthds.protocol.pipe_io_contracts import PipeIOContracts
-from pipelex_sdk.crate_models import CodegenRequest, CodegenTarget, CrateInvalidReport, MthdsFileItem, PipeIORequest, PipeIOValidReport
+from pipelex_sdk.crate_models import CodegenRequest, CodegenTarget, CrateInvalidReport, PipeIORequest, PipeIOValidReport
 
 from pipelex_method_cli_python.lib.contracts import (
     CONTRACTS_FILENAME,
@@ -213,8 +213,9 @@ def hash_source(content: str) -> str:
 class CodegenSource:
     """The one method of the package, as the crate routes name it, with the hashes of what it is read from."""
 
-    #: The bundle's files, each labelled `method/<path>`, when the method is a bundle.
-    files: tuple[MthdsFileItem, ...] | None = None
+    #: The bundle as the method's tree, when the method is a bundle: each file's text keyed by its tree
+    #: path, its path inside `method/`, which is the tree's root, as a run sends it.
+    files: dict[str, str] | None = None
     #: The catalog id or address `method.json` names, when the method lives elsewhere.
     selector: MethodSelector | None = None
     #: The SHA-256 of each source, keyed by its package-relative label, `method/<path>`.
@@ -230,7 +231,7 @@ class CodegenSource:
 
     def _selector_kwargs(self) -> dict[str, object]:
         if self.selector is None:
-            return {"files": list(self.files or ())}
+            return {"files": dict(self.files or {})}
         return {"method_id": self.selector.method_id, "method_ref": self.selector.method_ref}
 
     def codegen_request(self) -> CodegenRequest:
@@ -289,9 +290,8 @@ def discover_source(layout: Layout) -> CodegenSource | None:
         return CodegenSource(selector=parse_manifest(content, origin=label), source_hashes={label: hash_source(content)})
     if not bundles:
         return None
-    labelled = [(f"{METHOD_DIRNAME}/{relative}", content) for relative, content in read_bundle(method_dir, bundles, layout)]
-    files = tuple(MthdsFileItem(content=content, source=label) for label, content in labelled)
-    return CodegenSource(files=files, source_hashes={label: hash_source(content) for label, content in labelled})
+    tree = dict(read_bundle(method_dir, bundles, layout))
+    return CodegenSource(files=tree, source_hashes={f"{METHOD_DIRNAME}/{relative}": hash_source(content) for relative, content in tree.items()})
 
 
 def invalid_lines(report: CrateInvalidReport, *, lead: str = "the method does not resolve") -> list[str]:
