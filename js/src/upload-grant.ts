@@ -195,8 +195,11 @@ export interface UploadWithGrantOptions {
 export interface GrantedUpload {
   /** The grant's `pipelex-storage://` reference, which now names the stored file. */
   uri: string;
-  /** The file's record, the grant's `file_id`. */
-  file_id: string;
+  /**
+   * The file's record, the grant's `file_id`. Absent when the grant carried none, as from a
+   * deployment that predates file records.
+   */
+  file_id?: string;
 }
 
 /**
@@ -427,7 +430,9 @@ export async function uploadWithGrant(
 }
 
 function grantedUpload(grant: UploadGrant): GrantedUpload {
-  return { uri: grant.uri, file_id: grant.file_id };
+  return grant.file_id === undefined
+    ? { uri: grant.uri }
+    : { uri: grant.uri, file_id: grant.file_id };
 }
 
 /**

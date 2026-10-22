@@ -5,12 +5,12 @@
 ### Added
 
 - **`describeUpload`, a file described for its upload grant**: `describeUpload(file, { filename?, maxBytes? })`, on `@pipelex/sdk/upload` and the main entry, reads a `File`'s or a `Blob`'s name, type and size and computes the SHA-256 of its bytes with Web Crypto, the description `requestUploadGrant` takes as is. It leaves the hash out, and the grant works as it does without one, for a file larger than `maxBytes`, 50 MiB by default, which it never reads so the grant route's `413` refuses it, and where the runtime offers no Web Crypto digest, as on a page served over plain `http` from any host but the local one (`docs/input-preparation.md`).
-- **The file's record on the upload answer**: `UploadedFile`, the answer of `upload` (`POST /v1/upload`), gains `file_id`, the record the platform wrote for the file, as a grant and `uploadWithGrant` now answer it.
+- **The file's record on the upload answer**: `UploadedFile`, the answer of `upload` (`POST /v1/upload`), gains `file_id`, the record the platform wrote for the file, as a grant and `uploadWithGrant` now answer it; it is absent from a deployment that predates file records.
 - **The upload grant request takes the file's hash and its kind**: `UploadGrantInput` gains `sha256`, with which the platform names the object after its bytes and holds the upload to them, and `kind` (`uploaded` or `test`) with `method_id` for a method's test file; `UploadKind` is exported.
 
 ### Changed
 
-- **The upload grant answers whether the bytes are already stored (Breaking)**: `UploadGrant` gains `file_id` and `stored`, and its `url`, `headers` and `expires_at` are `null` when `stored` is true, the organization already holding those bytes, so code reading `grant.url` branches on `grant.stored` first. `uploadWithGrant` sends nothing for a stored grant, and resolves to `{ uri, file_id }` where it resolved to `{ uri }`.
+- **The upload grant answers whether the bytes are already stored (Breaking)**: `UploadGrant` gains `file_id` and `stored`, both absent from a deployment that predates them, and its `url`, `headers` and `expires_at` are `null` when `stored` is true, the organization already holding those bytes, so code reading `grant.url` branches on `grant.stored` first. `uploadWithGrant` sends nothing for a stored grant, and resolves to `{ uri, file_id }` where it resolved to `{ uri }`, `file_id` present whenever the grant carried one.
 - **`uploadWithGrant` reads a `412` as stored and sends a `409` again**: for a grant that names the file by its bytes, storage's `412` means another request stored those bytes meanwhile and resolves as stored, while a grant asked for without a hash still meets `grant_used`; a `409 ConditionalRequestConflict` is sent again after short pauses, within the call's time limit, before it fails with `conflict`; and a `400 BadDigest`, bytes other than the hashed ones, is a `store_refused` that says so.
 
 ## [v0.48.1] - 2026-10-22

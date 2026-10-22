@@ -692,8 +692,11 @@ export interface UploadedFile {
   uri: string;
   /** The name as sent. */
   filename: string;
-  /** The file's record, `fl_<uuid7>`, written `stored`, as an upload grant's `file_id` is. */
-  file_id: string;
+  /**
+   * The file's record, `fl_<uuid7>`, written `stored`, as an upload grant's `file_id` is.
+   * Absent from a deployment that predates file records, which answers none.
+   */
+  file_id?: string;
 }
 
 /**
@@ -747,8 +750,11 @@ export interface UploadGrantInput {
  * entry) is the sender, and sends nothing for a stored grant.
  */
 export interface UploadGrant {
-  /** The file's record, `fl_<uuid7>`, `stored` once the bytes are and `pending` before. */
-  file_id: string;
+  /**
+   * The file's record, `fl_<uuid7>`, `stored` once the bytes are and `pending` before.
+   * Absent from a deployment that predates file records, which answers none.
+   */
+  file_id?: string;
   /**
    * The reference the file carries. With `stored: false`, it names nothing until the
    * `PUT` has succeeded.
@@ -756,9 +762,11 @@ export interface UploadGrant {
   uri: string;
   /**
    * `true` when the organization already holds these bytes: nothing is to be sent, and
-   * `uri` and `file_id` name the file now. `false` when the bytes go to `url`.
+   * `uri` and `file_id` name the file now. `false` when the bytes go to `url`. Absent from
+   * a deployment that predates hashed uploads, whose grant is always a target, so an
+   * absent `stored` reads as `false`, as `uploadWithGrant` reads it.
    */
-  stored: boolean;
+  stored?: boolean;
   /** Where to `PUT` the file, as the raw request body; `null` when `stored`. */
   url: string | null;
   /**

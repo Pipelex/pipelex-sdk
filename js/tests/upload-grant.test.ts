@@ -269,12 +269,14 @@ describe("uploadWithGrant — a grant for bytes already stored", () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(null, { status: 200 }));
+    // Neither `stored` nor `file_id`: both are optional, and the result carries no file_id.
     const { stored: _stored, file_id: _fileId, ...legacy } = GRANT;
 
-    const result = await uploadWithGrant(legacy as unknown as UploadGrant, pdfFile());
+    const result = await uploadWithGrant(legacy, pdfFile());
 
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(result.uri).toBe(GRANT.uri);
+    expect(result).toStrictEqual({ uri: GRANT.uri });
+    expect("file_id" in result).toBe(false);
   });
 });
 

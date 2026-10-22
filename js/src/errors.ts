@@ -421,7 +421,7 @@ export class UploadAuthenticationError extends InputPreparationError {
  * - `conflict` — storage's `409 ConditionalRequestConflict` on every one of
  *   `uploadWithGrant`'s few attempts: another write of the same object was in flight.
  * - `redirected` — storage redirected the `PUT`, and the redirect was refused.
- * - `invalid_grant_url` — the grant's `url` is not an absolute `http(s)` URL free of
+ * - `invalid_grant_url` — the grant is not stored and its `url` is not an absolute `http(s)` URL free of
  *   user info, so nothing was sent.
  * - `unexpected` — a status or a failure the SDK has no specific mapping for. From
  *   `uploadWithGrant`, storage's `408` or `429`: it timed out or throttled the request,
