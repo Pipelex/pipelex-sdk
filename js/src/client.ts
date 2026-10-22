@@ -57,9 +57,12 @@ import type {
   BillingPortalResponse,
   ChangePlanResponse,
   CheckoutResponse,
+  FilePage,
+  FileSummary,
   InvoiceView,
   Membership,
   MembershipsResponse,
+  ListFilesQuery,
   ListMethodExamplesQuery,
   ListMethodsQuery,
   ListMethodVersionsQuery,
@@ -189,7 +192,7 @@ import { ExactJsonUnsupportedError, parseExactJson, stringifyExactJson } from ".
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // A pure RUNAWAY guard on the paged-list iterators (`iterateMethods`,
-// `iterateRuns`, `iterateMethodExamples`), deliberately not a coverage limit.
+// `iterateRuns`, `iterateMethodExamples`, `iterateFiles`), deliberately not a coverage limit.
 //
 // It counts TOTAL pages, not empty ones. An earlier version capped consecutive
 // empty pages, which is the wrong axis: an empty page whose cursor ADVANCED is
@@ -207,8 +210,8 @@ const MAX_PAGES = 10_000;
 
 /**
  * Follow a paged list's cursor until the server says there is no more, yielding every row —
- * the one loop behind `iterateMethods`, `iterateRuns` and `iterateMethodExamples`, so they cannot
- * drift apart.
+ * the one loop behind `iterateMethods`, `iterateRuns`, `iterateMethodExamples` and
+ * `iterateFiles`, so they cannot drift apart.
  *
  * It yields lazily: a caller that breaks early stops the requests. It stops when `nextCursor`
  * is `null`, the normal end, and when the server hands back the cursor it was just sent, which
@@ -607,6 +610,30 @@ function productQuery(params: Readonly<Record<string, ProductQueryValue>>): stri
   }
   const text = search.toString();
   return text ? `?${text}` : "";
+}
+
+/**
+ * A list filter sent as one repeated query parameter per value, such as `listFiles`' `format`:
+ * `undefined` when omitted, the values as given otherwise. An empty list names no value, and sent
+ * as no parameter at all it would read as no filter and list everything, so it is a
+ * `RequestArgumentError` before any request; a value that is not a list of strings is a
+ * `TypeError`, a bug in the calling code.
+ */
+function repeatedFilter(
+  call: string,
+  name: string,
+  values: readonly string[] | undefined,
+): readonly string[] | undefined {
+  if (values === undefined) return undefined;
+  if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
+    throw new TypeError(`${call}() takes "${name}" as a list of strings.`);
+  }
+  if (values.length === 0) {
+    throw new RequestArgumentError(
+      `${call}() takes "${name}" as one or more values; omit it to list every ${name}.`,
+    );
+  }
+  return values;
 }
 
 /** `items` joined as a sentence names them, the last after `conjunction`: `a`, `a or b`, `a, b or c`. */
@@ -1094,7 +1121,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * One page of a cursor-paged product route (`listMethods`, `listMethodVersions`,
-   * `listMethodExamples`, `listRuns`), read as the platform always serializes it: `items` an
+   * `listMethodExamples`, `listRuns`, `listFiles`), read as the platform always serializes it: `items` an
    * array, `next_cursor` a string or `null`. A page breaking either is an answer the SDK cannot
    * read, so it throws the `ApiResponseError` `unreadableAnswer` builds, `runtime` and not
    * retryable, rather than handing the iterators a page they cannot walk: `items` that is not
@@ -3692,6 +3719,73 @@ export class PipelexApiClient implements HostedProtocolSurface {
    */
   async prepareInputs(request: PrepareInputsRequest): Promise<PreparedInputs> {
     return prepareInputsImpl(this, request);
+  }
+
+  /**
+   * One page of the organization's files, newest first — `GET /v1/files`.
+   *
+   * Rows are `FileSummary`: the record's id, its `uri`, which a run's inputs take as they take
+   * any address, the name a person sees, its type, size and kind, and where it came from. A list
+   * never holds a file a run made along the way, nor an upload whose bytes have not been seen
+   * stored. Every role of the organization reads every file of it.
+   *
+   * `methodId`, `runId` and `createdBy` choose which list serves the page: the method's files
+   * (what its runs and examples took or made), the run's own files (its final outputs and inline
+   * inputs, in the order of their addresses), one member's (`"me"` for the caller's own), or the
+   * organization's. `q`, `kind`, `format`, `mediaType`, `createdFrom` and `createdTo` filter that
+   * list server-side; `format` and `mediaType` are sent as one repeated parameter per value, and
+   * an empty list of either is a `RequestArgumentError` before any request. The filters run after
+   * the index read, so **a filtered page can hold fewer rows than `limit`, or none, and still
+   * carry a `nextCursor`**: keep following it until it is `null`, with the same filters, since a
+   * cursor is bound to the list and filters that issued it.
+   *
+   * Throws `ApiResponseError`: `400` for a date bound that is not an instant with an offset, a
+   * range whose start is after its end, or a cursor of another list or other filters; `404`
+   * `run_not_found` for a run that is not the organization's; `422` for a `limit` outside 1 to
+   * 200, an unknown `kind`, more than 100 values of `format` or `mediaType`, or an id that cannot
+   * be one. A page whose `items` is not an array or whose `next_cursor` is neither a string nor
+   * `null` is an `ApiResponseError` of an answer the SDK cannot read. See `docs/files.md`.
+   */
+  async listFiles(query: ListFilesQuery = {}): Promise<FilePage> {
+    const search = productQuery({
+      method_id: query.methodId,
+      run_id: query.runId,
+      created_by: query.createdBy,
+      kind: query.kind,
+      format: repeatedFilter("listFiles", "format", query.format),
+      media_type: repeatedFilter("listFiles", "mediaType", query.mediaType),
+      created_from: query.createdFrom,
+      created_to: query.createdTo,
+      q: query.q,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    return this.requestPage<FileSummary>(`files${search}`);
+  }
+
+  /**
+   * Every file of the organization the query selects, streamed — follows the cursor for you.
+   *
+   * ```ts
+   * for await (const file of client.iterateFiles({ kind: "uploaded", format: ["pdf"] })) {
+   *   if (file.name === "March invoice.pdf") break; // stop whenever you like
+   * }
+   * ```
+   *
+   * **Prefer `listFiles`** for anything user-facing: this makes as many round trips as the data
+   * demands. It is an iterator rather than an all-at-once helper for the reason `iterateRuns` is
+   * one: a helper returning an array needs a page cap, and a cap returns a truncated list with no
+   * error.
+   *
+   * It keeps going **through an empty page that carries a cursor**, which under any filter means
+   * "nothing matched in the slice just read", not "done", sending the same filters with every
+   * page. It stops on a `null` cursor or on a cursor the server failed to advance, and throws
+   * `PagingNotTerminatingError` past a page ceiling no real file list reaches.
+   */
+  async *iterateFiles(
+    query: Omit<ListFilesQuery, "cursor"> = {},
+  ): AsyncGenerator<FileSummary, void, undefined> {
+    yield* followCursor("listFiles", (cursor) => this.listFiles({ ...query, cursor }));
   }
 
   /**
