@@ -112,15 +112,16 @@ describe("decideAfterValidate", () => {
   });
 
   it("passes silently on a valid bundle with no pending signatures", () => {
-    expect(decideAfterValidate(FILE, { status: "valid", pendingSignatures: [] })).toEqual({
-      kind: "pass",
-    });
+    expect(
+      decideAfterValidate(FILE, { status: "valid", pendingSignatures: [], withheld: [] }),
+    ).toEqual({ kind: "pass" });
   });
 
   it("emits a non-blocking nudge on pending signatures", () => {
     const outcome = decideAfterValidate(FILE, {
       status: "valid",
       pendingSignatures: ["demo.extract", "demo.render"],
+      withheld: [],
     });
     expect(outcome.kind).toBe("context");
     if (outcome.kind !== "context") return;
@@ -134,6 +135,7 @@ describe("decideAfterValidate", () => {
       status: "invalid",
       validationErrors: [validationError()],
       renderedMarkdown: markdown,
+      withheld: [],
     });
     expect(outcome).toEqual({ kind: "block", reason: markdown });
   });
@@ -150,6 +152,7 @@ describe("decideAfterValidate", () => {
           source: "demo.mthds",
         }),
       ],
+      withheld: [],
     });
     expect(outcome.kind).toBe("block");
     if (outcome.kind !== "block") return;
@@ -162,7 +165,11 @@ describe("decideAfterValidate", () => {
   });
 
   it("blocks even when the invalid verdict carries no errors or message", () => {
-    const outcome = decideAfterValidate(FILE, { status: "invalid", validationErrors: [] });
+    const outcome = decideAfterValidate(FILE, {
+      status: "invalid",
+      validationErrors: [],
+      withheld: [],
+    });
     expect(outcome.kind).toBe("block");
     if (outcome.kind !== "block") return;
     expect(outcome.reason).toContain("Bundle is invalid.");
@@ -173,6 +180,7 @@ describe("decideAfterValidate", () => {
       status: "invalid",
       message: "Custom server message.",
       validationErrors: [],
+      withheld: [],
     });
     expect(outcome.kind).toBe("block");
     if (outcome.kind !== "block") return;
@@ -180,6 +188,83 @@ describe("decideAfterValidate", () => {
     expect(outcome.reason).toContain("Custom server message.");
     expect(outcome.reason).not.toContain("Bundle is invalid.");
     expect(outcome.reason).not.toContain("[pipe_validation]");
+  });
+});
+
+describe("decideAfterValidate, with files kept home", () => {
+  const withheld = [
+    { path: "/work/key.pem", reason: "it holds a private key block (PEM)" },
+    { path: "/work/secrets.yaml", reason: "it holds an AWS access key id" },
+  ];
+  const note = [
+    "The .mthds hook kept these files of the method's tree on this machine, since each looks " +
+      "like a secret, and validated the method without them:",
+    "- `/work/key.pem` (it holds a private key block (PEM))",
+    "- `/work/secrets.yaml` (it holds an AWS access key id)",
+  ].join("\n");
+
+  it("names them in a non-blocking note beside a valid verdict", () => {
+    const outcome = decideAfterValidate(FILE, { status: "valid", pendingSignatures: [], withheld });
+
+    expect(outcome.kind).toBe("context");
+    if (outcome.kind !== "context") return;
+    expect(outcome.context.startsWith(note)).toBe(true);
+    expect(outcome.context).toContain("Move the secret out of the file");
+    expect(outcome.context).toContain("one above the tree's root is not read");
+  });
+
+  it("joins the note to the pending signatures' nudge", () => {
+    const outcome = decideAfterValidate(FILE, {
+      status: "valid",
+      pendingSignatures: ["demo.extract"],
+      withheld,
+    });
+
+    expect(outcome.kind).toBe("context");
+    if (outcome.kind !== "context") return;
+    const [nudge, ...rest] = outcome.context.split("\n\n");
+    expect(nudge).toContain("not yet runnable");
+    expect(rest.join("\n\n").startsWith(note)).toBe(true);
+  });
+
+  it("puts the note ahead of an invalid verdict's reason, which still blocks", () => {
+    const markdown = "# Validation failed\n\n- pipe `demo.print`: template file missing";
+    const outcome = decideAfterValidate(FILE, {
+      status: "invalid",
+      validationErrors: [validationError()],
+      renderedMarkdown: markdown,
+      withheld,
+    });
+
+    expect(outcome.kind).toBe("block");
+    if (outcome.kind !== "block") return;
+    expect(outcome.reason.startsWith(note)).toBe(true);
+    expect(outcome.reason).toContain("the validation reports that file missing");
+    expect(outcome.reason.endsWith(`\n\n${markdown}`)).toBe(true);
+  });
+
+  it("names the files of a refused validation in a note that never blocks", () => {
+    const outcome = decideAfterValidate(FILE, {
+      status: "refused",
+      withheld: [{ path: FILE, reason: "it holds an Anthropic API key" }],
+    });
+
+    expect(outcome).toEqual({
+      kind: "context",
+      context: [
+        "The .mthds hook did not validate /work/demo.mthds: these files of its method's tree " +
+          "look like a secret, and every validation reads the method's bundles and its " +
+          "manifest, so nothing was sent:",
+        "- `/work/demo.mthds` (it holds an Anthropic API key)",
+        "",
+        "A key belongs in the environment, never in a method: a method's files leave this " +
+          "machine for the Pipelex API, which keeps them in the organization's storage, where " +
+          "every member can read them. Move the secret out of each bundle or manifest listed, " +
+          "and the next edit is validated; any other file listed can instead stay where it is " +
+          "if you keep the file out of the method's tree with a `.gitignore` line inside the " +
+          "tree, since one above the tree's root is not read, or with a name starting with a dot.",
+      ].join("\n"),
+    });
   });
 });
 

@@ -26,9 +26,11 @@ export interface ValidateStageOptions {
 
 /**
  * Run the networked validate stage on `filePath`. Every no-verdict condition maps to
- * `unavailable` — no API key, a tree the gatherer refuses, the deadline running out, any failure
- * of the client — so a machine consumer branches on the structured verdict, never on transport,
- * and the lint and format verdicts the hook already applied stand.
+ * `unavailable` — no API key, a tree the gatherer cannot list whole, the deadline running out, any
+ * failure of the client — so a machine consumer branches on the structured verdict, never on
+ * transport, and the lint and format verdicts the hook already applied stand. A bundle or the
+ * manifest that looks like a secret is `refused`, with nothing sent, and a verdict names the files
+ * of the tree the gatherer kept home as `withheld`.
  */
 export async function runValidateStage(
   filePath: string,
@@ -43,8 +45,11 @@ export async function runValidateStage(
   const deadline = AbortSignal.timeout(options.timeoutMs ?? VALIDATE_TIMEOUT_MS);
   const gathered = await gatherMethodTree(filePath);
   if (!gathered.ok) {
-    return { status: "unavailable" };
+    return gathered.reason === "secret"
+      ? { status: "refused", withheld: gathered.withheld }
+      : { status: "unavailable" };
   }
+  const withheld = gathered.withheld;
   try {
     const client = options.client ?? createHookClient();
     const result = await client.validate({ tree: gathered.tree }, true, { signal: deadline });
@@ -54,6 +59,7 @@ export async function runValidateStage(
         pendingSignatures: Array.isArray(result.pending_signatures)
           ? result.pending_signatures
           : [],
+        withheld,
       };
     }
     if (result.is_valid === false) {
@@ -62,6 +68,7 @@ export async function runValidateStage(
         message: result.message,
         validationErrors: Array.isArray(result.validation_errors) ? result.validation_errors : [],
         renderedMarkdown: result.rendered_markdown,
+        withheld,
       };
     }
     return { status: "unavailable" }; // no discriminant — no verdict

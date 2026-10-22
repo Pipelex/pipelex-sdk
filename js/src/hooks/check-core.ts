@@ -12,6 +12,10 @@
  *   API a produced verdict is always a 200; server/config faults are non-2xx =
  *   no verdict = unavailable)
  * - validate valid + pending `PipeSignature`s → non-blocking additionalContext
+ * - tree files kept home as secrets → named in a note: non-blocking beside a
+ *   valid verdict, ahead of the reason of an invalid one's block
+ * - validate refused (a bundle or the manifest looks like a secret, so
+ *   nothing was sent) → non-blocking additionalContext naming the files
  * - any stage unavailable       → fail-open (the other stages' verdicts stand)
  */
 
@@ -26,15 +30,32 @@ export type LintStage =
   | { status: "diagnostics"; diagnostics: Diagnostic[] }
   | { status: "unavailable" };
 
-/** Verdict of the networked validate stage. `unavailable` = no verdict could be produced. */
+/**
+ * A file of the method's tree that the hook kept on this machine, since it looks like a secret
+ * (`secret-guard.ts`): its absolute path, and why, in words that quote nothing of the file.
+ */
+export interface WithheldFile {
+  path: string;
+  reason: string;
+}
+
+/**
+ * Verdict of the networked validate stage. `unavailable` = no verdict could be produced.
+ * `withheld` lists the files of the tree that stayed home, empty when every file was sent: a
+ * verdict is about the tree without them. `refused` = nothing was sent, because a file every
+ * validation reads, a bundle or the manifest, looks like a secret, so no tree without it is the
+ * method; `withheld` then lists every file of the tree that looks like one.
+ */
 export type ValidateStage =
-  | { status: "valid"; pendingSignatures: string[] }
+  | { status: "valid"; pendingSignatures: string[]; withheld: WithheldFile[] }
   | {
       status: "invalid";
       message?: string;
       validationErrors: ValidationErrorItem[];
       renderedMarkdown?: string;
+      withheld: WithheldFile[];
     }
+  | { status: "refused"; withheld: WithheldFile[] }
   | { status: "unavailable" };
 
 /** The hook's decision, prior to JSON encoding. */
@@ -411,6 +432,56 @@ function renderValidationErrorLine(item: ValidationErrorItem): string {
   return `- [${item.category ?? "error"}] ${item.message ?? ""}${locators ? ` (${locators})` : ""}`;
 }
 
+/** The withheld files as Markdown list items: each path, and why, never what the file holds. */
+function withheldLines(withheld: readonly WithheldFile[]): string[] {
+  return withheld.map((file) => `- \`${file.path}\` (${file.reason})`);
+}
+
+/** Why a key must not ride a method, the workshop's own words. */
+const KEY_BELONGS_IN_THE_ENVIRONMENT =
+  "A key belongs in the environment, never in a method: a method's files leave this machine " +
+  "for the Pipelex API, which keeps them in the organization's storage, where every member can " +
+  "read them.";
+
+/** How a file is kept out of the method's tree, which only the tree's own rule decides. */
+const KEEP_IT_OUT =
+  "keep the file out of the method's tree with a `.gitignore` line inside the tree, since one " +
+  "above the tree's root is not read, or with a name starting with a dot";
+
+/**
+ * The note on a verdict reached without some files of the tree. A step reading one of them, such
+ * as a `PipeDocGen` step's template or a `PipeFunc` step's module, cannot load without it, so the
+ * validation reports it missing; the note says so, and the error goes once the secret is out of
+ * the file.
+ */
+function withheldNote(withheld: readonly WithheldFile[]): string {
+  return [
+    "The .mthds hook kept these files of the method's tree on this machine, since each looks " +
+      "like a secret, and validated the method without them:",
+    ...withheldLines(withheld),
+    "",
+    "If a step reads one of them, as its template or its Python module, the validation reports " +
+      "that file missing until the secret is moved out of it. " +
+      KEY_BELONGS_IN_THE_ENVIRONMENT +
+      ` Move the secret out of the file, or ${KEEP_IT_OUT}. A file kept home for its name alone ` +
+      "that holds no key can be renamed.",
+  ].join("\n");
+}
+
+/** The note on a validation the hook did not send, a bundle or the manifest looking like a secret. */
+function refusedNote(filePath: string, withheld: readonly WithheldFile[]): string {
+  return [
+    `The .mthds hook did not validate ${filePath}: these files of its method's tree look like ` +
+      "a secret, and every validation reads the method's bundles and its manifest, so nothing " +
+      "was sent:",
+    ...withheldLines(withheld),
+    "",
+    KEY_BELONGS_IN_THE_ENVIRONMENT +
+      " Move the secret out of each bundle or manifest listed, and the next edit is validated; " +
+      `any other file listed can instead stay where it is if you ${KEEP_IT_OUT}.`,
+  ].join("\n");
+}
+
 /**
  * Map the validate verdict to a decision.
  *
@@ -420,35 +491,56 @@ function renderValidationErrorLine(item: ValidationErrorItem): string {
  * Valid passes, with a non-blocking nudge listing still-unimplemented
  * `PipeSignature`s. Unavailable passes silently — the local lint/format
  * verdicts already applied.
+ *
+ * A verdict reached without files the hook kept home says which, and why: a
+ * non-blocking note beside a valid verdict, and ahead of an invalid one's
+ * reason, so the agent reads an error about a missing file as the hook's
+ * doing. A refused validation sent nothing, and its note never blocks, since
+ * no verdict was produced; the lint and format verdicts stand.
  */
 export function decideAfterValidate(filePath: string, validate: ValidateStage): HookOutcome {
   switch (validate.status) {
     case "unavailable":
       return { kind: "pass" };
+    case "refused":
+      return { kind: "context", context: truncate(refusedNote(filePath, validate.withheld)) };
     case "valid": {
-      if (validate.pendingSignatures.length === 0) {
+      const notes: string[] = [];
+      if (validate.pendingSignatures.length > 0) {
+        notes.push(
+          "Bundle is valid but not yet runnable. Signatures still unimplemented (PipeSignature placeholders): " +
+            validate.pendingSignatures.join(", ") +
+            ". They mock their output on dry-run; implement them before running the method for real.",
+        );
+      }
+      if (validate.withheld.length > 0) {
+        notes.push(withheldNote(validate.withheld));
+      }
+      if (notes.length === 0) {
         return { kind: "pass" };
       }
-      const context =
-        "Bundle is valid but not yet runnable. Signatures still unimplemented (PipeSignature placeholders): " +
-        validate.pendingSignatures.join(", ") +
-        ". They mock their output on dry-run; implement them before running the method for real.";
-      return { kind: "context", context: truncate(context) };
+      return { kind: "context", context: truncate(notes.join("\n\n")) };
     }
     case "invalid": {
+      let reason: string;
       if (validate.renderedMarkdown) {
-        return { kind: "block", reason: truncate(validate.renderedMarkdown) };
+        reason = validate.renderedMarkdown;
+      } else {
+        const lines = [
+          `Validation failed for ${filePath}:`,
+          "",
+          validate.message || "Bundle is invalid.",
+        ];
+        if (validate.validationErrors.length > 0) {
+          lines.push("");
+          lines.push(...validate.validationErrors.map(renderValidationErrorLine));
+        }
+        reason = lines.join("\n");
       }
-      const lines = [
-        `Validation failed for ${filePath}:`,
-        "",
-        validate.message || "Bundle is invalid.",
-      ];
-      if (validate.validationErrors.length > 0) {
-        lines.push("");
-        lines.push(...validate.validationErrors.map(renderValidationErrorLine));
+      if (validate.withheld.length > 0) {
+        reason = `${withheldNote(validate.withheld)}\n\n${reason}`;
       }
-      return { kind: "block", reason: truncate(lines.join("\n")) };
+      return { kind: "block", reason: truncate(reason) };
     }
   }
 }

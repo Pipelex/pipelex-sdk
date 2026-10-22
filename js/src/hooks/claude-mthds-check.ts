@@ -35,6 +35,13 @@
  *   upload) → the local lint/format verdicts already applied; the validate
  *   stage passes silently (`validate-stage.ts`)
  *
+ * Secrets stay home: before any request, every file of the method's tree is
+ * read and screened by the workshop's rule (`secret-guard.ts`). A file that
+ * looks like a secret is left out and named, with why, in a note beside the
+ * verdict, never quoting it; one that is a bundle or the manifest, which every
+ * validation reads, keeps the whole tree home, and a non-blocking note names
+ * the files instead of a verdict (`bundle-gather.ts`).
+ *
  * The hook always exits 0; a block/deny is expressed on stdout, never via the
  * exit code.
  */

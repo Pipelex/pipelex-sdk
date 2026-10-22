@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The `.mthds` check hook keeps a method's secret files home**: the hook built by `npm run build:hook` screens every file of the method's tree before its validation sends anything, by the workshop's secret guard, so a file whose name is a known secret file's or whose text holds a well-known key format, such as a `key.pem`, a `secrets.yaml` holding an API key or a cloud service-account export, no longer travels with the method; since 0.48.0 the hook sent every file of the tree, and a `.gitignore` above the method's directory protects nothing in it. The method is validated without such a file, and a note beside the verdict, ahead of the reason when an invalid one blocks, names each file kept home and why, never quoting it. When the file is a bundle or the `METHODS.toml` manifest, which every validation reads, nothing is sent and a non-blocking note says so in place of a verdict (`docs/hook-bundle.md`).
+
 ## [v0.48.0] - 2026-10-20
 
 ### Added
