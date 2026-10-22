@@ -8,14 +8,24 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-/** A PEM block of the given label, such as `RSA PRIVATE KEY` or `CERTIFICATE`. */
-export function pemBlock(label: string): string {
-  return ["-----BEGIN ", `${label}-----\nMIIB\n-----END `, `${label}-----`].join("");
+/**
+ * A PEM block of the given label, such as `RSA PRIVATE KEY` or `CERTIFICATE`, its body two lines
+ * of one repeated Base64 character as long as a real key's lines, and with `encrypted` the
+ * `Proc-Type` and `DEK-Info` headers of an encrypted legacy key before it.
+ */
+export function pemBlock(label: string, options: { encrypted?: boolean } = {}): string {
+  const headers = options.encrypted
+    ? [["Proc-Type: 4", "ENCRYPTED"].join(","), `DEK-Info: AES-128-CBC,${"0".repeat(32)}`, ""]
+    : [];
+  const body = ["M".repeat(64), "Q".repeat(40)];
+  return [["-----BEGIN ", label, "-----"].join(""), ...headers, ...body, `-----END ${label}-----`]
+    .join("\n")
+    .concat("\n");
 }
 
 export const fake = {
   pem: pemBlock(["RSA", "PRIVATE KEY"].join(" ")),
-  openssh: ["-----BEGIN ", "OPENSSH PRIVATE KEY-----"].join(""),
+  openssh: pemBlock(["OPENSSH", "PRIVATE KEY"].join(" ")),
   aws: ["AKIA", "Z".repeat(16)].join(""),
   github: ["ghp_", "a".repeat(36)].join(""),
   slack: ["xoxb-", "1234567890-abcdef"].join(""),

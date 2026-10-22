@@ -46,7 +46,7 @@ export async function runValidateStage(
   const gathered = await gatherMethodTree(filePath);
   if (!gathered.ok) {
     return gathered.reason === "secret"
-      ? { status: "refused", withheld: gathered.withheld }
+      ? { status: "refused", root: gathered.root, withheld: gathered.withheld }
       : { status: "unavailable" };
   }
   const withheld = gathered.withheld;

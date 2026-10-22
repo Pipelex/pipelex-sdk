@@ -13,7 +13,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PipelexApiClient } from "../../src/client.js";
-import { decideAfterValidate } from "../../src/hooks/check-core.js";
+import {
+  decideAfterValidate,
+  encodeOutcome,
+  mergeOutcomes,
+  type HookOutcome,
+} from "../../src/hooks/check-core.js";
 import { runValidateStage } from "../../src/hooks/validate-stage.js";
 import {
   fake,
@@ -201,6 +206,15 @@ function recordApi(verdict: unknown): SentRequest[] {
 
 const VALID = { is_valid: true, pending_signatures: [], is_runnable: true };
 
+/** What the hook writes for one file's outcome, merged and encoded as it emits it, on Claude. */
+function hookOutput(outcome: HookOutcome): string {
+  const encoded = JSON.parse(encodeOutcome(mergeOutcomes([outcome]), "claude")) as {
+    reason?: string;
+    hookSpecificOutput?: { additionalContext: string };
+  };
+  return encoded.reason ?? encoded.hookSpecificOutput!.additionalContext;
+}
+
 const sha256Of = (path: string): string =>
   createHash("sha256").update(readFileSync(path)).digest("hex");
 
@@ -244,8 +258,8 @@ describe("runValidateStage, on a tree holding secrets", () => {
     );
 
     expect(outcome.kind).toBe("context");
-    if (outcome.kind !== "context") return;
-    expect(outcome.context.split("\n").slice(0, 4)).toEqual([
+    const output = hookOutput(outcome);
+    expect(output.split("\n").slice(0, 4)).toEqual([
       "The .mthds hook kept these files of the method's tree on this machine, since each looks " +
         "like a secret, and validated the method without them:",
       `- \`${join(dir, "key.pem")}\` (it holds a private key block (PEM))`,
@@ -253,9 +267,9 @@ describe("runValidateStage, on a tree holding secrets", () => {
       `- \`${join(dir, "service-account.json")}\` (it holds a private key block (PEM))`,
     ]);
     // `.env` never reaches the guard: the membership rule keeps a dotfile out of the tree.
-    expect(outcome.context).not.toContain(join(dir, ".env"));
+    expect(output).not.toContain(join(dir, ".env"));
     for (const secret of [...REPORTED_CASE_SECRETS, fake.aws.slice(4), fake.anthropic.slice(7)]) {
-      expect(outcome.context).not.toContain(secret);
+      expect(output).not.toContain(secret);
     }
   });
 
@@ -299,9 +313,10 @@ describe("runValidateStage, on a tree holding secrets", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(stage).toEqual({
       status: "refused",
+      root: dir,
       withheld: [
-        { path: join(dir, "key.pem"), reason: "it holds a private key block (PEM)" },
         { path: edited, reason: "it holds an Anthropic API key" },
+        { path: join(dir, "key.pem"), reason: "it holds a private key block (PEM)" },
         {
           path: join(dir, "secrets.yaml"),
           reason: "it holds an AWS access key id and an Anthropic API key",
@@ -311,9 +326,9 @@ describe("runValidateStage, on a tree holding secrets", () => {
     });
     const outcome = decideAfterValidate(edited, stage);
     expect(outcome.kind).toBe("context");
-    if (outcome.kind !== "context") return;
-    expect(outcome.context).toContain(`The .mthds hook did not validate ${edited}`);
-    expect(outcome.context).toContain(`- \`${edited}\` (it holds an Anthropic API key)`);
-    for (const secret of REPORTED_CASE_SECRETS) expect(outcome.context).not.toContain(secret);
+    const output = hookOutput(outcome);
+    expect(output).toContain(`The .mthds hook did not validate the method at \`${dir}\``);
+    expect(output).toContain(`- \`${edited}\` (it holds an Anthropic API key)`);
+    for (const secret of REPORTED_CASE_SECRETS) expect(output).not.toContain(secret);
   });
 });

@@ -2,7 +2,8 @@
  * The hook's secret guard, the workshop's rule: a file found by its name whatever it holds, a
  * file found by a well-known key format in its text in any encoding, and every finding naming the
  * format and never the key. The cases are the workshop's own, so the two copies of the rule are
- * held to the same bar.
+ * held to the same bar, but for the two rules this copy is ahead on: an SSH key's default name
+ * matched whole, and a PEM private key block found only with a key's body after its header.
  */
 
 import { describe, expect, it } from "vitest";
@@ -19,7 +20,7 @@ describe("secretFindings", () => {
         "deploy/Signing.KEY",
         "store.p12",
         "keys/id_rsa",
-        "keys/id_ed25519.pub",
+        "keys/ID_ED25519_SK",
         "credentials.json",
         "client_secret_123.apps.googleusercontent.com.json",
         "vault.kdbx",
@@ -30,7 +31,7 @@ describe("secretFindings", () => {
       "deploy/Signing.KEY",
       "store.p12",
       "keys/id_rsa",
-      "keys/id_ed25519.pub",
+      "keys/ID_ED25519_SK",
       "credentials.json",
       "client_secret_123.apps.googleusercontent.com.json",
       "vault.kdbx",
@@ -38,6 +39,45 @@ describe("secretFindings", () => {
     expect(findings[0]?.reason).toBe(
       "it is named like a key file (.key), and is no zip archive as a Keynote deck is",
     );
+  });
+
+  it("matches an SSH key's default name whole: its public half and longer names go", () => {
+    const findings = secretFindings(
+      ["keys/id_rsa.pub", "id_rsa_utils.py", "notes/ID_RSA_notes.md", "id_ed25519_check.mthds"].map(
+        (path) => ({ path, bytes: text("nothing secret") }),
+      ),
+    );
+
+    expect(findings).toEqual([]);
+  });
+
+  it("finds a private key block whose header a key's body follows, as each way writes a key", () => {
+    const encrypted = pemBlock(["RSA", "PRIVATE KEY"].join(" "), { encrypted: true });
+
+    const findings = secretFindings([
+      { path: "keys/server.txt", bytes: text(fake.pem) },
+      { path: "keys/legacy.txt", bytes: text(encrypted) },
+      // JSON writes each of the key's line breaks as the two characters of an escape.
+      { path: "config/escaped.json", bytes: text(JSON.stringify({ key: fake.pem })) },
+      { path: "keys/agent.txt", bytes: text(fake.openssh) },
+    ]);
+
+    expect(findings).toEqual(
+      ["keys/server.txt", "keys/legacy.txt", "config/escaped.json", "keys/agent.txt"].map(
+        (path) => ({ path, reason: "it holds a private key block (PEM)" }),
+      ),
+    );
+  });
+
+  it("lets a private key block's header named in prose go, with no key after it", () => {
+    const header = ["-----BEGIN ", "PRIVATE KEY-----"].join("");
+    const prompt = [
+      "[pipe.screen]",
+      'type = "PipeLLM"',
+      `prompt = "If the text holds a line reading ${header}, say that a private key was pasted, never repeat it, and tell the user to rotate the key at once."`,
+    ].join("\n");
+
+    expect(secretFindings([{ path: "screen.mthds", bytes: text(prompt) }])).toEqual([]);
   });
 
   it("judges a .pem file by what it holds: a certificate goes, a private key is found", () => {

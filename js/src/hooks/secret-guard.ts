@@ -3,9 +3,11 @@
  * whose NAME is a known secret file, or whose TEXT holds a well-known key format, in whatever
  * encoding the file is written, so that file never leaves the machine.
  *
- * The rule is the workshop's, pipelex-mcp's `src/capabilities/secret-guard.ts`, table for table,
- * so a file the hook keeps home is one the workshop refuses to send, and the two copies change
- * together. The membership rule already keeps the commonest secret files out by construction,
+ * The rule is the workshop's, pipelex-mcp's `src/capabilities/secret-guard.ts`, with two
+ * refinements this copy is ahead on until the workshop takes them up (L-261022-b4770f): an SSH key
+ * is found by its default name only when the name is exactly that, and a PEM private key block
+ * only when a key's body follows its header. Every other rule is the workshop's, and changes with
+ * it. The membership rule already keeps the commonest secret files out by construction,
  * since `.env`, `.ssh/`, `.aws/` and every other dotfile start with a dot. What it cannot keep
  * out is a key file under an ordinary name, or a key pasted into an ordinary file, a Python
  * module being the usual home of one, which is why the guard reads text and not names alone.
@@ -41,6 +43,11 @@ function isZipArchive(bytes: Uint8Array): boolean {
  * key in one is a PEM block, which the text search finds. A `.key` file is a Keynote deck as
  * often as a key, and a deck is a zip archive, so only a `.key` file that is no zip is found by
  * name, which still catches a DER key, binary and holding no PEM block.
+ *
+ * An SSH key's default name is matched whole, with the `_sk` of a hardware-backed key, so its
+ * `.pub` half, which is public, and a file merely starting with the name, such as
+ * `id_rsa_utils.py`, go. Nothing is lost: every SSH private key is PEM-armoured, which the text
+ * search finds under any name.
  */
 const SECRET_NAMES: readonly {
   pattern: RegExp;
@@ -55,7 +62,10 @@ const SECRET_NAMES: readonly {
   { pattern: /\.(p12|pfx|jks|keystore)$/i, reason: "a certificate or key store" },
   { pattern: /\.ppk$/i, reason: "a PuTTY private key" },
   { pattern: /\.kdbx$/i, reason: "a KeePass password database" },
-  { pattern: /^id_(rsa|dsa|ecdsa|ed25519)/i, reason: "an SSH key under its default name" },
+  {
+    pattern: /^id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?$/i,
+    reason: "an SSH key under its default name",
+  },
   { pattern: /^credentials(\.json)?$/i, reason: "a credentials file" },
   { pattern: /^client_secret.*\.json$/i, reason: "an OAuth client secret export" },
 ];
@@ -64,10 +74,17 @@ const SECRET_NAMES: readonly {
  * Well-known key formats, matched in a file's text. Each is a prefix a provider puts on its keys
  * so that scanners can find them, with enough of the key's body after it that prose mentioning
  * the prefix does not match.
+ *
+ * A PEM private key block is its header followed, within a short span, by a run of Base64 as
+ * long as a key's body lines: the span holds the line break, written as a real one or as the `\n`
+ * of a key escaped into JSON, and the `Proc-Type` and `DEK-Info` headers of an encrypted legacy
+ * key. A header named in prose, such as a prompt telling a model what a key looks like, has no
+ * such run after it, so it goes.
  */
 const KEY_FORMATS: readonly { pattern: RegExp; reason: string }[] = [
   {
-    pattern: /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/,
+    pattern:
+      /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]{0,200}?[A-Za-z0-9+/]{40,}/,
     reason: "a private key block (PEM)",
   },
   { pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/, reason: "an AWS access key id" },

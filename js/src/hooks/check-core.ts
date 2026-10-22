@@ -12,8 +12,8 @@
  *   API a produced verdict is always a 200; server/config faults are non-2xx =
  *   no verdict = unavailable)
  * - validate valid + pending `PipeSignature`s → non-blocking additionalContext
- * - tree files kept home as secrets → named in a note: non-blocking beside a
- *   valid verdict, ahead of the reason of an invalid one's block
+ * - tree files kept home as secrets → named in a note after the verdict's
+ *   text: non-blocking beside a valid verdict, inside an invalid one's block
  * - validate refused (a bundle or the manifest looks like a secret, so
  *   nothing was sent) → non-blocking additionalContext naming the files
  * - any stage unavailable       → fail-open (the other stages' verdicts stand)
@@ -44,7 +44,8 @@ export interface WithheldFile {
  * `withheld` lists the files of the tree that stayed home, empty when every file was sent: a
  * verdict is about the tree without them. `refused` = nothing was sent, because a file every
  * validation reads, a bundle or the manifest, looks like a secret, so no tree without it is the
- * method; `withheld` then lists every file of the tree that looks like one.
+ * method; `root` is the tree's root and `withheld` lists every file of the tree that looks like
+ * one, those every validation reads first.
  */
 export type ValidateStage =
   | { status: "valid"; pendingSignatures: string[]; withheld: WithheldFile[] }
@@ -55,12 +56,18 @@ export type ValidateStage =
       renderedMarkdown?: string;
       withheld: WithheldFile[];
     }
-  | { status: "refused"; withheld: WithheldFile[] }
+  | { status: "refused"; root: string; withheld: WithheldFile[] }
   | { status: "unavailable" };
 
-/** The hook's decision, prior to JSON encoding. */
+/**
+ * The hook's decision, prior to JSON encoding. `notes` say which files of a method's tree stayed
+ * home: they ride apart from the text so that merging the outcomes of several files of one tree
+ * names each note once, and encoding places them after the text (see {@link outcomeText}).
+ */
 export type HookOutcome =
-  { kind: "pass" } | { kind: "block"; reason: string } | { kind: "context"; context: string };
+  | { kind: "pass" }
+  | { kind: "block"; reason: string; notes?: string[] }
+  | { kind: "context"; context: string; notes?: string[] };
 
 /**
  * Which harness invoked the hook. Claude and Codex share the block /
@@ -360,21 +367,36 @@ export function extractVibeMthdsFilePath(
 /**
  * Merge per-file outcomes (Codex's `apply_patch` can touch several `.mthds`
  * files in one call) into the single decision the hook emits: any block wins
- * (reasons joined), else contexts are joined, else pass.
+ * (reasons joined), else contexts are joined, else pass. The winning
+ * outcomes' notes are kept once each, so several files of one tree, whose
+ * notes are the same, name its withheld files once.
  */
 export function mergeOutcomes(outcomes: HookOutcome[]): HookOutcome {
   const blocks = outcomes.filter((outcome) => outcome.kind === "block");
   if (blocks.length > 0) {
-    return { kind: "block", reason: truncate(blocks.map((block) => block.reason).join("\n\n")) };
+    const reason = truncate(joinTexts(blocks.map((block) => block.reason)));
+    return withNotesOf({ kind: "block", reason }, blocks);
   }
   const contexts = outcomes.filter((outcome) => outcome.kind === "context");
   if (contexts.length > 0) {
-    return {
-      kind: "context",
-      context: truncate(contexts.map((context) => context.context).join("\n\n")),
-    };
+    const context = truncate(joinTexts(contexts.map((outcome) => outcome.context)));
+    return withNotesOf({ kind: "context", context }, contexts);
   }
   return { kind: "pass" };
+}
+
+/** Texts joined as paragraphs, an empty one, that of an outcome holding only notes, left out. */
+function joinTexts(texts: readonly string[]): string {
+  return texts.filter((text) => text !== "").join("\n\n");
+}
+
+/** `outcome` carrying every distinct note of `merged`, in order, or none when they have none. */
+function withNotesOf<T extends HookOutcome>(
+  outcome: T,
+  merged: readonly { notes?: string[] }[],
+): T {
+  const notes = [...new Set(merged.flatMap((each) => each.notes ?? []))];
+  return notes.length > 0 ? { ...outcome, notes } : outcome;
 }
 
 /** Cap on emitted reason/context bodies — same guard as the plxt-era hook. */
@@ -386,6 +408,39 @@ export function truncate(text: string): string {
   }
   const omitted = text.length - MAX_OUTPUT_CHARS;
   return `${text.slice(0, MAX_OUTPUT_CHARS)}\n\n[truncated, ${omitted} chars omitted]`;
+}
+
+/** `text` cut to `budget` characters at most, the marker of the cut included, when longer. */
+function fitWithin(text: string, budget: number): string {
+  if (text.length <= budget) {
+    return text;
+  }
+  const marker = (omitted: number) => `\n\n[truncated, ${omitted} chars omitted]`;
+  // The marker is no longer for a smaller count, so measuring it for the whole text bounds it.
+  const kept = Math.max(0, budget - marker(text.length).length);
+  return `${text.slice(0, kept)}${marker(text.length - kept)}`;
+}
+
+/** The most of the output's characters an outcome's notes take, so its text keeps the rest. */
+const NOTES_SHARE = 3000;
+
+/**
+ * The text an outcome is encoded with: its own text, then its notes, within the output's cap.
+ * The text keeps its place and every character the notes leave it, so a verdict's errors are
+ * never cut for a note; the notes take at most {@link NOTES_SHARE}, a bound a note's capped list
+ * of files keeps them under but for paths of extreme length.
+ */
+export function outcomeText(outcome: Exclude<HookOutcome, { kind: "pass" }>): string {
+  const text = outcome.kind === "block" ? outcome.reason : outcome.context;
+  const notes = outcome.notes ?? [];
+  if (notes.length === 0) {
+    return text;
+  }
+  const notesText = fitWithin(notes.join("\n\n"), NOTES_SHARE);
+  if (text === "") {
+    return notesText;
+  }
+  return `${fitWithin(text, MAX_OUTPUT_CHARS - notesText.length - 2)}\n\n${notesText}`;
 }
 
 /**
@@ -432,9 +487,20 @@ function renderValidationErrorLine(item: ValidationErrorItem): string {
   return `- [${item.category ?? "error"}] ${item.message ?? ""}${locators ? ` (${locators})` : ""}`;
 }
 
-/** The withheld files as Markdown list items: each path, and why, never what the file holds. */
+/** How many withheld files a note names; the rest it counts. */
+const WITHHELD_LISTED = 10;
+
+/**
+ * The withheld files as Markdown list items, each path and why, never what the file holds: the
+ * first {@link WITHHELD_LISTED}, then how many more, so a tree full of key files cannot crowd a
+ * verdict out of the hook's output.
+ */
 function withheldLines(withheld: readonly WithheldFile[]): string[] {
-  return withheld.map((file) => `- \`${file.path}\` (${file.reason})`);
+  const lines = withheld
+    .slice(0, WITHHELD_LISTED)
+    .map((file) => `- \`${file.path}\` (${file.reason})`);
+  const more = withheld.length - WITHHELD_LISTED;
+  return more > 0 ? [...lines, `- and ${more} more ${more === 1 ? "file" : "files"}`] : lines;
 }
 
 /** Why a key must not ride a method, the workshop's own words. */
@@ -468,12 +534,16 @@ function withheldNote(withheld: readonly WithheldFile[]): string {
   ].join("\n");
 }
 
-/** The note on a validation the hook did not send, a bundle or the manifest looking like a secret. */
-function refusedNote(filePath: string, withheld: readonly WithheldFile[]): string {
+/**
+ * The note on a validation the hook did not send, a bundle or the manifest looking like a secret.
+ * It names the method by its tree's root, which every file of the tree shares, so the notes of
+ * several of them are one.
+ */
+function refusedNote(root: string, withheld: readonly WithheldFile[]): string {
   return [
-    `The .mthds hook did not validate ${filePath}: these files of its method's tree look like ` +
-      "a secret, and every validation reads the method's bundles and its manifest, so nothing " +
-      "was sent:",
+    `The .mthds hook did not validate the method at \`${root}\`: these files of its tree look ` +
+      "like a secret, and every validation reads the method's bundles and its manifest, so " +
+      "nothing was sent:",
     ...withheldLines(withheld),
     "",
     KEY_BELONGS_IN_THE_ENVIRONMENT +
@@ -492,34 +562,37 @@ function refusedNote(filePath: string, withheld: readonly WithheldFile[]): strin
  * `PipeSignature`s. Unavailable passes silently — the local lint/format
  * verdicts already applied.
  *
- * A verdict reached without files the hook kept home says which, and why: a
- * non-blocking note beside a valid verdict, and ahead of an invalid one's
- * reason, so the agent reads an error about a missing file as the hook's
- * doing. A refused validation sent nothing, and its note never blocks, since
- * no verdict was produced; the lint and format verdicts stand.
+ * A verdict reached without files the hook kept home says which, and why, in
+ * a note placed after the verdict's text: non-blocking beside a valid verdict,
+ * and inside an invalid one's block, so the agent reads an error about a
+ * missing file as the hook's doing while the errors keep their place. A
+ * refused validation sent nothing, and its note never blocks, since no verdict
+ * was produced; the lint and format verdicts stand.
  */
 export function decideAfterValidate(filePath: string, validate: ValidateStage): HookOutcome {
   switch (validate.status) {
     case "unavailable":
       return { kind: "pass" };
     case "refused":
-      return { kind: "context", context: truncate(refusedNote(filePath, validate.withheld)) };
+      return {
+        kind: "context",
+        context: "",
+        notes: [refusedNote(validate.root, validate.withheld)],
+      };
     case "valid": {
-      const notes: string[] = [];
-      if (validate.pendingSignatures.length > 0) {
-        notes.push(
-          "Bundle is valid but not yet runnable. Signatures still unimplemented (PipeSignature placeholders): " +
+      const notes = validate.withheld.length > 0 ? [withheldNote(validate.withheld)] : [];
+      const nudge =
+        validate.pendingSignatures.length > 0
+          ? "Bundle is valid but not yet runnable. Signatures still unimplemented (PipeSignature placeholders): " +
             validate.pendingSignatures.join(", ") +
-            ". They mock their output on dry-run; implement them before running the method for real.",
-        );
-      }
-      if (validate.withheld.length > 0) {
-        notes.push(withheldNote(validate.withheld));
-      }
-      if (notes.length === 0) {
+            ". They mock their output on dry-run; implement them before running the method for real."
+          : "";
+      if (nudge === "" && notes.length === 0) {
         return { kind: "pass" };
       }
-      return { kind: "context", context: truncate(notes.join("\n\n")) };
+      return notes.length > 0
+        ? { kind: "context", context: truncate(nudge), notes }
+        : { kind: "context", context: truncate(nudge) };
     }
     case "invalid": {
       let reason: string;
@@ -537,18 +610,18 @@ export function decideAfterValidate(filePath: string, validate: ValidateStage): 
         }
         reason = lines.join("\n");
       }
-      if (validate.withheld.length > 0) {
-        reason = `${withheldNote(validate.withheld)}\n\n${reason}`;
-      }
-      return { kind: "block", reason: truncate(reason) };
+      return validate.withheld.length > 0
+        ? { kind: "block", reason: truncate(reason), notes: [withheldNote(validate.withheld)] }
+        : { kind: "block", reason: truncate(reason) };
     }
   }
 }
 
 /**
- * Encode an outcome as the harness's stdout payload. `pass` is empty output;
- * the hook always exits 0. Claude and Codex share the block /
- * `hookSpecificOutput` protocol; Vibe speaks deny / `hook_specific_output`.
+ * Encode an outcome as the harness's stdout payload, its text and notes as
+ * {@link outcomeText} places them. `pass` is empty output; the hook always
+ * exits 0. Claude and Codex share the block / `hookSpecificOutput` protocol;
+ * Vibe speaks deny / `hook_specific_output`.
  */
 export function encodeOutcome(outcome: HookOutcome, platform: HookPlatform = "claude"): string {
   switch (outcome.kind) {
@@ -556,15 +629,15 @@ export function encodeOutcome(outcome: HookOutcome, platform: HookPlatform = "cl
       return "";
     case "block":
       if (platform === "vibe") {
-        return JSON.stringify({ decision: "deny", reason: outcome.reason }) + "\n";
+        return JSON.stringify({ decision: "deny", reason: outcomeText(outcome) }) + "\n";
       }
-      return JSON.stringify({ decision: "block", reason: outcome.reason }) + "\n";
+      return JSON.stringify({ decision: "block", reason: outcomeText(outcome) }) + "\n";
     case "context":
       if (platform === "vibe") {
         return (
           JSON.stringify({
             decision: "allow",
-            hook_specific_output: { additional_context: outcome.context },
+            hook_specific_output: { additional_context: outcomeText(outcome) },
           }) + "\n"
         );
       }
@@ -572,7 +645,7 @@ export function encodeOutcome(outcome: HookOutcome, platform: HookPlatform = "cl
         JSON.stringify({
           hookSpecificOutput: {
             hookEventName: "PostToolUse",
-            additionalContext: outcome.context,
+            additionalContext: outcomeText(outcome),
           },
         }) + "\n"
       );

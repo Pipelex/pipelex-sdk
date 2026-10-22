@@ -259,11 +259,89 @@ describe("gatherMethodTree's secret guard", () => {
       expect(result).toEqual({
         ok: false,
         reason: "secret",
+        root,
+        // The file every validation reads leads, so a note naming the first few names it.
         withheld: [
           { path: join(root, ...path.split("/")), reason: "it holds an Anthropic API key" },
           { path: join(root, "key.pem"), reason: "it holds a private key block (PEM)" },
-        ].sort((left, right) => (left.path < right.path ? -1 : 1)),
+        ],
       });
     },
   );
+
+  it("sends a bundle whose prompt names a private key block's header in prose", async () => {
+    const header = ["-----BEGIN ", "PRIVATE KEY-----"].join("");
+    const edited = put(
+      "main.mthds",
+      `${NOTICE_BUNDLE}\n[pipe.screen]\ntype = "PipeLLM"\nprompt = "If the text holds a line reading ${header}, say that a key was pasted and never repeat it."\n`,
+    );
+
+    const result = await gatherMethodTree(edited);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tree.files.map((file) => file.path)).toEqual(["main.mthds"]);
+    expect(result.withheld).toEqual([]);
+  });
+
+  it("names the files through the link the caller reached the method's directory by", async ({
+    skip,
+  }) => {
+    skip(process.platform === "win32");
+    writeReportedCase(root);
+    const elsewhere = mkdtempSync(join(tmpdir(), "hook-gather-link-"));
+    try {
+      // A link above the tree's root: the caller's path reaches the root by the same steps.
+      const project = join(elsewhere, "project");
+      symlinkSync(root, project);
+      const shownDir = join(project, "methods", "foo");
+
+      const result = await gatherMethodTree(join(shownDir, "main.mthds"));
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.withheld.map((file) => file.path)).toEqual(
+        ["key.pem", "secrets.yaml", "service-account.json"].map((name) => join(shownDir, name)),
+      );
+
+      writeFileSync(join(root, "methods", "foo", "main.mthds"), `# ${fake.anthropic}\n`);
+      const refused = await gatherMethodTree(join(shownDir, "main.mthds"));
+      expect(refused).toMatchObject({ ok: false, reason: "secret", root: shownDir });
+      if (refused.ok || refused.reason !== "secret") return;
+      expect(refused.withheld[0]?.path).toBe(join(shownDir, "main.mthds"));
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it("names the files by their real paths when the link points into the tree", async ({ skip }) => {
+    skip(process.platform === "win32");
+    put("METHODS.toml", "");
+    put("methods/foo/main.mthds", NOTICE_BUNDLE);
+    put("methods/foo/key.pem", fake.pem);
+    const elsewhere = mkdtempSync(join(tmpdir(), "hook-gather-link-"));
+    try {
+      // The link names a directory inside the tree rooted at the manifest, so the caller's path
+      // has no spelling of that root, and the real one is shown.
+      const linked = join(elsewhere, "foo");
+      symlinkSync(join(root, "methods", "foo"), linked);
+
+      const result = await gatherMethodTree(join(linked, "main.mthds"));
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.tree.files.map((file) => file.path)).toEqual([
+        "METHODS.toml",
+        "methods/foo/main.mthds",
+      ]);
+      expect(result.withheld).toEqual([
+        {
+          path: join(root, "methods", "foo", "key.pem"),
+          reason: "it holds a private key block (PEM)",
+        },
+      ]);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
 });
