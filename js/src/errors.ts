@@ -322,11 +322,14 @@ export class MethodLoadError extends InputPreparationError {
 /**
  * Why an asset was refused, in a closed vocabulary a caller branches on rather than
  * on the message: `too_large` — past the service-defined size cap (`uploadFile`'s
- * `413`); `grant_used` — the upload grant already wrote its object (`412`);
+ * `413`); `grant_used` — an upload grant asked for without the file's hash already
+ * wrote its object (`412`; for a grant that names its bytes, a `412` means they are
+ * stored, and is no refusal);
  * `grant_expired` — the grant's validity window has passed; `signature_mismatch` —
  * the file's size, content type or metadata differ from what the grant signed;
  * `unsigned_header` — the request carried a storage header the grant did not sign;
- * `store_refused` — any other refusal from storage. Storage's `408` and `429` are no
+ * `store_refused` — any other refusal from storage, such as the `400 BadDigest` of bytes
+ * other than the ones whose SHA-256 the grant was asked with. Storage's `408` and `429` are no
  * refusal of the asset: they refuse the request for its timing, and are an
  * `UploadTransportError`.
  */
@@ -415,8 +418,8 @@ export class UploadAuthenticationError extends InputPreparationError {
  *   storage does not implement the request it was sent, and stored nothing.
  * - `storage_timeout` — storage's `400 RequestTimeout`: it stopped waiting for the
  *   file's bytes and stored nothing.
- * - `conflict` — storage's `409 ConditionalRequestConflict`: another `PUT` with the
- *   same grant was in flight.
+ * - `conflict` — storage's `409 ConditionalRequestConflict` on every one of
+ *   `uploadWithGrant`'s few attempts: another write of the same object was in flight.
  * - `redirected` — storage redirected the `PUT`, and the redirect was refused.
  * - `invalid_grant_url` — the grant's `url` is not an absolute `http(s)` URL free of
  *   user info, so nothing was sent.
@@ -451,7 +454,7 @@ export type UploadTransportCode =
  * — always the case from `uploadWithGrant`, which wraps no response — `code` decides: `timeout`,
  * `storage_timeout` and `conflict` are `runtime` and retryable, `conflict` because storage
  * documents its `409 ConditionalRequestConflict` as retryable and the grant is not spent by it (a
- * spent grant is the `412` of a `RejectedAssetError` with code `grant_used`); `server_error` is
+ * spent hashless grant is the `412` of a `RejectedAssetError` with code `grant_used`); `server_error` is
  * `runtime`, and retryable when the fallback table a refused API request reads would call its
  * `status` retryable — any `5xx` but a `501`, which storage answers for a request it does not
  * implement — or when it carries no status; `unexpected` is `runtime`, and retryable when that

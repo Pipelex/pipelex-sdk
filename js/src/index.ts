@@ -58,10 +58,11 @@ export { PipelexExecuteResult, resultsFromExecute } from "./execute-result.js";
 // ── Input preparation (client.uploadFile / client.prepareInputs — hosted upload capability) ──
 // The operations are client methods; only their public types travel with the barrel.
 export type { UploadableAsset, UploadFileOptions, UploadRecord } from "./upload.js";
-// Except the upload grant's sender, which is standalone so the holder of the bytes needs
-// no client. It is also the browser-safe `@pipelex/sdk/upload` entry.
-export { uploadWithGrant } from "./upload-grant.js";
-export type { GrantedUpload, UploadWithGrantOptions } from "./upload-grant.js";
+// Except the upload grant's two halves that run where the bytes are, the description and the
+// sender, which are standalone so the holder of the bytes needs no client. They are also the
+// browser-safe `@pipelex/sdk/upload` entry.
+export { describeUpload, uploadWithGrant } from "./upload-grant.js";
+export type { GrantedUpload, UploadDescription, UploadWithGrantOptions } from "./upload-grant.js";
 export type {
   InputFormFault,
   PrepareInputsBase,
@@ -248,6 +249,7 @@ export type {
   UploadedFile,
   UploadGrantInput,
   UploadGrant,
+  UploadKind,
   ListRunsQuery,
   PipelineRun,
   RunDetail,

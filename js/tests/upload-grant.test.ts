@@ -1,23 +1,27 @@
 /**
- * `uploadWithGrant` — the sender of an upload grant, and the browser-safe
- * `@pipelex/sdk/upload` entry. Pins: the PUT it sends (the grant's URL, its signed
- * headers unchanged, the file as the raw body, redirects refused), the mapping of
- * storage's refusals onto the input-preparation errors and their codes, the time
- * limit on the whole exchange and the capped read of storage's error body, a
- * caller's abort passing through untouched, and — by bundling the module for the
- * browser with esbuild — that its runtime import graph reaches no Node builtin and
- * no `undici`.
+ * `describeUpload` and `uploadWithGrant` — the halves of an upload grant that run where
+ * the bytes are, and the browser-safe `@pipelex/sdk/upload` entry. Pins: the
+ * description (name, type, size and the SHA-256 Web Crypto computes, absent where the
+ * runtime has no digest), a stored grant sending nothing, the PUT it sends otherwise
+ * (the grant's URL, its signed headers unchanged, the file as the raw body, redirects
+ * refused), a `412` read as stored for a grant that names its bytes, a `409` conflict
+ * sent again after a short pause, the mapping of storage's refusals onto the
+ * input-preparation errors and their codes, the time limit on the whole exchange and
+ * the capped read of storage's error body, a caller's abort passing through untouched,
+ * and — by bundling the module for the browser with esbuild — that its runtime import
+ * graph reaches no Node builtin and no `undici`.
  *
  * The function calls the global `fetch`, so these spy on it; the bodies are the
  * XML documents S3 answers with.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
 import { build } from "esbuild";
-import { uploadWithGrant } from "../src/upload-grant.js";
+import { describeUpload, uploadWithGrant } from "../src/upload-grant.js";
 import type { UploadGrant } from "../src/upload-grant.js";
 import {
   InputPreparationError,
@@ -26,8 +30,11 @@ import {
 } from "../src/upload-grant.js";
 import * as mainEntry from "../src/index.js";
 
+/** A grant asked for without the file's hash: a UUID-named object, always a target. */
 const GRANT: UploadGrant = {
+  file_id: "fl_01a16405-12a5-757c-b44c-10c40b5a947b",
   uri: "pipelex-storage://org_1/assets/5f0c.pdf",
+  stored: false,
   url: "https://pipelex-app-dev.s3.amazonaws.com/org_1/assets/5f0c.pdf?X-Amz-Signature=abc",
   headers: {
     "If-None-Match": "*",
@@ -40,6 +47,34 @@ const GRANT: UploadGrant = {
   expires_at: "2026-09-23T10:05:00Z",
   max_bytes: 52428800,
 };
+
+/** The SHA-256 of `pdfFile()`'s five bytes, `%PDF-`. */
+const PDF_SHA256 = createHash("sha256").update(Buffer.from("%PDF-")).digest("hex");
+
+/** A grant asked for with the file's hash: the object is named after the bytes, which it signs. */
+const HASHED_GRANT: UploadGrant = {
+  ...GRANT,
+  uri: `pipelex-storage://org_1/assets/${PDF_SHA256}.pdf`,
+  url: `https://pipelex-app-dev.s3.amazonaws.com/org_1/assets/${PDF_SHA256}.pdf?X-Amz-Signature=abc`,
+  headers: {
+    ...GRANT.headers,
+    "x-amz-checksum-sha256": createHash("sha256").update(Buffer.from("%PDF-")).digest("base64"),
+  },
+};
+
+/** The answer for bytes the organization already holds: nothing to send. */
+const STORED_GRANT: UploadGrant = {
+  file_id: GRANT.file_id,
+  uri: HASHED_GRANT.uri,
+  stored: true,
+  url: null,
+  headers: null,
+  expires_at: null,
+  max_bytes: GRANT.max_bytes,
+};
+
+/** What a successful upload with `GRANT` answers. */
+const STORED = { uri: GRANT.uri, file_id: GRANT.file_id };
 
 /** The credential S3 echoes back inside a signature-mismatch body. It must never reach a message. */
 const ECHOED_TOKEN = "IQoJb3JpZ2luX2VjEXAMPLESECRET";
@@ -142,7 +177,7 @@ describe("uploadWithGrant — the PUT", () => {
     expect(init.headers).toEqual(GRANT.headers);
     expect(init.body).toBe(file);
     expect(init.redirect).toBe("manual");
-    expect(result).toEqual({ uri: GRANT.uri });
+    expect(result).toEqual(STORED);
   });
 
   it("accepts a nameless Blob", async () => {
@@ -150,7 +185,7 @@ describe("uploadWithGrant — the PUT", () => {
 
     const result = await uploadWithGrant(GRANT, new Blob([new Uint8Array([1, 2, 3])]));
 
-    expect(result).toEqual({ uri: GRANT.uri });
+    expect(result).toEqual(STORED);
   });
 
   it("forwards a caller's abort into the PUT's own signal", async () => {
@@ -180,6 +215,352 @@ describe("uploadWithGrant — the PUT", () => {
     controller.abort(new Error("too late"));
 
     expect(fetchSignal(spy).aborted).toBe(false);
+  });
+});
+
+describe("uploadWithGrant — a grant for bytes already stored", () => {
+  it("sends nothing for a stored grant and answers its uri and file_id", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("fetch must not be called"));
+    const file = pdfFile();
+    const read = vi.spyOn(file, "arrayBuffer");
+
+    const result = await uploadWithGrant(STORED_GRANT, file);
+
+    expect(result).toEqual({ uri: STORED_GRANT.uri, file_id: STORED_GRANT.file_id });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("still refuses an invalid timeoutMs and lets an earlier abort through for a stored grant", async () => {
+    const controller = new AbortController();
+    const reason = new Error("The user cancelled.");
+    controller.abort(reason);
+
+    expect(
+      await uploadWithGrant(STORED_GRANT, pdfFile(), { signal: controller.signal }).catch(
+        (e: unknown) => e,
+      ),
+    ).toBe(reason);
+    expect(
+      await uploadWithGrant(STORED_GRANT, pdfFile(), { timeoutMs: 0 }).catch((e: unknown) => e),
+    ).toBeInstanceOf(InputPreparationError);
+  });
+
+  it("sends the file when stored is false, branching on stored and never on url", async () => {
+    // A grant that is not stored and carries no target is refused, not read as stored.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("fetch must not be called"));
+
+    const error = await uploadWithGrant(
+      { ...GRANT, url: null, headers: null, expires_at: null },
+      pdfFile(),
+    ).catch((e: unknown) => e);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(error).toBeInstanceOf(UploadTransportError);
+    expect((error as UploadTransportError).code).toBe("invalid_grant_url");
+    expect((error as Error).message).toContain("not stored yet");
+  });
+
+  it("sends the file for an answer with no stored field, as a platform before hashed uploads gave", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const { stored: _stored, file_id: _fileId, ...legacy } = GRANT;
+
+    const result = await uploadWithGrant(legacy as unknown as UploadGrant, pdfFile());
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.uri).toBe(GRANT.uri);
+  });
+});
+
+describe("uploadWithGrant — a grant that names its bytes", () => {
+  it("sends the signed checksum with the other headers unchanged", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 200 }));
+
+    const result = await uploadWithGrant(HASHED_GRANT, pdfFile());
+
+    const [url, init] = spy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(HASHED_GRANT.url);
+    expect(init.headers).toEqual(HASHED_GRANT.headers);
+    expect(result).toEqual({ uri: HASHED_GRANT.uri, file_id: HASHED_GRANT.file_id });
+  });
+
+  it.each([
+    ["as the platform writes it", HASHED_GRANT.headers!],
+    [
+      "in any case",
+      {
+        ...GRANT.headers,
+        "X-Amz-Checksum-SHA256": HASHED_GRANT.headers!["x-amz-checksum-sha256"]!,
+      },
+    ],
+  ])(
+    "reads a 412 as stored when the grant signs the checksum %s: the key holds those bytes",
+    async (_case, headers) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        xmlResponse(412, s3Error("PreconditionFailed", "pre-conditions")),
+      );
+
+      const result = await uploadWithGrant({ ...HASHED_GRANT, headers }, pdfFile());
+
+      expect(result).toEqual({ uri: HASHED_GRANT.uri, file_id: HASHED_GRANT.file_id });
+    },
+  );
+
+  it("maps a body whose bytes differ from the hash onto RejectedAssetError, saying so", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      xmlResponse(
+        400,
+        s3Error("BadDigest", "The SHA256 you specified did not match the calculated checksum."),
+      ),
+    );
+
+    const error = await uploadWithGrant(HASHED_GRANT, pdfFile()).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(RejectedAssetError);
+    const rejected = error as RejectedAssetError;
+    expect(rejected.status).toBe(400);
+    expect(rejected.code).toBe("store_refused");
+    expect(rejected.message).toContain("400 BadDigest");
+    expect(rejected.message).toContain("bytes differ from the ones whose SHA-256");
+    expect(rejected.retryable).toBe(false);
+  });
+
+  it("advises a retry that finds the file stored, not a used grant", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      xmlResponse(503, s3Error("SlowDown", "Please reduce your request rate.")),
+    );
+
+    const error = await uploadWithGrant(HASHED_GRANT, pdfFile()).catch((e: unknown) => e);
+
+    expect((error as Error).message).toContain(
+      `Retrying with the same grant before it expires at ${GRANT.expires_at} stores the file ` +
+        "or finds it already stored",
+    );
+    expect((error as Error).message).not.toContain("reports the grant as used");
+  });
+});
+
+describe("uploadWithGrant — storage's 409 ConditionalRequestConflict", () => {
+  const conflict = (): Response =>
+    xmlResponse(
+      409,
+      s3Error(
+        "ConditionalRequestConflict",
+        "A conflicting operation occurred. If using PutObject you can retry the request.",
+      ),
+    );
+
+  it("sends the PUT again after a short pause, and succeeds when the other write is done", async () => {
+    vi.useFakeTimers();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(conflict())
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const file = pdfFile();
+
+    const upload = track(uploadWithGrant(GRANT, file));
+    await vi.advanceTimersByTimeAsync(249);
+    expect(spy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(await upload.outcome).toEqual(STORED);
+    expect(spy).toHaveBeenCalledTimes(2);
+    const [url, init] = spy.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe(GRANT.url);
+    expect(init.headers).toEqual(GRANT.headers);
+    expect(init.body).toBe(file);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reads the 412 after a conflict as stored for a grant that names its bytes", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(conflict())
+      .mockResolvedValueOnce(xmlResponse(412, s3Error("PreconditionFailed", "pre-conditions")));
+
+    const upload = track(uploadWithGrant(HASHED_GRANT, pdfFile()));
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(await upload.outcome).toEqual({
+      uri: HASHED_GRANT.uri,
+      file_id: HASHED_GRANT.file_id,
+    });
+  });
+
+  it("gives up after a few attempts with pauses of 250, 500, 1000 and 2000 ms", async () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => conflict());
+
+    const upload = track(uploadWithGrant(GRANT, pdfFile()));
+    const attemptsAfter: number[] = [];
+    for (const pauseMs of [250, 500, 1_000, 2_000]) {
+      await vi.advanceTimersByTimeAsync(pauseMs - 1);
+      attemptsAfter.push(spy.mock.calls.length);
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    expect(attemptsAfter).toEqual([1, 2, 3, 4]);
+
+    const error = await upload.outcome;
+    expect(spy).toHaveBeenCalledTimes(5);
+    expect(error).toBeInstanceOf(UploadTransportError);
+    expect(error).not.toBeInstanceOf(RejectedAssetError);
+    const transport = error as UploadTransportError;
+    expect(transport.status).toBe(409);
+    expect(transport.code).toBe("conflict");
+    expect(transport.message).toContain("409 ConditionalRequestConflict");
+    expect(transport.message).toContain("another write of the same object");
+    expect(transport.message).toContain("on each of its 5 attempts");
+    expect(transport.message).toContain(
+      `Retrying with the same grant before it expires at ${GRANT.expires_at}`,
+    );
+    expect(transport.errorDomain).toBe("runtime");
+    expect(transport.retryable).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("lets a caller's abort during the pause through as its own reason, sending nothing more", async () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => conflict());
+    const controller = new AbortController();
+    const reason = new Error("The user cancelled.");
+
+    const upload = track(uploadWithGrant(GRANT, pdfFile(), { signal: controller.signal }));
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort(reason);
+
+    expect(await upload.outcome).toBe(reason);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("settles as the conflict storage last answered when the time limit runs out in a pause", async () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => conflict());
+
+    const upload = track(uploadWithGrant(GRANT, pdfFile(), { timeoutMs: 600 }));
+    await vi.advanceTimersByTimeAsync(600);
+
+    const error = await upload.outcome;
+    expect(error).toBeInstanceOf(UploadTransportError);
+    expect((error as UploadTransportError).code).toBe("conflict");
+    expect((error as UploadTransportError).status).toBe(409);
+    expect((error as Error).message).toContain(
+      "on each of its 2 attempts before the 0.6 s allowed ran out",
+    );
+    // Sent at 0 and after the first pause, at 250 ms; the limit ran out in the second pause.
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("sends no new PUT for a 409 of any other code", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(xmlResponse(409, s3Error("OperationAborted", "A conflicting operation")));
+
+    const error = await uploadWithGrant(GRANT, pdfFile()).catch((e: unknown) => e);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(error).toBeInstanceOf(RejectedAssetError);
+    expect((error as RejectedAssetError).code).toBe("store_refused");
+  });
+});
+
+describe("describeUpload", () => {
+  it("reads a File's name, type and size, and the SHA-256 of its bytes", async () => {
+    const description = await describeUpload(pdfFile());
+
+    expect(description).toEqual({
+      filename: "report.pdf",
+      content_type: "application/pdf",
+      size: 5,
+      sha256: PDF_SHA256,
+    });
+  });
+
+  it("hashes an empty file as SHA-256 hashes nothing", async () => {
+    const description = await describeUpload(new File([], "empty.txt"));
+
+    expect(description).toEqual({
+      filename: "empty.txt",
+      content_type: "",
+      size: 0,
+      sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    });
+  });
+
+  it("hashes a file of a few megabytes exactly", async () => {
+    const bytes = new Uint8Array(3 * 1024 * 1024 + 7).map((_, i) => (i * 31) % 251);
+
+    const description = await describeUpload(new Blob([bytes]), { filename: "big.bin" });
+
+    expect(description.size).toBe(bytes.byteLength);
+    expect(description.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+  });
+
+  it("names a nameless Blob by the filename option, which also replaces a File's own", async () => {
+    const fromBlob = await describeUpload(new Blob([new Uint8Array([1])]), {
+      filename: "scan.png",
+    });
+    const renamed = await describeUpload(pdfFile(), { filename: "invoice.pdf" });
+
+    expect(fromBlob.filename).toBe("scan.png");
+    expect(fromBlob.content_type).toBe("");
+    expect(renamed.filename).toBe("invoice.pdf");
+    expect(renamed.sha256).toBe(PDF_SHA256);
+  });
+
+  it.each([
+    ["a nameless Blob", new Blob([new Uint8Array([1])])],
+    ["a File named nothing", new File([new Uint8Array([1])], "")],
+  ])("refuses %s before reading it", async (_case, file) => {
+    const read = vi.spyOn(file, "arrayBuffer");
+
+    const error = await describeUpload(file).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InputPreparationError);
+    expect((error as Error).message).toContain("has no name");
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("leaves the hash out where the runtime offers no Web Crypto digest", async () => {
+    // A browser withholds `crypto.subtle` from a page served over plain http.
+    vi.stubGlobal("crypto", {});
+    try {
+      const file = pdfFile();
+      const read = vi.spyOn(file, "arrayBuffer");
+
+      const description = await describeUpload(file);
+
+      expect(description).toEqual({
+        filename: "report.pdf",
+        content_type: "application/pdf",
+        size: 5,
+      });
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("wraps a file that cannot be read, keeping the runtime's error as its cause", async () => {
+    const file = pdfFile();
+    const failure = new DOMException("The file could not be read.", "NotReadableError");
+    vi.spyOn(file, "arrayBuffer").mockRejectedValue(failure);
+
+    const error = await describeUpload(file).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InputPreparationError);
+    expect((error as Error).message).toContain('"report.pdf" could not be read');
+    expect((error as Error).message).toContain("NotReadableError");
+    expect((error as InputPreparationError).cause).toBe(failure);
   });
 });
 
@@ -257,7 +638,7 @@ describe("uploadWithGrant — the time limit", () => {
 
     const result = await uploadWithGrant(GRANT, pdfFile(), { timeoutMs: 2 ** 31 - 1 });
 
-    expect(result).toEqual({ uri: GRANT.uri });
+    expect(result).toEqual(STORED);
   });
 
   it("lets a caller's abort before the limit through as its own reason", async () => {
@@ -387,6 +768,11 @@ describe("uploadWithGrant — the time limit", () => {
     expect(error).toBeInstanceOf(UploadTransportError);
     expect((error as UploadTransportError).code).toBe("conflict");
     expect((error as UploadTransportError).status).toBe(409);
+    // The limit has run out, so no new PUT is sent after it.
+    expect((error as Error).message).toContain(
+      "on its one attempt before the 61 s allowed ran out",
+    );
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -413,7 +799,7 @@ describe("uploadWithGrant — the time limit", () => {
       (e: unknown) => e,
     );
 
-    if (status === 200) expect(outcome).toEqual({ uri: GRANT.uri });
+    if (status === 200) expect(outcome).toEqual(STORED);
     if (status === 307) expect((outcome as UploadTransportError).code).toBe("redirected");
     if (status === 403) expect((outcome as RejectedAssetError).code).toBe("grant_expired");
   });
@@ -652,29 +1038,6 @@ describe("uploadWithGrant — transport failures", () => {
     expect((error as Error).message).not.toContain("..");
   });
 
-  it("maps storage's 409 ConditionalRequestConflict onto UploadTransportError, advising the same grant", async () => {
-    const error = await refusalFor(
-      xmlResponse(
-        409,
-        s3Error(
-          "ConditionalRequestConflict",
-          "A conflicting operation occurred. If using PutObject you can retry the request.",
-        ),
-      ),
-    );
-
-    expect(error).toBeInstanceOf(UploadTransportError);
-    expect(error).not.toBeInstanceOf(RejectedAssetError);
-    const transport = error as UploadTransportError;
-    expect(transport.status).toBe(409);
-    expect(transport.code).toBe("conflict");
-    expect(transport.message).toContain("409 ConditionalRequestConflict");
-    expect(transport.message).toContain("another upload with the same grant");
-    expect(transport.message).toContain(
-      `Retrying with the same grant before it expires at ${GRANT.expires_at}`,
-    );
-  });
-
   it("maps storage timing out on the body onto UploadTransportError, since nothing was written", async () => {
     const error = await refusalFor(
       xmlResponse(
@@ -907,6 +1270,7 @@ describe("the @pipelex/sdk/upload entry", () => {
     expect(result.errors).toEqual([]);
     const code = result.outputFiles[0]!.text;
     expect(code).toContain("uploadWithGrant");
+    expect(code).toContain("describeUpload");
     expect(code).not.toMatch(/["']node:/);
     expect(code).not.toContain("undici");
     expect(code).not.toContain("PipelexApiClient");
@@ -926,6 +1290,7 @@ describe("the @pipelex/sdk/upload entry", () => {
 
   it("shares its function and error classes with the main entry", () => {
     expect(mainEntry.uploadWithGrant).toBe(uploadWithGrant);
+    expect(mainEntry.describeUpload).toBe(describeUpload);
     expect(mainEntry.RejectedAssetError).toBe(RejectedAssetError);
     expect(mainEntry.UploadTransportError).toBe(UploadTransportError);
     expect(mainEntry.InputPreparationError).toBe(InputPreparationError);

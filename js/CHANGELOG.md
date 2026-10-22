@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`describeUpload`, a file described for its upload grant**: `describeUpload(file, { filename? })`, on `@pipelex/sdk/upload` and the main entry, reads a `File`'s or a `Blob`'s name, type and size and computes the SHA-256 of its bytes with Web Crypto, the description `requestUploadGrant` takes as is; where the runtime offers no Web Crypto digest, as on a page served over plain `http` from any host but the local one, it leaves the hash out and the grant works as before (`docs/input-preparation.md`).
+- **The upload grant request takes the file's hash and its kind**: `UploadGrantInput` gains `sha256`, with which the platform names the object after its bytes and holds the upload to them, and `kind` (`uploaded` or `test`) with `method_id` for a method's test file; `UploadKind` is exported.
+
+### Changed
+
+- **The upload grant answers whether the bytes are already stored (Breaking)**: `UploadGrant` gains `file_id` and `stored`, and its `url`, `headers` and `expires_at` are `null` when `stored` is true, the organization already holding those bytes, so code reading `grant.url` branches on `grant.stored` first. `uploadWithGrant` sends nothing for a stored grant, and resolves to `{ uri, file_id }` where it resolved to `{ uri }`.
+- **`uploadWithGrant` reads a `412` as stored and sends a `409` again**: for a grant that names the file by its bytes, storage's `412` means another request stored those bytes meanwhile and resolves as stored, while a grant asked for without a hash still meets `grant_used`; a `409 ConditionalRequestConflict` is sent again after short pauses, within the call's time limit, before it fails with `conflict`; and a `400 BadDigest`, bytes other than the hashed ones, is a `store_refused` that says so.
+
 ## [v0.48.1] - 2026-10-22
 
 ### Fixed

@@ -225,19 +225,18 @@ const client = new PipelexApiClient({ appInfo: { name: "acme-invoicer", version:
 
 ### Uploading from a browser
 
-A browser page that holds a file but not the API key can still store it: the server that holds the key asks for an upload grant, and the page sends the file straight to storage with it. The file never crosses your server or the API gateway, so it can be as large as the service's own limit. The page imports `@pipelex/sdk/upload`, which carries only the grant's sender, its types and its errors. Both entries bundle for the browser with nothing marked external, so a page may also import the main entry's error classes and types, while the client itself stays on the server that holds the key.
+A browser page that holds a file but not the API key can still store it: the page describes the file, its SHA-256 included, the server that holds the key asks for an upload grant with that description, and the page sends the file straight to storage with it, unless the grant says your organization already holds those bytes, in which case nothing is sent at all. The file never crosses your server or the API gateway, so it can be as large as the service's own limit. The page imports `@pipelex/sdk/upload`, which carries only the description, the grant's sender, their types and their errors. Both entries bundle for the browser with nothing marked external, so a page may also import the main entry's error classes and types, while the client itself stays on the server that holds the key.
 
 ```ts
-// On the server, which holds the key:
-const grant = await client.requestUploadGrant({
-  filename: "report.pdf",
-  content_type: "application/pdf",
-  size: 48213,
-});
-
 // In the page, which holds the file:
-import { uploadWithGrant } from "@pipelex/sdk/upload";
-const { uri } = await uploadWithGrant(grant, file); // pipelex-storage://…
+import { describeUpload, uploadWithGrant } from "@pipelex/sdk/upload";
+const description = await describeUpload(file); // { filename, content_type, size, sha256 }
+
+// On the server, which holds the key, given the description:
+const grant = await client.requestUploadGrant(description); // { stored, uri, file_id, url, … }
+
+// Back in the page, with the grant:
+const { uri, file_id } = await uploadWithGrant(grant, file); // sends nothing when grant.stored
 ```
 
 The full client surface is documented in [`docs/architecture.md`](./docs/architecture.md).
