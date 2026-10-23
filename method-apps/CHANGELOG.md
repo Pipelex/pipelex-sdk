@@ -1,6 +1,6 @@
 # Changelog
 
-## [v0.49.0] - 2026-10-23
+## [Unreleased]
 
 ### Added
 
@@ -8,10 +8,14 @@
 
 ### Changed
 
-- **The web app template runs on `@pipelex/sdk` 0.49.0**: moved from 0.48.1 for `getBranding`, the read the template's organization branding is drawn from, and nothing else in the release changes what an app does: the organization's files, an upload recorded as a method's test file and the branding write are new calls the template does not make. `npm ls mthds` still lists two copies, the form kernel's 0.32.1 beside the SDK's 0.33.0, until a release of `@pipelex/mthds-form` takes the SDK's range. The CLI stays on `pipelex-sdk` 0.48.1.
-- **Both templates run on the SDK 0.48.1**: `@pipelex/sdk` in the web app and `pipelex-sdk` in the CLI move from 0.45.0, with `mthds` moving from 0.22.0 to 0.25.0 in the CLI, and `npm ls mthds` lists two copies in the web app again, the form kernel's and the SDK's 0.33.0, until a release of `@pipelex/mthds-form` takes the SDK's range.
-- **The web app template runs on `@pipelex/mthds-form` 0.21.0**: moved from 0.17.1, and a form looks and behaves as it did, since the template supplies no `FieldStrings` of its own, offers no team files or method examples to the form and gives the result view no PDF maker, and the brand tokens the kernel's pills, tags and focus border now read fall back to the button colour wherever an app defines none. The kernel's `./brand` entry brings the colour derivation the template's organization branding paints with, and `npm ls mthds` lists the kernel's copy at 0.32.1 beside the SDK's 0.33.0. The CLI puts on the wire what it did, its recorded table of the kernel's payload rules being unchanged but for the version it names.
+- **The web app template runs on `@pipelex/sdk` 0.49.0 and `@pipelex/mthds-form` 0.21.0**: the SDK moves from 0.48.1 for `getBranding`, the read the organization's branding is drawn from, and nothing else in its release reaches an app, since the template lists no files, records no test file and writes no branding. The kernel moves from 0.17.1, its `./brand` entry bringing the colour derivation the branding paints with, and an unbranded form looks and behaves as it did, since the template supplies no `FieldStrings` of its own, offers no team files or method examples to the form and gives the result view no PDF maker. `npm ls mthds` lists two copies, the kernel's 0.32.1 beside the SDK's 0.33.0, until a release of the kernel takes the SDK's range, and the CLI stays on `pipelex-sdk` 0.48.1, putting on the wire what it did, its recorded table of the kernel's payload rules unchanged but for the version it names.
 - **The web app's page renders per request, and its run chrome reads the kernel's tokens**: the page is no longer prerendered at build time, the Run button `make add-method` writes is painted with `bg-primary` and `text-primary-foreground` where it was slate, the method tabs with the kernel's border, foreground and muted colours, the selected one underlined in the accent's ink, and the run status with the pale accent fill and its ink where it was blue, so an unbranded app shows the kernel's neutral colours there. A form scaffolded before keeps its slate button until its `className` is changed the same way.
+
+## [v0.49.0] - 2026-10-23
+
+### Changed
+
+- **Both templates run on the SDK 0.48.1**: `@pipelex/sdk` in the web app and `pipelex-sdk` in the CLI move from 0.45.0, with `mthds` moving from 0.22.0 to 0.25.0 in the CLI, and `npm ls mthds` lists two copies in the web app again, the form kernel's 0.30.1 and the SDK's 0.33.0, until a release of `@pipelex/mthds-form` takes the SDK's range.
 - **A bundle travels as the method's tree (Breaking)**: both templates send a bundle to the runs, the preparation of the inputs, `/v1/codegen` and `/v1/pipe-io` as `contents`, each `.mthds` file's text keyed by its path in the method's directory, `methods/<name>/` in the web app and `method/` in the CLI, and in the web app `loadMethodBundles` returns that map, which every action `make add-method` writes passes, so an action written before passes `contents` where it passed `mthds_contents`. A refusal from `make codegen`, `make add-method` or `make create` names a bundle's file by that path, where the CLI named it `method/<path>`, and `make create`'s note under it says which directory or file the paths start from.
 
 ## [v0.46.0] - 2026-10-19
