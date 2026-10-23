@@ -35,7 +35,7 @@ describe("PipeIOValidReport — the standard's artifacts, imported", () => {
     expect(
       narrow({
         is_valid: false,
-        validation_errors: [],
+        errors: [],
         message: "MTHDS library could not be resolved",
       }),
     ).toBeUndefined();

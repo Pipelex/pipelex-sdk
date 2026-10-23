@@ -37,21 +37,31 @@ import {
   RunFailedError,
   RunStillRunningError,
   ScopeUnavailableError,
+  runFailedProblem,
 } from "../src/errors.js";
 import type { GetRunResultOptions, RunResults, RunResultState } from "../src/runs.js";
+import type { Problem } from "mthds/protocol";
+import { problemDocument } from "./helpers/problems.js";
 
-/** The verdict an artifact operation declares for an argument it refuses: the caller's to fix. */
+/** The problem an artifact operation carries for an argument it refuses: the caller's to fix. */
 const REFUSED_ARGUMENT = {
   name: "ArtifactOperationError",
-  errorDomain: "input",
-  retryable: false,
+  code: "client.argument_invalid",
+  retry: "no",
 } as const;
 
-/** The verdict it declares when the environment cannot hold a download. */
-const REFUSED_ENVIRONMENT = {
+/** The problem it carries when the runtime cannot write a download to a file system. */
+const REFUSED_RUNTIME = {
   name: "ArtifactOperationError",
-  errorDomain: "config",
-  retryable: false,
+  code: "runtime.unsupported",
+  retry: "no",
+} as const;
+
+/** The problem it carries when the download directory cannot be created. */
+const REFUSED_DIRECTORY = {
+  name: "ArtifactOperationError",
+  code: "client.write_failed",
+  retry: "no",
 } as const;
 
 const RUN_ID = "01JRUN0000000000000000TEST";
@@ -87,17 +97,14 @@ function refusedItem(uri: string, code: string, detail: string): ResolvedArtifac
   return { uri, url: null, expires_at: null, content_type: null, error: { code, detail } };
 }
 
+/** The `ApiResponseError` of a refusal: a problem document coded `code`, or an empty body. */
 function apiError(status: number, code?: string): ApiResponseError {
   return new ApiResponseError(
     `HTTP ${status}`,
     "http://localhost:8081",
     status,
     "Error",
-    "",
-    undefined,
-    "refused",
-    undefined,
-    code,
+    code === undefined ? "" : JSON.stringify(problemDocument(code, status, { detail: "refused" })),
   );
 }
 
@@ -537,13 +544,13 @@ describe("resolveArtifacts", () => {
     // An answer that breaks the route's contract is no fault of the caller's.
     await expect(resolveArtifacts(client, [PICTURE_URI, REPORT_URI])).rejects.toMatchObject({
       name: "ArtifactOperationError",
-      errorDomain: "runtime",
-      retryable: false,
+      code: "client.response_unreadable",
+      retry: "no",
     });
   });
 
   it("lets a whole-request refusal propagate unchanged", async () => {
-    const client = makeClient({ answers: { [PICTURE_URI]: apiError(404, "not_found") } });
+    const client = makeClient({ answers: { [PICTURE_URI]: apiError(404, "request.not_found") } });
 
     await expect(resolveArtifacts(client, [PICTURE_URI])).rejects.toBeInstanceOf(ApiResponseError);
   });
@@ -584,7 +591,11 @@ describe("fetchArtifact", () => {
     const failure = fetchArtifact(client, REPORT_URI);
 
     await expect(failure).rejects.toBeInstanceOf(ArtifactFetchError);
-    await expect(failure).rejects.toMatchObject({ code: "invalid_storage_uri", uri: REPORT_URI });
+    await expect(failure).rejects.toMatchObject({
+      reason: "invalid_storage_uri",
+      uri: REPORT_URI,
+      code: "input.reference_not_found",
+    });
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -595,7 +606,8 @@ describe("fetchArtifact", () => {
     const spy = mockFetch(() => streamed([PNG_BYTES]));
 
     await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({
-      code: "plain_http_refused",
+      reason: "plain_http_refused",
+      code: "client.link_refused",
     });
     expect(spy).not.toHaveBeenCalled();
 
@@ -609,13 +621,13 @@ describe("fetchArtifact", () => {
       const client = makeClient({ answers: { [PICTURE_URI]: resolvedItem(PICTURE_URI, { url }) } });
 
       await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({
-        code: "unsupported_url",
+        reason: "unsupported_url",
       });
     }
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("maps the store's statuses onto the codes: redirect, refused, vanished, fault", async () => {
+  it("maps the store's statuses onto the reasons: redirect, refused, vanished, fault", async () => {
     const cases: [number, string][] = [
       [302, "redirect_refused"],
       [401, "store_refused"],
@@ -624,11 +636,11 @@ describe("fetchArtifact", () => {
       [410, "not_found"],
       [503, "store_error"],
     ];
-    for (const [status, code] of cases) {
+    for (const [status, reason] of cases) {
       const client = makeClient();
       mockFetch(() => new Response(null, { status }));
 
-      await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({ code, status });
+      await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({ reason, status });
       vi.restoreAllMocks();
     }
   });
@@ -640,7 +652,8 @@ describe("fetchArtifact", () => {
     mockFetch(() => body);
 
     await expect(fetchArtifact(client, PICTURE_URI, { maxBytes: 100 })).rejects.toMatchObject({
-      code: "too_large",
+      reason: "too_large",
+      code: "client.download_limit_exceeded",
     });
     expect(cancel).toHaveBeenCalled();
   });
@@ -653,7 +666,7 @@ describe("fetchArtifact", () => {
     const failure = response.arrayBuffer();
 
     await expect(failure).rejects.toBeInstanceOf(ArtifactFetchError);
-    await expect(failure).rejects.toMatchObject({ code: "too_large" });
+    await expect(failure).rejects.toMatchObject({ reason: "too_large" });
   });
 
   it("times out an exchange that outlives its budget", async () => {
@@ -661,7 +674,8 @@ describe("fetchArtifact", () => {
     mockFetch(pendingUntilAborted);
 
     await expect(fetchArtifact(client, PICTURE_URI, { timeoutMs: 20 })).rejects.toMatchObject({
-      code: "timeout",
+      reason: "timeout",
+      code: "client.timeout",
     });
   });
 
@@ -671,7 +685,7 @@ describe("fetchArtifact", () => {
 
     const response = await fetchArtifact(client, PICTURE_URI, { timeoutMs: 30 });
 
-    await expect(response.arrayBuffer()).rejects.toMatchObject({ code: "timeout" });
+    await expect(response.arrayBuffer()).rejects.toMatchObject({ reason: "timeout" });
   });
 
   it("propagates the caller's abort as-is", async () => {
@@ -753,7 +767,10 @@ describe("fetchArtifact", () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed"));
 
-    await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({ code: "network" });
+    await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({
+      reason: "network",
+      code: "client.unreachable",
+    });
   });
 
   it("refuses nonsense bounds before resolving anything", async () => {
@@ -782,7 +799,7 @@ describe("fetchArtifact", () => {
     );
 
     await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({
-      code: "redirect_refused",
+      reason: "redirect_refused",
       status: undefined,
     });
   });
@@ -828,7 +845,7 @@ describe("downloadArtifacts", () => {
     try {
       await expect(
         downloadArtifacts(client, { run_id: RUN_ID, dir: "irrelevant" }),
-      ).rejects.toMatchObject(REFUSED_ENVIRONMENT);
+      ).rejects.toMatchObject(REFUSED_RUNTIME);
     } finally {
       Object.defineProperty(process, "versions", versions);
     }
@@ -872,19 +889,18 @@ describe("downloadArtifacts", () => {
     await expect(failure).rejects.toMatchObject({ runId: RUN_ID, retryAfterSeconds: 7 });
   });
 
-  it("throws RunFailedError, with the run's report, for a run that ended without a result", async () => {
-    const report = {
-      error_type: "PipeRunError",
-      message: "Pipe 'summarize' failed: boom",
-      error_domain: "runtime",
-      retryable: true,
-    };
+  it("throws RunFailedError, with the run's problem, for a run that ended without a result", async () => {
+    const report = problemDocument("runtime.unexpected", 500, {
+      domain: "runtime",
+      detail: "Pipe 'summarize' failed: boom",
+    }) as unknown as Problem;
     const client = makeClient({
       state: {
         state: "failed",
         pipeline_run_id: RUN_ID,
         status: "FAILED",
         message: "Run finished with status FAILED: Pipe 'summarize' failed: boom",
+        problem: runFailedProblem(RUN_ID, "FAILED", report),
         error: report,
       },
     });
@@ -892,7 +908,12 @@ describe("downloadArtifacts", () => {
     const failure = downloadArtifacts(client, { run_id: RUN_ID, dir: "x" });
 
     await expect(failure).rejects.toBeInstanceOf(RunFailedError);
-    await expect(failure).rejects.toMatchObject({ runId: RUN_ID, status: "FAILED", error: report });
+    await expect(failure).rejects.toMatchObject({
+      runId: RUN_ID,
+      status: "FAILED",
+      code: "run.failed",
+      runError: report,
+    });
   });
 
   it("throws ScopeUnavailableError when the scope's artifact is null or missing", async () => {
@@ -1611,11 +1632,11 @@ describe("downloadArtifacts", () => {
         results: { pipeline_run_id: RUN_ID, main_stuff: { url: PICTURE_URI } },
         dir: join(file, "under-a-file"),
       }),
-    ).rejects.toMatchObject(REFUSED_ENVIRONMENT);
+    ).rejects.toMatchObject(REFUSED_DIRECTORY);
   });
 
   it("lets a deployment without the bulk route surface as the transport error", async () => {
-    const client = makeClient({ sequence: [apiError(404, "not_found")] });
+    const client = makeClient({ sequence: [apiError(404, "request.not_found")] });
 
     await expect(
       downloadArtifacts(client, {

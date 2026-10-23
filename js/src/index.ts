@@ -133,22 +133,6 @@ export type {
   PipelexValidationReport,
   PipelexInvalidReport,
   PipelexValidationResult,
-  ValidationErrorCategory,
-  ValidationErrorItem,
-  FixSafety,
-  FixOpKind,
-  TomlScalar,
-  TomlValue,
-  FixValue,
-  SetKeyOp,
-  EnsureTableOp,
-  DeleteKeyOp,
-  DeleteTableOp,
-  RenameTableKeyOp,
-  MoveKeyOp,
-  RemapValueOp,
-  FixOp,
-  SuggestedFix,
   CrateRequestBase,
   CrateRouteOptions,
   CrateInvalidReport,
@@ -353,15 +337,12 @@ export type {
   UsageTokenTotals,
 } from "./usage.js";
 
-// ── Typed errors (PipelineRequestError rides the protocol re-export above) ──
-// Every one carries a verdict — `retryable` and `errorDomain` — read with `errorVerdictOf`, and
-// `runMayHaveStarted`, read with `runMayHaveStartedOf`. `problemVerdict` reads the standard's
-// problem in the same vocabulary, as `errorVerdictOf` reads an `mthds` error.
-export { problemVerdict } from "./error-verdicts.js";
+// ── Typed errors (ProblemError and PipelineRequestError ride the protocol re-export above) ──
+// Every one is a `ProblemError` carrying the failure as its `problem`, an RFC 9457 problem
+// document with the MTHDS core members: a caller branches on `code`, and reads `domain`, `retry`
+// (`outcome_unknown` where a run may already exist) and `nextStep` off the error.
 export {
   PipelexRequestError,
-  errorVerdictOf,
-  runMayHaveStartedOf,
   RequestArgumentError,
   ApiResponseError,
   ApiUnreachableError,
@@ -390,25 +371,16 @@ export {
 } from "./errors.js";
 export type {
   ApiResponseErrorOptions,
-  ErrorDomain,
-  ErrorVerdict,
   IdempotencyErrorCode,
   LogoRefusalCode,
   MethodErrorCode,
-  MethodFileTransferCode,
   MethodFileTransferOperation,
-  RejectedAssetCode,
-  TestFileRefusalCode,
+  MethodFileTransferReason,
+  RejectedAssetReason,
+  TestFileRefusalReason,
   UploadNotAllowedKind,
-  UploadTransportCode,
+  UploadTransportReason,
 } from "./errors.js";
 
-// ── Error reports (a failed run's stored report, a problem document's typed members) ──
-export type {
-  FieldError,
-  MigrationErrorBlock,
-  ProblemDetails,
-  ProviderErrorMetadata,
-  RunErrorReport,
-  UserAction,
-} from "./error-models.js";
+// ── Problem items (a verdict's `errors` and `warnings`, read member by member) ──
+export { readProblemItems } from "./problem-items.js";

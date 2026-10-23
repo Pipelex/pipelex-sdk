@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
+import { problemDocument } from "./helpers/problems.js";
 import {
   ApiResponseError,
   ApiUnreachableError,
   MissingMainStuffError,
   RunLifecycleUnavailableError,
   UploadTransportError,
-  errorVerdictOf,
 } from "../src/errors.js";
 
 function makeClient(): PipelexApiClient {
@@ -205,7 +206,7 @@ describe("PipelexApiClient.startAndWaitForResult (hosted — durable start+poll 
       (thrown: unknown) => thrown,
     );
     expect(err).toBeInstanceOf(ApiUnreachableError);
-    expect((err as ApiUnreachableError).code).toBe("ECONNREFUSED");
+    expect((err as ApiUnreachableError).networkCode).toBe("ECONNREFUSED");
     expect(paths()).toEqual(["/v1/version"]);
 
     // Nothing was cached, so the next call asks again, and runs once the server answers.
@@ -291,7 +292,7 @@ describe("PipelexApiClient.startAndWaitForResult (hosted — durable start+poll 
     );
 
     expect(err).toBeInstanceOf(ApiUnreachableError);
-    expect((err as ApiUnreachableError).code).toBe("UND_ERR_SOCKET");
+    expect((err as ApiUnreachableError).networkCode).toBe("UND_ERR_SOCKET");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -596,7 +597,7 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
 
       // A completed run's answer carries its working memory, as the Python SDK's model of it
       // requires: one without it is no run the SDK can read, and the blocking execute may have
-      // started one, so the error says so and is not retryable.
+      // started one, so its outcome is unknown and the request is not sent again.
       const err = await client
         .startAndWaitForResult({ pipe_code: "p", files: { "main.mthds": "x" } })
         .catch((e: unknown) => e);
@@ -604,8 +605,8 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       expect((err as ApiResponseError).message).toBe(
         "API POST /v1/execute answered 200 with a body that is not the answer the route returns",
       );
-      expect((err as ApiResponseError).runMayHaveStarted).toBe(true);
-      expect((err as ApiResponseError).retryable).toBe(false);
+      expect((err as ApiResponseError).code).toBe("client.outcome_unknown");
+      expect((err as ApiResponseError).retry).toBe("outcome_unknown");
     },
   );
 
@@ -762,14 +763,14 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
 
     expect(missing).toBeInstanceOf(ApiResponseError);
     const notServed = missing as ApiResponseError;
-    expect(notServed.message).toBe("API GET /health failed (404): Not Found");
+    expect(notServed.message).toBe('API GET /health failed (404): {"detail":"Not Found"}');
     expect(notServed.status).toBe(404);
-    // A bare 404: the origin does not serve the probe, which the base URL fixes.
-    expect(notServed.errorDomain).toBe("config");
-    expect(notServed.retryable).toBe(false);
+    // A bare 404: the origin serves no such route.
+    expect(notServed.code).toBe("request.not_found");
+    expect(notServed.retry).toBe("no");
     expect(down).toBeInstanceOf(ApiResponseError);
-    expect((down as ApiResponseError).errorDomain).toBe("runtime");
-    expect((down as ApiResponseError).retryable).toBe(true);
+    expect((down as ApiResponseError).code).toBe("runtime.unavailable");
+    expect((down as ApiResponseError).retry).toBe("yes");
   });
 
   it("health throws an ApiUnreachableError when the origin cannot be reached", async () => {
@@ -784,9 +785,9 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
     );
 
     expect(err).toBeInstanceOf(ApiUnreachableError);
-    expect((err as ApiUnreachableError).code).toBe("ECONNREFUSED");
-    expect((err as ApiUnreachableError).errorDomain).toBe("config");
-    expect((err as ApiUnreachableError).retryable).toBe(true);
+    expect((err as ApiUnreachableError).networkCode).toBe("ECONNREFUSED");
+    expect((err as ApiUnreachableError).code).toBe("client.unreachable");
+    expect((err as ApiUnreachableError).retry).toBe("yes");
   });
 
   it("throws a typed ApiResponseError on a 2xx whose body is not UTF-8, and reads a refusal's leniently", async () => {
@@ -810,13 +811,19 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
       "API POST /v1/start answered 202 with a body that is not UTF-8",
     );
     expect((err as ApiResponseError).status).toBe(202);
+    // The start was accepted, so the run may exist.
+    expect((err as ApiResponseError).code).toBe("client.outcome_unknown");
 
-    // A refusal's body is read for its reason all the same, the stray byte as U+FFFD.
+    // A refusal's body is read all the same, the stray byte as U+FFFD.
+    const [head, tail] = JSON.stringify(
+      problemDocument("request.invalid", 422, { detail: "bad @" }),
+    ).split("@") as [string, string];
+    const encoder = new TextEncoder();
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(
-        new Uint8Array([...new TextEncoder().encode('{"detail": "bad '), 0xff, 0x22, 0x7d]),
-        { status: 422, headers: { "content-type": "application/json" } },
-      ),
+      new Response(new Uint8Array([...encoder.encode(head), 0xff, ...encoder.encode(tail)]), {
+        status: 422,
+        headers: { "content-type": "application/problem+json" },
+      }),
     );
     const refusal = await client.start({ pipe_code: "p" }).then(
       () => expect.fail("expected start to throw"),
@@ -824,7 +831,8 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
     );
     expect(refusal).toBeInstanceOf(ApiResponseError);
     expect((refusal as ApiResponseError).status).toBe(422);
-    expect((refusal as ApiResponseError).serverMessage).toBe("bad \ufffd");
+    expect((refusal as ApiResponseError).code).toBe("request.invalid");
+    expect((refusal as ApiResponseError).problem.detail).toBe("bad \ufffd");
   });
 
   it.each([
@@ -846,13 +854,12 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
     expect(unreadable.message).toBe(`API GET /health answered 200 with ${what}`);
     expect(unreadable.status).toBe(200);
     expect(unreadable.responseBody).toBe(body ?? "");
-    expect(unreadable.problemDocument).toBeUndefined();
-    expect(unreadable.serverMessage).toBeUndefined();
     expect(unreadable.requestId).toBe("gw-1");
     expect(unreadable.cause).toBeInstanceOf(SyntaxError);
-    // A 2xx is no refusal the fallback names: runtime, and nothing says a retry helps.
-    expect(unreadable.errorDomain).toBe("runtime");
-    expect(unreadable.retryable).toBe(false);
+    // A 2xx the SDK cannot read: the runtime's fault, and nothing says a retry helps.
+    expect(unreadable.code).toBe("client.response_unreadable");
+    expect(unreadable.problem.params).toEqual({ status: 200 });
+    expect(unreadable.retry).toBe("no");
   });
 });
 
@@ -888,8 +895,8 @@ describe("PipelexApiClient answers it cannot read", () => {
       expect(unreadable.message).toBe(`API GET ${path} answered 200 with a body that is not JSON`);
       expect(unreadable.status).toBe(200);
       expect(unreadable.responseBody).toBe("<html>Maintenance</html>");
-      expect(unreadable.errorDomain).toBe("runtime");
-      expect(unreadable.retryable).toBe(false);
+      expect(unreadable.code).toBe("client.response_unreadable");
+      expect(unreadable.problem).toMatchObject({ domain: "runtime", retry: "no" });
     },
   );
 
@@ -925,11 +932,14 @@ describe("PipelexApiClient answers it cannot read", () => {
       );
       expect(unreadable.status).toBe(200);
       expect(unreadable.responseBody).toBe(body);
-      expect(unreadable.problemDocument).toBeUndefined();
+      expect(unreadable.code).toBe("client.response_unreadable");
       expect(unreadable.requestId).toBe("req-7");
       // The body parsed, so there is no parse failure to carry.
       expect(unreadable.cause).toBeUndefined();
-      expect(errorVerdictOf(unreadable)).toEqual({ errorDomain: "runtime", retryable: false });
+      expect((unreadable as ProblemError).problem).toMatchObject({
+        domain: "runtime",
+        retry: "no",
+      });
     },
   );
 
@@ -1001,15 +1011,17 @@ describe("PipelexApiClient answers it cannot read", () => {
         `API ${route} answered ${status} with a body that is not JSON`,
       );
       expect(unreadable.responseBody).toBe(body);
-      expect(unreadable.problemDocument).toBeUndefined();
       expect(unreadable.requestId).toBe("req-8");
       // `JSON.parse` reads each of them, so there is no parse failure to carry.
       expect(unreadable.cause).toBeUndefined();
-      expect(unreadable.runMayHaveStarted).toBe(startsRun);
-      expect(unreadable.problem.code).toBe(
+      // A request that creates a run was accepted, so the run may exist.
+      expect(unreadable.code).toBe(
         startsRun ? "client.outcome_unknown" : "client.response_unreadable",
       );
-      expect(errorVerdictOf(unreadable)).toEqual({ errorDomain: "runtime", retryable: false });
+      expect(unreadable.problem).toMatchObject({
+        domain: "runtime",
+        retry: startsRun ? "outcome_unknown" : "no",
+      });
     },
   );
 
@@ -1087,7 +1099,11 @@ describe("PipelexApiClient answers it cannot read", () => {
     expect((err as ApiResponseError).message).toBe(
       `API ${route} answered 200 with a body that is not an object`,
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    // A request that creates a run was accepted, so the run may exist.
+    const startsRun = route === "POST /v1/execute" || route === "POST /v1/start";
+    expect((err as ApiResponseError).code).toBe(
+      startsRun ? "client.outcome_unknown" : "client.response_unreadable",
+    );
   });
 
   it.each([
@@ -1117,7 +1133,7 @@ describe("PipelexApiClient answers it cannot read", () => {
       expect((err as ApiResponseError).message).toBe(
         `API ${route} answered 200 with an empty body where JSON was expected`,
       );
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+      expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
     },
   );
 
@@ -1142,7 +1158,8 @@ describe("PipelexApiClient answers it cannot read", () => {
 
       expect(err).toBeInstanceOf(UploadTransportError);
       const transport = err as UploadTransportError;
-      expect(transport.code).toBe("unexpected");
+      expect(transport.reason).toBe("unexpected");
+      expect(transport.code).toBe("client.response_unreadable");
       expect(transport.status).toBe(200);
       expect(transport.cause).toBeInstanceOf(ApiResponseError);
       const unreadable = transport.cause as ApiResponseError;
@@ -1152,7 +1169,7 @@ describe("PipelexApiClient answers it cannot read", () => {
       expect(unreadable.responseBody).toBe(body);
       expect(unreadable.requestId).toBe("req-9");
       // Storage may hold the file, but under no reference: nothing says a retry helps.
-      expect(errorVerdictOf(transport)).toEqual({ errorDomain: "runtime", retryable: false });
+      expect((transport as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
     },
   );
 
@@ -1200,8 +1217,8 @@ describe("PipelexApiClient answers it cannot read", () => {
         );
 
       expect(err).toBeInstanceOf(UploadTransportError);
-      expect((err as UploadTransportError).code).toBe("unexpected");
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+      expect((err as UploadTransportError).reason).toBe("unexpected");
+      expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
       // No prepared input carrying no URL ever reaches a run.
       expect(fetchSpy.mock.calls.map((call) => String(call[0]))).toEqual([
         "http://localhost:8081/v1/pipe-io",
@@ -1264,7 +1281,10 @@ describe("PipelexApiClient answers it cannot read", () => {
       expect(unreadable.responseBody).toBe(body.replace('"url":"u"', '"url":"[redacted]"'));
       expect(unreadable.requestId).toBe("req-8");
       // Server data the caller cannot fix: runtime, and nothing says a retry helps.
-      expect(errorVerdictOf(unreadable)).toEqual({ errorDomain: "runtime", retryable: false });
+      expect((unreadable as ProblemError).problem).toMatchObject({
+        domain: "runtime",
+        retry: "no",
+      });
     },
   );
 });

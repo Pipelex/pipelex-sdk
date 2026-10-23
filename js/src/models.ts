@@ -3,7 +3,8 @@
  *
  * Holds the Dict-serialized protocol concretes (`DictStuff` / `DictWorkingMemory`
  * / `DictPipeOutput` and the default `RunResultExecute` binding), the Pipelex
- * `/v1/validate` surface (`PipelexValidationResult` + `ValidationErrorItem`), the
+ * `/v1/validate` surface (`PipelexValidationResult`, whose faults are the standard's
+ * `ProblemItem`s), the
  * request/response models of the tools routes and the crate routes, and the verdict of
  * the model reference check. Built on the protocol wire types imported from the
  * `mthds/protocol` subpath.
@@ -12,6 +13,7 @@
 import type {
   InputForm,
   MethodFiles,
+  ProblemItem,
   MethodTreeSource,
   OutputForm,
   PipeIOContracts,
@@ -113,8 +115,8 @@ export interface PipelexRunResultStart extends RunResultStart {
  * one of inline source / `method_ref` / `method_id` per request — any second
  * selector is a request-shape `422`. An unknown or foreign-org id is a `404`
  * (indistinguishable by design); a bare id of a method never published is a `409`
- * `method_not_published`; a version never published is a `404`
- * `method_version_not_found`; a malformed suffix, or a stored method with no MTHDS
+ * `pipelex.catalog.not_published`; a version never published is a `404`
+ * `pipelex.catalog.not_found`; a malformed suffix, or a stored method with no MTHDS
  * source, is a `422`.
  */
 export interface PipelexHostedToolingExtensions {
@@ -130,17 +132,16 @@ export interface PipelexHostedToolingExtensions {
 // `POST /v1/validate` is a diagnostic endpoint: every produced verdict rides a
 // 200, discriminated on `is_valid`. The Pipelex API answers both arms in its own
 // shape: the VALID arm is the canonical `PipelexValidationReport`; the INVALID arm
-// is `PipelexInvalidReport`, carrying a structured `validation_errors[]` list.
-// Non-2xx is reserved for no-verdict conditions (a malformed request, a tree
+// is `PipelexInvalidReport`, listing its faults as the standard's problem items in
+// `errors[]`. Non-2xx is reserved for no-verdict conditions (a malformed request, a tree
 // the route refuses, auth, a server fault), surfaced as `ApiResponseError`.
 //
 // Both arms are declared here whole rather than as extensions of the protocol's
-// `ValidationReport` and `InvalidValidationReport`. Since protocol `2.0.0` those
-// list each fault and each warning as a problem item (`errors[]`, `warnings[]` of
-// `ProblemItem`), while the hosted plane still answers the verdict it answered
-// before, faults in `validation_errors[]` and warnings as `ValidationErrorItem`s,
-// until the hosted plane itself moves to problem documents. Narrowing the
-// protocol's arms would claim members the hosted answer does not carry.
+// `ValidationReport` and `InvalidValidationReport`: the hosted answer carries members of
+// its own beside the protocol's (`bundle_blueprint`, `pipe_io_contracts`, the opt-in views
+// and `rendered_markdown`). Their `errors[]` and `warnings[]` are the protocol's items, read
+// member by member (`readProblemItems`), so a malformed member is left out of its item
+// rather than failing the verdict.
 
 /**
  * The method selector the tooling routes take in place of the method's tree: a
@@ -348,17 +349,12 @@ export interface PipelexValidationReport {
   /** Per-pipe dry-run sweep outcomes. */
   validated_pipes: ValidatedPipeEntry[];
   /**
-   * Advisory findings on a VALID bundle — same item shape as `validation_errors[]`, so one
-   * parser serves both channels, but these never flip `is_valid`. Empty when there is
-   * nothing to report. Their `error_type`s come in families, always in this order: the
-   * useless-`!` lint (`optional_force_redundant`), the entry pipe's vacuous-presence lint
-   * (`input_presence_vacuous`), the intent-hint lints (`hint_unknown_key`,
-   * `hint_unknown_intent`, `hint_inapplicable_intent`, which ride here exclusively), then the
-   * findings a `PipeDocGen` step's template check made in its office template file during
-   * the dry run (`template_check_warning`, a `dry_run` item carrying `pipe_code`,
-   * `domain_code`, `template_file` and `template_location`).
+   * Advisory findings on a VALID bundle, one problem item each with the code its finding's
+   * type names: the same item shape as the invalid arm's `errors[]`, so one reader serves
+   * both, but these never flip `is_valid`. Empty when there is nothing to report. The client
+   * reads them member by member (`readProblemItems`).
    */
-  warnings: ValidationErrorItem[];
+  warnings: ProblemItem[];
   /** Qualified refs of pipes still declared as `PipeSignature`. */
   pending_signatures: string[];
   /** `not pending_signatures` — whether the validated library is complete enough to run. */
@@ -380,17 +376,20 @@ export interface PipelexValidationReport {
 
 /**
  * Pipelex's `POST /v1/validate` 200 body for an INVALID bundle — the `is_valid: false`
- * arm of the response union, carrying the closed-vocabulary `ValidationErrorItem[]`.
- * The structural artifacts of the valid arm
- * are absent (they don't exist when load/parse/wiring failed); `validation_errors[]` is
- * non-empty on every invalid verdict (the structured-info invariant — even a parse-level
- * failure carries one source-less `blueprint_validation` residual).
+ * arm of the response union, listing its faults as problem items. The structural
+ * artifacts of the valid arm are absent (they don't exist when load/parse/wiring failed);
+ * `errors[]` is non-empty on every invalid verdict the server sends, and the client reads
+ * it member by member (`readProblemItems`), so an item whose `code` or `detail` is not a
+ * string is skipped and a malformed member is left out of its item.
  */
 export interface PipelexInvalidReport {
   /** Discriminant of the invalid arm. */
   is_valid: false;
-  /** Structured per-error diagnostics, built by pipelex's one shared builder. */
-  validation_errors: ValidationErrorItem[];
+  /**
+   * One problem item per fault, each with its own `code`, `detail`, `params`, `location`
+   * and, when the server has one, its `suggested_fix`.
+   */
+  errors: ProblemItem[];
   /** Outstanding signatures (best-effort; empty when no library could be assembled). */
   pending_signatures: string[];
   /** An invalid bundle is never runnable. */
@@ -399,8 +398,8 @@ export interface PipelexInvalidReport {
   message: string;
   /**
    * Opt-in Pipelex-API presentation extra: the server-rendered Markdown view of the
-   * invalid verdict (`# Validation failed` + the `validation_errors`), present only
-   * when the request asked for it (`render: ["markdown"]`). Absent by default.
+   * invalid verdict's errors, present only when the request asked for it
+   * (`render: ["markdown"]`). Absent by default.
    */
   rendered_markdown?: string;
 }
@@ -412,217 +411,6 @@ export interface PipelexInvalidReport {
  * answers, not narrowings of the protocol's (see the section's heading above).
  */
 export type PipelexValidationResult = PipelexValidationReport | PipelexInvalidReport;
-
-/**
- * Which validation stage produced a `ValidationErrorItem` — mirror of pipelex's
- * closed `ValidationErrorCategory` set. `pipe_factory` and graph-level `dry_run`
- * items carry no `source`; map those by `domain_code` / `pipe_code`. The other
- * categories carry `source` when the runtime can attribute one.
- */
-export type ValidationErrorCategory =
-  "blueprint_validation" | "pipe_factory" | "pipe_validation" | "dry_run";
-
-/**
- * One structured bundle-validation error — mirror of pipelex's `ValidationErrorItem`.
- * Carried by `PipelexInvalidReport.validation_errors[]` on the **200** invalid arm of
- * `POST /v1/validate` (NOT a 422 — an invalid bundle is a produced verdict), by the
- * VALID arm's advisory `warnings[]`, by the crate routes' **200** invalid arm
- * (`CrateInvalidReport.validation_errors[]`), by the 422 problem body a run route answers
- * when the runner refuses the method for its validation errors
- * (`ApiResponseError.validationErrors`), and by a failed run's stored report.
- *
- * **The shape is the hosted plane's.** It is the item the runner sends today, which
- * predates the standard's problem items: from protocol 2.0.0 a verdict lists its faults
- * as `ProblemItem`s under a registry `code`, which the hosted plane does not send yet, so
- * this declaration is not the standard's and is not pinned to it. Its fix shares the
- * standard's operation and safety vocabularies, which `tests/validation-items.test.ts`
- * pins.
- *
- * Only `category` and `message` are always present; the rest are populated per
- * `category`. Every other member is `?: T | null` because the two channels serialize an
- * unset locator differently: the invalid arm and the crate routes drop the key
- * (`exclude_none` server-side) while the valid arm — which carries `warnings[]` — does
- * not, so the same item arrives with explicit `null`s there. A truthiness check reads
- * both; an `=== undefined` check would be wrong on one of them.
- *
- * `source` is the declaring file: its path (CLI), or its tree path in the tree the
- * request sent — the owning file for cross-file diagnostics.
- *
- * An `unknown_model` item (a model reference the runner's model deck does not know)
- * carries the reference as written, the kind of model the field takes and the close
- * matches, and, when there is exactly one close match, a `suggested_fix` that remaps
- * the reference to it.
- *
- * A `template_check_warning` item, on the valid arm's `warnings[]` only, is a finding of a
- * `PipeDocGen` step's template check in its office template file during the dry run, such
- * as a field of the template that matches no input: a `dry_run` item carrying the step's
- * `pipe_code` and `domain_code`, the template file as the step names it and the place in
- * it the engine's finding names.
- */
-export interface ValidationErrorItem {
-  category: ValidationErrorCategory;
-  message: string;
-  error_type?: string | null;
-  pipe_code?: string | null;
-  concept_code?: string | null;
-  domain_code?: string | null;
-  source?: string | null;
-  field_path?: string | null;
-  field_name?: string | null;
-  variable_names?: string[] | null;
-  missing_concept_code?: string | null;
-  /** The pipe a reference names that the bundle does not declare. */
-  missing_pipe_code?: string | null;
-  declared_concepts?: string[] | null;
-  /**
-   * On an `unknown_model` item: the model reference exactly as the author wrote it
-   * (`gpt-5.1`, `@best-sonet`, `$writting-factual`).
-   */
-  model_reference?: string | null;
-  /** On an `unknown_model` item: the kind of model the field takes (`llm`, `img_gen`, …). */
-  model_type?: string | null;
-  /**
-   * On an `unknown_model` item: the close matches of the same kind, each spelled as a
-   * reference the field accepts.
-   */
-  suggestions?: string[] | null;
-  /**
-   * On a `template_check_warning` item: the template file as the `PipeDocGen` step names it
-   * (`templates/invoice.xlsx`); `null` for a step of the server's own library, whose path is
-   * the server's and is never shown.
-   */
-  template_file?: string | null;
-  /**
-   * On a `template_check_warning` item: the place in the template file the finding names, in
-   * the engine's own words (a defined name, a table, a cell, a shape, a tag); `null` when the
-   * finding names none.
-   */
-  template_location?: string | null;
-  /** The server's deterministic repair proposal for this error, when it has one. */
-  suggested_fix?: SuggestedFix | null;
-}
-
-/** Whether a `SuggestedFix` is safe to auto-apply, or needs explicit opt-in. */
-export type FixSafety = "safe" | "unsafe";
-
-/** The semantic patch operations a `SuggestedFix` is composed of. */
-export type FixOpKind =
-  | "set_key"
-  | "ensure_table"
-  | "delete_key"
-  | "delete_table"
-  | "rename_table_key"
-  | "move_key"
-  | "remap_value";
-
-/** A TOML-representable scalar a `set_key` op can write. */
-export type TomlScalar = string | number | boolean;
-
-/**
- * What a `set_key` op writes: a scalar, or a flat scalar mapping for fixes that create
- * a whole table at once (written as an inline table). Deeper nesting is not modelled —
- * the server does not emit it.
- */
-export type TomlValue = TomlScalar | Record<string, TomlScalar>;
-
-/** `TomlValue` under the name `mthds` gives it, so either client's vocabulary reads here. */
-export type FixValue = TomlValue;
-
-/**
- * What every fix op carries: the table it acts in. `table_path` addresses the containing
- * table (e.g. `["pipe", "my_seq"]`), aligned with the `field_path` conventions of
- * `ValidationErrorItem`, and is empty for the document root.
- *
- * The segment `"*"` is the wildcard — "every entry of the open mapping at this node".
- * The server refuses it as a `key` on every kind but `remap_value`, the only one with a
- * per-key meaning for it.
- */
-interface FixOpBase {
-  table_path: string[];
-}
-
-/** Write `key = value` in the addressed table, whatever it currently holds. */
-export interface SetKeyOp extends FixOpBase {
-  kind: "set_key";
-  key: string;
-  value: TomlValue;
-}
-
-/** Create the addressed table when it is missing. `table_path` is never empty. */
-export interface EnsureTableOp extends FixOpBase {
-  kind: "ensure_table";
-}
-
-/** Remove `key` from the addressed table. */
-export interface DeleteKeyOp extends FixOpBase {
-  kind: "delete_key";
-  key: string;
-}
-
-/** Remove the addressed table entirely. `table_path` is never empty. */
-export interface DeleteTableOp extends FixOpBase {
-  kind: "delete_table";
-}
-
-/** Rename `key` to `new_key` within the addressed table. */
-export interface RenameTableKeyOp extends FixOpBase {
-  kind: "rename_table_key";
-  key: string;
-  new_key: string;
-}
-
-/** Move `key` out of the addressed table into `new_table_path`, under `new_key`. */
-export interface MoveKeyOp extends FixOpBase {
-  kind: "move_key";
-  key: string;
-  new_table_path: string[];
-  new_key: string;
-}
-
-/**
- * Rewrite `key`'s value through `mapping`, leaving an unmapped value untouched. The
- * unknown-model fix is one: it maps the reference as written to its one close match, so
- * it changes nothing once the author has edited the field.
- */
-export interface RemapValueOp extends FixOpBase {
-  kind: "remap_value";
-  key: string;
-  mapping: Record<string, string>;
-}
-
-/** One patch operation of a `SuggestedFix` — discriminated on `kind`. */
-export type FixOp =
-  | SetKeyOp
-  | EnsureTableOp
-  | DeleteKeyOp
-  | DeleteTableOp
-  | RenameTableKeyOp
-  | MoveKeyOp
-  | RemapValueOp;
-
-/**
- * A deterministic fix for one validation error, ready for a style-preserving applier —
- * mirror of pipelex's `SuggestedFix`. The ops are semantic patches over the `.mthds`
- * document, not a text diff, so an applier keeps the author's formatting.
- *
- * The shape is the hosted plane's, as `ValidationErrorItem`'s is: the standard's
- * `SuggestedFix` names the file `file` rather than `source` and is open to members it does
- * not declare. Its operation kinds, its safeties and the values a `set_key` writes are the
- * standard's (this SDK's `TomlValue` is the standard's `FixValue`), and a type-level test
- * pins them.
- */
-export interface SuggestedFix {
-  /** The kebab-case rule id, e.g. `"match-sequence-output"`. */
-  fix_code: string;
-  description: string;
-  safety: FixSafety;
-  /**
-   * The file the ops target, when known (multi-file libraries). An applier must only
-   * apply these ops to that file.
-   */
-  source?: string | null;
-  ops: FixOp[];
-}
 
 // ── Tools routes (Pipelex API — `/v1/lint`, `/v1/format`) ───────────────
 //
@@ -779,7 +567,11 @@ export interface CrateRouteOptions {
  */
 export interface CrateInvalidReport {
   is_valid: false;
-  validation_errors: ValidationErrorItem[];
+  /**
+   * One problem item per fault, the same items `/v1/validate` lists for the identical
+   * failure, read member by member (`readProblemItems`).
+   */
+  errors: ProblemItem[];
   message: string;
 }
 
@@ -903,12 +695,12 @@ export interface PipeIORequest extends CrateRequestBase, PipelexHostedToolingExt
    * The pipe to describe, as a QUALIFIED `domain.pipe_code` ref. Omit it and the
    * server's selection chain decides: the `main_pipe` of the `METHODS.toml` at the tree's
    * root, whether the tree was sent or fetched, else the closure's single `main_pipe`
-   * declaration. A selection the server refuses is a
-   * `422` typed by what went wrong, with `error_domain: "input"` and the candidates, where
-   * there are some, in its `detail`: `EntryPipeNotFoundError` for a ref that names no pipe
-   * or (without `all_pipes`) a method with no entry pipe, `EntryPipeAmbiguousError` for a
-   * code that matches pipes in several domains or (without `all_pipes`) several `main_pipe`
-   * declarations. A malformed request stays a `ValidationError` `422`.
+   * declaration. A selection the server refuses is a problem coded by what went wrong, of
+   * the domain `input`, the candidates in its parameters where there are some:
+   * `request.pipe_not_found` for a ref that names no pipe, `request.pipe_unspecified` for
+   * (without `all_pipes`) a method with no entry pipe, `request.pipe_ambiguous` for a code that
+   * matches pipes in several domains or (without `all_pipes`) several `main_pipe` declarations.
+   * A malformed request is `request.malformed`.
    *
    * The server does not refuse a bare code yet: a bare ref that matches one pipe is
    * resolved across domains, and the valid arm reports the qualified ref.

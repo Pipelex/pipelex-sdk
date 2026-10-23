@@ -67,16 +67,29 @@ function problemResponse(status: number, body: Record<string, unknown>): Respons
 }
 
 /** The platform's problem document for `code`, as its error handler renders one. */
-function problem(code: string, title: string, detail: string, errors?: unknown[]) {
+function problem(
+  code: string,
+  title: string,
+  detail: string,
+  errors?: unknown[],
+  verdict: { domain: string; retry: string } = { domain: "input", retry: "no" },
+) {
   return {
-    type: `https://pipelex.com/errors/${code}`,
+    type: `https://docs.pipelex.com/errors/${code}`,
     title,
     code,
     detail,
+    ...verdict,
+    next_step: { kind: "change_input", detail: "Change the branding and send it again." },
     instance: "urn:pipelex:request:a9a249b93c024bf08ac9a5fd0704ea92",
     request_id: "a9a249b93c024bf08ac9a5fd0704ea92",
     ...(errors === undefined ? {} : { errors }),
   };
+}
+
+/** The item of a refused branding write naming the logo slot or colour key `field`. */
+function fieldItem(field: string, detail: string) {
+  return { code: "request.invalid", detail, location: { field } };
 }
 
 /** The URL, method and parsed body of the single fetch call recorded by the spy. */
@@ -270,14 +283,11 @@ describe("updateOrganizationBranding", () => {
     const squareDetail =
       "The square logo is 100 × 100 px; a square logo must be at least 128 px on each side.";
     const wideDetail = "The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall.";
-    const errors = [
-      { field: "square_logo", code: "logo_too_small", detail: squareDetail },
-      { field: "wide_logo", code: "logo_too_short", detail: wideDetail },
-    ];
+    const errors = [fieldItem("square_logo", squareDetail), fieldItem("wide_logo", wideDetail)];
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       problemResponse(
         422,
-        problem("validation_failed", "Validation failed", `${squareDetail} ${wideDetail}`, errors),
+        problem("request.invalid", "Invalid request", `${squareDetail} ${wideDetail}`, errors),
       ),
     );
 
@@ -289,15 +299,15 @@ describe("updateOrganizationBranding", () => {
     );
 
     expect(err.status).toBe(422);
-    expect(err.code).toBe("validation_failed");
-    expect(err.errorDomain).toBe("input");
-    expect(err.retryable).toBe(false);
-    expect(err.errors).toEqual(errors);
+    expect(err.code).toBe("request.invalid");
+    expect(err.domain).toBe("input");
+    expect(err.retry).toBe("no");
+    expect(err.problem.errors).toEqual(errors);
     // What the settings screen does: one slot's sentences, read by the slot's key.
-    const underSquare = err.errors?.filter((entry) => entry.field === "square_logo");
+    const underSquare = err.problem.errors?.filter(
+      (entry) => entry.location?.field === "square_logo",
+    );
     expect(underSquare?.map((entry) => entry.detail)).toEqual([squareDetail]);
-    const code: LogoRefusalCode = "logo_too_short";
-    expect(err.errors?.find((entry) => entry.field === "wide_logo")?.code).toBe(code);
   });
 
   /** The platform's sentence for a URI a slot may not take (`not_an_upload_refusal`). */
@@ -317,70 +327,60 @@ describe("updateOrganizationBranding", () => {
       "an SVG carrying active content",
       "wide_logo",
       WIDE_UPLOAD_URI,
-      "logo_active_content",
       "The wide logo is an SVG that carries active content, which a logo may not: a <script> element.",
     ],
     [
       "a branding copy no slot holds",
       "wide_logo",
       `pipelex-storage://${ORG_ID}/branding/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.svg`,
-      "logo_not_an_upload",
       notAnUpload("wide logo"),
     ],
     [
       "the other slot's logo, which cannot move by its URI",
       "wide_logo",
       SQUARE_LOGO_URI,
-      "logo_not_an_upload",
       notAnUpload("wide logo"),
     ],
     [
       "a raster past the pixel cap",
       "square_logo",
       SQUARE_UPLOAD_URI,
-      "logo_unreadable",
       "The square logo looks like a PNG image but cannot be read: at 5,000 × 5,000 px it has more than the 16,777,216 pixels (4096 × 4096) a logo may have.",
     ],
     [
       "a raster cut short",
       "square_logo",
       SQUARE_UPLOAD_URI,
-      "logo_unreadable",
       "The square logo looks like a JPEG image but cannot be read: the file is damaged or incomplete.",
     ],
     [
       "an animated WebP, since a logo is a still image",
       "square_logo",
       SQUARE_UPLOAD_URI,
-      "logo_type_not_accepted",
       "The square logo is an animated WebP; a logo must be a still image.",
     ],
     [
       "an animated PNG, since a logo is a still image",
       "wide_logo",
       WIDE_UPLOAD_URI,
-      "logo_type_not_accepted",
       "The wide logo is an animated PNG; a logo must be a still image.",
     ],
     [
       "an SVG whose width and height lie outside the range a side may measure",
       "square_logo",
       SQUARE_UPLOAD_URI,
-      "logo_unreadable",
       "The square logo is an SVG that cannot be read: its width or height lies outside the 0.001 to 1,000,000 px a logo's side may measure.",
     ],
     [
       "an SVG whose viewBox lies outside the range a side may measure",
       "wide_logo",
       WIDE_UPLOAD_URI,
-      "logo_unreadable",
       "The wide logo is an SVG that cannot be read: its viewBox's width or height lies outside the 0.001 to 1,000,000 units a logo's side may measure.",
     ],
     [
       "an SVG with an xml-stylesheet processing instruction",
       "square_logo",
       SQUARE_UPLOAD_URI,
-      "logo_active_content",
       activeContent(
         "square logo",
         "an xml-stylesheet processing instruction, which loads a style sheet",
@@ -390,14 +390,12 @@ describe("updateOrganizationBranding", () => {
       "an SVG whose CSS imports a style sheet",
       "square_logo",
       SQUARE_UPLOAD_URI,
-      "logo_active_content",
       activeContent("square logo", "a CSS @import, which loads a style sheet"),
     ],
     [
       "an SVG whose CSS url() leaves the file",
       "wide_logo",
       WIDE_UPLOAD_URI,
-      "logo_active_content",
       activeContent(
         "wide logo",
         `a CSS url() that links to something outside the file, ${INERT_LINKS_ONLY}`,
@@ -407,7 +405,6 @@ describe("updateOrganizationBranding", () => {
       "an SVG whose CSS src() leaves the file",
       "square_logo",
       SQUARE_UPLOAD_URI,
-      "logo_active_content",
       activeContent(
         "square logo",
         `a CSS src() that links to something outside the file, ${INERT_LINKS_ONLY}`,
@@ -417,7 +414,6 @@ describe("updateOrganizationBranding", () => {
       "an SVG whose CSS holds an image-set()",
       "square_logo",
       SQUARE_UPLOAD_URI,
-      "logo_active_content",
       activeContent(
         "square logo",
         "a CSS image-set() function, which can load an image from outside the file",
@@ -427,7 +423,6 @@ describe("updateOrganizationBranding", () => {
       "an SVG whose CSS holds an image()",
       "wide_logo",
       WIDE_UPLOAD_URI,
-      "logo_active_content",
       activeContent(
         "wide logo",
         "a CSS image() function, which can load an image from outside the file",
@@ -437,59 +432,56 @@ describe("updateOrganizationBranding", () => {
       "an SVG whose CSS holds an escape",
       "square_logo",
       SQUARE_UPLOAD_URI,
-      "logo_active_content",
       activeContent("square logo", "a CSS escape (a backslash), which can disguise a link"),
     ],
-  ])("refuses %s under its slot", async (_topic, field, uri, code, detail) => {
+  ])("refuses %s under its slot", async (_topic, field, uri, detail) => {
     const client = makeClient();
-    const errors = [{ field, code, detail }];
+    const errors = [fieldItem(field, detail)];
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      problemResponse(422, problem("validation_failed", "Validation failed", detail, errors)),
+      problemResponse(422, problem("request.invalid", "Invalid request", detail, errors)),
     );
 
     const err = await caught(client.updateOrganizationBranding(ORG_ID, { [field]: uri }));
 
-    expect(err.code).toBe("validation_failed");
-    expect(err.errors).toEqual(errors);
+    expect(err.code).toBe("request.invalid");
+    expect(err.problem.errors).toEqual(errors);
   });
 
-  it("hands back a storage failure while reading or copying a logo as a retryable 500", async () => {
+  it("hands back a storage failure while reading or copying a logo as a retryable 503", async () => {
     const client = makeClient();
     const detail = "Storage backend failure while storing a logo.";
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      problemResponse(500, {
-        ...problem("storage_backend_failed", "Storage backend failure", detail),
-        error_domain: "runtime",
-        retryable: true,
-      }),
+      problemResponse(
+        503,
+        problem("runtime.unavailable", "Unavailable", detail, undefined, {
+          domain: "runtime",
+          retry: "yes",
+        }),
+      ),
     );
 
     const err = await caught(
       client.updateOrganizationBranding(ORG_ID, { square_logo: SQUARE_UPLOAD_URI }),
     );
 
-    expect(err.status).toBe(500);
-    expect(err.code).toBe("storage_backend_failed");
-    expect(err.errorDomain).toBe("runtime");
-    expect(err.retryable).toBe(true);
-    expect(err.errors).toBeUndefined();
+    expect(err.status).toBe(503);
+    expect(err.code).toBe("runtime.unavailable");
+    expect(err.domain).toBe("runtime");
+    expect(err.retry).toBe("yes");
+    expect(err.problem.errors).toBeUndefined();
   });
 
   it("names a refused colour by its dotted key", async () => {
     const client = makeClient();
     const errors = [
-      {
-        field: "dark_colors.header",
-        code: "string_pattern_mismatch",
-        detail: "String should match pattern '^#[0-9a-fA-F]{6}$'",
-      },
+      fieldItem("dark_colors.header", "String should match pattern '^#[0-9a-fA-F]{6}$'"),
     ];
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       problemResponse(
         422,
         problem(
-          "validation_failed",
-          "Validation failed",
+          "request.invalid",
+          "Invalid request",
           "Request body failed validation. See `errors` for the per-field breakdown.",
           errors,
         ),
@@ -500,23 +492,28 @@ describe("updateOrganizationBranding", () => {
       client.updateOrganizationBranding(ORG_ID, { dark_colors: { header: "#14213g" } }),
     );
 
-    expect(err.code).toBe("validation_failed");
-    expect(err.errors).toEqual(errors);
+    expect(err.code).toBe("request.invalid");
+    expect(err.problem.errors).toEqual(errors);
   });
 
   it.each([
     [
-      400,
-      "invalid_storage_uri",
+      422,
+      "pipelex.storage.uri_invalid",
       "Invalid storage URI",
       "The square logo is not a valid storage URI: Storage URI must start with pipelex-storage://",
     ],
-    [403, "forbidden", "Forbidden", "The square logo is a file of a different organization."],
+    [
+      403,
+      "pipelex.org.mismatch",
+      "Organization mismatch",
+      "The square logo is a file of a different organization.",
+    ],
   ])(
     "names the slot of a logo URI refused before any read (%i %s)",
     async (status, code, title, detail) => {
       const client = makeClient();
-      const errors = [{ field: "square_logo", code, detail }];
+      const errors = [{ code, detail, location: { field: "square_logo" } }];
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
         problemResponse(status, problem(code, title, detail, errors)),
       );
@@ -527,24 +524,24 @@ describe("updateOrganizationBranding", () => {
 
       expect(err.status).toBe(status);
       expect(err.code).toBe(code);
-      expect(err.errors).toEqual(errors);
+      expect(err.problem.errors).toEqual(errors);
     },
   );
 
   it.each([
     [
       403,
-      "role_not_permitted",
-      "Role not permitted",
+      "auth.forbidden",
+      "Forbidden",
       "Your role in this organization is member: changing the organization's branding needs the admin role.",
     ],
     [
       409,
-      "conflict",
-      "Conflict",
+      "pipelex.org.not_manageable",
+      "Organization not manageable",
       "A personal workspace has no branding: logos and colours belong to a team organization.",
     ],
-    [404, "not_found", "Not found", "Organization not found"],
+    [404, "pipelex.org.not_found", "Organization not found", "Organization not found"],
   ])("refuses a write the platform refuses (%i %s)", async (status, code, title, detail) => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -555,7 +552,7 @@ describe("updateOrganizationBranding", () => {
 
     expect(err.status).toBe(status);
     expect(err.code).toBe(code);
-    expect(err.serverMessage).toBe(detail);
-    expect(err.errors).toBeUndefined();
+    expect(err.problem.detail).toBe(detail);
+    expect(err.problem.errors).toBeUndefined();
   });
 });

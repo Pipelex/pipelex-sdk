@@ -4,9 +4,11 @@
  * method error codes — all against a mocked fetch.
  */
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
-import { ApiResponseError, errorVerdictOf, RequestArgumentError } from "../src/errors.js";
+import { ApiResponseError, RequestArgumentError } from "../src/errors.js";
 import type { MethodErrorCode } from "../src/errors.js";
+import { problemResponse } from "./helpers/problems.js";
 import type {
   MethodData,
   MethodDeletionState,
@@ -179,16 +181,12 @@ describe("writeDraft", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("surfaces a stale token as a 409 method_update_conflict naming the field", async () => {
+  it("surfaces a stale token as a 409 pipelex.catalog.update_conflict naming the field", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, {
-        type: "https://pipelex.com/errors/method_update_conflict",
-        title: "Conflict",
-        status: 409,
-        code: "method_update_conflict",
+      problemResponse("pipelex.catalog.update_conflict", 409, {
         detail: "The method was updated since 2026-10-08T08:00:00+00:00.",
-        errors: [{ field: "expected_updated_at", code: "stale", detail: "moved" }],
+        location: { field: "expected_updated_at" },
       }),
     );
 
@@ -199,9 +197,10 @@ describe("writeDraft", () => {
     expect(err).toBeInstanceOf(ApiResponseError);
     const refused = err as ApiResponseError;
     expect(refused.status).toBe(409);
-    expect(refused.code).toBe("method_update_conflict");
-    expect(refused.errors?.[0]?.field).toBe("expected_updated_at");
-    expect(errorVerdictOf(refused)).toEqual({ errorDomain: "input", retryable: false });
+    const conflict: MethodErrorCode = "pipelex.catalog.update_conflict";
+    expect(refused.code).toBe(conflict);
+    expect(refused.problem.location?.field).toBe("expected_updated_at");
+    expect((refused as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
   });
 });
 
@@ -330,7 +329,7 @@ describe("publishMethod", () => {
     expect((err as ApiResponseError).message).toContain(
       `API POST /v1/methods/mt_receipts01/publish answered 200 with a publish result whose \`${member}\``,
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
   });
 
   it("refuses a call with no token before sending anything", async () => {
@@ -346,13 +345,12 @@ describe("publishMethod", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("surfaces a stale token as a 409 method_update_conflict, publishing nothing", async () => {
+  it("surfaces a stale token as a 409 pipelex.catalog.update_conflict, publishing nothing", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, {
-        code: "method_update_conflict",
+      problemResponse("pipelex.catalog.update_conflict", 409, {
         detail: "The draft moved.",
-        errors: [{ field: "expected_draft_updated_at", code: "stale", detail: "moved" }],
+        location: { field: "expected_draft_updated_at" },
       }),
     );
 
@@ -361,8 +359,8 @@ describe("publishMethod", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).code).toBe("method_update_conflict");
-    expect((err as ApiResponseError).errors?.[0]?.field).toBe("expected_draft_updated_at");
+    expect((err as ApiResponseError).code).toBe("pipelex.catalog.update_conflict");
+    expect((err as ApiResponseError).problem.location?.field).toBe("expected_draft_updated_at");
   });
 });
 
@@ -436,13 +434,11 @@ describe("getMethodVersion", () => {
     expect(version.files.map((file) => file.path)).toEqual(["helper.py", "main.mthds"]);
   });
 
-  it("surfaces a version stored before methods were trees as a 409 conflict, runtime", async () => {
+  it("surfaces a version stored before methods were trees as the platform's own fault", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, {
-        code: "conflict",
+      problemResponse("runtime.unexpected", 500, {
         detail: "Version 3 names no tree.",
-        error_domain: "runtime",
-        retryable: false,
+        domain: "runtime",
       }),
     );
 
@@ -451,8 +447,8 @@ describe("getMethodVersion", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).code).toBe("conflict");
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expect((err as ApiResponseError).code).toBe("runtime.unexpected");
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
   });
 
   it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
@@ -488,10 +484,13 @@ describe("getMethodVersion", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("surfaces an unknown version as a 404 method_version_not_found", async () => {
+  it("surfaces an unknown version as a 404 pipelex.catalog.not_found naming a version", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, { code: "method_version_not_found", detail: "No version 9." }),
+      problemResponse("pipelex.catalog.not_found", 404, {
+        detail: "No version 9.",
+        params: { resource: "version" },
+      }),
     );
 
     const err = await client
@@ -499,9 +498,10 @@ describe("getMethodVersion", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).code).toBe("method_version_not_found");
+    expect((err as ApiResponseError).code).toBe("pipelex.catalog.not_found");
+    expect((err as ApiResponseError).problem.params).toEqual({ resource: "version" });
     // A named 404 is the caller's: no retry turns version 9 into one that exists.
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
   });
 
   it.each([
@@ -535,7 +535,7 @@ describe("getMethodVersion", () => {
     expect((err as ApiResponseError).message).toBe(
       `API GET /v1/methods/m1/versions/3 answered 200 with a published version whose \`files\` ${fault}`,
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
   });
 });
 
@@ -567,7 +567,7 @@ describe("the method routes take a bare id", () => {
           "id: they address the method itself, never one of its versions. Strip the suffix " +
           "with parseMethodSelector, and read a published version with getMethodVersion.",
       );
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+      expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
       expect(spy).not.toHaveBeenCalled();
     },
   );
@@ -607,7 +607,7 @@ describe("the run routes' linkage form takes a bare id", () => {
           "that did not. Send the bare id (parseMethodSelector(...).method_id), or drop the " +
           "tree to run the version the selector names.",
       );
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+      expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
       expect(spy).not.toHaveBeenCalled();
     },
   );
@@ -726,13 +726,11 @@ describe("getMethod", () => {
     );
   });
 
-  it("surfaces a draft naming a tree the platform holds no record of as a 409, runtime", async () => {
+  it("surfaces a draft naming a tree the platform holds no record of as its own fault", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, {
-        code: "conflict",
+      problemResponse("runtime.unexpected", 500, {
         detail: "The method names a tree the organization holds no record of.",
-        error_domain: "runtime",
-        retryable: false,
+        domain: "runtime",
       }),
     );
 
@@ -741,25 +739,24 @@ describe("getMethod", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
   });
 });
 
 describe("the method error codes", () => {
   it("names the codes a method caller branches on", () => {
     expectTypeOf<MethodErrorCode>().toEqualTypeOf<
-      | "method_update_conflict"
-      | "method_being_deleted"
-      | "method_not_published"
-      | "method_version_not_found"
+      | "pipelex.catalog.update_conflict"
+      | "pipelex.catalog.being_deleted"
+      | "pipelex.catalog.not_published"
+      | "pipelex.catalog.not_found"
     >();
   });
 
-  it("surfaces a never-published bare id's 409 method_not_published, not retryable", async () => {
+  it("surfaces a never-published bare id's 409 pipelex.catalog.not_published, not retryable", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, {
-        code: "method_not_published",
+      problemResponse("pipelex.catalog.not_published", 409, {
         detail:
           "mt_receipts01 has no published version; run mt_receipts01@draft or publish it first.",
       }),
@@ -771,9 +768,9 @@ describe("the method error codes", () => {
 
     expect(err).toBeInstanceOf(ApiResponseError);
     const refused = err as ApiResponseError;
-    expect(refused.code satisfies string | undefined).toBe("method_not_published");
-    expect(refused.serverMessage).toContain("@draft");
-    expect(errorVerdictOf(refused)).toEqual({ errorDomain: "input", retryable: false });
+    expect(refused.code satisfies string).toBe("pipelex.catalog.not_published");
+    expect(refused.problem.detail).toContain("@draft");
+    expect((refused as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
   });
 });
 

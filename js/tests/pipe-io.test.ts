@@ -18,6 +18,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
 import { ApiResponseError, ApiUnreachableError } from "../src/errors.js";
+import { problemResponse as problemAnswer } from "./helpers/problems.js";
 import type { CrateInvalidReport, PipeIOValidReport } from "../src/models.js";
 
 function makeClient(): PipelexApiClient {
@@ -31,14 +32,9 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-/** An RFC 7807 problem body, as the server renders every non-2xx. */
-function problemResponse(status: number, detail: string, errorType?: string): Response {
-  const body: Record<string, unknown> = { status, title: "Error", detail };
-  if (errorType !== undefined) body.error_type = errorType;
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/problem+json" },
-  });
+/** A problem document coded `code`, as the server renders every non-2xx. */
+function problemResponse(status: number, detail: string, code: string): Response {
+  return problemAnswer(code, status, { detail });
 }
 
 function postedBody(spy: ReturnType<typeof vi.spyOn>): unknown {
@@ -96,7 +92,7 @@ const VALID_ARM: PipeIOValidReport = {
 
 const INVALID_ARM: CrateInvalidReport = {
   is_valid: false,
-  validation_errors: [{ category: "blueprint_validation", message: "boom", source: "smoke.mthds" }],
+  errors: [{ code: "method.schema_violation", detail: "boom", location: { file: "smoke.mthds" } }],
   message: "MTHDS library could not be resolved",
 };
 
@@ -161,13 +157,13 @@ describe("pipeIo — request envelope", () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
-        problemResponse(422, "provide exactly one of `files` or `method_ref`", "ValidationError"),
+        problemResponse(422, "provide exactly one of `files` or `method_ref`", "request.invalid"),
       );
 
     const failure = client.pipeIo({ files: { "main.mthds": "x" }, method_ref: "github.com/o/r" });
 
     await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
-    await expect(failure).rejects.toMatchObject({ status: 422, errorType: "ValidationError" });
+    await expect(failure).rejects.toMatchObject({ status: 422, code: "request.invalid" });
     expect(postedBody(fetchSpy)).toEqual({
       files: { "main.mthds": "x" },
       method_ref: "github.com/o/r",
@@ -277,8 +273,8 @@ describe("pipeIo — the 200 verdict", () => {
 
     expect(result.is_valid).toBe(false);
     const report = result as CrateInvalidReport;
-    expect(report.validation_errors[0]!.message).toBe("boom");
-    expect(report.validation_errors[0]!.source).toBe("smoke.mthds");
+    expect(report.errors[0]!.detail).toBe("boom");
+    expect(report.errors[0]!.location?.file).toBe("smoke.mthds");
   });
 });
 
@@ -287,10 +283,10 @@ describe("pipeIo — what throws", () => {
     vi.restoreAllMocks();
   });
 
-  it("throws ApiResponseError on a selection refusal, its error_type intact", async () => {
+  it("throws ApiResponseError on a selection refusal, its code intact", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      problemResponse(422, "Pipe 'smoke.absent' not found", "EntryPipeNotFoundError"),
+      problemResponse(422, "Pipe 'smoke.absent' not found", "request.pipe_not_found"),
     );
 
     // The client relays; turning a selection refusal into a preparation error is
@@ -299,22 +295,28 @@ describe("pipeIo — what throws", () => {
     await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
     await expect(failure).rejects.toMatchObject({
       status: 422,
-      errorType: "EntryPipeNotFoundError",
-      serverMessage: "Pipe 'smoke.absent' not found",
+      code: "request.pipe_not_found",
+      problem: { detail: "Pipe 'smoke.absent' not found" },
     });
   });
 
   it("maps the reserved registry-form method_ref to a 501 and an unknown id to a 404", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      problemResponse(501, "Registry-form method_ref resolution is not implemented yet."),
+      problemResponse(
+        501,
+        "Registry-form method_ref resolution is not implemented yet.",
+        "runtime.unsupported",
+      ),
     );
     await expect(client.pipeIo({ method_ref: "acme/method@1" })).rejects.toMatchObject({
       status: 501,
     });
 
     vi.restoreAllMocks();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(problemResponse(404, "No such method."));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse(404, "No such method.", "pipelex.catalog.not_found"),
+    );
     await expect(client.pipeIo({ method_id: "mt_missing" })).rejects.toMatchObject({
       status: 404,
     });

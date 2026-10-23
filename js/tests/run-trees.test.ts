@@ -11,9 +11,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 
 import { PipelexApiClient } from "../src/client.js";
-import { errorVerdictOf, RequestArgumentError } from "../src/errors.js";
+import { RequestArgumentError } from "../src/errors.js";
 
 const BASE_URL = "http://localhost:8081";
 const STORAGE = "https://app-bucket.s3.amazonaws.com";
@@ -188,7 +189,7 @@ describe("a run given its method as a directory", () => {
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toMatch(/^execute\(\) could not list the method's tree at /);
     expect(((err as Error).cause as { code?: unknown }).code).toBe("limit_exceeded");
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
     expect(api.paths).toEqual(["/v1/version"]);
   });
 

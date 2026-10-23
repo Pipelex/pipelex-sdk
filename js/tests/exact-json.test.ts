@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
-import { ApiResponseError, RequestArgumentError, runMayHaveStartedOf } from "../src/errors.js";
+import { ApiResponseError, RequestArgumentError } from "../src/errors.js";
 import {
   ExactJsonUnsupportedError,
   parseExactJson,
@@ -400,7 +400,8 @@ describe("a request body", () => {
       /^The body of POST \/v1\/start cannot be written as JSON, so nothing was sent: /,
     );
     expect((err as Error).cause).toBeInstanceOf(TypeError);
-    expect(runMayHaveStartedOf(err)).toBe(false);
+    expect((err as RequestArgumentError).code).toBe("client.argument_invalid");
+    expect((err as RequestArgumentError).retry).toBe("no");
     expect(spy).not.toHaveBeenCalled();
   });
 

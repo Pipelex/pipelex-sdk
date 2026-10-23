@@ -18,7 +18,7 @@ import type {
   PipeIOValidReport,
   PipelexStartOptions,
 } from "../index.js";
-import { inputFormFault } from "../index.js";
+import { inputFormFault, readProblemItems } from "../index.js";
 import type { BundleFile } from "./bundle.js";
 import { CommandError, EXIT_FAILED, untilInterrupted } from "./io.js";
 import { loadFailureLines, METHOD_DOES_NOT_LOAD_SENTENCE } from "./present.js";
@@ -96,7 +96,7 @@ export async function describePipe(
   if (!answer.is_valid) {
     throw new CommandError(METHOD_DOES_NOT_LOAD_SENTENCE, {
       exitCode: EXIT_FAILED,
-      details: loadFailureLines(answer.validation_errors, answer.message),
+      details: loadFailureLines(readProblemItems(answer.errors), answer.message),
     });
   }
   const report = answer as unknown as PipeIOValidReport;

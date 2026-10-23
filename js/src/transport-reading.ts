@@ -1,49 +1,22 @@
 /**
- * Whether a failed request that may create a run, a start or a blocking execute, may still have
- * started one whose id never reached the caller. `ApiUnreachableError` and `ApiResponseError` read
- * it when the client tells them their request may create a run, and carry the answer as
- * `runMayHaveStarted`; the Python twin, `pipelex-sdk`, reads the same failures the same way in
- * `pipelex_sdk.run_may_have_started`.
+ * Whether a request that got no answer may have left this machine, the one reading of a transport
+ * failure the SDK cannot take from a problem. `ApiUnreachableError` reads it when the client tells
+ * it the request may create a run, a start or a blocking execute: a failure that proves nothing was
+ * sent reads as the transport's own problem (`client.unreachable`), and any other as
+ * `client.outcome_unknown`, whose `retry` says the run may exist. The Python twin, `pipelex-sdk`,
+ * reads the same failures the same way in `pipelex_sdk.transport_reading`.
  *
- * The reading errs on the safe side. A false "may have started" costs the person a look at the run
- * history; a false "did not start" costs a second paid run. So every failure counts as one that
- * may have started a run unless it proves otherwise: a transport failure that proves nothing was
- * sent, and an answer that says the request was refused before anything ran.
+ * The reading errs on the safe side. A false "may have left" costs the person a look at the run
+ * history; a false "never left" costs a second paid run. So every failure counts as one that may
+ * have left unless it proves otherwise.
  */
 
 /**
- * The platform code of the `503` a start answers when the platform could not reach the runner at
- * all: it finalized the run's row `FAILED` and started nothing. Every other `503`, the platform's
- * `service_unavailable` included, can follow a run the runner already started.
+ * Whether a request that met a transport failure may have left this machine: every failure but one
+ * that proves nothing was sent. `cause` is the failure fetch threw, which `ApiUnreachableError`
+ * keeps as its own `cause`.
  */
-const START_UNAVAILABLE_CODE = "pipeline_start_unavailable";
-
-/**
- * Whether an answer to a request that may create a run leaves one possibly started:
- *
- * - any `2xx`, which the client met only because it could not read it: the server accepted the
- *   request, and only its acknowledgement was lost;
- * - a `408`, which a proxy in front of the platform may answer for a request it forwarded;
- * - every `5xx` but a `501`, which says the deployment does not serve the route, and a `503`
- *   carrying the platform's code `pipeline_start_unavailable`, which says the runner was never
- *   reached: the server or a gateway failed while handling the request.
- *
- * Any other status is the request refused before anything ran.
- */
-export function answerMayHaveStartedRun(status: number, code: string | undefined): boolean {
-  if (status >= 200 && status < 300) return true;
-  if (status === 408) return true;
-  if (status === 501) return false;
-  if (status === 503 && code === START_UNAVAILABLE_CODE) return false;
-  return status >= 500 && status < 600;
-}
-
-/**
- * Whether a transport failure of a request that may create a run leaves one possibly started:
- * every failure but one that proves nothing was sent. `cause` is the failure fetch threw, which
- * `ApiUnreachableError` keeps as its own `cause`.
- */
-export function transportMayHaveStartedRun(cause: unknown): boolean {
+export function requestMayHaveLeft(cause: unknown): boolean {
   return !provesNothingSent(cause);
 }
 
@@ -64,7 +37,7 @@ export function transportMayHaveStartedRun(cause: unknown): boolean {
  * the TLS handshake or after the request, and so does an `EHOSTUNREACH` met once connected, so
  * neither proves anything; nor does another TLS failure, which may come after the handshake; nor
  * does the SDK's own time limit (`ABORT_TIMEOUT`), which fetch cannot place before or after the
- * connection was made; nor does a body that arrived and could not be decoded. Every request that
+ * connection was made. Every request that
  * may create a run has a limit longer than undici's connect limit, so with Node's own dispatcher
  * it runs out only once the request has left.
  */

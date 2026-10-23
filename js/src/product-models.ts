@@ -10,7 +10,7 @@
  * consumes — not a speculative mirror of every server field.
  */
 
-import type { RunErrorReport } from "./error-models.js";
+import type { Problem } from "mthds/protocol";
 import type { MethodTreeForms } from "./method-trees.js";
 import type { PipelexValidationResult } from "./models.js";
 import type { RunStatus } from "./runs.js";
@@ -147,7 +147,7 @@ export interface MethodData {
   /**
    * Where the method is in the erasure cascade; absent or `null` on a normal method. Every
    * method route refuses a method whose erasure has started with a `409`
-   * `method_being_deleted`, so a method read seldom carries it; `MethodSummary` carries the
+   * `pipelex.catalog.being_deleted`, so a method read seldom carries it; `MethodSummary` carries the
    * same field on the list, where a method mid-erasure stays listed.
    */
   deletion_state?: MethodDeletionState | null;
@@ -301,7 +301,7 @@ export interface MethodDraftInput extends MethodTreeInput {
   /**
    * The draft token the caller last saw — the `updated_at` of the method it last read or
    * wrote, echoed verbatim. With it the write is a compare-and-swap: a draft that moved since
-   * is refused with a `409` whose `code` is `method_update_conflict`, and nothing is written.
+   * is refused with a `409` whose `code` is `pipelex.catalog.update_conflict`, and nothing is written.
    * Omitted, the write is last-writer-wins.
    */
   expected_updated_at?: string;
@@ -318,7 +318,7 @@ export interface MethodPublishInput {
   /**
    * The draft token the caller last saw (`MethodData.updated_at`), echoed verbatim. Required: a
    * publish never takes a draft its caller has not seen, so a draft that moved since is
-   * refused with a `409` whose `code` is `method_update_conflict`, and nothing is published.
+   * refused with a `409` whose `code` is `pipelex.catalog.update_conflict`, and nothing is published.
    */
   expected_draft_updated_at: string;
 }
@@ -359,7 +359,7 @@ export interface MethodPublishRefused {
   message: string;
   /**
    * The runner's `POST /v1/validate` answer for the draft, verbatim: an invalid arm whose
-   * `validation_errors` say what to fix, or, for `not_runnable`, the valid arm.
+   * `errors`, problem items, say what to fix, or, for `not_runnable`, the valid arm.
    */
   validation: PipelexValidationResult;
   method: MethodData;
@@ -1320,8 +1320,8 @@ export type FileArchiveRequest =
   | { run_id: string; file_ids?: never; name?: string };
 
 /**
- * The cap a `422` `file_archive_too_large` names, read from the refusal's
- * `ApiResponseError.problemDocument.limit`: `max_files` (500) or `max_total_bytes`
+ * The cap a `422` `file_archive_too_large` names, read from the refusal's problem
+ * (`ApiResponseError.problem`) as its `limit` member: `max_files` (500) or `max_total_bytes`
  * (2,000,000,000), its `value`, and what the selection `reached`. For a run, the count stops as
  * soon as it passes the cap, so `reached` is one more than `max_files` and means "at least".
  */
@@ -1342,7 +1342,7 @@ export interface DraftFileFromFileInput {
   path: string;
   /**
    * The draft token (`MethodData.updated_at`) the caller last read, echoed verbatim: a draft that
-   * moved since is refused with a `409` `method_update_conflict`. Omitted, the file is added to the
+   * moved since is refused with a `409` `pipelex.catalog.update_conflict`. Omitted, the file is added to the
    * draft as it stands when the request is served, never erasing another save.
    */
   expected_updated_at?: string;
@@ -1469,10 +1469,10 @@ export interface PipelineRun {
   result_url?: string | null;
   created_at: string;
   finished_at?: string | null;
-  /** The run's stored error report as the platform serves it, the runner's STRICT
-   *  projection, typed whole (see `RunErrorReport` for which runs hold one). This is how a
-   *  consumer tells the user WHY a run failed rather than showing a generic message. */
-  error?: RunErrorReport | null;
+  /** The problem the run ended with, as the platform serves it to its caller (see
+   *  `RunPublic.error`): kept only when it is a problem document, `null` otherwise. This is how
+   *  a consumer tells the user WHY a run failed rather than showing a generic message. */
+  error?: Problem | null;
   /**
    * Which version of its method the run ran: the version number for a run addressed by a
    * bare id (the latest published version) or by `mt_…@<n>`, `"draft"` for one addressed by
@@ -1508,10 +1508,10 @@ export interface RunHistoryItem {
   finished_at?: string | null;
   /** `null` when the runner resolved the pipe from the bundle's `main_pipe`. */
   pipe_code?: string | null;
-  /** The run's stored error report, served as on the run detail — present only on a run
+  /** The problem the run ended with, served as on the run detail — present only on a run
    *  that ended without completing and holds one, so opening it from history shows why
    *  without another read. */
-  error?: RunErrorReport | null;
+  error?: Problem | null;
   /**
    * Which version of the method the run ran — a number, `"draft"`, or `null` for an inline
    * source (see `PipelineRun.method_version`). The history lists the runs of every version

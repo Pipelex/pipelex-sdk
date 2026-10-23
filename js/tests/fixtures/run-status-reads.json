@@ -1,5 +1,5 @@
 {
-  "about": "The status reads the two Pipelex SDKs must agree on: what each makes of a body of GET /v1/runs/{id}/status. Each case gives the body the platform answered with a 200, and 'retry_after' the Retry-After header it set, or null for none. 'expected' says what the read yields: 'degraded' as the server sent it; 'retry_after_seconds' parsed from the header; 'request_id' the run's request id; and 'degradation' the degradation as the SDK reads it, field by field. A field is kept when it has its declared type, the null the platform sends for an unknown value included: 'reason' a string, 'message', 'failing_since' and 'ends_at' strings, 'failed_attempts' an integer. A known field that does not fit is not kept, and a field 'expected' does not list is one the reading does not keep, which JavaScript reads as absent and Python as None; members the SDK does not name are relayed as sent. A degradation that is not an object, or whose 'reason' is not a string, reads as none. A null in 'expected' means none, which Python reads as None and JavaScript as null, or as absent when the body did not carry the key. Each SDK's suite answers every case to its own client's status read over a mocked transport. This file exists twice: js/tests/fixtures/run-status-reads.json is the source, and python/tests/fixtures/run-status-reads.json its copy, which must stay byte for byte identical. Change the source, then run make shared-files at the repository's root to write the copy; make check-shared-files fails on a stale one.",
+  "about": "The status reads the two Pipelex SDKs must agree on: what each makes of a body of GET /v1/runs/{id}/status. Each case gives the body the platform answered with a 200, and 'retry_after' the Retry-After header it set, or null for none. 'expected' says what the read yields: 'degraded' as the server sent it; 'retry_after_seconds' parsed from the header; 'request_id' the run's request id; and 'degradation' the degradation as the SDK reads it, field by field; and 'error_code' the code of the run's problem the read keeps as its 'error', which it keeps only when the body's 'error' is a problem document, or null for none. A field is kept when it has its declared type, the null the platform sends for an unknown value included: 'reason' a string, 'message', 'failing_since' and 'ends_at' strings, 'failed_attempts' an integer. A known field that does not fit is not kept, and a field 'expected' does not list is one the reading does not keep, which JavaScript reads as absent and Python as None; members the SDK does not name are relayed as sent. A degradation that is not an object, or whose 'reason' is not a string, reads as none. A null in 'expected' means none, which Python reads as None and JavaScript as null, or as absent when the body did not carry the key. Each SDK's suite answers every case to its own client's status read over a mocked transport. This file exists twice: js/tests/fixtures/run-status-reads.json is the source, and python/tests/fixtures/run-status-reads.json its copy, which must stay byte for byte identical. Change the source, then run make shared-files at the repository's root to write the copy; make check-shared-files fails on a stale one.",
   "cases": [
     {
       "name": "a healthy read",
@@ -19,7 +19,8 @@
         "degraded": false,
         "degradation": null,
         "request_id": "req_healthy",
-        "retry_after_seconds": null
+        "retry_after_seconds": null,
+        "error_code": null
       }
     },
     {
@@ -52,7 +53,8 @@
           "ends_at": null
         },
         "request_id": "req_unreachable",
-        "retry_after_seconds": 5
+        "retry_after_seconds": 5,
+        "error_code": null
       }
     },
     {
@@ -85,7 +87,8 @@
           "ends_at": "2026-10-11T08:10:00+00:00"
         },
         "request_id": "req_failing",
-        "retry_after_seconds": null
+        "retry_after_seconds": null,
+        "error_code": null
       }
     },
     {
@@ -118,7 +121,8 @@
           "ends_at": null
         },
         "request_id": null,
-        "retry_after_seconds": null
+        "retry_after_seconds": null,
+        "error_code": null
       }
     },
     {
@@ -144,7 +148,8 @@
           "resumes_at": "2026-10-11T08:20:00+00:00"
         },
         "request_id": "req_future_reason",
-        "retry_after_seconds": 30
+        "retry_after_seconds": 30,
+        "error_code": null
       }
     },
     {
@@ -169,7 +174,8 @@
           "reason": "workflow_task_failing"
         },
         "request_id": null,
-        "retry_after_seconds": null
+        "retry_after_seconds": null,
+        "error_code": null
       }
     },
     {
@@ -193,7 +199,8 @@
           "message": "The workflow driving this run keeps failing."
         },
         "request_id": null,
-        "retry_after_seconds": null
+        "retry_after_seconds": null,
+        "error_code": null
       }
     },
     {
@@ -210,7 +217,8 @@
         "degraded": true,
         "degradation": null,
         "request_id": null,
-        "retry_after_seconds": null
+        "retry_after_seconds": null,
+        "error_code": null
       }
     },
     {
@@ -231,7 +239,8 @@
         "degraded": true,
         "degradation": null,
         "request_id": null,
-        "retry_after_seconds": null
+        "retry_after_seconds": null,
+        "error_code": null
       }
     },
     {
@@ -250,7 +259,8 @@
         "degraded": true,
         "degradation": null,
         "request_id": null,
-        "retry_after_seconds": null
+        "retry_after_seconds": null,
+        "error_code": null
       }
     },
     {
@@ -269,7 +279,8 @@
         "degraded": true,
         "degradation": null,
         "request_id": null,
-        "retry_after_seconds": 5
+        "retry_after_seconds": 5,
+        "error_code": null
       }
     },
     {
@@ -281,14 +292,17 @@
         "created_at": "2026-10-11T08:00:00+00:00",
         "finished_at": "2026-10-11T08:10:02+00:00",
         "error": {
-          "error_type": "WorkflowTaskKeptFailingError",
+          "type": "https://mthds.ai/errors/runtime.unexpected",
           "title": "Workflow kept failing",
-          "type_uri": "https://pipelex.com/errors/workflow_task_kept_failing",
-          "message": "The platform stopped this run because the workflow driving it kept failing for 5 minutes (7 attempts in a row) without making progress.",
-          "error_domain": "runtime",
-          "retryable": false,
-          "user_action": { "kind": "contact_support", "detail": "Give support the run id plr_ended." },
-          "caller_facing_message": false
+          "detail": "The platform stopped this run because the workflow driving it kept failing for 5 minutes (7 attempts in a row) without making progress.",
+          "code": "runtime.unexpected",
+          "domain": "runtime",
+          "retry": "no",
+          "next_step": {
+            "kind": "contact_support",
+            "detail": "Give support the run id plr_ended."
+          },
+          "pipeline_run_id": "plr_ended"
         },
         "request_id": "req_ended",
         "degraded": false,
@@ -299,7 +313,35 @@
         "degraded": false,
         "degradation": null,
         "request_id": "req_ended",
-        "retry_after_seconds": null
+        "retry_after_seconds": null,
+        "error_code": "runtime.unexpected"
+      }
+    },
+    {
+      "name": "a failed run whose error is no problem document",
+      "body": {
+        "pipeline_run_id": "plr_retired_envelope",
+        "pipe_code": "summarize",
+        "status": "FAILED",
+        "created_at": "2026-10-11T08:00:00+00:00",
+        "finished_at": "2026-10-11T08:10:02+00:00",
+        "error": {
+          "error_type": "WorkflowTaskKeptFailingError",
+          "message": "The platform stopped this run.",
+          "error_domain": "runtime",
+          "retryable": false
+        },
+        "request_id": "req_retired",
+        "degraded": false,
+        "degradation": null
+      },
+      "retry_after": null,
+      "expected": {
+        "degraded": false,
+        "degradation": null,
+        "request_id": "req_retired",
+        "retry_after_seconds": null,
+        "error_code": null
       }
     }
   ]
