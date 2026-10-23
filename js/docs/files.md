@@ -194,7 +194,7 @@ The other refusals of a request: `422` `validation_failed` for more than 1,000 i
 
 ## A run's files
 
-`listRunFiles` answers a `RunFilesPage` of what went in, what came out and what was made along the way, sorted by where each file sits in the run. Each `RunFileEntry` carries its `mark` (`input`, `final` or `intermediate`), the `input_name` an input was given under (`null` for an output), its `uri` and the `FileRecord` a surface shows for it, `null` for an input no record holds.
+`listRunFiles` answers a `RunFilesPage` of what went in, what came out and what was made along the way, sorted by where each file sits in the run. Each `RunFileEntry` carries its `mark` (`input`, `final` or `intermediate`), the `input_name` of the run's input that held an input given by its address (`null` for an inline input and for every file the run made), its `uri` and the `FileRecord` a surface shows for it, `null` for an input no record holds.
 
 | Member | Meaning |
 |---|---|
@@ -215,7 +215,7 @@ while (page.state === "listing") {
 for (const entry of page.outputs) console.log(entry.file?.name ?? entry.uri);
 ```
 
-**Take the list as whole only once `state` is `listed`.** The run's own records, its outputs, its intermediate files and its inline inputs, are paged by address with `limit` (1 to 200) and `cursor`; the inputs given by address and the links come on the first page only. Pass `nextCursor` back as `cursor` until it is `null`. A run that is not the organization's is a `404`, exactly as one that does not exist. A page whose `state` is neither, whose four lists are not arrays, or whose `next_cursor` is neither a string nor `null`, is an `ApiResponseError` of an answer the SDK cannot read.
+**Take the list as whole only once `state` is `listed`.** The run's own records, its outputs, its intermediate files and its inline inputs, are paged by address with `limit` (1 to 200) and `cursor`; the inputs given by address and the links come on the first page only. Pass `nextCursor` back as `cursor` until it is `null`. A run that is not the organization's is a `404`, exactly as one that does not exist; a run id holding a character outside letters, digits, `_` and `-`, or a cursor another listing issued, is a `400`; and a `limit` outside 1 to 200 is a `422`. A page whose `state` is neither, whose four lists are not arrays, or whose `next_cursor` is neither a string nor `null`, is an `ApiResponseError` of an answer the SDK cannot read.
 
 ## Adding a file to a method's draft
 

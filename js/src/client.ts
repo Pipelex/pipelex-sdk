@@ -725,6 +725,20 @@ function requireNonEmptyId(value: unknown, call: string, what: string): string {
 }
 
 /**
+ * The check the example writes that take a name and inputs share, the create and the assistant's
+ * save: a `name` or `inputs` not given, a `null` counting as not given, is refused with
+ * `RequestArgumentError` before anything is sent, `call` naming the method in the message and
+ * `needs` what it needs.
+ */
+function requireNameAndInputs(name: unknown, inputs: unknown, call: string, needs: string): void {
+  if (name != null && inputs != null) return;
+  let got: string;
+  if (name == null && inputs == null) got = "neither";
+  else got = name == null ? "no name" : "no inputs";
+  throw new RequestArgumentError(`${call}() needs ${needs}; got ${got}.`);
+}
+
+/**
  * A caller's value as the refusal of a number argument names it: a number by its value, anything
  * else by its type, as `requireNonEmptyId` names a value, and `null` as itself. Never by `String`,
  * which throws for an object with no prototype and would replace the refusal with a `TypeError`.
@@ -3362,14 +3376,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       inputs,
       run_id: runId,
     } = (input as Partial<MethodExampleCreateInput> | undefined) ?? {};
-    if (name == null || inputs == null) {
-      let got: string;
-      if (name == null && inputs == null) got = "neither";
-      else got = name == null ? "no name" : "no inputs";
-      throw new RequestArgumentError(
-        `createMethodExample() needs the example's name and its inputs; got ${got}.`,
-      );
-    }
+    requireNameAndInputs(name, inputs, "createMethodExample", "the example's name and its inputs");
     const body: Record<string, unknown> = { name, inputs };
     if (runId != null) {
       body.run_id = requireNonEmptyId(runId, "createMethodExample", CREATE_RUN_ID_ARGUMENT);
@@ -3586,14 +3593,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       example_id: exampleId,
       input_revision: revision,
     } = (input as Partial<MethodExampleAssistantSaveInput> | undefined) ?? {};
-    if (name == null || inputs == null) {
-      let got: string;
-      if (name == null && inputs == null) got = "neither";
-      else got = name == null ? "no name" : "no inputs";
-      throw new RequestArgumentError(
-        `${call}() needs the name a new example takes and the inputs; got ${got}.`,
-      );
-    }
+    requireNameAndInputs(name, inputs, call, "the name a new example takes and the inputs");
     const body: Record<string, unknown> = { name, inputs };
     if (exampleId != null) {
       body.example_id = requireNonEmptyId(exampleId, call, ASSISTANT_EXAMPLE_ID_ARGUMENT);
@@ -4050,14 +4050,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * array is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async getFilesByUri(uri: string, options: GetFilesByUriOptions = {}): Promise<FileRecordList> {
-    if (typeof uri !== "string" || uri === "") {
-      throw argumentRefusal(
-        "getFilesByUri",
-        STORAGE_URI_ARGUMENT,
-        typeof uri === "string" ? "an empty string" : describeNumberArgument(uri),
-      );
-    }
-    const endpoint = `files/by-uri${productQuery({ uri, run_id: options.runId })}`;
+    const checkedUri = requireNonEmptyId(uri, "getFilesByUri", STORAGE_URI_ARGUMENT);
+    const endpoint = `files/by-uri${productQuery({ uri: checkedUri, run_id: options.runId })}`;
     const res = await this.requestProductAnswer("GET", endpoint, undefined);
     const answer = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
     if (!Array.isArray(answer.items)) {
@@ -4492,8 +4486,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Throws `RequestArgumentError` for a run id that is empty, `.` or `..`, or holds a lone
    * surrogate, before any request. Throws `ApiResponseError`: `404` for a run that is not the
-   * organization's, exactly as for one that does not exist; `422` for a `limit` outside 1 to 200.
-   * A page whose `state` is unknown, whose lists are not arrays, or whose `next_cursor` is neither a
+   * organization's, exactly as for one that does not exist; `400` for a run id holding a character
+   * outside letters, digits, `_` and `-`, or a cursor another listing issued; `422` for a `limit`
+   * outside 1 to 200. A page whose `state` is unknown, whose lists are not arrays, or whose `next_cursor` is neither a
    * string nor `null`, is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async listRunFiles(runId: string, query: ListRunFilesQuery = {}): Promise<RunFilesPage> {

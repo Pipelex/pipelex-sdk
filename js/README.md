@@ -173,8 +173,12 @@ for await (const saved of client.iterateMethodExamples(created.method_id)) {
 const files = await client.listFiles({ q: "invoice", kind: "uploaded", format: ["pdf"] });
 await client.start({ method_id: created.method_id, inputs: { invoice: { url: files.items[0]!.uri } } });
 // One file with its uses, a link that downloads it under its name, and a zip of a run's files.
-const detail = await client.getFile(files.items[0]!.file_id);
-const [link] = (await client.linkFiles([{ file_id: detail.file_id }])).items;
+const fileDetail = await client.getFile(files.items[0]!.file_id);
+for (const link of (await client.linkFiles([{ file_id: fileDetail.file_id }])).items) {
+  // A fifteen-minute link, or why this file got none. Hand link.url to a browser, never a log.
+  if (link.error === null) console.log(`${link.name} downloadable until ${link.expires_at}`);
+  else console.error(link.error.code);
+}
 const archive = await client.requestFileArchive({ run_id: run.pipeline_run_id });
 // then getFileArchive(archive.archive_id) until its state is ready or failed.
 // An upload recorded as a test file of the method it was made to try.
