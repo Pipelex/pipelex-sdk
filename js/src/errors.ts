@@ -1133,6 +1133,11 @@ export class PagingNotTerminatingError extends PipelexRequestError {
  *   and the method was never published. Publish it, or address its draft as `mt_…@draft`.
  * - `pipelex.catalog.not_found` (`404`): the method is not one of the organization's, or
  *   `mt_…@<n>`, or `getMethodVersion`, names a version the method never published.
+ * - `pipelex.org.not_found` (`404`): the destination of a `copyMethod` is one the caller does not
+ *   belong to, one still being set up, or one that does not exist, answered alike so the platform
+ *   never says whether an organization exists. An unknown method is `pipelex.catalog.not_found`.
+ * - `pipelex.catalog.copy_too_large` (`422`): a `copyMethod` past one of the copy's bounds on the
+ *   stored files it copies, which the problem's `limit` member names (`MethodCopyLimit`).
  *
  * `code` stays a `string`, since the registry adds codes; this type names the ones a method caller
  * branches on. Each has `domain` `input` and `retry` `no`.
@@ -1141,7 +1146,9 @@ export type MethodErrorCode =
   | "pipelex.catalog.update_conflict"
   | "pipelex.catalog.being_deleted"
   | "pipelex.catalog.not_published"
-  | "pipelex.catalog.not_found";
+  | "pipelex.catalog.not_found"
+  | "pipelex.org.not_found"
+  | "pipelex.catalog.copy_too_large";
 
 /**
  * The registry codes a refusal about a request's `Idempotency-Key` carries:

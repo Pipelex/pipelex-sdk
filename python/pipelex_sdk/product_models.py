@@ -161,6 +161,26 @@ class MethodVersionPage(BaseModel):
     next_cursor: str | None
 
 
+class MethodCopiedFrom(BaseModel):
+    """The method a copy was made from, as it stood at the copy — `MethodData.copied_from`.
+
+    Opaque ids only, never a name: the original may have changed or been erased since, and its organization
+    may be one the reader does not belong to, so nothing here is a link the reader can follow unless they
+    belong to that organization.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    org_id: str
+    """The canonical id of the organization that holds the original."""
+
+    method_id: str
+    """The original's method id."""
+
+    draft_digest: str | None = None
+    """The digest of the original's draft the copy took; `None` for an empty draft."""
+
+
 class MethodData(BaseModel):
     """One saved method — `create_method`, `write_draft`, `rename_method`, and the `method` of every
     publish outcome. `get_method` answers a `MethodDetail`, which adds the draft's files.
@@ -205,6 +225,11 @@ class MethodData(BaseModel):
 
     latest_published: MethodVersionSummary | None = None
     """The latest published version's summary; `None` when the method was never published."""
+
+    copied_from: MethodCopiedFrom | None = None
+    """The method this one was copied from, on a method `copy_method` made; `None` on a method created afresh,
+    and from a platform that predates copies. Written once, when the copy is made, and never rewritten. The
+    list rows (`MethodSummary`) do not carry it."""
 
 
 class MethodDetail(MethodData):
@@ -415,6 +440,143 @@ class MethodDeletionAccepted(BaseModel):
     method_id: str
     deletion_state: MethodDeletionState
     deletion_job_id: str
+
+
+# ── Method copies (`/v1/methods/{id}/copy`, `/v1/methods/{id}/copies`) ──────
+#
+# A copy is a new, unpublished method in a destination organization holding the original's draft, its form
+# inputs and its saved examples, each stored file they name copied into the destination. The original stays as
+# it was, and keeps a marker of each copy made of it.
+
+
+class MethodCopyOutcome(StrEnum):
+    """What a copy did — the discriminant of `MethodCopyResult`."""
+
+    COPIED = "copied"
+    """The copy exists in the destination."""
+
+    REFUSED = "refused"
+    """A bundle of the draft names stored files the destination cannot read, and nothing was written."""
+
+
+class MethodCopyRefusalReason(StrEnum):
+    """Why a copy was refused, the `reason` of `MethodCopyRefused`."""
+
+    BUNDLE_NAMES_OTHER_STORAGE = "bundle_names_other_storage"
+    """A `.mthds` file of the draft holds a `pipelex-storage://` reference the destination cannot read, which
+    every run there would refuse."""
+
+
+class BundleStorageReference(BaseModel):
+    """One stored file a bundle of the draft names that the destination cannot read."""
+
+    model_config = ConfigDict(extra="allow")
+
+    path: str
+    """The tree path of the `.mthds` file that holds the reference."""
+
+    uri: str
+    """The `pipelex-storage://` reference as the file writes it, a malformed one included."""
+
+
+class MethodCopied(BaseModel):
+    """A copy that was made: `method` is the copy, in the destination, `copied_from` included."""
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodCopyOutcome.COPIED]
+    method: MethodData
+
+    examples_copied: int
+    """How many saved examples the copy holds, each a new example at `input_revision` 1."""
+
+    stored_files_copied: int
+    """How many distinct stored files were copied into the destination for the copy's inputs."""
+
+
+class MethodCopyRefused(BaseModel):
+    """A copy refused before anything was written: a bundle of the draft names stored files the destination cannot read.
+
+    The person removes or replaces each reference in the original and copies again, since rewriting the bundle
+    would change the author's code without asking them.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodCopyOutcome.REFUSED]
+    reason: MethodCopyRefusalReason
+
+    message: str
+    """What was refused and what to do, for a person."""
+
+    references: list[BundleStorageReference]
+    """Every reference the destination cannot read, ordered by bundle path, then by reference."""
+
+
+MethodCopyResult: TypeAlias = Annotated[
+    MethodCopied | MethodCopyRefused,
+    Field(discriminator="outcome"),
+]
+"""The answer of `copy_method`, a `200` discriminated on `outcome`, because a bundle the destination cannot run
+is a verdict about the method, not a failure of the request. Branch on `outcome` (`match result:` over its
+classes), never on the status: a destination the caller may not write to, a stale token, a method being deleted
+or a copy past its bounds raise `ApiResponseError` instead, since they produce no verdict."""
+
+MethodCopyResultAdapter: TypeAdapter[MethodCopyResult] = TypeAdapter(MethodCopyResult)  # pylint: disable=invalid-name
+"""The single parse path for a copy's answer — built once at import (TypeAdapter construction is expensive)."""
+
+
+class MethodCopyLimit(BaseModel):
+    """The bound a `422` `pipelex.catalog.copy_too_large` names, in its problem document's `limit` member.
+
+    Read it with `MethodCopyLimit.model_validate((error.problem.model_extra or {})["limit"])`: `max_stored_files`, the most
+    distinct stored files one copy copies, or `max_stored_bytes`, the most bytes they add up to, each set per
+    deployment; its `value`, and what the copy `reached`. Removing examples, or the files they hold, brings the
+    copy under it.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: Literal["max_stored_files", "max_stored_bytes"]
+    value: int
+    reached: int
+
+
+class MethodCopyMarker(BaseModel):
+    """The original's record of one copy made of it — a row of `list_method_copies`.
+
+    It names the destination by its id alone, never its name, so the listing tells no reader the name of an
+    organization they do not belong to: show a destination's name only from the reader's own memberships. The
+    marker stays when its copy is erased, and the copy then reads as not found.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    copy_method_id: str
+    """The copy's method id, in the destination organization."""
+
+    destination_org_id: str
+    """The canonical id of the organization the copy was made in."""
+
+    copied_by_user_id: str
+    """The canonical id of the member who made the copy."""
+
+    copied_at: str
+    """ISO 8601 UTC instant the copy's row was written."""
+
+
+class MethodCopyPage(BaseModel):
+    """One page of a method's copies — `{items, next_cursor}`, in the order of the copies' ids.
+
+    The order says nothing of when each copy was made. The cursor is opaque: pass it straight back as `cursor`,
+    and treat a `None` as the last page; `next_cursor` is required, as on every page model. A method never copied,
+    and a copy, which names its original through `copied_from` and has no copies of its own, answer an empty page.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    items: list[MethodCopyMarker]
+    next_cursor: str | None
 
 
 # ── Method examples (`/v1/methods/{id}/examples`) ────────────────────────

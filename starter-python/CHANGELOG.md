@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.51.0] - 2026-10-23
+
+### Added
+
+- **`.python-version` pins the project's Python to 3.13**: uv reads the file, as pyenv, mise and `actions/setup-python` do, so `make install`, `uv sync` and `uv run` build `.venv` on 3.13 rather than on the newest Python on the machine, and the next `make install` moves an environment built on another Python back to it. Each job of the lint and tests matrices in `.github/workflows/` sets `UV_PYTHON` to its version for the whole job and ends by checking that `.venv` runs that version.
+
+### Fixed
+
+- **`PYTHON_VERSION=<version> make install` moves an existing environment to that version**: the `Makefile` takes the version from `PYTHON_VERSION`, then `UV_PYTHON`, then `.python-version`, and exports it as `UV_PYTHON`, so the `uv sync` it runs builds `.venv` on that version, where an existing `.venv` used to keep the Python it was created with.
+
 ## [v0.49.0] - 2026-10-23
 
 ### Changed

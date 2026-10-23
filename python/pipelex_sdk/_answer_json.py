@@ -1,8 +1,33 @@
 from __future__ import annotations
 
 import json
+import re
 
 from mthds.protocol.problem.answers import DecodedBody, decode_json
+
+#: A UTF-16 surrogate code point, which a Python string holds alone and no UTF-8 encoder accepts.
+_LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
+def dumps_as_javascript(value: object) -> str:
+    r"""A JSON-able value as `JSON.stringify` writes it, so a text reads the same from either SDK.
+
+    `json.dumps` with `ensure_ascii` off and no spaces escapes exactly what `JSON.stringify` does — the
+    quote, the backslash and the control characters, the latter as lowercase `\u00XX` — and keeps every
+    other character as typed, except a surrogate standing alone: `JSON.stringify` escapes it as `\udXXX`,
+    and left raw it would make the text a string no UTF-8 encoder accepts. Its two writers are a file path
+    built from an output's keys (`pipelex_sdk.artifacts`) and a request body holding such a surrogate
+    (`pipelex_sdk.client`), which pydantic's `to_json` refuses to write.
+
+    Args:
+        value: The value, made of what `json.dumps` writes: strings, numbers, booleans, `None`, lists and
+            string-keyed dicts.
+
+    Returns:
+        The JSON text, every lone surrogate escaped.
+    """
+    dumped = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return _LONE_SURROGATE.sub(lambda match: f"\\u{ord(match.group()):04x}", dumped)
 
 
 def decode_json_as_written(text: str) -> DecodedBody:

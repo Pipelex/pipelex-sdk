@@ -1,6 +1,6 @@
 # Continuous integration
 
-The workflows below run on every pull request, on the oldest and the newest Python the project supports, and none needs a key or a network beyond the package index. Each installs with `make install` under `UV_LOCKED=1`, so a `uv.lock` that `pyproject.toml` has moved away from fails the run rather than being rewritten: after changing the dependencies, run `make lock` and commit the lock with them.
+The workflows below run on every pull request, on the oldest and the newest Python the project supports, and none needs a key or a network beyond the package index. Each installs with `make install` under `UV_LOCKED=1`, so a `uv.lock` that `pyproject.toml` has moved away from fails the run rather than being rewritten: after changing the dependencies, run `make lock` and commit the lock with them. Each job hands its Python to `astral-sh/setup-uv`, which sets `UV_PYTHON` for the whole job in place of the `.python-version` pin, and its last step fails when `.venv/bin/python` runs any other version, so a job that silently tested the pinned Python goes red.
 
 | Workflow | Runs | What it proves |
 | --- | --- | --- |

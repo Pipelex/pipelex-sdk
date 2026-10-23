@@ -46,6 +46,7 @@ from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.problem import transport_failure_problem
 from pydantic import BaseModel, ValidationError
 
+from pipelex_sdk._answer_json import dumps_as_javascript
 from pipelex_sdk.artifact_models import (
     BULK_RESOLVE_MAX_URIS,
     PIPELEX_STORAGE_SCHEME,
@@ -108,9 +109,6 @@ _IDENTIFIER_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _KEY_STEP = re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)")
 _INDEX_STEP = re.compile(r"\[([0-9]+)\]")
 _QUOTED_STEP = re.compile(r'\[("(?:[^"\\]|\\.)*")\]', re.DOTALL)
-
-#: A UTF-16 surrogate standing alone in a Python string, which `JSON.stringify` escapes as `\uXXXX`.
-_LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 
 #: A `%` that does not open a two-digit escape, which makes `decodeURIComponent` refuse the segment.
 _BARE_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
@@ -286,15 +284,8 @@ def _render_path(segments: Sequence[_PathSegment]) -> str:
 
 
 def _json_string(key: str) -> str:
-    r"""A key as `JSON.stringify` writes it, so a path reads the same from either SDK.
-
-    `json.dumps` with `ensure_ascii` off escapes exactly what `JSON.stringify` does — the quote, the
-    backslash and the control characters, the latter as lowercase `\u00XX` — and keeps every other
-    character as typed, except a surrogate standing alone: `JSON.stringify` escapes it, and left raw
-    it would make the path a string no UTF-8 encoder accepts.
-    """
-    dumped = json.dumps(key, ensure_ascii=False)
-    return _LONE_SURROGATE.sub(lambda match: f"\\u{ord(match.group()):04x}", dumped)
+    """A key as `JSON.stringify` writes it, so a path reads the same from either SDK (`dumps_as_javascript`)."""
+    return dumps_as_javascript(key)
 
 
 def _parse_path(path: str) -> list[_PathSegment] | None:

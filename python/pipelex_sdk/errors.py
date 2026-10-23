@@ -347,6 +347,15 @@ class MethodErrorCode(StrEnum):
     """`404`: the method is not one of the organization's, or `mt_…@<n>`, or `get_method_version`, names a
     version the method never published."""
 
+    ORGANIZATION_NOT_FOUND = "pipelex.org.not_found"
+    """`404`: the destination of a `copy_method` is one the caller does not belong to, one still being set up, or
+    one that does not exist, answered alike so the platform never says whether an organization exists. An unknown
+    method is `NOT_FOUND` instead."""
+
+    COPY_TOO_LARGE = "pipelex.catalog.copy_too_large"
+    """`422`: a `copy_method` past one of the copy's bounds on the stored files it copies, which the problem's
+    `limit` member names (`pipelex_sdk.product_models.MethodCopyLimit`, read from `problem.model_extra`)."""
+
 
 class IdempotencyErrorCode(StrEnum):
     """The registry codes a refusal about a request's `Idempotency-Key` carries.

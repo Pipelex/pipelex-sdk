@@ -1,6 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [v0.51.0] - 2026-10-23
+
+### Added
+
+- **`PYTHON_VERSION=<version> make install` in the CLI template**: its `Makefile` takes the version from `PYTHON_VERSION`, then `UV_PYTHON`, then `.python-version`, and exports it as `UV_PYTHON`, so every uv command it runs builds `.venv` on that version, as `UV_PYTHON=<version> make install` alone did before. Each job of its lint and tests matrices ends by checking that `.venv` runs the version the job names.
 
 ### Changed
 
