@@ -64,6 +64,8 @@ _SUFFIXED_ID_ROUTES: list[tuple[str, MethodRouteCall]] = [
     ("publish_method", lambda client: client.publish_method(_SUFFIXED_ID, expected_draft_updated_at="t")),
     ("list_method_versions", lambda client: client.list_method_versions(_SUFFIXED_ID)),
     ("get_method_version", lambda client: client.get_method_version(_SUFFIXED_ID, 3)),
+    ("copy_method", lambda client: client.copy_method(_SUFFIXED_ID, destination_org_id="org_team")),
+    ("list_method_copies", lambda client: client.list_method_copies(_SUFFIXED_ID)),
     ("delete_method", lambda client: client.delete_method(_SUFFIXED_ID)),
 ]
 
@@ -251,6 +253,29 @@ class TestClientMethodVersions:
         assert method.name == "Renamed"
         # A rename moves no token.
         assert method.updated_at == MethodVersionBodies.TOKEN
+
+    def test_rename_method_sends_a_name_holding_a_lone_surrogate_escaped_and_raises_the_platforms_422(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        # `to_json` refuses a lone surrogate before any request; `JSON.stringify` escapes it, and the platform
+        # refuses the text it cannot store with its own `422`, so the client sends what `@pipelex/sdk` sends.
+        problem = {
+            "type": "about:blank",
+            "title": "validation_failed",
+            "status": 422,
+            "code": "validation_failed",
+            "error_domain": "input",
+            "retryable": False,
+        }
+        send = patch_send(api_client, wire_response(422, json_body=problem))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.rename_method("mt_receipts01", "Renamed \ud800"))
+
+        assert send.call_args.kwargs["content"] == b'{"name":"Renamed \\ud800"}'
+        assert _sent_body(send) == {"name": "Renamed \ud800"}
+        assert exc_info.value.status == 422
+        assert exc_info.value.code == "validation_failed"
 
     # ----- publish_method ----------------------------------------------------------------------
 
@@ -511,6 +536,8 @@ class TestClientMethodVersions:
             "method_being_deleted",
             "method_not_published",
             "method_version_not_found",
+            "organization_not_found",
+            "method_copy_too_large",
         ]
 
     def test_a_bare_id_of_a_method_never_published_raises_not_published(
