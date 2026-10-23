@@ -1,5 +1,6 @@
 """Tests for a saved method's examples — `create_method_example`, `list_method_examples`, `iterate_method_examples`,
-`get_method_example`, `update_method_example`, `record_method_example_latest_run` and `delete_method_example`.
+`get_method_example`, `update_method_example`, `record_method_example_latest_run`, `save_assistant_method_example` and
+`delete_method_example`.
 
 The twin of `pipelex-sdk-js/tests/method-examples.test.ts`. `_send` is mocked; the bodies are the platform's own
 serialized shapes (`MethodExampleBodies`), so Pydantic's validation on the way back is part of what runs.
@@ -18,6 +19,8 @@ from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.product_models import (
     MethodExample,
+    MethodExampleAssistantCreated,
+    MethodExampleAssistantKept,
     MethodExampleLatestRunRecorded,
     MethodExampleLatestRunStale,
 )
@@ -76,6 +79,12 @@ _EXAMPLE_READS: list[tuple[str, int, Callable[[dict[str, Any]], object], MethodR
         lambda example: {"outcome": "recorded", "example": example},
         lambda client: client.record_method_example_latest_run(_METHOD_ID, _EXAMPLE_ID, run_id="run_2", input_revision=2),
     ),
+    (
+        "save_assistant_method_example",
+        200,
+        lambda example: {"outcome": "kept", "example": example},
+        lambda client: client.save_assistant_method_example(_METHOD_ID, name="n", inputs={}),
+    ),
 ]
 
 _EXAMPLE_READ_PARAMS = [pytest.param(status, answer, call, id=name) for name, status, answer, call in _EXAMPLE_READS]
@@ -86,7 +95,10 @@ _SUFFIXED_METHOD_ROUTES: list[tuple[str, MethodRouteCall]] = [
     ("list_method_examples", lambda client: client.list_method_examples("mt_x@3")),
     ("get_method_example", lambda client: client.get_method_example("mt_x@3", _EXAMPLE_ID)),
     ("delete_method_example", lambda client: client.delete_method_example("mt_x@3", _EXAMPLE_ID)),
+    ("save_assistant_method_example", lambda client: client.save_assistant_method_example("mt_x@3", name="n", inputs={})),
 ]
+
+_ASSISTANT_SAVE_URL = f"{_EXAMPLES_URL}/assistant-save"
 
 
 def _sent_method(send: MockType) -> str:
@@ -547,6 +559,121 @@ class TestClientMethodExamples:
 
         assert exc_info.value.code == "not_found"
 
+    # ----- save_assistant_method_example -------------------------------------------------------
+
+    def test_assistant_save_posts_the_inputs_with_the_example_and_revision_read_and_reads_kept(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        kept = {**MethodExampleBodies.EXAMPLE, "kept_by_assistant": True, "input_revision": 3, "latest_run_id": None}
+        send = patch_send(api_client, wire_response(200, json_body={"outcome": "kept", "example": kept}))
+
+        result = asyncio.run(
+            api_client.save_assistant_method_example(
+                _METHOD_ID, name="Assistant test inputs", inputs={"total": 4}, example_id=_EXAMPLE_ID, input_revision=2
+            )
+        )
+
+        assert _sent_method(send) == "POST"
+        assert _sent_url(send) == _ASSISTANT_SAVE_URL
+        assert _sent_body(send) == {"name": "Assistant test inputs", "inputs": {"total": 4}, "example_id": _EXAMPLE_ID, "input_revision": 2}
+        match result:
+            case MethodExampleAssistantKept():
+                assert result.example.kept_by_assistant is True
+                assert result.example.input_revision == 3
+            case MethodExampleAssistantCreated():
+                pytest.fail("A kept save read as created.")
+
+    def test_assistant_save_naming_no_example_sends_name_and_inputs_alone_and_reads_created(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        """The first save on a method names no example, and a person taking the example is answered `created`, never raised."""
+        created = {**MethodExampleBodies.EXAMPLE, "kept_by_assistant": True, "input_revision": 1, "latest_run_id": None}
+        send = patch_send(api_client, wire_response(200, json_body={"outcome": "created", "example": created, "added_later": 1}))
+
+        result = asyncio.run(api_client.save_assistant_method_example(_METHOD_ID, name="Assistant test inputs", inputs={"total": 4}))
+
+        assert _sent_body(send) == {"name": "Assistant test inputs", "inputs": {"total": 4}}
+        match result:
+            case MethodExampleAssistantCreated():
+                assert result.example.input_revision == 1
+            case MethodExampleAssistantKept():
+                pytest.fail("A created save read as kept.")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param({"example": MethodExampleBodies.EXAMPLE}, id="no-outcome"),
+            pytest.param({"outcome": "recorded", "example": MethodExampleBodies.EXAMPLE}, id="unknown-outcome"),
+            pytest.param({"outcome": "kept"}, id="no-example"),
+        ],
+    )
+    def test_assistant_save_refuses_an_answer_off_the_union(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, body: dict[str, Any]
+    ) -> None:
+        patch_send(api_client, wire_response(200, json_body=body))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.save_assistant_method_example(_METHOD_ID, name="n", inputs={}))
+
+        unreadable = exc_info.value
+        assert (
+            str(unreadable)
+            == f"API POST /v1/methods/{_METHOD_ID}/examples/assistant-save answered 200 with a body that is not the answer the route returns"
+        )
+        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            pytest.param({"name": None, "inputs": {}}, r"needs the name a new example takes and the inputs; got no name\.$", id="no-name"),
+            pytest.param({"name": "n", "inputs": None}, r"needs the name a new example takes and the inputs; got no inputs\.$", id="no-inputs"),
+            pytest.param(
+                {"name": "n", "inputs": {}, "example_id": "", "input_revision": 2},
+                r"takes an example_id naming .*; got an empty string\.$",
+                id="empty-id",
+            ),
+            pytest.param(
+                {"name": "n", "inputs": {}, "example_id": "ex_1", "input_revision": 0}, r"takes an input_revision, .*; got 0\.$", id="zero-revision"
+            ),
+            pytest.param(
+                {"name": "n", "inputs": {}, "example_id": "ex_1", "input_revision": True},
+                r"takes an input_revision, .*; got True\.$",
+                id="bool-revision",
+            ),
+            pytest.param(
+                {"name": "n", "inputs": {}, "example_id": "ex_1"},
+                r"names the assistant's example by both .*, or neither; got only example_id\.$",
+                id="only-the-id",
+            ),
+            pytest.param(
+                {"name": "n", "inputs": {}, "input_revision": 2},
+                r"names the assistant's example by both .*, or neither; got only input_revision\.$",
+                id="only-the-revision",
+            ),
+        ],
+    )
+    def test_assistant_save_refuses_what_the_route_would_refuse_before_any_request(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, kwargs: dict[str, Any], message: str
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body={}))
+
+        with pytest.raises(RequestArgumentError, match=rf"^save_assistant_method_example\(\) {message}") as exc_info:
+            asyncio.run(api_client.save_assistant_method_example(_METHOD_ID, **kwargs))
+
+        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        send.assert_not_called()
+
+    def test_assistant_save_raises_role_not_permitted_for_a_runner(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        detail = "Your role in this organization is runner: it runs the organization's published versions and changes no method."
+        patch_send(api_client, wire_response(403, json_body={"status": 403, "code": "role_not_permitted", "detail": detail}))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.save_assistant_method_example(_METHOD_ID, name="n", inputs={}))
+
+        assert exc_info.value.code == "role_not_permitted"
+
     # ----- delete_method_example ---------------------------------------------------------------
 
     def test_delete_sends_a_delete_and_reads_the_204(
@@ -653,6 +780,8 @@ class TestClientMethodExamples:
             pytest.param("example_id", 7, id="numeric-example-id"),
             pytest.param("latest_run_id", 1, id="numeric-latest-run-id"),
             pytest.param("inputs", [3], id="inputs-as-a-list"),
+            pytest.param("kept_by_assistant", "false", id="assistant-flag-as-a-string"),
+            pytest.param("kept_by_assistant", 0, id="assistant-flag-as-a-number"),
         ],
     )
     @pytest.mark.parametrize(("status", "answer", "call"), _EXAMPLE_READ_PARAMS)
