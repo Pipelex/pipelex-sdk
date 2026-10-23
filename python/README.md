@@ -402,6 +402,8 @@ make agent-test   # run the test suite quietly (prints only on failure)
 make check        # full gate: agent-check aggregate + unused-imports + pylint
 ```
 
+The package is developed on the Python that `.python-version` names, which uv reads, so `uv sync` and `uv run` build `.venv` on that version rather than on the newest Python installed on the machine. The next `make install` moves an environment built on another Python back to it, and `PYTHON_VERSION=<version> make install` builds it on another one: the `Makefile` exports the version it uses as `UV_PYTHON`, so every uv command it runs keeps to it.
+
 See `CLAUDE.md` for the coding standards and `docs/architecture.md` for the design (including the parity map against `@pipelex/sdk`).
 
 ## License
