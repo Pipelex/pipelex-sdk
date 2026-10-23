@@ -79,10 +79,16 @@ import type {
   OrganizationBranding,
   OrganizationBrandingUpdate,
   ListFilesQuery,
+  ListMethodCopiesQuery,
   ListMethodExamplesQuery,
   ListMethodsQuery,
   ListMethodVersionsQuery,
   ListRunFilesQuery,
+  MethodCopyInput,
+  MethodCopyMarker,
+  MethodCopyOutcome,
+  MethodCopyPage,
+  MethodCopyResult,
   MethodData,
   MethodDeletionAccepted,
   MethodDetail,
@@ -407,6 +413,34 @@ export interface PipelexStartRequestOptions {
 }
 
 /**
+ * What a method copy sends beside its body: the request's own header, which no copy argument
+ * reaches, camelCase since it is no wire field of the copy.
+ */
+export interface MethodCopyRequestOptions {
+  /**
+   * The copy's idempotency key, sent as the `Idempotency-Key` header of
+   * `POST /v1/methods/{id}/copy`, and not sent at all when absent or `null`. Generate one per copy
+   * the caller means to make (a `crypto.randomUUID()` is a good key), and keep it, with the
+   * arguments unchanged, across that copy's retries.
+   *
+   * The hosted API stores the copy's answer under the key for 24 hours, scoped to the caller and
+   * the method's organization, so the same copy sent again under the same key is answered with the
+   * stored answer and copies nothing more: a copy whose answer was lost, as on a client timeout,
+   * can be sent again unchanged and makes one copy, not two. A verdict and a `4xx` refusal are
+   * stored alike, so the same copy under the same key is answered the same again; a `5xx` is not
+   * stored, and a copy that failed with one left nothing visible, so the same key sends it afresh.
+   * The same key with a different body is refused (`409` `conflict`), as is a key whose earlier
+   * request is still being handled (`409` `idempotency_key_in_use`, retryable: send it again
+   * under the same key in a few seconds); a changed copy, such as one with a fresh draft token,
+   * goes under a new key. See `docs/method-copy.md`.
+   *
+   * A key is held to the rule a start's is (`PipelexStartRequestOptions.idempotencyKey`): 1 to
+   * 255 visible ASCII characters, anything else a `RequestArgumentError` before any request.
+   */
+  idempotencyKey?: string | null;
+}
+
+/**
  * `start()` / `startAndWaitForResult()` options — the same, for the durable path, plus the start
  * request's own `idempotencyKey`.
  */
@@ -696,6 +730,14 @@ const DRAFT_PATH_ARGUMENT = "the tree path the file takes in the draft, a non-em
 const DRAFT_TOKEN_ARGUMENT =
   "the draft token the caller last read, the method's `updated_at`, a string, or none";
 
+/** What each argument of a method copy is, as a refusal of it names it. */
+const COPY_DESTINATION_ARGUMENT =
+  "a destination_org_id, the canonical id of the organization to copy into, a non-empty string";
+const COPY_NAME_ARGUMENT = "a name for the copy, a string, or none";
+const COPY_DRAFT_TOKEN_ARGUMENT =
+  "an expected_draft_updated_at, the draft token the caller last read, the method's " +
+  "`updated_at`, a string, or none";
+
 /**
  * The refusal of an argument a call cannot take, worded as every such refusal is:
  * `<call>() takes <what>; got <got>.`, with what made it unusable as `cause` when there is one.
@@ -816,6 +858,9 @@ const FILE_ARCHIVE_STATES: readonly FileArchiveState[] = ["queued", "building", 
 
 /** What a copy into a draft did in the blob store, the field its answer is discriminated on. */
 const DRAFT_FILE_BLOBS: readonly DraftFileBlob[] = ["copied", "already_held"];
+
+/** What a method copy did, the field its answer is discriminated on. */
+const METHOD_COPY_OUTCOMES: readonly MethodCopyOutcome[] = ["copied", "refused"];
 
 /** Whether a run's records are all written, the field a reader of its files branches on. */
 const RUN_FILES_STATES: readonly RunFilesState[] = ["listing", "listed"];
@@ -982,7 +1027,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * resolved absolute URL. `mayStartRun` marks a request that may create a run,
    * whose `ApiUnreachableError` then says whether it may have (see `RunCreation`).
    * `idempotencyKey`, already checked by `idempotencyKeyOf`, is sent as the
-   * `Idempotency-Key` header; only `start` passes one.
+   * `Idempotency-Key` header; only `start` and `copyMethod` pass one.
    */
   private async requestRaw(
     method: HttpMethod,
@@ -1314,12 +1359,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
     method: HttpMethod,
     endpoint: string,
     body: unknown,
-    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+    options: { signal?: AbortSignal; timeoutMs?: number; idempotencyKey?: string } = {},
   ): Promise<RawResponse> {
     const res = await this.requestRaw(method, this.url(endpoint), {
       body,
       timeoutMs: options.timeoutMs ?? POLL_REQUEST_TIMEOUT_MS,
       signal: options.signal,
+      idempotencyKey: options.idempotencyKey,
     });
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError(method, endpoint, res);
@@ -3318,6 +3364,132 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
+   * Copy a method into an organization the caller may change methods in —
+   * `POST /v1/methods/{id}/copy`: the method's own organization for a duplicate, another team, or
+   * the caller's personal workspace.
+   *
+   * The copy is a new, unpublished method of the destination, the caller's, holding the
+   * original's draft tree (the same `draft_digest`), its name unless `name` gives another, its
+   * form inputs and every saved example, each stored file they name copied into the destination,
+   * and `copied_from` naming the original. Published versions and runs are not copied, and the
+   * original stays as it was. The copy takes the draft, never the latest published version; with
+   * `expected_draft_updated_at`, it takes exactly the draft the caller last saw.
+   *
+   * The answer is a `MethodCopyResult` discriminated on `outcome` — branch on it: `copied` with
+   * the copy as `method`, `examples_copied` and `stored_files_copied`; `refused` with the
+   * `reason` `bundle_names_other_storage`, a `message` and every `references` entry (`{ path, uri
+   * }`) a `.mthds` file of the draft holds that the destination cannot read, nothing written.
+   *
+   * The route serves web sessions only: a Pipelex API key belongs to one organization and cannot
+   * speak for another. `options.idempotencyKey` is sent as the `Idempotency-Key` header, so a copy
+   * sent again under the same key is answered with the first one's answer rather than copied
+   * twice (see `MethodCopyRequestOptions`).
+   *
+   * Takes a bare catalog id, as `getMethod` does. Sends `destination_org_id` and, when given,
+   * `name` and `expected_draft_updated_at`, and nothing else: the body is closed, and a `null`
+   * reads as not given. Throws `RequestArgumentError` before any request for a
+   * `destination_org_id` that is not a non-empty string, a `name` or an
+   * `expected_draft_updated_at` given that is not a string, and a malformed idempotency key.
+   * Throws `ApiResponseError` when no verdict was produced, each refusal writing nothing a reader
+   * sees: `403` `forbidden` for a request that is not from a web session; `403`
+   * `role_not_permitted` for a role that may not change methods, in the method's organization or
+   * in the destination; `404` `organization_not_found` for a destination the caller does not
+   * belong to, still being set up or unknown, alike; `404` `not_found` for an unknown method;
+   * `409` `method_being_deleted`; `409` `method_update_conflict` for a draft that moved since
+   * `expected_draft_updated_at`; `409` `conflict`, `runtime`, for a draft whose tree the
+   * organization holds no full record of; `413` `payload_too_large` for an example or a copy too
+   * large for one stored item; `422` `validation_failed` for a body that does not validate, such
+   * as a name holding a lone surrogate; `422` `method_copy_too_large` past one of the copy's
+   * bounds on the stored files it copies, named by `problemDocument.limit` (`MethodCopyLimit`);
+   * and, each retryable, a `502` when the platform could not read the caller's memberships, a
+   * `500` `storage_backend_failed` and a `503` past the copy's deadline. An answer whose
+   * `outcome` is neither arm's, a `copied` one whose `method` is not an object or a `refused` one
+   * whose `references` is not an array, is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too.
+   */
+  async copyMethod(
+    methodId: string,
+    input: MethodCopyInput,
+    options: MethodCopyRequestOptions = {},
+  ): Promise<MethodCopyResult> {
+    const call = "copyMethod";
+    const endpoint = `${methodPath(methodId, call)}/copy`;
+    const {
+      destination_org_id: destinationOrgId,
+      name,
+      expected_draft_updated_at: token,
+    } = (input as Partial<MethodCopyInput> | undefined) ?? {};
+    const body: Record<string, unknown> = {
+      destination_org_id: requireNonEmptyId(destinationOrgId, call, COPY_DESTINATION_ARGUMENT),
+    };
+    if (name != null) {
+      if (typeof name !== "string") {
+        throw argumentRefusal(call, COPY_NAME_ARGUMENT, describeNumberArgument(name));
+      }
+      body.name = name;
+    }
+    if (token != null) {
+      if (typeof token !== "string") {
+        throw argumentRefusal(call, COPY_DRAFT_TOKEN_ARGUMENT, describeNumberArgument(token));
+      }
+      body.expected_draft_updated_at = token;
+    }
+    const idempotencyKey = idempotencyKeyOf(options, "copy the method");
+    const res = await this.requestProductAnswer("POST", endpoint, body, { idempotencyKey });
+    const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
+    let fault: string | undefined;
+    switch (answer.outcome) {
+      case "copied":
+        if (!isPlainObject(answer.method)) {
+          fault = "a `copied` copy result whose `method` is not an object";
+        }
+        break;
+      case "refused":
+        if (!Array.isArray(answer.references)) {
+          fault = "a `refused` copy result whose `references` is not an array";
+        }
+        break;
+      default:
+        fault = `a copy result whose \`outcome\` is not ${inWords(
+          METHOD_COPY_OUTCOMES.map((outcome) => `\`${outcome}\``),
+          "or",
+        )}`;
+    }
+    if (fault !== undefined) {
+      throw this.unreadableAnswer("POST", `/${API_PREFIX}/${endpoint}`, res, fault);
+    }
+    return answer as unknown as MethodCopyResult;
+  }
+
+  /**
+   * One page of the copies made of a method, in the order of the copies' ids, which says nothing
+   * of when each was made — `GET /v1/methods/{id}/copies`.
+   *
+   * Each row is the `MethodCopyMarker` the original keeps of a copy: the copy's id, the
+   * destination's id, the member who made it and when. The destination is named by its id alone,
+   * never its name, so a surface shows a destination's name only from the reader's own
+   * memberships, and a copy in an organization the reader does not belong to stays a bare id. A
+   * marker stays when its copy is erased, and the copy then reads as not found. Pass the page's
+   * `nextCursor` back as `cursor` to continue; `null` is the last page. A method never copied,
+   * and a copy itself, answer an empty page. The listing is open to every member of the method's
+   * organization, a runner included, as every read of a method is.
+   *
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found` for
+   * an unknown method, `409` `method_being_deleted`, `400` `malformed_request` for a cursor the
+   * listing did not issue for this method, `422` for a `limit` outside 1 to 100. A page whose
+   * `items` is not an array or whose `next_cursor` is neither a string nor `null` is an answer the
+   * SDK cannot read, thrown as an `ApiResponseError` too.
+   */
+  async listMethodCopies(
+    methodId: string,
+    query: ListMethodCopiesQuery = {},
+  ): Promise<MethodCopyPage> {
+    const search = productQuery({ limit: query.limit, cursor: query.cursor });
+    const endpoint = `${methodPath(methodId, "listMethodCopies")}/copies`;
+    return this.requestPage<MethodCopyMarker>(`${endpoint}${search}`);
+  }
+
+  /**
    * Erase a method and everything it produced — `DELETE /v1/methods/{id}`.
    *
    * **Asynchronous, and the return value says so.** The platform answers `202`
@@ -5064,7 +5236,7 @@ function nonEmptyString(value: string | null | undefined): string | undefined {
   return value != null && value.length > 0 ? value : undefined;
 }
 
-/** The request header the hosted API reads a run start's idempotency key from. */
+/** The request header the hosted API reads a request's idempotency key from. */
 const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
 /**
@@ -5082,21 +5254,25 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 const VISIBLE_ASCII = /^[\x21-\x7E]+$/;
 
 /**
- * The idempotency key a start sends, or `undefined` when the options carry none (absent or
- * `null`). A key that is not a string of 1 to 255 visible ASCII characters is refused with a
- * `RequestArgumentError` rather than dropped, an empty one included, since a start sent without
- * the key its caller gave would lose the protection the caller asked for without a word. The
- * message never quotes the key, which a caller may derive from something private. The Python SDK
- * holds a key to the same rule, in the same words.
+ * The idempotency key a start or a method copy sends, or `undefined` when the options carry none
+ * (absent or `null`). A key that is not a string of 1 to 255 visible ASCII characters is refused
+ * with a `RequestArgumentError` rather than dropped, an empty one included, since a request sent
+ * without the key its caller gave would lose the protection the caller asked for without a word.
+ * `request` says what the request does, as the refusal's last sentence names it ("start the run",
+ * "copy the method"). The message never quotes the key, which a caller may derive from something
+ * private. The Python SDK holds a key to the same rule, in the same words.
  */
-function idempotencyKeyOf(options: PipelexStartRequestOptions): string | undefined {
+function idempotencyKeyOf(
+  options: { idempotencyKey?: string | null },
+  request = "start the run",
+): string | undefined {
   const key: unknown = options.idempotencyKey;
   if (key == null) return undefined;
   const fault = idempotencyKeyFault(key);
   if (fault !== undefined) {
     throw new RequestArgumentError(
       `The idempotency key must be 1 to ${MAX_IDEMPOTENCY_KEY_LENGTH} visible ASCII characters ` +
-        `(\`!\` to \`~\`), and this one ${fault}. Leave it out to start the run without one.`,
+        `(\`!\` to \`~\`), and this one ${fault}. Leave it out to ${request} without one.`,
     );
   }
   return key as string;

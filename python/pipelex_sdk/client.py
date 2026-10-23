@@ -125,6 +125,8 @@ from pipelex_sdk.product_models import (
     InvoiceView,
     Membership,
     MembershipsResponse,
+    MethodCopyPage,
+    MethodCopyResultAdapter,
     MethodData,
     MethodDeletionAccepted,
     MethodDetail,
@@ -185,6 +187,7 @@ if TYPE_CHECKING:
 
     from pipelex_sdk.product_models import (
         FileKind,
+        MethodCopyResult,
         MethodDraftInput,
         MethodExampleAssistantSaveResult,
         MethodExampleLatestRunResult,
@@ -242,15 +245,16 @@ _REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEO
 # travels as a context variable, kept to the task that made it as the time limit above is.
 _MAY_START_RUN: ContextVar[bool] = ContextVar("_MAY_START_RUN", default=False)
 
-# The idempotency key of the `start` in flight, which `_send` sends as the `Idempotency-Key` header. The base
-# builds the start's request deep inside its own `start`, so the key travels as a context variable, kept to
-# the task that set it as the time limit above is, and set only around the one request `start` sends.
+# The idempotency key of the `start` or the `copy_method` in flight, which `_send` sends as the
+# `Idempotency-Key` header. The base builds the start's request deep inside its own `start`, so the key
+# travels as a context variable, kept to the task that set it as the time limit above is, and set only around
+# the one request `start` or `copy_method` sends.
 _IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar("_IDEMPOTENCY_KEY", default=None)
 
-# The request header the hosted API reads a run start's idempotency key from.
+# The request header the hosted API reads a request's idempotency key from.
 _IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
-# The longest idempotency key a start sends. It is room for any generated key, and keeps the hosted API's
+# The longest idempotency key a start or a copy sends. It is room for any generated key, and keeps the hosted API's
 # stored record of the key far inside its store's limit, which a longer key could exceed, so that the start
 # would run without the protection the key was sent for. `@pipelex/sdk` holds keys to the same limit.
 _MAX_IDEMPOTENCY_KEY_LENGTH = 255
@@ -630,9 +634,9 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Inside `_reading_inherited_answer` it also records the answer, which the inherited route then
         parses, so that an answer that route cannot read is reported as every other route reports it. Inside
-        `_creating_run`, the error says whether the run the request may create may have started. While `start`
-        holds an idempotency key (`_IDEMPOTENCY_KEY`), the request carries it as the `Idempotency-Key` header
-        (`_send_with_idempotency_key`).
+        `_creating_run`, the error says whether the run the request may create may have started. While `start` or
+        `copy_method` holds an idempotency key (`_IDEMPOTENCY_KEY`), the request carries it as the
+        `Idempotency-Key` header (`_send_with_idempotency_key`).
         """
         timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
         effective_timeout = request_timeout if timeout is None else timeout
@@ -679,9 +683,9 @@ class PipelexAPIClient(MthdsAPIClient):
     ) -> httpx.Response:
         """Send one request as the base's `_send` sends it, plus the `Idempotency-Key` header.
 
-        The base's `_send` builds its headers itself and takes none from its caller, so the one request that
-        carries a key, `start`'s, is sent here with the headers the base sets (`Accept`, `User-Agent`, and
-        `Content-Type` beside a body) and the key, through the same client. A unit test holds a keyed start to
+        The base's `_send` builds its headers itself and takes none from its caller, so the requests that carry
+        a key, `start`'s and `copy_method`'s, are sent here with the headers the base sets (`Accept`,
+        `User-Agent`, and `Content-Type` beside a body) and the key, through the same client. A unit test holds a keyed start to
         the headers of an unkeyed one plus the key, so a header the base adds later fails that test rather than
         going missing from a keyed start. The `_send` override maps this request's failures as it maps the
         base's.
@@ -2656,6 +2660,123 @@ class PipelexAPIClient(MthdsAPIClient):
         endpoint = f"{_method_path(method_id, call='get_method_version')}/versions/{version}"
         return await self._request_product("GET", endpoint, read=MethodVersion.model_validate, carries_links=True)
 
+    async def copy_method(
+        self,
+        method_id: str,
+        *,
+        destination_org_id: str,
+        name: str | None = None,
+        expected_draft_updated_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> MethodCopyResult:
+        """Copy a method into an organization the caller may change methods in — `POST /v1/methods/{id}/copy`.
+
+        The destination is the method's own organization for a duplicate, another team, or the caller's personal
+        workspace. The copy is a new, unpublished method of the destination, the caller's, holding the original's
+        draft tree (the same `draft_digest`), its name unless `name` gives another, its form inputs and every saved
+        example, each stored file they name copied into the destination, and `copied_from` naming the original.
+        Published versions and runs are not copied, and the original stays as it was. The copy takes the draft,
+        never the latest published version; with `expected_draft_updated_at`, it takes exactly the draft the
+        caller last saw.
+
+        The route serves web sessions only: a Pipelex API key belongs to one organization and cannot speak for
+        another. The body is closed: the client sends `destination_org_id` and, when given, `name` and
+        `expected_draft_updated_at`, and nothing else, a `None` reading as not given.
+
+        Args:
+            method_id: The method's bare catalog id.
+            destination_org_id: The canonical id of the organization to copy into, where the caller is an admin
+                or a member.
+            name: The copy's name, under the creation's rules; `None` keeps the original's.
+            expected_draft_updated_at: The original's draft token (`MethodData.updated_at`) the caller last saw,
+                echoed verbatim: a draft that moved since is refused with a `409` `method_update_conflict`, and
+                nothing is copied. `None` copies the draft as it stands when the request is served.
+            idempotency_key: The copy's idempotency key, sent as the `Idempotency-Key` header, and not sent at all
+                when `None`. Generate one per copy the caller means to make (a `str(uuid.uuid4())` is a good key),
+                and keep it, with every other argument unchanged, across that copy's retries. The hosted API
+                stores the copy's answer under the key for 24 hours, scoped to the caller and the method's
+                organization, so the same copy sent again under the same key is answered with the stored answer and
+                copies nothing more: a copy whose answer was lost, as on a client timeout, can be sent again
+                unchanged and makes one copy, not two. A verdict and a `4xx` refusal are stored alike, so the same
+                copy under the same key is answered the same again; a `5xx` is not stored, and a copy that failed
+                with one left nothing visible, so the same key sends it afresh. The same key with a different body
+                is refused (`409` `conflict`), as is a key whose earlier request is still being handled (`409`
+                `idempotency_key_in_use`, retryable); a changed copy, such as one with a fresh draft token, goes
+                under a new key. See `docs/method-copy.md`. A key is held to the rule a start's is: 1 to 255
+                visible ASCII characters.
+
+        Returns:
+            A `MethodCopyResult` discriminated on `outcome` — branch on it: `MethodCopied` with the copy as `method`,
+            `examples_copied` and `stored_files_copied`; `MethodCopyRefused` with the `reason`
+            `bundle_names_other_storage`, a `message` and every `references` entry (`path`, `uri`) a `.mthds` file
+            of the draft holds that the destination cannot read, nothing written.
+
+        Raises:
+            RequestArgumentError: `method_id` is refused as every method route refuses it, `destination_org_id` is
+                not a non-empty `str`, `name` or `expected_draft_updated_at` is given but is not a `str`, or
+                `idempotency_key` is not 1 to 255 visible ASCII characters; nothing is sent.
+            ApiResponseError: When no verdict was produced, each refusal writing nothing a reader sees: `403`
+                `forbidden` for a request that is not from a web session; `403` `role_not_permitted` for a role that
+                may not change methods, in the method's organization or in the destination; `404`
+                `organization_not_found` for a destination the caller does not belong to, still being set up or
+                unknown, alike; `404` `not_found` for an unknown method; `409` `method_being_deleted`; `409`
+                `method_update_conflict` for a draft that moved since `expected_draft_updated_at`; `409` `conflict`,
+                `runtime`, for a draft whose tree the organization holds no full record of; `413`
+                `payload_too_large` for an example or a copy too large for one stored item; `422`
+                `validation_failed` for a body that does not validate; `422` `method_copy_too_large` past one of the
+                copy's bounds on the stored files it copies, whose `problem_document["limit"]` names it
+                (`MethodCopyLimit`); and, each retryable, a `502` when the platform could not read the caller's
+                memberships, a `500` `storage_backend_failed` and a `503` past the copy's deadline.
+        """
+        call = "copy_method"
+        endpoint = f"{_method_path(method_id, call=call)}/copy"
+        body: dict[str, Any] = {"destination_org_id": _require_non_empty_id(destination_org_id, call=call, what=_COPY_DESTINATION_ARGUMENT)}
+        # Checked as `object`s: the annotations are promises to the type checker, not to a caller forwarding a
+        # value of another type, which would reach the platform's `422` or be sent as something else.
+        if name is not None:
+            if not isinstance(cast("object", name), str):
+                raise _argument_refusal(call, _COPY_NAME_ARGUMENT, type(name).__name__, reason="not_a_string")
+            body["name"] = name
+        if expected_draft_updated_at is not None:
+            if not isinstance(cast("object", expected_draft_updated_at), str):
+                raise _argument_refusal(call, _COPY_DRAFT_TOKEN_ARGUMENT, type(expected_draft_updated_at).__name__, reason="not_a_string")
+            body["expected_draft_updated_at"] = expected_draft_updated_at
+        checked_idempotency_key = _idempotency_key_of(idempotency_key, request="copy the method")
+        key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
+        try:
+            return await self._request_product("POST", endpoint, body=body, read=MethodCopyResultAdapter.validate_python)
+        finally:
+            _IDEMPOTENCY_KEY.reset(key_token)
+
+    async def list_method_copies(self, method_id: str, *, limit: int | None = None, cursor: str | None = None) -> MethodCopyPage:
+        """List one page of the copies made of a method — `GET /v1/methods/{id}/copies`.
+
+        Each row is the `MethodCopyMarker` the original keeps of a copy: the copy's id, the destination's id, the
+        member who made it and when, in the order of the copies' ids, which says nothing of when each was made.
+        The destination is named by its id alone, never its name, so a surface shows a destination's name only
+        from the reader's own memberships, and a copy in an organization the reader does not belong to stays a
+        bare id. A marker stays when its copy is erased, and the copy then reads as not found. The listing is open
+        to every member of the method's organization, a runner included, as every read of a method is.
+
+        Args:
+            method_id: The method's bare catalog id.
+            limit: Page size, from 1 to 100; the API defaults to 50 and refuses a `limit` outside that range with
+                a `422`.
+            cursor: The `next_cursor` of the previous page, passed back opaquely.
+
+        Returns:
+            A `MethodCopyPage` of `MethodCopyMarker` rows. `next_cursor` is `None` on the last page. A method never
+            copied, and a copy itself, answer an empty page.
+
+        Raises:
+            ApiResponseError: `404` `not_found` for an unknown method; `409` `method_being_deleted`; `400`
+                `malformed_request` for a cursor the listing did not issue for this method; `422` for a `limit`
+                outside 1 to 100.
+        """
+        query = _product_query({"limit": limit, "cursor": cursor})
+        endpoint = f"{_method_path(method_id, call='list_method_copies')}/copies{query}"
+        return await self._request_product("GET", endpoint, read=MethodCopyPage.model_validate)
+
     async def delete_method(self, method_id: str) -> MethodDeletionAccepted:
         """Erase a method and everything it produced — `DELETE /v1/methods/{id}`.
 
@@ -4097,16 +4218,17 @@ def _checked_run_extensions(
     return merged_extra
 
 
-def _idempotency_key_of(value: object) -> str | None:
-    """The idempotency key a start sends, or `None` when the caller gave none.
+def _idempotency_key_of(value: object, *, request: str = "start the run") -> str | None:
+    """The idempotency key a start or a method copy sends, or `None` when the caller gave none.
 
     A key that is not a string of 1 to 255 visible ASCII characters is refused rather than dropped, an empty
-    one included, since a start sent without the key its caller gave would lose the protection the caller
-    asked for without a word. Typed `object`, as `_normalized_selector` is, because this is the runtime
-    boundary an untyped caller reaches. The characters are checked before the length, which then counts ASCII
-    characters alone, so this message and `@pipelex/sdk`'s, which counts a character outside ASCII
-    differently, read alike for every key; neither quotes the key, which a caller may derive from something
-    private.
+    one included, since a request sent without the key its caller gave would lose the protection the caller
+    asked for without a word. `request` says what the request does, as the refusal's last sentence names it
+    ("start the run", "copy the method"). Typed `object`, as `_normalized_selector` is, because this is the
+    runtime boundary an untyped caller reaches. The characters are checked before the length, which then
+    counts ASCII characters alone, so this message and `@pipelex/sdk`'s, which counts a character outside
+    ASCII differently, read alike for every key; neither quotes the key, which a caller may derive from
+    something private.
 
     Raises:
         RequestArgumentError: The key is present and is not 1 to 255 visible ASCII characters.
@@ -4120,7 +4242,7 @@ def _idempotency_key_of(value: object) -> str | None:
     reason = fault.reason if fault is not None else "not_a_string"
     msg = (
         f"The idempotency key must be 1 to {_MAX_IDEMPOTENCY_KEY_LENGTH} visible ASCII characters (`!` to `~`), "
-        f"and this one {words}. Leave it out to start the run without one."
+        f"and this one {words}. Leave it out to {request} without one."
     )
     raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="idempotency_key", reason=reason))
 
@@ -4430,6 +4552,16 @@ _ARCHIVE_NAME_ARGUMENT = _Argument(name="name", what="a name for the zip, a stri
 _DRAFT_PATH_ARGUMENT = _Argument(name="path", what="the tree path the file takes in the draft, a non-empty string")
 _DRAFT_TOKEN_ARGUMENT = _Argument(
     name="expected_updated_at", what="the draft token the caller last read, the method's `updated_at`, a string, or none"
+)
+
+#: What each argument of a method copy is, as a refusal of it names it.
+_COPY_DESTINATION_ARGUMENT = _Argument(
+    name="destination_org_id", what="a destination_org_id, the canonical id of the organization to copy into, a non-empty string"
+)
+_COPY_NAME_ARGUMENT = _Argument(name="name", what="a name for the copy, a string, or none")
+_COPY_DRAFT_TOKEN_ARGUMENT = _Argument(
+    name="expected_draft_updated_at",
+    what="an expected_draft_updated_at, the draft token the caller last read, the method's `updated_at`, a string, or none",
 )
 
 #: The ids that are dot segments, which the URL resolves before the request leaves.

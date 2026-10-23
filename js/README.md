@@ -167,6 +167,17 @@ for await (const saved of client.iterateMethodExamples(created.method_id)) {
   // every example, oldest first
 }
 
+// Copy a method into a team, or into your personal workspace, with its draft, its form inputs and
+// its examples (web sessions only). A bundle naming storage the destination cannot read answers
+// `refused`, a verdict rather than an error; the key makes a retry copy once.
+const copy = await client.copyMethod(
+  created.method_id,
+  { destination_org_id: "org_team", expected_draft_updated_at: draft.updated_at },
+  { idempotencyKey: crypto.randomUUID() },
+);
+if (copy.outcome === "copied") console.log(copy.method.copied_from); // the original it names
+const copies = await client.listMethodCopies(created.method_id); // where the copies went
+
 // The organization's files, newest first: uploads, test files and the files runs made. Each row's
 // `uri` goes into a run's inputs as any address does. A filtered page can be empty and still carry
 // a nextCursor; iterateFiles follows it.
@@ -273,6 +284,7 @@ These pages ship inside the published package, so a reader who has only installe
 | [`docs/method-trees.md`](./docs/method-trees.md) | A method's tree: the four forms a run, a validation, a save and the crate routes take it in (a directory on disk among them), how it travels inline or by hash and what is uploaded, the files a step reads, the template check's warnings and which step reads which file of the tree, the deployment's limits, the read's listing with its links, `writeMethodTree`, and `MethodFileTransferError` |
 | [`docs/files.md`](./docs/files.md) | An organization's files: `listFiles` and `iterateFiles`, the row, the whole record and its provenance, the query and its repeated filters, paging through filtered pages, one file and its uses, the records of an address, the rename rule, links that name the file, a zip of files and its caps, a run's files, the copy into a method's draft, and an upload recorded as a method's test file with the refusals that come with it |
 | [`docs/method-examples.md`](./docs/method-examples.md) | A method's saved examples: the create, the paged list and its iterator, the edit that raises the input revision, the latest-run write and its `recorded` or `stale` verdict, the build assistant's save and its `kept` or `created` verdict, how an integer past `Number.MAX_SAFE_INTEGER` in the inputs stays exact, and what is refused before sending |
+| [`docs/method-copy.md`](./docs/method-copy.md) | Copying a method into another organization or duplicating it: what a copy holds and the stored files it copies, the `copied` or `refused` verdict, every refusal, the copy's idempotency key, the copies a method lists, and `copied_from` |
 | [`docs/organization-branding.md`](./docs/organization-branding.md) | An organization's logos and colours: `getBranding`, which every member and API key reads, `updateOrganizationBranding`, an admin's write that sets, clears or keeps each key, and how a refused logo or colour names its slot in `errors` so a settings screen shows the sentence under it |
 | [`docs/exact-integers.md`](./docs/exact-integers.md) | Which reads keep an integer past `Number.MAX_SAFE_INTEGER` exact, as a `bigint` (a run's inputs and outputs, an example's inputs), how a request body writes it back with its digits, and `parseExactJson` and `stringifyExactJson` for code showing such data as JSON text |
 | [`docs/crate-routes.md`](./docs/crate-routes.md) | `resolve`, `codegen` and `pipeIo` — the method's tree as the protocol's `files` map, with its dependencies, the normalized crate, the stamped types, and a method's I/O artifacts without a validation — and the offline `runCodegenCheck` that guards a committed tree |

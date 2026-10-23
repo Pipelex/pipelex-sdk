@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A method copied into another organization**: `copy_method(method_id, destination_org_id=, name=, expected_draft_updated_at=, idempotency_key=)` sends `POST /v1/methods/{method_id}/copy`, which makes a new, unpublished method in an organization the caller may change methods in, the method's own for a duplicate, holding the original's draft tree, its form inputs and its saved examples, with the stored files they name copied into the destination, and leaves the original as it was. It answers a `MethodCopyResult`, read by `MethodCopyResultAdapter` and discriminated on `outcome`: `MethodCopied` with the copy as `method`, `examples_copied` and `stored_files_copied`, or `MethodCopyRefused` naming every `BundleStorageReference` of a `.mthds` file that names storage the destination cannot read, nothing written. Only a web session may copy. The `idempotency_key`, held to a start's rule, is sent as the `Idempotency-Key` header, so a copy whose answer was lost can be sent again and makes one copy (`docs/method-copy.md`).
+- **The copies of a method**: `list_method_copies(method_id, limit=, cursor=)` reads `GET /v1/methods/{method_id}/copies`, a `MethodCopyPage` of the `MethodCopyMarker` rows the original keeps, each naming the copy, its destination by id alone, the member who made it and when.
+- **`copied_from` on a method**: `MethodData`, and so every method read, gains `copied_from`, a `MethodCopiedFrom` naming the original organization, method and draft digest on a copy, and `None` on a method created afresh or from a platform that predates copies.
+- **The copy's codes**: `MethodErrorCode` gains `ORGANIZATION_NOT_FOUND`, a destination the caller does not belong to or that does not exist, answered alike, and `METHOD_COPY_TOO_LARGE`, a copy past its bounds on the stored files it copies, whose problem document's `limit` the new `MethodCopyLimit` reads. `MethodCopyOutcome` and `MethodCopyRefusalReason` name the verdict's wire values.
+
 ## [v0.50.0] - 2026-10-23
 
 ### Added

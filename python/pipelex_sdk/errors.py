@@ -361,6 +361,15 @@ class MethodErrorCode(StrEnum):
     """`404`: `mt_…@<n>`, or `get_method_version`, names a version the method never published. An
     unknown method is `not_found` instead."""
 
+    ORGANIZATION_NOT_FOUND = "organization_not_found"
+    """`404`: the destination of a `copy_method` is one the caller does not belong to, one still being
+    set up, or one that does not exist, answered alike so the platform never says whether an
+    organization exists. An unknown method is `not_found` instead."""
+
+    METHOD_COPY_TOO_LARGE = "method_copy_too_large"
+    """`422`: a `copy_method` past one of the copy's bounds on the stored files it copies, which
+    `problem_document["limit"]` names (`pipelex_sdk.product_models.MethodCopyLimit`)."""
+
 
 class IdempotencyErrorCode(StrEnum):
     """The platform code a refusal about a request's `Idempotency-Key` carries in `ApiResponseError.code`.

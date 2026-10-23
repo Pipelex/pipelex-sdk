@@ -64,6 +64,8 @@ _SUFFIXED_ID_ROUTES: list[tuple[str, MethodRouteCall]] = [
     ("publish_method", lambda client: client.publish_method(_SUFFIXED_ID, expected_draft_updated_at="t")),
     ("list_method_versions", lambda client: client.list_method_versions(_SUFFIXED_ID)),
     ("get_method_version", lambda client: client.get_method_version(_SUFFIXED_ID, 3)),
+    ("copy_method", lambda client: client.copy_method(_SUFFIXED_ID, destination_org_id="org_team")),
+    ("list_method_copies", lambda client: client.list_method_copies(_SUFFIXED_ID)),
     ("delete_method", lambda client: client.delete_method(_SUFFIXED_ID)),
 ]
 
@@ -511,6 +513,8 @@ class TestClientMethodVersions:
             "method_being_deleted",
             "method_not_published",
             "method_version_not_found",
+            "organization_not_found",
+            "method_copy_too_large",
         ]
 
     def test_a_bare_id_of_a_method_never_published_raises_not_published(
