@@ -22,7 +22,8 @@ import {
   type CodexMthdsTarget,
   type HookOutcome,
 } from "../../src/hooks/check-core.js";
-import type { Diagnostic, ValidationErrorItem } from "../../src/models.js";
+import type { ProblemItem } from "mthds/protocol";
+import type { Diagnostic } from "../../src/models.js";
 
 const FILE = "/work/demo.mthds";
 
@@ -42,9 +43,9 @@ const diagnostic = (overrides: Partial<Diagnostic> = {}): Diagnostic => ({
   ...overrides,
 });
 
-const validationError = (overrides: Partial<ValidationErrorItem> = {}): ValidationErrorItem => ({
-  category: "pipe_validation",
-  message: "unknown concept",
+const problemItem = (overrides: Partial<ProblemItem> = {}): ProblemItem => ({
+  code: "method.concept_unknown",
+  detail: "Pipe 'extract' names the concept 'Invoice', which the domain does not declare.",
   ...overrides,
 });
 
@@ -136,41 +137,104 @@ describe("decideAfterValidate", () => {
     const markdown = "# Validation failed\n\n- pipe `demo.x`: unknown concept";
     const outcome = decideAfterValidate(FILE, {
       status: "invalid",
-      validationErrors: [validationError()],
+      errors: [problemItem()],
       renderedMarkdown: markdown,
       withheld: [],
     });
     expect(outcome).toEqual({ kind: "block", reason: markdown });
   });
 
-  it("falls back to a client-side rendering with locators", () => {
+  it("names each problem item by its code, its sentence and its location without Markdown", () => {
     const outcome = decideAfterValidate(FILE, {
       status: "invalid",
-      message: "Bundle failed validation.",
-      validationErrors: [
-        validationError({
-          pipe_code: "extract",
-          concept_code: "Invoice",
-          field_name: "output",
-          source: "demo.mthds",
+      message: "The method does not validate.",
+      errors: [
+        problemItem({ location: { pipe: "extract", file: "demo.mthds", line: 12 } }),
+        problemItem({
+          code: "method.input_unused",
+          detail: "Pipe 'extract' declares inputs it never reads: name.",
         }),
       ],
       withheld: [],
     });
+
+    expect(outcome).toEqual({
+      kind: "block",
+      reason: [
+        "Validation failed for /work/demo.mthds:",
+        "",
+        "The method does not validate.",
+        "",
+        "- `method.concept_unknown`: Pipe 'extract' names the concept 'Invoice', which the " +
+          "domain does not declare. (pipe 'extract', file 'demo.mthds', line 12)",
+        "- `method.input_unused`: Pipe 'extract' declares inputs it never reads: name.",
+      ].join("\n"),
+    });
+  });
+
+  it("gives a problem item's suggested fix a line of its own, with its safety and rule", () => {
+    const outcome = decideAfterValidate(FILE, {
+      status: "invalid",
+      message: "The method does not validate.",
+      errors: [
+        problemItem({
+          code: "method.model_unknown",
+          detail: "The llm model 'gpt-5.1' is not one the runtime knows.",
+          location: { pipe: "summarize" },
+          suggested_fix: {
+            fix_code: "rename-model",
+            description: "Use the model 'gpt-5' in place of 'gpt-5.1'.",
+            safety: "safe",
+            ops: [
+              {
+                kind: "remap_value",
+                table_path: ["pipe", "summarize"],
+                key: "model",
+                mapping: { "gpt-5.1": "gpt-5" },
+              },
+            ],
+          },
+        }),
+      ],
+      withheld: [],
+    });
+
     expect(outcome.kind).toBe("block");
     if (outcome.kind !== "block") return;
-    expect(outcome.reason).toContain("Validation failed for /work/demo.mthds");
-    expect(outcome.reason).toContain("Bundle failed validation.");
-    expect(outcome.reason).toContain("[pipe_validation] unknown concept");
+    expect(outcome.reason.split("\n").slice(-2)).toEqual([
+      "- `method.model_unknown`: The llm model 'gpt-5.1' is not one the runtime knows. " +
+        "(pipe 'summarize')",
+      "  - Suggested fix (safe, rename-model): Use the model 'gpt-5' in place of 'gpt-5.1'.",
+    ]);
+  });
+
+  it("words a suggested fix of a safety it does not know as unsafe", () => {
+    const outcome = decideAfterValidate(FILE, {
+      status: "invalid",
+      errors: [
+        problemItem({
+          suggested_fix: {
+            fix_code: "declare-concept",
+            description: "Declare the concept 'Invoice'.",
+            safety: "reviewed",
+            ops: [{ kind: "ensure_table", table_path: ["concept", "Invoice"] }],
+          },
+        }),
+      ],
+      withheld: [],
+    });
+
+    expect(outcome.kind).toBe("block");
+    if (outcome.kind !== "block") return;
     expect(outcome.reason).toContain(
-      "pipe extract, concept Invoice, field output, source demo.mthds",
+      "  - Suggested fix (unsafe, declare-concept): Declare the concept 'Invoice'.",
     );
   });
 
   it("blocks even when the invalid verdict carries no errors or message", () => {
     const outcome = decideAfterValidate(FILE, {
       status: "invalid",
-      validationErrors: [],
+      errors: [],
       withheld: [],
     });
     expect(outcome.kind).toBe("block");
@@ -182,15 +246,14 @@ describe("decideAfterValidate", () => {
     const outcome = decideAfterValidate(FILE, {
       status: "invalid",
       message: "Custom server message.",
-      validationErrors: [],
+      errors: [],
       withheld: [],
     });
     expect(outcome.kind).toBe("block");
     if (outcome.kind !== "block") return;
-    expect(outcome.reason).toContain("Validation failed for /work/demo.mthds");
-    expect(outcome.reason).toContain("Custom server message.");
-    expect(outcome.reason).not.toContain("Bundle is invalid.");
-    expect(outcome.reason).not.toContain("[pipe_validation]");
+    expect(outcome.reason).toBe(
+      "Validation failed for /work/demo.mthds:\n\nCustom server message.",
+    );
   });
 });
 
@@ -244,7 +307,7 @@ describe("decideAfterValidate, with files kept home", () => {
     const markdown = "# Validation failed\n\n- pipe `demo.print`: template file missing";
     const outcome = decideAfterValidate(FILE, {
       status: "invalid",
-      validationErrors: [validationError()],
+      errors: [problemItem()],
       renderedMarkdown: markdown,
       withheld,
     });
@@ -283,7 +346,7 @@ describe("decideAfterValidate, with files kept home", () => {
     expect(markdown.length).toBeGreaterThan(12000);
     const outcome = decideAfterValidate(FILE, {
       status: "invalid",
-      validationErrors: [validationError()],
+      errors: [problemItem()],
       renderedMarkdown: markdown,
       withheld: manyWithheld(100),
     });
@@ -336,7 +399,7 @@ describe("decideAfterValidate, with files kept home", () => {
     const merged = mergeOutcomes([
       decideAfterValidate(FILE, {
         status: "invalid",
-        validationErrors: [],
+        errors: [],
         renderedMarkdown: markdown,
         withheld,
       }),
@@ -385,13 +448,13 @@ describe("decideAfterValidate, with files kept home", () => {
   it("names a tree's note once when several of its files are merged", () => {
     const first = decideAfterValidate("/work/a.mthds", {
       status: "invalid",
-      validationErrors: [],
+      errors: [],
       renderedMarkdown: "# a is invalid",
       withheld,
     });
     const second = decideAfterValidate("/work/b.mthds", {
       status: "invalid",
-      validationErrors: [],
+      errors: [],
       renderedMarkdown: "# b is invalid",
       withheld,
     });
@@ -423,7 +486,7 @@ describe("decideAfterValidate, with files kept home", () => {
   it("encodes the note after the text, on every platform", () => {
     const outcome = decideAfterValidate(FILE, {
       status: "invalid",
-      validationErrors: [],
+      errors: [],
       renderedMarkdown: "# invalid",
       withheld,
     });

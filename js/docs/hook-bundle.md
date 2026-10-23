@@ -6,6 +6,20 @@
 
 Each file goes through three stages: a local lint that blocks on any diagnostic, a local format that rewrites the file in place when its layout changes, and a validation by the hosted API (`POST /v1/validate`) that blocks on an invalid verdict and adds a non-blocking note about pending pipe signatures. The hook fails open: when the engine cannot load, when `PIPELEX_API_KEY` is unset or the API cannot be reached, the stage that could not run passes silently and the others stand. When several files are checked, one block among them wins and the notes are joined, and each file is read when its turn comes, so an edit made to it while an earlier file was being validated is checked rather than overwritten. The hook always exits 0, since its verdict is on stdout.
 
+An invalid verdict blocks with the server's Markdown rendering of it, which the hook always asks for, forwarded verbatim. When the server sends none, the hook words the block itself: the file that failed, the verdict's message, then one line for each fault the verdict lists in `errors[]`, each an MTHDS problem item named by its code, its sentence and where it happened, with its suggested fix, when it carries one, on a line of its own. The place and the fix are worded by the `mthds` package's `formatLocation` and `formatSuggestedFix`, as every MTHDS client words them, and a fix of a safety the hook does not know is shown as unsafe:
+
+```text
+Validation failed for /work/methods/greeting/greeting.mthds:
+
+The method does not validate.
+
+- `method.input_undeclared`: Pipe 'greet_visitor' reads names its inputs do not declare: visitor. (pipe 'greet_visitor', file 'greeting.mthds')
+- `method.model_unknown`: The llm model 'gpt-5.1' is not one the runtime knows. (pipe 'greet_visitor')
+  - Suggested fix (safe, rename-model): Use the model 'gpt-5' in place of 'gpt-5.1'.
+```
+
+The hook reads each item member by member. An entry with no string `code` or `detail` names no fault and is skipped, and a `location` or a `suggested_fix` the hook cannot read is left out of its item, so a malformed member never costs the agent the fault it belongs to. The verdict, never its wording, decides the block: an invalid verdict whose faults cannot be read still blocks, with its message. The older `validation_errors[]` list is not read.
+
 The validation sends the method's tree around the file, the tree a run of the method would send: the edited file's directory listed by the `mthds` package's lister under the MTHDS standard's membership rule, so it is rooted at the nearest `METHODS.toml` at or above that directory, else at the directory itself, and holds every file the rule keeps — every bundle of the method, and every file a step reads, such as the template a `PipeDocGen` step names in `template_file`, under its tree path — while hidden entries, `node_modules`, `__pycache__`, what a `.gitignore` inside the tree keeps out and a run's inputs file never travel ([`method-trees.md`](./method-trees.md#the-four-forms-of-a-tree)), and neither does a file that looks like a secret ([below](#secrets-stay-home)). A method that fills a template thus validates as it would load from disk, its template checked by the dry run, and a step whose template file the tree does not hold makes the verdict say so, which blocks until the file is written. The client sends the tree inline when small and by hash otherwise, uploading the files the API lacks. The whole validation runs under one ten-second deadline, the version handshake, the blob route, the uploads and the validation request together, and the deadline stops whichever of them is under way when it runs out. Validation passes silently, as when the API cannot be reached, when that deadline runs out, when the tree holds a symbolic link or a directory the lister cannot read, when the edited file is not in its own tree because the rule keeps it out, when a file of the tree changes between its listing and its reading, when a file of the tree fails to upload, and past the hook's own caps: 100 files, 5 MiB for one of them or 12 MiB in all, each checked while the tree is listed, before any file is read.
 
 ## Secrets stay home
