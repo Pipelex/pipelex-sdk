@@ -49,7 +49,7 @@ from mthds.method_tree.models import MethodTree, TreeLimits
 from mthds.method_tree.tree_path import path_collisions, tree_path_violation
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import RunResultStart
-from mthds.protocol.problem.answers import read_problem_document
+from mthds.protocol.problem.answers import decode_json, read_problem_document
 from mthds.protocol.problem.client_problems import make_client_problem
 from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.client import DEFAULT_INLINE_TREE_MAX_BYTES, MthdsAPIClient
@@ -1064,8 +1064,8 @@ class PipelexAPIClient(MthdsAPIClient):
     ) -> None:
         """Translate a "route absent" 404 (a bare pipelex-api with no platform block) into a clear
         `RunLifecycleUnavailableError`. A 404 the platform or the runner answered on purpose — a run not
-        found, a `method_ref` with no package — is a problem document and is left for normal handling as
-        `ApiResponseError`. `explanation` replaces the sentence saying why the
+        found, a method that does not exist — names its own `code` and is left for normal handling as
+        `ApiResponseError` (`_is_missing_route_404`). `explanation` replaces the sentence saying why the
         route is missing, for a route a hosted API may also lack.
         """
         if status != 404:
@@ -1788,8 +1788,7 @@ class PipelexAPIClient(MthdsAPIClient):
         hosted (the SDK default), and let the start surface the real error; no answer at all propagates,
         uncached. An answer is anything the server sent back: a non-2xx status, a body that is not JSON,
         not UTF-8 or no version, and a body that arrived but could not be decoded, such as a broken gzip
-        stream, which the `_send` override reports as the `ApiUnreachableError` whose cause is httpx's
-        `DecodingError`.
+        stream, which `_send_and_read` reports as an `ApiResponseError` (`_undecodable_answer`).
 
         Raises:
             ApiUnreachableError: The handshake got no answer. Nothing is cached, so the next call asks
@@ -1800,14 +1799,10 @@ class PipelexAPIClient(MthdsAPIClient):
             try:
                 info = await self.version()
             # The server answered with something that is no version: a non-2xx status, a body that is not
-            # JSON or not UTF-8, or JSON that does not validate as one, each an `ApiResponseError`. Assume hosted.
+            # JSON or not UTF-8, JSON that does not validate as one, or a body that arrived and could not be
+            # decoded, each an `ApiResponseError`. Assume hosted. An `ApiUnreachableError` got no answer at
+            # all: it propagates, uncached.
             except ApiResponseError:
-                self._lifecycle_available = True
-            except ApiUnreachableError as exc:
-                # A body that arrived and could not be decoded is an answer too, so assume hosted. Any
-                # other unreachable host got no answer at all: it propagates, uncached.
-                if not isinstance(exc.__cause__, httpx.DecodingError):
-                    raise
                 self._lifecycle_available = True
             else:
                 implementation = (info.model_extra or {}).get("implementation")
@@ -3186,15 +3181,16 @@ class PipelexAPIClient(MthdsAPIClient):
     async def change_plan(self, plan: str) -> ChangePlanResponse:
         """Switch the existing subscription's plan — `POST /v1/billing/change-plan`.
 
-        A 409 `conflict` (`ApiResponseError.problem.code`) means there is no subscription to change —
-        start one via `create_checkout` first.
+        A 409 `pipelex.billing.subscription_conflict` (`ApiResponseError.problem.code`) means there is no
+        subscription to change — start one via `create_checkout` first.
         """
         return await self._request_product("POST", "billing/change-plan", body={"plan": plan}, read=ChangePlanResponse.model_validate)
 
     async def get_billing_portal(self) -> BillingPortalResponse:
         """A Stripe billing-portal session URL — `GET /v1/billing/portal`.
 
-        A 409 `conflict` (`ApiResponseError.problem.code`) means there is no subscription yet.
+        A 409 `pipelex.billing.subscription_conflict` (`ApiResponseError.problem.code`) means there is no
+        subscription yet.
         """
         return await self._request_product("GET", "billing/portal", read=BillingPortalResponse.model_validate)
 
@@ -3205,7 +3201,7 @@ class PipelexAPIClient(MthdsAPIClient):
     async def create_pipelex_api_key(self, label: str) -> PipelexApiKeyCreated:
         """Mint a Pipelex API key — `POST /v1/pipelex-api-keys`.
 
-        The plaintext `api_key` is returned ONCE. A 409 `pipelex_api_key_limit_reached`
+        The plaintext `api_key` is returned ONCE. A 409 `pipelex.billing.plan_limit`
         (`ApiResponseError.problem.code`) means the per-account key limit is hit.
         """
         return await self._request_product("POST", "pipelex-api-keys", body={"label": label}, read=PipelexApiKeyCreated.model_validate)
@@ -5023,15 +5019,24 @@ def _execute_timeout_message(elapsed_seconds: float) -> str:
 
 
 def _is_missing_route_404(body: str) -> bool:
-    """Whether a 404's body is an unmatched-route 404 (no run store deployed) rather than a 404 the
-    platform or the runner answered on purpose: the body is no problem document.
+    """Whether a 404 says that no route serves the path (no run store deployed), rather than that a route
+    answered it on purpose, such as a run or a method that does not exist.
 
-    The platform answers every 404 of its own as a problem document (`run.not_found`, `request.not_found`),
-    and so does the runner (a `method_ref` whose package does not exist); a bare runner's unmatched route
-    answers Starlette's default `{"detail": "Not Found"}`, which is none. An empty, non-JSON or non-object
-    body is none either. `@pipelex/sdk`'s `isMissingRoute404` reads the same rule.
+    A route that answers a 404 of its own names its failure by a `code`, whether in a problem document
+    (`run.not_found`, or a runner's `method.not_found` for a `method_ref` it cannot find) or in an older
+    native body the platform still answers (`run_not_found`, `not_found`), and one defect elsewhere in the
+    document does not make the route missing. So the 404 is a missing route when its body is not a JSON
+    object naming a non-empty string `code`, as a bare runner's framework default `{"detail": "Not Found"}`
+    and an empty or non-JSON body are not, or when that code is `request.not_found`, the problem a runner
+    answers for a path no route serves (pipelex-api 0.90 and later). The body is decoded as the protocol
+    decodes a problem body (`decode_json`). `@pipelex/sdk`'s `isMissingRoute404` reads the same rule.
     """
-    return read_problem_document(body, status=404, headers={}) is None
+    decoded = decode_json(body)
+    value: object = decoded.value
+    if not decoded.is_json or not isinstance(value, dict):
+        return True
+    code: object = cast("dict[str, object]", value).get("code")
+    return not isinstance(code, str) or code in {"", "request.not_found"}
 
 
 def _parse_retry_after(headers: httpx.Headers) -> int | None:

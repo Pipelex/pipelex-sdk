@@ -2,7 +2,7 @@
   "about": [
     "The problem each SDK builds for a failure it detects itself, and the problem it reads from an answer that is not the route's result, pinned code by code for both SDKs.",
     "`answers` are answers the hosted API, its edge or a proxy gave: each SDK reads one with `readHostedAnswer` (JavaScript) or `read_hosted_answer` (Python), `creates_run` true for a start or an execute. A case gives the body as JSON (`body`) or as raw text (`text`, an empty one for no body), and `expect` the members the problem must carry, `from_body` saying whether the body was the problem document read, `run_error_code` the code of a failed run's own problem.",
-    "`storage_statuses`, `upload_transport`, `artifact_fetch` and `method_file_transfer` are the readings of a storage answer's status and of each transfer failure's reason (`null` for none). `classes` are the error classes both SDKs raise, each built by its suite from the arguments the class takes, with the code and the members its problem must carry.",
+    "`storage_statuses`, `upload_transport`, `artifact_fetch` and `method_file_transfer` are the readings of a storage answer's status and of each transfer failure's reason with the status storage answered (`null` for none). `classes` are the error classes both SDKs raise, each built by its suite from the arguments the class takes, with the code and the members its problem must carry.",
     "The source is js/tests/fixtures/sdk-problems.json. Its copy, python/tests/fixtures/sdk-problems.json, is written by `make shared-files` at the repository root, and is never edited."
   ],
   "answers": [
@@ -615,50 +615,92 @@
   "artifact_fetch": [
     {
       "reason": "invalid_storage_uri",
+      "status": null,
       "code": "input.reference_not_found"
     },
     {
       "reason": "forbidden",
+      "status": null,
       "code": "input.reference_not_found"
     },
     {
       "reason": "not_found",
+      "status": null,
       "code": "input.reference_not_found"
     },
     {
       "reason": "unsupported_url",
+      "status": null,
       "code": "client.link_refused"
     },
     {
       "reason": "plain_http_refused",
+      "status": null,
       "code": "client.link_refused"
     },
     {
       "reason": "redirect_refused",
+      "status": null,
       "code": "client.link_refused"
     },
     {
       "reason": "store_refused",
+      "status": 403,
+      "code": "client.response_unreadable"
+    },
+    {
+      "reason": "store_refused",
+      "status": null,
       "code": "runtime.unavailable"
     },
     {
       "reason": "store_error",
+      "status": 400,
+      "code": "client.response_unreadable"
+    },
+    {
+      "reason": "store_error",
+      "status": 405,
+      "code": "client.response_unreadable"
+    },
+    {
+      "reason": "store_error",
+      "status": 501,
+      "code": "runtime.unsupported"
+    },
+    {
+      "reason": "store_error",
+      "status": 429,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "store_error",
+      "status": 503,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "store_error",
+      "status": null,
       "code": "runtime.unavailable"
     },
     {
       "reason": "timeout",
+      "status": null,
       "code": "runtime.unavailable"
     },
     {
       "reason": "network",
+      "status": null,
       "code": "runtime.unavailable"
     },
     {
       "reason": "unknown",
+      "status": null,
       "code": "runtime.unexpected"
     },
     {
       "reason": "a_reason_this_version_does_not_know",
+      "status": null,
       "code": "runtime.unexpected"
     }
   ],

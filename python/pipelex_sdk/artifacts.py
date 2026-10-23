@@ -1120,12 +1120,15 @@ async def _save_one(
             budget.committed -= share()
         return _item_error(location, content_type, exc.reason, str(exc))
     except (httpx.HTTPError, OSError) as exc:
+        # Every transport failure of the fetch is already an `ArtifactFetchError` (`network`), and every
+        # failure to write the file a `write_failed`, so what reaches here is a fault the SDK cannot place:
+        # `unknown`, never read as one a retry can pass, as `@pipelex/sdk`'s `classifyFailure` labels it.
         if target is not None:
             target.remove()
         if share_taken:
             budget.committed -= share()
         msg = f"The artifact could not be read: {exc}."
-        return _item_error(location, content_type, "network", msg)
+        return _item_error(location, content_type, "unknown", msg)
     except asyncio.CancelledError:
         # A cancelled download leaves nothing truncated behind, then lets the cancellation through.
         if target is not None:

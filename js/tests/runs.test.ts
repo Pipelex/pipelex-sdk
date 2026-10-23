@@ -136,6 +136,56 @@ describe("PipelexApiClient.getRunStatus", () => {
     expect(err).not.toBeInstanceOf(RunLifecycleUnavailableError);
     expect((err as ApiResponseError).code).toBe("run.not_found");
   });
+
+  // A 404 is a missing route when its body names no non-empty string `code`, or names
+  // `request.not_found`, which a runner answers for a path no route serves (pipelex-api 0.90 on).
+  it.each([
+    [
+      "a runner's request.not_found problem document",
+      () => problemResponse("request.not_found", 404),
+    ],
+    ["an empty code", () => jsonResponse(404, { code: "", detail: "Not Found" })],
+    ["a code that is not a string", () => jsonResponse(404, { code: 404, detail: "Not Found" })],
+    ["a JSON array", () => jsonResponse(404, ["Not Found"])],
+    ["a body that is not JSON", () => new Response("Not Found", { status: 404 })],
+    ["an empty body", () => emptyResponse(404)],
+  ])("maps a 404 with %s to RunLifecycleUnavailableError", async (_name, answer) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(answer());
+    const err = await makeClient()
+      .getRunStatus("run-1")
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RunLifecycleUnavailableError);
+  });
+
+  // A route that answers a 404 on purpose names its code, even in a document with a defect or in
+  // the native body the platform still answers.
+  it.each([
+    [
+      "a run.not_found document with a defect",
+      () => jsonResponse(404, { ...problemDocument("run.not_found", 404), next_step: "retry" }),
+    ],
+    [
+      "the platform's native run_not_found body",
+      () =>
+        jsonResponse(404, {
+          type: "https://pipelex.com/errors/run_not_found",
+          title: "Run not found",
+          status: 404,
+          detail: "Run run-1 not found.",
+          code: "run_not_found",
+          error_domain: "input",
+          retryable: false,
+        }),
+    ],
+  ])("leaves a 404 with %s as ApiResponseError", async (_name, answer) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(answer());
+    const err = await makeClient()
+      .getRunStatus("run-1")
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect(err).not.toBeInstanceOf(RunLifecycleUnavailableError);
+    expect((err as ApiResponseError).status).toBe(404);
+  });
 });
 
 /**

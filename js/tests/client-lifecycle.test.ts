@@ -716,6 +716,63 @@ describe("PipelexApiClient against a bare runner (no run store)", () => {
     expect(fetchSpy.mock.calls).toHaveLength(4);
   });
 
+  it("self-heals on a runner's request.not_found problem document too", async () => {
+    // pipelex-api 0.90 and later answers a path no route serves with a `request.not_found`
+    // problem document rather than the framework's default body: the route is still missing.
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, BASE_ONLY_VERSION))
+      .mockResolvedValueOnce(jsonResponse(404, problemDocument("request.not_found", 404)))
+      .mockResolvedValueOnce(jsonResponse(200, executeBody("run-z")));
+
+    const result = await client.startAndWaitForResult({ pipe_code: "p" });
+
+    expect(result.pipeline_run_id).toBe("run-z");
+    expect(fetchSpy.mock.calls.map((c) => new URL(String(c[0])).pathname)).toEqual([
+      "/v1/version",
+      "/v1/start",
+      "/v1/execute",
+    ]);
+  });
+
+  it("keeps a coded 404 on the start, such as a method that does not exist, as the start's refusal", async () => {
+    // Today's platform answers a method it does not know with a native body naming its code: the
+    // route exists and refused the request, so nothing falls back to the blocking execute, and
+    // the next call still tries the durable start.
+    const nativeNotFound = {
+      type: "https://pipelex.com/errors/not_found",
+      title: "Not found",
+      status: 404,
+      detail: "Method mt_typo not found.",
+      code: "not_found",
+      error_domain: "input",
+      retryable: false,
+    };
+    const client = makeClient();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((input) =>
+        Promise.resolve(
+          new URL(String(input)).pathname === "/v1/version"
+            ? jsonResponse(200, HOSTED_VERSION)
+            : jsonResponse(404, nativeNotFound),
+        ),
+      );
+
+    for (let call = 0; call < 2; call += 1) {
+      const err = await client.startAndWaitForResult({ pipe_code: "p" }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ApiResponseError);
+      expect(err).not.toBeInstanceOf(RunLifecycleUnavailableError);
+      expect((err as ApiResponseError).status).toBe(404);
+    }
+    expect(fetchSpy.mock.calls.map((c) => new URL(String(c[0])).pathname)).toEqual([
+      "/v1/version",
+      "/v1/start",
+      "/v1/start",
+    ]);
+  });
+
   it("the run-lifecycle primitives surface RunLifecycleUnavailableError on the bare 404", async () => {
     const client = makeClient();
     // Bare runner: Starlette's default 404 body — no structured `code` field.

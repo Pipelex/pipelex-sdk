@@ -545,10 +545,19 @@ class TestArtifacts:
         assert seen == []
 
     @pytest.mark.parametrize(
-        ("status", "code"),
-        [(302, "redirect_refused"), (401, "store_refused"), (403, "store_refused"), (404, "not_found"), (410, "not_found"), (500, "store_error")],
+        ("status", "code", "problem_code"),
+        [
+            (302, "redirect_refused", "client.link_refused"),
+            (401, "store_refused", "client.response_unreadable"),
+            (403, "store_refused", "client.response_unreadable"),
+            (404, "not_found", "input.reference_not_found"),
+            (410, "not_found", "input.reference_not_found"),
+            (400, "store_error", "client.response_unreadable"),
+            (501, "store_error", "runtime.unsupported"),
+            (500, "store_error", "runtime.unavailable"),
+        ],
     )
-    def test_maps_the_stores_statuses_onto_the_fetch_codes(self, mocker: MockerFixture, status: int, code: str) -> None:
+    def test_maps_the_stores_statuses_onto_the_fetch_codes(self, mocker: MockerFixture, status: int, code: str, problem_code: str) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
         _patch_storage(mocker, _serving(b"", status=status, headers={"location": f"{_STORE}/elsewhere"}))
 
@@ -560,6 +569,8 @@ class TestArtifacts:
             asyncio.run(_read())
         assert caught.value.reason == code
         assert caught.value.status == status
+        # A refusal and a fault the store will answer again carry no retry; a transient fault does.
+        assert caught.value.problem.code == problem_code
 
     def test_refuses_a_declared_oversize_without_reading_the_body(self, mocker: MockerFixture) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
@@ -842,6 +853,22 @@ class TestArtifacts:
         assert [artifact.found_at for artifact in verdict.artifacts] == [["$.root.doc.content.url"], ["$.root.picture.content.url"]]
         assert verdict.all_saved is True
         assert verdict.saved_paths == [str(target / "root-doc-content.pdf"), str(target / "root-picture-content.png")]
+
+    def test_labels_a_failure_it_cannot_place_unknown(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        """Every transport failure is the fetch's `network` and every write failure a `write_failed`, so a
+        failure that is neither is `unknown`, never read as one a retry can pass, as `@pipelex/sdk` labels it.
+        """
+        client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
+        _patch_storage(mocker, _serving(_PDF_BYTES))
+        mocker.patch("pipelex_sdk.artifacts._declared_length", side_effect=OSError("a fault of no transport"))
+        target = tmp_path / "out"
+
+        verdict = asyncio.run(download_artifacts(client, dir_path=target, results=_results(_content(_URI_PDF))))
+
+        item = verdict.artifacts[0]
+        assert item.error is not None
+        assert item.error.code == "unknown"
+        assert verdict.saved_paths == []
 
     def test_never_overwrites_a_name_already_on_disk(self, mocker: MockerFixture, tmp_path: Path) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))

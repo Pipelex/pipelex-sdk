@@ -166,14 +166,63 @@ class TestClientLifecycle:
         assert exc_info.value.problem.code == "pipelex.catalog.not_found"
         assert str(exc_info.value) == "API POST /v1/start failed (404): The requested resource does not exist."
 
-    def test_start_404_whose_body_is_no_problem_document_is_a_missing_run_store(self, mocker: MockerFixture) -> None:
-        """A 404 is a missing route when its body is no problem document, whatever members it carries."""
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param(
+                json.dumps(problem_document("request.not_found", 404, detail="No route serves this path")).encode(), id="a-runner-request-not-found"
+            ),
+            pytest.param(b'{"detail": "Not Found"}', id="the-framework-default"),
+            pytest.param(b'{"code": "", "detail": "Not Found"}', id="an-empty-code"),
+            pytest.param(b'{"code": 404, "detail": "Not Found"}', id="a-code-that-is-not-a-string"),
+            pytest.param(b'["Not Found"]', id="a-json-array"),
+            pytest.param(b"Not Found", id="a-body-that-is-not-json"),
+            pytest.param(b"", id="an-empty-body"),
+        ],
+    )
+    def test_start_404_naming_no_code_of_its_own_is_a_missing_run_store(self, mocker: MockerFixture, content: bytes) -> None:
+        """A 404 is a missing route when its body is not a JSON object naming a non-empty string `code`, or when that
+        code is `request.not_found`, which a runner answers for a path no route serves (pipelex-api 0.90 and later).
+        """
         client = self._client()
-        body = {"code": "NOT_FOUND", "detail": "The requested resource does not exist."}
-        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(404, json=body)))
+        answer = httpx.Response(404, content=content, request=httpx.Request("POST", f"{_BASE_URL}/v1/start"))
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=answer))
 
         with pytest.raises(RunLifecycleUnavailableError):
             asyncio.run(client.start(pipe_code="answer"))
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(
+                {**problem_document("run.not_found", 404, detail="Run not found."), "next_step": "retry"}, id="a-run-not-found-with-a-defect"
+            ),
+            pytest.param(
+                {
+                    "type": "https://pipelex.com/errors/not_found",
+                    "title": "Not found",
+                    "status": 404,
+                    "detail": "Method mt_typo not found.",
+                    "code": "not_found",
+                    "error_domain": "input",
+                    "retryable": False,
+                },
+                id="the-platforms-native-not-found",
+            ),
+            pytest.param({"code": "NOT_FOUND", "detail": "The requested resource does not exist."}, id="a-bare-code"),
+        ],
+    )
+    def test_start_404_naming_a_code_of_its_own_stays_api_response_error(self, mocker: MockerFixture, body: dict[str, Any]) -> None:
+        """A route that answers a 404 on purpose names its code, even in a document with a defect or in the native body
+        the platform still answers: it is the route's refusal, never a missing run store.
+        """
+        client = self._client()
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(404, json=body)))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(client.start(pipe_code="answer"))
+        assert not isinstance(exc_info.value, RunLifecycleUnavailableError)
+        assert exc_info.value.status == 404
 
     # ── get_run_status ───────────────────────────────────────────
 
@@ -288,6 +337,19 @@ class TestClientLifecycle:
         assert exc.problem.type == "https://docs.pipelex.com/errors/run.not_found"
         assert exc.request_url == f"{_BASE_URL}/v1/runs/run%201/status"
         assert str(exc) == "API GET /v1/runs/run%201/status failed (404): Run not found."
+
+    def test_get_run_status_run_not_found_with_a_defect_is_api_response_error(self, mocker: MockerFixture) -> None:
+        """A `run.not_found` document with one defect still names its code: the route answered, so the read raises
+        `ApiResponseError`, never `RunLifecycleUnavailableError`.
+        """
+        client = self._client()
+        body = {**problem_document("run.not_found", 404, detail="Run not found."), "next_step": "retry"}
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(404, json=body)))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(client.get_run_status("run_1"))
+        assert not isinstance(exc_info.value, RunLifecycleUnavailableError)
+        assert exc_info.value.status == 404
 
     # ── get_run_result status mapping ────────────────────────────
 

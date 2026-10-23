@@ -627,20 +627,27 @@ describe("fetchArtifact", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("maps the store's statuses onto the reasons: redirect, refused, vanished, fault", async () => {
-    const cases: [number, string][] = [
-      [302, "redirect_refused"],
-      [401, "store_refused"],
-      [403, "store_refused"],
-      [404, "not_found"],
-      [410, "not_found"],
-      [503, "store_error"],
+  it("maps the store's statuses onto the reasons and problems: redirect, refused, vanished, fault", async () => {
+    // A refusal and a fault the store will answer again carry no retry; a transient fault does.
+    const cases: [number, string, string][] = [
+      [302, "redirect_refused", "client.link_refused"],
+      [401, "store_refused", "client.response_unreadable"],
+      [403, "store_refused", "client.response_unreadable"],
+      [404, "not_found", "input.reference_not_found"],
+      [410, "not_found", "input.reference_not_found"],
+      [400, "store_error", "client.response_unreadable"],
+      [501, "store_error", "runtime.unsupported"],
+      [503, "store_error", "runtime.unavailable"],
     ];
-    for (const [status, reason] of cases) {
+    for (const [status, reason, code] of cases) {
       const client = makeClient();
       mockFetch(() => new Response(null, { status }));
 
-      await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({ reason, status });
+      await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({
+        reason,
+        status,
+        code,
+      });
       vi.restoreAllMocks();
     }
   });

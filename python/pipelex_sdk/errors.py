@@ -1251,32 +1251,36 @@ class ArtifactFetchError(ArtifactOperationError):
     failure the SDK cannot place. `status` is the store's HTTP status when one was received. `download_artifacts`
     never lets this escape: it becomes the item's `error`.
 
-    Its `problem` is `problem` when given, else follows `reason` (`artifact_fetch_problem`). The SDK gives
+    Its `problem` is `problem` when given, else follows `reason` and `status` (`artifact_fetch_problem`). The SDK gives
     `client.download_limit_exceeded` naming the cap for `too_large`, `client.timeout` naming the budget for
     `timeout`, and `client.unreachable` naming the store's origin for a `network` failure that is one of a
     transport.
     """
 
     def __init__(self, message: str, uri: str, reason: str, status: int | None = None, *, problem: Problem | None = None) -> None:
-        super().__init__(message, problem=problem or artifact_fetch_problem(reason=reason, uri=uri))
+        super().__init__(message, problem=problem or artifact_fetch_problem(reason=reason, uri=uri, status=status))
         self.uri = uri
         self.reason = reason
         self.status = status
 
 
-def artifact_fetch_problem(*, reason: str, uri: str) -> Problem:
+def artifact_fetch_problem(*, reason: str, uri: str, status: int | None = None) -> Problem:
     """The problem of one reference's fetch failure that its raise site states none for.
 
     Args:
         reason: Why the fetch failed, in the download verdict's vocabulary.
         uri: The reference.
+        status: The store's HTTP status, when one was received.
 
     Returns:
         `input.reference_not_found` naming the reference for `invalid_storage_uri`, `forbidden` and `not_found`;
-        `client.link_refused` for `unsupported_url`, `plain_http_refused` and `redirect_refused`;
-        `runtime.unavailable` for `store_error` and `store_refused`, the object store failing or refusing a link
-        the platform has just signed, and for `timeout` and `network`; and `runtime.unexpected` otherwise,
-        `unknown` and a reason this version does not know included.
+        `client.link_refused` for `unsupported_url`, `plain_http_refused` and `redirect_refused`; for `store_error`
+        and `store_refused`, the object store failing or refusing a link the platform has just signed,
+        `storage_status_problem`'s reading of the store's status (`runtime.unavailable` for a `408`, a `429` or a
+        `5xx` other than `501`, `runtime.unsupported` for a `501`, and `client.response_unreadable` naming any other
+        status, a `401` or a `403` included), and `runtime.unavailable` when no status is known;
+        `runtime.unavailable` for `timeout` and `network`; and `runtime.unexpected` otherwise, `unknown` and a reason
+        this version does not know included.
     """
     match reason:
         case "invalid_storage_uri" | "forbidden" | "not_found":
@@ -1287,7 +1291,9 @@ def artifact_fetch_problem(*, reason: str, uri: str) -> Problem:
             return make_client_problem(CoreCode.CLIENT_LINK_REFUSED, params={"reason": "plain_http"})
         case "redirect_refused":
             return make_client_problem(CoreCode.CLIENT_LINK_REFUSED, params={"reason": "redirect"})
-        case "store_error" | "store_refused" | "timeout" | "network":
+        case "store_error" | "store_refused":
+            return make_client_problem(CoreCode.RUNTIME_UNAVAILABLE) if status is None else storage_status_problem(status)
+        case "timeout" | "network":
             return make_client_problem(CoreCode.RUNTIME_UNAVAILABLE)
         case _:
             return make_client_problem(CoreCode.RUNTIME_UNEXPECTED)

@@ -1654,8 +1654,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * Translate a "route absent" 404 (a bare pipelex-api with no platform block)
-   * into a clear `RunLifecycleUnavailableError`. The platform's own 404s (run
-   * not found / cross-org) are problem documents and are left for normal handling.
+   * into a clear `RunLifecycleUnavailableError`. A 404 a route answered on purpose (a run
+   * not found, cross-org included, or a method that does not exist) names its own `code`
+   * and is left for normal handling as `ApiResponseError` (`isMissingRoute404`).
    * `explanation` replaces the sentence saying why the route is missing, for a route a
    * hosted API may also lack.
    */
@@ -5608,13 +5609,22 @@ function extractNetworkErrorCode(err: unknown): string | undefined {
 }
 
 /**
- * Whether a 404 is an unmatched-route 404 (no platform deployed) rather than
- * the platform's run-not-found 404: the body is no problem document. The platform
- * answers every 404 of its own as one (`run.not_found`, `request.not_found`); a bare
- * runner's unmatched route returns Starlette's default `{"detail": "Not Found"}`.
+ * Whether a 404 says that no route serves the path (no run store deployed), rather than that a
+ * route answered it on purpose, such as a run or a method that does not exist. A route that
+ * answers a 404 of its own names its failure by a `code`, whether in a problem document
+ * (`run.not_found`, or a runner's `method.not_found` for a `method_ref` it cannot find) or in
+ * an older native body the platform still answers (`run_not_found`, `not_found`), and one defect
+ * elsewhere in the document does not make the route missing. So the 404 is a missing route when
+ * its body is not a JSON object naming a non-empty string `code`, as a bare runner's framework
+ * default `{"detail": "Not Found"}` and an empty or non-JSON body are not, or when that code is
+ * `request.not_found`, the problem a runner answers for a path no route serves (pipelex-api 0.90
+ * and later). The Python SDK's `_is_missing_route_404` reads the same rule.
  */
 function isMissingRoute404(body: string): boolean {
-  return readProblemBody(body) === undefined;
+  const reading = parseJsonBody(body);
+  if (!reading.ok || !isPlainObject(reading.value)) return true;
+  const code = reading.value["code"];
+  return typeof code !== "string" || code === "" || code === "request.not_found";
 }
 
 /**

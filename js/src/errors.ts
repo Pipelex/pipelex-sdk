@@ -670,7 +670,7 @@ export class ScopeUnavailableError extends ArtifactOperationError {
  * cannot place. `status` is the store's HTTP status when one was received. `downloadArtifacts`
  * never lets this escape: it becomes the item's `error`.
  *
- * Its problem is `options.problem` when given, else follows `reason`
+ * Its problem is `options.problem` when given, else follows `reason` and `status`
  * (`artifactFetchProblem`). The SDK gives `client.download_limit_exceeded` naming the cap for
  * `too_large`, `client.timeout` naming the budget for `timeout`, and `client.unreachable` naming
  * the store's origin for `network`.
@@ -689,7 +689,7 @@ export class ArtifactFetchError extends ArtifactOperationError {
   ) {
     super(message, {
       cause: options?.cause,
-      problem: options?.problem ?? artifactFetchProblem(reason, uri),
+      problem: options?.problem ?? artifactFetchProblem(reason, uri, status),
     });
     this.name = "ArtifactFetchError";
     this.uri = uri;
@@ -702,12 +702,16 @@ export class ArtifactFetchError extends ArtifactOperationError {
  * The problem of one reference's fetch failure that its raise site states none for, by its reason
  * and the store's status: `input.reference_not_found` naming the reference for
  * `invalid_storage_uri`, `forbidden` and `not_found`; `client.link_refused` for
- * `unsupported_url`, `plain_http_refused` and `redirect_refused`; `runtime.unavailable` for
- * `store_error` and `store_refused`, the object store failing or refusing a link the platform has
- * just signed, and for `timeout` and `network`; and `runtime.unexpected` otherwise, `unknown` and a
- * reason this version does not know included.
+ * `unsupported_url`, `plain_http_refused` and `redirect_refused`; for `store_error` and
+ * `store_refused`, the object store failing or refusing a link the platform has just signed,
+ * `storageStatusProblem`'s reading of the store's status (`runtime.unavailable` for a `408`, a
+ * `429` or a `5xx` other than `501`, `runtime.unsupported` for a `501`, and
+ * `client.response_unreadable` naming any other status, a `401` or a `403` included), and
+ * `runtime.unavailable` when no status is known; `runtime.unavailable` for `timeout` and
+ * `network`; and `runtime.unexpected` otherwise, `unknown` and a reason this version does not know
+ * included.
  */
-export function artifactFetchProblem(reason: string, uri: string): Problem {
+export function artifactFetchProblem(reason: string, uri: string, status?: number): Problem {
   switch (reason) {
     case "invalid_storage_uri":
     case "forbidden":
@@ -721,6 +725,9 @@ export function artifactFetchProblem(reason: string, uri: string): Problem {
       return buildProblem("client.link_refused", { reason: "redirect" });
     case "store_error":
     case "store_refused":
+      return status === undefined
+        ? buildProblem("runtime.unavailable", {})
+        : storageStatusProblem(status);
     case "timeout":
     case "network":
       return buildProblem("runtime.unavailable", {});

@@ -15,6 +15,7 @@ import type { Problem } from "mthds/protocol";
 import { readHostedAnswer } from "../src/answer-reading.js";
 import {
   ApiUnreachableError,
+  ArtifactFetchError,
   ArtifactOperationError,
   InputPreparationError,
   InvalidInputValueError,
@@ -71,7 +72,7 @@ interface CaseFile {
   answers: AnswerCase[];
   storage_statuses: { status: number; code: string }[];
   upload_transport: { reason: UploadTransportReason | null; status: number | null; code: string }[];
-  artifact_fetch: { reason: string; code: string }[];
+  artifact_fetch: { reason: string; status: number | null; code: string }[];
   method_file_transfer: {
     reason: MethodFileTransferReason;
     status: number | null;
@@ -194,10 +195,12 @@ describe("sdk-problems.json", () => {
     },
   );
 
-  it.each(CASES.artifact_fetch.map((entry) => [entry.reason, entry.code] as const))(
-    "an artifact fetch failure %s carries %s",
-    (reason, code) => {
-      expect(artifactFetchProblem(reason, "pipelex-storage://org/file.pdf").code).toBe(code);
+  it.each(CASES.artifact_fetch.map((entry) => [entry.reason, entry.status, entry.code] as const))(
+    "an artifact fetch failure %s with the status %s carries %s",
+    (reason, status, code) => {
+      const uri = "pipelex-storage://org/file.pdf";
+      expect(artifactFetchProblem(reason, uri, status ?? undefined).code).toBe(code);
+      expect(new ArtifactFetchError("failed", uri, reason, status ?? undefined).code).toBe(code);
     },
   );
 
