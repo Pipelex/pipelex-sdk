@@ -47,6 +47,12 @@ function statusLabel(status: string): string {
  * null, so it shows just the spinner + elapsed. `role="status"` +
  * `aria-live="polite"` announces progress to assistive tech without stealing
  * focus.
+ *
+ * Progress wears the accent: the card is the pale accent fill
+ * (`--brand-muted`) and its text the accent's ink on it
+ * (`--brand-muted-foreground`), which reads at 4.5:1 there whatever colour an
+ * organization picked, so every line keeps the one ink and none is faded. An
+ * unbranded app shows the neutral muted fill with the button colour as ink.
  */
 export function RunStatus({ status, elapsedMs, health, runId }: RunStatusProps) {
   const seconds = (elapsedMs / 1000).toFixed(1);
@@ -54,21 +60,21 @@ export function RunStatus({ status, elapsedMs, health, runId }: RunStatusProps) 
     <div
       role="status"
       aria-live="polite"
-      className="flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900"
+      className="flex items-center gap-3 rounded-lg border border-brand/25 bg-brand-muted p-4 text-sm text-brand-muted-foreground"
     >
       <span
         aria-hidden="true"
-        className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-blue-300 border-t-blue-700"
+        className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-brand/30 border-t-brand"
       />
       <div className="space-y-0.5">
         <p className="font-medium">
           {status ? `${statusLabel(status)}… ` : "Running… "}
           {/* aria-hidden: ticks every 250ms — announcing it would drown the live region. */}
-          <span aria-hidden="true" className="font-normal text-blue-700">
+          <span aria-hidden="true" className="font-normal">
             {seconds}s
           </span>
         </p>
-        {health && <p className="text-xs text-blue-700">{HEALTH_NOTES[health]}</p>}
+        {health && <p className="text-xs">{HEALTH_NOTES[health]}</p>}
         {/* The run id, where a person can read and copy it: a run started from
             an inline bundle has no catalog id, so once this page is closed the
             id is the only way back to it — in the back office, through the
@@ -80,7 +86,7 @@ export function RunStatus({ status, elapsedMs, health, runId }: RunStatusProps) 
             otherwise be read out as a run id's worth of hexadecimal the moment
             it arrives. `select-all` makes one click take the whole id. */}
         {runId && (
-          <p aria-live="off" className="text-xs text-blue-700">
+          <p aria-live="off" className="text-xs">
             Run <span className="select-all font-mono">{runId}</span>
           </p>
         )}
