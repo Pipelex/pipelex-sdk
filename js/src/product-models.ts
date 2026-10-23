@@ -1,8 +1,8 @@
 /**
  * Pipelex-product wire models — the snake_case JSON shapes the hosted-product
- * routes (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/billing/*`,
+ * routes (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/branding`, `/v1/billing/*`,
  * `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
- * `/v1/resolve-storage-url`, `/v1/upload`, `/v1/upload/grant`, `/v1/runs`) speak.
+ * `/v1/resolve-storage-url`, `/v1/upload`, `/v1/upload/grant`, `/v1/files`, `/v1/runs`) speak.
  *
  * These are the management surface a consumer (today `pipelex-app`) hand-rolls.
  * The wire is snake_case; any camelCase remap is a consumer's UI concern and
@@ -577,6 +577,105 @@ export interface MembershipsResponse {
   active_org_feature_flags: string[];
 }
 
+// ── Organization branding (`/v1/branding`, `/v1/organizations/{id}/branding`) ──
+//
+// An organization may set up to two logos and two colour sets of three colours, which its shared
+// method apps and the apps scaffolded from the method-app template wear. Every member and every
+// API key reads it with `getBranding`; an admin writes it with `updateOrganizationBranding`. Both
+// answer the same `OrganizationBranding`. See `docs/organization-branding.md`.
+
+/**
+ * One colour set: the button, accent and header colours, each `#rrggbb` in lower case, or `null`
+ * when not set. The platform always sends all three keys.
+ */
+export interface BrandingColors {
+  /** The button colour. */
+  action: string | null;
+  /** The accent colour: links, the active tab, the brand ink. */
+  accent: string | null;
+  /** The header band's colour. */
+  header: string | null;
+}
+
+/**
+ * What the platform recorded about a logo when it accepted it.
+ *
+ * `content_type` is the type the platform read from the file's own bytes, never the type the
+ * upload declared: `image/png`, `image/jpeg`, `image/webp` or `image/svg+xml`. `width` and
+ * `height` are the image's size in pixels for a raster, oriented as a browser draws it, and for an
+ * SVG its `width` and `height` in pixels when both are in absolute units, which is the size a
+ * browser draws it at, else the width and height of its `viewBox`; an SVG's may be fractional.
+ * Their ratio is the logo's shape, which sizes its box before the image loads.
+ */
+export interface LogoDescriptor {
+  /**
+   * The platform's own copy of the logo, `pipelex-storage://<org_id>/branding/<uuid>.<ext>`, never
+   * the upload URI the write sent: the platform copies a logo it accepts, under a fresh uuid each
+   * time, so the same bytes attached again get a new URI. Sending it back unchanged in its slot
+   * keeps the logo. `resolveStorageUrl` turns it into a short-lived link to its bytes.
+   */
+  uri: string;
+  /** The SHA-256 of the logo's bytes, 64 lower-case hexadecimal digits: a cache key for them. */
+  sha256: string;
+  content_type: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * An organization's branding — what `getBranding` and `updateOrganizationBranding` answer.
+ *
+ * `colors` is the light set and `dark_colors` the dark one, used in dark mode only: a dark colour
+ * that is `null` falls back to the light colour of the same role, and a light one that is `null`
+ * to Pipelex's own palette. A logo is `null` when its slot is empty. A personal workspace, or a
+ * team that set nothing, answers every colour and logo `null`.
+ */
+export interface OrganizationBranding {
+  org_id: string;
+  /** The organization's display name, the wordmark a client shows when it has no logo. */
+  org_name: string;
+  colors: BrandingColors;
+  dark_colors: BrandingColors;
+  /** The square logo, for the organization menu and small headers. */
+  square_logo: LogoDescriptor | null;
+  /** The wide logo, at least one and a half times as wide as it is tall, for an app's header. */
+  wide_logo: LogoDescriptor | null;
+}
+
+/**
+ * Changes to one colour set. A key set to a colour sets it, a key set to `null` clears it, and a
+ * key left out keeps its value. A colour is `#rrggbb` in either case, stored in lower case; the
+ * platform refuses anything else with a `422` `validation_failed` whose `errors[]` entry names the
+ * key, such as `colors.action`.
+ */
+export interface BrandingColorsUpdate {
+  action?: string | null;
+  accent?: string | null;
+  header?: string | null;
+}
+
+/**
+ * The body of `updateOrganizationBranding`: every key optional, a value sets it, `null` clears it,
+ * and a key left out keeps its value, so `{}` writes nothing and answers the branding as it
+ * stands.
+ *
+ * - `colors` and `dark_colors` take a `BrandingColorsUpdate`, or `null` to clear all three
+ *   colours of that set.
+ * - `square_logo` and `wide_logo` take the `pipelex-storage://` URI of a file the organization
+ *   uploaded on its own (`requestUploadGrant` or `upload`) to set a new logo, the `uri` the
+ *   branding answers for that slot to keep it, or `null` to remove it. Any other URI, a run's or
+ *   a method's file, a stale `branding/` copy or the other slot's logo, is refused as
+ *   `logo_not_an_upload`, so a logo cannot move between slots by its URI. The platform reads and
+ *   measures an upload before it accepts it, keeps its own copy under `branding/`, whose URI it
+ *   answers, and erases the copy a write replaces or clears; the upload is left as it is.
+ */
+export interface OrganizationBrandingUpdate {
+  colors?: BrandingColorsUpdate | null;
+  dark_colors?: BrandingColorsUpdate | null;
+  square_logo?: string | null;
+  wide_logo?: string | null;
+}
+
 // ── Billing (`/v1/billing/*`) ────────────────────────────────────────────
 
 export interface SubscriptionResponse {
@@ -684,12 +783,25 @@ export interface UploadInput {
   filename: string;
   data: string;
   content_type: string;
+  /** What the upload is recorded as; `uploaded` when omitted. */
+  kind?: UploadKind;
+  /**
+   * The bare catalog id of the method a `test` file is for, required with `kind: "test"`
+   * and refused without it.
+   */
+  method_id?: string;
 }
 
 export interface UploadedFile {
   uri: string;
   filename: string;
 }
+
+/**
+ * What an upload is recorded as: `uploaded`, a person's file, or `test`, a test input
+ * made for one method, which names that method in `method_id`.
+ */
+export type UploadKind = "uploaded" | "test";
 
 /**
  * What an upload grant is requested for — `POST /v1/upload/grant`. The file is
@@ -732,6 +844,137 @@ export interface UploadGrant {
   expires_at: string;
   /** The largest file any grant allows, in bytes (the service's upload cap). */
   max_bytes: number;
+}
+
+// ── An organization's files (`/v1/files`) ────────────────────────────────
+//
+// A file is the record the platform keeps of a stored object: a member's upload, a test file
+// made for a method, or a file a run made that reached its result, each with the name a person
+// sees, its type, its size and where it came from. A run, a form or an example still points at
+// the bytes by their `pipelex-storage://` address, the record's `uri`, which a run's inputs take
+// as they take any address (see `docs/files.md`).
+
+/**
+ * What made a file: `uploaded`, a person's upload or a run's inline input; `generated`, a file a
+ * run made whose result reaches it; `test`, a test input made for one method, which its
+ * `origin.method_id` names.
+ */
+export type FileKind = "uploaded" | "generated" | "test";
+
+/**
+ * Who or what made a file, as far as the platform knows it. Each kind fills a different part, and
+ * the rest is `null`: an upload names the surface it came through; a generated file or a run's
+ * inline input names the run, its method and the version or draft that ran; a test file names the
+ * surface it came through and the method it was made for. The member a file is attributed to is
+ * the record's `created_by`, never repeated here.
+ */
+export interface FileOrigin {
+  /**
+   * The surface an upload came through, as its request's `User-Agent` declared it (`app`, `mcp`,
+   * `cli`, `n8n`, `hook`, `sdk`, `raw_http`, and more as surfaces are added); `null` for a run's
+   * files. Self-declared, so it is provenance to show, never authority.
+   */
+  surface: string | null;
+  /** The run that made the file; `null` for an upload. */
+  run_id: string | null;
+  /** The method whose run made the file, or the method a test file was made for; `null` otherwise. */
+  method_id: string | null;
+  /**
+   * The published version number or `"draft"` that ran, for a file made by a saved method's run;
+   * `null` otherwise.
+   */
+  method_version: number | "draft" | null;
+}
+
+/**
+ * One row of a file list, what a list or a picker shows. A list never holds a file a run made
+ * along the way, nor an upload whose bytes have not been seen stored.
+ */
+export interface FileSummary {
+  /** The record's id, `fl_…`. */
+  file_id: string;
+  /** The `pipelex-storage://` address of the bytes, which a run's inputs take as they take any address. */
+  uri: string;
+  /** The name shown and used for downloads; it starts as the name the file arrived with and changes with a rename. */
+  name: string;
+  /** The MIME type the object is stored under. */
+  media_type: string;
+  /** The format key the list's `format` filter matches: `pdf`, `docx`, `image`, `html` and the rest of the runtime's table. */
+  format: string;
+  /** The byte size. */
+  size: number;
+  kind: FileKind;
+  origin: FileOrigin;
+  /** ISO-8601 instant the record was made. */
+  created_at: string;
+  /** The member the file is attributed to: the uploader, or the member who started the run that made it. */
+  created_by: string;
+}
+
+/**
+ * Query for one page of an organization's files — `GET /v1/files`. Every member is optional, and
+ * each is sent only when given, so an empty string is sent and refused by the API rather than
+ * dropped into an unfiltered list.
+ *
+ * `methodId`, `runId` and `createdBy` choose which list serves the page: a method's list, a
+ * run's own list, one member's, or, with none of them, the organization's. The other members
+ * filter whichever list serves it, after the index read, so a filtered page can hold fewer rows
+ * than `limit`, or none, and still carry a `nextCursor`.
+ */
+export interface ListFilesQuery {
+  /** A case-insensitive search in a file's name and the name it arrived with, applied server-side; at most 200 characters. */
+  q?: string;
+  /** Only the files of this kind. */
+  kind?: FileKind;
+  /**
+   * Only the files of one of these format keys (`pdf`, `image`, …), sent as one repeated
+   * `format=` parameter per value; at most 100. An empty list names no format and is a
+   * `RequestArgumentError` before any request, since sent as no parameter it would list every
+   * format.
+   */
+  format?: readonly string[];
+  /**
+   * Only the files of one of these MIME types (`image/png`, …), sent as one repeated
+   * `media_type=` parameter per value; at most 100. An empty list is refused as `format`'s is.
+   */
+  mediaType?: readonly string[];
+  /** The method's list, by its bare catalog id: the files its runs and examples took or made. Sent as `method_id`. */
+  methodId?: string;
+  /**
+   * The run's own list: its final outputs and its inline inputs, in the order of their addresses
+   * rather than newest first. Beside `methodId`, the run's list when the method is the run's own,
+   * and an empty page otherwise. The files a run took from the organization as inputs are not in
+   * it. Sent as `run_id`.
+   */
+  runId?: string;
+  /** One member's files by user id, or `"me"` for the caller's own: their uploads and their runs' outputs. Sent as `created_by`. */
+  createdBy?: string;
+  /**
+   * Only the files created at or after this INSTANT, ISO-8601 with a UTC offset
+   * (`2026-10-01T00:00:00Z`), inclusive. A bare date or a naive timestamp is refused by the API
+   * with a `400`. Sent as `created_from`.
+   */
+  createdFrom?: string;
+  /** Only the files created at or before this instant. Same rules as `createdFrom`. Sent as `created_to`. */
+  createdTo?: string;
+  /** Page size, from 1 to 200; the API defaults to 50 and refuses one outside that range with a `422`. */
+  limit?: number;
+  /** Opaque `nextCursor` from the previous page, bound to the list and the filters that issued it. */
+  cursor?: string;
+}
+
+/**
+ * One page of an organization's files, newest first (in the order of their addresses under
+ * `runId`).
+ *
+ * `nextCursor` is opaque — pass it straight back to `listFiles` with the same filters to
+ * continue; `null` means this was the last page. A filtered page can hold fewer rows than
+ * `limit`, or none, and still carry a `nextCursor`: only a `null` cursor ends the list, and
+ * `iterateFiles` keeps following the cursor through such a page. There is deliberately no total.
+ */
+export interface FilePage {
+  items: FileSummary[];
+  nextCursor: string | null;
 }
 
 // ── Runs list / update (`/v1/runs`) ──────────────────────────────────────

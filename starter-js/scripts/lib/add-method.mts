@@ -230,11 +230,18 @@ export function addressSegments(methodRef: string): string[] {
 
 /** One `.mthds` file of a bundle, as read. */
 export interface BundleFile {
-  /** Where it lands inside the method directory, forward slashes: `main.mthds`. */
+  /**
+   * Where it lands inside the method directory, forward slashes: `main.mthds`.
+   * It is also the file's tree path, the key the crate routes and the run take
+   * it under, since the method directory is the tree's root.
+   */
   relative: string;
-  /** How messages and validation diagnostics name it. */
-  label: string;
   content: string;
+}
+
+/** A bundle's files as the method's tree: each one's text, keyed by its tree path. */
+export function treeOf(files: readonly BundleFile[]): Record<string, string> {
+  return Object.fromEntries(files.map((file) => [file.relative, file.content]));
 }
 
 /** A bundle the gesture was pointed at, read and placed. */
@@ -283,7 +290,6 @@ function notRegularRefusal(where: string, kind: string): string {
 async function readBundleDir(
   dir: string,
   display: string,
-  label: (relative: string) => string,
 ): Promise<{ files: BundleFile[]; treePaths: string[] }> {
   let treePaths: string[];
   try {
@@ -300,11 +306,7 @@ async function readBundleDir(
   }
   const files: BundleFile[] = [];
   for (const relative of bundlePaths) {
-    files.push({
-      relative,
-      label: label(relative),
-      content: await readUtf8(path.join(dir, relative)),
-    });
+    files.push({ relative, content: await readUtf8(path.join(dir, relative)) });
   }
   return { files, treePaths };
 }
@@ -363,11 +365,7 @@ export async function readBundle(given: string, cwd: string, repoRoot: string): 
     }
     const methodDir = path.join(methodsRoot, dirName!);
     const display = `methods/${dirName}/`;
-    const { files, treePaths } = await readBundleDir(
-      methodDir,
-      display,
-      (relative) => `methods/${dirName}/${relative}`,
-    );
+    const { files, treePaths } = await readBundleDir(methodDir, display);
     if (treePaths.includes(MANIFEST_FILENAME)) {
       throw new AddMethodError(
         `${display} holds a ${MANIFEST_FILENAME} beside its .mthds files — a method directory ` +
@@ -387,7 +385,7 @@ export async function readBundle(given: string, cwd: string, repoRoot: string): 
     }
     const content = await readUtf8(resolved);
     return {
-      files: [{ relative: path.basename(resolved), label: shown, content }],
+      files: [{ relative: path.basename(resolved), content }],
       inPlace: null,
       display: shown,
     };
@@ -404,9 +402,7 @@ export async function readBundle(given: string, cwd: string, repoRoot: string): 
     );
   }
   const display = `${shown}/`;
-  const { files } = await readBundleDir(resolved, display, (relative) =>
-    path.join(shown, relative),
-  );
+  const { files } = await readBundleDir(resolved, display);
   return { files, inPlace: null, display };
 }
 
@@ -1104,9 +1100,9 @@ export function renderUploads(plan: ScaffoldPlan): string {
  *
  * A selector-sourced method lives elsewhere, so `buildOptions` sends the same
  * `method_ref` / `method_id` the tree was projected from. A bundle-sourced one
- * sends the bundle itself, as `mthds_contents`, read through the one generic
- * loader. Everything else — the gate, the file path, the exports — is the
- * same for both.
+ * sends the bundle itself, as the method's tree in `contents`, read through the
+ * one generic loader. Everything else — the gate, the file path, the exports —
+ * is the same for both.
  */
 export function renderAction(plan: ScaffoldPlan): string {
   const { names, source, pipe, files } = plan;
@@ -1191,8 +1187,8 @@ export function renderAction(plan: ScaffoldPlan): string {
       source.kind === "files"
         ? {
             load: ["  const bundles = await loadMethodBundles(METHOD_DIR);"],
-            prepare: "    files: bundles.map((content) => ({ content })),",
-            run: "    mthds_contents: bundles,",
+            prepare: "    contents: bundles,",
+            run: "    contents: bundles,",
           }
         : {
             load: [],
@@ -1266,7 +1262,7 @@ export function renderAction(plan: ScaffoldPlan): string {
   } else {
     const run =
       source.kind === "files"
-        ? "    mthds_contents: await loadMethodBundles(METHOD_DIR),"
+        ? "    contents: await loadMethodBundles(METHOD_DIR),"
         : `    ${selectorConstant(source.selector).field}: ${selectorConstant(source.selector).name},`;
     body.push(
       "/**",
@@ -1274,8 +1270,8 @@ export function renderAction(plan: ScaffoldPlan): string {
       " *",
       ...(source.kind === "files"
         ? [
-            " * The bundle travels inline as `mthds_contents`, every file of it, in the",
-            " * order `npm run codegen` read them.",
+            " * The bundle travels as the method's tree, `contents`, every file of it",
+            " * keyed by its path in the method's directory, as `npm run codegen` sends it.",
           ]
         : [
             " * `PipelexStartOptions` is the protocol's run arguments plus the run extensions;",
@@ -1355,7 +1351,7 @@ export function renderActionTest(plan: ScaffoldPlan): string {
       : [manifestImport(names)];
   const methodField =
     source.kind === "files"
-      ? `      mthds_contents: await loadMethodBundles(${JSON.stringify(names.slug)}),`
+      ? `      contents: await loadMethodBundles(${JSON.stringify(names.slug)}),`
       : `      ${selectorConstant(source.selector).field}: MANIFEST.${selectorConstant(source.selector).field},`;
 
   const head = [
@@ -1924,13 +1920,15 @@ export async function planAddMethod(
       }
     }
 
-    // The files are sent under the labels they were read by, so a diagnostic
-    // names the file the person pointed at. The label does not reach the
-    // artifacts: the crate is the same whatever the files are called.
+    // The files are sent as the method's tree, each under its path in the
+    // bundle, the path it keeps once copied into `methods/<name>/`, so a
+    // diagnostic names it relative to the bundle the failure line names. The
+    // path does not reach the artifacts: the crate is the same whatever the
+    // files are called.
     const pending: MethodSource = {
       name: bundle.inPlace ?? bundle.display,
       kind: "files",
-      files: bundle.files.map((file) => ({ content: file.content, source: file.label })),
+      files: treeOf(bundle.files),
       sourceHashes: {},
     };
     // The tree's directory is not known until the pipe is, and only the
@@ -1960,7 +1958,7 @@ export async function planAddMethod(
     methodSource = {
       name: names.slug,
       kind: "files",
-      files: placed.map((file) => ({ content: file.content, source: file.relative })),
+      files: treeOf(bundle.files),
       sourceHashes: Object.fromEntries(
         placed.map((file) => [file.relative, hashSource(file.content)]),
       ),

@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.49.0] - 2026-10-23
+
+### Added
+
+- **An organization's branding, read and written**: `get_branding()` reads the active organization's name, light and dark colour sets and square and wide logos (`GET /v1/branding`), for any role and by API key too, and `update_organization_branding(org_id, update)` is an admin's write of them (`PATCH /v1/organizations/{org_id}/branding`), which sends only the fields its `OrganizationBrandingUpdate` sets, an explicit `None` clearing one. Both answer an `OrganizationBranding`, whose logo `uri` is the platform's own copy under `branding/`, which sent back unchanged keeps the logo, with the models `BrandingColors`, `LogoDescriptor` and `BrandingColorsUpdate` in `pipelex_sdk.product_models` (`docs/organization-branding.md`).
+- **`LogoRefusalCode`, the codes of a refused logo**: a branding write that refuses a logo names its slot in `ApiResponseError.errors`, each entry's `field` being `square_logo` or `wide_logo`, its `code` a member of this `StrEnum` in `pipelex_sdk.errors`, and its `detail` the sentence to show under that slot; a refused colour is named by its dotted key, such as `colors.action`.
+
 ## [v0.48.1] - 2026-10-22
 
 ### Fixed

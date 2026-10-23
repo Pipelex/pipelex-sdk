@@ -35,12 +35,12 @@ const CONTRACT = requireContract(PIPE_IO_CONTRACTS, "check_claims", PIPE_CODE);
 /**
  * SDK options shared by both paths — `execute` and `start` take the same shape.
  *
- * The bundle travels inline as `mthds_contents`, every file of it, in the
- * order `npm run codegen` read them.
+ * The bundle travels as the method's tree, `contents`, every file of it
+ * keyed by its path in the method's directory, as `npm run codegen` sends it.
  */
 async function buildOptions(inputs: Record<string, unknown>): Promise<PipelexStartOptions> {
   return {
-    mthds_contents: await loadMethodBundles(METHOD_DIR),
+    contents: await loadMethodBundles(METHOD_DIR),
     pipe_code: PIPE_REF,
     inputs,
   };

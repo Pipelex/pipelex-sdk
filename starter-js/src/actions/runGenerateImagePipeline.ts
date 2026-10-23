@@ -11,7 +11,7 @@ import {
   type StartOutcome,
 } from "@/lib/durableRun";
 import { gateRunInputs, requireContract } from "@/lib/runInputs";
-import type { StartOptions } from "@pipelex/sdk";
+import type { PipelexStartOptions } from "@pipelex/sdk";
 
 const PIPE_CODE = "generate_image";
 /**
@@ -23,10 +23,10 @@ const PIPE_REF = "generate_image.generate_image";
 
 const CONTRACT = requireContract(PIPE_IO_CONTRACTS, "generate_image", PIPE_CODE);
 
-async function buildOptions(inputs: Record<string, unknown>): Promise<StartOptions> {
+async function buildOptions(inputs: Record<string, unknown>): Promise<PipelexStartOptions> {
   return {
     pipe_code: PIPE_REF,
-    mthds_contents: await loadMethodBundles("generate-image"),
+    contents: await loadMethodBundles("generate-image"),
     inputs,
   };
 }

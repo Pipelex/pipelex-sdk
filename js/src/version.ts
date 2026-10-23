@@ -3,4 +3,4 @@
  * `User-Agent` without importing the public barrel. Kept in sync with
  * `package.json` — enforced by `tests/index.test.ts`.
  */
-export const SDK_VERSION = "0.48.1";
+export const SDK_VERSION = "0.49.0";

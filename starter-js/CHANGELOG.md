@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.49.0] - 2026-10-23
+
+### Changed
+
+- **The starter runs on `@pipelex/sdk` 0.48.1 and sends a bundle as its tree (Breaking)**: moved from 0.45.0, it sends a bundle to the runs, `prepareInputs`, `/v1/codegen` and `/v1/pipe-io` as `contents`, each `.mthds` file's text keyed by its path inside `methods/<name>/`, which `loadMethodBundles` now returns and every bundle-sourced tab and every action `make add-method` writes passes, so an action of a project's own that passed `mthds_contents` passes `contents` instead. A refusal from `make codegen` or `make add-method` names a bundle's file by that path, under the line naming the method. `npm ls mthds` lists two copies again, the form kernel's 0.30.1 and the SDK's 0.33.0, until a release of `@pipelex/mthds-form` takes the SDK's range.
+
 ## [v0.46.0] - 2026-10-19
 
 ### Added

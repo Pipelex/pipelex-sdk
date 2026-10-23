@@ -33,7 +33,6 @@ import {
   type CodegenValidReport,
   type GeneratedArtifact,
   type InputForm,
-  type MthdsFileItem,
   type OutputForm,
   type PipeIOContracts,
 } from "@pipelex/sdk";
@@ -272,11 +271,12 @@ export function readMethodProse(blueprint: unknown): MethodProse {
 }
 
 /**
- * Read `MethodProse` out of a method's `.mthds` files.
+ * Read `MethodProse` out of a method's `.mthds` files, each one's text keyed by
+ * its tree path, as the crate routes take them and `/v1/pipe-io` echoes them.
  *
  * The domain's description is the one in the method's primary file: the first
- * that declares a `main_pipe`, else the first, which is the file a method leads
- * with. Every file's pipes contribute their descriptions, each qualified by its
+ * that declares a `main_pipe`, else the first in the map's order, which is the
+ * file a method leads with. Every file's pipes contribute their descriptions, each qualified by its
  * own file's domain, so a pipe declared beside the main one is described too;
  * the primary file's come first, since `methodVocabulary` keeps the first
  * spelling it meets.
@@ -285,11 +285,11 @@ export function readMethodProse(blueprint: unknown): MethodProse {
  * the same closure, so such a file is a disagreement between two TOML parsers,
  * not a broken method, and the prose is optional: every caller has a fallback.
  */
-export function methodProseOf(files: readonly MthdsFileItem[]): MethodProse {
+export function methodProseOf(files: Readonly<Record<string, string>>): MethodProse {
   const blueprints: Record<string, unknown>[] = [];
-  for (const file of files) {
+  for (const content of Object.values(files)) {
     try {
-      blueprints.push(parseToml(file.content));
+      blueprints.push(parseToml(content));
     } catch {
       continue;
     }
@@ -374,7 +374,7 @@ export async function fetchPipeIoArtifacts(
       pipeIoContracts: response.pipe_io_contracts,
       inputForm: response.input_form,
       outputForm: response.output_form,
-      prose: methodProseOf(source.kind === "files" ? source.files : (response.files ?? [])),
+      prose: methodProseOf(source.kind === "files" ? source.files : (response.files ?? {})),
       defaultPipeRef: response.default_pipe_ref,
     };
   } catch (error) {
@@ -420,7 +420,7 @@ export async function fetchGenerated(
     // No `pipe_ref`: `kind: "types"` is concept-set-wide and rejects it with a 422.
     const response = await client.codegen(
       source.kind === "files"
-        ? { files: source.files, kind: "types", target: "ts-zod" }
+        ? { contents: source.files, kind: "types", target: "ts-zod" }
         : { ...source.selector, kind: "types", target: "ts-zod" },
     );
     if (!response.is_valid) {

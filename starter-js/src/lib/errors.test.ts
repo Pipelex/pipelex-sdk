@@ -718,7 +718,7 @@ describe("classifyPipelineError — a refusal's problem document", () => {
       undefined,
       undefined,
       {
-        problem: {
+        details: {
           retryable: true,
           userAction: {
             kind: "wait_and_retry",
@@ -753,7 +753,7 @@ describe("classifyPipelineError — a refusal's problem document", () => {
       undefined,
       undefined,
       {
-        problem: {
+        details: {
           userAction: { kind: "unknown", detail: "Check pipe_stack to identify which pipe failed" },
         },
       },
@@ -801,7 +801,7 @@ describe("classifyPipelineError — a refusal's problem document", () => {
       "No API key for the provider.",
       undefined,
       undefined,
-      { problem: { retryable: true }, problemDocument: { retryable: true } },
+      { details: { retryable: true }, problemDocument: { retryable: true } },
     );
     expect(classifyPipelineError(err, OVERRIDE_ENV).retry?.retryable).toBe(true);
   });

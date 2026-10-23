@@ -116,7 +116,7 @@ def refused_start() -> ApiResponseError:
             if client.client is not None:
                 await client.client.aclose()
             client.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
-            await client.start(pipe_code="sales_copy.pitch_product", mthds_contents=["domain = 'sales_copy'"])
+            await client.start(pipe_code="sales_copy.pitch_product", files={"main.mthds": "domain = 'sales_copy'"})
 
     with pytest.raises(ApiResponseError) as caught:
         asyncio.run(start())

@@ -7,7 +7,7 @@ const getRunStatus = vi.fn();
 const getRunResult = vi.fn();
 
 vi.mock("@/lib/loadBundle", () => ({
-  loadMethodBundles: vi.fn().mockResolvedValue(["DUMMY_BUNDLE_TOML"]),
+  loadMethodBundles: vi.fn().mockResolvedValue({ "main.mthds": "DUMMY_BUNDLE_TOML" }),
 }));
 
 vi.mock("@/lib/pipelexClient", () => ({
@@ -55,7 +55,7 @@ describe("runExtractEntitiesBlocking", () => {
     expect(loadMethodBundles).toHaveBeenCalledWith("extract-entities");
     expect(execute).toHaveBeenCalledWith({
       pipe_code: "extract_entities.extract_entities",
-      mthds_contents: ["DUMMY_BUNDLE_TOML"],
+      contents: { "main.mthds": "DUMMY_BUNDLE_TOML" },
       inputs: WIRE_INPUTS,
     });
     // `toMatchObject`: these tests assert delegation + narrowed output; the `usage`
@@ -95,7 +95,7 @@ describe("startExtractEntitiesRun", () => {
     const result = await startExtractEntitiesRun(DATA);
     expect(start).toHaveBeenCalledWith({
       pipe_code: "extract_entities.extract_entities",
-      mthds_contents: ["DUMMY_BUNDLE_TOML"],
+      contents: { "main.mthds": "DUMMY_BUNDLE_TOML" },
       inputs: WIRE_INPUTS,
     });
     expect(result).toEqual({ ok: true, runId: "run-1" });

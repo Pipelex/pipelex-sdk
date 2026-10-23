@@ -2,8 +2,9 @@
 
 `method/` inside the package holds the method in one of two forms, never both:
 
-- **a bundle**, the method's own `.mthds` files, sent as the run's `mthds_contents`, every file under
-  the directory in the order of its path;
+- **a bundle**, the method's own `.mthds` files, sent as the method's tree, the run's `contents`:
+  each file's text keyed by its tree path, its path under the directory, which is the tree's root,
+  in the order of that path, which the SDK sends inline when it is small and by hash otherwise;
 - **a manifest**, `method.json`, naming a method that lives elsewhere: a catalog id (`method_id`) or
   a published address (`method_ref`), read by `lib/manifest.py`.
 
@@ -12,12 +13,10 @@ installed CLI (`uv tool install .`, or a wheel) has no repository around it, and
 `method/` as package data.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from typing import TypedDict
-
-from pipelex_sdk.crate_models import MthdsFileItem
 
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.manifest import MANIFEST_FILENAME, parse_manifest
@@ -37,18 +36,10 @@ class MethodSourceError(AppError):
     """A `method/` directory that does not name exactly one method."""
 
 
-class RunSourceKwargs(TypedDict):
-    """The keyword arguments the SDK's `start` and `execute` take to name a run's method."""
+class SourceKwargs(TypedDict):
+    """The keyword arguments the SDK's `start`, `execute` and `prepare_inputs` all take to name the method."""
 
-    mthds_contents: list[str] | None
-    method_id: str | None
-    method_ref: str | None
-
-
-class CrateSourceKwargs(TypedDict):
-    """The keyword arguments the SDK's `prepare_inputs` takes to name the method, as the crate routes do."""
-
-    files: list[MthdsFileItem] | None
+    contents: dict[str, bytes | str] | None
     method_id: str | None
     method_ref: str | None
 
@@ -57,33 +48,22 @@ class CrateSourceKwargs(TypedDict):
 class MethodSource:
     """The one way a run names its method; exactly one field is set.
 
-    The fields are the SDK's own run sources: inline bundle contents, a catalog id, or a published
-    address. `run_kwargs` hands them to `start` and `execute` as the keyword arguments of the same
-    names, so both kinds of run name the method the same way.
+    The fields are the SDK's own method sources: a bundle as the method's tree, a catalog id, or a
+    published address. `kwargs` hands them to `start`, `execute` and `prepare_inputs` as their keyword
+    arguments, the tree as `contents`, so a run and its inputs' preparation name the method the
+    same way.
     """
 
-    mthds_contents: tuple[str, ...] | None = None
+    #: A bundle as the method's tree: each `.mthds` file's text, keyed by its path in `method/`, in the
+    #: order of that path. The server names a file by that path in a diagnostic about it.
+    files: dict[str, str] | None = None
     method_id: str | None = None
     method_ref: str | None = None
-    #: Where each of a bundle's files comes from, `method/<path>`, beside its contents: the label the
-    #: server names in a diagnostic about the file. Not part of what the source is.
-    labels: tuple[str, ...] | None = field(default=None, compare=False)
 
-    def run_kwargs(self) -> RunSourceKwargs:
-        """The source as the keyword arguments of the SDK's `start` and `execute`."""
-        return RunSourceKwargs(
-            mthds_contents=list(self.mthds_contents) if self.mthds_contents is not None else None,
-            method_id=self.method_id,
-            method_ref=self.method_ref,
-        )
-
-    def crate_kwargs(self) -> CrateSourceKwargs:
-        """The source as the keyword arguments of the SDK's `prepare_inputs`: a bundle as files, each with its label."""
-        bundle: list[MthdsFileItem] | None = None
-        if self.mthds_contents is not None:
-            labels = self.labels if self.labels is not None and len(self.labels) == len(self.mthds_contents) else (None,) * len(self.mthds_contents)
-            bundle = [MthdsFileItem(content=content, source=label) for content, label in zip(self.mthds_contents, labels, strict=True)]
-        return CrateSourceKwargs(files=bundle, method_id=self.method_id, method_ref=self.method_ref)
+    def kwargs(self) -> SourceKwargs:
+        """The source as the keyword arguments of the SDK's `start`, `execute` and `prepare_inputs`."""
+        tree: dict[str, bytes | str] | None = dict(self.files) if self.files is not None else None
+        return SourceKwargs(contents=tree, method_id=self.method_id, method_ref=self.method_ref)
 
 
 def method_dir() -> Traversable:
@@ -115,10 +95,7 @@ def read_method_source(directory: Traversable | None = None) -> MethodSource:
     if not bundles:
         msg = f"{where} holds neither .mthds files nor a {MANIFEST_FILENAME}."
         raise MethodSourceError(msg, hint="Restore it from version control: it holds the method's .mthds files or its method.json.")
-    return MethodSource(
-        mthds_contents=tuple(_read_utf8(entry, where=f"{where}{relative}") for relative, entry in bundles),
-        labels=tuple(f"{METHOD_DIRNAME}/{relative}" for relative, _ in bundles),
-    )
+    return MethodSource(files={relative: _read_utf8(entry, where=f"{where}{relative}") for relative, entry in bundles})
 
 
 def _read_utf8(entry: Traversable, *, where: str) -> str:

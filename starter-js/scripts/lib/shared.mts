@@ -35,7 +35,6 @@ import {
   isStampableArtifactPath,
   type CodegenTreeFile,
   type InputForm,
-  type MthdsFileItem,
   type OutputForm,
   type PipeIOContracts,
   type PipeIORequest,
@@ -138,7 +137,7 @@ export interface SourcesSidecar {
  */
 export function pipeIoRequest(source: MethodSource): PipeIORequest {
   return source.kind === "files"
-    ? { files: source.files, all_pipes: true }
+    ? { contents: source.files, all_pipes: true }
     : { ...source.selector, all_pipes: true, include_files: true };
 }
 
@@ -249,8 +248,12 @@ export type MethodSource = {
   | {
       /** The closure lives here: `.mthds` files under `methods/<name>/`. */
       kind: "files";
-      /** Every `.mthds` file in the closure, sorted, with repo-relative `source` labels. */
-      files: MthdsFileItem[];
+      /**
+       * The method's tree, sent to the crate routes as `contents`: every `.mthds` file in the
+       * closure, keyed by its path inside `methods/<name>/` (the tree's root), in
+       * sorted order, each value the file's text.
+       */
+      files: Record<string, string>;
     }
   | {
       /** The closure lives elsewhere; `methods/<name>/method.json` names it. */
@@ -533,14 +536,14 @@ export async function discoverMethods(methodsDir = METHODS_DIR): Promise<MethodS
 
     if (bundlePaths.length === 0) continue;
 
-    const files: MthdsFileItem[] = [];
+    const files: Record<string, string> = {};
     const sourceHashes: Record<string, string> = {};
     for (const relative of bundlePaths) {
       const content = await readTextFile(path.join(methodDir, relative));
-      // `source` is the repo-relative path, so a validation error points at a real file.
-      const source = `methods/${entry.name}/${relative}`;
-      files.push({ content, source });
-      sourceHashes[source] = hashSource(content);
+      // The method directory is the tree's root, so a file's tree path is its path
+      // inside it, the one a run sends too; the sidecar keys it from the repo root.
+      files[relative] = content;
+      sourceHashes[`methods/${entry.name}/${relative}`] = hashSource(content);
     }
     methods.push({ name: entry.name, kind: "files", files, sourceHashes });
   }

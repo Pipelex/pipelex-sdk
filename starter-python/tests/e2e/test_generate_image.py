@@ -17,7 +17,7 @@ class TestGenerateImage:
         # start, get an id back, then pick the run up again through that id alone.
         # Image generation outlives the ~30s blocking cap, so it is the demo detached mode owns.
         bundle = BUNDLE_PATH.read_text()
-        run_id = await start_pipe(pipe_code="generate_image.generate_image", mthds_contents=[bundle], inputs={"image_prompt": SAMPLE_PROMPT})
+        run_id = await start_pipe(pipe_code="generate_image.generate_image", contents={"main.mthds": bundle}, inputs={"image_prompt": SAMPLE_PROMPT})
         assert run_id
         results = await attend_run(run_id)
         image = Image.model_validate(results.main_stuff)

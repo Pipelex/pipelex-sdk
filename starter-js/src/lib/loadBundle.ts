@@ -7,15 +7,16 @@ const METHODS_DIR = path.join(process.cwd(), "methods");
 const METHOD_NAME = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 
 /**
- * Read every `.mthds` file of one method directory, for a run's
- * `mthds_contents`.
+ * Read every `.mthds` file of one method directory, as the method's tree a run
+ * sends in `contents`: each file's text, keyed by its tree path.
  *
  * The Pipelex API takes a bundle's TOML directly, so a method authored in this
  * repo is read from disk at request time rather than inlined as a string. The
- * files are the ones `npm run codegen` projected the method from — every
+ * method directory is the tree's root, so a file's tree path is its path inside
+ * it. The files are the ones `npm run codegen` projected the method from — every
  * `.mthds` file under `methods/<name>/`, at any depth, in the order of
- * `bundleOrder` — so a run and its generated types always describe the same
- * bundle. One loader serves every bundle-sourced action, hand-written or
+ * `bundleOrder` — and they are keyed as it keys them, so a run and its generated
+ * types always describe the same tree. One loader serves every bundle-sourced action, hand-written or
  * scaffolded: the action names its directory, and that is all it holds.
  *
  * A missing directory, or one holding no `.mthds` file, rejects with an
@@ -24,7 +25,7 @@ const METHOD_NAME = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 export async function loadMethodBundles(
   name: string,
   methodsDir: string = METHODS_DIR,
-): Promise<string[]> {
+): Promise<Record<string, string>> {
   // The name comes from a constant in an action, never from a request, but it
   // is joined into a filesystem path, so it is held to the one shape it can have.
   if (!METHOD_NAME.test(name)) {
@@ -41,7 +42,10 @@ export async function loadMethodBundles(
   if (bundlePaths.length === 0) {
     throw Object.assign(new Error(`ENOENT: no .mthds file under ${dir}`), { code: "ENOENT" });
   }
-  return Promise.all(bundlePaths.map((relative) => readFile(path.join(dir, relative), "utf-8")));
+  const contents = await Promise.all(
+    bundlePaths.map((relative) => readFile(path.join(dir, relative), "utf-8")),
+  );
+  return Object.fromEntries(bundlePaths.map((relative, index) => [relative, contents[index]!]));
 }
 
 /**
@@ -49,8 +53,8 @@ export async function loadMethodBundles(
  * the order codegen's `walk` (`scripts/lib/shared.mts`) reads them in, on every
  * platform. Sorting the absolute paths would compare the platform separator
  * instead, and on Windows `\` sorts after `2`, putting `steps2.mthds` before
- * `steps/score.mthds`. The order reaches the API as `mthds_contents`, where the
- * first of two same-domain files to declare a metadata value is the one kept.
+ * `steps/score.mthds`. The paths are the tree paths the run sends, and the map
+ * keeps this order, the one codegen sent the same files in.
  */
 export function bundleOrder(
   dir: string,

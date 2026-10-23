@@ -69,7 +69,7 @@ src/
     check-claims/ …
   lib/
     pipelexClient.ts          # PipelexApiClient singleton factory
-    loadBundle.ts             # loadMethodBundles(name) — every .mthds file of methods/<name>/, for mthds_contents
+    loadBundle.ts             # loadMethodBundles(name) — every .mthds file of methods/<name>/, as the run's contents map
     blockingRun.ts            # executeBlockingRun — the blocking `execute` path (server)
     durableRun.ts             # startDurableRun + pollDurableRun — the durable start/poll path (server)
     wireOutput.ts             # wireOutput + wireListOutput (plural) + schema-guided dropWireNulls + describeSchemaFailure (pure; `import "server-only"` build-enforces the boundary)
@@ -189,16 +189,16 @@ import {
   type PollOutcome,
   type StartOutcome,
 } from "@/lib/durableRun";
-import type { StartOptions } from "@pipelex/sdk";
+import type { PipelexStartOptions } from "@pipelex/sdk";
 
 // The same generated contract the browser rendered the form from.
 const CONTRACT = requireContract(PIPE_IO_CONTRACTS, "extract_entities", "extract_entities");
 
 // `execute` and `start` take the same options, so one closure drives both.
-async function buildOptions(inputs: Record<string, unknown>): Promise<StartOptions> {
+async function buildOptions(inputs: Record<string, unknown>): Promise<PipelexStartOptions> {
   return {
     pipe_code: "extract_entities.extract_entities", // the qualified <domain>.<pipe_code>, an exact key
-    mthds_contents: await loadMethodBundles("extract-entities"), // every .mthds file of the directory
+    contents: await loadMethodBundles("extract-entities"), // every .mthds file of the directory, by tree path
     inputs,
   };
 }
@@ -239,7 +239,7 @@ There is no `pipe_output` search arm and no `findOutputContent` predicate anymor
 
 Conventions:
 
-- **Bundle source**: ship `.mthds` files in the repo under `methods/<name>/` and read them at request time with `loadMethodBundles("<name>")`, which returns every `.mthds` file of the directory in the sorted order `npm run codegen` projects them in. Do **not** inline bundle TOML as a string in `.ts`, and do not add a loader per bundle — bundles are first-class, and the directory name is all an action holds.
+- **Bundle source**: ship `.mthds` files in the repo under `methods/<name>/` and read them at request time with `loadMethodBundles("<name>")`, which returns every `.mthds` file of the directory as the method's tree, each file's text keyed by its path inside the directory, in the sorted order `npm run codegen` sends them in, for the action to pass as `contents`. Do **not** inline bundle TOML as a string in `.ts`, and do not add a loader per bundle — bundles are first-class, and the directory name is all an action holds.
 - **One client**: instantiate `PipelexApiClient` once via `getPipelexClient()`. Never `new PipelexApiClient()` directly in actions or components.
 - **Narrow at the boundary, but never re-declare the shape**: the SDK returns loosely-typed output, so always pass the whole `RunResults` through a `parseXxx(results)` narrower in `src/types/`. That narrower hands `wireOutput(results)` to the generated binder and translates the thrown `ZodError` into a tagged subclass of `Error` (e.g. `BadPipelineOutputError`) via `describeSchemaFailure`. Do not `as` your way through, and do not hand-write the shape it validates — the bundle already declares it and `npm run codegen` projects it. The narrower is the same for both modes: the blocking response is adapted onto `RunResults` with the SDK-resolved `main_stuff`, the same field the durable path delivers.
 - **Return classified errors, don't throw across the server→client boundary**: the shared helpers return `{ ok: true, ... } | { ok: false, error: PipelineError }`. Throwing works in dev but Next.js production builds strip server-action error messages to opaque digests, which destroys the developer-facing error UX. `executeBlockingRun` / `startDurableRun` / `pollDurableRun` wrap the SDK call in `try/catch`, hand the caught value to `classifyPipelineError(err, env)`, and return the structured error. Render it client-side with `<ErrorDisplay>`.

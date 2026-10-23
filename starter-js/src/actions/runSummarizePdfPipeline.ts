@@ -16,7 +16,7 @@ import { INPUT_FORM, PIPE_IO_CONTRACTS } from "@/generated/summarize-pdf/contrac
 import { grantFileUpload, type GrantOutcome } from "@/lib/uploadGrant";
 import type { PipelineError } from "@/lib/errors";
 import { ALLOWED_MIMES } from "@/types/summarizePdfUploads";
-import type { StartOptions } from "@pipelex/sdk";
+import type { PipelexStartOptions } from "@pipelex/sdk";
 
 const PIPE_CODE = "summarize_pdf";
 /**
@@ -92,14 +92,14 @@ export async function requestSummarizePdfUpload(request: UploadRequest): Promise
  * durable path the preparation happens once, at start; `poll` never rebuilds
  * options.
  */
-async function buildOptions(inputs: Record<string, unknown>): Promise<StartOptions> {
+async function buildOptions(inputs: Record<string, unknown>): Promise<PipelexStartOptions> {
   const bundles = await loadMethodBundles("summarize-pdf");
   const prepared = await getPipelexClient().prepareInputs({
-    files: bundles.map((content) => ({ content })),
+    contents: bundles,
     pipe_ref: PIPE_REF,
     inputs,
   });
-  return { pipe_code: PIPE_REF, mthds_contents: bundles, inputs: prepared.inputs };
+  return { pipe_code: PIPE_REF, contents: bundles, inputs: prepared.inputs };
 }
 
 /** BLOCKING path: summarize a stored PDF synchronously (`POST /v1/execute`). */

@@ -1752,3 +1752,57 @@ describe("PrepareInputsRequest is a type-level XOR over the three selectors", ()
     ]).toHaveLength(10);
   });
 });
+
+// ── What the uploads are recorded as ─────────────────────────────────
+
+describe("prepareInputs records its uploads as its upload option says", () => {
+  it("sends the kind and method with every file it uploads, the selector untouched", async () => {
+    const client = makeClient([topLevel("photo", image()), topLevel("scan", document())]);
+
+    await prepareInputs(client, {
+      method_id: "mt_abc",
+      inputs: { photo: new Uint8Array([1]), scan: "data:application/pdf;base64,JVBERi0=" },
+      upload: { kind: "test", method_id: "mt_abc" },
+    });
+
+    expect(client.uploadCalls).toHaveLength(2);
+    for (const call of client.uploadCalls) {
+      expect(call).toMatchObject({ kind: "test", method_id: "mt_abc" });
+    }
+    expect(client.pipeIoCalls[0]).toEqual({ method_id: "mt_abc" });
+  });
+
+  it("sends neither member when the option is omitted", async () => {
+    const client = makeClient([topLevel("photo", image())]);
+
+    await prepareInputs(client, { files: FILES, inputs: { photo: new Uint8Array([1]) } });
+
+    expect(Object.keys(client.uploadCalls[0]!).sort()).toEqual([
+      "content_type",
+      "data",
+      "filename",
+    ]);
+  });
+
+  it.each([
+    ["a test kind naming no method", { kind: "test" }, "`upload.method_id`"],
+    ["a method beside no kind", { method_id: "mt_abc" }, "only a test file names a method"],
+    ["an unknown kind", { kind: "generated" }, "`upload.kind`"],
+    ["a suffixed method", { kind: "test", method_id: "mt_abc@draft" }, "no version suffix"],
+    ["an option that is not an object", "test", "`upload` must be an object"],
+  ])("refuses %s before any request", async (_case, upload, words) => {
+    const client = makeClient([topLevel("photo", image())]);
+
+    const error = await prepareInputs(client, {
+      files: FILES,
+      inputs: { photo: new Uint8Array([1]) },
+      upload,
+    } as unknown as PrepareInputsRequest).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InputPreparationError);
+    expect((error as Error).message).toContain("Cannot prepare inputs");
+    expect((error as Error).message).toContain(words);
+    expect(client.pipeIoCalls).toHaveLength(0);
+    expect(client.uploadCalls).toHaveLength(0);
+  });
+});

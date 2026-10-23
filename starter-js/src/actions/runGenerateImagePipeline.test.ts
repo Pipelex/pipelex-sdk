@@ -7,7 +7,7 @@ const getRunStatus = vi.fn();
 const getRunResult = vi.fn();
 
 vi.mock("@/lib/loadBundle", () => ({
-  loadMethodBundles: vi.fn().mockResolvedValue(["DUMMY_BUNDLE_TOML"]),
+  loadMethodBundles: vi.fn().mockResolvedValue({ "main.mthds": "DUMMY_BUNDLE_TOML" }),
 }));
 
 vi.mock("@/lib/pipelexClient", () => ({
@@ -56,7 +56,7 @@ describe("runGenerateImageBlocking", () => {
     expect(loadMethodBundles).toHaveBeenCalledWith("generate-image");
     expect(execute).toHaveBeenCalledWith({
       pipe_code: "generate_image.generate_image",
-      mthds_contents: ["DUMMY_BUNDLE_TOML"],
+      contents: { "main.mthds": "DUMMY_BUNDLE_TOML" },
       inputs: WIRE_INPUTS,
     });
     // `toMatchObject`: these tests assert delegation + narrowed output; the `usage`
@@ -108,7 +108,7 @@ describe("startGenerateImageRun", () => {
     const result = await startGenerateImageRun(DATA);
     expect(start).toHaveBeenCalledWith({
       pipe_code: "generate_image.generate_image",
-      mthds_contents: ["DUMMY_BUNDLE_TOML"],
+      contents: { "main.mthds": "DUMMY_BUNDLE_TOML" },
       inputs: WIRE_INPUTS,
     });
     expect(result).toEqual({ ok: true, runId: "run-1" });

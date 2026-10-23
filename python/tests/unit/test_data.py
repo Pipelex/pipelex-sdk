@@ -637,3 +637,166 @@ class RunProgressBodies:
         "summary": "Waiting to start",
         "invocations": [],
     }
+
+
+class BrandingBodies:
+    """An organization's branding and the branding write's refusals, as the platform serializes them.
+
+    `BRANDED` and `UNBRANDED` are its `BrandingResponse`, which both branding routes answer; the refusals
+    are its problem documents, the logo ones carrying one `errors[]` entry per broken rule.
+    """
+
+    ORG_ID: ClassVar[str] = "0f6c2a4e-org"
+    #: What a write sends to set a new logo: a standalone upload of the organization.
+    SQUARE_UPLOAD_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/assets/7d1e.png"
+    WIDE_UPLOAD_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/assets/9a3c.svg"
+
+    #: What the answer names: the platform's own copy of an accepted logo, under `branding/`.
+    SQUARE_LOGO_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/3f9a1c2e-5b7d-4e8f-9a0b-1c2d3e4f5a6b.png"
+    WIDE_LOGO_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/8c7b6a5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d.svg"
+
+    #: A branding copy that no slot of the organization holds, which a write may not attach.
+    STRAY_BRANDING_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.svg"
+
+    SQUARE_LOGO: ClassVar[dict[str, Any]] = {
+        "uri": SQUARE_LOGO_URI,
+        "sha256": "9b2f6d0c1e4a7b3c5d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e",
+        "content_type": "image/png",
+        "width": 512.0,
+        "height": 512.0,
+    }
+
+    #: An SVG's size is its viewBox's, which may be fractional.
+    WIDE_SVG_LOGO: ClassVar[dict[str, Any]] = {
+        "uri": WIDE_LOGO_URI,
+        "sha256": "0d1c2b3a49586776a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f00f1e",
+        "content_type": "image/svg+xml",
+        "width": 240.5,
+        "height": 64.25,
+    }
+
+    #: A branded team: one logo, a partial light set, a partial dark set.
+    BRANDED: ClassVar[dict[str, Any]] = {
+        "org_id": ORG_ID,
+        "org_name": "Acme Corp",
+        "colors": {"action": "#14213d", "accent": "#fca311", "header": None},
+        "dark_colors": {"action": None, "accent": None, "header": "#e5e5e5"},
+        "square_logo": SQUARE_LOGO,
+        "wide_logo": None,
+    }
+
+    #: A personal workspace, or a team that set nothing: every colour and logo `None`.
+    UNBRANDED: ClassVar[dict[str, Any]] = {
+        "org_id": ORG_ID,
+        "org_name": "Ada's workspace",
+        "colors": {"action": None, "accent": None, "header": None},
+        "dark_colors": {"action": None, "accent": None, "header": None},
+        "square_logo": None,
+        "wide_logo": None,
+    }
+
+    SQUARE_TOO_SMALL: ClassVar[str] = "The square logo is 100 × 100 px; a square logo must be at least 128 px on each side."
+    WIDE_TOO_SHORT: ClassVar[str] = "The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall."
+
+    #: Both slots refused at once: one entry per broken rule, the problem's `detail` their sentences joined.
+    LOGOS_REFUSED: ClassVar[dict[str, Any]] = {
+        "type": "https://pipelex.com/errors/validation_failed",
+        "title": "Validation failed",
+        "status": 422,
+        "code": "validation_failed",
+        "detail": f"{SQUARE_TOO_SMALL} {WIDE_TOO_SHORT}",
+        "instance": "urn:pipelex:request:a9a249b93c024bf08ac9a5fd0704ea92",
+        "request_id": "a9a249b93c024bf08ac9a5fd0704ea92",
+        "errors": [
+            {"field": "square_logo", "code": "logo_too_small", "detail": SQUARE_TOO_SMALL},
+            {"field": "wide_logo", "code": "logo_too_short", "detail": WIDE_TOO_SHORT},
+        ],
+    }
+
+    #: The platform's own sentences, from `services/logo_inspection.py`.
+    ACTIVE_CONTENT: ClassVar[str] = "The wide logo is an SVG that carries active content, which a logo may not: a <script> element."
+    NOT_AN_UPLOAD: ClassVar[str] = (
+        "The wide logo must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) or the URI the wide logo already has."
+    )
+    PIXEL_CAP: ClassVar[str] = (
+        "The square logo looks like a PNG image but cannot be read: "
+        "at 5,000 × 5,000 px it has more than the 16,777,216 pixels (4096 × 4096) a logo may have."
+    )
+    CUT_SHORT: ClassVar[str] = "The square logo looks like a JPEG image but cannot be read: the file is damaged or incomplete."
+    ANIMATED_WEBP: ClassVar[str] = "The square logo is an animated WebP; a logo must be a still image."
+    ANIMATED_PNG: ClassVar[str] = "The wide logo is an animated PNG; a logo must be a still image."
+    SVG_SIDE_OUT_OF_RANGE: ClassVar[str] = (
+        "The square logo is an SVG that cannot be read: its width or height lies outside the 0.001 to 1,000,000 px a logo's side may measure."
+    )
+    SVG_VIEWBOX_OUT_OF_RANGE: ClassVar[str] = (
+        "The wide logo is an SVG that cannot be read: "
+        "its viewBox's width or height lies outside the 0.001 to 1,000,000 units a logo's side may measure."
+    )
+    #: The style an SVG logo may not carry, by kind: a style sheet's processing instruction and the CSS a browser
+    #: reads. Each is the slot, the upload sent for it, and the platform's sentence.
+    STYLE_ACTIVE_CONTENT: ClassVar[dict[str, tuple[str, str, str]]] = {
+        "xml-stylesheet": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            (
+                "The square logo is an SVG that carries active content, which a logo may not: "
+                "an xml-stylesheet processing instruction, which loads a style sheet."
+            ),
+        ),
+        "css-import": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            ("The square logo is an SVG that carries active content, which a logo may not: a CSS @import, which loads a style sheet."),
+        ),
+        "css-url": (
+            "wide_logo",
+            WIDE_UPLOAD_URI,
+            (
+                "The wide logo is an SVG that carries active content, which a logo may not: "
+                "a CSS url() that links to something outside the file, "
+                "where only a reference inside it or an embedded PNG, JPEG, GIF or WebP image is allowed."
+            ),
+        ),
+        "css-src": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            (
+                "The square logo is an SVG that carries active content, which a logo may not: "
+                "a CSS src() that links to something outside the file, "
+                "where only a reference inside it or an embedded PNG, JPEG, GIF or WebP image is allowed."
+            ),
+        ),
+        "css-image-set": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            (
+                "The square logo is an SVG that carries active content, which a logo may not: "
+                "a CSS image-set() function, which can load an image from outside the file."
+            ),
+        ),
+        "css-image": (
+            "wide_logo",
+            WIDE_UPLOAD_URI,
+            (
+                "The wide logo is an SVG that carries active content, which a logo may not: "
+                "a CSS image() function, which can load an image from outside the file."
+            ),
+        ),
+        "css-escape": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            ("The square logo is an SVG that carries active content, which a logo may not: a CSS escape (a backslash), which can disguise a link."),
+        ),
+    }
+
+    #: A colour that is not `#rrggbb`, refused by the body's validation and named by its dotted key.
+    COLOR_REFUSED: ClassVar[dict[str, Any]] = {
+        "type": "https://pipelex.com/errors/validation_failed",
+        "title": "Validation failed",
+        "status": 422,
+        "code": "validation_failed",
+        "detail": "Request body failed validation. See `errors` for the per-field breakdown.",
+        "errors": [
+            {"field": "dark_colors.header", "code": "string_pattern_mismatch", "detail": "String should match pattern '^#[0-9a-fA-F]{6}$'"},
+        ],
+    }

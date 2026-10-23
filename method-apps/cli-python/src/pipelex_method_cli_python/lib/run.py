@@ -129,7 +129,7 @@ async def prepare_run_inputs(client: PipelexAPIClient, *, binding: MethodBinding
     if not inputs or not declares_files(binding.contracts.input_form):
         return inputs
     with stderr.status("Preparing the input files…"):
-        prepared = await client.prepare_inputs(pipe_ref=binding.pipe_ref, inputs=inputs, **binding.source.crate_kwargs())
+        prepared = await client.prepare_inputs(pipe_ref=binding.pipe_ref, inputs=inputs, **binding.source.kwargs())
     for upload in prepared.uploads:
         stderr.print(f"Uploaded {escape(upload.filename)} as {escape(upload.uri)}")
     return prepared.inputs
@@ -142,7 +142,7 @@ async def start_run(client: PipelexAPIClient, *, binding: MethodBinding, inputs:
     request may or may not have reached the server, which this says rather than guessing.
     """
     try:
-        started = await client.start(pipe_code=binding.pipe_ref, inputs=inputs, **binding.source.run_kwargs())
+        started = await client.start(pipe_code=binding.pipe_ref, inputs=inputs, **binding.source.kwargs())
     except asyncio.CancelledError:
         stderr.print(
             "\nInterrupted before the API answered with a run id. A run may or may not have started on the server, "
@@ -206,7 +206,7 @@ async def run_blocking(client: PipelexAPIClient, *, binding: MethodBinding, inpu
     """Run the bound pipe in one request and lift the response onto `RunResults`, as a durable run returns it."""
     with stderr.status("Running…"):
         try:
-            result = await client.execute(pipe_code=binding.pipe_ref, inputs=inputs, **binding.source.run_kwargs())
+            result = await client.execute(pipe_code=binding.pipe_ref, inputs=inputs, **binding.source.kwargs())
         except asyncio.CancelledError:
             stderr.print("\nInterrupted. A blocking run has no id to resume it by.")
             raise

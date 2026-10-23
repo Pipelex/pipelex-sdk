@@ -38,7 +38,7 @@ A method directory under `widget/methods/` names its closure in one of exactly t
 
 | Kind | What the directory holds | What is sent to `POST /v1/codegen` |
 | --- | --- | --- |
-| **Bundle** | `.mthds` files — the whole closure, nested files included | inline `files`, each labelled with its repo-relative path so a server diagnostic names a file you can open |
+| **Bundle** | `.mthds` files — the whole closure, nested files included | `contents`, the method's tree, each file keyed by its path in the method's directory, which is the path a server diagnostic names under the line naming the method |
 | **Manifest** | `method.json`, holding exactly one of `method_id` or `method_ref` | that selector, resolved server-side |
 
 The three demos are bundles. A manifest is what [`make add-method`](add-method.md) writes for a method that lives on the platform (a catalog id) or in a published package (an address), and it holds the selector and nothing else:
@@ -70,7 +70,7 @@ When you do want a fill-in template for a method — to hand an agent, or to dri
 from mthds.protocol.inputs_template import InputsTemplateFormat, render_inputs_template
 from pipelex_sdk.validation_models import VALIDATION_VIEW_INPUT_FORM, PipelexValidationReport
 
-report = await client.validate(mthds_contents=[bundle], views=[VALIDATION_VIEW_INPUT_FORM])
+report = await client.validate(contents={"main.mthds": bundle}, views=[VALIDATION_VIEW_INPUT_FORM])
 if not isinstance(report, PipelexValidationReport):
     raise SystemExit(report.message)
 if report.input_form is None:  # the view is lenient-ignored by a runner that does not serve it
@@ -79,7 +79,7 @@ descriptor = report.input_form["extract_entities.extract_entities"]  # pipe_ref 
 print(render_inputs_template(descriptor=descriptor, explicit=False, output_format=InputsTemplateFormat.JSON))
 ```
 
-The descriptor is the standard's own artifact: the inputs, their kinds, and which are required. Rendering it is the standard's package's job, and `client.prepare_inputs(files=…, inputs=…)` walks the same descriptor internally when it uploads a method's file inputs. That is where a template comes from now — derived when you need it, against the method as it is today, rather than committed and trusted.
+The descriptor is the standard's own artifact: the inputs, their kinds, and which are required. Rendering it is the standard's package's job, and `client.prepare_inputs(contents=…, inputs=…)` walks the same descriptor internally when it uploads a method's file inputs. That is where a template comes from now — derived when you need it, against the method as it is today, rather than committed and trusted.
 
 ## Offline test floor
 

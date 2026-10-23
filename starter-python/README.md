@@ -145,7 +145,7 @@ flowchart TD
     CLI --> Read
     Bundle --> Read
     Read --> Client
-    Client -->|"send bundle as content<br/>(mthds_contents)"| Run
+    Client -->|"send bundle as its tree<br/>(contents)"| Run
     Run --> MainStuff
     MainStuff --> Parse
     Parse --> JSON
@@ -156,8 +156,8 @@ flowchart TD
     classDef terminal fill:#f8fafc,stroke:#475569,stroke-width:1.5px,color:#0f172a
 ```
 
-1. **Read the bundle.** `widget` reads `methods/extract-entities/main.mthds` from disk and constructs a `PipelexAPIClient`, which picks up `PIPELEX_BASE_URL` / `PIPELEX_API_KEY` from the environment. A method dir may hold a single `main.mthds` or several `.mthds` files (a multi-file bundle split across pipes) — read them all with `[p.read_text() for p in sorted((METHODS_DIR / "<name>").glob("*.mthds"))]`.
-2. **Run it on the API.** The bundle's files are sent together as *content* (`mthds_contents`, one string per file), so nothing method-specific needs to live in the runtime — edit the `.mthds` file(s) and re-run, no redeploy.
+1. **Read the bundle.** `widget` reads `methods/extract-entities/main.mthds` from disk and constructs a `PipelexAPIClient`, which picks up `PIPELEX_BASE_URL` / `PIPELEX_API_KEY` from the environment. A method dir may hold a single `main.mthds` or several `.mthds` files (a multi-file bundle split across pipes) — read them all, each keyed by its path in the method's directory, with `method_dir = METHODS_DIR / "<name>"`, then `{path.relative_to(method_dir).as_posix(): path.read_text(encoding="utf-8") for path in sorted(method_dir.rglob("*.mthds"))}`.
+2. **Run it on the API.** The bundle's files are sent together as the method's *tree* (`contents`, each file's text keyed by its path in the method's directory, sent inline when small and by hash otherwise), so nothing method-specific needs to live in the runtime — edit the `.mthds` file(s) and re-run, no redeploy.
 3. **Narrow the result.** Every lifecycle helper hands back the SDK's `RunResults`; the command validates its `main_stuff` into the generated `ExtractedEntities` model (`ExtractedEntities.model_validate(results.main_stuff)`), printed as JSON. The same object carries what the run consumed, which the command prints as a cost report to stderr (via `widget/usage.py`), and the references to whatever files the run produced, which `widget/artifacts.py` brings down to disk.
 
 The typed models are **not hand-written**: they are generated from the `.mthds` bundles into `widget/generated/` (stamped, with a `codegen.lock` per method) by the hosted API's codegen route, reached through the same `pipelex-sdk` the runs go through — so regenerating needs your API key and no local Pipelex runtime. Edit a bundle → `make codegen` regenerates the models → `make codegen-check` verifies offline that nothing is stale or hand-edited. The test suite runs that same check over each method's generated tree, so a tree that drifted from its lock — regenerated and only half committed, or hand-edited below its stamp — is caught by CI too, with no local Pipelex runtime. Catching a bundle edited and never regenerated is `make codegen`'s job, not the check's. See [docs/codegen.md](docs/codegen.md).

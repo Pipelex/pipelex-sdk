@@ -57,9 +57,14 @@ import type {
   BillingPortalResponse,
   ChangePlanResponse,
   CheckoutResponse,
+  FilePage,
+  FileSummary,
   InvoiceView,
   Membership,
   MembershipsResponse,
+  OrganizationBranding,
+  OrganizationBrandingUpdate,
+  ListFilesQuery,
   ListMethodExamplesQuery,
   ListMethodsQuery,
   ListMethodVersionsQuery,
@@ -189,7 +194,7 @@ import { ExactJsonUnsupportedError, parseExactJson, stringifyExactJson } from ".
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // A pure RUNAWAY guard on the paged-list iterators (`iterateMethods`,
-// `iterateRuns`, `iterateMethodExamples`), deliberately not a coverage limit.
+// `iterateRuns`, `iterateMethodExamples`, `iterateFiles`), deliberately not a coverage limit.
 //
 // It counts TOTAL pages, not empty ones. An earlier version capped consecutive
 // empty pages, which is the wrong axis: an empty page whose cursor ADVANCED is
@@ -207,8 +212,8 @@ const MAX_PAGES = 10_000;
 
 /**
  * Follow a paged list's cursor until the server says there is no more, yielding every row —
- * the one loop behind `iterateMethods`, `iterateRuns` and `iterateMethodExamples`, so they cannot
- * drift apart.
+ * the one loop behind `iterateMethods`, `iterateRuns`, `iterateMethodExamples` and
+ * `iterateFiles`, so they cannot drift apart.
  *
  * It yields lazily: a caller that breaks early stops the requests. It stops when `nextCursor`
  * is `null`, the normal end, and when the server hands back the cursor it was just sent, which
@@ -607,6 +612,30 @@ function productQuery(params: Readonly<Record<string, ProductQueryValue>>): stri
   }
   const text = search.toString();
   return text ? `?${text}` : "";
+}
+
+/**
+ * A list filter sent as one repeated query parameter per value, such as `listFiles`' `format`:
+ * `undefined` when omitted, the values as given otherwise. An empty list names no value, and sent
+ * as no parameter at all it would read as no filter and list everything, so it is a
+ * `RequestArgumentError` before any request; a value that is not a list of strings is a
+ * `TypeError`, a bug in the calling code.
+ */
+function repeatedFilter(
+  call: string,
+  name: string,
+  values: readonly string[] | undefined,
+): readonly string[] | undefined {
+  if (values === undefined) return undefined;
+  if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
+    throw new TypeError(`${call}() takes "${name}" as a list of strings.`);
+  }
+  if (values.length === 0) {
+    throw new RequestArgumentError(
+      `${call}() takes "${name}" as one or more values; omit it to list every ${name}.`,
+    );
+  }
+  return values;
 }
 
 /** `items` joined as a sentence names them, the last after `conjunction`: `a`, `a or b`, `a, b or c`. */
@@ -1094,7 +1123,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * One page of a cursor-paged product route (`listMethods`, `listMethodVersions`,
-   * `listMethodExamples`, `listRuns`), read as the platform always serializes it: `items` an
+   * `listMethodExamples`, `listRuns`, `listFiles`), read as the platform always serializes it: `items` an
    * array, `next_cursor` a string or `null`. A page breaking either is an answer the SDK cannot
    * read, so it throws the `ApiResponseError` `unreadableAnswer` builds, `runtime` and not
    * retryable, rather than handing the iterators a page they cannot walk: `items` that is not
@@ -3474,6 +3503,52 @@ export class PipelexApiClient implements HostedProtocolSurface {
     return this.requestProduct("PATCH", `organizations/${segment}`, input);
   }
 
+  /**
+   * The branding of the caller's active organization — `GET /v1/branding`: its name, its light
+   * and dark colour sets and its two logos. Any role reads it, `runner` included, by web session
+   * or API key, so an app scaffolded from the method-app template reads its organization's
+   * branding with its own key. A personal workspace, or a team that set nothing, answers every
+   * colour and logo `null`. A logo's `uri` is a `pipelex-storage://` reference, which
+   * `resolveStorageUrl` turns into a short-lived link to its bytes.
+   *
+   * Throws `ApiResponseError`: `400` when the caller has no active organization, `404` when its
+   * row is missing, and an answer that is not a JSON object, an empty one included.
+   */
+  async getBranding(): Promise<OrganizationBranding> {
+    return this.requestProductObject("GET", "branding");
+  }
+
+  /**
+   * Set or clear an organization's branding — `PATCH /v1/organizations/{org_id}/branding`, an
+   * admin's write to the active organization. Every key of `input` is optional: a value sets it,
+   * `null` clears it, and a key left out keeps its value (`OrganizationBrandingUpdate`), so `{}`
+   * writes nothing. A new logo is the `pipelex-storage://` URI of a file the organization uploaded
+   * on its own, which the platform reads and measures, then copies under `branding/`: the answer's
+   * `uri` is that copy, and sending it back unchanged keeps the logo. The logo a write replaces or
+   * clears is erased. Answers the branding as the write left it.
+   *
+   * Throws `RequestArgumentError` for an organization id that is empty, `.` or `..`, before any
+   * request. Throws `ApiResponseError`, refusing every change of the request when it refuses one:
+   * `403` `forbidden` when `orgId` is not the active organization, `403` `role_not_permitted` for
+   * a caller who is not its admin, `404` for a missing organization, `409` `conflict` for a
+   * personal workspace, which has no branding, and `422` `validation_failed` for a colour that is
+   * not `#rrggbb` or a key the body does not know. A logo's refusal names its slot in the error's
+   * `errors[]`, each entry's `field` being `square_logo` or `wide_logo` and its `detail` the
+   * sentence to show under that slot: `400` `invalid_storage_uri` for a URI that is not a storage
+   * URI, `403` `forbidden` for another organization's file, and `422` `validation_failed` with a
+   * `LogoRefusalCode` per broken rule for a file the platform refused. A failure of the platform's
+   * storage while reading or copying a logo is a `500` `storage_backend_failed`, retryable, with
+   * nothing written. A `503` `service_unavailable` is a failure of its database, after which the
+   * write may have landed or not: the same input sent again is safe.
+   */
+  async updateOrganizationBranding(
+    orgId: string,
+    input: OrganizationBrandingUpdate,
+  ): Promise<OrganizationBranding> {
+    const segment = idPathSegment(orgId, "updateOrganizationBranding", ORG_ID_ARGUMENT);
+    return this.requestProductObject("PATCH", `organizations/${segment}/branding`, input);
+  }
+
   /** The active org's subscription state — `GET /v1/billing/subscription`. */
   async getSubscription(): Promise<SubscriptionResponse> {
     return this.requestProduct("GET", "billing/subscription");
@@ -3653,9 +3728,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Upload one local asset and return its {@link UploadRecord} — the single-asset
    * convenience over {@link upload}. Accepts `Blob`/`File`/`ArrayBuffer`/`Uint8Array`
    * in every runtime; a path string is Node-only (it fails instructively elsewhere).
-   * The record guarantees `uri`, `contentType`, `size`, and `filename`. Transport
-   * failures surface as the semantic input-preparation errors (rejected asset, auth,
-   * unsupported capability, transport). See `docs/input-preparation.md`.
+   * The record guarantees `uri`, `contentType`, `size`, and `filename`. A `kind` and its
+   * `method_id` in the options record the upload as a method's test file, checked before the
+   * asset is read. Transport failures surface as the semantic input-preparation errors
+   * (rejected asset, refused test file, auth, unsupported capability, transport). See
+   * `docs/input-preparation.md`.
    */
   async uploadFile(asset: UploadableAsset, options?: UploadFileOptions): Promise<UploadRecord> {
     return uploadFileImpl(this, asset, options);
@@ -3692,6 +3769,73 @@ export class PipelexApiClient implements HostedProtocolSurface {
    */
   async prepareInputs(request: PrepareInputsRequest): Promise<PreparedInputs> {
     return prepareInputsImpl(this, request);
+  }
+
+  /**
+   * One page of the organization's files, newest first — `GET /v1/files`.
+   *
+   * Rows are `FileSummary`: the record's id, its `uri`, which a run's inputs take as they take
+   * any address, the name a person sees, its type, size and kind, and where it came from. A list
+   * never holds a file a run made along the way, nor an upload whose bytes have not been seen
+   * stored. Every role of the organization reads every file of it.
+   *
+   * `methodId`, `runId` and `createdBy` choose which list serves the page: the method's files
+   * (what its runs and examples took or made), the run's own files (its final outputs and inline
+   * inputs, in the order of their addresses), one member's (`"me"` for the caller's own), or the
+   * organization's. `q`, `kind`, `format`, `mediaType`, `createdFrom` and `createdTo` filter that
+   * list server-side; `format` and `mediaType` are sent as one repeated parameter per value, and
+   * an empty list of either is a `RequestArgumentError` before any request. The filters run after
+   * the index read, so **a filtered page can hold fewer rows than `limit`, or none, and still
+   * carry a `nextCursor`**: keep following it until it is `null`, with the same filters, since a
+   * cursor is bound to the list and filters that issued it.
+   *
+   * Throws `ApiResponseError`: `400` for a date bound that is not an instant with an offset, a
+   * range whose start is after its end, or a cursor of another list or other filters; `404`
+   * `run_not_found` for a run that is not the organization's; `422` for a `limit` outside 1 to
+   * 200, an unknown `kind`, more than 100 values of `format` or `mediaType`, or an id that cannot
+   * be one. A page whose `items` is not an array or whose `next_cursor` is neither a string nor
+   * `null` is an `ApiResponseError` of an answer the SDK cannot read. See `docs/files.md`.
+   */
+  async listFiles(query: ListFilesQuery = {}): Promise<FilePage> {
+    const search = productQuery({
+      method_id: query.methodId,
+      run_id: query.runId,
+      created_by: query.createdBy,
+      kind: query.kind,
+      format: repeatedFilter("listFiles", "format", query.format),
+      media_type: repeatedFilter("listFiles", "mediaType", query.mediaType),
+      created_from: query.createdFrom,
+      created_to: query.createdTo,
+      q: query.q,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    return this.requestPage<FileSummary>(`files${search}`);
+  }
+
+  /**
+   * Every file of the organization the query selects, streamed — follows the cursor for you.
+   *
+   * ```ts
+   * for await (const file of client.iterateFiles({ kind: "uploaded", format: ["pdf"] })) {
+   *   if (file.name === "March invoice.pdf") break; // stop whenever you like
+   * }
+   * ```
+   *
+   * **Prefer `listFiles`** for anything user-facing: this makes as many round trips as the data
+   * demands. It is an iterator rather than an all-at-once helper for the reason `iterateRuns` is
+   * one: a helper returning an array needs a page cap, and a cap returns a truncated list with no
+   * error.
+   *
+   * It keeps going **through an empty page that carries a cursor**, which under any filter means
+   * "nothing matched in the slice just read", not "done", sending the same filters with every
+   * page. It stops on a `null` cursor or on a cursor the server failed to advance, and throws
+   * `PagingNotTerminatingError` past a page ceiling no real file list reaches.
+   */
+  async *iterateFiles(
+    query: Omit<ListFilesQuery, "cursor"> = {},
+  ): AsyncGenerator<FileSummary, void, undefined> {
+    yield* followCursor("listFiles", (cursor) => this.listFiles({ ...query, cursor }));
   }
 
   /**
