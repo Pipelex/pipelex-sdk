@@ -1,7 +1,7 @@
 """Pipelex-product wire models — the snake_case JSON shapes the hosted-product routes speak.
 
 These mirror `pipelex-sdk-js/src/product-models.ts`. They are the management surface
-the hosted product (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/billing/*`,
+the hosted product (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/branding`, `/v1/billing/*`,
 `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
 `/v1/resolve-storage-url`, `/v1/upload`, `/v1/runs`) drives.
 
@@ -582,6 +582,124 @@ class MembershipsResponse(BaseModel):
 
     memberships: list[Membership]
     active_org_feature_flags: list[str]
+
+
+# ── Organization branding (`/v1/branding`, `/v1/organizations/{id}/branding`) ──
+#
+# An organization may set up to two logos and two colour sets of three colours, which its shared
+# method apps and the apps scaffolded from the method-app template wear. Every member and every API
+# key reads it with `get_branding`; an admin writes it with `update_organization_branding`. Both
+# answer the same `OrganizationBranding`. See `docs/organization-branding.md`.
+
+
+class BrandingColors(BaseModel):
+    """One colour set: the button, accent and header colours, each `#rrggbb` in lower case, or `None` when not set.
+
+    The platform always sends all three colours.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    action: str | None
+    """The button colour."""
+
+    accent: str | None
+    """The accent colour: links, the active tab, the brand ink."""
+
+    header: str | None
+    """The header band's colour."""
+
+
+class LogoDescriptor(BaseModel):
+    """What the platform recorded about a logo when it accepted it.
+
+    `content_type` is the type the platform read from the file's own bytes, never the type the upload
+    declared: `image/png`, `image/jpeg`, `image/webp` or `image/svg+xml`. `width` and `height` are the
+    image's size in pixels for a raster, oriented as a browser draws it, and for an SVG its `width` and
+    `height` in pixels when both are in absolute units, which is the size a browser draws it at, else the
+    width and height of its `viewBox`; an SVG's may be fractional. Their ratio is the logo's shape, which
+    sizes its box before the image loads.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    uri: str
+    """The platform's own copy of the logo, `pipelex-storage://<org_id>/branding/<uuid>.<ext>`, never the upload
+    URI the write sent: the platform copies a logo it accepts, under a fresh uuid each time, so the same bytes
+    attached again get a new URI. Sending it back unchanged in its slot keeps the logo. `resolve_storage_url`
+    turns it into a short-lived link to its bytes."""
+
+    sha256: str
+    """The SHA-256 of the logo's bytes, 64 lower-case hexadecimal digits: a cache key for them."""
+
+    content_type: str
+    width: float
+    height: float
+
+
+class OrganizationBranding(BaseModel):
+    """An organization's branding — what `get_branding` and `update_organization_branding` answer.
+
+    `colors` is the light set and `dark_colors` the dark one, used in dark mode only: a dark colour that
+    is `None` falls back to the light colour of the same role, and a light one that is `None` to
+    Pipelex's own palette. A logo is `None` when its slot is empty. A personal workspace, or a team that
+    set nothing, answers every colour and logo `None`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    org_id: str
+    org_name: str
+    """The organization's display name, the wordmark a client shows when it has no logo."""
+
+    colors: BrandingColors
+    dark_colors: BrandingColors
+    square_logo: LogoDescriptor | None
+    """The square logo, for the organization menu and small headers."""
+
+    wide_logo: LogoDescriptor | None
+    """The wide logo, at least one and a half times as wide as it is tall, for an app's header."""
+
+
+class BrandingColorsUpdate(BaseModel):
+    """Changes to one colour set — part of an `OrganizationBrandingUpdate`.
+
+    A field set to a colour sets it, a field set to `None` clears it, and a field left unset keeps its value.
+    A colour is `#rrggbb` in either case, stored in lower case; the platform refuses anything else with
+    a `422` `validation_failed` whose `errors[]` entry names the field, such as `colors.action`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: str | None = None
+    accent: str | None = None
+    header: str | None = None
+
+
+class OrganizationBrandingUpdate(BaseModel):
+    """The write of `update_organization_branding` — `PATCH /v1/organizations/{org_id}/branding`.
+
+    Every field is optional, and only the fields set are sent: a value sets it, an explicit `None`
+    clears it, and a field left unset keeps its value, so `OrganizationBrandingUpdate()` writes nothing
+    and answers the branding as it stands.
+
+    - `colors` and `dark_colors` take a `BrandingColorsUpdate`, or `None` to clear all three colours of
+      that set.
+    - `square_logo` and `wide_logo` take the `pipelex-storage://` URI of a file the organization
+      uploaded on its own (`upload`) to set a new logo, the `uri` the branding answers for that slot to
+      keep it, or `None` to remove it. Any other URI, a run's or a method's file, a stale `branding/` copy
+      or the other slot's logo, is refused as `logo_not_an_upload`, so a logo cannot move between slots by
+      its URI. The platform reads and measures an upload before it accepts it, keeps its own copy under
+      `branding/`, whose URI it answers, and erases the copy a write replaces or clears; the upload is left
+      as it is.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    colors: BrandingColorsUpdate | None = None
+    dark_colors: BrandingColorsUpdate | None = None
+    square_logo: str | None = None
+    wide_logo: str | None = None
 
 
 # ── Billing (`/v1/billing/*`) ────────────────────────────────────────────

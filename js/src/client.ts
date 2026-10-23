@@ -62,6 +62,8 @@ import type {
   InvoiceView,
   Membership,
   MembershipsResponse,
+  OrganizationBranding,
+  OrganizationBrandingUpdate,
   ListFilesQuery,
   ListMethodExamplesQuery,
   ListMethodsQuery,
@@ -3499,6 +3501,52 @@ export class PipelexApiClient implements HostedProtocolSurface {
   async renameOrganization(orgId: string, input: { name: string }): Promise<Membership> {
     const segment = idPathSegment(orgId, "renameOrganization", ORG_ID_ARGUMENT);
     return this.requestProduct("PATCH", `organizations/${segment}`, input);
+  }
+
+  /**
+   * The branding of the caller's active organization — `GET /v1/branding`: its name, its light
+   * and dark colour sets and its two logos. Any role reads it, `runner` included, by web session
+   * or API key, so an app scaffolded from the method-app template reads its organization's
+   * branding with its own key. A personal workspace, or a team that set nothing, answers every
+   * colour and logo `null`. A logo's `uri` is a `pipelex-storage://` reference, which
+   * `resolveStorageUrl` turns into a short-lived link to its bytes.
+   *
+   * Throws `ApiResponseError`: `400` when the caller has no active organization, `404` when its
+   * row is missing, and an answer that is not a JSON object, an empty one included.
+   */
+  async getBranding(): Promise<OrganizationBranding> {
+    return this.requestProductObject("GET", "branding");
+  }
+
+  /**
+   * Set or clear an organization's branding — `PATCH /v1/organizations/{org_id}/branding`, an
+   * admin's write to the active organization. Every key of `input` is optional: a value sets it,
+   * `null` clears it, and a key left out keeps its value (`OrganizationBrandingUpdate`), so `{}`
+   * writes nothing. A new logo is the `pipelex-storage://` URI of a file the organization uploaded
+   * on its own, which the platform reads and measures, then copies under `branding/`: the answer's
+   * `uri` is that copy, and sending it back unchanged keeps the logo. The logo a write replaces or
+   * clears is erased. Answers the branding as the write left it.
+   *
+   * Throws `RequestArgumentError` for an organization id that is empty, `.` or `..`, before any
+   * request. Throws `ApiResponseError`, refusing every change of the request when it refuses one:
+   * `403` `forbidden` when `orgId` is not the active organization, `403` `role_not_permitted` for
+   * a caller who is not its admin, `404` for a missing organization, `409` `conflict` for a
+   * personal workspace, which has no branding, and `422` `validation_failed` for a colour that is
+   * not `#rrggbb` or a key the body does not know. A logo's refusal names its slot in the error's
+   * `errors[]`, each entry's `field` being `square_logo` or `wide_logo` and its `detail` the
+   * sentence to show under that slot: `400` `invalid_storage_uri` for a URI that is not a storage
+   * URI, `403` `forbidden` for another organization's file, and `422` `validation_failed` with a
+   * `LogoRefusalCode` per broken rule for a file the platform refused. A failure of the platform's
+   * storage while reading or copying a logo is a `500` `storage_backend_failed`, retryable, with
+   * nothing written. A `503` `service_unavailable` is a failure of its database, after which the
+   * write may have landed or not: the same input sent again is safe.
+   */
+  async updateOrganizationBranding(
+    orgId: string,
+    input: OrganizationBrandingUpdate,
+  ): Promise<OrganizationBranding> {
+    const segment = idPathSegment(orgId, "updateOrganizationBranding", ORG_ID_ARGUMENT);
+    return this.requestProductObject("PATCH", `organizations/${segment}/branding`, input);
   }
 
   /** The active org's subscription state — `GET /v1/billing/subscription`. */

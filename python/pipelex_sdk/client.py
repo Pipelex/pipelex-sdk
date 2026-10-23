@@ -127,6 +127,7 @@ from pipelex_sdk.product_models import (
     MethodSummary,
     MethodVersion,
     MethodVersionPage,
+    OrganizationBranding,
     PipelexApiKeyCreated,
     PipelexApiKeyList,
     PlanView,
@@ -177,6 +178,7 @@ if TYPE_CHECKING:
         MethodPublishResult,
         MethodWriteInput,
         OnboardingSubmission,
+        OrganizationBrandingUpdate,
         UpdateRunInput,
         UploadInput,
     )
@@ -2907,6 +2909,58 @@ class PipelexAPIClient(MthdsAPIClient):
         """Rename an organization — `PATCH /v1/organizations/{org_id}`."""
         endpoint = f"organizations/{_id_path_segment(org_id, call='rename_organization', what=_ORG_ID_ARGUMENT)}"
         return await self._request_product("PATCH", endpoint, body={"name": name}, read=Membership.model_validate)
+
+    async def get_branding(self) -> OrganizationBranding:
+        """The branding of the caller's active organization — `GET /v1/branding`.
+
+        Its name, its light and dark colour sets and its two logos. Any role reads it, `runner` included,
+        by web session or API key, so an app scaffolded from a method-app template reads its organization's
+        branding with its own key. A personal workspace, or a team that set nothing, answers every colour
+        and logo `None`. A logo's `uri` is a `pipelex-storage://` reference, which `resolve_storage_url`
+        turns into a short-lived link to its bytes.
+
+        Raises:
+            ApiResponseError: `400` when the caller has no active organization, `404` when its row is
+                missing, and an answer that is not the branding, an empty one included.
+        """
+        return await self._request_product("GET", "branding", read=OrganizationBranding.model_validate)
+
+    async def update_organization_branding(self, org_id: str, update: OrganizationBrandingUpdate) -> OrganizationBranding:
+        """Set or clear an organization's branding — `PATCH /v1/organizations/{org_id}/branding`.
+
+        An admin's write to the active organization. Only the fields `update` sets are sent: a value sets
+        it, an explicit `None` clears it, and a field left unset keeps its value (`OrganizationBrandingUpdate`),
+        so an empty update writes nothing. A new logo is the `pipelex-storage://` URI of a file the organization
+        uploaded on its own, which the platform reads and measures, then copies under `branding/`: the answer's
+        `uri` is that copy, and sending it back unchanged keeps the logo. The logo a write replaces or clears
+        is erased.
+
+        Args:
+            org_id: The active organization's `org_id`.
+            update: What to set and what to clear.
+
+        Returns:
+            The branding as the write left it.
+
+        Raises:
+            RequestArgumentError: `org_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`;
+                nothing is sent.
+            ApiResponseError: The platform refuses every change of the request when it refuses one: `403`
+                `forbidden` when `org_id` is not the active organization, `403` `role_not_permitted` for a
+                caller who is not its admin, `404` for a missing organization, `409` `conflict` for a
+                personal workspace, which has no branding, and `422` `validation_failed` for a colour that
+                is not `#rrggbb`. A logo's refusal names its slot in the error's `errors`, each entry's
+                `field` being `square_logo` or `wide_logo` and its `detail` the sentence to show under that
+                slot: `400` `invalid_storage_uri` for a URI that is not a storage URI, `403` `forbidden`
+                for another organization's file, and `422` `validation_failed` with a `LogoRefusalCode` per
+                broken rule for a file the platform refused. A failure of the platform's storage while reading
+                or copying a logo is a `500` `storage_backend_failed`, retryable, with nothing written. A `503`
+                `service_unavailable` is a failure of its database, after which the write may have landed or
+                not: the same update sent again is safe.
+        """
+        endpoint = f"organizations/{_id_path_segment(org_id, call='update_organization_branding', what=_ORG_ID_ARGUMENT)}/branding"
+        body = update.model_dump(mode="json", exclude_unset=True)
+        return await self._request_product("PATCH", endpoint, body=body, read=OrganizationBranding.model_validate)
 
     async def get_subscription(self) -> SubscriptionResponse:
         """The active org's subscription state — `GET /v1/billing/subscription`."""

@@ -380,6 +380,64 @@ class IdempotencyErrorCode(StrEnum):
     second time. On a `start`, its `run_may_have_started` is `False`: this request started nothing."""
 
 
+class LogoRefusalCode(StrEnum):
+    """The `code` of an `errors[]` entry when `update_organization_branding` refuses a logo.
+
+    The entry's `field` is the slot, `square_logo` or `wide_logo`, and its `detail` the sentence to show
+    under that slot. The refusal itself is a `422` `validation_failed` naming both slots' failures at
+    once, one entry per broken rule, and writes nothing. `FieldError.code` stays a `str`, since the
+    platform adds codes; being a `StrEnum` each member equals its string (`match entry.code:` with
+    `case LogoRefusalCode.TOO_SMALL:`).
+
+    Two refusals of a logo URI come before any file is read and name the slot the same way, with the
+    platform's own code: `400` `invalid_storage_uri` for a URI that is not a storage URI, and `403`
+    `forbidden` for another organization's file. A colour's refusal names its key instead
+    (`colors.action`, `dark_colors.header`) with pydantic's code.
+    """
+
+    NOT_AN_UPLOAD = "logo_not_an_upload"
+    """The URI is neither a new upload of the organization nor the `uri` the slot already holds: a run's or a
+    method's file, a stale `branding/` copy, or the other slot's logo, since a logo cannot move between slots by
+    its URI."""
+
+    NOT_FOUND = "logo_not_found"
+    """No such upload in the organization."""
+
+    TOO_LARGE = "logo_too_large"
+    """The file is over 1 MiB."""
+
+    TYPE_NOT_ACCEPTED = "logo_type_not_accepted"
+    """Its bytes are not a PNG, JPEG, WebP or SVG image, whatever type the upload declared, or they are an animated
+    PNG (an APNG) or an animated WebP, since a logo is a still image."""
+
+    UNREADABLE = "logo_unreadable"
+    """A raster that is damaged or cut short, its one frame being decoded whole, or that has more than 4096 × 4096
+    pixels; or an SVG that is not well-formed, whose shape cannot be read, that declares XML entities or external
+    references, or one of whose sides lies outside 0.001 to 1,000,000, in pixels for its `width` and `height` or in
+    its own units for its `viewBox`."""
+
+    ACTIVE_CONTENT = "logo_active_content"
+    """An SVG that carries a `script` or a `foreignObject` element, any element in the XHTML namespace, an `on…`
+    event handler attribute, a `set` or an `animate` that rewrites a link, an `xml-stylesheet` processing
+    instruction, or a link that is neither a reference inside the file (`#…`) nor an embedded PNG, JPEG, GIF or
+    WebP image (`data:image/…`), whether an `href`, an `xlink:href`, or a CSS `url()` or `src()`. Wherever a
+    browser reads CSS, a `<style>` element's text or an attribute such as `style` or `fill`, an `@import`, an
+    `image()` or `image-set()` and any CSS escape (a backslash) are refused too. A `<style>` element itself is
+    allowed, holding only references inside the file, such as `fill:url(#grad)`."""
+
+    NOT_SQUARE = "logo_not_square"
+    """A square logo whose longer side is more than 10% longer than its shorter."""
+
+    TOO_SMALL = "logo_too_small"
+    """A raster square logo under 128 px on a side."""
+
+    NOT_WIDE = "logo_not_wide"
+    """A wide logo less than one and a half times as wide as it is tall."""
+
+    TOO_SHORT = "logo_too_short"
+    """A raster wide logo under 64 px tall."""
+
+
 class ApiResponseError(PipelexRequestError, _MthdsApiResponseError):
     """A response that DID come back from the API and that the SDK cannot hand back as a result: a
     non-2xx refusal, with its problem document parsed, or a 2xx answer the SDK could not read — a body

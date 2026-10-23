@@ -1082,6 +1082,57 @@ export type MethodErrorCode =
 export type IdempotencyErrorCode = "idempotency_key_in_use";
 
 /**
+ * The `code` of an `errors[]` entry when `updateOrganizationBranding` refuses a logo. The entry's
+ * `field` is the slot, `square_logo` or `wide_logo`, and its `detail` the sentence to show under
+ * that slot. The refusal itself is a `422` `validation_failed` naming both slots' failures at
+ * once, one entry per broken rule, and writes nothing:
+ *
+ * - `logo_not_an_upload`: the URI is neither a new upload of the organization nor the `uri` the
+ *   slot already holds: a run's or a method's file, a stale `branding/` copy, or the other slot's
+ *   logo, since a logo cannot move between slots by its URI.
+ * - `logo_not_found`: no such upload in the organization.
+ * - `logo_too_large`: the file is over 1 MiB.
+ * - `logo_type_not_accepted`: its bytes are not a PNG, JPEG, WebP or SVG image, whatever type
+ *   the upload declared, or they are an animated PNG (an APNG) or an animated WebP, since a logo
+ *   is a still image.
+ * - `logo_unreadable`: a raster that is damaged or cut short, its one frame being decoded whole,
+ *   or that has more than 4096 × 4096 pixels; or an SVG that is not well-formed, whose shape
+ *   cannot be read, that declares XML entities or external references, or one of whose sides
+ *   lies outside 0.001 to 1,000,000, in pixels for its `width` and `height` or in its own units
+ *   for its `viewBox`.
+ * - `logo_active_content`: an SVG that carries a `script` or a `foreignObject` element, any
+ *   element in the XHTML namespace, an `on…` event handler attribute, a `set` or an `animate`
+ *   that rewrites a link, an `xml-stylesheet` processing instruction, or a link that is neither
+ *   a reference inside the file (`#…`) nor an embedded PNG, JPEG, GIF or WebP image
+ *   (`data:image/…`), whether an `href`, an `xlink:href`, or a CSS `url()` or `src()`. Wherever
+ *   a browser reads CSS, a `<style>` element's text or an attribute such as `style` or `fill`, an
+ *   `@import`, an `image()` or `image-set()` and any CSS escape (a backslash) are refused too. A
+ *   `<style>` element itself is allowed, holding only references inside the file, such as
+ *   `fill:url(#grad)`.
+ * - `logo_not_square`: a square logo whose longer side is more than 10% longer than its shorter.
+ * - `logo_too_small`: a raster square logo under 128 px on a side.
+ * - `logo_not_wide`: a wide logo less than one and a half times as wide as it is tall.
+ * - `logo_too_short`: a raster wide logo under 64 px tall.
+ *
+ * Two refusals of a logo URI come before any file is read and name the slot the same way, with
+ * the platform's own code: `400` `invalid_storage_uri` for a URI that is not a storage URI, and
+ * `403` `forbidden` for another organization's file. A colour's refusal names its key instead
+ * (`colors.action`, `dark_colors.header`) with pydantic's code. `FieldError.code` stays a
+ * `string`, since the platform adds codes.
+ */
+export type LogoRefusalCode =
+  | "logo_not_an_upload"
+  | "logo_not_found"
+  | "logo_too_large"
+  | "logo_type_not_accepted"
+  | "logo_unreadable"
+  | "logo_active_content"
+  | "logo_not_square"
+  | "logo_too_small"
+  | "logo_not_wide"
+  | "logo_too_short";
+
+/**
  * The last constructor argument of `ApiResponseError`: the error's `cause`, the hosted problem
  * document's typed members, the decoded document whole, the answer's headers, and whether the
  * request that met the answer may create a run.
@@ -1234,7 +1285,11 @@ export class ApiResponseError extends PipelexRequestError {
   public readonly providerMetadata: ProviderErrorMetadata | undefined;
   /** The body's `migration`: a pending configuration migration that explains the failure. */
   public readonly migration: MigrationErrorBlock | undefined;
-  /** The platform's field-level `errors[]` — one item per offending request field. */
+  /**
+   * The platform's field-level `errors[]` — one item per offending request field. A refused
+   * branding write names the logo slot or the colour key each entry is about in its `field`,
+   * with a `LogoRefusalCode` for a logo the platform measured.
+   */
   public readonly errors: FieldError[] | undefined;
   /**
    * The decoded problem document whole — every member, named or not, such as a failed run's
