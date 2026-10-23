@@ -848,9 +848,17 @@ export interface UploadInput {
   method_id?: string;
 }
 
+/** The answer to `POST /v1/upload`: the stored file's reference, its name and its record. */
 export interface UploadedFile {
+  /** The file's `pipelex-storage://` reference. */
   uri: string;
+  /** The name as sent. */
   filename: string;
+  /**
+   * The file's record, `fl_<uuid7>`, written `stored`, as an upload grant's `file_id` is.
+   * Absent from a deployment that predates file records, which answers none.
+   */
+  file_id?: string;
 }
 
 /**
@@ -862,42 +870,78 @@ export type UploadKind = "uploaded" | "test";
 /**
  * What an upload grant is requested for — `POST /v1/upload/grant`. The file is
  * described, never sent: its bytes go to storage with the grant, from wherever
- * they are held.
+ * they are held. `describeUpload` reads this description off a `File` or a `Blob`,
+ * its SHA-256 included.
  */
 export interface UploadGrantInput {
   /** The original filename with its extension; the stored object keeps the extension. */
   filename: string;
   /**
-   * MIME type, signed into the grant so the upload must carry it. Omitted, `null`
-   * or empty, none is signed — a browser's `File.type` is empty for a type it
-   * does not know, and means the same.
+   * The MIME type the file is declared as. The platform types the stored object by
+   * the name's extension and never stores this one, which serves only a name with no
+   * extension. Omitted, `null` or empty, none is declared — a browser's `File.type` is
+   * empty for a type it does not know, and means the same.
    */
   content_type?: string | null;
   /** The file's exact size in bytes. The grant accepts a body of this size and no other. */
   size: number;
+  /**
+   * The SHA-256 of the file's bytes, as 64 lowercase hexadecimal digits. With it, the
+   * object is named after its bytes, so a file the organization already holds is not
+   * sent again: the grant answers `stored: true`. Without it, the grant always names a
+   * new object and asks for the bytes. Any other string is a `422`, and so is a `size`
+   * other than the one the organization holds those bytes at (`blob_mismatch`).
+   */
+  sha256?: string;
+  /** What the upload is recorded as; `uploaded` when omitted. */
+  kind?: UploadKind;
+  /**
+   * The bare catalog id of the method a `test` file is for, required with `kind: "test"`
+   * and refused without it.
+   */
+  method_id?: string;
 }
 
 /**
- * A presigned, create-only `PUT` for one new object in the caller's organization,
- * and the `pipelex-storage://` URI that object will carry. A bearer capability
- * until `expires_at`: whoever holds it can write that one object, once, so it is
+ * The answer to an upload grant request: the file's record and `pipelex-storage://`
+ * URI, and either the news that the organization already holds the bytes
+ * (`stored: true`) or a presigned, create-only `PUT` to send them with. **Branch on
+ * `stored`, never on whether `url` is present.** A grant with a target is a bearer
+ * capability until `expires_at`: whoever holds it can write that one object, so it is
  * never logged. `uploadWithGrant` (also on the browser-safe `@pipelex/sdk/upload`
- * entry) is the sender.
+ * entry) is the sender, and sends nothing for a stored grant.
  */
 export interface UploadGrant {
-  /** The reference the object carries — it names nothing until the `PUT` has succeeded. */
-  uri: string;
-  /** Where to `PUT` the file, as the raw request body. */
-  url: string;
   /**
-   * The signed headers to send unchanged: `If-None-Match: *`, the `Content-Type`
-   * when one was declared, and the provenance `x-amz-meta-*` values. `Content-Length`
-   * is signed too but is not listed — the body sets it, so the body must be
-   * exactly the declared size.
+   * The file's record, `fl_<uuid7>`, `stored` once the bytes are and `pending` before.
+   * Absent from a deployment that predates file records, which answers none.
    */
-  headers: Record<string, string>;
-  /** ISO-8601 UTC instant after which storage refuses the `PUT`. */
-  expires_at: string;
+  file_id?: string;
+  /**
+   * The reference the file carries. With `stored: false`, it names nothing until the
+   * `PUT` has succeeded.
+   */
+  uri: string;
+  /**
+   * `true` when the organization already holds these bytes: nothing is to be sent, and
+   * `uri` and `file_id` name the file now. `false` when the bytes go to `url`. Absent from
+   * a deployment that predates hashed uploads, whose grant is always a target, so an
+   * absent `stored` reads as `false`, as `uploadWithGrant` reads it.
+   */
+  stored?: boolean;
+  /** Where to `PUT` the file, as the raw request body; `null` when `stored`. */
+  url: string | null;
+  /**
+   * The signed headers to send unchanged, `null` when `stored`: `If-None-Match: *`,
+   * the `Content-Type` the name's extension implies, the provenance `x-amz-meta-*`
+   * values and, when the grant was asked for with a `sha256`, the checksum
+   * `x-amz-checksum-sha256`, which storage holds the body to. `Content-Length` is
+   * signed too but is not listed — the body sets it, so the body must be exactly the
+   * declared size.
+   */
+  headers: Record<string, string> | null;
+  /** ISO-8601 UTC instant after which storage refuses the `PUT`; `null` when `stored`. */
+  expires_at: string | null;
   /** The largest file any grant allows, in bytes (the service's upload cap). */
   max_bytes: number;
 }

@@ -8,10 +8,12 @@
  *
  * What the unit suite cannot prove: that the PUT `uploadWithGrant` composes is the one
  * S3 accepts for the grant the platform signed — the header names, the body setting a
- * `Content-Length` that matches the signed one — and that S3's refusals carry the codes
- * the error mapping reads. Every mock agrees with the helper; only the live store
- * settles whether S3 does. It runs in Node, whose `fetch` sends no preflight, so the
- * bucket's CORS rule is proven by a hosted page, not here.
+ * `Content-Length` that matches the signed one, the checksum `describeUpload` computes
+ * matching the one S3 computes — that the platform answers a repeat of the same bytes
+ * with `stored: true`, and that S3's refusals carry the codes the error mapping reads.
+ * Every mock agrees with the helper; only the live store settles whether S3 does. It
+ * runs in Node, whose `fetch` sends no preflight, so the bucket's CORS rule is proven
+ * by a hosted page, not here.
  *
  * A bare runner cannot run it (the grant is a platform route) and fails it honestly
  * rather than skipping.
@@ -20,7 +22,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { PipelexApiClient } from "../../src/client.js";
 import { ApiResponseError, RejectedAssetError } from "../../src/errors.js";
-import { uploadWithGrant } from "../../src/upload-grant.js";
+import { describeUpload, uploadWithGrant } from "../../src/upload-grant.js";
 
 const BASE_URL = process.env.PIPELEX_E2E_BASE_URL ?? "http://localhost:8081";
 
@@ -44,7 +46,7 @@ describe("the upload grant against a live platform", () => {
     client = new PipelexApiClient({ baseUrl: BASE_URL });
   });
 
-  it("uploads through a grant, and the reference resolves to the same bytes", async () => {
+  it("uploads through a grant asked for without a hash, and the reference resolves to the same bytes", async () => {
     const bytes = pdfBytes();
     const file = pdfFile(bytes);
 
@@ -54,15 +56,18 @@ describe("the upload grant against a live platform", () => {
       size: file.size,
     });
 
+    expect(grant.stored).toBe(false);
+    expect(grant.file_id).toMatch(/^fl_/);
     expect(grant.uri).toMatch(/^pipelex-storage:\/\/.+\.pdf$/);
     expect(grant.url).toMatch(/^https:\/\//);
-    expect(grant.headers["If-None-Match"]).toBe("*");
-    expect(grant.headers["Content-Type"]).toBe("application/pdf");
-    expect(Date.parse(grant.expires_at)).toBeGreaterThan(Date.now());
+    expect(grant.headers?.["If-None-Match"]).toBe("*");
+    expect(grant.headers?.["Content-Type"]).toBe("application/pdf");
+    expect(grant.headers?.["x-amz-checksum-sha256"]).toBeUndefined();
+    expect(Date.parse(grant.expires_at ?? "")).toBeGreaterThan(Date.now());
     expect(grant.max_bytes).toBeGreaterThanOrEqual(file.size);
 
     const stored = await uploadWithGrant(grant, file);
-    expect(stored).toEqual({ uri: grant.uri });
+    expect(stored).toEqual({ uri: grant.uri, file_id: grant.file_id });
 
     const resolved = await client.resolveStorageUrl({ uri: stored.uri });
     expect(resolved.content_type).toBe("application/pdf");
@@ -71,7 +76,67 @@ describe("the upload grant against a live platform", () => {
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
   });
 
-  it("refuses a second upload with the same grant as a rejected asset (412)", async () => {
+  it("names the file by its bytes when asked with its hash, and answers a repeat as stored", async () => {
+    const bytes = pdfBytes();
+    const file = pdfFile(bytes);
+    const description = await describeUpload(file);
+
+    const grant = await client.requestUploadGrant(description);
+
+    expect(grant.stored).toBe(false);
+    expect(grant.uri).toMatch(new RegExp(`/assets/${description.sha256}\\.pdf$`));
+    expect(grant.headers?.["x-amz-checksum-sha256"]).toBe(
+      Buffer.from(description.sha256!, "hex").toString("base64"),
+    );
+    expect(await uploadWithGrant(grant, file)).toEqual({
+      uri: grant.uri,
+      file_id: grant.file_id,
+    });
+
+    // The same person sends the same bytes under the same name: their record comes back.
+    const repeat = await client.requestUploadGrant(description);
+    expect(repeat).toMatchObject({
+      stored: true,
+      uri: grant.uri,
+      file_id: grant.file_id,
+      url: null,
+      headers: null,
+      expires_at: null,
+    });
+    expect(await uploadWithGrant(repeat, file)).toEqual({
+      uri: grant.uri,
+      file_id: grant.file_id,
+    });
+    const response = await client.fetchArtifact(grant.uri);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+  });
+
+  it("reads storage's 412 as stored when a grant that names its bytes is sent twice", async () => {
+    const file = pdfFile(pdfBytes());
+    const grant = await client.requestUploadGrant(await describeUpload(file));
+    await uploadWithGrant(grant, file);
+
+    expect(await uploadWithGrant(grant, file)).toEqual({
+      uri: grant.uri,
+      file_id: grant.file_id,
+    });
+  });
+
+  it("refuses bytes other than the ones whose hash the grant was asked with (400 BadDigest)", async () => {
+    const bytes = pdfBytes();
+    const grant = await client.requestUploadGrant(await describeUpload(pdfFile(bytes)));
+    const other = bytes.slice();
+    other[other.length - 2] = other[other.length - 2]! ^ 1;
+
+    const error = await uploadWithGrant(grant, pdfFile(other)).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(RejectedAssetError);
+    expect((error as RejectedAssetError).status).toBe(400);
+    expect((error as RejectedAssetError).code).toBe("store_refused");
+    expect((error as RejectedAssetError).message).toContain("BadDigest");
+  });
+
+  it("refuses a second upload with the same grant asked for without a hash as a rejected asset (412)", async () => {
     const file = pdfFile(pdfBytes());
     const grant = await client.requestUploadGrant({
       filename: file.name,

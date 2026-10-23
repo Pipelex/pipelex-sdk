@@ -61,10 +61,16 @@ export { PipelexExecuteResult, resultsFromExecute } from "./execute-result.js";
 // `prepareInputs`' `upload` both take it.
 export type { UploadKindOptions } from "./upload.js";
 export type { UploadableAsset, UploadFileOptions, UploadRecord } from "./upload.js";
-// Except the upload grant's sender, which is standalone so the holder of the bytes needs
-// no client. It is also the browser-safe `@pipelex/sdk/upload` entry.
-export { uploadWithGrant } from "./upload-grant.js";
-export type { GrantedUpload, UploadWithGrantOptions } from "./upload-grant.js";
+// Except the upload grant's two halves that run where the bytes are, the description and the
+// sender, which are standalone so the holder of the bytes needs no client. They are also the
+// browser-safe `@pipelex/sdk/upload` entry.
+export { describeUpload, uploadWithGrant } from "./upload-grant.js";
+export type {
+  DescribeUploadOptions,
+  GrantedUpload,
+  UploadDescription,
+  UploadWithGrantOptions,
+} from "./upload-grant.js";
 export type {
   InputFormFault,
   PrepareInputsBase,

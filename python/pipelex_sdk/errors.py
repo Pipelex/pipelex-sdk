@@ -996,10 +996,13 @@ class RejectedAssetCode(StrEnum):
     The vocabulary is `@pipelex/sdk`'s, shared so a consumer of both SDKs branches on one set.
     `upload_file` raises `too_large`, the upload route's `413` past the service-defined size cap. The
     others name the refusals of storage to an upload made with a grant, which `@pipelex/sdk`'s
-    `uploadWithGrant` performs: `grant_used` — the grant already wrote its object (`412`);
-    `grant_expired` — the grant's validity window has passed; `signature_mismatch` — the file's size,
-    content type or metadata differ from what the grant signed; `unsigned_header` — the request carried a
-    storage header the grant did not sign; `store_refused` — any other refusal from storage.
+    `uploadWithGrant` performs: `grant_used` — a grant asked for without the file's hash already wrote
+    its object (`412`; for a grant that names its bytes, a `412` means they are stored, and is no
+    refusal); `grant_expired` — the grant's validity window has passed; `signature_mismatch` — the
+    file's size, content type or metadata differ from what the grant signed; `unsigned_header` — the
+    request carried a storage header the grant did not sign; `store_refused` — any other refusal from
+    storage, such as the `400 BadDigest` of bytes other than the ones whose SHA-256 the grant was asked
+    with.
     """
 
     TOO_LARGE = "too_large"
@@ -1165,11 +1168,11 @@ class UploadTransportCode(StrEnum):
       deployment does not implement the request it was sent, and stored nothing.
     - `storage_timeout` — storage's `400 RequestTimeout`: it stopped waiting for the file's bytes and
       stored nothing.
-    - `conflict` — storage's `409 ConditionalRequestConflict`: another write with the same grant was in
-      flight.
+    - `conflict` — storage's `409 ConditionalRequestConflict` on every one of `uploadWithGrant`'s few
+      attempts: another write of the same object was in flight.
     - `redirected` — storage redirected the write, and the redirect was refused.
-    - `invalid_grant_url` — the grant's `url` is not an absolute `http(s)` URL free of user info, so
-      nothing was sent.
+    - `invalid_grant_url` — the grant is not stored and its `url` is not an absolute `http(s)` URL free
+      of user info, so nothing was sent.
     - `unexpected` — a status or a failure the SDK has no specific mapping for.
     """
 
@@ -1195,7 +1198,10 @@ class UploadTransportError(InputPreparationError):
     `unexpected`, like any status the SDK has no mapping for), so a wrapped `402` is `config` and not
     retryable. Pass the same error as `cause` and raise this one `from` it. Otherwise `code` decides:
     `timeout`, `storage_timeout` and `conflict` are `runtime` and retryable, `conflict` because storage
-    documents its `409 ConditionalRequestConflict` as retryable and the grant is not spent by it;
+    documents its `409 ConditionalRequestConflict` as retryable and the grant is not spent by it, even
+    once `uploadWithGrant`'s own few attempts have all met it (a spent grant is the `412` of a
+    `RejectedAssetError` with code `grant_used`, which only a grant asked for without the file's hash
+    can meet);
     `server_error` is `runtime`, and retryable when the fallback table a refused API request reads would
     call its `status` retryable — any `5xx` but a `501` — or when it carries no status; `unexpected` is
     `runtime`, and retryable when that table would call its `status` retryable — a `408` or a `429`,

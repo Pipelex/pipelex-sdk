@@ -3836,7 +3836,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
-   * Upload a base64 file — `POST /v1/upload`. An answer with no non-empty string `uri` names no
+   * Upload a base64 file — `POST /v1/upload`, answering the file's `uri`, the `filename` as sent
+   * and the `file_id` of its record. An answer with no non-empty string `uri` names no
    * stored file, so it is an answer the SDK cannot read: an `ApiResponseError`, `runtime` and
    * not retryable, which `uploadFile` wraps as an `UploadTransportError` with code `unexpected`.
    */
@@ -3861,18 +3862,24 @@ export class PipelexApiClient implements HostedProtocolSurface {
   /**
    * Request a grant to upload one file straight to storage — `POST /v1/upload/grant`.
    * `upload` for a caller that holds the bytes but not this client's credential, such
-   * as a browser page: the credential-holding side asks for the grant, hands it over,
-   * and the holder of the bytes sends them with `uploadWithGrant`, from the
-   * browser-safe `@pipelex/sdk/upload` entry. The bytes cross neither this client nor
-   * the API gateway, so the gateway's request quota does not cap the file below the
-   * service's own limit (`max_bytes`).
+   * as a browser page: the holder of the bytes describes the file with `describeUpload`,
+   * its SHA-256 included, the credential-holding side asks for the grant with that
+   * description and hands the grant over, and the holder of the bytes sends them with
+   * `uploadWithGrant`. Both are on the browser-safe `@pipelex/sdk/upload` entry. The
+   * bytes cross neither this client nor the API gateway, so the gateway's request quota
+   * does not cap the file below the service's own limit (`max_bytes`).
    *
-   * The grant describes one new object: its `uri` exists once the `PUT` succeeds, and
-   * not before. It is create-only and short-lived, and it is a bearer capability, so
-   * keep it out of logs. The route never replays a grant: ask again for a new one
-   * rather than retrying. A declared `size` over the cap is a `413` `ApiResponseError`
-   * (`code` `payload_too_large`); a deployment without the route answers a `404`. See
-   * `docs/input-preparation.md`.
+   * **Branch on the answer's `stored`.** With the file's `sha256`, the object is named
+   * after its bytes: when the organization already holds them, the grant answers
+   * `stored: true` with the file's `uri` and `file_id` and no upload target, and nothing
+   * is to be sent. Otherwise, and always without a `sha256`, it answers a presigned,
+   * create-only `PUT` whose `uri` exists once the `PUT` succeeds, and not before. That
+   * target is short-lived and a bearer capability, so keep it out of logs. The route
+   * never replays a grant: ask again for a new one rather than retrying; with a
+   * `sha256`, a new grant answers the same file record. A declared `size` over the cap
+   * is a `413` `ApiResponseError` (`code` `payload_too_large`), a malformed `sha256` and
+   * a `size` other than the one the organization holds those bytes at are a `422`, and a
+   * deployment without the route answers a `404`. See `docs/input-preparation.md`.
    */
   async requestUploadGrant(
     input: UploadGrantInput,
