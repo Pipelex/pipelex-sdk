@@ -938,12 +938,38 @@ class ResolvedStorageUrl(BaseModel):
     content_type: str | None
 
 
+class UploadKind(StrEnum):
+    """What an upload is recorded as, sent with it to `POST /v1/upload` — the kinds a caller may claim.
+
+    A subset of `FileKind`: no caller may claim to have generated a file, which only a run does, so
+    `generated` is not a kind an upload carries.
+    """
+
+    UPLOADED = "uploaded"
+    """A person's file, what an upload is recorded as when it names no kind."""
+
+    TEST = "test"
+    """A test input made for one method, such as the inputs a build assistant makes to try it, which
+    names that method in `method_id`."""
+
+
 class UploadInput(BaseModel):
-    """Upload payload — base64 `data` (the multipart hop is browser→BFF only)."""
+    """Upload payload — base64 `data` (the multipart hop is browser→BFF only).
+
+    `kind` and `method_id` say what the upload is recorded as and are sent only when given. `upload`
+    sends them as they are and the upload route checks them, refusing with a `422` a `kind="test"`
+    without a `method_id`, a `method_id` without `kind="test"`, and a `method_id` that is not a bare
+    catalog id; `upload_file` and `prepare_inputs` check them first, before any file is read.
+    """
 
     filename: str
     data: str
     content_type: str
+    kind: UploadKind | None = None
+    """What the upload is recorded as; the platform records `uploaded` when it is `None`."""
+    method_id: str | None = None
+    """The bare catalog id of the method a `test` file is for, required with `kind="test"` and refused
+    without it."""
 
 
 class UploadedFile(BaseModel):
