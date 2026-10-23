@@ -16,7 +16,7 @@ An app made from this template wears the branding of the organization its API ke
 
 ## The colours
 
-An organization sets up to three colours per theme: the button colour (`action`), an accent, and a header colour. None of them is painted as given. Each theme's three seeds go through the form kernel's `deriveBrandRoles`, against that theme's page colour, and the roles it answers are written onto the template's CSS variables by `brandStyleSheet` (`src/lib/brandStyle.ts`), as a `<style>` the page renders: the light set under `:root`, the dark set under `.dark`.
+An organization sets up to three colours per theme: the button colour (`action`), an accent, and a header colour. None of them is painted as given. Each theme's three seeds go through the form kernel's `deriveBrandRoles`, against that theme's page colour, and the roles it answers are written onto the template's CSS variables by `brandStyleSheet` (`src/lib/brandStyle.ts`), as a `<style>` the page renders once the team set any colour: the light set under `:root` and the dark set under `.dark`, a theme whose team set nothing getting no rule.
 
 | Role              | Variable                  | Where it shows                                                                                    | Written when                                        |
 | ----------------- | ------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
