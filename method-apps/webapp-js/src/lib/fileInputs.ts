@@ -12,11 +12,14 @@ import type { InputFormItem, PipeInputFormDescriptor } from "@pipelex/sdk";
  * asks the method's Server Action for an upload grant, sends the file with it,
  * and writes the `pipelex-storage://` reference into the form's value. So the
  * bytes cross neither this app's server nor the API gateway, and no request of
- * this app carries more than a file's name, type and size. Two gates follow:
+ * this app carries more than a file's name, type, size and SHA-256. Two gates
+ * follow:
  *
  * - `checkUploadRequest` — what a grant action accepts: a file of a media type
- *   the method takes, no larger than `MAX_FILE_BYTES`. The grant signs the type
- *   and the size, so storage refuses a file that differs from what was declared.
+ *   the method takes, no larger than `MAX_FILE_BYTES`, with a well-formed
+ *   SHA-256 when it states one. The grant signs the type and the size, and the
+ *   bytes when the digest came with them, so storage refuses a file that
+ *   differs from what was declared.
  * - `checkFileInputs` — what a run action accepts at a file position: a
  *   reference in a closed set of schemes, and nothing else. The security half,
  *   because the SDK's `prepareInputs` resolves an unrecognised string as a
@@ -44,14 +47,29 @@ export type FileInputError = {
 
 /**
  * What the browser tells a grant action about a file it is about to upload —
- * the SDK's `UploadGrantInput`, with the type required, since a type the method
- * does not take is refused before any grant is asked for.
+ * the SDK's `UploadDescription`, which `describeUpload` reads off the `File`,
+ * and the part of its `UploadGrantInput` that describes a file, with the type
+ * required, since a type the method does not take is refused before any grant
+ * is asked for.
  */
 export interface UploadRequest {
   filename: string;
   content_type: string;
   size: number;
+  /**
+   * The SHA-256 of the file's bytes, 64 lowercase hexadecimal digits. With it
+   * the platform names the object after its bytes, so a file the organization
+   * already holds is answered `stored: true` and never sent again. Optional,
+   * because `describeUpload` leaves it out where the browser offers no Web
+   * Crypto, which is the case on a page served over plain `http` from a host
+   * other than the local one; the grant then names a new object, as it always
+   * did.
+   */
+  sha256?: string;
 }
+
+/** A SHA-256 as the grant route takes it: 64 lowercase hexadecimal digits. */
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 /** Human-readable megabytes, e.g. `8` or `11.4`. */
 function mb(bytes: number): string {
@@ -76,13 +94,20 @@ export function fileTooLargeError(bytes: number, maxBytes: number): FileInputErr
  *
  * A Server Action is a public endpoint, so the request is read as untrusted
  * JSON: each field is checked for its type before its value. The browser's own
- * size check is an early exit, not this gate — it is trivially bypassed.
+ * size check is an early exit, not this gate — it is trivially bypassed. A
+ * digest is checked only for its form, since this server never holds the bytes
+ * it names: storage holds the upload to it.
  */
 export function checkUploadRequest(
   request: unknown,
   opts: { allowedMimes: string[]; maxBytes: number },
 ): FileInputError | null {
-  const { filename, content_type: type, size } = (request ?? {}) as Partial<UploadRequest>;
+  const {
+    filename,
+    content_type: type,
+    size,
+    sha256,
+  } = (request ?? {}) as Partial<Record<keyof UploadRequest, unknown>>;
   if (typeof filename !== "string" || filename.length === 0) {
     return { kind: "invalid_file", message: "The file has no name." };
   }
@@ -97,6 +122,12 @@ export function checkUploadRequest(
     return { kind: "invalid_file", message: "The file is empty." };
   }
   if (size > opts.maxBytes) return fileTooLargeError(size, opts.maxBytes);
+  if (sha256 !== undefined && (typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256))) {
+    return {
+      kind: "invalid_file",
+      message: "The file's SHA-256 is not 64 lowercase hexadecimal digits.",
+    };
+  }
   return null;
 }
 

@@ -125,17 +125,14 @@ The dependency tree ends up with two: the kernel's **ajv** gates inputs, and the
 The kernel never uploads. `DocumentField` fires `env.onDropFile(id, file)` and waits for the host to write a value back. This app's host is `useFileInputs`, and what it writes back is a file already in Pipelex storage:
 
 ```ts
-const granted = await requestUpload({
-  filename: file.name,
-  content_type: file.type,
-  size: file.size,
-});
+const description = await describeUpload(file); // name, type, size and SHA-256
+const granted = await requestUpload(description);
 if (!granted.ok) return showError(granted.error);
-const { uri } = await uploadWithGrant(granted.grant, file);
+const { uri } = await uploadWithGrant(granted.grant, file); // sends nothing when stored
 setValues((current) => setValueAtPath(current, id.split("."), { url: uri, filename: file.name }));
 ```
 
-The `id` is a **dotted path**, not a name, which is what makes the same handler work for a file nested inside a structured concept or an item of a list. While the field's id sits in `env.uploadingIds`, the kernel shuts **every door into that value** — the dropzone, the "paste a URL instead" toggle and the URL input behind it — and shows a spinner. That guarantee is why this app needs no staleness token for a second selection while the first is still uploading, and why `PdfForm` passes plain run state as the form's `disabled`; the hook keeps the id there from the grant request until the reference is written, so there is no window between the two steps. The one write path `uploadingIds` cannot cover is the host's own chrome: the "Use sample PDF" shortcut writes into the same field — it fetches the sample and hands it to the same `dropFile` — so it disables itself while the field is resolving (`running || uploadingIds.size > 0`), the same rule, applied by the one who owns the button.
+The `id` is a **dotted path**, not a name, which is what makes the same handler work for a file nested inside a structured concept or an item of a list. While the field's id sits in `env.uploadingIds`, the kernel shuts **every door into that value** — the dropzone, the "paste a URL instead" toggle and the URL input behind it — and shows a spinner. That guarantee is why this app needs no staleness token for a second selection while the first is still uploading, and why `PdfForm` passes plain run state as the form's `disabled`; the hook keeps the id there from hashing the file until the reference is written, so there is no window between the steps. The one write path `uploadingIds` cannot cover is the host's own chrome: the "Use sample PDF" shortcut writes into the same field — it fetches the sample and hands it to the same `dropFile` — so it disables itself while the field is resolving (`running || uploadingIds.size > 0`), the same rule, applied by the one who owns the button.
 
 The kernel previews a file dropped into it from its own local copy, which it keeps after the upload. For a stored reference it holds no copy of — the sample's, or one pasted through "paste a URL instead" — it would ask the form's `env.resolveUrl`, and `PdfForm` passes none, so the preview settles on the kernel's placeholder. The method-app template resolves such a reference through a same-origin assets route, which this gallery has not taken.
 
@@ -149,11 +146,17 @@ The grant writes one object, once, within minutes, and only the file it was requ
 
 **The grant route has to exist on the configured API.** A deployment without `POST /v1/upload/grant` answers `404`, which `classifyPipelineError` reports as `upload_unavailable`, naming the route and `PIPELEX_BASE_URL`, rather than letting it read as a transport failure. The hosted API serves the route: verified on 2026-09-24 against both `api.pipelex.com` and `api-dev.pipelex.com`, from the grant through the stored object's resolution. Preparing a run's file inputs needs a second route, `POST /v1/pipe-io`, from which `prepareInputs` reads the method's inputs: `api.pipelex.com` serves it, and so does `pipelex-api` from v0.33.1, while an older runner refuses the run before it starts.
 
+### A file already stored is not sent again
+
+The browser describes the file with the SDK's `describeUpload` before it asks for the grant, and the description carries the SHA-256 of the file's bytes, computed with Web Crypto. The grant action passes the digest through, and the platform names the object after the bytes. A file the organization already holds, dropped again or stored by an earlier run, is answered `stored: true`, with its `pipelex-storage://` reference and its `file_id` but no `url`, `headers` or `expires_at`, and `uploadWithGrant` hands the reference back without sending anything. For a new file the grant signs the digest too, so storage refuses any bytes but the hashed ones. Hashing reads the whole file into memory once, which is why it comes after the size check, and the field stays busy while it runs.
+
+The digest is optional. A browser gives Web Crypto only to a secure context, so a page served over plain `http` from a host other than the local one describes the file without it, and the grant then names a new object and asks for the bytes, as every grant did before. A file that cannot be read to compute it, such as one changed on disk since it was picked, is shown beside the field as a file that could not be prepared, and nothing is asked for.
+
 ### Where each check lives
 
 The bundle can say the document input carries a `url`. It cannot say "a PDF, under 50 MB" — that is host policy. The checks are placed where the thing they check is:
 
-- **The type and the size are the grant action's.** `checkUploadRequest` (`src/lib/fileInputs.ts`) reads the request as untrusted JSON and refuses a type outside the method's `ALLOWED_MIMES` and a size past `MAX_FILE_BYTES`, before any grant is asked for. `ALLOWED_MIMES` lives in a module of its own (`src/types/summarizePdfUploads.ts` for the PDF example), because the action's `"use server"` file may export only async functions and the form reads the list too. The grant then signs both, so storage refuses a file that differs from what was declared. `MAX_FILE_BYTES` is the platform's own limit, and the grant route's `413` for a larger declaration stays the authority behind it.
+- **The type, the size and the digest's form are the grant action's.** `checkUploadRequest` (`src/lib/fileInputs.ts`) reads the request as untrusted JSON and refuses a type outside the method's `ALLOWED_MIMES`, a size past `MAX_FILE_BYTES` and a SHA-256 that is not 64 lowercase hexadecimal digits, before any grant is asked for. `ALLOWED_MIMES` lives in a module of its own (`src/types/summarizePdfUploads.ts` for the PDF example), because the action's `"use server"` file may export only async functions and the form reads the list too. The grant then signs the type and the size, and the digest when the request carried one, so storage refuses a file that differs from what was declared. `MAX_FILE_BYTES` is the platform's own limit, and the grant route's `413` for a larger declaration stays the authority behind it.
 - **The form offers only what the grant action grants.** `PdfForm` passes `ALLOWED_MIMES` to `useRunInputs` as `allowedMimes`, and the hook narrows each file input to those formats with the kernel's `narrowFileFormats`. The dropzone's hint, its file picker's filter and its own check then name the same list, so a PNG dropped on the PDF input is refused at the dropzone rather than after the grant action has been asked. The form can offer only a format the kernel knows for the input's kind, and a list naming none of an input's formats is refused when the form renders.
 - **The size check in the browser stays, as an early exit.** It reads the same exported constant, so it is not a second rule, and it only spares a round trip.
 - **The type check in the browser is the kernel's, over the narrowed list.** The hint under the dropzone, its picker filter and the check a dropped file must pass all read the field's narrowed formats; the grant action's check is still the one that decides.

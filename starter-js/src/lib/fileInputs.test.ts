@@ -50,6 +50,28 @@ describe("checkUploadRequest", () => {
   ])("refuses %s — a Server Action reads untrusted JSON", (_label, bad) => {
     expect(checkUploadRequest(bad, opts)?.kind).toBe("invalid_file");
   });
+
+  /** The SHA-256 of the bytes "jpeg bytes", as `describeUpload` writes one. */
+  const SHA256 = "1b48e21282963dfba2ffff3a4c331471242fe42fd0a51161e56df72085c445c9";
+
+  it("accepts the file's SHA-256, and a request that carries none", () => {
+    expect(checkUploadRequest({ ...request, sha256: SHA256 }, opts)).toBeNull();
+    // `describeUpload` leaves the digest out where the browser offers no Web Crypto.
+    expect(checkUploadRequest(request, opts)).toBeNull();
+  });
+
+  it.each([
+    ["in capitals", SHA256.toUpperCase()],
+    ["a digit short", SHA256.slice(1)],
+    ["holding a letter that is not hexadecimal", `${SHA256.slice(1)}g`],
+    ["that is empty", ""],
+    ["that is not a string", 42],
+    ["that is null", null],
+  ])("refuses a SHA-256 %s as an invalid file", (_label, sha256) => {
+    const refused = checkUploadRequest({ ...request, sha256 }, opts);
+    expect(refused?.kind).toBe("invalid_file");
+    expect(refused?.message).toContain("SHA-256");
+  });
 });
 
 describe("checkFileInputs", () => {

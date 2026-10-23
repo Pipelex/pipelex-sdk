@@ -53,7 +53,8 @@ export type PipelineErrorKind =
   // a few distinct, actionable ways — classified from `InputPreparationError` and
   // its subclasses into one kind with subclass-tailored copy, on the server by
   // `classifyPipelineError` and in the browser by `classifyUploadError` — or by
-  // `buildFilePreparationError`, when the host's own `prepareFile` throws.
+  // `buildFilePreparationError`, when the host's own `prepareFile` throws or the
+  // file cannot be read to compute its SHA-256.
   | "upload_failed"
   // The configured API does not serve `POST /v1/upload/grant`, so a file cannot
   // be stored at all. Classified by `classifyPipelineError` with `uploadGrant`.
@@ -1058,9 +1059,11 @@ function classifyUploadTransport(err: UploadTransportError): PipelineError {
 }
 
 /**
- * A host's `prepareFile` (see `useFileInputs`) threw before the upload began, so
- * nothing was sent. Not a transport error: the browser never tried to reach
- * anything, and saying so would send the user after the wrong cause.
+ * The file could not be prepared for its upload, so nothing was sent: a host's
+ * `prepareFile` (see `useFileInputs`) threw, or the SDK's `describeUpload` could
+ * not read the file to compute its SHA-256, as when it changed on disk since it
+ * was picked. Not a transport error: the browser never tried to reach anything,
+ * and saying so would send the user after the wrong cause.
  */
 export function buildFilePreparationError(err: unknown): PipelineError {
   const message = err instanceof Error ? err.message : String(err);

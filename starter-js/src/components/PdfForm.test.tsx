@@ -22,8 +22,11 @@ vi.mock("@/actions/runSummarizePdfPipeline", () => ({
 vi.mock("@/lib/fetchRunProgress", () => ({ fetchRunProgress: vi.fn() }));
 const readProgress = vi.mocked(fetchRunProgress);
 
+// The upload is stood in for, and the description is the SDK's own, so a drop
+// is hashed in the browser as it is in the app.
 const uploadWithGrant = vi.fn();
-vi.mock("@pipelex/sdk/upload", () => ({
+vi.mock("@pipelex/sdk/upload", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@pipelex/sdk/upload")>()),
   uploadWithGrant: (...args: unknown[]) => uploadWithGrant(...args),
 }));
 
@@ -45,16 +48,21 @@ beforeEach(() => {
   requestUpload.mockReset().mockImplementation(async (request: UploadRequest) => ({
     ok: true,
     grant: {
+      file_id: `fl_${request.filename}`,
+      uri: storedUri(request.filename),
+      stored: false,
       url: `https://storage.example/${request.filename}`,
       headers: { "Content-Type": request.content_type },
-      uri: storedUri(request.filename),
       expires_at: "2026-09-24T12:00:00Z",
       max_bytes: 52_428_800,
     },
   }));
-  uploadWithGrant.mockReset().mockImplementation(async (grant: { uri: string }) => ({
-    uri: grant.uri,
-  }));
+  uploadWithGrant
+    .mockReset()
+    .mockImplementation(async (grant: { uri: string; file_id?: string }) => ({
+      uri: grant.uri,
+      file_id: grant.file_id,
+    }));
 });
 
 const USAGE = {
@@ -76,6 +84,9 @@ const USAGE = {
 function pdfFile(name = "doc.pdf", type = "application/pdf") {
   return new File(["%PDF-1.4 fake pdf bytes"], name, { type });
 }
+
+/** The SHA-256 of `pdfFile()`'s bytes. */
+const PDF_SHA256 = "2825bfc89e1fae627faeee6aa8007367636d00604e36f711fb12b8dee3255ad5";
 
 /**
  * The kernel's `DocumentField` links its field label to the `<input
@@ -120,11 +131,13 @@ describe("PdfForm", () => {
     render(<PdfForm />);
     const file = pdfFile();
     await selectFile(file);
-    // Only the file's description crosses to the server, never its bytes.
+    // Only the file's description crosses to the server, never its bytes: its
+    // name, type and size, and the SHA-256 the browser computed from them.
     expect(requestUpload).toHaveBeenCalledWith({
       filename: "doc.pdf",
       content_type: "application/pdf",
       size: file.size,
+      sha256: PDF_SHA256,
     });
     fireEvent.click(screen.getByRole("button", { name: /summarize pdf/i }));
 
