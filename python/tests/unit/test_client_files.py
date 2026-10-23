@@ -144,7 +144,25 @@ class TestClientFiles:
         assert refused_argument(exc_info.value) == {"argument": argument, "reason": "empty"}
         send.assert_not_called()
 
-    @pytest.mark.parametrize("value", [pytest.param("pdf", id="bare-string"), pytest.param(["pdf", 3], id="non-string-value")])
+    def test_list_sends_a_one_shot_filter_whole_rather_than_dropping_it(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=_page()))
+        one_shot = (value for value in ["pdf", "image"])
+
+        asyncio.run(api_client.list_files(formats=cast("list[str]", one_shot), media_types=cast("list[str]", iter(["application/pdf"]))))
+
+        assert _sent_query(send) == {"format": ["pdf", "image"], "media_type": ["application/pdf"]}
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("pdf", id="bare-string"),
+            pytest.param(["pdf", 3], id="non-string-value"),
+            pytest.param(3, id="not-iterable"),
+            pytest.param((value for value in ["pdf", 3]), id="one-shot-with-a-non-string-value"),
+        ],
+    )
     def test_list_raises_type_error_for_a_filter_that_is_not_a_list_of_strings(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, value: object
     ) -> None:
@@ -203,6 +221,25 @@ class TestClientFiles:
             {"kind": ["uploaded"], "format": ["pdf"]},
             {"kind": ["uploaded"], "format": ["pdf"], "cursor": ["c2"]},
             {"kind": ["uploaded"], "format": ["pdf"], "cursor": ["c3"]},
+        ]
+
+    def test_iterate_sends_a_one_shot_filter_whole_with_every_page(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(
+            api_client,
+            wire_response(200, json_body=_page(FileBodies.SUMMARY, next_cursor="c2")),
+            wire_response(200, json_body=_page({**FileBodies.SUMMARY, "file_id": "fl_2"})),
+        )
+        one_shot = (value for value in ["pdf", "image"])
+
+        files = asyncio.run(_collect_files(api_client, formats=one_shot, media_types=iter(["application/pdf"])))
+
+        assert len(files) == 2
+        sent_queries = [parse_qs(urlsplit(cast("str", call.args[1])).query) for call in send.call_args_list]
+        assert sent_queries == [
+            {"format": ["pdf", "image"], "media_type": ["application/pdf"]},
+            {"format": ["pdf", "image"], "media_type": ["application/pdf"], "cursor": ["c2"]},
         ]
 
     def test_iterate_refuses_an_empty_filter_at_the_call_before_it_is_iterated(
@@ -405,6 +442,17 @@ class TestClientFiles:
     def test_links_raise_type_error_for_one_target_passed_alone(self, api_client: PipelexAPIClient) -> None:
         with pytest.raises(TypeError, match=r"^link_files\(\) takes a list of FileLinkTarget"):
             asyncio.run(api_client.link_files(cast("list[FileLinkTarget]", FileLinkTarget(file_id="fl_1"))))
+
+    def test_links_raise_type_error_naming_an_item_that_is_not_a_target_before_any_request(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body={"items": []}))
+        items = cast("list[FileLinkTarget]", [FileLinkTarget(file_id="fl_1"), {"file_id": "fl_2"}])
+
+        with pytest.raises(TypeError, match=r"^link_files\(\) takes a list of FileLinkTarget, one per file to link; item 1 is a dict\.$"):
+            asyncio.run(api_client.link_files(items))
+
+        send.assert_not_called()
 
     @pytest.mark.parametrize(
         "items",

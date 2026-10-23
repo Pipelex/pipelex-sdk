@@ -83,7 +83,7 @@ async for file in client.iterate_files(method_id="mt_abc123"):
     print(file.kind, file.name)
 ```
 
-**An empty `formats` or `media_types` is refused before any request** with a `RequestArgumentError`, since a list with no value would be sent as no parameter at all and list every format; a bare `str`, or a list holding a value that is not a `str`, is a `TypeError`, a bug in the calling code. `iterate_files` refuses both at the call, before it is iterated. Everything else the API checks itself: a `limit` out of range, an unknown `kind`, more than 100 values of a repeated filter, or an id that cannot be one is a `422`; a date bound that is not an instant with an offset, a range whose start is after its end, or a cursor of another list or other filters is a `400`; and a run that is not the organization's is a `404` `run_not_found`. Each is an `ApiResponseError` ([errors.md](./errors.md)).
+**An empty `formats` or `media_types` is refused before any request** with a `RequestArgumentError`, since a list with no value would be sent as no parameter at all and list every format; a bare `str`, a value that is not iterable, or one holding a value that is not a `str`, is a `TypeError`, a bug in the calling code. Any iterable of strings is taken, a generator included, and copied once before anything reads it, so a one-shot iterable is sent whole, on every page of `iterate_files` too. `iterate_files` refuses both at the call, before it is iterated. Everything else the API checks itself: a `limit` out of range, an unknown `kind`, more than 100 values of a repeated filter, or an id that cannot be one is a `422`; a date bound that is not an instant with an offset, a range whose start is after its end, or a cursor of another list or other filters is a `400`; and a run that is not the organization's is a `404` `run_not_found`. Each is an `ApiResponseError` ([errors.md](./errors.md)).
 
 ## Paging
 
@@ -129,7 +129,7 @@ print(renamed.name)  # March invoice.pdf
 
 ## Links that name the file
 
-`link_files` asks for fresh links to read files, each a `FileLinkTarget` naming exactly one of its record's id and its address, at most 100 in one request. A `FileLinkTarget` naming both, neither or an empty one raises pydantic's `ValidationError` at construction, as the platform would refuse the whole request, and `files` given as a bare `str` or one `FileLinkTarget` alone, rather than a list, is a `TypeError`. The answer holds exactly one item per requested file, in the request's order. **Branch on each item's class, never on the status**: the request is a `200` whenever every file got a verdict.
+`link_files` asks for fresh links to read files, each a `FileLinkTarget` naming exactly one of its record's id and its address, at most 100 in one request. A `FileLinkTarget` naming both, neither or an empty one raises pydantic's `ValidationError` at construction, as the platform would refuse the whole request, and `files` given as a bare `str` or one `FileLinkTarget` alone, rather than a list, or holding an item that is not a `FileLinkTarget`, such as a plain `dict`, is a `TypeError` naming that item, with nothing sent. The answer holds exactly one item per requested file, in the request's order. **Branch on each item's class, never on the status**: the request is a `200` whenever every file got a verdict.
 
 - A `FileLinked` carries `url`, a presigned `GET` valid for fifteen minutes, its `expires_at`, the `name` a download saves under and its `media_type`, with `error` `None`.
 - A `FileLinkRefused` carries `error`, a `FileLinkError` with `code` and `detail`, and `None` link fields: `not_found` for an unknown file id, `conflict` for a file whose upload has not finished, `invalid_storage_uri` for a malformed address and `forbidden` for another organization's. `code` stays a `str`, so a code a later platform adds still reads.
@@ -212,7 +212,7 @@ The other refusals of a request: `422` `validation_failed` for more than 1,000 i
 
 ## A run's files
 
-`list_run_files` answers a `RunFilesPage` of what went in, what came out and what was made along the way, sorted by where each file sits in the run. Each `RunFileEntry` carries its `mark` (`input`, `final` or `intermediate`), the `input_name` an input was given under (`None` for an output), its `uri` and the `FileRecord` a surface shows for it, `None` for an input no record holds.
+`list_run_files` answers a `RunFilesPage` of what went in, what came out and what was made along the way, sorted by where each file sits in the run. Each `RunFileEntry` carries its `mark` (`input`, `final` or `intermediate`), the `input_name` of the run's input that held an input given by its address (`None` for an inline input and for every file the run made), its `uri` and the `FileRecord` a surface shows for it, `None` for an input no record holds.
 
 | Field | Meaning |
 |---|---|
@@ -237,7 +237,7 @@ for entry in page.outputs:
     print(entry.file.name if entry.file else entry.uri)
 ```
 
-**Take the list as whole only once `state` is `listed`.** The run's own records, its outputs, its intermediate files and its inline inputs, are paged by address with `limit` (1 to 200) and `cursor`; the inputs given by address and the links come on the first page only. Pass `next_cursor` back as `cursor` until it is `None`. A run that is not the organization's is a `404`, exactly as one that does not exist. A page whose `state` is neither, whose four lists are not lists, or whose `next_cursor` is neither a string nor `None`, is an `ApiResponseError` of an answer the SDK cannot read.
+**Take the list as whole only once `state` is `listed`.** The run's own records, its outputs, its intermediate files and its inline inputs, are paged by address with `limit` (1 to 200) and `cursor`; the inputs given by address and the links come on the first page only. Pass `next_cursor` back as `cursor` until it is `None`. A run that is not the organization's is a `404`, exactly as one that does not exist; a run id holding a character outside letters, digits, `_` and `-`, or a cursor another listing issued, is a `400`; and a `limit` outside 1 to 200 is a `422`. A page whose `state` is neither, whose four lists are not lists, or whose `next_cursor` is neither a string nor `None`, is an `ApiResponseError` of an answer the SDK cannot read.
 
 ## Adding a file to a method's draft
 

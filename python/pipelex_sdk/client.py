@@ -33,7 +33,7 @@ import os
 import re
 import secrets
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
@@ -2720,21 +2720,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 answers.
         """
         endpoint = f"{_method_path(method_id, call='create_method_example')}/examples"
-        # Checked as `object`s: the annotations are promises to the type checker, not to a caller forwarding
-        # an optional value, which would be sent as `null` for the platform to refuse.
-        name_missing = cast("object", name) is None
-        inputs_missing = cast("object", inputs) is None
-        got: str | None = None
-        if name_missing and inputs_missing:
-            got = "neither"
-        elif name_missing:
-            got = "no name"
-        elif inputs_missing:
-            got = "no inputs"
-        if got is not None:
-            msg = f"create_method_example() needs the example's name and its inputs; got {got}."
-            missing_argument = "name" if name_missing else "inputs"
-            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument=missing_argument, reason="missing"))
+        _require_name_and_inputs(name, inputs, call="create_method_example", needs="the example's name and its inputs")
         body: dict[str, Any] = {"name": name, "inputs": inputs}
         if run_id is not None:
             # Checked as an `object`, as the latest-run write checks its run id: the annotation is a
@@ -2940,21 +2926,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         call = "save_assistant_method_example"
         endpoint = f"{_method_path(method_id, call=call)}/examples/assistant-save"
-        # Checked as `object`s, as `create_method_example` checks its own: the annotations are promises to the type
-        # checker, not to a caller forwarding an optional value.
-        name_missing = cast("object", name) is None
-        inputs_missing = cast("object", inputs) is None
-        got: str | None = None
-        if name_missing and inputs_missing:
-            got = "neither"
-        elif name_missing:
-            got = "no name"
-        elif inputs_missing:
-            got = "no inputs"
-        if got is not None:
-            msg = f"{call}() needs the name a new example takes and the inputs; got {got}."
-            missing_argument = "name" if name_missing else "inputs"
-            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument=missing_argument, reason="missing"))
+        _require_name_and_inputs(name, inputs, call=call, needs="the name a new example takes and the inputs")
         body: dict[str, Any] = {"name": name, "inputs": inputs}
         if example_id is not None:
             body["example_id"] = _require_non_empty_id(example_id, call=call, what=_ASSISTANT_EXAMPLE_ID_ARGUMENT)
@@ -3221,7 +3193,8 @@ class PipelexAPIClient(MthdsAPIClient):
             the list. For every file, prefer `iterate_files`, which follows the cursors.
 
         Raises:
-            TypeError: `formats` or `media_types` is a bare `str`, which read as a sequence would name its characters.
+            TypeError: `formats` or `media_types` is a bare `str`, which read as a sequence would name its characters,
+                is not iterable, or holds a value that is not a `str`.
             RequestArgumentError: `formats` or `media_types` is empty, which sent as no parameter would list every
                 format; nothing is sent.
             ApiResponseError: `400` for a date bound that is not an instant with an offset, a range whose start is
@@ -3268,13 +3241,15 @@ class PipelexAPIClient(MthdsAPIClient):
         `list_files` for anything user-facing.
 
         Raises:
-            TypeError: At the call, for a `formats` or `media_types` that is a bare `str`.
+            TypeError: At the call, for a `formats` or `media_types` that is a bare `str`, is not iterable, or holds a
+                value that is not a `str`.
             RequestArgumentError: At the call, before anything is sent, for an empty `formats` or `media_types`.
             PagingNotTerminatingError: If the server never stops handing out cursors.
         """
-        # Checked here rather than in an async generator's body, which runs only once it is iterated.
-        _repeated_filter(formats, call="iterate_files", name="formats")
-        _repeated_filter(media_types, call="iterate_files", name="media_types")
+        # Checked here rather than in an async generator's body, which runs only once it is iterated, and copied once,
+        # so a one-shot iterable is sent whole with every page rather than exhausted by the first.
+        checked_formats = _repeated_filter(formats, call="iterate_files", name="formats")
+        checked_media_types = _repeated_filter(media_types, call="iterate_files", name="media_types")
         return _follow_cursor(
             "File",
             lambda cursor: self.list_files(
@@ -3282,8 +3257,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 run_id=run_id,
                 created_by=created_by,
                 kind=kind,
-                formats=formats,
-                media_types=media_types,
+                formats=checked_formats,
+                media_types=checked_media_types,
                 created_from=created_from,
                 created_to=created_to,
                 q=q,
@@ -3378,7 +3353,8 @@ class PipelexAPIClient(MthdsAPIClient):
             files: The files to link, each a `FileLinkTarget` naming exactly one of `file_id` and `uri`; at most 100.
 
         Raises:
-            TypeError: `files` is a bare `str` or a `FileLinkTarget` alone, rather than a list of them.
+            TypeError: `files` is a bare `str` or a `FileLinkTarget` alone, rather than a list of them, or holds an
+                item that is not a `FileLinkTarget`, such as a plain `dict`; nothing is sent.
             ApiResponseError: `422` for more than 100 files, or an id or address longer than one can be; `500`
                 `config` when the platform cannot sign at all. An answer that is not one item per requested file,
                 each with its link or its error, is one the SDK cannot read, raised as an `ApiResponseError` too.
@@ -3386,7 +3362,12 @@ class PipelexAPIClient(MthdsAPIClient):
         if isinstance(cast("object", files), (str, FileLinkTarget)):
             msg = "link_files() takes a list of FileLinkTarget, one per file to link."
             raise TypeError(msg)
-        body = {"files": [target.model_dump(exclude_none=True) for target in files]}
+        targets: list[FileLinkTarget] = list(files)
+        for index_target, target in enumerate(targets):
+            if not isinstance(cast("object", target), FileLinkTarget):
+                msg = f"link_files() takes a list of FileLinkTarget, one per file to link; item {index_target} is a {type(target).__name__}."
+                raise TypeError(msg)
+        body = {"files": [target.model_dump(exclude_none=True) for target in targets]}
         requested = len(body["files"])
         return await self._request_product(
             "POST",
@@ -3914,7 +3895,8 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `run_id` is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate;
                 nothing is sent.
             ApiResponseError: `404` for a run that is not the organization's, exactly as for one that does not
-                exist; `422` for a `limit` outside 1 to 200.
+                exist; `400` for a run id holding a character outside letters, digits, `_` and `-`, or a cursor
+                another listing issued; `422` for a `limit` outside 1 to 200.
         """
         segment = _id_path_segment(run_id, call="list_run_files", what=_RUN_ID_ARGUMENT)
         query = _product_query({"limit": limit, "cursor": cursor})
@@ -4361,21 +4343,30 @@ def _repeated_filter(values: Sequence[str] | None, *, call: str, name: str) -> l
     An empty filter names no value, and sending it as no parameter at all would list every value, a different
     question from the one asked, so it is refused before any request with `RequestArgumentError`. A bare `str` is
     no filter: read as a sequence it would name its characters, so it raises `TypeError`, a bug in the calling
-    code that carries no verdict, as does a value that is not a `str`.
+    code that carries no verdict, as does a value that is not iterable or not a `str`.
+
+    The values are copied once, before anything reads them, so a one-shot iterable such as a generator is checked
+    and sent whole: checking it in place would exhaust it, and the empty remainder would be sent as no parameter,
+    an unfiltered list that reads as working. The copy is what the caller sends on, every page of a walk included.
 
     Raises:
-        TypeError: `values` is a bare `str`, or holds a value that is not a `str`.
+        TypeError: `values` is a bare `str` or not iterable, or holds a value that is not a `str`.
         RequestArgumentError: `values` is empty.
     """
     if values is None:
         return None
-    if isinstance(cast("object", values), str) or not all(isinstance(cast("object", value), str) for value in values):
+    candidate = cast("object", values)
+    if isinstance(candidate, str) or not isinstance(candidate, Iterable):
         msg = f'{call}() takes "{name}" as a list of strings.'
         raise TypeError(msg)
-    if not values:
+    copied: list[object] = list(cast("Iterable[object]", candidate))
+    if not all(isinstance(value, str) for value in copied):
+        msg = f'{call}() takes "{name}" as a list of strings.'
+        raise TypeError(msg)
+    if not copied:
         msg = f'{call}() takes "{name}" as one or more values; omit it to list every one.'
         raise RequestArgumentError(msg, problem=argument_invalid_problem(argument=name, reason="empty"))
-    return list(values)
+    return cast("list[str]", copied)
 
 
 class _Argument(NamedTuple):
@@ -4432,6 +4423,37 @@ def _argument_refusal(call: str, argument: _Argument, got: str, *, reason: str) 
     """
     msg = f"{call}() takes {argument.what}; got {got}."
     return RequestArgumentError(msg, problem=argument_invalid_problem(argument=argument.name, reason=reason))
+
+
+def _require_name_and_inputs(name: object, inputs: object, *, call: str, needs: str) -> None:
+    """Refuse an example write given no `name` or no `inputs`, the check the create and the assistant's save share.
+
+    Checked as `object`s: the annotations are promises to the type checker, not to a caller forwarding an optional
+    value, which would be sent as `null` for the platform to refuse. The refusal names the first argument missing.
+
+    Args:
+        name: The `name` the call was given.
+        inputs: The `inputs` the call was given.
+        call: The call's name, which the message opens with.
+        needs: What the call needs, as its message says it.
+
+    Raises:
+        RequestArgumentError: `name` or `inputs` is `None`; nothing is sent.
+    """
+    name_missing = name is None
+    inputs_missing = inputs is None
+    got: str
+    if name_missing and inputs_missing:
+        got = "neither"
+    elif name_missing:
+        got = "no name"
+    elif inputs_missing:
+        got = "no inputs"
+    else:
+        return
+    msg = f"{call}() needs {needs}; got {got}."
+    missing_argument = "name" if name_missing else "inputs"
+    raise RequestArgumentError(msg, problem=argument_invalid_problem(argument=missing_argument, reason="missing"))
 
 
 def _require_non_empty_id(value: object, *, call: str, what: _Argument) -> str:
