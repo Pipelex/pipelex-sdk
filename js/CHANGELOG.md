@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **One file read, renamed and linked**: `getFile(fileId, query)` reads `GET /v1/files/{file_id}`, a `FileDetail` holding the whole `FileRecord` (the row's fields with `source_uri`, `original_name`, `sha256`, `role` and `state`), the `method_ids` whose lists hold it and one page of its uses, paged by `usesLimit` and `usesCursor`; `getFilesByUri(uri, { runId })` reads `GET /v1/files/by-uri`, every record holding an address, the one a surface shows first; `renameFile(fileId, { name })` sends `PATCH /v1/files/{file_id}` and answers the record under the name the platform's rule saved; and `linkFiles(files)` sends `POST /v1/files/links` and answers one `FileLink` per file named by `file_id` or `uri`, in order, each a fifteen-minute link naming the file for its download or an `error`, a `200` either way, with every link hidden from the error of an answer the SDK cannot read (`docs/files.md`).
+- **A zip of files**: `requestFileArchive(request)` asks `POST /v1/files/archives` for one zip of chosen `file_ids`, or of a `run_id`'s inputs and outputs, under an optional `name`, and answers the `FileArchive`, `queued`; `getFileArchive(archiveId)` reads it until its `state` is `ready`, with a fresh link to the zip, or `failed`, with its `failure`. A request naming both or neither of `file_ids` and `run_id` is refused with `RequestArgumentError` before sending, and a selection past a cap is a `422` `file_archive_too_large` whose `problemDocument.limit`, typed `FileArchiveLimit`, names the cap and how far over the selection is.
+- **A run's files**: `listRunFiles(runId, query)` reads `GET /v1/runs/{run_id}/files`, a `RunFilesPage` of what went in, what came out, what was made along the way and the inputs given as web links, each entry with its `mark` and the `FileRecord` a surface shows, its `state` `listing` until every file of the run is recorded and its `next_cursor` read as `nextCursor`.
+- **Adding a file to a method's draft**: `copyFileIntoDraft(methodId, { file_id, path, expected_updated_at })` sends `POST /v1/methods/{method_id}/draft/files/from-file`, which copies one of the organization's files into the draft at `path` without its bytes crossing the client, and answers a `DraftFileFromFileResult` discriminated on `blob`, `copied` or `already_held`, with the file as the tree names it and the method carrying the new draft token.
+- **The build assistant's save**: `saveAssistantMethodExample(methodId, { name, inputs, example_id, input_revision })` sends `POST /v1/methods/{method_id}/examples/assistant-save`, which writes the inputs into the named example only while it is still the assistant's at the revision read, and otherwise saves them as a new example flagged as the assistant's, never writing over a person's edit, and answers a `MethodExampleAssistantSaveResult` discriminated on `outcome`, `kept` or `created`, with the example (`docs/method-examples.md`).
+
+### Changed
+
+- **An example carries `kept_by_assistant` (Breaking)**: `MethodExample` gains the required boolean `kept_by_assistant`, true on the example the build assistant keeps current and false from a person's first inputs edit, and every example the client hands back is checked to carry it, so an example answered without it, by a platform predating it, is an `ApiResponseError` of an answer the SDK cannot read, and code building a `MethodExample` by hand, such as a test fixture, adds the field.
+
 ## [v0.49.0] - 2026-10-23
 
 ### Added

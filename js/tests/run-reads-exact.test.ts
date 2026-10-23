@@ -56,6 +56,7 @@ const EXAMPLE = {
   created_by_user_id: "user_1",
   created_at: "2026-10-13T09:00:00+00:00",
   updated_at: "2026-10-13T09:00:00+00:00",
+  kept_by_assistant: false,
 };
 
 beforeEach(() => {

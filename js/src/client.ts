@@ -57,8 +57,22 @@ import type {
   BillingPortalResponse,
   ChangePlanResponse,
   CheckoutResponse,
+  DraftFileBlob,
+  DraftFileFromFileInput,
+  DraftFileFromFileResult,
+  FileArchive,
+  FileArchiveRequest,
+  FileArchiveState,
+  FileDetail,
+  FileLinkTarget,
+  FileLinksResult,
   FilePage,
+  FileRecord,
+  FileRecordList,
+  FileRenameInput,
   FileSummary,
+  GetFileQuery,
+  GetFilesByUriOptions,
   InvoiceView,
   Membership,
   MembershipsResponse,
@@ -68,11 +82,14 @@ import type {
   ListMethodExamplesQuery,
   ListMethodsQuery,
   ListMethodVersionsQuery,
+  ListRunFilesQuery,
   MethodData,
   MethodDeletionAccepted,
   MethodDetail,
   MethodDraftInput,
   MethodExample,
+  MethodExampleAssistantSaveInput,
+  MethodExampleAssistantSaveResult,
   MethodExampleCreateInput,
   MethodExampleLatestRunInput,
   MethodExampleLatestRunResult,
@@ -93,6 +110,8 @@ import type {
   ListRunsQuery,
   RunHistoryItem,
   RunDetail,
+  RunFilesPage,
+  RunFilesState,
   RunPage,
   PlanView,
   ResolvedStorageUrl,
@@ -650,12 +669,32 @@ const EXAMPLE_ID_ARGUMENT = "an example id, the example's non-empty `example_id`
 const RUN_ID_ARGUMENT = "a run id, the run's non-empty `pipeline_run_id`";
 const ORG_ID_ARGUMENT = "an organization id, the organization's non-empty `org_id`";
 const API_KEY_ID_ARGUMENT = "an API key id, the key's non-empty `id`";
+const FILE_ID_ARGUMENT = "a file id, the file's non-empty `file_id`";
+const ARCHIVE_ID_ARGUMENT = "an archive id, the archive's non-empty `archive_id`";
 
 /** What the run id of each example write is, as a refusal of it names it. */
 const CREATE_RUN_ID_ARGUMENT =
   "a run_id naming a run of this method that used these inputs, a non-empty string, or none";
 const RECORD_RUN_ID_ARGUMENT =
   "a run_id naming a run of this method that used the example's inputs, a non-empty string";
+
+/** What the example an assistant save keeps current is, as a refusal of it names it. */
+const ASSISTANT_EXAMPLE_ID_ARGUMENT =
+  "an example_id naming the assistant's example the caller read, a non-empty string, or none";
+const ASSISTANT_REVISION_ARGUMENT =
+  "an input_revision, the revision the caller read the assistant's example at, a positive integer";
+
+/** What each member of the files routes' bodies is, as a refusal of it names it. */
+const STORAGE_URI_ARGUMENT = "a `pipelex-storage://` address, a non-empty string";
+const RENAME_NAME_ARGUMENT = "the file's new name, a string";
+const LINK_TARGET_ARGUMENT =
+  "a file to link, an object naming exactly one of `file_id` and `uri`, each a non-empty string";
+const ARCHIVE_FILE_ID_ARGUMENT = "a file id to zip, a non-empty string";
+const ARCHIVE_RUN_ID_ARGUMENT = "a run_id naming the run whose files to zip, a non-empty string";
+const ARCHIVE_NAME_ARGUMENT = "a name for the zip, a string, or none";
+const DRAFT_PATH_ARGUMENT = "the tree path the file takes in the draft, a non-empty string";
+const DRAFT_TOKEN_ARGUMENT =
+  "the draft token the caller last read, the method's `updated_at`, a string, or none";
 
 /**
  * The refusal of an argument a call cannot take, worded as every such refusal is:
@@ -683,6 +722,20 @@ function requireNonEmptyId(value: unknown, call: string, what: string): string {
   if (typeof value === "string") got = "an empty string";
   else got = value === null ? "null" : typeof value;
   throw argumentRefusal(call, what, got);
+}
+
+/**
+ * The check the example writes that take a name and inputs share, the create and the assistant's
+ * save: a `name` or `inputs` not given, a `null` counting as not given, is refused with
+ * `RequestArgumentError` before anything is sent, `call` naming the method in the message and
+ * `needs` what it needs.
+ */
+function requireNameAndInputs(name: unknown, inputs: unknown, call: string, needs: string): void {
+  if (name != null && inputs != null) return;
+  let got: string;
+  if (name == null && inputs == null) got = "neither";
+  else got = name == null ? "no name" : "no inputs";
+  throw new RequestArgumentError(`${call}() needs ${needs}; got ${got}.`);
 }
 
 /**
@@ -758,6 +811,40 @@ function methodExamplePath(methodId: string, exampleId: string, call: string): s
 
 const isString = (value: unknown): boolean => typeof value === "string";
 
+/** The states an archive is in, the field a caller branches on, in the order a refusal lists them. */
+const FILE_ARCHIVE_STATES: readonly FileArchiveState[] = ["queued", "building", "ready", "failed"];
+
+/** What a copy into a draft did in the blob store, the field its answer is discriminated on. */
+const DRAFT_FILE_BLOBS: readonly DraftFileBlob[] = ["copied", "already_held"];
+
+/** Whether a run's records are all written, the field a reader of its files branches on. */
+const RUN_FILES_STATES: readonly RunFilesState[] = ["listing", "listed"];
+
+/** The lists of a page of a run's files, each an array on every page. */
+const RUN_FILES_LISTS = ["inputs", "outputs", "intermediates", "links"] as const;
+
+/**
+ * One file `linkFiles` is asked to link, checked and reduced to what the closed body takes:
+ * `{ file_id }` or `{ uri }`, exactly one of them a non-empty string. Anything else, an object
+ * naming both, neither or an empty one included, is refused with `RequestArgumentError` before
+ * anything is sent, as the platform would refuse the whole request with a `422`.
+ */
+function fileLinkTarget(value: unknown): FileLinkTarget {
+  if (!isPlainObject(value)) {
+    throw argumentRefusal("linkFiles", LINK_TARGET_ARGUMENT, describeNumberArgument(value));
+  }
+  const fileId = value.file_id ?? undefined;
+  const uri = value.uri ?? undefined;
+  if ((fileId === undefined) === (uri === undefined)) {
+    const got = fileId === undefined ? "an object naming neither" : "an object naming both";
+    throw argumentRefusal("linkFiles", LINK_TARGET_ARGUMENT, got);
+  }
+  if (fileId !== undefined) {
+    return { file_id: requireNonEmptyId(fileId, "linkFiles", LINK_TARGET_ARGUMENT) };
+  }
+  return { uri: requireNonEmptyId(uri, "linkFiles", LINK_TARGET_ARGUMENT) };
+}
+
 /**
  * Each field of a `MethodExample`, what it must be, and the check it must pass: every field the
  * Python SDK's model requires, held to the same strict types it holds them to, so both SDKs refuse
@@ -782,6 +869,7 @@ const METHOD_EXAMPLE_FIELDS = {
   created_by_user_id: ["a string", isString],
   created_at: ["a string", isString],
   updated_at: ["a string", isString],
+  kept_by_assistant: ["a boolean", (value) => typeof value === "boolean"],
 } satisfies Record<
   keyof MethodExample,
   readonly [expected: string, fits: (value: unknown) => boolean]
@@ -3288,14 +3376,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       inputs,
       run_id: runId,
     } = (input as Partial<MethodExampleCreateInput> | undefined) ?? {};
-    if (name == null || inputs == null) {
-      let got: string;
-      if (name == null && inputs == null) got = "neither";
-      else got = name == null ? "no name" : "no inputs";
-      throw new RequestArgumentError(
-        `createMethodExample() needs the example's name and its inputs; got ${got}.`,
-      );
-    }
+    requireNameAndInputs(name, inputs, "createMethodExample", "the example's name and its inputs");
     const body: Record<string, unknown> = { name, inputs };
     if (runId != null) {
       body.run_id = requireNonEmptyId(runId, "createMethodExample", CREATE_RUN_ID_ARGUMENT);
@@ -3469,6 +3550,82 @@ export class PipelexApiClient implements HostedProtocolSurface {
         this.readMethodExample("PUT", endpoint, res, value, "a latest-run result's `example`"),
     });
     return { ...answer, outcome, example: subject } as MethodExampleLatestRunResult;
+  }
+
+  /**
+   * Save the build assistant's test inputs as its example of the method —
+   * `POST /v1/methods/{id}/examples/assistant-save` — **never writing over a person's edit**.
+   *
+   * The assistant keeps one example of a method current with its test inputs, until a person
+   * edits that example's inputs. Find its example as the method's newest with `kept_by_assistant`
+   * true (`listMethodExamples` answers them oldest first), and send its `example_id` with the
+   * `input_revision` you read it at. The platform writes the inputs into it only while it still
+   * exists, still carries the flag and still holds that revision, in one conditional write that it
+   * never retries. Otherwise, and when no example is named, which is how the first save on a
+   * method creates the assistant's example, it saves the inputs as a new example flagged as the
+   * assistant's, under `name`.
+   *
+   * The answer is a `MethodExampleAssistantSaveResult` discriminated on `outcome` — branch on it:
+   * `kept`, the named example now holds the inputs, its name untouched; `created`, a new example
+   * holds them. Both carry the `example`, which is the assistant's from then on. A retry of a save
+   * that landed answers `kept` and writes nothing again.
+   *
+   * Sends `name`, `inputs` and, when given, `example_id` with `input_revision`, and nothing else:
+   * the body is closed, and `null` reads as not given. Throws `RequestArgumentError` before any
+   * request when `name` or `inputs` is not given, for an `example_id` that is not a non-empty
+   * string or an `input_revision` that is not a positive integer, and when only one of the two is
+   * given. Throws `ApiResponseError`: `403` `role_not_permitted` for a role that may not change
+   * methods, such as a runner; `413` `payload_too_large` for an example larger than one stored item
+   * holds; `422` for a name that is empty, blank or over 200 characters, or inputs that are not a
+   * JSON object; and the codes every example route answers. An answer whose `outcome` is neither
+   * arm's, or whose `example` is not an example `readMethodExample` can read, is an answer the SDK
+   * cannot read, thrown as an `ApiResponseError` too.
+   */
+  async saveAssistantMethodExample(
+    methodId: string,
+    input: MethodExampleAssistantSaveInput,
+  ): Promise<MethodExampleAssistantSaveResult> {
+    const call = "saveAssistantMethodExample";
+    const endpoint = `${methodPath(methodId, call)}/examples/assistant-save`;
+    const {
+      name,
+      inputs,
+      example_id: exampleId,
+      input_revision: revision,
+    } = (input as Partial<MethodExampleAssistantSaveInput> | undefined) ?? {};
+    requireNameAndInputs(name, inputs, call, "the name a new example takes and the inputs");
+    const body: Record<string, unknown> = { name, inputs };
+    if (exampleId != null) {
+      body.example_id = requireNonEmptyId(exampleId, call, ASSISTANT_EXAMPLE_ID_ARGUMENT);
+    }
+    if (revision != null) {
+      if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1) {
+        throw argumentRefusal(call, ASSISTANT_REVISION_ARGUMENT, describeNumberArgument(revision));
+      }
+      body.input_revision = revision;
+    }
+    if ((body.example_id === undefined) !== (body.input_revision === undefined)) {
+      throw new RequestArgumentError(
+        `${call}() names the assistant's example by both its example_id and the input_revision ` +
+          `it was read at, or neither; got only ${body.example_id === undefined ? "input_revision" : "example_id"}.`,
+      );
+    }
+    const res = await this.requestProductAnswer("POST", endpoint, body);
+    const { answer, outcome, subject } = this.readVerdict("POST", endpoint, res, {
+      verdict: "an assistant save result",
+      outcomes: ["kept", "created"],
+      member: "example",
+      parse: parseExactJson,
+      readMember: (value) =>
+        this.readMethodExample(
+          "POST",
+          endpoint,
+          res,
+          value,
+          "an assistant save result's `example`",
+        ),
+    });
+    return { ...answer, outcome, example: subject } as MethodExampleAssistantSaveResult;
   }
 
   /**
@@ -3839,6 +3996,374 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
+   * One file with its provenance, the methods whose lists hold it, and one page of its uses —
+   * `GET /v1/files/{file_id}`.
+   *
+   * The answer is a `FileDetail`: the file's whole record (`FileRecord`), its `method_ids`, and
+   * `uses`, one page of the examples that hold its address, then the runs that took it. Page the
+   * uses by passing `uses.next_cursor` back as `usesCursor`; `null` is the last page. A record whose
+   * upload looked unfinished past the upload grant's lifespan is settled by the read, so it answers
+   * `stored` when its bytes are there.
+   *
+   * Throws `RequestArgumentError` for a file id that is empty, `.` or `..`, or holds a lone
+   * surrogate, before any request. Throws `ApiResponseError`: `404` `not_found` for a file that is
+   * not the organization's; `422` for a `usesLimit` outside 1 to 200 or an id that cannot be one.
+   * An answer that is not an object, or whose `uses` is not a page of `items` and `next_cursor`, is
+   * an answer the SDK cannot read, thrown as an `ApiResponseError` too. See `docs/files.md`.
+   */
+  async getFile(fileId: string, query: GetFileQuery = {}): Promise<FileDetail> {
+    const search = productQuery({ uses_limit: query.usesLimit, uses_cursor: query.usesCursor });
+    const endpoint = `files/${idPathSegment(fileId, "getFile", FILE_ID_ARGUMENT)}${search}`;
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
+    const detail = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const uses = detail.uses;
+    if (
+      !isPlainObject(uses) ||
+      !Array.isArray(uses.items) ||
+      (uses.next_cursor !== null && typeof uses.next_cursor !== "string")
+    ) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a file whose `uses` is not a page of `items` and `next_cursor`",
+      );
+    }
+    return detail as unknown as FileDetail;
+  }
+
+  /**
+   * The records holding one `pipelex-storage://` address — `GET /v1/files/by-uri` — in the order a
+   * surface picks the one to show, the first being it.
+   *
+   * Several records hold one address when several members uploaded the same bytes. With `runId`,
+   * the records of the member who started that run come first, so a run's inputs show the name its
+   * starter gave the file; then the caller's; then the rest, each group oldest first. A record
+   * whose upload has not finished is answered with its `state`, `pending`. An address no record
+   * holds answers an empty `items`, which is how a client tells a file stored before the platform
+   * kept records.
+   *
+   * Throws `RequestArgumentError` for a `uri` that is not a non-empty string, before any request.
+   * Throws `ApiResponseError`: `400` `invalid_storage_uri` for a malformed address, `403`
+   * `forbidden` for another organization's, `404` `run_not_found` for a run that is not the
+   * organization's, and `422` for an address over 512 characters. An answer whose `items` is not an
+   * array is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   */
+  async getFilesByUri(uri: string, options: GetFilesByUriOptions = {}): Promise<FileRecordList> {
+    const checkedUri = requireNonEmptyId(uri, "getFilesByUri", STORAGE_URI_ARGUMENT);
+    const endpoint = `files/by-uri${productQuery({ uri: checkedUri, run_id: options.runId })}`;
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
+    const answer = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    if (!Array.isArray(answer.items)) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "an answer whose `items` is not an array",
+      );
+    }
+    return answer as unknown as FileRecordList;
+  }
+
+  /**
+   * Rename a file — `PATCH /v1/files/{file_id}` — and return its record as it now stands.
+   *
+   * **The platform holds the name to one rule, for every client**: it removes the characters no
+   * list or header can show (control and format characters, a right-to-left override among
+   * them), trims the ends, refuses a name with nothing left, and adds the file's own extension,
+   * the one its `original_name` ends with, when the name does not end with it, case aside:
+   * `March invoice` becomes `March invoice.pdf`, and `March.docx` becomes `March.docx.pdf`. A file
+   * whose original name has no extension gains none. Read the saved name from the answer's
+   * `name`. The rename changes `name` alone, never the file's bytes, its address or its
+   * `original_name`.
+   *
+   * An `admin` or a `member` renames any file; any other role, a runner among them, only the files
+   * whose record names it as `created_by`: its own uploads and the outputs of the runs it started.
+   *
+   * Sends `name` alone: the body is closed. Throws `RequestArgumentError` for a file id that is
+   * empty, `.` or `..`, or holds a lone surrogate, and for a `name` that is not a string, before
+   * any request. Throws `ApiResponseError`: `403` `role_not_permitted` past the rule above; `404`
+   * `not_found` for a file that is not the organization's; `422` for a name over 512 characters or
+   * with nothing left once cleaned. An answer that is not an object is an answer the SDK cannot
+   * read, thrown as an `ApiResponseError` too.
+   */
+  async renameFile(fileId: string, input: FileRenameInput): Promise<FileRecord> {
+    const segment = idPathSegment(fileId, "renameFile", FILE_ID_ARGUMENT);
+    const { name } = (input as Partial<FileRenameInput> | undefined) ?? {};
+    if (typeof name !== "string") {
+      throw argumentRefusal("renameFile", RENAME_NAME_ARGUMENT, describeNumberArgument(name));
+    }
+    return this.requestProductObject("PATCH", `files/${segment}`, { name });
+  }
+
+  /**
+   * Fresh links to read files — `POST /v1/files/links` — one per requested file, in the request's
+   * order, each named by exactly one of its record's id (`file_id`) and its address (`uri`).
+   *
+   * **Branch on each item's `error`, never on the status**: the request is a `200` whenever every
+   * file got a verdict. A linked file carries its `url`, a presigned `GET` valid for fifteen
+   * minutes, with its `expires_at`, the `name` the download saves under and its `media_type`, and
+   * a `null` `error`. A file that got no link carries `error`, `{ code, detail }`, and `null` link
+   * members: `not_found` for an unknown file id, `conflict` for a file whose upload has not
+   * finished, `invalid_storage_uri` for a malformed address and `forbidden` for another
+   * organization's.
+   *
+   * Each link is signed with a `Content-Disposition` naming the file, so a download saves under
+   * the name a person sees rather than the bytes' hash. It opens in place (`inline`) for an image,
+   * a PDF or plain text and downloads (`attachment`) for every other type, SVG, HTML and XML
+   * included, so a file that could run scripts never opens from a link. A file named by its id is
+   * linked under its record's name; an address under the name of its first stored record, the
+   * caller's before another member's, whose id the item's `file_id` names. A link is a bearer
+   * capability: keep it out of logs, and ask again for a fresh one rather than storing it.
+   *
+   * Sends each file as `{ file_id }` or `{ uri }` and nothing else: the body is closed. Throws
+   * `RequestArgumentError` before any request when `files` is not a list, or one of its items does
+   * not name exactly one of `file_id` and `uri` as a non-empty string. Throws `ApiResponseError`:
+   * `422` for more than 100 files, or an id or address longer than one can be; `500` `config` when
+   * the platform cannot sign at all. An answer that is not one item per requested file, each an
+   * object with its `url` or its `error`, is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` whose body hides every link.
+   */
+  async linkFiles(files: readonly FileLinkTarget[]): Promise<FileLinksResult> {
+    if (!Array.isArray(files)) {
+      throw argumentRefusal("linkFiles", "a list of files to link", describeNumberArgument(files));
+    }
+    const targets = files.map((target: unknown) => fileLinkTarget(target));
+    const res = withLinks(
+      await this.requestProductAnswer("POST", "files/links", { files: targets }),
+    );
+    const answer = this.readObjectAnswer<Record<string, unknown>>("POST", "files/links", res);
+    const items = answer.items;
+    if (!Array.isArray(items) || items.length !== targets.length) {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/files/links`,
+        res,
+        "an answer that is not one item per requested file",
+      );
+    }
+    for (const item of items) {
+      const linked = isPlainObject(item) && item.error === null && typeof item.url === "string";
+      const refused = isPlainObject(item) && isPlainObject(item.error) && item.url === null;
+      if (!linked && !refused) {
+        throw this.unreadableAnswer(
+          "POST",
+          `/${API_PREFIX}/files/links`,
+          res,
+          "an item that carries neither a link nor an error",
+        );
+      }
+    }
+    return answer as unknown as FileLinksResult;
+  }
+
+  /**
+   * Ask for one zip of chosen files, or of a run's files — `POST /v1/files/archives` — and return
+   * the archive, `queued`.
+   *
+   * The platform cannot build a zip inside a request, so the zip is two calls: this one queues the
+   * archive and answers at once (`202`), and `getFileArchive` reads it until its `state` is `ready`,
+   * whose `url` downloads the zip, or `failed`, whose `failure` says why. Name the files by exactly
+   * one of `file_ids`, in the order the zip holds them, and `run_id`, whose zip holds what went in
+   * and what came out of the run, never a file it made along the way nor an input given as a web
+   * link. `name` is the name the zip downloads under (see `FileArchiveRequest`). An archive is never
+   * a file: no list shows it, and it is gone a day after it was asked for.
+   *
+   * Sends `file_ids` or `run_id`, and `name` when given, and nothing else: the body is closed, and a
+   * `null` member reads as not given. Throws `RequestArgumentError` before any request when the
+   * request names both or neither of `file_ids` and `run_id`, when `file_ids` is not a non-empty
+   * list of non-empty strings, when `run_id` is not a non-empty string, and when `name` is not a
+   * string. Throws `ApiResponseError`:
+   *
+   * - `422` `file_archive_too_large` past a cap, at most 500 files or 2,000,000,000 bytes, whose
+   *   `problemDocument.limit` names it (`FileArchiveLimit`), so the person can be told how far over
+   *   the selection is;
+   * - `422` `validation_failed` for more than 1,000 ids listed, or an id longer than one can be;
+   * - `404` `not_found` for a file that is not the organization's, the `detail` naming up to five
+   *   of them, or a run whose files hold nothing stored to zip; `404` `run_not_found` for a run
+   *   that is not the organization's;
+   * - `409` `conflict`: an `input` one, not retryable, for a selected file whose upload has not
+   *   finished; a `runtime` one, retryable, for a run whose files are not all recorded yet, which
+   *   the same request clears a few seconds after the run ends;
+   * - `503` `service_unavailable`, retryable, when the archive could not be queued: the same request
+   *   sent again asks for a new archive.
+   *
+   * An answer that is not an archive, an object with a string `archive_id` and a known `state`, is
+   * an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   */
+  async requestFileArchive(request: FileArchiveRequest): Promise<FileArchive> {
+    const call = "requestFileArchive";
+    if (!isPlainObject(request)) {
+      throw argumentRefusal(
+        call,
+        "an archive request, an object naming `file_ids` or `run_id`",
+        describeNumberArgument(request),
+      );
+    }
+    const raw = request as { file_ids?: unknown; run_id?: unknown; name?: unknown };
+    const fileIds = raw.file_ids ?? undefined;
+    const runId = raw.run_id ?? undefined;
+    const name = raw.name ?? undefined;
+    if ((fileIds === undefined) === (runId === undefined)) {
+      throw new RequestArgumentError(
+        `${call}() names the files to zip by exactly one of file_ids and run_id; got ` +
+          `${fileIds === undefined ? "neither" : "both"}.`,
+      );
+    }
+    const body: Record<string, unknown> = {};
+    if (fileIds !== undefined) {
+      if (!Array.isArray(fileIds) || fileIds.length === 0) {
+        throw argumentRefusal(
+          call,
+          "file_ids, a non-empty list of the file ids to zip",
+          Array.isArray(fileIds) ? "an empty list" : describeNumberArgument(fileIds),
+        );
+      }
+      body.file_ids = fileIds.map((id: unknown) =>
+        requireNonEmptyId(id, call, ARCHIVE_FILE_ID_ARGUMENT),
+      );
+    } else {
+      body.run_id = requireNonEmptyId(runId, call, ARCHIVE_RUN_ID_ARGUMENT);
+    }
+    if (name !== undefined) {
+      if (typeof name !== "string") {
+        throw argumentRefusal(call, ARCHIVE_NAME_ARGUMENT, describeNumberArgument(name));
+      }
+      body.name = name;
+    }
+    const res = await this.requestProductAnswer("POST", "files/archives", body);
+    return this.readFileArchive("POST", "files/archives", res);
+  }
+
+  /**
+   * Where an archive stands — `GET /v1/files/archives/{archive_id}` — with a fresh link to its zip
+   * once it is `ready`.
+   *
+   * **Branch on `state`.** `queued` and `building` mean read it again shortly: a zip of a few files
+   * is ready within seconds, and the largest the caps allow within a few minutes. `ready` carries
+   * `url`, a presigned `GET` of the zip valid for fifteen minutes and signed with a
+   * `Content-Disposition` naming the archive's `name`, with `archive_bytes` and `ready_at`; each read
+   * signs a fresh link, so a caller that let one lapse reads the archive again. `failed` carries
+   * `failure`, `file_gone` or `build_failed`, and the remedy for both is a new request. An archive
+   * still `queued` or `building` an hour after it was asked for reads as `failed`.
+   *
+   * Throws `RequestArgumentError` for an archive id that is empty, `.` or `..`, or holds a lone
+   * surrogate, before any request. Throws `ApiResponseError`: `404` `not_found` for an archive that
+   * is not the organization's, never existed, or has expired, a day after `created_at`; `500` when
+   * the link cannot be signed. An answer that is not an archive is an answer the SDK cannot read,
+   * thrown as an `ApiResponseError` whose body hides the link.
+   */
+  async getFileArchive(archiveId: string): Promise<FileArchive> {
+    const segment = idPathSegment(archiveId, "getFileArchive", ARCHIVE_ID_ARGUMENT);
+    const endpoint = `files/archives/${segment}`;
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
+    return this.readFileArchive("GET", endpoint, res);
+  }
+
+  /**
+   * An archive as `res` carried it, checked to be one: an object with a string `archive_id` and a
+   * `state` this SDK knows, the field a caller branches on. Anything else is an answer the SDK
+   * cannot read, thrown as the `ApiResponseError` `unreadableAnswer` builds with every link hidden,
+   * since a ready archive's answer carries one.
+   */
+  private readFileArchive(method: HttpMethod, endpoint: string, res: RawResponse): FileArchive {
+    const linked = withLinks(res);
+    const archive = this.readObjectAnswer<Record<string, unknown>>(method, endpoint, linked);
+    if (typeof archive.archive_id !== "string") {
+      throw this.unreadableAnswer(
+        method,
+        `/${API_PREFIX}/${endpoint}`,
+        linked,
+        "an archive whose `archive_id` is not a string",
+      );
+    }
+    if (!(FILE_ARCHIVE_STATES as readonly unknown[]).includes(archive.state)) {
+      throw this.unreadableAnswer(
+        method,
+        `/${API_PREFIX}/${endpoint}`,
+        linked,
+        `an archive whose \`state\` is not ${inWords(
+          FILE_ARCHIVE_STATES.map((state) => `\`${state}\``),
+          "or",
+        )}`,
+      );
+    }
+    return archive as unknown as FileArchive;
+  }
+
+  /**
+   * Copy one of the organization's files into a method's draft —
+   * `POST /v1/methods/{id}/draft/files/from-file`, "Add to method files".
+   *
+   * The file becomes a file of the draft at `path`, replacing a file already there. Its bytes are
+   * copied into the organization's blob store by the storage service itself, so they never cross
+   * the client or the API whatever their size, and are skipped when the store already holds them.
+   * The method file then lives apart from its source: erasing the file's record, the run that made
+   * it or the method it came from leaves it readable.
+   *
+   * The answer is a `DraftFileFromFileResult`, a `200` discriminated on `blob`: `copied`, or
+   * `already_held` when the store held the bytes and nothing was copied. Both carry the `file` as
+   * the draft's tree now names it and the `method` as the draft write stored it, whose
+   * `updated_at` is the new draft token. With `expected_updated_at`, the write is a
+   * compare-and-swap on the draft token; without it, the file is added to the draft as it stands,
+   * never erasing someone else's save.
+   *
+   * Takes a bare catalog id, as `writeDraft` does. Sends `file_id`, `path` and, when given,
+   * `expected_updated_at`, and nothing else: the body is closed, and a `null` token reads as not
+   * given. Throws `RequestArgumentError` before any request for a `file_id` or a `path` that is not
+   * a non-empty string, and an `expected_updated_at` that is not a string. Throws
+   * `ApiResponseError`: `403` `role_not_permitted` for a role that may not change methods; `404`
+   * for an unknown method or a file that is not the organization's; `409` `method_being_deleted`,
+   * `409` `method_update_conflict` for a stale `expected_updated_at`, and `409` `conflict` for a
+   * file whose upload has not finished or whose stored bytes do not match its record; `422`
+   * `invalid_method_files` for a path the draft cannot hold, such as `.env` or `../logo.png`, and
+   * `422` `method_tree_too_large` past the deployment's limits. An answer whose `blob` is neither
+   * arm's, or whose `file` or `method` is not an object, is an answer the SDK cannot read, thrown
+   * as an `ApiResponseError` too.
+   */
+  async copyFileIntoDraft(
+    methodId: string,
+    input: DraftFileFromFileInput,
+  ): Promise<DraftFileFromFileResult> {
+    const call = "copyFileIntoDraft";
+    const endpoint = `${methodPath(methodId, call)}/draft/files/from-file`;
+    const {
+      file_id: fileId,
+      path,
+      expected_updated_at: token,
+    } = (input as Partial<DraftFileFromFileInput> | undefined) ?? {};
+    const body: Record<string, unknown> = {
+      file_id: requireNonEmptyId(fileId, call, FILE_ID_ARGUMENT),
+      path: requireNonEmptyId(path, call, DRAFT_PATH_ARGUMENT),
+    };
+    if (token != null) {
+      if (typeof token !== "string") {
+        throw argumentRefusal(call, DRAFT_TOKEN_ARGUMENT, describeNumberArgument(token));
+      }
+      body.expected_updated_at = token;
+    }
+    const res = await this.requestProductAnswer("POST", endpoint, body);
+    const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
+    let fault: string | undefined;
+    if (!(DRAFT_FILE_BLOBS as readonly unknown[]).includes(answer.blob)) {
+      fault = `whose \`blob\` is not ${inWords(
+        DRAFT_FILE_BLOBS.map((blob) => `\`${blob}\``),
+        "or",
+      )}`;
+    } else if (!isPlainObject(answer.file)) fault = "whose `file` is not an object";
+    else if (!isPlainObject(answer.method)) fault = "whose `method` is not an object";
+    if (fault !== undefined) {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `a copy into a draft ${fault}`,
+      );
+    }
+    return answer as unknown as DraftFileFromFileResult;
+  }
+
+  /**
    * One PAGE of a method's runs, newest first — `GET /v1/runs?method_id=`.
    *
    * **This returns a page, not the whole history.** The API serves it from a
@@ -3942,6 +4467,55 @@ export class PipelexApiClient implements HostedProtocolSurface {
     return withCheckedReport(
       this.readObjectAnswer<RunDetail>("GET", endpoint, res, {}, parseExactJson),
     );
+  }
+
+  /**
+   * One page of a run's files, sorted by where they sit in the run — `GET /v1/runs/{id}/files`.
+   *
+   * Each entry carries its `mark`, `input`, `final` or `intermediate`, and the record a surface
+   * shows for it (`RunFileEntry`): `inputs` are what went in, the inputs given by their address
+   * with the record of the member who started the run first, then the inline inputs; `outputs` are
+   * the run's final outputs; `intermediates` the files it made along the way. An input given as a
+   * web link gets no record and is listed in `links`, with the warning that replaying the run needs
+   * it to still serve the same file.
+   *
+   * **`state` is `listing` until the platform has recorded every file of the run**, a few seconds
+   * after it ends: read it again until it is `listed` before taking the list as whole. The run's
+   * own records are paged by address with `limit` and `cursor`; the inputs by address and the links
+   * come on the first page only. Pass `nextCursor` back as `cursor`; `null` is the last page.
+   *
+   * Throws `RequestArgumentError` for a run id that is empty, `.` or `..`, or holds a lone
+   * surrogate, before any request. Throws `ApiResponseError`: `404` for a run that is not the
+   * organization's, exactly as for one that does not exist; `400` for a run id holding a character
+   * outside letters, digits, `_` and `-`, or a cursor another listing issued; `422` for a `limit`
+   * outside 1 to 200. A page whose `state` is unknown, whose lists are not arrays, or whose `next_cursor` is neither a
+   * string nor `null`, is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   */
+  async listRunFiles(runId: string, query: ListRunFilesQuery = {}): Promise<RunFilesPage> {
+    const segment = idPathSegment(runId, "listRunFiles", RUN_ID_ARGUMENT);
+    const search = productQuery({ limit: query.limit, cursor: query.cursor });
+    const endpoint = `runs/${segment}/files${search}`;
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
+    const page = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const { next_cursor: nextCursor, ...rest } = page;
+    const notAList = RUN_FILES_LISTS.find((list) => !Array.isArray(page[list]));
+    let fault: string | undefined;
+    if (!(RUN_FILES_STATES as readonly unknown[]).includes(page.state)) {
+      fault = "whose `state` is not `listing` or `listed`";
+    } else if (notAList !== undefined) {
+      fault = `whose \`${notAList}\` is not an array`;
+    } else if (nextCursor !== null && typeof nextCursor !== "string") {
+      fault = "whose `next_cursor` is neither a string nor null";
+    }
+    if (fault !== undefined) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `a page of a run's files ${fault}`,
+      );
+    }
+    return { ...rest, nextCursor } as unknown as RunFilesPage;
   }
 
   /** Patch a run's status (admin/manual) — `PUT /v1/runs/{id}`. */
