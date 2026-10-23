@@ -1165,6 +1165,12 @@ class FileUse(BaseModel):
     created_at: str
     """ISO-8601 instant the use was recorded."""
 
+    created_by: str | None = None
+    """The member who started the run, or who saved the example: the holder's own creator, copied onto the use when it
+    was recorded, so a client tells its own runs among a file's uses without reading any run. `None` on a use recorded
+    before uses carried it, until the platform's stored-files migration fills it, and on every use from a platform
+    that predates the field, which leaves it out."""
+
 
 class FileUsePage(BaseModel):
     """One page of a file's uses, the examples that hold its address first, then the runs that took it.

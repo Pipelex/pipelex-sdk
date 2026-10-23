@@ -267,7 +267,26 @@ class TestClientFiles:
         assert detail.state == FileState.STORED
         assert detail.method_ids == ["mt_abc"]
         assert [use.holder_type for use in detail.uses.items] == [FileUseHolderType.EXAMPLE, FileUseHolderType.RUN]
+        assert [use.created_by for use in detail.uses.items] == ["user_1", None]
         assert detail.uses.next_cursor == "u2"
+
+    def test_get_reads_a_use_without_its_creator_as_none(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        """A platform that predates `created_by` leaves it out of every use, which still validates and reads as `None`."""
+        uses_without_creator: list[dict[str, Any]] = []
+        for use_body in FileBodies.DETAIL["uses"]["items"]:
+            legacy_use = dict(use_body)
+            del legacy_use["created_by"]
+            uses_without_creator.append(legacy_use)
+        body = {**FileBodies.DETAIL, "uses": {"items": uses_without_creator, "next_cursor": None}}
+        patch_send(api_client, wire_response(200, json_body=body))
+
+        detail = asyncio.run(api_client.get_file(FileBodies.FILE_ID))
+
+        assert [use.created_by for use in detail.uses.items] == [None, None]
+        assert [use.holder_id for use in detail.uses.items] == ["ex_1", "run_7"]
+        assert all("created_by" not in use.model_fields_set for use in detail.uses.items)
 
     def test_get_pages_the_uses_with_their_limit_and_cursor(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
