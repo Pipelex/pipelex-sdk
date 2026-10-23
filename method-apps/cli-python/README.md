@@ -91,6 +91,8 @@ The command reads `PIPELEX_API_KEY` and `PIPELEX_BASE_URL` from the shell, or fr
 
 Every tool runs from `.venv/bin/`, never through `uv run`, so a package installed over the locked one stays in place until you switch it back.
 
+The project runs on the Python that `.python-version` names, which uv installs when the machine lacks it. The next `make install` moves an environment built on another Python back to it, and `PYTHON_VERSION=<version> make install` builds it on another version that `requires-python` in `pyproject.toml` allows.
+
 ## Developing against local checkouts
 
 `make use-local` installs a checkout of `Pipelex/pipelex-sdk` (its `python/` directory is the SDK) and, when it is there, a checkout of `mthds-ai/mthds-python`, as editable packages in place of the PyPI releases, so an edit to either takes effect at once. It looks for both in the project's parent directory; `SIBLINGS_DIR=<dir>` names another parent, and `SDK_DIR=<dir>` and `MTHDS_DIR=<dir>` name either checkout directly. `make use-published` puts back the versions `uv.lock` pins, and `make local-status` says which is installed. Neither changes `pyproject.toml` or `uv.lock`.

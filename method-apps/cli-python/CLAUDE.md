@@ -12,7 +12,7 @@ It is the `cli-python/` member of the method-app family, `method-apps/` in the `
 
 ## Tech Stack
 
-- **Python** 3.11 to 3.14, managed by [uv](https://docs.astral.sh/uv/); `.python-version` names the one a fresh `make install` uses
+- **Python** 3.11 to 3.14, managed by [uv](https://docs.astral.sh/uv/); `.python-version` names the one `make install` builds `.venv` on, and `PYTHON_VERSION=<version> make install` builds it on another
 - **CLI**: [Typer](https://typer.tiangolo.com/), one command and no subcommands; [Rich](https://rich.readthedocs.io/) for everything on stderr
 - **SDK**: [`pipelex-sdk`](https://pypi.org/project/pipelex-sdk/) (`PipelexAPIClient`, async only, and the codegen writer and check), and [`mthds`](https://pypi.org/project/mthds/) for the protocol's error types, input-form descriptors and IO contracts
 - **Environment**: `python-dotenv`, which loads `.env` without overriding the shell
