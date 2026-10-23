@@ -81,3 +81,15 @@ describe("the run id", () => {
     expect(screen.queryByText(/^Run /)).not.toBeInTheDocument();
   });
 });
+
+describe("the brand", () => {
+  it("wears the accent's tokens, never a hard-coded palette, so the organization's brand reaches it", () => {
+    render(<RunStatus status="RUNNING" elapsedMs={0} health="retrying" runId="run_1" />);
+    const region = screen.getByRole("status");
+    // The pale accent fill with the accent's ink on it, which reads there at
+    // 4.5:1 whatever accent was picked, on every line.
+    expect(region).toHaveClass("bg-brand-muted", "text-brand-muted-foreground");
+    const classes = [region, ...region.querySelectorAll("*")].map((el) => el.className).join(" ");
+    expect(classes).not.toMatch(/\b(?:bg|text|border)(?:-t)?-(?:blue|slate|gray|zinc)-\d+/);
+  });
+});
