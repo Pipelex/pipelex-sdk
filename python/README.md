@@ -146,6 +146,26 @@ async for saved in client.iterate_method_examples("mt_123"):  # every example, o
     print(saved.name, saved.latest_run_id)
 ```
 
+### Copy a method into a team
+
+A copy is a new, unpublished method in an organization you may change methods in, holding the original's draft, its form inputs and its examples, the stored files they name copied with it, and `copied_from` naming the original. Only a web session may copy. A bundle naming storage the destination cannot read answers `refused`, a verdict rather than an error, and the idempotency key makes a retry copy once ([`docs/method-copy.md`](docs/method-copy.md)):
+
+```python
+import uuid
+
+from pipelex_sdk.product_models import MethodCopied
+
+method = await client.get_method("mt_123")
+result = await client.copy_method(
+    "mt_123", destination_org_id="org_team", expected_draft_updated_at=method.updated_at, idempotency_key=str(uuid.uuid4())
+)
+if isinstance(result, MethodCopied):
+    print(result.method.method_id, result.method.copied_from)
+else:
+    print(result.message, [reference.uri for reference in result.references])
+copies = await client.list_method_copies("mt_123")  # where the copies went
+```
+
 ### Find, link and zip the organization's files
 
 The organization's files are its uploads, its test files and the files its runs made, newest first, and each row's `uri` goes into a run's inputs as any address does. A filtered page can be empty and still carry a `next_cursor`, which `iterate_files` follows. A link downloads a file under the name a person sees, a zip is queued, then read until it is ready, and an upload names the method it was made to try to be recorded as that method's test file ([`docs/files.md`](docs/files.md)):

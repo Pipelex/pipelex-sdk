@@ -259,6 +259,55 @@ class MethodVersionBodies:
     }
 
 
+class MethodCopyBodies:
+    """A method copied into another organization, as the platform serializes it (`MethodCopied`, `MethodCopyRefused`,
+    `MethodCopyPage`), and the original a copy names (`MethodCopiedFrom`).
+
+    `@pipelex/sdk`'s `tests/method-copies.test.ts` answers its client with the same documents.
+    """
+
+    KEY: ClassVar[str] = "0c7e1a4f-5b2d-4e8a-9f61-3d2c7b8a1e05"
+    DIGEST: ClassVar[str] = "sha256:5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47"
+
+    COPIED_FROM: ClassVar[dict[str, Any]] = {"org_id": "org_personal", "method_id": "mt_receipts01", "draft_digest": DIGEST}
+
+    #: The copy: a new, unpublished method of the destination.
+    COPY: ClassVar[dict[str, Any]] = {
+        "method_id": "mt_copy01",
+        "org_id": "org_team",
+        "created_by_user_id": "user_1",
+        "name": "Receipt review",
+        "input_data": {"photo": {"url": "pipelex-storage://org_team/assets/1b2c.png"}},
+        "pipe_output": None,
+        "description": "Review a receipt",
+        "created_at": "2026-10-23T09:00:00+00:00",
+        "updated_at": "2026-10-23T09:00:00+00:00",
+        "deletion_state": None,
+        "draft_digest": DIGEST,
+        "latest_version": None,
+        "latest_published": None,
+        "copied_from": COPIED_FROM,
+    }
+
+    COPIED: ClassVar[dict[str, Any]] = {"outcome": "copied", "method": COPY, "examples_copied": 2, "stored_files_copied": 1}
+
+    REFUSED: ClassVar[dict[str, Any]] = {
+        "outcome": "refused",
+        "reason": "bundle_names_other_storage",
+        "message": "main.mthds names a stored file the destination cannot read; remove or replace it, then copy again.",
+        "references": [{"path": "main.mthds", "uri": "pipelex-storage://org_personal/assets/logo.png"}],
+    }
+
+    MARKER: ClassVar[dict[str, Any]] = {
+        "copy_method_id": "mt_copy01",
+        "destination_org_id": "org_team",
+        "copied_by_user_id": "user_1",
+        "copied_at": "2026-10-23T09:00:00+00:00",
+    }
+
+    LIMIT: ClassVar[dict[str, Any]] = {"name": "max_stored_files", "value": 200, "reached": 201}
+
+
 class MethodExampleBodies:
     """A method's saved examples, as the platform serializes them (`MethodExample`, `MethodExamplePage`).
 
