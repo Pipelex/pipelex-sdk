@@ -65,9 +65,12 @@ export interface DescribeUploadOptions {
   /**
    * The largest file to hash, in bytes, 52428800 (50 MiB, the platform's default limit on
    * one upload) when omitted. Hashing reads the whole file into memory, so a larger file
-   * is described without its SHA-256 and never read: its grant request then meets the
-   * grant route's own `413` for a size past the limit. Pass a deployment's larger
-   * `max_bytes` to hash up to it. It must be a positive number.
+   * is described without its SHA-256 and never read. Where the deployment's limit is no
+   * larger, its grant request then meets the grant route's own `413`. On a deployment
+   * whose grants report a larger `max_bytes`, a file between the two is granted without
+   * a hash: it is uploaded under a fresh name, with no deduplication and no checksum for
+   * storage to hold the body to, and the description's absent `sha256` is how a caller
+   * sees it. Pass that `max_bytes` to hash up to it. It must be a positive number.
    */
   maxBytes?: number;
 }
@@ -88,8 +91,10 @@ export interface UploadDescription {
    * cases, where the grant then names a new object and asks for the bytes, as it does
    * for every request with no hash: where the runtime offers no Web Crypto digest, which
    * a browser withholds from a page served over plain `http` from any host but the local
-   * one, and for a file larger than `describeUpload`'s `maxBytes`, which is never read,
-   * so the grant route refuses its size with its own `413`.
+   * one, and for a file larger than `describeUpload`'s `maxBytes`, which is never read.
+   * The grant route refuses such a file's size with its own `413` only where the
+   * deployment's limit is no larger than `maxBytes`; under a larger limit the file is
+   * granted and uploaded without its hash, so without deduplication.
    */
   sha256?: string;
 }
@@ -109,8 +114,14 @@ export interface UploadDescription {
  * The whole file is read into memory once to hash it, so only a file no larger than
  * `options.maxBytes` is, 50 MiB by default: a larger one, such as a video of several
  * gigabytes picked by mistake, would freeze or crash a browser tab before the grant
- * route could refuse its size. It is described without `sha256` and never read, and the
- * grant route's `413` refuses it with its own message. Where the runtime offers no Web
+ * route could refuse its size. It is described without `sha256` and never read. Where
+ * the deployment's limit is no larger than `maxBytes`, as with the default on a
+ * deployment at the platform's default limit, the grant route's `413` refuses it with its
+ * own message. On a deployment whose grants report a larger `max_bytes`, a file between
+ * the two is granted without the hash and uploaded under a fresh name, with no
+ * deduplication and no checksum for storage to hold the body to: the absent `sha256` on
+ * the description is how the caller sees it, and passing that `max_bytes` as `maxBytes`
+ * hashes up to it. Where the runtime offers no Web
  * Crypto digest, the file is described without `sha256` too, and the upload goes on
  * without the hash.
  *
@@ -136,7 +147,8 @@ export async function describeUpload(
     );
   }
   const description: UploadDescription = { filename, content_type: file.type, size: file.size };
-  // A file past the bound is never read: the grant route refuses its size on its own.
+  // A file past the bound is never read and goes without its hash: the grant route refuses
+  // its size when the deployment's limit is no larger, and otherwise grants it hashless.
   if (file.size > maxBytes) return description;
   const digest = webCryptoDigest();
   if (digest === undefined) return description;
