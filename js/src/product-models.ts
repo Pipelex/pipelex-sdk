@@ -2,7 +2,7 @@
  * Pipelex-product wire models — the snake_case JSON shapes the hosted-product
  * routes (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/branding`, `/v1/billing/*`,
  * `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
- * `/v1/resolve-storage-url`, `/v1/upload`, `/v1/upload/grant`, `/v1/runs`) speak.
+ * `/v1/resolve-storage-url`, `/v1/upload`, `/v1/upload/grant`, `/v1/files`, `/v1/runs`) speak.
  *
  * These are the management surface a consumer (today `pipelex-app`) hand-rolls.
  * The wire is snake_case; any camelCase remap is a consumer's UI concern and
@@ -783,12 +783,25 @@ export interface UploadInput {
   filename: string;
   data: string;
   content_type: string;
+  /** What the upload is recorded as; `uploaded` when omitted. */
+  kind?: UploadKind;
+  /**
+   * The bare catalog id of the method a `test` file is for, required with `kind: "test"`
+   * and refused without it.
+   */
+  method_id?: string;
 }
 
 export interface UploadedFile {
   uri: string;
   filename: string;
 }
+
+/**
+ * What an upload is recorded as: `uploaded`, a person's file, or `test`, a test input
+ * made for one method, which names that method in `method_id`.
+ */
+export type UploadKind = "uploaded" | "test";
 
 /**
  * What an upload grant is requested for — `POST /v1/upload/grant`. The file is
@@ -831,6 +844,137 @@ export interface UploadGrant {
   expires_at: string;
   /** The largest file any grant allows, in bytes (the service's upload cap). */
   max_bytes: number;
+}
+
+// ── An organization's files (`/v1/files`) ────────────────────────────────
+//
+// A file is the record the platform keeps of a stored object: a member's upload, a test file
+// made for a method, or a file a run made that reached its result, each with the name a person
+// sees, its type, its size and where it came from. A run, a form or an example still points at
+// the bytes by their `pipelex-storage://` address, the record's `uri`, which a run's inputs take
+// as they take any address (see `docs/files.md`).
+
+/**
+ * What made a file: `uploaded`, a person's upload or a run's inline input; `generated`, a file a
+ * run made whose result reaches it; `test`, a test input made for one method, which its
+ * `origin.method_id` names.
+ */
+export type FileKind = "uploaded" | "generated" | "test";
+
+/**
+ * Who or what made a file, as far as the platform knows it. Each kind fills a different part, and
+ * the rest is `null`: an upload names the surface it came through; a generated file or a run's
+ * inline input names the run, its method and the version or draft that ran; a test file names the
+ * surface it came through and the method it was made for. The member a file is attributed to is
+ * the record's `created_by`, never repeated here.
+ */
+export interface FileOrigin {
+  /**
+   * The surface an upload came through, as its request's `User-Agent` declared it (`app`, `mcp`,
+   * `cli`, `n8n`, `hook`, `sdk`, `raw_http`, and more as surfaces are added); `null` for a run's
+   * files. Self-declared, so it is provenance to show, never authority.
+   */
+  surface: string | null;
+  /** The run that made the file; `null` for an upload. */
+  run_id: string | null;
+  /** The method whose run made the file, or the method a test file was made for; `null` otherwise. */
+  method_id: string | null;
+  /**
+   * The published version number or `"draft"` that ran, for a file made by a saved method's run;
+   * `null` otherwise.
+   */
+  method_version: number | "draft" | null;
+}
+
+/**
+ * One row of a file list, what a list or a picker shows. A list never holds a file a run made
+ * along the way, nor an upload whose bytes have not been seen stored.
+ */
+export interface FileSummary {
+  /** The record's id, `fl_…`. */
+  file_id: string;
+  /** The `pipelex-storage://` address of the bytes, which a run's inputs take as they take any address. */
+  uri: string;
+  /** The name shown and used for downloads; it starts as the name the file arrived with and changes with a rename. */
+  name: string;
+  /** The MIME type the object is stored under. */
+  media_type: string;
+  /** The format key the list's `format` filter matches: `pdf`, `docx`, `image`, `html` and the rest of the runtime's table. */
+  format: string;
+  /** The byte size. */
+  size: number;
+  kind: FileKind;
+  origin: FileOrigin;
+  /** ISO-8601 instant the record was made. */
+  created_at: string;
+  /** The member the file is attributed to: the uploader, or the member who started the run that made it. */
+  created_by: string;
+}
+
+/**
+ * Query for one page of an organization's files — `GET /v1/files`. Every member is optional, and
+ * each is sent only when given, so an empty string is sent and refused by the API rather than
+ * dropped into an unfiltered list.
+ *
+ * `methodId`, `runId` and `createdBy` choose which list serves the page: a method's list, a
+ * run's own list, one member's, or, with none of them, the organization's. The other members
+ * filter whichever list serves it, after the index read, so a filtered page can hold fewer rows
+ * than `limit`, or none, and still carry a `nextCursor`.
+ */
+export interface ListFilesQuery {
+  /** A case-insensitive search in a file's name and the name it arrived with, applied server-side; at most 200 characters. */
+  q?: string;
+  /** Only the files of this kind. */
+  kind?: FileKind;
+  /**
+   * Only the files of one of these format keys (`pdf`, `image`, …), sent as one repeated
+   * `format=` parameter per value; at most 100. An empty list names no format and is a
+   * `RequestArgumentError` before any request, since sent as no parameter it would list every
+   * format.
+   */
+  format?: readonly string[];
+  /**
+   * Only the files of one of these MIME types (`image/png`, …), sent as one repeated
+   * `media_type=` parameter per value; at most 100. An empty list is refused as `format`'s is.
+   */
+  mediaType?: readonly string[];
+  /** The method's list, by its bare catalog id: the files its runs and examples took or made. Sent as `method_id`. */
+  methodId?: string;
+  /**
+   * The run's own list: its final outputs and its inline inputs, in the order of their addresses
+   * rather than newest first. Beside `methodId`, the run's list when the method is the run's own,
+   * and an empty page otherwise. The files a run took from the organization as inputs are not in
+   * it. Sent as `run_id`.
+   */
+  runId?: string;
+  /** One member's files by user id, or `"me"` for the caller's own: their uploads and their runs' outputs. Sent as `created_by`. */
+  createdBy?: string;
+  /**
+   * Only the files created at or after this INSTANT, ISO-8601 with a UTC offset
+   * (`2026-10-01T00:00:00Z`), inclusive. A bare date or a naive timestamp is refused by the API
+   * with a `400`. Sent as `created_from`.
+   */
+  createdFrom?: string;
+  /** Only the files created at or before this instant. Same rules as `createdFrom`. Sent as `created_to`. */
+  createdTo?: string;
+  /** Page size, from 1 to 200; the API defaults to 50 and refuses one outside that range with a `422`. */
+  limit?: number;
+  /** Opaque `nextCursor` from the previous page, bound to the list and the filters that issued it. */
+  cursor?: string;
+}
+
+/**
+ * One page of an organization's files, newest first (in the order of their addresses under
+ * `runId`).
+ *
+ * `nextCursor` is opaque — pass it straight back to `listFiles` with the same filters to
+ * continue; `null` means this was the last page. A filtered page can hold fewer rows than
+ * `limit`, or none, and still carry a `nextCursor`: only a `null` cursor ends the list, and
+ * `iterateFiles` keeps following the cursor through such a page. There is deliberately no total.
+ */
+export interface FilePage {
+  items: FileSummary[];
+  nextCursor: string | null;
 }
 
 // ── Runs list / update (`/v1/runs`) ──────────────────────────────────────
