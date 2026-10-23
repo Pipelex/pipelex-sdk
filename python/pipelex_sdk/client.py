@@ -2697,9 +2697,10 @@ class PipelexAPIClient(MthdsAPIClient):
                 stores the copy's answer under the key for 24 hours, scoped to the caller and the method's
                 organization, so the same copy sent again under the same key is answered with the stored answer and
                 copies nothing more: a copy whose answer was lost, as on a client timeout, can be sent again
-                unchanged and makes one copy, not two. A verdict and a `4xx` refusal are stored alike, so the same
-                copy under the same key is answered the same again; a `5xx` is not stored, and a copy that failed
-                with one left nothing visible, so the same key sends it afresh. The same key with a different body
+                unchanged and makes one copy, not two. A verdict and a `4xx` refusal of the copy are stored alike,
+                so the same copy under the same key is answered the same again; a `5xx` and a refusal for its timing
+                (a `408`, `425` or `429`) are not stored, and a copy that failed with one left nothing visible, so
+                the same key sends it afresh. The same key with a different body
                 is refused (`409` `conflict`), as is a key whose earlier request is still being handled (`409`
                 `idempotency_key_in_use`, retryable); a changed copy, such as one with a fresh draft token, goes
                 under a new key. See `docs/method-copy.md`. A key is held to the rule a start's is: 1 to 255

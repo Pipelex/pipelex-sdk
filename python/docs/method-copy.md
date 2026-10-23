@@ -107,10 +107,10 @@ except ApiResponseError as exc:
 
 | The copy | The answer |
 |---|---|
-| The first under the key | The copy is made, or refused, and the answer is stored under the key for 24 hours, scoped to the caller and the method's organization. |
-| The same arguments under the same key, once the first was answered with a verdict or a `4xx` | The stored answer, and nothing more is copied: a copy whose answer was lost, as on a client timeout, makes one copy, not two. |
-| The same arguments under the same key, after a `5xx` | A fresh attempt: a `5xx` is not stored, and the failed copy left nothing visible. |
-| The same arguments under the same key, while the first is still being handled | A `409` `idempotency_key_in_use`, `runtime` and retryable: send it again under the same key in a few seconds. |
+| The first under the key | The copy is made, or refused, and its answer is stored under the key for 24 hours, scoped to the caller and the method's organization, unless it is a `5xx` or a refusal for its timing (`408`, `425` or `429`). |
+| The same arguments under the same key, once the first was answered with a verdict, or with a `4xx` refusal other than one for its timing | The stored answer, and nothing more is copied: a copy whose answer was lost, as on a client timeout, makes one copy, not two, and a copy refused for its content is refused again. |
+| The same arguments under the same key, after a `5xx` or a refusal for its timing, such as a `429` | A fresh attempt: neither is stored, the key was freed, and the failed copy left nothing visible. |
+| The same arguments under the same key, while the first is still being handled, or while its stored answer cannot be read | A `409` `idempotency_key_in_use`, `runtime` and retryable, answered by the key and never stored: send it again under the same key in a few seconds. |
 | Other arguments under the same key | A `409` `conflict`, `input` and not retryable. A changed copy, such as one with a fresh draft token, goes under a new key. |
 
 Without a key, a copy whose answer was lost cannot be told from one that never ran, and sending it again may make a second copy. Even with one, a platform process that dies after writing the copy and before storing its answer can make a second copy on the retry, a rare window the creation of a method shares.
