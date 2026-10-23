@@ -1,6 +1,10 @@
 import { getPipelexClient } from "@/lib/pipelexClient";
 import { classifyPipelineError, type PipelineError } from "@/lib/errors";
-import { checkUploadRequest, fileInputErrorToPipelineError } from "@/lib/fileInputs";
+import {
+  checkUploadRequest,
+  fileInputErrorToPipelineError,
+  type UploadRequest,
+} from "@/lib/fileInputs";
 import { readClassifyEnv } from "@/lib/serverEnv";
 import type { UploadGrant } from "@pipelex/sdk";
 
@@ -16,12 +20,21 @@ export type GrantOutcome = { ok: true; grant: UploadGrant } | { ok: false; error
  * the file. The grant joins them: a presigned, create-only `PUT` for one new
  * object, signed for the declared type and size, which the browser sends with
  * `uploadWithGrant`. So the bytes cross neither this server nor the API gateway,
- * and no Server Action body carries more than a file's name, type and size.
+ * and no Server Action body carries more than a file's description.
+ *
+ * **The browser's SHA-256 of the file is passed through when it sent one.** The
+ * platform then names the object after the bytes and signs the digest, so
+ * storage refuses any other bytes, and a file the organization already holds is
+ * answered `stored: true`, with its reference and no target: `uploadWithGrant`
+ * sends nothing for it. A request without the digest, from a browser that
+ * offers no Web Crypto, is granted a new object as before.
  *
  * The request is checked first, because a Server Action is a public endpoint:
- * `checkUploadRequest` refuses a type the method does not take and a size past
- * `MAX_FILE_BYTES`, before any grant is asked for. The platform refuses a size
- * past its own limit too, with a `413` that stays the authority.
+ * `checkUploadRequest` refuses a type the method does not take, a size past
+ * `MAX_FILE_BYTES` and a malformed digest, before any grant is asked for. The
+ * platform refuses a size past its own limit too, with a `413` that stays the
+ * authority. Only the file's description is sent on: what the upload is
+ * recorded as is this server's to say, never the browser's.
  *
  * **The grant is a bearer capability**: until it expires, whoever holds it can
  * create that one object. It goes to the browser that asked, and nowhere else —
@@ -47,13 +60,14 @@ export async function grantFileUpload(
     };
   }
   // `checkUploadRequest` proved each field's type, so the request is read as one.
-  const { filename, content_type, size } = request as {
-    filename: string;
-    content_type: string;
-    size: number;
-  };
+  const { filename, content_type, size, sha256 } = request as UploadRequest;
   try {
-    const grant = await getPipelexClient().requestUploadGrant({ filename, content_type, size });
+    const grant = await getPipelexClient().requestUploadGrant({
+      filename,
+      content_type,
+      size,
+      ...(sha256 !== undefined && { sha256 }),
+    });
     return { ok: true, grant };
   } catch (err) {
     return {

@@ -181,9 +181,11 @@ describe("requestSummarizePdfUpload", () => {
   // public endpoint, so what the browser says about a file is checked before
   // the platform is asked for anything.
   const GRANT = {
+    file_id: "fl_01920000-0000-7000-8000-000000000001",
+    uri: STORED_PDF,
+    stored: false,
     url: "https://storage.example/put",
     headers: { "Content-Type": "application/pdf" },
-    uri: STORED_PDF,
     expires_at: "2026-09-24T12:00:00Z",
     max_bytes: 52_428_800,
   };

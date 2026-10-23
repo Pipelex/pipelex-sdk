@@ -39,7 +39,7 @@ The command refuses rather than overwriting a slice that already exists, and `DR
 
 ## How it works
 
-1. A form renders the method's inputs from its committed input-form descriptor with `@pipelex/mthds-form`. A file the user drops is stored at once, straight from the browser to Pipelex storage with an upload grant the method's Server Action asks for, and the form keeps its reference. The form then calls the `useRun` hook, which dispatches to the Server Actions for the deployment's execution mode.
+1. A form renders the method's inputs from its committed input-form descriptor with `@pipelex/mthds-form`. A file the user drops is stored at once, straight from the browser to Pipelex storage with an upload grant the method's Server Action asks for, and the form keeps its reference. The browser hashes the file first, so a file the organization already holds is not sent again. The form then calls the `useRun` hook, which dispatches to the Server Actions for the deployment's execution mode.
 2. The Server Action gates the inputs against the same committed contract — a Server Action is a public endpoint, so the browser's check is only UX — and checks that every file position holds a reference it accepts.
 3. The SDK runs the method: `execute` in **Blocking** mode, or `start` and a poll loop in **Durable** mode, the default, which survives the hosted gateway's ~30s synchronous cap and streams live status.
 4. A narrower validates the main output against the zod schema generated from the method's contract.

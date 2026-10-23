@@ -14,11 +14,25 @@ beforeEach(() => requestUploadGrant.mockReset());
 
 const OPTS = { allowedMimes: ["image/png", "image/jpeg"], maxBytes: MAX_FILE_BYTES };
 const REQUEST = { filename: "receipt.jpg", content_type: "image/jpeg", size: 2_500_000 };
+/** A SHA-256 as `describeUpload` writes one: 64 lowercase hexadecimal digits. */
+const SHA256 = "1b48e21282963dfba2ffff3a4c331471242fe42fd0a51161e56df72085c445c9";
 const GRANT = {
+  file_id: "fl_01920000-0000-7000-8000-000000000001",
   uri: "pipelex-storage://org_1/assets/abc.jpg",
+  stored: false,
   url: "https://bucket.s3.amazonaws.com/org_1/assets/abc.jpg?X-Amz-Signature=sig",
   headers: { "Content-Type": "image/jpeg", "If-None-Match": "*" },
   expires_at: "2026-09-24T12:00:00Z",
+  max_bytes: 52_428_800,
+};
+/** The answer for bytes the organization already holds: a reference, and nothing to send. */
+const STORED_GRANT = {
+  file_id: GRANT.file_id,
+  uri: GRANT.uri,
+  stored: true,
+  url: null,
+  headers: null,
+  expires_at: null,
   max_bytes: 52_428_800,
 };
 
@@ -42,7 +56,32 @@ describe("grantFileUpload", () => {
     requestUploadGrant.mockResolvedValueOnce(GRANT);
     const outcome = await grantFileUpload(REQUEST, OPTS);
     expect(requestUploadGrant).toHaveBeenCalledWith(REQUEST);
+    // No digest was given, so none is sent, and the grant names a new object.
+    expect(requestUploadGrant.mock.calls[0]?.[0]).not.toHaveProperty("sha256");
     expect(outcome).toEqual({ ok: true, grant: GRANT });
+  });
+
+  it("passes the file's SHA-256 through, and hands back the grant for bytes already held", async () => {
+    requestUploadGrant.mockResolvedValueOnce(STORED_GRANT);
+    const outcome = await grantFileUpload({ ...REQUEST, sha256: SHA256 }, OPTS);
+    expect(requestUploadGrant).toHaveBeenCalledWith({ ...REQUEST, sha256: SHA256 });
+    expect(outcome).toEqual({ ok: true, grant: STORED_GRANT });
+  });
+
+  it("asks with the file's description and nothing else the request carries", async () => {
+    requestUploadGrant.mockResolvedValueOnce(GRANT);
+    // A Server Action reads untrusted JSON: what an upload is recorded as is not the browser's to say.
+    await grantFileUpload({ ...REQUEST, kind: "test", method_id: "mt_other" }, OPTS);
+    expect(requestUploadGrant.mock.calls[0]?.[0]).toEqual(REQUEST);
+  });
+
+  it("refuses a malformed SHA-256 before asking for anything, naming the file", async () => {
+    const outcome = await grantFileUpload({ ...REQUEST, sha256: "not-a-digest" }, OPTS);
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: { kind: "invalid_file", details: "invalid_file: receipt.jpg" },
+    });
+    expect(requestUploadGrant).not.toHaveBeenCalled();
   });
 
   it("refuses a type the method does not take before asking for anything", async () => {
