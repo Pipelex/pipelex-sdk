@@ -60,6 +60,8 @@ You get the extracted entities as JSON:
 
 `blocking` is the execution mode — one call, one response. It is the first of three, and every demo runs in all three: see **Execution modes** below. Prefer a bare `widget …`? Activate the venv once with `source .venv/bin/activate` and drop the `uv run` prefix.
 
+The project runs on the Python that `.python-version` names, which uv downloads when the machine lacks it. The next `make install` moves an environment built on another Python back to it, and `PYTHON_VERSION=<version> make install` builds it on another version that `requires-python` in `pyproject.toml` allows.
+
 ## Try the demos
 
 Each demo is one self-contained `widget` command — a bundle path, the pipe's qualified reference (`domain.pipe_code`), and a typed narrowing of the result into its *generated* model. Every demo exists in every execution mode; the commands below use `blocking`, the simplest one.

@@ -1056,6 +1056,11 @@ export class PagingNotTerminatingError extends PipelexRequestError {
  *   the method was never published. Publish it, or address its draft as `mt_…@draft`.
  * - `method_version_not_found` (`404`): `mt_…@<n>`, or `getMethodVersion`, names a version
  *   the method never published. An unknown method is `not_found` instead.
+ * - `organization_not_found` (`404`): the destination of a `copyMethod` is one the caller does
+ *   not belong to, one still being set up, or one that does not exist, answered alike so the
+ *   platform never says whether an organization exists. An unknown method is `not_found`.
+ * - `method_copy_too_large` (`422`): a `copyMethod` past one of the copy's bounds on the stored
+ *   files it copies, which `problemDocument.limit` names (`MethodCopyLimit`).
  *
  * `code` stays a `string`, since the platform adds codes; this type names the ones a method
  * caller branches on. Each is `input` and not retryable by the fallback verdict.
@@ -1064,7 +1069,9 @@ export type MethodErrorCode =
   | "method_update_conflict"
   | "method_being_deleted"
   | "method_not_published"
-  | "method_version_not_found";
+  | "method_version_not_found"
+  | "organization_not_found"
+  | "method_copy_too_large";
 
 /**
  * The platform code a refusal about a request's `Idempotency-Key` carries in

@@ -3,7 +3,7 @@ const nextConfig = {
   // No `serverActions.bodySizeLimit`: Server Actions keep Next's 1 MB default.
   // A dropped file goes from the browser straight to Pipelex storage with an
   // upload grant (src/hooks/useFileInputs.ts), so a grant action only receives
-  // a file's name, type and size, and a run only references. What can still
+  // a file's name, type, size and SHA-256, and a run only references. What can still
   // reach the limit is a run's text and other typed values, so `useRun`
   // measures them first and refuses a set past `MAX_RUN_INPUT_BYTES`
   // (src/lib/runRequest.ts) with the size and the limit, rather than let Next

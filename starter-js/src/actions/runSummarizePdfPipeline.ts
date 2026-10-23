@@ -54,11 +54,13 @@ function gatePdfInputs(
 
 /**
  * UPLOAD — a grant for the browser to store one dropped PDF straight in Pipelex
- * storage, before any run. Only the file's name, type and size reach this
- * action, never its bytes; it refuses a type outside `ALLOWED_MIMES` and a size
- * past `MAX_FILE_BYTES`, then asks the platform for a create-only `PUT` signed
- * for exactly that file. `PdfForm`'s `useFileInputs` sends the file with it and
- * keeps the `pipelex-storage://` reference the run then carries.
+ * storage, before any run. Only the file's name, type, size and SHA-256 reach
+ * this action, never its bytes; it refuses a type outside `ALLOWED_MIMES`, a size
+ * past `MAX_FILE_BYTES` and a malformed digest, then asks the platform for a
+ * create-only `PUT` signed for exactly that file, or learns that the organization
+ * already holds those bytes. `PdfForm`'s `useFileInputs` sends the file with it,
+ * unless storage holds it already, and keeps the `pipelex-storage://` reference
+ * the run then carries.
  *
  * It is open to anyone who can reach the app, like the run actions: see
  * `grantFileUpload` in `src/lib/uploadGrant.ts`.

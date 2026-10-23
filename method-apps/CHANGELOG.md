@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.51.0] - 2026-10-23
+
+### Added
+
+- **`PYTHON_VERSION=<version> make install` in the CLI template**: its `Makefile` takes the version from `PYTHON_VERSION`, then `UV_PYTHON`, then `.python-version`, and exports it as `UV_PYTHON`, so every uv command it runs builds `.venv` on that version, as `UV_PYTHON=<version> make install` alone did before. Each job of its lint and tests matrices ends by checking that `.venv` runs the version the job names.
+
+### Changed
+
+- **A dropped file the organization already holds is not uploaded again**: the web app template runs on `@pipelex/sdk` 0.50.0, and `useFileInputs` describes each dropped file with the SDK's `describeUpload`, which computes its SHA-256 in the browser, and sends the digest with the upload grant request, so a file already stored, dropped again or kept from an earlier run, is answered as stored and the form takes its reference without sending the bytes, while a page served over plain `http` from a host other than the local one, where the browser offers no Web Crypto, uploads as before. The grant action `make add-method` writes refuses a digest that is not 64 lowercase hexadecimal digits, a file that cannot be read to hash is shown beside the field as one that could not be prepared, and the grant request now needs a platform that serves hashed uploads, since one that predates them refuses the digest; nothing else in the SDK's release reaches the app, and the CLI stays on `pipelex-sdk` 0.48.1.
+
 ## [v0.49.1] - 2026-10-23
 
 ### Added

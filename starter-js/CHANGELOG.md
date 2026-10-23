@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.51.0] - 2026-10-23
+
+### Changed
+
+- **A dropped file the organization already holds is not uploaded again**: the starter runs on `@pipelex/sdk` 0.50.0, and `useFileInputs` describes each dropped file, the sample PDF included, with the SDK's `describeUpload`, which computes its SHA-256 in the browser, and sends the digest with the upload grant request, so a file already stored is answered as stored and the form takes its reference without sending the bytes, while a page served over plain `http` from a host other than the local one, where the browser offers no Web Crypto, uploads as before. The PDF example's grant action, and every one `make add-method` writes, refuses a digest that is not 64 lowercase hexadecimal digits, a file that cannot be read to hash is shown beside the field as one that could not be prepared, and the grant request now needs a platform that serves hashed uploads, since one that predates them refuses the digest; nothing else in the SDK's releases since 0.48.1 reaches the starter.
+
 ## [v0.49.0] - 2026-10-23
 
 ### Changed

@@ -551,6 +551,8 @@ describe("the method routes take a bare id", () => {
     ],
     ["listMethodVersions", (client) => client.listMethodVersions(SELECTOR)],
     ["getMethodVersion", (client) => client.getMethodVersion(SELECTOR, 3)],
+    ["copyMethod", (client) => client.copyMethod(SELECTOR, { destination_org_id: "org_team" })],
+    ["listMethodCopies", (client) => client.listMethodCopies(SELECTOR)],
     ["deleteMethod", (client) => client.deleteMethod(SELECTOR)],
   ];
 
@@ -752,6 +754,8 @@ describe("the method error codes", () => {
       | "method_being_deleted"
       | "method_not_published"
       | "method_version_not_found"
+      | "organization_not_found"
+      | "method_copy_too_large"
     >();
   });
 

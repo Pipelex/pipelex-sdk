@@ -1,28 +1,50 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { RejectedAssetError } from "@pipelex/sdk";
 import type { GrantOutcome } from "@/lib/uploadGrant";
 
+// The upload is stood in for, and the description is the SDK's own: the digest
+// the hook sends is the one `describeUpload` computes from the file's bytes.
 const uploadWithGrant = vi.fn();
-vi.mock("@pipelex/sdk/upload", () => ({
+vi.mock("@pipelex/sdk/upload", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@pipelex/sdk/upload")>()),
   uploadWithGrant: (...args: unknown[]) => uploadWithGrant(...args),
 }));
 
 import { useFileInputs } from "./useFileInputs";
 
 const GRANT = {
+  file_id: "fl_01920000-0000-7000-8000-000000000001",
   uri: "pipelex-storage://org_1/assets/abc.jpg",
+  stored: false,
   url: "https://bucket.s3.amazonaws.com/org_1/assets/abc.jpg?X-Amz-Signature=sig",
   headers: { "Content-Type": "image/jpeg", "If-None-Match": "*" },
   expires_at: "2026-09-24T12:00:00Z",
   max_bytes: 52_428_800,
 };
+/** The answer for bytes the organization already holds: a reference, and nothing to send. */
+const STORED_GRANT = {
+  file_id: GRANT.file_id,
+  uri: GRANT.uri,
+  stored: true,
+  url: null,
+  headers: null,
+  expires_at: null,
+  max_bytes: 52_428_800,
+};
+
+/** The SHA-256 of `receipt()`'s bytes, "jpeg bytes". */
+const RECEIPT_SHA256 = "1b48e21282963dfba2ffff3a4c331471242fe42fd0a51161e56df72085c445c9";
 
 const requestUpload = vi.fn<(request: unknown) => Promise<GrantOutcome>>();
 
 beforeEach(() => {
   uploadWithGrant.mockReset();
   requestUpload.mockReset();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 /** The hook over a plain values object, the way a form's `useRunInputs` holds one. */
@@ -47,18 +69,21 @@ const firstReceipt = (values: Record<string, unknown>) =>
 describe("useFileInputs", () => {
   it("asks for a grant, sends the file to storage, then writes the reference", async () => {
     requestUpload.mockResolvedValueOnce({ ok: true, grant: GRANT });
-    uploadWithGrant.mockResolvedValueOnce({ uri: GRANT.uri });
+    uploadWithGrant.mockResolvedValueOnce({ uri: GRANT.uri, file_id: GRANT.file_id });
     const { hook, state, onSelectionStart } = setup();
     const file = receipt();
 
     await act(() => hook.result.current.dropFile("receipts.0", file));
 
-    // Only the file's description crosses to the server, never its bytes.
+    // Only the file's description crosses to the server, never its bytes: its
+    // name, type and size, and the SHA-256 the browser computed from them.
     expect(requestUpload).toHaveBeenCalledWith({
       filename: "receipt.jpg",
       content_type: "image/jpeg",
       size: file.size,
+      sha256: RECEIPT_SHA256,
     });
+    // No options: the SDK's own limit, which grows with the file's size, bounds it.
     expect(uploadWithGrant).toHaveBeenCalledWith(GRANT, file);
     expect(firstReceipt(state.values)).toEqual({ url: GRANT.uri, filename: "receipt.jpg" });
     expect(onSelectionStart).toHaveBeenCalledOnce();
@@ -127,6 +152,63 @@ describe("useFileInputs", () => {
       title: "The upload's permission ran out",
     });
     expect(firstReceipt(state.values)).toBeUndefined();
+  });
+
+  it("writes the reference to bytes storage already holds, and sends nothing", async () => {
+    // The SDK's own sender, over a `fetch` that must not be called.
+    const actual =
+      await vi.importActual<typeof import("@pipelex/sdk/upload")>("@pipelex/sdk/upload");
+    const put = vi.fn();
+    vi.stubGlobal("fetch", put);
+    requestUpload.mockResolvedValueOnce({ ok: true, grant: STORED_GRANT });
+    uploadWithGrant.mockImplementationOnce(actual.uploadWithGrant);
+    const { hook, state } = setup();
+
+    await act(() => hook.result.current.dropFile("receipts.0", receipt()));
+
+    expect(requestUpload).toHaveBeenCalledWith(expect.objectContaining({ sha256: RECEIPT_SHA256 }));
+    expect(put).not.toHaveBeenCalled();
+    expect(firstReceipt(state.values)).toEqual({ url: GRANT.uri, filename: "receipt.jpg" });
+    expect(hook.result.current.fileError).toBeNull();
+    expect(hook.result.current.uploadingIds.size).toBe(0);
+  });
+
+  it("asks without the digest where the browser offers no Web Crypto", async () => {
+    // A page served over plain `http` from a host other than the local one.
+    vi.stubGlobal("crypto", {});
+    requestUpload.mockResolvedValueOnce({ ok: true, grant: GRANT });
+    uploadWithGrant.mockResolvedValueOnce({ uri: GRANT.uri, file_id: GRANT.file_id });
+    const { hook, state } = setup();
+    const file = receipt();
+
+    await act(() => hook.result.current.dropFile("receipts.0", file));
+
+    expect(requestUpload.mock.calls[0]?.[0]).toEqual({
+      filename: "receipt.jpg",
+      content_type: "image/jpeg",
+      size: file.size,
+    });
+    expect(requestUpload.mock.calls[0]?.[0]).not.toHaveProperty("sha256");
+    expect(firstReceipt(state.values)).toEqual({ url: GRANT.uri, filename: "receipt.jpg" });
+  });
+
+  it("shows a file that cannot be read as a preparation error, and asks for nothing", async () => {
+    const file = receipt();
+    // How a browser answers for a file changed on disk since it was picked.
+    Object.defineProperty(file, "arrayBuffer", {
+      value: () => Promise.reject(new DOMException("The file changed.", "NotReadableError")),
+    });
+    const { hook, state } = setup();
+
+    await act(() => hook.result.current.dropFile("receipts.0", file));
+
+    expect(hook.result.current.fileError).toMatchObject({
+      kind: "upload_failed",
+      title: "The file could not be prepared",
+    });
+    expect(requestUpload).not.toHaveBeenCalled();
+    expect(firstReceipt(state.values)).toBeUndefined();
+    expect(hook.result.current.uploadingIds.size).toBe(0);
   });
 
   it("refuses a file past the cap before asking for anything", async () => {
