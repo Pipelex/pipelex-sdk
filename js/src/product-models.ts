@@ -407,8 +407,8 @@ export interface MethodVersionPage {
 
 /**
  * One saved example of a method — what `createMethodExample`, `getMethodExample`,
- * `updateMethodExample` and both arms of `recordMethodExampleLatestRun` answer, and a row of
- * `listMethodExamples`.
+ * `updateMethodExample` and both arms of `recordMethodExampleLatestRun` and
+ * `saveAssistantMethodExample` answer, and a row of `listMethodExamples`.
  */
 export interface MethodExample {
   /** The example's id, `ex_…`, minted by the platform. */
@@ -447,6 +447,13 @@ export interface MethodExample {
   created_at: string;
   /** ISO-8601 UTC instant of its last change: its name, its inputs or its latest run. */
   updated_at: string;
+  /**
+   * Whether the build assistant keeps this example's inputs current with its test inputs: `true`
+   * on an example the assistant's save created (`saveAssistantMethodExample`), `false` on every
+   * other, and `false` from the first inputs change that is not the assistant's own. A rename
+   * leaves it as it is.
+   */
+  kept_by_assistant: boolean;
 }
 
 /** The create — `createMethodExample`, `POST /v1/methods/{id}/examples`. */
@@ -521,6 +528,55 @@ export interface MethodExampleLatestRunStale {
  */
 export type MethodExampleLatestRunResult =
   MethodExampleLatestRunRecorded | MethodExampleLatestRunStale;
+
+/**
+ * The build assistant's save — `saveAssistantMethodExample`,
+ * `POST /v1/methods/{id}/examples/assistant-save`: its new test inputs, and the example it read as
+ * its own with the revision it read it at, both or neither.
+ */
+export interface MethodExampleAssistantSaveInput {
+  /** The name a new example takes, 1 to 200 characters and not blank; an example kept current keeps its own. */
+  name: string;
+  /** The assistant's test inputs, a JSON object; a `bigint` in them is sent as its exact digits. */
+  inputs: Record<string, unknown>;
+  /**
+   * The assistant's example the caller read, the method's newest with `kept_by_assistant` true,
+   * to keep current. Omitted, or `null`, the save creates a new example.
+   */
+  example_id?: string | null;
+  /** The `input_revision` the caller read that example at; given with `example_id` and only with it. */
+  input_revision?: number | null;
+}
+
+/** What an assistant save did — the discriminant of `MethodExampleAssistantSaveResult`. */
+export type MethodExampleAssistantSaveOutcome = "kept" | "created";
+
+/**
+ * The named example was still the assistant's at the revision read, and now holds the inputs;
+ * `example` is it as it now stands, its name untouched.
+ */
+export interface MethodExampleAssistantKept {
+  outcome: "kept";
+  example: MethodExample;
+}
+
+/**
+ * A new example, flagged as the assistant's, holds the inputs under the save's `name`: none was
+ * named, or a person's edit, another save or a deletion took the named one first.
+ */
+export interface MethodExampleAssistantCreated {
+  outcome: "created";
+  example: MethodExample;
+}
+
+/**
+ * The answer of `saveAssistantMethodExample`, a `200` discriminated on `outcome`. Finding that a
+ * person has taken the example is the expected course of events whenever a person edits the
+ * assistant's inputs while it works, so it is answered rather than thrown: remember the answer's
+ * `example` as the assistant's from then on.
+ */
+export type MethodExampleAssistantSaveResult =
+  MethodExampleAssistantKept | MethodExampleAssistantCreated;
 
 /** Query for one page of a method's examples. */
 export interface ListMethodExamplesQuery {
@@ -792,9 +848,17 @@ export interface UploadInput {
   method_id?: string;
 }
 
+/** The answer to `POST /v1/upload`: the stored file's reference, its name and its record. */
 export interface UploadedFile {
+  /** The file's `pipelex-storage://` reference. */
   uri: string;
+  /** The name as sent. */
   filename: string;
+  /**
+   * The file's record, `fl_<uuid7>`, written `stored`, as an upload grant's `file_id` is.
+   * Absent from a deployment that predates file records, which answers none.
+   */
+  file_id?: string;
 }
 
 /**
@@ -806,42 +870,78 @@ export type UploadKind = "uploaded" | "test";
 /**
  * What an upload grant is requested for — `POST /v1/upload/grant`. The file is
  * described, never sent: its bytes go to storage with the grant, from wherever
- * they are held.
+ * they are held. `describeUpload` reads this description off a `File` or a `Blob`,
+ * its SHA-256 included.
  */
 export interface UploadGrantInput {
   /** The original filename with its extension; the stored object keeps the extension. */
   filename: string;
   /**
-   * MIME type, signed into the grant so the upload must carry it. Omitted, `null`
-   * or empty, none is signed — a browser's `File.type` is empty for a type it
-   * does not know, and means the same.
+   * The MIME type the file is declared as. The platform types the stored object by
+   * the name's extension and never stores this one, which serves only a name with no
+   * extension. Omitted, `null` or empty, none is declared — a browser's `File.type` is
+   * empty for a type it does not know, and means the same.
    */
   content_type?: string | null;
   /** The file's exact size in bytes. The grant accepts a body of this size and no other. */
   size: number;
+  /**
+   * The SHA-256 of the file's bytes, as 64 lowercase hexadecimal digits. With it, the
+   * object is named after its bytes, so a file the organization already holds is not
+   * sent again: the grant answers `stored: true`. Without it, the grant always names a
+   * new object and asks for the bytes. Any other string is a `422`, and so is a `size`
+   * other than the one the organization holds those bytes at (`blob_mismatch`).
+   */
+  sha256?: string;
+  /** What the upload is recorded as; `uploaded` when omitted. */
+  kind?: UploadKind;
+  /**
+   * The bare catalog id of the method a `test` file is for, required with `kind: "test"`
+   * and refused without it.
+   */
+  method_id?: string;
 }
 
 /**
- * A presigned, create-only `PUT` for one new object in the caller's organization,
- * and the `pipelex-storage://` URI that object will carry. A bearer capability
- * until `expires_at`: whoever holds it can write that one object, once, so it is
+ * The answer to an upload grant request: the file's record and `pipelex-storage://`
+ * URI, and either the news that the organization already holds the bytes
+ * (`stored: true`) or a presigned, create-only `PUT` to send them with. **Branch on
+ * `stored`, never on whether `url` is present.** A grant with a target is a bearer
+ * capability until `expires_at`: whoever holds it can write that one object, so it is
  * never logged. `uploadWithGrant` (also on the browser-safe `@pipelex/sdk/upload`
- * entry) is the sender.
+ * entry) is the sender, and sends nothing for a stored grant.
  */
 export interface UploadGrant {
-  /** The reference the object carries — it names nothing until the `PUT` has succeeded. */
-  uri: string;
-  /** Where to `PUT` the file, as the raw request body. */
-  url: string;
   /**
-   * The signed headers to send unchanged: `If-None-Match: *`, the `Content-Type`
-   * when one was declared, and the provenance `x-amz-meta-*` values. `Content-Length`
-   * is signed too but is not listed — the body sets it, so the body must be
-   * exactly the declared size.
+   * The file's record, `fl_<uuid7>`, `stored` once the bytes are and `pending` before.
+   * Absent from a deployment that predates file records, which answers none.
    */
-  headers: Record<string, string>;
-  /** ISO-8601 UTC instant after which storage refuses the `PUT`. */
-  expires_at: string;
+  file_id?: string;
+  /**
+   * The reference the file carries. With `stored: false`, it names nothing until the
+   * `PUT` has succeeded.
+   */
+  uri: string;
+  /**
+   * `true` when the organization already holds these bytes: nothing is to be sent, and
+   * `uri` and `file_id` name the file now. `false` when the bytes go to `url`. Absent from
+   * a deployment that predates hashed uploads, whose grant is always a target, so an
+   * absent `stored` reads as `false`, as `uploadWithGrant` reads it.
+   */
+  stored?: boolean;
+  /** Where to `PUT` the file, as the raw request body; `null` when `stored`. */
+  url: string | null;
+  /**
+   * The signed headers to send unchanged, `null` when `stored`: `If-None-Match: *`,
+   * the `Content-Type` the name's extension implies, the provenance `x-amz-meta-*`
+   * values and, when the grant was asked for with a `sha256`, the checksum
+   * `x-amz-checksum-sha256`, which storage holds the body to. `Content-Length` is
+   * signed too but is not listed — the body sets it, so the body must be exactly the
+   * declared size.
+   */
+  headers: Record<string, string> | null;
+  /** ISO-8601 UTC instant after which storage refuses the `PUT`; `null` when `stored`. */
+  expires_at: string | null;
   /** The largest file any grant allows, in bytes (the service's upload cap). */
   max_bytes: number;
 }
@@ -974,6 +1074,372 @@ export interface ListFilesQuery {
  */
 export interface FilePage {
   items: FileSummary[];
+  nextCursor: string | null;
+}
+
+/**
+ * For a file a run made, whether the run's result reaches it: `final`, an output of the run, or
+ * `intermediate`, a file made along the way, which no list holds.
+ */
+export type FileRole = "final" | "intermediate";
+
+/** Whether a file's bytes are stored: `stored`, or `pending` while an upload's bytes have not been seen. */
+export type FileState = "stored" | "pending";
+
+/**
+ * One file's whole record — what `renameFile` answers, each record `getFilesByUri` lists, and the
+ * `file` of a run's file entry; `getFile` answers it with its methods and uses (`FileDetail`). It
+ * is a `FileSummary` with the members a list leaves out.
+ */
+export interface FileRecord extends FileSummary {
+  /**
+   * The address the record was written under, once another run or an example took the file and
+   * the platform copied it into the organization's `assets/`; `uri` is then the copy's. `null`
+   * until then.
+   */
+  source_uri: string | null;
+  /** The name the file arrived with, never changed: a rename changes `name` alone. */
+  original_name: string;
+  /**
+   * The SHA-256 of the bytes in lowercase hexadecimal, or `null` for a file stored before every
+   * writer sent one.
+   */
+  sha256: string | null;
+  /** For a file a run made, `final` or `intermediate`; `null` for the other kinds. */
+  role: FileRole | null;
+  /** `stored`, or `pending` while an upload's bytes have not been seen. */
+  state: FileState;
+}
+
+/** What holds an address a use links: a run that took it as an input, or an example that holds it. */
+export type FileUseHolderType = "run" | "example";
+
+/**
+ * An address taken as an input by a run, or held by an example. A use names an address, not a
+ * record, so every record holding the address shows the same uses; a file a run made names that
+ * run in its `origin`, never as a use.
+ */
+export interface FileUse {
+  /** The `pipelex-storage://` address used. */
+  uri: string;
+  holder_type: FileUseHolderType;
+  /** The run's id or the example's id. */
+  holder_id: string;
+  /** The method of the run or of the example; `null` for a run of no saved method. */
+  method_id: string | null;
+  /** ISO-8601 instant the use was recorded. */
+  created_at: string;
+}
+
+/**
+ * One page of a file's uses, the examples that hold its address first, then the runs that took
+ * it. It is a member of `FileDetail`, as the platform serializes it: pass `next_cursor` back to
+ * `getFile` as `usesCursor` for the next page; `null` means there is none.
+ */
+export interface FileUsePage {
+  items: FileUse[];
+  next_cursor: string | null;
+}
+
+/** One file with what links it to the organization's methods, runs and examples — `getFile`. */
+export interface FileDetail extends FileRecord {
+  /** The methods whose list of files holds this one, because one of their runs or examples took or made it. */
+  method_ids: string[];
+  /** One page of the file's uses. */
+  uses: FileUsePage;
+}
+
+/** Query of `getFile`, for the page of the file's uses it answers. */
+export interface GetFileQuery {
+  /** How many uses the page holds, from 1 to 200; the API defaults to 50. Sent as `uses_limit`. */
+  usesLimit?: number;
+  /** The previous answer's `uses.next_cursor`. Sent as `uses_cursor`. */
+  usesCursor?: string;
+}
+
+/** Options of `getFilesByUri`. */
+export interface GetFilesByUriOptions {
+  /**
+   * The run whose input the address is: the records of the member who started it come first, so
+   * a run's inputs show the name its starter gave the file. Sent as `run_id`.
+   */
+  runId?: string;
+}
+
+/**
+ * The records holding one address — `getFilesByUri` — in the order a surface picks the one to
+ * show, the first being it. Empty for an address no record holds, such as a file stored before
+ * the platform kept records.
+ */
+export interface FileRecordList {
+  items: FileRecord[];
+}
+
+/** The rename — `renameFile`, `PATCH /v1/files/{file_id}`. */
+export interface FileRenameInput {
+  /**
+   * The new name, at most 512 characters. The platform removes the characters no list or header
+   * can show, trims the ends, refuses a name with nothing left, and adds the file's own extension,
+   * the one its `original_name` ends with, when the name does not end with it, case aside.
+   */
+  name: string;
+}
+
+/** One file to link — `linkFiles` — named by exactly one of its record's id and its address. */
+export type FileLinkTarget = { file_id: string; uri?: never } | { uri: string; file_id?: never };
+
+/**
+ * Why one file got no link — a value, never a thrown error. `code` is `not_found` (an unknown file,
+ * or one deleted meanwhile), `conflict` (a file whose upload has not finished), `invalid_storage_uri`
+ * (a malformed address) or `forbidden` (another organization's address); `detail` is the sentence
+ * a person reads.
+ */
+export interface FileLinkError {
+  code: string;
+  detail: string;
+}
+
+/**
+ * One requested file's link, or why it has none. Either the link members are set and `error` is
+ * `null`, or `error` is set and they are `null`. Branch on `error`, never on the HTTP status: the
+ * request is a `200` whenever every file got a verdict.
+ */
+export type FileLink =
+  | {
+      /**
+       * The record linked: the one asked for, or for an address, the record whose name the link
+       * carries; `null` for an address no record holds, a file stored before records existed.
+       */
+      file_id: string | null;
+      /** The address the link reads. */
+      uri: string;
+      /** The name the download saves under, which the link's `Content-Disposition` carries. */
+      name: string;
+      /** The file's type, which decides whether a browser shows it in place or downloads it. */
+      media_type: string;
+      /** A presigned `GET` of the file, valid for fifteen minutes; a bearer capability, so keep it out of logs. */
+      url: string;
+      /** ISO-8601 UTC instant the link stops working. */
+      expires_at: string;
+      error: null;
+    }
+  | {
+      /** The file id as requested, or `null` when the file was named by its address. */
+      file_id: string | null;
+      /** The address as requested, or `null` when the file was named by its id. */
+      uri: string | null;
+      name: null;
+      media_type: null;
+      url: null;
+      expires_at: null;
+      error: FileLinkError;
+    };
+
+/** The answer of `linkFiles`: exactly one `FileLink` per requested file, in the request's order. */
+export interface FileLinksResult {
+  items: FileLink[];
+}
+
+/**
+ * Where an archive stands: `queued` and `building`, read it again shortly; `ready`, its `url`
+ * downloads the zip; `failed`, its `failure` says why, and a new request is the remedy.
+ */
+export type FileArchiveState = "queued" | "building" | "ready" | "failed";
+
+/** How an archive's files were chosen: `files`, by their ids, or `run`, as one run's files. */
+export type FileArchiveSource = "files" | "run";
+
+/**
+ * Why an archive failed: `file_gone`, a selected file was deleted before the zip was ready;
+ * `build_failed`, the build failed or did not finish within the hour. Asking again is the remedy
+ * for both.
+ */
+export type FileArchiveFailureCode = "file_gone" | "build_failed";
+
+/** What a failed archive says about its failure. */
+export interface FileArchiveFailure {
+  code: FileArchiveFailureCode;
+  /** A sentence for a person, naming the file when one was gone. */
+  detail: string;
+}
+
+/**
+ * One zip of an organization's files — what `requestFileArchive` (`queued`) and `getFileArchive`
+ * answer. An archive is never a file: no list shows it, and it is gone a day after it was asked
+ * for, past `expires_at`, when reading it answers `404`.
+ */
+export interface FileArchive {
+  /** The archive's id, `arc_…`. */
+  archive_id: string;
+  /** The name the zip downloads under, ending in `.zip`. */
+  name: string;
+  state: FileArchiveState;
+  source: FileArchiveSource;
+  /** The run whose files the archive holds, for a `run` archive; `null` otherwise. */
+  run_id: string | null;
+  /** How many files the zip holds. */
+  file_count: number;
+  /** The files' total size in bytes, before compression. */
+  total_bytes: number;
+  /** ISO-8601 instant the archive was asked for. */
+  created_at: string;
+  /** ISO-8601 instant after which the archive is gone and reads as unknown, a day after `created_at`. */
+  expires_at: string;
+  /** The zip's own size in bytes, once it is ready; `null` until then. */
+  archive_bytes: number | null;
+  /** ISO-8601 instant the zip was complete; `null` until then. */
+  ready_at: string | null;
+  /** Why the archive failed; `null` unless `state` is `failed`. */
+  failure: FileArchiveFailure | null;
+  /**
+   * A presigned `GET` of the zip, valid for fifteen minutes and signed with a `Content-Disposition`
+   * naming `name`, set only on a read of a `ready` archive; each read signs a fresh one. A bearer
+   * capability, so keep it out of logs.
+   */
+  url: string | null;
+  /** ISO-8601 instant `url` stops working; `null` without a link. */
+  url_expires_at: string | null;
+}
+
+/**
+ * The request — `requestFileArchive`, `POST /v1/files/archives` — naming the files by exactly one
+ * of `file_ids` and `run_id`.
+ *
+ * - `file_ids`: any of the organization's files, in the order the zip holds them, at least one; an
+ *   id given twice is zipped once. At most 500 files once duplicates are removed and 1,000 ids
+ *   listed.
+ * - `run_id`: a run of the organization, whose zip holds what went in and what came out, never a
+ *   file it made along the way nor an input given as a web link.
+ *
+ * `name` is the name the zip downloads under, `.zip` added when it does not end with it; omitted,
+ * or with nothing usable left once the platform cleans it, the platform names it
+ * `files-<run_id>.zip` or `files-<YYYYMMDD-HHMMSS>.zip`.
+ */
+export type FileArchiveRequest =
+  | { file_ids: readonly string[]; run_id?: never; name?: string }
+  | { run_id: string; file_ids?: never; name?: string };
+
+/**
+ * The cap a `422` `file_archive_too_large` names, read from the refusal's
+ * `ApiResponseError.problemDocument.limit`: `max_files` (500) or `max_total_bytes`
+ * (2,000,000,000), its `value`, and what the selection `reached`. For a run, the count stops as
+ * soon as it passes the cap, so `reached` is one more than `max_files` and means "at least".
+ */
+export interface FileArchiveLimit {
+  name: "max_files" | "max_total_bytes";
+  value: number;
+  reached: number;
+}
+
+/**
+ * The copy of a file into a method's draft — `copyFileIntoDraft`,
+ * `POST /v1/methods/{id}/draft/files/from-file`, "Add to method files".
+ */
+export interface DraftFileFromFileInput {
+  /** The file to copy, one of the organization's, `fl_…`. */
+  file_id: string;
+  /** The tree path the file takes in the draft, such as `assets/logo.png`; a file already there is replaced. */
+  path: string;
+  /**
+   * The draft token (`MethodData.updated_at`) the caller last read, echoed verbatim: a draft that
+   * moved since is refused with a `409` `method_update_conflict`. Omitted, the file is added to the
+   * draft as it stands when the request is served, never erasing another save.
+   */
+  expected_updated_at?: string;
+}
+
+/**
+ * What the copy did in the organization's blob store, the field the answer is discriminated on:
+ * `copied`, the bytes were copied under their SHA-256, or `already_held`, the store held them and
+ * nothing was copied.
+ */
+export type DraftFileBlob = "copied" | "already_held";
+
+/** The copied file as the draft's tree now names it. */
+export interface DraftFileAdded {
+  /** Its tree path. */
+  path: string;
+  /** The SHA-256 of its bytes, in lowercase hexadecimal. */
+  sha256: string;
+  /** Its size in bytes. */
+  size: number;
+}
+
+/**
+ * The answer of `copyFileIntoDraft`, a `200` discriminated on `blob`; both arms carry the file as
+ * the draft names it and the method as the draft write stored it, with its new draft token.
+ */
+export interface DraftFileFromFileResult {
+  blob: DraftFileBlob;
+  file: DraftFileAdded;
+  method: MethodData;
+}
+
+/** Whether a run's records are all written: `listed`, or `listing` while the platform is still recording them. */
+export type RunFilesState = "listing" | "listed";
+
+/** Where a file sits in its run: what went in, what came out, or what was made along the way. */
+export type RunFileMark = "input" | "final" | "intermediate";
+
+/** One file of a run, with its mark and the record a surface shows for it. */
+export interface RunFileEntry {
+  mark: RunFileMark;
+  /**
+   * For an input given by its address, the run's input that held it; `null` for an inline input
+   * and for the files the run made.
+   */
+  input_name: string | null;
+  /**
+   * The address the run took or wrote; a record a take moved to a copy says where it lives now in
+   * its own `uri`.
+   */
+  uri: string;
+  /**
+   * The record a surface shows for the file: for an input, the one of the member who started the
+   * run first, then the caller's, then the oldest. `null` for an input address no record holds,
+   * such as a file stored before records existed.
+   */
+  file: FileRecord | null;
+}
+
+/** A web link the run's inputs held, which gets no record: the platform neither fetched nor kept what it served. */
+export interface RunInputLink {
+  /** The run's input that held the link. */
+  input_name: string;
+  /** The link, as the run was given it. */
+  url: string;
+  /** Why the link matters to a replay of the run: it must still serve the same file. */
+  warning: string;
+}
+
+/** Query of `listRunFiles`, paging the run's own records. */
+export interface ListRunFilesQuery {
+  /** How many of the run's own records the page holds at most, from 1 to 200; the API defaults to 50. */
+  limit?: number;
+  /** Opaque `nextCursor` from the previous page. */
+  cursor?: string;
+}
+
+/**
+ * One page of a run's files, sorted by where they sit in the run — `listRunFiles`.
+ *
+ * The inputs given by their address and the web links come on the first page only; the run's own
+ * records, its inline inputs, its final outputs and the files it made along the way, are paged by
+ * address. `nextCursor` is opaque — pass it straight back to `listRunFiles`; `null` is the last
+ * page. `state` is `listing` until the platform has recorded every file of the run, a few seconds
+ * after it ends, so a client showing a run that just ended reads it again until it is `listed`.
+ */
+export interface RunFilesPage {
+  pipeline_run_id: string;
+  state: RunFilesState;
+  /** What went in: the inputs by address (first page only), then the inline inputs. */
+  inputs: RunFileEntry[];
+  /** What came out: the run's final outputs. */
+  outputs: RunFileEntry[];
+  /** What was made along the way. */
+  intermediates: RunFileEntry[];
+  /** The web links the inputs held (first page only). */
+  links: RunInputLink[];
   nextCursor: string | null;
 }
 

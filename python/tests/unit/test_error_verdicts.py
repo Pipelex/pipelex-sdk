@@ -73,6 +73,8 @@ from pipelex_sdk.errors import (
     RunStillRunningError,
     RunTimeoutError,
     ScopeUnavailableError,
+    TestFileRefusalCode,
+    TestFileRefusedError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
     UploadNotAllowedError,
@@ -323,6 +325,13 @@ def _rejected_asset(given: _Given) -> RejectedAssetError:
     return RejectedAssetError("Refused.", "a.pdf", 413 if given.status is None else given.status, code=code)
 
 
+def _test_file_refused(given: _Given) -> TestFileRefusedError:
+    code = None if given.code is None else TestFileRefusalCode(given.code)
+    return TestFileRefusedError(
+        "The test file was refused.", status=given.status, code=code, filename="case.pdf", method_id="mt_abc", cause=_cause_from(given.cause)
+    )
+
+
 def _upload_transport(given: _Given) -> UploadTransportError:
     code = None if given.code is None else UploadTransportCode(given.code)
     return UploadTransportError("The upload failed.", status=given.status, code=code, cause=_cause_from(given.cause))
@@ -367,6 +376,7 @@ _BUILDERS: dict[str, Callable[[_Given], BaseException]] = {
     "RejectedAssetError": _rejected_asset,
     "UnsupportedUploadCapabilityError": lambda _: UnsupportedUploadCapabilityError("No upload here."),
     "UploadAuthenticationError": lambda given: UploadAuthenticationError("Not authorized.", 401 if given.status is None else given.status),
+    "TestFileRefusedError": _test_file_refused,
     "UploadTransportError": _upload_transport,
     "MethodFileTransferError": _method_file_transfer,
     "ArtifactOperationError": lambda given: ArtifactOperationError(

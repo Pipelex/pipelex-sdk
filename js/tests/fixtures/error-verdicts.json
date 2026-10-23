@@ -223,7 +223,6 @@
     },
     {
       "class": "TestFileRefusedError",
-      "only_in": "js",
       "variants": [
         { "variant": "a wrapped role refusal", "given": { "code": "role_not_permitted", "status": 403, "cause": { "class": "ApiResponseError", "status": 403, "body": { "code": "role_not_permitted", "error_domain": "config", "retryable": false, "detail": "Your role in this organization is runner." } } }, "expected": { "error_domain": "config", "retryable": false } },
         { "variant": "a wrapped unknown method", "given": { "code": "method_not_found", "status": 404, "cause": { "class": "ApiResponseError", "status": 404, "body": { "code": "not_found", "error_domain": "input", "retryable": false, "detail": "Item not found." } } }, "expected": { "error_domain": "input", "retryable": false } },

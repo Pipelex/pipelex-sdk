@@ -14,7 +14,7 @@ this client reads its own, the `_raise_api_response_error` override that every `
 through, the `execute` override (hosted gateway-timeout translation),
 the `start` override (bare-runner 404 translation), the durable run lifecycle, the
 `validate` override (markdown-render injection and the method selectors), the Pipelex product
-surface (methods, organizations, billing, API keys, onboarding, storage, run records),
+surface (methods, organizations, billing, API keys, onboarding, storage, an organization's files, run records),
 the model reference check, and the origin-level `health` probe.
 
 Every call taking a method takes its tree the same way, in one of three forms: `files`, the MTHDS
@@ -33,7 +33,7 @@ import os
 import re
 import secrets
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
@@ -113,6 +113,15 @@ from pipelex_sdk.product_models import (
     BillingPortalResponse,
     ChangePlanResponse,
     CheckoutResponse,
+    DraftFileFromFileResult,
+    FileArchive,
+    FileDetail,
+    FileLinksResult,
+    FileLinkTarget,
+    FilePage,
+    FileRecord,
+    FileRecordList,
+    FileSummary,
     InvoiceView,
     Membership,
     MembershipsResponse,
@@ -120,6 +129,7 @@ from pipelex_sdk.product_models import (
     MethodDeletionAccepted,
     MethodDetail,
     MethodExample,
+    MethodExampleAssistantSaveResultAdapter,
     MethodExampleLatestRunResultAdapter,
     MethodExamplePage,
     MethodPage,
@@ -133,6 +143,7 @@ from pipelex_sdk.product_models import (
     PlanView,
     ResolvedStorageUrl,
     RunDetail,
+    RunFilesPage,
     RunHistoryItem,
     RunPage,
     SavedMethodFile,
@@ -154,7 +165,7 @@ from pipelex_sdk.runs import (
     WaitForResultOptions,
     is_fresher_run_progress,
 )
-from pipelex_sdk.upload import UploadRecord, UploadSource
+from pipelex_sdk.upload import UploadKindOptions, UploadRecord, UploadSource
 from pipelex_sdk.upload import upload_file as _upload_file_impl
 from pipelex_sdk.user_agent import AppInfo, build_user_agent
 from pipelex_sdk.validation_models import PipelexValidationResultAdapter
@@ -173,7 +184,9 @@ if TYPE_CHECKING:
     from mthds.protocol.working_memory import WorkingMemoryAbstract
 
     from pipelex_sdk.product_models import (
+        FileKind,
         MethodDraftInput,
+        MethodExampleAssistantSaveResult,
         MethodExampleLatestRunResult,
         MethodPublishResult,
         MethodWriteInput,
@@ -181,6 +194,7 @@ if TYPE_CHECKING:
         OrganizationBrandingUpdate,
         UpdateRunInput,
         UploadInput,
+        UploadKind,
     )
     from pipelex_sdk.runs import RunResultState
     from pipelex_sdk.validation_models import PipelexValidationResult
@@ -191,6 +205,7 @@ if TYPE_CHECKING:
 # hosted extensions (e.g. run polling) differ, detectable via GET /v1/version.
 _API_PREFIX = "v1"
 _RUNS = "runs"
+_FILES = "files"
 
 #: Hosted default — the client composes every endpoint as `{base}/v1/{endpoint}`.
 DEFAULT_API_BASE_URL = "https://api.pipelex.com"
@@ -2706,21 +2721,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 answers.
         """
         endpoint = f"{_method_path(method_id, call='create_method_example')}/examples"
-        # Checked as `object`s: the annotations are promises to the type checker, not to a caller forwarding
-        # an optional value, which would be sent as `null` for the platform to refuse.
-        name_missing = cast("object", name) is None
-        inputs_missing = cast("object", inputs) is None
-        got: str | None = None
-        if name_missing and inputs_missing:
-            got = "neither"
-        elif name_missing:
-            got = "no name"
-        elif inputs_missing:
-            got = "no inputs"
-        if got is not None:
-            msg = f"create_method_example() needs the example's name and its inputs; got {got}."
-            missing_argument = "name" if name_missing else "inputs"
-            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument=missing_argument, reason="missing"))
+        _require_name_and_inputs(name, inputs, call="create_method_example", needs="the example's name and its inputs")
         body: dict[str, Any] = {"name": name, "inputs": inputs}
         if run_id is not None:
             # Checked as an `object`, as the latest-run write checks its run id: the annotation is a
@@ -2878,6 +2879,69 @@ class PipelexAPIClient(MthdsAPIClient):
             raise _argument_refusal(call, _INPUT_REVISION_ARGUMENT, repr(input_revision), reason="not_a_positive_integer")
         body = {"run_id": checked_run_id, "input_revision": candidate_revision}
         return await self._request_product("PUT", endpoint, body=body, read=MethodExampleLatestRunResultAdapter.validate_python)
+
+    async def save_assistant_method_example(
+        self,
+        method_id: str,
+        *,
+        name: str,
+        inputs: dict[str, Any],
+        example_id: str | None = None,
+        input_revision: int | None = None,
+    ) -> MethodExampleAssistantSaveResult:
+        """Save the build assistant's test inputs as its example of the method — `POST /v1/methods/{id}/examples/assistant-save`.
+
+        **A person's edit is never written over.** The assistant keeps one example of a method current with its
+        test inputs, until a person edits that example's inputs. Find its example as the method's newest with
+        `kept_by_assistant` true (`list_method_examples` answers them oldest first), and send its `example_id`
+        with the `input_revision` you read it at. The platform writes the inputs into it only while it still
+        exists, still carries the flag and still holds that revision, in one conditional write it never retries.
+        Otherwise, and when no example is named, which is how the first save on a method creates the assistant's
+        example, it saves the inputs as a new example flagged as the assistant's, under `name`. A retry of a save
+        that landed answers `kept` and writes nothing again.
+
+        Args:
+            method_id: The method's bare catalog id.
+            name: The name a new example takes, 1 to 200 characters and not blank; a `kept` save leaves the named
+                example's own name alone.
+            inputs: The assistant's test inputs, a JSON object.
+            example_id: The assistant's example the caller read; `None` names none, and the save creates one.
+            input_revision: The `input_revision` the caller read that example at, a positive integer; given with
+                `example_id` and only with it.
+
+        Returns:
+            A `MethodExampleAssistantSaveResult` discriminated on `outcome` — branch on it:
+            `MethodExampleAssistantKept`, the named example now holds the inputs, its name untouched;
+            `MethodExampleAssistantCreated`, a new example holds them. Both carry the `example`, which is the
+            assistant's from then on.
+
+        Raises:
+            RequestArgumentError: `name` or `inputs` is `None`, `example_id` is given but is not a non-empty `str`,
+                `input_revision` is given but is not a positive integer, or only one of the two is given; nothing
+                is sent.
+            ApiResponseError: `403` `role_not_permitted` for a role that may not change methods, such as a runner;
+                `413` `payload_too_large` for an example larger than one stored item holds; `422` for a name that
+                is empty, blank or over 200 characters, or inputs that are not a JSON object; and the codes every
+                example route answers. An answer off the union is one the SDK cannot read, raised as an
+                `ApiResponseError` too.
+        """
+        call = "save_assistant_method_example"
+        endpoint = f"{_method_path(method_id, call=call)}/examples/assistant-save"
+        _require_name_and_inputs(name, inputs, call=call, needs="the name a new example takes and the inputs")
+        body: dict[str, Any] = {"name": name, "inputs": inputs}
+        if example_id is not None:
+            body["example_id"] = _require_non_empty_id(example_id, call=call, what=_ASSISTANT_EXAMPLE_ID_ARGUMENT)
+        if input_revision is not None:
+            candidate_revision = cast("object", input_revision)
+            if isinstance(candidate_revision, bool) or not isinstance(candidate_revision, int) or candidate_revision < 1:
+                raise _argument_refusal(call, _ASSISTANT_REVISION_ARGUMENT, repr(input_revision), reason="not_a_positive_integer")
+            body["input_revision"] = candidate_revision
+        if ("example_id" in body) != ("input_revision" in body):
+            only = "example_id" if "example_id" in body else "input_revision"
+            msg = f"{call}() names the assistant's example by both its example_id and the input_revision it was read at, or neither; got only {only}."
+            missing_argument = "input_revision" if only == "example_id" else "example_id"
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument=missing_argument, reason="missing"))
+        return await self._request_product("POST", endpoint, body=body, read=MethodExampleAssistantSaveResultAdapter.validate_python)
 
     async def delete_method_example(self, method_id: str, example_id: str) -> None:
         """Delete an example — `DELETE /v1/methods/{id}/examples/{example_id}`.
@@ -3074,9 +3138,376 @@ class PipelexAPIClient(MthdsAPIClient):
         return await _download_artifacts_impl(self, dir_path=dir_path, run_id=run_id, results=results, options=options)
 
     async def upload(self, upload_input: UploadInput) -> UploadedFile:
-        """Upload a base64 file — `POST /v1/upload`."""
+        """Upload a base64 file — `POST /v1/upload`.
+
+        `upload_input.kind` and `upload_input.method_id`, what the upload is recorded as, are sent only when
+        given and as given: the route refuses a pair it does not take with a `422`, and `upload_file` checks
+        the pair before reading any file. A test file the route refuses for what it claims is the
+        `ApiResponseError` the platform answered: `403` `role_not_permitted` for a role that may not change
+        methods, `404` `not_found` for a method that is not the organization's, `409`
+        `method_being_deleted` for one being erased, which `upload_file` raises as a `TestFileRefusedError`.
+        """
         body = upload_input.model_dump(mode="json", exclude_none=True)
         return await self._request_product("POST", "upload", body=body, read=UploadedFile.model_validate)
+
+    # ── An organization's files (`/v1/files`) ──────────────────────────────
+    #
+    # The records the platform keeps of the organization's stored objects: the list and its iterator,
+    # one file with its uses, the records of an address, the rename, links that name the file, and a zip
+    # of files in two calls. The copy into a method's draft is with them, and a run's files are with the
+    # run records. Every role of the organization reads every file, link and archive of it.
+
+    async def list_files(
+        self,
+        *,
+        method_id: str | None = None,
+        run_id: str | None = None,
+        created_by: str | None = None,
+        kind: FileKind | None = None,
+        formats: Sequence[str] | None = None,
+        media_types: Sequence[str] | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        q: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> FilePage:
+        """List one page of the organization's files, newest first — `GET /v1/files`.
+
+        Each row's `uri` goes into a run's inputs as any address does. `method_id`, `run_id` and `created_by`
+        choose which list serves the page: the method's, the run's own (in the order of its addresses), one
+        member's, or, with none of them, the organization's. The other arguments filter that list. Each is sent
+        only when given, so an empty `q`, cursor or date is sent and refused by the API rather than dropped
+        into an unfiltered list.
+
+        Args:
+            method_id: The method's list, by its bare catalog id: the files its runs and examples took or made.
+            run_id: The run's own list: its final outputs and its inline inputs. Beside `method_id`, the run's
+                list when the method is the run's own, and an empty page otherwise.
+            created_by: One member's files by user id, or `"me"` for the caller's own.
+            kind: Only the files of this kind.
+            formats: Only the files of one of these format keys (`pdf`, `image`, …), sent as one repeated
+                `format=` parameter per value; at most 100.
+            media_types: Only the files of one of these MIME types, sent as one repeated `media_type=`
+                parameter per value; at most 100.
+            created_from: Inclusive lower bound on creation, an instant: ISO-8601 with a UTC offset.
+            created_to: Inclusive upper bound, the same instant-only rule.
+            q: A case-insensitive search in the name and the name the file arrived with, at most 200 characters.
+            limit: Page size, from 1 to 200; the API defaults to 50.
+            cursor: The `next_cursor` of the previous page, bound to the list and the filters that issued it.
+
+        Returns:
+            A `FilePage` of `FileSummary` rows. The filters apply after the index read, so a filtered page can
+            hold fewer rows than `limit`, or none, and still carry a `next_cursor`: only a `None` cursor ends
+            the list. For every file, prefer `iterate_files`, which follows the cursors.
+
+        Raises:
+            TypeError: `formats` or `media_types` is a bare `str`, which read as a sequence would name its characters,
+                is not iterable, or holds a value that is not a `str`.
+            RequestArgumentError: `formats` or `media_types` is empty, which sent as no parameter would list every
+                format; nothing is sent.
+            ApiResponseError: `400` for a date bound that is not an instant with an offset, a range whose start is
+                after its end, or a cursor of another list or other filters; `404` `run_not_found` for a run that
+                is not the organization's; `422` for a `limit` out of range, an unknown `kind`, more than 100
+                values of a repeated filter or an id that cannot be one.
+        """
+        query = _product_query(
+            {
+                "method_id": method_id,
+                "run_id": run_id,
+                "created_by": created_by,
+                "kind": kind,
+                "format": _repeated_filter(formats, call="list_files", name="formats"),
+                "media_type": _repeated_filter(media_types, call="list_files", name="media_types"),
+                "created_from": created_from,
+                "created_to": created_to,
+                "q": q,
+                "limit": limit,
+                "cursor": cursor,
+            }
+        )
+        return await self._request_product("GET", f"{_FILES}{query}", read=FilePage.model_validate)
+
+    def iterate_files(
+        self,
+        *,
+        method_id: str | None = None,
+        run_id: str | None = None,
+        created_by: str | None = None,
+        kind: FileKind | None = None,
+        formats: Sequence[str] | None = None,
+        media_types: Sequence[str] | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        q: str | None = None,
+        limit: int | None = None,
+    ) -> AsyncIterator[FileSummary]:
+        """Yield every file of the organization the arguments select, following the cursors — `GET /v1/files`.
+
+        The same loop as `iterate_runs`: it keeps going through an empty page that carries a cursor, which under
+        any filter means "nothing matched in the slice just read", sending the same filters with every page, stops
+        on a `None` cursor or on a cursor the server failed to advance, and raises at the page ceiling. Prefer
+        `list_files` for anything user-facing.
+
+        Raises:
+            TypeError: At the call, for a `formats` or `media_types` that is a bare `str`, is not iterable, or holds a
+                value that is not a `str`.
+            RequestArgumentError: At the call, before anything is sent, for an empty `formats` or `media_types`.
+            PagingNotTerminatingError: If the server never stops handing out cursors.
+        """
+        # Checked here rather than in an async generator's body, which runs only once it is iterated, and copied once,
+        # so a one-shot iterable is sent whole with every page rather than exhausted by the first.
+        checked_formats = _repeated_filter(formats, call="iterate_files", name="formats")
+        checked_media_types = _repeated_filter(media_types, call="iterate_files", name="media_types")
+        return _follow_cursor(
+            "File",
+            lambda cursor: self.list_files(
+                method_id=method_id,
+                run_id=run_id,
+                created_by=created_by,
+                kind=kind,
+                formats=checked_formats,
+                media_types=checked_media_types,
+                created_from=created_from,
+                created_to=created_to,
+                q=q,
+                limit=limit,
+                cursor=cursor,
+            ),
+        )
+
+    async def get_file(self, file_id: str, *, uses_limit: int | None = None, uses_cursor: str | None = None) -> FileDetail:
+        """Read one file with its provenance, its methods and one page of its uses — `GET /v1/files/{file_id}`.
+
+        The answer is the file's whole record, the `method_ids` whose lists hold it, and `uses`, one page of the
+        examples that hold its address, then the runs that took it. A record whose upload looked unfinished past
+        the upload grant's lifespan is settled by the read, which answers it `stored` when its bytes are there.
+
+        Args:
+            file_id: The file's `file_id`.
+            uses_limit: How many uses the page holds, from 1 to 200; the API defaults to 50.
+            uses_cursor: The previous answer's `uses.next_cursor`.
+
+        Raises:
+            RequestArgumentError: `file_id` is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate;
+                nothing is sent.
+            ApiResponseError: `404` `not_found` for a file that is not the organization's; `422` for a `uses_limit`
+                outside 1 to 200 or an id that cannot be one.
+        """
+        query = _product_query({"uses_limit": uses_limit, "uses_cursor": uses_cursor})
+        endpoint = f"{_FILES}/{_id_path_segment(file_id, call='get_file', what=_FILE_ID_ARGUMENT)}{query}"
+        return await self._request_product("GET", endpoint, read=FileDetail.model_validate)
+
+    async def get_files_by_uri(self, uri: str, *, run_id: str | None = None) -> FileRecordList:
+        """Read the records holding one `pipelex-storage://` address — `GET /v1/files/by-uri`.
+
+        The records come in the order a surface picks the one to show, the first being it: with `run_id`, the
+        records of the member who started that run first, so a run's inputs show the name its starter gave the
+        file; then the caller's; then the rest, each group oldest first. A record whose upload has not finished is
+        answered with its `state`, `pending`. An address no record holds answers an empty `items`, which is how a
+        client tells a file stored before the platform kept records.
+
+        Raises:
+            RequestArgumentError: `uri` is not a non-empty `str`; nothing is sent.
+            ApiResponseError: `400` `invalid_storage_uri` for a malformed address, `403` `forbidden` for another
+                organization's, `404` `run_not_found` for a run that is not the organization's, and `422` for an
+                address over 512 characters.
+        """
+        checked_uri = _require_non_empty_id(uri, call="get_files_by_uri", what=_STORAGE_URI_ARGUMENT)
+        endpoint = f"{_FILES}/by-uri{_product_query({'uri': checked_uri, 'run_id': run_id})}"
+        return await self._request_product("GET", endpoint, read=FileRecordList.model_validate)
+
+    async def rename_file(self, file_id: str, name: str) -> FileRecord:
+        """Rename a file — `PATCH /v1/files/{file_id}` — and return its record as it now stands.
+
+        **The platform holds the name to one rule, for every client**: it removes the characters no list or
+        header can show (control and format characters, a right-to-left override among them), trims the ends,
+        refuses a name with nothing left, and adds the file's own extension, the one its `original_name` ends
+        with, when the name does not end with it, case aside: `March invoice` becomes `March invoice.pdf`, and
+        `March.docx` becomes `March.docx.pdf`. Read the saved name from the answer's `name`. The rename changes
+        `name` alone, never the file's bytes, its address or its `original_name`.
+
+        An `admin` or a `member` renames any file; any other role, a runner among them, only the files whose
+        record names it as `created_by`: its own uploads and the outputs of the runs it started.
+
+        Raises:
+            RequestArgumentError: `file_id` is refused as `get_file` refuses it, or `name` is not a `str`; nothing
+                is sent.
+            ApiResponseError: `403` `role_not_permitted` past the rule above; `404` `not_found` for a file that is
+                not the organization's; `422` for a name over 512 characters or with nothing left once cleaned.
+        """
+        call = "rename_file"
+        segment = _id_path_segment(file_id, call=call, what=_FILE_ID_ARGUMENT)
+        if not isinstance(cast("object", name), str):
+            raise _argument_refusal(call, _RENAME_NAME_ARGUMENT, type(name).__name__, reason="not_a_string")
+        return await self._request_product("PATCH", f"{_FILES}/{segment}", body={"name": name}, read=FileRecord.model_validate)
+
+    async def link_files(self, files: Sequence[FileLinkTarget]) -> FileLinksResult:
+        """Fresh links to read files — `POST /v1/files/links` — one per requested file, in the request's order.
+
+        **Branch on each item's class, never on the status**: the request is a `200` whenever every file got a
+        verdict. A `FileLinked` carries its `url`, a presigned `GET` valid for fifteen minutes, with its
+        `expires_at`, the `name` the download saves under and its `media_type`. A `FileLinkRefused` carries its
+        `error`, a `FileLinkError` whose `code` is `not_found` for an unknown file id, `conflict` for a file whose
+        upload has not finished, `invalid_storage_uri` for a malformed address and `forbidden` for another
+        organization's.
+
+        Each link is signed with a `Content-Disposition` naming the file, so a download saves under the name a
+        person sees rather than the bytes' hash. It opens in place for an image, a PDF or plain text and downloads
+        for every other type, SVG, HTML and XML included. A link is a bearer capability: keep it out of logs, and
+        ask again for a fresh one rather than storing it. An answer the SDK cannot read is reported with every
+        link redacted.
+
+        Args:
+            files: The files to link, each a `FileLinkTarget` naming exactly one of `file_id` and `uri`; at most 100.
+
+        Raises:
+            TypeError: `files` is a bare `str` or a `FileLinkTarget` alone, rather than a list of them, or holds an
+                item that is not a `FileLinkTarget`, such as a plain `dict`; nothing is sent.
+            ApiResponseError: `422` for more than 100 files, or an id or address longer than one can be; `500`
+                `config` when the platform cannot sign at all. An answer that is not one item per requested file,
+                each with its link or its error, is one the SDK cannot read, raised as an `ApiResponseError` too.
+        """
+        if isinstance(cast("object", files), (str, FileLinkTarget)):
+            msg = "link_files() takes a list of FileLinkTarget, one per file to link."
+            raise TypeError(msg)
+        targets: list[FileLinkTarget] = list(files)
+        for index_target, target in enumerate(targets):
+            if not isinstance(cast("object", target), FileLinkTarget):
+                msg = f"link_files() takes a list of FileLinkTarget, one per file to link; item {index_target} is a {type(target).__name__}."
+                raise TypeError(msg)
+        body = {"files": [target.model_dump(exclude_none=True) for target in targets]}
+        requested = len(body["files"])
+        return await self._request_product(
+            "POST",
+            f"{_FILES}/links",
+            body=body,
+            read=lambda answer: FileLinksResult.model_validate(answer, context={"requested_files": requested}),
+            carries_links=True,
+        )
+
+    async def request_file_archive(
+        self,
+        *,
+        file_ids: Sequence[str] | None = None,
+        run_id: str | None = None,
+        name: str | None = None,
+    ) -> FileArchive:
+        """Ask for one zip of chosen files, or of a run's files — `POST /v1/files/archives` — and return the archive, `queued`.
+
+        The platform cannot build a zip inside a request, so the zip is two calls: this one queues the archive
+        and answers at once (`202`), and `get_file_archive` reads it until its `state` is `ready`, whose `url`
+        downloads the zip, or `failed`, whose `failure` says why. An archive is never a file: no list shows it,
+        and it is gone a day after it was asked for.
+
+        Args:
+            file_ids: The files to zip, in the order the zip holds them, at least one; an id given twice is zipped
+                once. Exactly one of `file_ids` and `run_id`.
+            run_id: A run of the organization, whose zip holds what went in and what came out, never a file it made
+                along the way nor an input given as a web link.
+            name: The name the zip downloads under; omitted, or with nothing usable left once the platform cleans
+                it, `files-<run_id>.zip` or `files-<YYYYMMDD-HHMMSS>.zip`.
+
+        Raises:
+            TypeError: `file_ids` is a bare `str`, which read as a sequence would name its characters.
+            RequestArgumentError: Both or neither of `file_ids` and `run_id` are given, `file_ids` is empty or holds
+                an id that is not a non-empty `str`, `run_id` is not a non-empty `str`, or `name` is not a `str`;
+                nothing is sent.
+            ApiResponseError: `422` `file_archive_too_large` past a cap, at most 500 files or 2,000,000,000 bytes,
+                whose `problem_document["limit"]` names it (`FileArchiveLimit`); `422` `validation_failed` for more
+                than 1,000 ids listed; `404` `not_found` for a file that is not the organization's or a run whose
+                files hold nothing stored to zip, `404` `run_not_found` for a run that is not the organization's;
+                `409` `conflict`, an `input` one for a selected file whose upload has not finished and a retryable
+                `runtime` one for a run whose files are not all recorded yet; and a retryable `503`
+                `service_unavailable` when the archive could not be queued.
+        """
+        call = "request_file_archive"
+        if (file_ids is None) == (run_id is None):
+            got = "neither" if file_ids is None else "both"
+            msg = f"{call}() names the files to zip by exactly one of file_ids and run_id; got {got}."
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="file_ids", reason="not_exactly_one"))
+        body: dict[str, Any] = {}
+        if file_ids is not None:
+            if isinstance(cast("object", file_ids), str):
+                msg = f"{call}() takes file_ids as a list of file ids, not a single string."
+                raise TypeError(msg)
+            if not file_ids:
+                raise _argument_refusal(call, _ARCHIVE_FILE_IDS_ARGUMENT, "an empty list", reason="empty")
+            body["file_ids"] = [_require_non_empty_id(file_id, call=call, what=_ARCHIVE_FILE_ID_ARGUMENT) for file_id in file_ids]
+        else:
+            body["run_id"] = _require_non_empty_id(run_id, call=call, what=_ARCHIVE_RUN_ID_ARGUMENT)
+        if name is not None:
+            if not isinstance(cast("object", name), str):
+                raise _argument_refusal(call, _ARCHIVE_NAME_ARGUMENT, type(name).__name__, reason="not_a_string")
+            body["name"] = name
+        return await self._request_product("POST", f"{_FILES}/archives", body=body, read=FileArchive.model_validate, carries_links=True)
+
+    async def get_file_archive(self, archive_id: str) -> FileArchive:
+        """Where an archive stands — `GET /v1/files/archives/{archive_id}` — with a fresh link to its zip once it is `ready`.
+
+        **Branch on `state`.** `queued` and `building` mean read it again shortly: a zip of a few files is ready
+        within seconds, and the largest the caps allow within a few minutes. `ready` carries `url`, a presigned
+        `GET` of the zip valid for fifteen minutes and signed with a `Content-Disposition` naming the archive's
+        `name`; each read signs a fresh link. `failed` carries `failure`, `file_gone` or `build_failed`, and the
+        remedy for both is a new request. An archive still `queued` or `building` an hour after it was asked for
+        reads as `failed`. An answer the SDK cannot read is reported with its link redacted.
+
+        Raises:
+            RequestArgumentError: `archive_id` is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate;
+                nothing is sent.
+            ApiResponseError: `404` `not_found` for an archive that is not the organization's, never existed, or has
+                expired, a day after `created_at`; `500` when the link cannot be signed.
+        """
+        segment = _id_path_segment(archive_id, call="get_file_archive", what=_ARCHIVE_ID_ARGUMENT)
+        return await self._request_product("GET", f"{_FILES}/archives/{segment}", read=FileArchive.model_validate, carries_links=True)
+
+    async def copy_file_into_draft(
+        self,
+        method_id: str,
+        *,
+        file_id: str,
+        path: str,
+        expected_updated_at: str | None = None,
+    ) -> DraftFileFromFileResult:
+        """Copy one of the organization's files into a method's draft — `POST /v1/methods/{id}/draft/files/from-file`.
+
+        The file becomes a file of the draft at `path`, replacing a file already there: the app's "Add to method
+        files". Its bytes are copied by the storage service itself, so they never cross the client or the API
+        whatever their size, and the method file then lives apart from its source.
+
+        Args:
+            method_id: The method's bare catalog id.
+            file_id: The file to copy, one of the organization's.
+            path: The tree path the file takes in the draft, such as `assets/logo.png`.
+            expected_updated_at: The draft token (`MethodData.updated_at`) the caller last read, echoed verbatim:
+                a draft that moved since is refused with a `409` `method_update_conflict`. `None` adds the file to
+                the draft as it stands, never erasing another save.
+
+        Returns:
+            A `DraftFileFromFileResult`, discriminated on `blob`: `copied`, or `already_held` when the store held
+            the bytes. Both carry the `file` as the draft's tree now names it and the `method`, whose `updated_at`
+            is the new draft token.
+
+        Raises:
+            RequestArgumentError: `method_id` is refused as every method route refuses it, `file_id` or `path` is
+                not a non-empty `str`, or `expected_updated_at` is given but is not a `str`; nothing is sent.
+            ApiResponseError: `403` `role_not_permitted` for a role that may not change methods; `404` for an
+                unknown method or a file that is not the organization's; `409` `method_being_deleted`, `409`
+                `method_update_conflict` for a stale token, and `409` `conflict` for a file whose upload has not
+                finished or whose stored bytes do not match its record; `422` `invalid_method_files` for a path
+                the draft cannot hold, and `422` `method_tree_too_large` past the deployment's limits.
+        """
+        call = "copy_file_into_draft"
+        endpoint = f"{_method_path(method_id, call=call)}/draft/files/from-file"
+        body: dict[str, Any] = {
+            "file_id": _require_non_empty_id(file_id, call=call, what=_FILE_ID_ARGUMENT),
+            "path": _require_non_empty_id(path, call=call, what=_DRAFT_PATH_ARGUMENT),
+        }
+        if expected_updated_at is not None:
+            if not isinstance(cast("object", expected_updated_at), str):
+                raise _argument_refusal(call, _DRAFT_TOKEN_ARGUMENT, type(expected_updated_at).__name__, reason="not_a_string")
+            body["expected_updated_at"] = expected_updated_at
+        return await self._request_product("POST", endpoint, body=body, read=DraftFileFromFileResult.model_validate)
 
     # ── Crate extensions (Pipelex API — `/v1/resolve`, `/v1/codegen`, `/v1/pipe-io`) ─────
     #
@@ -3280,14 +3711,18 @@ class PipelexAPIClient(MthdsAPIClient):
         *,
         filename: str | None = None,
         content_type: str | None = None,
+        kind: UploadKind | None = None,
+        method_id: str | None = None,
     ) -> UploadRecord:
         """Upload one local asset and return its `UploadRecord` — the single-asset convenience
         over `upload`. `source` is a filesystem path (`str`/`Path`) or raw `bytes`. The record
-        guarantees `uri`, `content_type`, `size`, and `filename`. Transport failures surface as
-        the semantic input-preparation errors (rejected asset, auth, unsupported capability,
-        transport). See `docs/input-preparation.md`.
+        guarantees `uri`, `content_type`, `size`, and `filename`. `kind` and `method_id` record the
+        upload as a method's test file (`kind=UploadKind.TEST` with its bare catalog id), checked before
+        the asset is read. Transport failures surface as the semantic input-preparation errors
+        (rejected asset, refused test file, auth, unsupported capability, transport). See
+        `docs/input-preparation.md` and `docs/files.md`.
         """
-        return await _upload_file_impl(self, source, filename=filename, content_type=content_type)
+        return await _upload_file_impl(self, source, filename=filename, content_type=content_type, kind=kind, method_id=method_id)
 
     async def prepare_inputs(
         self,
@@ -3301,6 +3736,7 @@ class PipelexAPIClient(MthdsAPIClient):
         pipe_ref: str | None = None,
         inputs: dict[str, Any],
         allow_uploads: bool = True,
+        upload: UploadKindOptions | None = None,
     ) -> PreparedInputs:
         """Prepare a pipe's inputs — resolve the declared signature, upload the file-bearing
         assets, and return copy-on-write rewritten inputs (canonical content carrying
@@ -3324,6 +3760,11 @@ class PipelexAPIClient(MthdsAPIClient):
         not decode, raises `InvalidInputValueError`, naming the input. With `allow_uploads=False` it
         uploads nothing and reads no file: a value that would need an upload raises
         `UploadNotAllowedError`, naming the input too.
+
+        `upload` says what every file the preparation uploads is recorded as, such as
+        `UploadKindOptions(kind=UploadKind.TEST, method_id="mt_abc")` for the inputs made to try a
+        method; omitted, each is a person's file. It is checked before any request, its members named
+        `upload.kind` and `upload.method_id` in a refusal, and is not sent to the pipe I/O route.
         """
         return await _prepare_inputs_impl(
             self,
@@ -3336,6 +3777,7 @@ class PipelexAPIClient(MthdsAPIClient):
             pipe_ref=pipe_ref,
             inputs=inputs,
             allow_uploads=allow_uploads,
+            upload=upload,
         )
 
     async def list_runs(
@@ -3450,6 +3892,35 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         endpoint = f"{_RUNS}/{_id_path_segment(run_id, call='get_run_detail', what=_RUN_ID_ARGUMENT)}"
         return await self._request_product("GET", endpoint, read=RunDetail.model_validate)
+
+    async def list_run_files(self, run_id: str, *, limit: int | None = None, cursor: str | None = None) -> RunFilesPage:
+        """List one page of a run's files, sorted by where they sit in the run — `GET /v1/runs/{id}/files`.
+
+        Each entry carries its `mark`, `input`, `final` or `intermediate`, and the record a surface shows for it:
+        `inputs` are what went in, the inputs given by their address with the record of the member who started
+        the run first, then the inline inputs; `outputs` are the run's final outputs; `intermediates` the files it
+        made along the way. An input given as a web link gets no record and is listed in `links`, with the warning
+        that replaying the run needs it to still serve the same file.
+
+        **`state` is `listing` until the platform has recorded every file of the run**, a few seconds after it
+        ends: read it again until it is `listed` before taking the list as whole. The run's own records are paged
+        by address with `limit` and `cursor`; the inputs by address and the links come on the first page only.
+
+        Args:
+            run_id: The run's `pipeline_run_id`.
+            limit: How many of the run's own records the page holds at most, from 1 to 200; the API defaults to 50.
+            cursor: The `next_cursor` of the previous page.
+
+        Raises:
+            RequestArgumentError: `run_id` is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate;
+                nothing is sent.
+            ApiResponseError: `404` for a run that is not the organization's, exactly as for one that does not
+                exist; `400` for a run id holding a character outside letters, digits, `_` and `-`, or a cursor
+                another listing issued; `422` for a `limit` outside 1 to 200.
+        """
+        segment = _id_path_segment(run_id, call="list_run_files", what=_RUN_ID_ARGUMENT)
+        query = _product_query({"limit": limit, "cursor": cursor})
+        return await self._request_product("GET", f"{_RUNS}/{segment}/files{query}", read=RunFilesPage.model_validate)
 
     async def update_run(self, run_id: str, update_input: UpdateRunInput) -> None:
         """Patch a run's status (admin/manual) — `PUT /v1/runs/{id}` (empty body)."""
@@ -3824,7 +4295,7 @@ class _CursorPage(Protocol[_PageItemT_co]):
 async def _follow_cursor(noun: str, read_page: Callable[[str | None], Awaitable[_CursorPage[_PageItemT]]]) -> AsyncIterator[_PageItemT]:
     """Follow a paged list's cursor until the server says there is no more, yielding every row.
 
-    The one loop behind `iterate_methods`, `iterate_runs` and `iterate_method_examples`, so they cannot drift apart. It
+    The one loop behind `iterate_methods`, `iterate_runs`, `iterate_method_examples` and `iterate_files`, so they cannot drift apart. It
     keeps going through an empty page that carries a cursor, since a filtered page can hold no
     row and still not be the end. It stops when `next_cursor` is `None`, and when the server hands
     back the cursor it was just sent, checked before yielding so a stuck cursor never re-yields a
@@ -3885,6 +4356,39 @@ def _status_filter(status: Sequence[RunStatus] | None) -> tuple[RunStatus, ...] 
     return tuple(run_status for run_status in RunStatus if run_status in requested)
 
 
+def _repeated_filter(values: Sequence[str] | None, *, call: str, name: str) -> list[str] | None:
+    """A file list's repeated filter (`formats`, `media_types`), checked: `None` filters nothing, anything else is
+    sent as one repeated parameter per value, as `@pipelex/sdk`'s `repeatedFilter` sends it.
+
+    An empty filter names no value, and sending it as no parameter at all would list every value, a different
+    question from the one asked, so it is refused before any request with `RequestArgumentError`. A bare `str` is
+    no filter: read as a sequence it would name its characters, so it raises `TypeError`, a bug in the calling
+    code that carries no verdict, as does a value that is not iterable or not a `str`.
+
+    The values are copied once, before anything reads them, so a one-shot iterable such as a generator is checked
+    and sent whole: checking it in place would exhaust it, and the empty remainder would be sent as no parameter,
+    an unfiltered list that reads as working. The copy is what the caller sends on, every page of a walk included.
+
+    Raises:
+        TypeError: `values` is a bare `str` or not iterable, or holds a value that is not a `str`.
+        RequestArgumentError: `values` is empty.
+    """
+    if values is None:
+        return None
+    candidate = cast("object", values)
+    if isinstance(candidate, str) or not isinstance(candidate, Iterable):
+        msg = f'{call}() takes "{name}" as a list of strings.'
+        raise TypeError(msg)
+    copied: list[object] = list(cast("Iterable[object]", candidate))
+    if not all(isinstance(value, str) for value in copied):
+        msg = f'{call}() takes "{name}" as a list of strings.'
+        raise TypeError(msg)
+    if not copied:
+        msg = f'{call}() takes "{name}" as one or more values; omit it to list every one.'
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument=name, reason="empty"))
+    return cast("list[str]", copied)
+
+
 class _Argument(NamedTuple):
     """An argument a call refuses: its parameter's name, which the refusal's problem names, and what it is, as its message says."""
 
@@ -3906,6 +4410,28 @@ _INPUT_REVISION_ARGUMENT = _Argument(
     name="input_revision", what="an input_revision, the example's revision whose inputs the run used, a positive integer"
 )
 
+#: What the assistant's save names its example by, as a refusal of it names it.
+_ASSISTANT_EXAMPLE_ID_ARGUMENT = _Argument(
+    name="example_id", what="an example_id naming the assistant's example the caller read, a non-empty string, or none"
+)
+_ASSISTANT_REVISION_ARGUMENT = _Argument(
+    name="input_revision", what="an input_revision, the revision the caller read the assistant's example at, a positive integer"
+)
+
+#: What each argument of the files routes is, as a refusal of it names it.
+_FILE_ID_ARGUMENT = _Argument(name="file_id", what="a file id, the file's non-empty `file_id`")
+_ARCHIVE_ID_ARGUMENT = _Argument(name="archive_id", what="an archive id, the archive's non-empty `archive_id`")
+_STORAGE_URI_ARGUMENT = _Argument(name="uri", what="a `pipelex-storage://` address, a non-empty string")
+_RENAME_NAME_ARGUMENT = _Argument(name="name", what="the file's new name, a string")
+_ARCHIVE_FILE_IDS_ARGUMENT = _Argument(name="file_ids", what="file_ids, a non-empty list of the file ids to zip")
+_ARCHIVE_FILE_ID_ARGUMENT = _Argument(name="file_ids", what="a file id to zip, a non-empty string")
+_ARCHIVE_RUN_ID_ARGUMENT = _Argument(name="run_id", what="a run_id naming the run whose files to zip, a non-empty string")
+_ARCHIVE_NAME_ARGUMENT = _Argument(name="name", what="a name for the zip, a string, or none")
+_DRAFT_PATH_ARGUMENT = _Argument(name="path", what="the tree path the file takes in the draft, a non-empty string")
+_DRAFT_TOKEN_ARGUMENT = _Argument(
+    name="expected_updated_at", what="the draft token the caller last read, the method's `updated_at`, a string, or none"
+)
+
 #: The ids that are dot segments, which the URL resolves before the request leaves.
 _DOT_SEGMENTS = frozenset({".", ".."})
 
@@ -3917,6 +4443,37 @@ def _argument_refusal(call: str, argument: _Argument, got: str, *, reason: str) 
     """
     msg = f"{call}() takes {argument.what}; got {got}."
     return RequestArgumentError(msg, problem=argument_invalid_problem(argument=argument.name, reason=reason))
+
+
+def _require_name_and_inputs(name: object, inputs: object, *, call: str, needs: str) -> None:
+    """Refuse an example write given no `name` or no `inputs`, the check the create and the assistant's save share.
+
+    Checked as `object`s: the annotations are promises to the type checker, not to a caller forwarding an optional
+    value, which would be sent as `null` for the platform to refuse. The refusal names the first argument missing.
+
+    Args:
+        name: The `name` the call was given.
+        inputs: The `inputs` the call was given.
+        call: The call's name, which the message opens with.
+        needs: What the call needs, as its message says it.
+
+    Raises:
+        RequestArgumentError: `name` or `inputs` is `None`; nothing is sent.
+    """
+    name_missing = name is None
+    inputs_missing = inputs is None
+    got: str
+    if name_missing and inputs_missing:
+        got = "neither"
+    elif name_missing:
+        got = "no name"
+    elif inputs_missing:
+        got = "no inputs"
+    else:
+        return
+    msg = f"{call}() needs {needs}; got {got}."
+    missing_argument = "name" if name_missing else "inputs"
+    raise RequestArgumentError(msg, problem=argument_invalid_problem(argument=missing_argument, reason="missing"))
 
 
 def _require_non_empty_id(value: object, *, call: str, what: _Argument) -> str:

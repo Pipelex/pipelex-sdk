@@ -821,9 +821,13 @@ describe("storage", () => {
 
   it("POSTs /v1/upload with the base64 payload", async () => {
     const client = makeClient();
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { uri: "s3://x", filename: "f.pdf" }));
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        uri: "s3://x",
+        filename: "f.pdf",
+        file_id: "fl_01a16405-12a5-757c-b44c-10c40b5a947b",
+      }),
+    );
 
     const result = await client.upload({
       filename: "f.pdf",
@@ -835,12 +839,15 @@ describe("storage", () => {
     expect(req.url).toBe("http://localhost:8081/v1/upload");
     expect(req.body).toEqual({ filename: "f.pdf", data: "Zm9v", content_type: "application/pdf" });
     expect(result.uri).toBe("s3://x");
+    expect(result.file_id).toBe("fl_01a16405-12a5-757c-b44c-10c40b5a947b");
   });
 
   it("POSTs /v1/upload/grant with the file's description and returns the grant as sent", async () => {
     const client = makeClient();
     const grant = {
+      file_id: "fl_01a16405-12a5-757c-b44c-10c40b5a947b",
       uri: "pipelex-storage://org_1/assets/5f0c.pdf",
+      stored: false,
       url: "https://pipelex-app-dev.s3.amazonaws.com/org_1/assets/5f0c.pdf?X-Amz-Signature=abc",
       headers: { "If-None-Match": "*", "Content-Type": "application/pdf" },
       expires_at: "2026-09-23T10:05:00Z",
@@ -858,6 +865,40 @@ describe("storage", () => {
     expect(req.url).toBe("http://localhost:8081/v1/upload/grant");
     expect(req.method).toBe("POST");
     expect(req.body).toEqual({ filename: "report.pdf", content_type: "application/pdf", size: 5 });
+    expect(result).toEqual(grant);
+  });
+
+  it("sends the file's hash, kind and method as given, and returns a stored grant as sent", async () => {
+    const client = makeClient();
+    const sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const grant = {
+      file_id: "fl_01a16405-12a5-757c-b44c-10c40b5a947b",
+      uri: `pipelex-storage://org_1/assets/${sha256}.pdf`,
+      stored: true,
+      url: null,
+      headers: null,
+      expires_at: null,
+      max_bytes: 52428800,
+    };
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, grant));
+
+    const result = await client.requestUploadGrant({
+      filename: "case.pdf",
+      content_type: "application/pdf",
+      size: 4,
+      sha256,
+      kind: "test",
+      method_id: "mt_abc123",
+    });
+
+    expect(lastRequest(spy).body).toEqual({
+      filename: "case.pdf",
+      content_type: "application/pdf",
+      size: 4,
+      sha256,
+      kind: "test",
+      method_id: "mt_abc123",
+    });
     expect(result).toEqual(grant);
   });
 

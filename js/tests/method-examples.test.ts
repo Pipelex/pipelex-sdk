@@ -9,6 +9,8 @@ import { ApiResponseError, RequestArgumentError, errorVerdictOf } from "../src/e
 import { stringifyExactJson } from "../src/exact-json.js";
 import type {
   MethodExample,
+  MethodExampleAssistantSaveInput,
+  MethodExampleAssistantSaveResult,
   MethodExampleCreateInput,
   MethodExampleLatestRunInput,
   MethodExampleLatestRunResult,
@@ -57,6 +59,7 @@ const EXAMPLE: MethodExample = {
   created_by_user_id: "user_1",
   created_at: "2026-10-12T09:00:00+00:00",
   updated_at: "2026-10-12T10:00:00+00:00",
+  kept_by_assistant: false,
 };
 
 const REVISED: MethodExample = {
@@ -137,6 +140,21 @@ const EXAMPLE_READS: ExampleRead[] = [
       (
         await client.recordMethodExampleLatestRun(METHOD_ID, EXAMPLE_ID, {
           run_id: "run_1",
+          input_revision: 2,
+        })
+      ).example,
+  ],
+  [
+    "saveAssistantMethodExample",
+    `POST /v1/methods/${METHOD_ID}/examples/assistant-save`,
+    (text) => textResponse(200, `{"outcome":"kept","example":${text}}`),
+    "an assistant save result's `example`",
+    async (client) =>
+      (
+        await client.saveAssistantMethodExample(METHOD_ID, {
+          name: "Assistant's test inputs",
+          inputs: { total: 3 },
+          example_id: EXAMPLE_ID,
           input_revision: 2,
         })
       ).example,
@@ -675,6 +693,156 @@ describe("recordMethodExampleLatestRun", () => {
   });
 });
 
+describe("saveAssistantMethodExample", () => {
+  const SAVE_PATH = `${BASE_URL}/v1/methods/${METHOD_ID}/examples/assistant-save`;
+  const KEPT_EXAMPLE: MethodExample = {
+    ...EXAMPLE,
+    inputs: { total: 5 },
+    input_revision: 3,
+    latest_run_id: null,
+    kept_by_assistant: true,
+  };
+
+  it("POSTs the inputs with the example and revision it read, and hands back a kept verdict", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { outcome: "kept", example: KEPT_EXAMPLE }));
+
+    const result = await client.saveAssistantMethodExample(METHOD_ID, {
+      name: "Assistant's test inputs",
+      inputs: { total: 5 },
+      example_id: EXAMPLE_ID,
+      input_revision: 2,
+    });
+
+    const req = onlyRequest(spy);
+    expect(req.method).toBe("POST");
+    expect(req.url).toBe(SAVE_PATH);
+    expect(req.body).toEqual({
+      name: "Assistant's test inputs",
+      inputs: { total: 5 },
+      example_id: EXAMPLE_ID,
+      input_revision: 2,
+    });
+    expect(result).toEqual({ outcome: "kept", example: KEPT_EXAMPLE });
+    expect(result.example.kept_by_assistant).toBe(true);
+  });
+
+  it("sends neither member when none is named, null included, and nothing an untyped caller adds", async () => {
+    const client = makeClient();
+    const created = { ...KEPT_EXAMPLE, example_id: "ex_new", input_revision: 1 };
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { outcome: "created", example: created }));
+
+    const result = await client.saveAssistantMethodExample(METHOD_ID, {
+      name: "Assistant's test inputs",
+      inputs: { total: 5 },
+      example_id: null,
+      input_revision: null,
+      run_id: "run_1",
+    } as unknown as MethodExampleAssistantSaveInput);
+
+    expect(onlyRequest(spy).body).toEqual({
+      name: "Assistant's test inputs",
+      inputs: { total: 5 },
+    });
+    expect(result.outcome).toBe("created");
+    expect(result.example.example_id).toBe("ex_new");
+  });
+
+  it("narrows on outcome", () => {
+    expectTypeOf<MethodExampleAssistantSaveResult["outcome"]>().toEqualTypeOf<"kept" | "created">();
+    expectTypeOf<
+      Extract<MethodExampleAssistantSaveResult, { outcome: "created" }>["example"]
+    >().toEqualTypeOf<MethodExample>();
+  });
+
+  it.each([
+    ["an outcome it does not know", { outcome: "stale", example: KEPT_EXAMPLE }],
+    ["no outcome", { example: KEPT_EXAMPLE }],
+  ])("throws a typed ApiResponseError for a verdict with %s", async (_label, body) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
+
+    const err = await makeClient()
+      .saveAssistantMethodExample(METHOD_ID, { name: "n", inputs: {} })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      `API POST /v1/methods/${METHOD_ID}/examples/assistant-save answered 200 with an assistant ` +
+        "save result whose `outcome` is not `kept` or `created`",
+    );
+    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+  });
+
+  it.each([
+    [
+      "no name",
+      { inputs: {} },
+      /needs the name a new example takes and the inputs; got no name\.$/,
+    ],
+    ["no inputs", { name: "n" }, /; got no inputs\.$/],
+    ["neither", {}, /; got neither\.$/],
+    [
+      "an empty example id",
+      { name: "n", inputs: {}, example_id: "", input_revision: 2 },
+      /takes an example_id naming the assistant's example .*; got an empty string\.$/,
+    ],
+    [
+      "a zero revision",
+      { name: "n", inputs: {}, example_id: EXAMPLE_ID, input_revision: 0 },
+      /takes an input_revision, the revision the caller read .*; got 0\.$/,
+    ],
+    [
+      "a revision as a string",
+      { name: "n", inputs: {}, example_id: EXAMPLE_ID, input_revision: "2" },
+      /takes an input_revision, .*; got string\.$/,
+    ],
+    [
+      "an example id without its revision",
+      { name: "n", inputs: {}, example_id: EXAMPLE_ID },
+      /by both its example_id and the input_revision it was read at, or neither; got only example_id\.$/,
+    ],
+    [
+      "a revision without its example id",
+      { name: "n", inputs: {}, input_revision: 2 },
+      /; got only input_revision\.$/,
+    ],
+  ])("refuses %s before sending anything", async (_label, input, message) => {
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const err = await makeClient()
+      .saveAssistantMethodExample(METHOD_ID, input as unknown as MethodExampleAssistantSaveInput)
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).message).toMatch(/^saveAssistantMethodExample\(\) /);
+    expect((err as Error).message).toMatch(message);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a runner's refusal as a 403 role_not_permitted", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(403, {
+        status: 403,
+        code: "role_not_permitted",
+        error_domain: "config",
+        retryable: false,
+        detail: "Your role in this organization is runner.",
+      }),
+    );
+
+    const err = await makeClient()
+      .saveAssistantMethodExample(METHOD_ID, { name: "n", inputs: {} })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).code).toBe("role_not_permitted");
+  });
+});
+
 describe.each(EXAMPLE_READS)(
   "an integer past Number.MAX_SAFE_INTEGER read by %s",
   (_name, _route, answer, _where, read) => {
@@ -781,6 +949,13 @@ const DEFECTIVE_EXAMPLES: [label: string, example: unknown, field: string, expec
   ["no created_by_user_id", exampleWith("created_by_user_id"), "created_by_user_id", "a string"],
   ["no created_at", exampleWith("created_at"), "created_at", "a string"],
   ["no updated_at", exampleWith("updated_at"), "updated_at", "a string"],
+  ["no kept_by_assistant", exampleWith("kept_by_assistant"), "kept_by_assistant", "a boolean"],
+  [
+    "a kept_by_assistant as a string",
+    exampleWith("kept_by_assistant", "true"),
+    "kept_by_assistant",
+    "a boolean",
+  ],
 ];
 
 describe.each(EXAMPLE_READS)("an example %s answers", (_name, route, answer, where, read) => {
@@ -936,6 +1111,10 @@ describe("the example routes' ids", () => {
     ["listMethodExamples", (client) => client.listMethodExamples("mt_x@3")],
     ["getMethodExample", (client) => client.getMethodExample("mt_x@3", EXAMPLE_ID)],
     ["deleteMethodExample", (client) => client.deleteMethodExample("mt_x@3", EXAMPLE_ID)],
+    [
+      "saveAssistantMethodExample",
+      (client) => client.saveAssistantMethodExample("mt_x@3", { name: "n", inputs: {} }),
+    ],
   ];
 
   it.each(methodCalls)(

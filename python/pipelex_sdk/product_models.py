@@ -3,7 +3,7 @@
 These mirror `pipelex-sdk-js/src/product-models.ts`. They are the management surface
 the hosted product (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/branding`, `/v1/billing/*`,
 `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
-`/v1/resolve-storage-url`, `/v1/upload`, `/v1/runs`) drives.
+`/v1/resolve-storage-url`, `/v1/upload`, `/v1/files`, `/v1/runs`) drives.
 
 The wire is snake_case. Each model holds only the fields the product actually
 consumes — not a speculative mirror of every server field. Response models are
@@ -30,11 +30,11 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, Literal, Self, TypeAlias, cast
 
 from mthds.method_tree.file_entry import FileEntry
 from mthds.method_tree.models import MethodTree
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, TypeAdapter, ValidationInfo, model_validator
 
 from pipelex_sdk.error_models import LenientRunErrorReport
 from pipelex_sdk.runs import RunStatus
@@ -421,9 +421,12 @@ class MethodDeletionAccepted(BaseModel):
 #
 # An example is a named set of inputs saved on a method, so the method can be run on them again in
 # one gesture, with the latest run of exactly those inputs. Like the method, it is shared across the
-# organization: any member reads, edits, runs and deletes any example. `input_revision` starts at 1
+# organization: every role reads and runs any example, and every role that may change methods
+# (`admin` and `member`) saves, edits and deletes any of them. `input_revision` starts at 1
 # and rises each time the inputs change, which clears `latest_run_id`; a run is recorded as the
-# latest only against the revision whose inputs it used (`record_method_example_latest_run`).
+# latest only against the revision whose inputs it used (`record_method_example_latest_run`). The
+# build assistant keeps one example current with its test inputs, `kept_by_assistant`, through its
+# own save (`save_assistant_method_example`), which never writes over a person's edit.
 
 #: The largest integer a JavaScript number holds exactly, `Number.MAX_SAFE_INTEGER`: `@pipelex/sdk` refuses an
 #: example whose `input_revision` lies past it in either direction, and so does `MethodExample`.
@@ -433,8 +436,9 @@ _LARGEST_EXACT_REVISION = 2**53 - 1
 class MethodExample(BaseModel):
     """One saved example of a method.
 
-    What `create_method_example`, `get_method_example`, `update_method_example` and both arms of
-    `record_method_example_latest_run` answer, and a row of `list_method_examples`.
+    What `create_method_example`, `get_method_example`, `update_method_example`, both arms of
+    `record_method_example_latest_run` and of `save_assistant_method_example` answer, and a row of
+    `list_method_examples`.
 
     Its fields are read strictly, as `@pipelex/sdk` reads them, so both SDKs refuse the same answers: a
     field of another type is never coerced, so a revision of `"2"`, `True` or `2.0` is no revision, and
@@ -477,6 +481,12 @@ class MethodExample(BaseModel):
 
     updated_at: StrictStr
     """ISO-8601 UTC instant of its last change: its name, its inputs or its latest run."""
+
+    kept_by_assistant: StrictBool
+    """Whether the build assistant keeps this example's inputs current with its test inputs: `True` on an
+    example the assistant's save created, `False` on every other, and `False` from the first inputs change a
+    person makes (`update_method_example` with new inputs). A rename leaves it as it is. Required, as
+    `@pipelex/sdk` requires it: an example without it is an answer the SDK cannot read."""
 
 
 class MethodExamplePage(BaseModel):
@@ -536,6 +546,48 @@ deleted raise `ApiResponseError` instead."""
 
 MethodExampleLatestRunResultAdapter: TypeAdapter[MethodExampleLatestRunResult] = TypeAdapter(MethodExampleLatestRunResult)  # pylint: disable=invalid-name
 """The single parse path for a latest-run answer — built once at import (TypeAdapter construction is expensive)."""
+
+
+class MethodExampleAssistantSaveOutcome(StrEnum):
+    """What the build assistant's save did — the discriminant of `MethodExampleAssistantSaveResult`."""
+
+    KEPT = "kept"
+    """The named example was still the assistant's at the revision read, and now holds the inputs, its name untouched."""
+
+    CREATED = "created"
+    """No example was named, or a person's edit, another save or a deletion landed first: a new example
+    flagged as the assistant's holds the inputs, under the save's `name`."""
+
+
+class MethodExampleAssistantKept(BaseModel):
+    """The named example now holds the assistant's inputs; `example` is the example as it now stands."""
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodExampleAssistantSaveOutcome.KEPT]
+    example: MethodExample
+
+
+class MethodExampleAssistantCreated(BaseModel):
+    """A new example, flagged as the assistant's, holds the inputs; `example` is it, at revision 1."""
+
+    model_config = ConfigDict(extra="allow")
+
+    outcome: Literal[MethodExampleAssistantSaveOutcome.CREATED]
+    example: MethodExample
+
+
+MethodExampleAssistantSaveResult: TypeAlias = Annotated[
+    MethodExampleAssistantKept | MethodExampleAssistantCreated,
+    Field(discriminator="outcome"),
+]
+"""The answer of `save_assistant_method_example`, a `200` discriminated on `outcome`. Finding that a person took
+the assistant's example is the expected course of events whenever a person edits its inputs while it works, so it
+is answered rather than raised. Branch on `outcome` (`match result:` over its classes); the `example` of either
+arm is the assistant's from then on."""
+
+MethodExampleAssistantSaveResultAdapter: TypeAdapter[MethodExampleAssistantSaveResult] = TypeAdapter(MethodExampleAssistantSaveResult)  # pylint: disable=invalid-name
+"""The single parse path for an assistant save's answer — built once at import (TypeAdapter construction is expensive)."""
 
 
 # ── Organizations (`/v1/organizations`) ──────────────────────────────────
@@ -886,25 +938,610 @@ class ResolvedStorageUrl(BaseModel):
     content_type: str | None
 
 
+class UploadKind(StrEnum):
+    """What an upload is recorded as, sent with it to `POST /v1/upload` — the kinds a caller may claim.
+
+    A subset of `FileKind`: no caller may claim to have generated a file, which only a run does, so
+    `generated` is not a kind an upload carries.
+    """
+
+    UPLOADED = "uploaded"
+    """A person's file, what an upload is recorded as when it names no kind."""
+
+    TEST = "test"
+    """A test input made for one method, such as the inputs a build assistant makes to try it, which
+    names that method in `method_id`."""
+
+
 class UploadInput(BaseModel):
-    """Upload payload — base64 `data` (the multipart hop is browser→BFF only)."""
+    """Upload payload — base64 `data` (the multipart hop is browser→BFF only).
+
+    `kind` and `method_id` say what the upload is recorded as and are sent only when given. `upload`
+    sends them as they are and the upload route checks them, refusing with a `422` a `kind="test"`
+    without a `method_id`, a `method_id` without `kind="test"`, and a `method_id` that is not a bare
+    catalog id; `upload_file` and `prepare_inputs` check them first, before any file is read.
+    """
 
     filename: str
     data: str
     content_type: str
+    kind: UploadKind | None = None
+    """What the upload is recorded as; the platform records `uploaded` when it is `None`."""
+    method_id: str | None = None
+    """The bare catalog id of the method a `test` file is for, required with `kind="test"` and refused
+    without it."""
 
 
 class UploadedFile(BaseModel):
-    """An uploaded file's storage handle — `POST /v1/upload`.
+    """An uploaded file's storage handle — `POST /v1/upload`: its reference, the name as sent and
+    the `file_id` of the record the platform wrote for it.
 
     An answer with no non-empty `uri` names no stored file, so it does not validate, and `upload`
     raises the `ApiResponseError` of an answer the SDK cannot read, as `@pipelex/sdk` does.
+    `file_id` is `None` only from a deployment that predates file records, which answers none.
     """
 
     model_config = ConfigDict(extra="allow")
 
     uri: str = Field(min_length=1)
     filename: str
+    file_id: str | None = None
+
+
+# ── An organization's files (`/v1/files`) ────────────────────────────────
+#
+# A file is the record the platform keeps of a stored object: a member's upload, a test file made
+# for a method, or a file a run made that reached its result, each with the name a person sees, its
+# type, its size and where it came from. A run, a form or an example still points at the bytes by
+# their `pipelex-storage://` address, the record's `uri`, which a run's inputs take as they take any
+# address (see `docs/files.md`). The values a later platform may add to (a kind, a role, a mark)
+# are read open: the enum member when this SDK knows the value, its raw string otherwise, so a
+# `match` on one needs a branch for a string. The fields a caller branches on to act (an archive's
+# `state`, a run's files' `state`, a copy's `blob`) are read closed, as `@pipelex/sdk` checks them.
+
+
+class FileKind(StrEnum):
+    """What made a file. Read open on `FileSummary.kind`; also the `kind` filter of `list_files`."""
+
+    UPLOADED = "uploaded"
+    """A person's upload, or a run's inline input."""
+
+    GENERATED = "generated"
+    """A file a run made whose result reaches it."""
+
+    TEST = "test"
+    """A test input made for one method, which its `origin.method_id` names."""
+
+
+class FileOrigin(BaseModel):
+    """Who or what made a file, as far as the platform knows it.
+
+    Each kind fills a different part, and the rest is `None`: an upload names the surface it came
+    through; a generated file or a run's inline input names the run, its method and the version or draft
+    that ran; a test file names the surface it came through and the method it was made for. The member
+    a file is attributed to is the record's `created_by`, never repeated here.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    surface: str | None = None
+    """The surface an upload came through, as its request's `User-Agent` declared it (`app`, `mcp`, `cli`,
+    `n8n`, `hook`, `sdk`, `raw_http`, and more as surfaces are added); `None` for a run's files.
+    Self-declared, so it is provenance to show, never authority."""
+
+    run_id: str | None = None
+    """The run that made the file; `None` for an upload."""
+
+    method_id: str | None = None
+    """The method whose run made the file, or the method a test file was made for; `None` otherwise."""
+
+    method_version: int | Literal["draft"] | None = None
+    """The published version number or `"draft"` that ran, for a file made by a saved method's run."""
+
+
+class FileSummary(BaseModel):
+    """One row of a file list, what a list or a picker shows — `list_files`.
+
+    A list never holds a file a run made along the way, nor an upload whose bytes have not been seen stored.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    file_id: str
+    """The record's id, `fl_…`."""
+
+    uri: str
+    """The `pipelex-storage://` address of the bytes, which a run's inputs take as they take any address."""
+
+    name: str
+    """The name shown and used for downloads; it starts as the name the file arrived with and changes with a rename."""
+
+    media_type: str
+    """The MIME type the object is stored under."""
+
+    format: str
+    """The format key the list's `formats` filter matches: `pdf`, `docx`, `image`, `html` and the rest of the runtime's table."""
+
+    size: int
+    """The byte size."""
+
+    kind: Annotated[FileKind | str, Field(union_mode="left_to_right")]
+    """What made the file: the `FileKind` member when this SDK knows the kind, its raw string otherwise."""
+
+    origin: FileOrigin
+
+    created_at: str
+    """ISO-8601 instant the record was made."""
+
+    created_by: str
+    """The member the file is attributed to: the uploader, or the member who started the run that made it."""
+
+
+class FilePage(BaseModel):
+    """One page of an organization's files, newest first (in the order of their addresses under `run_id`).
+
+    `next_cursor` is opaque: pass it straight back to `list_files` with the same filters to continue;
+    `None` means this was the last page. A filtered page can hold fewer rows than `limit`, or none, and
+    still carry a `next_cursor`: only a `None` cursor ends the list, and `iterate_files` keeps following
+    the cursor through such a page.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    items: list[FileSummary]
+    next_cursor: str | None
+
+
+class FileRole(StrEnum):
+    """For a file a run made, whether the run's result reaches it. Read open on `FileRecord.role`."""
+
+    FINAL = "final"
+    """An output of the run."""
+
+    INTERMEDIATE = "intermediate"
+    """A file made along the way, which no list of the organization's files holds."""
+
+
+class FileState(StrEnum):
+    """Whether a file's bytes are stored. Read open on `FileRecord.state`."""
+
+    STORED = "stored"
+    PENDING = "pending"
+    """An upload whose bytes have not been seen; only a read by id or by address answers one."""
+
+
+class FileRecord(FileSummary):
+    """One file's whole record — what `rename_file` answers, each record `get_files_by_uri` lists, and the
+    `file` of a run's file entry; `get_file` answers it with its methods and uses (`FileDetail`).
+    """
+
+    source_uri: str | None = None
+    """The address the record was written under, once another run or an example took the file and the
+    platform copied it into the organization's `assets/`; `uri` is then the copy's. `None` until then."""
+
+    original_name: str
+    """The name the file arrived with, never changed: a rename changes `name` alone."""
+
+    sha256: str | None = None
+    """The SHA-256 of the bytes in lowercase hexadecimal, or `None` for a file stored before every writer sent one."""
+
+    role: Annotated[FileRole | str | None, Field(union_mode="left_to_right")] = None
+    """For a file a run made, `final` or `intermediate`; `None` for the other kinds."""
+
+    state: Annotated[FileState | str, Field(union_mode="left_to_right")]
+    """`stored`, or `pending` while an upload's bytes have not been seen."""
+
+
+class FileUseHolderType(StrEnum):
+    """What holds an address a use links. Read open on `FileUse.holder_type`."""
+
+    RUN = "run"
+    """A run that took the address as an input."""
+
+    EXAMPLE = "example"
+    """An example whose inputs hold the address."""
+
+
+class FileUse(BaseModel):
+    """An address taken as an input by a run, or held by an example.
+
+    A use names an address, not a record, so every record holding the address shows the same uses; a
+    file a run made names that run in its `origin`, never as a use.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    uri: str
+    """The `pipelex-storage://` address used."""
+
+    holder_type: Annotated[FileUseHolderType | str, Field(union_mode="left_to_right")]
+
+    holder_id: str
+    """The run's id or the example's id."""
+
+    method_id: str | None = None
+    """The method of the run or of the example; `None` for a run of no saved method."""
+
+    created_at: str
+    """ISO-8601 instant the use was recorded."""
+
+
+class FileUsePage(BaseModel):
+    """One page of a file's uses, the examples that hold its address first, then the runs that took it.
+
+    Pass `next_cursor` back to `get_file` as `uses_cursor` for the next page; `None` means there is none.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    items: list[FileUse]
+    next_cursor: str | None
+
+
+class FileDetail(FileRecord):
+    """One file with what links it to the organization's methods, runs and examples — `get_file`."""
+
+    method_ids: list[str]
+    """The methods whose list of files holds this one, because one of their runs or examples took or made it."""
+
+    uses: FileUsePage
+    """One page of the file's uses."""
+
+
+class FileRecordList(BaseModel):
+    """The records holding one address — `get_files_by_uri` — in the order a surface picks the one to show, the first being it.
+
+    Empty for an address no record holds, such as a file stored before the platform kept records.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    items: list[FileRecord]
+
+
+class FileLinkTarget(BaseModel):
+    """One file to link — `link_files` — named by exactly one of its record's id and its address.
+
+    `FileLinkTarget(file_id="fl_…")` or `FileLinkTarget(uri="pipelex-storage://…")`. Both, neither, or an
+    empty one raise pydantic's `ValidationError` at construction, as the platform would refuse the whole
+    request with a `422`; `None` reads as not given.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    file_id: str | None = Field(default=None, min_length=1)
+    uri: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _names_exactly_one(self) -> Self:
+        if (self.file_id is None) == (self.uri is None):
+            msg = "name the file to link by exactly one of `file_id` and `uri`"
+            raise ValueError(msg)
+        return self
+
+
+class FileLinkError(BaseModel):
+    """Why one file got no link — a value, never a raised error.
+
+    `code` is `not_found` (an unknown file, or one deleted meanwhile), `conflict` (a file whose upload has
+    not finished), `invalid_storage_uri` (a malformed address) or `forbidden` (another organization's
+    address), and stays a `str` so a code a later platform adds still reads; `detail` is the sentence a
+    person reads.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    code: str
+    detail: str
+
+
+class FileLinked(BaseModel):
+    """A requested file's link: a presigned `GET` valid for fifteen minutes, and `error` is `None`."""
+
+    model_config = ConfigDict(extra="allow")
+
+    file_id: str | None
+    """The record linked: the one asked for, or for an address, the record whose name the link carries;
+    `None` for an address no record holds, a file stored before records existed."""
+
+    uri: str
+    """The address the link reads."""
+
+    name: str
+    """The name the download saves under, which the link's `Content-Disposition` carries."""
+
+    media_type: str
+    """The file's type, which decides whether a browser shows it in place or downloads it."""
+
+    url: str
+    """A presigned `GET` of the file, valid for fifteen minutes; a bearer capability, so keep it out of logs."""
+
+    expires_at: str
+    """ISO-8601 UTC instant the link stops working."""
+
+    error: None
+
+
+class FileLinkRefused(BaseModel):
+    """A requested file that got no link: `error` says why, and the link fields are `None`."""
+
+    model_config = ConfigDict(extra="allow")
+
+    file_id: str | None
+    """The file id as requested, or `None` when the file was named by its address."""
+
+    uri: str | None
+    """The address as requested, or `None` when the file was named by its id."""
+
+    name: None
+    media_type: None
+    url: None
+    expires_at: None
+    error: FileLinkError
+
+
+FileLink: TypeAlias = FileLinked | FileLinkRefused
+"""One requested file's link, or why it has none. Branch on the class (`match link:`), never on the HTTP status:
+the request is a `200` whenever every file got a verdict."""
+
+
+class FileLinksResult(BaseModel):
+    """The answer of `link_files`: exactly one `FileLink` per requested file, in the request's order.
+
+    Read with the count of files requested in its validation context (`requested_files`), so an answer
+    holding another count is refused as one the SDK cannot read.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    items: list[FileLink]
+
+    @model_validator(mode="after")
+    def _one_item_per_requested_file(self, info: ValidationInfo) -> Self:
+        context = cast("object", info.context)
+        requested = cast("dict[str, object]", context).get("requested_files") if isinstance(context, dict) else None
+        if isinstance(requested, int) and len(self.items) != requested:
+            msg = f"an answer to a request for {requested} file(s) holds {len(self.items)} item(s)"
+            raise ValueError(msg)
+        return self
+
+
+class FileArchiveState(StrEnum):
+    """Where an archive stands, the field a caller branches on. Read closed, as `@pipelex/sdk` checks it."""
+
+    QUEUED = "queued"
+    """Read it again shortly."""
+
+    BUILDING = "building"
+    """Read it again shortly."""
+
+    READY = "ready"
+    """Its `url` downloads the zip."""
+
+    FAILED = "failed"
+    """Its `failure` says why; a new request is the remedy."""
+
+
+class FileArchiveSource(StrEnum):
+    """How an archive's files were chosen. Read open on `FileArchive.source`."""
+
+    FILES = "files"
+    """By their ids, `file_ids`."""
+
+    RUN = "run"
+    """As one run's files, `run_id`."""
+
+
+class FileArchiveFailureCode(StrEnum):
+    """Why an archive failed. Read open on `FileArchiveFailure.code`; asking again is the remedy for both."""
+
+    FILE_GONE = "file_gone"
+    """A selected file was deleted before the zip was ready."""
+
+    BUILD_FAILED = "build_failed"
+    """The build failed, or did not finish within the hour, or the archive could not be queued."""
+
+
+class FileArchiveFailure(BaseModel):
+    """What a failed archive says about its failure."""
+
+    model_config = ConfigDict(extra="allow")
+
+    code: Annotated[FileArchiveFailureCode | str, Field(union_mode="left_to_right")]
+    detail: str
+    """A sentence for a person, naming the file when one was gone."""
+
+
+class FileArchive(BaseModel):
+    """One zip of an organization's files — what `request_file_archive` (`queued`) and `get_file_archive` answer.
+
+    An archive is never a file: no list shows it, and it is gone a day after it was asked for, past
+    `expires_at`, when reading it answers `404`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    archive_id: str
+    """The archive's id, `arc_…`."""
+
+    name: str
+    """The name the zip downloads under, ending in `.zip`."""
+
+    state: FileArchiveState
+
+    source: Annotated[FileArchiveSource | str, Field(union_mode="left_to_right")]
+
+    run_id: str | None = None
+    """The run whose files the archive holds, for a `run` archive; `None` otherwise."""
+
+    file_count: int
+    """How many files the zip holds."""
+
+    total_bytes: int
+    """The files' total size in bytes, before compression."""
+
+    created_at: str
+    """ISO-8601 instant the archive was asked for."""
+
+    expires_at: str
+    """ISO-8601 instant after which the archive is gone and reads as unknown, a day after `created_at`."""
+
+    archive_bytes: int | None = None
+    """The zip's own size in bytes, once it is ready; `None` until then."""
+
+    ready_at: str | None = None
+    """ISO-8601 instant the zip was complete; `None` until then."""
+
+    failure: FileArchiveFailure | None = None
+    """Why the archive failed; `None` unless `state` is `failed`."""
+
+    url: str | None = None
+    """A presigned `GET` of the zip, valid for fifteen minutes and signed with a `Content-Disposition` naming
+    `name`, set only on a read of a `ready` archive; each read signs a fresh one. A bearer capability, so keep
+    it out of logs."""
+
+    url_expires_at: str | None = None
+    """ISO-8601 instant `url` stops working; `None` without a link."""
+
+
+class FileArchiveLimit(BaseModel):
+    """The cap a `422` `file_archive_too_large` names, in its problem document's `limit` member.
+
+    Read it with `FileArchiveLimit.model_validate(error.problem_document["limit"])`: `max_files` (500) or
+    `max_total_bytes` (2,000,000,000), its `value`, and what the selection `reached`. For a run, the count
+    stops as soon as it passes the cap, so `reached` is one more than `max_files` and means "at least".
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: Literal["max_files", "max_total_bytes"]
+    value: int
+    reached: int
+
+
+class DraftFileBlob(StrEnum):
+    """What the copy into a draft did in the organization's blob store, the field its answer is discriminated on."""
+
+    COPIED = "copied"
+    """The bytes were copied under their SHA-256."""
+
+    ALREADY_HELD = "already_held"
+    """The store held the bytes, and nothing was copied."""
+
+
+class DraftFileAdded(BaseModel):
+    """The copied file as the draft's tree now names it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    path: str
+    """Its tree path."""
+
+    sha256: str
+    """The SHA-256 of its bytes, in lowercase hexadecimal."""
+
+    size: int
+    """Its size in bytes."""
+
+
+class DraftFileFromFileResult(BaseModel):
+    """The answer of `copy_file_into_draft`, a `200` discriminated on `blob`.
+
+    Both values carry the file as the draft names it and the method as the draft write stored it, whose
+    `updated_at` is the new draft token.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    blob: DraftFileBlob
+    file: DraftFileAdded
+    method: MethodData
+
+
+class RunFilesState(StrEnum):
+    """Whether a run's records are all written, the field a reader of its files branches on. Read closed."""
+
+    LISTING = "listing"
+    """The platform is still recording the run's files: read the page again before taking it as whole."""
+
+    LISTED = "listed"
+    """Every file of the run is recorded."""
+
+
+class RunFileMark(StrEnum):
+    """Where a file sits in its run. Read open on `RunFileEntry.mark`."""
+
+    INPUT = "input"
+    """What went in."""
+
+    FINAL = "final"
+    """What came out."""
+
+    INTERMEDIATE = "intermediate"
+    """What was made along the way."""
+
+
+class RunFileEntry(BaseModel):
+    """One file of a run, with its mark and the record a surface shows for it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    mark: Annotated[RunFileMark | str, Field(union_mode="left_to_right")]
+
+    input_name: str | None = None
+    """For an input given by its address, the run's input that held it; `None` for an inline input and for
+    the files the run made."""
+
+    uri: str
+    """The address the run took or wrote; a record a take moved to a copy says where it lives now in its own `uri`."""
+
+    file: FileRecord | None = None
+    """The record a surface shows for the file: for an input, the one of the member who started the run first,
+    then the caller's, then the oldest. `None` for an input address no record holds."""
+
+
+class RunInputLink(BaseModel):
+    """A web link the run's inputs held, which gets no record: the platform neither fetched nor kept what it served."""
+
+    model_config = ConfigDict(extra="allow")
+
+    input_name: str
+    """The run's input that held the link."""
+
+    url: str
+    """The link, as the run was given it."""
+
+    warning: str
+    """Why the link matters to a replay of the run: it must still serve the same file."""
+
+
+class RunFilesPage(BaseModel):
+    """One page of a run's files, sorted by where they sit in the run — `list_run_files`.
+
+    The inputs given by their address and the web links come on the first page only; the run's own records,
+    its inline inputs, its final outputs and the files it made along the way, are paged by address.
+    `next_cursor` is opaque: pass it straight back to `list_run_files`; `None` is the last page. `state` is
+    `listing` until the platform has recorded every file of the run, a few seconds after it ends, so a client
+    showing a run that just ended reads it again until it is `listed`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    pipeline_run_id: str
+    state: RunFilesState
+    inputs: list[RunFileEntry]
+    """What went in: the inputs by address (first page only), then the inline inputs."""
+
+    outputs: list[RunFileEntry]
+    """What came out: the run's final outputs."""
+
+    intermediates: list[RunFileEntry]
+    """What was made along the way."""
+
+    links: list[RunInputLink]
+    """The web links the inputs held (first page only)."""
+
+    next_cursor: str | None
 
 
 # ── Run records (`/v1/runs`) ─────────────────────────────────────────────

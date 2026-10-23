@@ -2,7 +2,7 @@
 
 The Python client for the [Pipelex](https://www.pipelex.com) hosted API.
 
-`pipelex-sdk` is the Python counterpart of [`@pipelex/sdk`](https://www.npmjs.com/package/@pipelex/sdk), exactly as [`mthds`](https://pypi.org/project/mthds/) (the `mthds-python` package) is the Python counterpart of the `mthds` npm package. It is the **hosted superset**: the five normative MTHDS Protocol routes (inherited from `mthds`) **plus** the durable run lifecycle **plus** the Pipelex product surface (methods, organizations, billing, API keys, onboarding, storage, run records).
+`pipelex-sdk` is the Python counterpart of [`@pipelex/sdk`](https://www.npmjs.com/package/@pipelex/sdk), exactly as [`mthds`](https://pypi.org/project/mthds/) (the `mthds-python` package) is the Python counterpart of the `mthds` npm package. It is the **hosted superset**: the five normative MTHDS Protocol routes (inherited from `mthds`) **plus** the durable run lifecycle **plus** the Pipelex product surface (methods, organizations, billing, API keys, onboarding, storage, an organization's files, run records).
 
 One-way dependency: `pipelex-sdk → mthds`.
 
@@ -144,6 +144,27 @@ if isinstance(verdict, MethodExampleLatestRunStale):
     print("edited since", verdict.example.input_revision)
 async for saved in client.iterate_method_examples("mt_123"):  # every example, oldest first
     print(saved.name, saved.latest_run_id)
+```
+
+### Find, link and zip the organization's files
+
+The organization's files are its uploads, its test files and the files its runs made, newest first, and each row's `uri` goes into a run's inputs as any address does. A filtered page can be empty and still carry a `next_cursor`, which `iterate_files` follows. A link downloads a file under the name a person sees, a zip is queued, then read until it is ready, and an upload names the method it was made to try to be recorded as that method's test file ([`docs/files.md`](docs/files.md)):
+
+```python
+from pipelex_sdk.product_models import FileKind, FileLinked, FileLinkTarget, UploadKind
+
+page = await client.list_files(q="invoice", kind=FileKind.UPLOADED, formats=["pdf"])
+started = await client.start(method_id="mt_123", inputs={"invoice": {"url": page.items[0].uri}})
+detail = await client.get_file(page.items[0].file_id)  # the whole record, with the runs and examples that used it
+links = await client.link_files([FileLinkTarget(file_id=detail.file_id)])
+for link in links.items:
+    if isinstance(link, FileLinked):
+        print(link.name, link.url)  # a fifteen-minute link: keep it out of logs
+archive = await client.request_file_archive(run_id=started.pipeline_run_id)
+# then get_file_archive(archive.archive_id) until its state is ready or failed.
+run_files = await client.list_run_files(started.pipeline_run_id)  # what went in, came out and was made along the way
+# An upload recorded as a test file of the method it was made to try.
+await client.upload_file("cases/receipt.pdf", kind=UploadKind.TEST, method_id="mt_123")
 ```
 
 ### Read a method's inputs and outputs
@@ -360,7 +381,7 @@ There is no barrel import — package `__init__.py` files stay empty. Import eac
 - **Client & construction** — `from pipelex_sdk.client import PipelexAPIClient, DEFAULT_API_BASE_URL`
 - **Run lifecycle types** — `from pipelex_sdk.runs import RunStatus, RunPublic, RunRead, RunResults, RunResultState, WaitForResultOptions, PollInfo`, and the progress snapshot `RunProgress`, `RunProgressStatus`, `ProgressInvocation`, `ProgressInvocationStatus`, `ProgressBatch`, `ProgressCondition`, `ProgressFailure`, `ProgressAttempt` with `is_fresher_run_progress`
 - **Error reports** — `from pipelex_sdk.error_models import RunErrorReport, UserAction, ProviderErrorMetadata, MigrationErrorBlock, FieldError, ProblemUserAction, HostedProblemMembers`
-- **Product wire models** — `from pipelex_sdk.product_models import UserProfile, MethodData, MethodDetail, SavedMethodFile, MethodWriteInput, MethodDraftInput, MethodVersion, MethodVersionSummary, MethodPublished, MethodPublishUnchanged, MethodPublishRefused, Membership, MembershipsResponse, OrganizationBranding, OrganizationBrandingUpdate, BrandingColors, BrandingColorsUpdate, LogoDescriptor, SubscriptionResponse, PlanView, InvoiceView, OnboardingSubmission, UploadInput, UploadedFile, RunHistoryItem, RunDetail, ...`; a method's tree is `mthds`'s own, `MethodTree` and `TreeLimits` from `mthds.method_tree.models` and `FileEntry` from `mthds.method_tree.file_entry`.
+- **Product wire models** — `from pipelex_sdk.product_models import UserProfile, MethodData, MethodDetail, SavedMethodFile, MethodWriteInput, MethodDraftInput, MethodVersion, MethodVersionSummary, MethodPublished, MethodPublishUnchanged, MethodPublishRefused, Membership, MembershipsResponse, OrganizationBranding, OrganizationBrandingUpdate, BrandingColors, BrandingColorsUpdate, LogoDescriptor, SubscriptionResponse, PlanView, InvoiceView, OnboardingSubmission, UploadInput, UploadKind, UploadedFile, FileSummary, FileRecord, FileDetail, FileLinkTarget, FileLinked, FileLinkRefused, FileArchive, FileArchiveLimit, RunFilesPage, DraftFileFromFileResult, MethodExample, MethodExampleAssistantKept, MethodExampleAssistantCreated, RunHistoryItem, RunDetail, ...`; a method's tree is `mthds`'s own, `MethodTree` and `TreeLimits` from `mthds.method_tree.models` and `FileEntry` from `mthds.method_tree.file_entry`.
 - **Method selectors** — `from pipelex_sdk.method_selector import parse_method_selector, ParsedMethodSelector`
 - **Validation verdict types** — `from pipelex_sdk.validation_models import PipelexValidationResult, PipelexValidationReport, PipelexInvalidReport, ValidationErrorItem, SuggestedFix, TreeFileRead, TreeFileUse, VALIDATION_VIEW_INPUT_FORM, ...`
 - **Crate routes** — `from pipelex_sdk.crate_models import ResolveRequest, CodegenRequest, PipeIORequest, PipeIOValidReport, CrateInvalidReport, ...`, the requests and the two 200 arms of `resolve`, `codegen` and `pipe_io`, which take the method's tree as `files`, `tree` or `contents`

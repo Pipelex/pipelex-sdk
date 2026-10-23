@@ -570,7 +570,8 @@ class TestClientProduct:
 
     def test_upload_base64_payload(self, mocker: MockerFixture) -> None:
         client = self._client()
-        send = self._mock_send(mocker, client, _response(200, json_body={"uri": "s3://x", "filename": "f.pdf"}))
+        answer = {"uri": "s3://x", "filename": "f.pdf", "file_id": "fl_01a16405-12a5-757c-b44c-10c40b5a947b"}
+        send = self._mock_send(mocker, client, _response(200, json_body=answer))
 
         result = asyncio.run(client.upload(UploadInput(filename="f.pdf", data="Zm9v", content_type="application/pdf")))
 
@@ -578,6 +579,17 @@ class TestClientProduct:
         assert sent.url == f"{_BASE_URL}/v1/upload"
         assert sent.body == {"filename": "f.pdf", "data": "Zm9v", "content_type": "application/pdf"}
         assert result.uri == "s3://x"
+        assert result.file_id == "fl_01a16405-12a5-757c-b44c-10c40b5a947b"
+
+    def test_upload_answer_without_a_file_id_still_reads(self, mocker: MockerFixture) -> None:
+        # A deployment that predates file records answers no `file_id`; the upload still succeeded.
+        client = self._client()
+        self._mock_send(mocker, client, _response(200, json_body={"uri": "s3://x", "filename": "f.pdf"}))
+
+        result = asyncio.run(client.upload(UploadInput(filename="f.pdf", data="Zm9v", content_type="application/pdf")))
+
+        assert result.uri == "s3://x"
+        assert result.file_id is None
 
     # ── Runs list / update ───────────────────────────────────────────
 
