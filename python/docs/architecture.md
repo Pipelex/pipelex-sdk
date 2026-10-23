@@ -327,6 +327,7 @@ This SDK is a port of the TypeScript `@pipelex/sdk` (`PipelexApiClient`) and tra
 
 - **Tooling routes** — `lint`, `format` (`resolve` and `codegen` shipped in 0.8.0 with the method selectors and are **not** gaps).
 - **A test file's upload** — `@pipelex/sdk`'s `upload` takes a `kind` and a `method_id` to store a test input made for one method, and raises its `TestFileRefusedError` when the platform refuses one; `UploadInput` here takes neither, and the class has no Python counterpart (it is `only_in: js` in the shared error case file).
+- **The upload grant** — `@pipelex/sdk`'s `requestUploadGrant` (`POST /v1/upload/grant`), `describeUpload` and `uploadWithGrant` let a browser page that must not hold the API key send a file straight to storage, the file's SHA-256 naming the object. This SDK has no grant path, by design rather than by delay: it holds the key wherever it runs, so it uploads through `POST /v1/upload`, where the platform hashes the bytes itself and answers the file's `file_id`. What `uploadWithGrant` decides from storage's answers therefore has nothing to apply to here, the `412` of a create-only `PUT` read as stored for a grant that names its bytes among them; the shared `RejectedAssetCode` and `UploadTransportCode` still name those answers' codes, so a consumer of both SDKs branches on one vocabulary.
 
 The `pipelex-sdk` command is not a gap: it is at parity with `@pipelex/sdk`'s, both running every case of one recorded table ("The `pipelex-sdk` command" above).
 

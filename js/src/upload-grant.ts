@@ -216,7 +216,9 @@ export interface GrantedUpload {
  * Two answers from storage are no failure. A `412` refuses the create-only `PUT`
  * because the object already exists: when the grant names the file by its bytes (it
  * signs `x-amz-checksum-sha256`), that object can only hold those bytes, stored
- * meanwhile by another request, so the call succeeds. A `409 ConditionalRequestConflict`
+ * meanwhile by another upload of them or by the platform's own copy of a run's file
+ * that holds them, so the call succeeds with the grant's `uri` and `file_id`, the answer
+ * a `stored: true` grant gives. A `409 ConditionalRequestConflict`
  * says another write of the object was in flight, so the `PUT` is sent again after a
  * short pause, a few times at most.
  *
@@ -438,6 +440,11 @@ function grantedUpload(grant: UploadGrant): GrantedUpload {
 /**
  * Whether the grant names its object by the file's bytes: it signs the SHA-256 they were
  * described with, so the object it creates can hold those bytes and no others.
+ *
+ * The signed checksum is the platform's own mark of such a grant: it signs
+ * `x-amz-checksum-sha256` on every grant asked for with a hash, whose key is named after
+ * the bytes, and on no grant asked for without one, whose key is a fresh name
+ * (`platform/docs/uploads.md` in `pipelex-server`). The key's shape is never read.
  */
 function namesItsBytes(grant: UploadGrant): boolean {
   return Object.keys(grant.headers ?? {}).some((name) => name.toLowerCase() === CHECKSUM_HEADER);

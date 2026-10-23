@@ -313,8 +313,28 @@ describe("uploadWithGrant — a grant that names its bytes", () => {
       const result = await uploadWithGrant({ ...HASHED_GRANT, headers }, pdfFile());
 
       expect(result).toEqual({ uri: HASHED_GRANT.uri, file_id: HASHED_GRANT.file_id });
+      // The same answer as the grant that found the bytes held and asked for no PUT.
+      expect(result).toEqual(await uploadWithGrant(STORED_GRANT, pdfFile()));
     },
   );
+
+  it("tells a grant that names its bytes by its signed checksum, never by its key's shape", async () => {
+    // A grant without the checksum is a hashless one, whatever its key looks like: its 412
+    // still means it was used, and the one with the checksum still reads as stored.
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(xmlResponse(412, s3Error("PreconditionFailed", "pre-conditions"))),
+    );
+
+    const hashlessError = await uploadWithGrant(
+      { ...HASHED_GRANT, headers: GRANT.headers },
+      pdfFile(),
+    ).catch((e: unknown) => e);
+    const hashed = await uploadWithGrant({ ...HASHED_GRANT, uri: GRANT.uri }, pdfFile());
+
+    expect(hashlessError).toBeInstanceOf(RejectedAssetError);
+    expect((hashlessError as RejectedAssetError).code).toBe("grant_used");
+    expect(hashed).toEqual({ uri: GRANT.uri, file_id: GRANT.file_id });
+  });
 
   it("maps a body whose bytes differ from the hash onto RejectedAssetError, saying so", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
