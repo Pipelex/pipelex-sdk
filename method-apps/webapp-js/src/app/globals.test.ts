@@ -94,6 +94,56 @@ describe("globals.css", () => {
     expect(css).toMatch(/\.rounded-lg\s*\{\s*border-radius:\s*var\(--radius\)/);
   });
 
+  it("emits the brand utilities the band, the tabs and the run status paint with", async () => {
+    const css = await build(SOURCE);
+
+    // An organization's colours reach the page only through these. A mapping
+    // dropped from the `@theme inline` block is a class Tailwind does not
+    // know, and the band or the run status would render uncoloured.
+    const required: ReadonlyArray<[string, string]> = [
+      ["bg-app-header", "background-color"],
+      ["text-app-header-foreground", "color"],
+      ["bg-brand-muted", "background-color"],
+      ["text-brand-muted-foreground", "color"],
+      ["border-brand", "border-color"],
+      ["border-t-brand", "border-top-color"],
+      ["bg-primary", "background-color"],
+      ["text-primary-foreground", "color"],
+    ];
+    const missing = required.filter(
+      ([cls, prop]) => !new RegExp(`\\.${cls}\\s*\\{\\s*${prop}:`).test(css),
+    );
+    expect(missing.map(([cls]) => cls)).toEqual([]);
+  });
+
+  it("falls each brand token back to what an unbranded app shows", async () => {
+    const css = await build(SOURCE);
+
+    // Only a branded app's page defines the brand tokens, so an unbranded one
+    // reads these fallbacks: the button colour for the ink, the neutral muted
+    // fill for the pale fill, the page for the band.
+    expect(css).toMatch(/\.border-brand\s*\{\s*border-color:\s*var\(--brand,\s*var\(--primary\)\)/);
+    // A plain fallback, so no browser is handed the `color-mix()`-less
+    // fallback Tailwind writes: the button colour, solid, under its own ink.
+    expect(css).toMatch(
+      /\.bg-brand-muted\s*\{\s*background-color:\s*var\(--brand-muted,\s*var\(--muted\)\);\s*\}/,
+    );
+    expect(css).toMatch(
+      /\.text-brand-muted-foreground\s*\{\s*color:\s*var\(--brand-muted-foreground,\s*var\(--brand,\s*var\(--primary\)\)\)/,
+    );
+    expect(css).toMatch(
+      /\.bg-app-header\s*\{\s*background-color:\s*var\(--app-header,\s*var\(--page\)\)/,
+    );
+  });
+
+  it("paints the page with the page token, which .dark redefines", async () => {
+    const css = await build(SOURCE);
+    expect(css).toMatch(
+      /html,\s*body\s*\{\s*background-color:\s*var\(--page\);\s*color:\s*var\(--page-foreground\)/,
+    );
+    expect(css).toMatch(/\.dark\s*\{\s*--page:\s*#09090b;/);
+  });
+
   it("scans the form kernel's bundle, which only the @source directive reaches", async () => {
     const [withSource, withoutIt] = await Promise.all([
       build(SOURCE),

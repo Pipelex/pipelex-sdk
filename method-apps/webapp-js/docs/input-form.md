@@ -203,7 +203,9 @@ wc -l /tmp/without.css /tmp/with.css
 
 `@tailwindcss/cli` is a devDependency for exactly this reason: it is a different package from the `@tailwindcss/postcss` plugin that builds the app, so without the entry those two lines would be an unpinned `npx` fetch off the network — grading the stylesheet with a compiler the app never runs.
 
-`@custom-variant dark` is declared even though this app never sets a dark class: it costs nothing, and it is what a consumer who adds a dark theme would otherwise have to discover. Dark token values come with `theme.css` already.
+`@custom-variant dark` is declared even though this app never sets a dark class: it costs nothing, and it is what a consumer who adds a dark theme would otherwise have to discover. Dark token values come with `theme.css` already, the page's dark colour with `globals.css`'s `.dark` rule, and an organization's dark colour set with the `.dark` rule a branded page renders ([`docs/branding.md`](branding.md)).
+
+The `@theme inline` block also maps the organization's brand: `--color-brand`, `--color-brand-muted` and `--color-brand-muted-foreground`, which the kernel's controls read under the same names, and `--color-app-header` with its foreground for the band. A branded page defines the variables behind them, and each mapping falls back to what an unbranded app shows, so `globals.test.ts` checks the fallbacks as well as the utilities.
 
 ## Adding an input to a method
 

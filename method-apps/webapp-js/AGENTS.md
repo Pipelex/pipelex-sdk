@@ -17,7 +17,7 @@ The full project guide for AI coding agents is [`CLAUDE.md`](CLAUDE.md) — read
 - **No hand-written output shapes, no `as` casts on SDK output** — go through the `parseXxx()` narrowers in `src/types/`, which wrap the generated binders.
 - **Server Actions return classified errors** (`{ ok: false, error }`), never throw across the server→client boundary.
 
-Reference docs live in [`docs/`](docs/) — [`docs/add-method.md`](docs/add-method.md) for adding and removing a method, [`docs/codegen.md`](docs/codegen.md) for the generated-types design, and [`docs/input-form.md`](docs/input-form.md) for how forms and result views are rendered.
+Reference docs live in [`docs/`](docs/) — [`docs/add-method.md`](docs/add-method.md) for adding and removing a method, [`docs/codegen.md`](docs/codegen.md) for the generated-types design, [`docs/input-form.md`](docs/input-form.md) for how forms and result views are rendered, and [`docs/branding.md`](docs/branding.md) for how the page wears the organization's logo and colours.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

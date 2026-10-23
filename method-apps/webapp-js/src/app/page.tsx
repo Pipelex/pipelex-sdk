@@ -1,14 +1,12 @@
-import { MethodPage } from "@/components/MethodPage";
-import { SITE } from "@/site";
+import { connection } from "next/server";
+import { AppPage } from "@/components/AppPage";
+import { brandingFromApi } from "@/lib/branding";
+import { readOrganizationBranding } from "@/lib/brandingRead";
 
-export default function Home() {
-  return (
-    <main className="mx-auto max-w-2xl px-6 py-16">
-      <header className="mb-8">
-        <h1 className="text-3xl font-semibold tracking-tight text-slate-900">{SITE.title}</h1>
-        <p className="mt-2 text-sm text-slate-600">{SITE.description}</p>
-      </header>
-      <MethodPage />
-    </main>
-  );
+export default async function Home() {
+  // Rendered per request, never at build time: the app wears its organization's
+  // branding as it stands now, read with the deployment's key, which a build
+  // does not have. A read that fails renders the page unbranded.
+  await connection();
+  return <AppPage branding={brandingFromApi(await readOrganizationBranding())} />;
 }

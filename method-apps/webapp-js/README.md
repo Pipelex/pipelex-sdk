@@ -45,6 +45,8 @@ The command refuses rather than overwriting a slice that already exists, and `DR
 4. A narrower validates the main output against the zod schema generated from the method's contract.
 5. `<RunResult>` renders the validated output from the method's output-form descriptor, or `<ErrorDisplay>` shows a classified error. A file the run produced is streamed from the app's own origin through `/api/assets/…`, so the store's signed link is never what the browser fetches (the run's JSON receipt still carries it for a reader who opens that view), and `<RunDetails>` shows the run's id with a Copy button, and what the run consumed behind a closed "Usage and cost" disclosure.
 
+The page wears the branding of the organization the API key belongs to, when an admin has set one: its logo in a band across the top, its colours on the Run button, the tabs and the run status, and a "Made with Pipelex" credit at the end. The server reads it per request, served from memory for a minute, and a read that fails keeps the branding read before it, or renders the page unbranded when there is none ([`docs/branding.md`](docs/branding.md)).
+
 [`docs/input-form.md`](docs/input-form.md) covers the forms and result views, and [`docs/codegen.md`](docs/codegen.md) covers the generated types and the checks that keep them current.
 
 ## Prerequisites
@@ -113,6 +115,7 @@ Next.js 16 (App Router), React 19, TypeScript 5 (strict), Tailwind CSS 4 (config
 - [`docs/codegen.md`](docs/codegen.md) — the generated types and the checks that keep them current.
 - [`docs/input-form.md`](docs/input-form.md) — how the input form and the result view are rendered from a method's contract.
 - [`docs/errors.md`](docs/errors.md) — what a person reads when something fails, and where a failed run's reason comes from.
+- [`docs/branding.md`](docs/branding.md) — how the app wears its organization's logo and colours, and how a project changes that.
 - [`docs/ci.md`](docs/ci.md) — what the pull-request checks prove.
 - [`docs/chrome-lineage.md`](docs/chrome-lineage.md) — what this template took from the gallery, and what it changed.
 - [`CLAUDE.md`](CLAUDE.md) — the project guide for coding agents.

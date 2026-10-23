@@ -64,6 +64,18 @@ describe("MethodPage", () => {
     );
   });
 
+  it("marks the selected tab with the brand's ink, through tokens alone", () => {
+    render(<MethodPage methods={[FIRST, SECOND]} />);
+    const selected = screen.getByRole("tab", { name: "First method" });
+    const other = screen.getByRole("tab", { name: "Second method" });
+    // The organization's accent reaches the tabs only through tokens: the ink,
+    // which reads against the page, underlines the selected one.
+    expect(selected).toHaveClass("border-brand", "text-foreground");
+    expect(other).toHaveClass("text-muted-foreground");
+    const classes = [screen.getByRole("tablist"), selected, other].map((el) => el.className);
+    expect(classes.join(" ")).not.toMatch(/\b(?:bg|text|border)-(?:slate|gray|zinc)-\d+/);
+  });
+
   it("renders the app's own registry when given none", () => {
     render(<MethodPage />);
     expect(screen.getByText("REGISTERED PANEL")).toBeVisible();
