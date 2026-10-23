@@ -1637,7 +1637,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """Poll a run to a terminal state and return its result.
 
         Resolves on `COMPLETED`, raises `RunFailedError` on any other terminal status — carrying the
-        run's status and its stored error report, typed, as `error` — and raises
+        run's status, the `run.failed` problem as `problem`, and the run's own problem as `run_error` — and raises
         `RunTimeoutError` if `timeout_seconds` elapses first (the run keeps executing server-side —
         resume later by `run_id`). Honors the server's `Retry-After`. A poll that gets no answer
         raises `ApiUnreachableError` at once, the loop not retrying it. Async-native: cancelling the
@@ -2137,12 +2137,12 @@ class PipelexAPIClient(MthdsAPIClient):
                 no file (`EmptyMethodTreeError`).
             TreeSourceError: A `tree` given as a path is missing, or a file of `tree` cannot be read
                 or changed since it was listed.
-            ApiResponseError: `422` `invalid_method_files` for a map the standard refuses, with its
-                `tree_refusal`; `422` `method_tree_too_large` for a tree past one of the deployment's
-                limits, named in its `limit`; `422` `blob_mismatch` for a hash stated at another size
-                than the one held; `422` `missing_blobs` for a hash entry whose bytes the organization
-                does not hold; `413` `payload_too_large` for a method that would leave no room for a
-                publish.
+            ApiResponseError: `422` `method.package_invalid` for a map the standard refuses, naming the
+                path in its `params`, and for a tree past one of the deployment's limits, its `params`
+                carrying `reason` `too_large` and the integer `limit`; `422` `request.invalid` for a hash
+                stated at another size than the one held; `422` `request.blobs_missing` for a hash entry
+                whose bytes the organization does not hold; `413` `request.too_large` for a method that
+                would leave no room for a publish.
         """
         files = await self._method_tree_files(
             call="create_method",
@@ -2188,10 +2188,10 @@ class PipelexAPIClient(MthdsAPIClient):
             TreeSourceError: A `tree` given as a path is missing, or a file of `tree` cannot be read
                 or changed since it was listed.
             ApiResponseError: `409` `pipelex.catalog.update_conflict` for a draft that moved since the token;
-                `404` `not_found` for an unknown or foreign-org method; `409` `pipelex.catalog.being_deleted`
-                while its erasure runs; the `422` refusals of a tree `create_method` lists; `413`
-                `payload_too_large` for a draft that would grow the method past the room a publish
-                needs; `403` for a read-only key; a `503` that wrote nothing, safe to retry, when the
+                `404` `pipelex.catalog.not_found` for an unknown or foreign-org method; `409`
+                `pipelex.catalog.being_deleted` while its erasure runs; the `422` refusals of a tree
+                `create_method` lists; `413` `request.too_large` for a draft that would grow the method past
+                the room a publish needs; `403` for a read-only key; a `503` that wrote nothing, safe to retry, when the
                 method kept changing under the write.
         """
         endpoint = f"{_method_path(method_id, call='write_draft')}/draft"
@@ -2570,11 +2570,10 @@ class PipelexAPIClient(MthdsAPIClient):
             name: The new name.
 
         Raises:
-            ApiResponseError: `404` `not_found`; `409` `pipelex.catalog.being_deleted`; `403` for a read-only
-                key; `422` for an empty name or one holding a lone surrogate; `413`
-                `payload_too_large` for a name so long it would leave the method too large to
-                publish; a `503` that wrote nothing, safe to retry, when draft writes kept landing
-                under the rename.
+            ApiResponseError: `404` `pipelex.catalog.not_found`; `409` `pipelex.catalog.being_deleted`; `403`
+                for a read-only key; `422` for an empty name or one holding a lone surrogate; `413`
+                `request.too_large` for a name so long it would leave the method too large to publish; a
+                `503` that wrote nothing, safe to retry, when draft writes kept landing under the rename.
         """
         return await self._request_product(
             "PATCH", _method_path(method_id, call="rename_method"), body={"name": name}, read=MethodData.model_validate
@@ -2610,10 +2609,10 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `expected_draft_updated_at` is not a `str` — `None` included; nothing
                 is sent.
             ApiResponseError: When no verdict was produced: `409` `pipelex.catalog.update_conflict` for a draft
-                that moved since the token; `409` `pipelex.catalog.being_deleted`; `404` `not_found`; `422`
-                for a draft with no `.mthds` file or whose file names a run could not assemble (one
-                name used by a `.mthds` and a Python file); `413` `payload_too_large` for a draft too
-                large to publish; `403` for a read-only key; `502` or `503` from the runner, as above.
+                that moved since the token; `409` `pipelex.catalog.being_deleted`; `404`
+                `pipelex.catalog.not_found`; `422` for a draft with no `.mthds` file or whose file names a
+                run could not assemble (one name used by a `.mthds` and a Python file); `413`
+                `request.too_large` for a draft too large to publish; `403` for a read-only key; `502` or `503` from the runner, as above.
         """
         # Checked as an `object`, as `get_method_version` checks its version: a caller forwarding an
         # optional `updated_at` would otherwise send a null token and read the platform's `422`.
@@ -2643,9 +2642,9 @@ class PipelexAPIClient(MthdsAPIClient):
             reads versions whole. A method never published answers an empty page.
 
         Raises:
-            ApiResponseError: `404` `not_found` for an unknown method; `409` `pipelex.catalog.being_deleted`;
-                `400` `malformed_request` for a cursor the listing did not issue for this method;
-                `422` for a `limit` outside 1 to 100.
+            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown method; `409`
+                `pipelex.catalog.being_deleted`; `422` `request.invalid` for a cursor the listing did not
+                issue for this method or a `limit` outside 1 to 100.
         """
         query = _product_query({"limit": limit, "cursor": cursor})
         endpoint = f"{_method_path(method_id, call='list_method_versions')}/versions{query}"
@@ -2737,18 +2736,18 @@ class PipelexAPIClient(MthdsAPIClient):
                 not a non-empty `str`, `name` or `expected_draft_updated_at` is given but is not a `str`, or
                 `idempotency_key` is not 1 to 255 visible ASCII characters; nothing is sent.
             ApiResponseError: When no verdict was produced, each refusal writing nothing a reader sees: `403`
-                `forbidden` for a request that is not from a web session; `403` `role_not_permitted` for a role that
-                may not change methods, in the method's organization or in the destination; `404`
-                `pipelex.org.not_found` for a destination the caller does not belong to, still being set up or
-                unknown, alike; `404` `pipelex.catalog.not_found` for an unknown method; `409`
-                `pipelex.catalog.being_deleted`; `409` `pipelex.catalog.update_conflict` for a draft that moved since
-                `expected_draft_updated_at`; `409` `conflict`,
-                `runtime`, for a draft whose tree the organization holds no full record of; `413`
-                `payload_too_large` for an example or a copy too large for one stored item; `422`
-                `validation_failed` for a body that does not validate; `422` `pipelex.catalog.copy_too_large` past one
-                of the copy's bounds on the stored files it copies, whose problem's `limit` member names it
-                (`MethodCopyLimit`); and, each with `retry` `yes`, a `502` when the platform could not read the caller's
-                memberships, a `500` `storage_backend_failed` and a `503` past the copy's deadline.
+                `auth.forbidden` for a request that is not from a web session, or for a role that may not change
+                methods, in the method's organization or in the destination; `404` `pipelex.org.not_found` for a
+                destination the caller does not belong to, still being set up or unknown, alike; `404`
+                `pipelex.catalog.not_found` for an unknown method; `409` `pipelex.catalog.being_deleted`; `409`
+                `pipelex.catalog.update_conflict` for a draft that moved since `expected_draft_updated_at`; a `409`
+                for a draft whose tree the organization holds no full record of; `413` `request.too_large` for an
+                example or a copy too large for one stored item; `422` `request.invalid` for a body that does not
+                validate; `422` `pipelex.catalog.copy_too_large` past one of the copy's bounds on the stored files it
+                copies, whose problem's `limit` member names it (`MethodCopyLimit`); and, each with `retry` `yes`, a
+                `502` `runtime.unavailable` when the platform could not read the caller's memberships, a `503`
+                `pipelex.storage.unavailable` when storage failed, and a `503` `runtime.unavailable` past the copy's
+                deadline.
         """
         call = "copy_method"
         endpoint = f"{_method_path(method_id, call=call)}/copy"
@@ -2791,9 +2790,9 @@ class PipelexAPIClient(MthdsAPIClient):
             copied, and a copy itself, answer an empty page.
 
         Raises:
-            ApiResponseError: `404` `not_found` for an unknown method; `409` `method_being_deleted`; `400`
-                `malformed_request` for a cursor the listing did not issue for this method; `422` for a `limit`
-                outside 1 to 100.
+            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown method; `409`
+                `pipelex.catalog.being_deleted`; `422` `request.invalid` for a cursor the listing did not issue
+                for this method or a `limit` outside 1 to 100.
         """
         query = _product_query({"limit": limit, "cursor": cursor})
         endpoint = f"{_method_path(method_id, call='list_method_copies')}/copies{query}"
@@ -2858,7 +2857,7 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `name` or `inputs` is `None`, or `run_id` is given but is empty or not a
                 `str`; nothing is sent.
             ApiResponseError: `404` `run.not_found` for a `run_id` that is not one of this method's runs
-                in the caller's organization, with nothing written; `413` `payload_too_large` for an
+                in the caller's organization, with nothing written; `413` `request.too_large` for an
                 example larger than one stored item holds; `422` for a name that is empty, blank or over
                 200 characters, or inputs that are not a JSON object; and the codes every example route
                 answers.
@@ -2887,8 +2886,8 @@ class PipelexAPIClient(MthdsAPIClient):
             1 MB. For every example, prefer `iterate_method_examples`, which follows the cursors.
 
         Raises:
-            ApiResponseError: `400` `malformed_request` for a cursor the listing did not issue for this
-                method; `422` for a `limit` outside 1 to 100; and the codes every example route answers.
+            ApiResponseError: `422` `request.invalid` for a cursor the listing did not issue for this
+                method or a `limit` outside 1 to 100; and the codes every example route answers.
         """
         query = _product_query({"limit": limit, "cursor": cursor})
         endpoint = f"{_method_path(method_id, call='list_method_examples')}/examples{query}"
@@ -2959,7 +2958,7 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`, or neither `name` nor
                 `inputs` is given; nothing is sent.
-            ApiResponseError: `413` `payload_too_large` for inputs larger than one stored item holds;
+            ApiResponseError: `413` `request.too_large` for inputs larger than one stored item holds;
                 `422` for a name that is empty, blank or over 200 characters, or inputs that are not a JSON
                 object; a `503` that wrote nothing, safe to retry, when concurrent edits kept landing under
                 the write; and the codes every example route answers.
@@ -3062,8 +3061,8 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `name` or `inputs` is `None`, `example_id` is given but is not a non-empty `str`,
                 `input_revision` is given but is not a positive integer, or only one of the two is given; nothing
                 is sent.
-            ApiResponseError: `403` `role_not_permitted` for a role that may not change methods, such as a runner;
-                `413` `payload_too_large` for an example larger than one stored item holds; `422` for a name that
+            ApiResponseError: `403` `auth.forbidden` for a role that may not change methods, such as a runner;
+                `413` `request.too_large` for an example larger than one stored item holds; `422` for a name that
                 is empty, blank or over 200 characters, or inputs that are not a JSON object; and the codes every
                 example route answers. An answer off the union is one the SDK cannot read, raised as an
                 `ApiResponseError` too.
@@ -3475,8 +3474,8 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: `file_id` is refused as `get_file` refuses it, or `name` is not a `str`; nothing
                 is sent.
-            ApiResponseError: `403` `role_not_permitted` past the rule above; `404` `not_found` for a file that is
-                not the organization's; `422` for a name over 512 characters or with nothing left once cleaned.
+            ApiResponseError: `403` `auth.forbidden` past the rule above; `404` `pipelex.storage.not_found` for a
+                file that is not the organization's; `422` for a name over 512 characters or with nothing left once cleaned.
         """
         call = "rename_file"
         segment = _id_path_segment(file_id, call=call, what=_FILE_ID_ARGUMENT)
@@ -3634,11 +3633,12 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: `method_id` is refused as every method route refuses it, `file_id` or `path` is
                 not a non-empty `str`, or `expected_updated_at` is given but is not a `str`; nothing is sent.
-            ApiResponseError: `403` `role_not_permitted` for a role that may not change methods; `404` for an
+            ApiResponseError: `403` `auth.forbidden` for a role that may not change methods; `404` for an
                 unknown method or a file that is not the organization's; `409` `pipelex.catalog.being_deleted`, `409`
                 `pipelex.catalog.update_conflict` for a stale token, and `409` `conflict` for a file whose upload has not
-                finished or whose stored bytes do not match its record; `422` `invalid_method_files` for a path
-                the draft cannot hold, and `422` `method_tree_too_large` past the deployment's limits.
+                finished or whose stored bytes do not match its record; and `422` `method.package_invalid` for a
+                path the draft cannot hold, naming the path in its `params`, and past the deployment's limits, its
+                `params` carrying `reason` `too_large` and the integer `limit`.
         """
         call = "copy_file_into_draft"
         endpoint = f"{_method_path(method_id, call=call)}/draft/files/from-file"
@@ -3678,8 +3678,8 @@ class PipelexAPIClient(MthdsAPIClient):
         `create_method` sends it.
 
         Returns a 200 verdict: branch on `is_valid` before reading the arm. A no-verdict
-        condition (a tree the runner cannot read — `InvalidMethodFiles`, `MissingBlobs`,
-        `MethodTreeTooLarge`, `InvalidBundle` — a malformed selector, a selector-resolution
+        condition (a tree the runner cannot read — `method.package_invalid`, `request.blobs_missing`, a
+        tree holding no `.mthds` bundle — a malformed selector, a selector-resolution
         failure — fetch failure, no package at the address, an unknown or foreign-org id — auth, a
         server fault) raises `ApiResponseError`, never an `is_valid: false` verdict.
 

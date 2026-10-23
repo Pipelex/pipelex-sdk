@@ -2546,10 +2546,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Maps the server's poll semantics to a discriminated union:
    * - HTTP 202 → `running` (with the `Retry-After` hint)
    * - HTTP 200 → `completed` (with the result artifacts)
-   * - HTTP 409 → `failed` (terminal non-`COMPLETED`), carrying the problem's `detail` as
-   *   `message`, its `run_status` member as `status` (recovered from `detail` on a platform
-   *   that predates the member) and its `error` member, the run's stored error report, typed
-   *   as `error`
+   * - HTTP 409 `run.failed` → `failed` (terminal non-`COMPLETED`), carrying the problem as
+   *   `problem`, its `detail` as `message`, the terminal status its `run_status` parameter names
+   *   as `status`, and the run's own problem, which it nests as `run_error`, as `error`; a `409`
+   *   `run.not_finished` → `running`, and any other `409` throws `ApiResponseError`
    * - HTTP 503 → `running` (Temporal degraded — retry, never fail a poller)
    *
    * `options.artifacts` narrows the read to the named artifacts, sent as one
@@ -2879,12 +2879,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Throws `RequestArgumentError` for two forms of the tree, or `contents` holding no file, before
    * any request; `MethodFileTransferError` when a file the organization lacks could not be
-   * uploaded, and nothing is saved. Throws `ApiResponseError`: `422` `invalid_method_files` for a
-   * map the standard refuses, with its `tree_refusal`; `422` `method_tree_too_large` for a tree
-   * past one of the deployment's limits, named in its `limit`; `422` `blob_mismatch` for a hash
-   * stated at another size than the one held; `422` `request.blobs_missing` for a hash entry whose bytes
-   * the organization does not hold; `413` `payload_too_large` for a method that would leave no
-   * room for a publish.
+   * uploaded, and nothing is saved. Throws `ApiResponseError`: `422` `method.package_invalid` for
+   * a map the standard refuses, naming the path in its `params`, and for a tree past one of the
+   * deployment's limits, its `params` carrying `reason` `too_large` and the integer `limit`;
+   * `422` `request.invalid` for a hash stated at another size than the one held; `422`
+   * `request.blobs_missing` for a hash entry whose bytes the organization does not hold; `413`
+   * `request.too_large` for a method that would leave no room for a publish.
    */
   async createMethod(input: MethodWriteInput): Promise<MethodData> {
     const source = await this.treeToSend("createMethod", input, SAVE_SENDING);
@@ -2912,10 +2912,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` for a draft that
    * gives its tree in no form or in two, or `contents` holding no file, before any request;
    * `MethodFileTransferError` when a file the organization lacks could not be uploaded. Throws
-   * `ApiResponseError`: `404` `not_found` for an unknown or foreign-org method, `409`
-   * `pipelex.catalog.being_deleted` while its erasure runs, the `422` refusals of a tree `createMethod`
-   * lists, `413` `payload_too_large` for a draft that would grow the method past the room a
-   * publish needs, `403` for a read-only key, and a `503` that wrote nothing, safe to retry,
+   * `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown or foreign-org method,
+   * `409` `pipelex.catalog.being_deleted` while its erasure runs, the `422` refusals of a tree
+   * `createMethod` lists, `413` `request.too_large` for a draft that would grow the method past the
+   * room a publish needs, `403` for a read-only key, and a `503` that wrote nothing, safe to retry,
    * when the method kept changing under the write.
    */
   async writeDraft(methodId: string, input: MethodDraftInput): Promise<MethodData> {
@@ -3372,11 +3372,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * draft, so the `updated_at` a caller holds stays valid for its next `writeDraft` or
    * `publishMethod`.
    *
-   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`,
-   * `409` `pipelex.catalog.being_deleted`, `403` for a read-only key, `422` for an empty name or one
-   * holding a lone surrogate, `413` `payload_too_large` for a name so long it would leave the
-   * method too large to publish, and a `503` that wrote nothing, safe to retry, when draft
-   * writes kept landing under the rename.
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404`
+   * `pipelex.catalog.not_found`, `409` `pipelex.catalog.being_deleted`, `403` for a read-only key,
+   * `422` for an empty name or one holding a lone surrogate, `413` `request.too_large` for a name
+   * so long it would leave the method too large to publish, and a `503` that wrote nothing, safe
+   * to retry, when draft writes kept landing under the rename.
    */
   async renameMethod(methodId: string, input: MethodRenameInput): Promise<MethodData> {
     return this.requestMethodData("PATCH", methodPath(methodId, "renameMethod"), {
@@ -3401,10 +3401,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` when
    * `expected_draft_updated_at` is not a string, before any request. Throws `ApiResponseError`
    * when no verdict was produced: `409` `pipelex.catalog.update_conflict` for a draft that moved since
-   * the token, `409` `pipelex.catalog.being_deleted`, `404` `not_found`, `422` for a draft with no
-   * `.mthds` file or whose file names a run could not assemble (one name used by a `.mthds` and
-   * a Python file), `413` `payload_too_large` for a draft too large to publish, and `403` for a
-   * read-only key.
+   * the token, `409` `pipelex.catalog.being_deleted`, `404` `pipelex.catalog.not_found`, `422` for
+   * a draft with no `.mthds` file or whose file names a run could not assemble (one name used by a
+   * `.mthds` and a Python file), `413` `request.too_large` for a draft too large to publish, and
+   * `403` for a read-only key.
    *
    * Only a draft that differs from the latest version reaches the runner, and a runner that
    * cannot be reached, answers unusably or does not finish within the platform's deadline is a
@@ -3445,10 +3445,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * may be short while `nextCursor` is set, because the platform reads versions whole. A method
    * never published answers an empty page.
    *
-   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`
-   * for an unknown method, `409` `pipelex.catalog.being_deleted`, `400` `malformed_request` for a cursor
-   * the listing did not issue for this method, `422` for a `limit` outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a string nor `null`
-   * is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404`
+   * `pipelex.catalog.not_found` for an unknown method, `409` `pipelex.catalog.being_deleted`, and
+   * `422` `request.invalid` for a cursor the listing did not issue for this method or a `limit`
+   * outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a
+   * string nor `null` is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async listMethodVersions(
     methodId: string,
@@ -3518,23 +3519,21 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `destination_org_id` that is not a non-empty string, a `name` or an
    * `expected_draft_updated_at` given that is not a string, and a malformed idempotency key.
    * Throws `ApiResponseError` when no verdict was produced, each refusal writing nothing a reader
-   * sees: `403` `forbidden` for a request that is not from a web session; `403`
-   * `role_not_permitted` for a role that may not change methods, in the method's organization or
-   * in the destination; `404` `pipelex.org.not_found` for a destination the caller does not
-   * belong to, still being set up or unknown, alike; `404` `pipelex.catalog.not_found` for an
-   * unknown method; `409` `pipelex.catalog.being_deleted`; `409`
-   * `pipelex.catalog.update_conflict` for a draft that moved since
-   * `expected_draft_updated_at`; `409` `conflict`, `runtime`, for a draft whose tree the
-   * organization holds no full record of; `413` `payload_too_large` for an example or a copy too
-   * large for one stored item; `422` `validation_failed` for a body that does not validate, such
-   * as a name holding a lone surrogate; `422` `pipelex.catalog.copy_too_large` past one of the
-   * copy's bounds on the stored files it copies, named by the problem's `limit` member
-   * (`MethodCopyLimit`); and, each with `retry` `yes`, a `502` when the platform could not read
-   * the caller's memberships, a
-   * `500` `storage_backend_failed` and a `503` past the copy's deadline. An answer whose
-   * `outcome` is neither arm's, a `copied` one whose `method` is not an object or a `refused` one
-   * whose `references` is not an array, is an answer the SDK cannot read, thrown as an
-   * `ApiResponseError` too.
+   * sees: `403` `auth.forbidden` for a request that is not from a web session, or for a role
+   * that may not change methods, in the method's organization or in the destination; `404`
+   * `pipelex.org.not_found` for a destination the caller does not belong to, still being set up
+   * or unknown, alike; `404` `pipelex.catalog.not_found` for an unknown method; `409`
+   * `pipelex.catalog.being_deleted`; `409` `pipelex.catalog.update_conflict` for a draft that
+   * moved since `expected_draft_updated_at`; a `409` for a draft whose tree the organization holds
+   * no full record of; `413` `request.too_large` for an example or a copy too large for one
+   * stored item; `422` `request.invalid` for a body that does not validate, such as a name holding
+   * a lone surrogate; `422` `pipelex.catalog.copy_too_large` past one of the copy's bounds on the
+   * stored files it copies, named by the problem's `limit` member (`MethodCopyLimit`); and, each
+   * with `retry` `yes`, a `502` `runtime.unavailable` when the platform could not read the
+   * caller's memberships, a `503` `pipelex.storage.unavailable` when storage failed, and a `503`
+   * `runtime.unavailable` past the copy's deadline. An answer whose `outcome` is neither arm's, a
+   * `copied` one whose `method` is not an object or a `refused` one whose `references` is not an
+   * array, is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async copyMethod(
     methodId: string,
@@ -3613,11 +3612,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * and a copy itself, answer an empty page. The listing is open to every member of the method's
    * organization, a runner included, as every read of a method is.
    *
-   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found` for
-   * an unknown method, `409` `method_being_deleted`, `400` `malformed_request` for a cursor the
-   * listing did not issue for this method, `422` for a `limit` outside 1 to 100. A page whose
-   * `items` is not an array or whose `next_cursor` is neither a string nor `null` is an answer the
-   * SDK cannot read, thrown as an `ApiResponseError` too.
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404`
+   * `pipelex.catalog.not_found` for an unknown method, `409` `pipelex.catalog.being_deleted`, and
+   * `422` `request.invalid` for a cursor the listing did not issue for this method or a `limit`
+   * outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a
+   * string nor `null` is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async listMethodCopies(
     methodId: string,
@@ -3641,7 +3640,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * it with a `409`.
    *
    * A double-clicked delete is safe: the claim is a conditional write, so the
-   * second call is an `ApiResponseError` (`409 method_being_deleted`) rather than a
+   * second call is an `ApiResponseError` (`409` `pipelex.catalog.being_deleted`) rather than a
    * second cascade over the same runs. An unknown or foreign-org id is a `404`. The
    * erasure deletes the method's published versions with the rest. Takes a bare catalog id,
    * as `getMethod` does: the whole method is erased, never one of its versions.
@@ -3673,7 +3672,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * request when `name` or `inputs` is not given (`null` counting as not given), and for a
    * `run_id` that is given but is not a non-empty string. Throws `ApiResponseError`: `404`
    * `run.not_found` for a `run_id` that is not one of this method's runs in the caller's
-   * organization, with nothing written; `413` `payload_too_large` for an example larger than one
+   * organization, with nothing written; `413` `request.too_large` for an example larger than one
    * stored item holds; `422` for a name that is empty, blank or over 200 characters, or inputs
    * that are not a JSON object; and the codes every example route answers.
    */
@@ -3703,12 +3702,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * may be short while `nextCursor` is set, because the platform reads examples whole and stops
    * a read at 1 MB; `iterateMethodExamples` follows the cursor for a caller that wants them all.
    *
-   * Throws `ApiResponseError`: `400` `malformed_request` for a cursor the listing did not issue
-   * for this method, `422` for a `limit` outside 1 to 100, and the codes every example route
-   * answers. A page whose `items` is not an array, whose `next_cursor` is neither a string nor
-   * `null`, or one of whose items is not an example `readMethodExample` can read, is an answer
-   * the SDK cannot read, thrown as an `ApiResponseError` too. An example whose inputs hold an
-   * integer past the safe range is read like any other, that integer as a `bigint`.
+   * Throws `ApiResponseError`: `422` `request.invalid` for a cursor the listing did not issue for
+   * this method or a `limit` outside 1 to 100, and the codes every example route answers. A page
+   * whose `items` is not an array, whose `next_cursor` is neither a string nor `null`, or one of
+   * whose items is not an example `readMethodExample` can read, is an answer the SDK cannot read,
+   * thrown as an `ApiResponseError` too. An example whose inputs hold an integer past the safe
+   * range is read like any other, that integer as a `bigint`.
    */
   async listMethodExamples(
     methodId: string,
@@ -3786,7 +3785,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Throws `RequestArgumentError` before any request for an example id that is empty, `.` or
    * `..`, or when neither `name` nor `inputs` is given. Throws `ApiResponseError`: `413`
-   * `payload_too_large` for inputs larger than one stored item holds, `422` for a name that is
+   * `request.too_large` for inputs larger than one stored item holds, `422` for a name that is
    * empty, blank or over 200 characters, or inputs that are not a JSON object, a `503` that wrote
    * nothing, safe to retry, when concurrent edits kept landing under the write, and the codes
    * every example route answers.
@@ -3890,8 +3889,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * the body is closed, and `null` reads as not given. Throws `RequestArgumentError` before any
    * request when `name` or `inputs` is not given, for an `example_id` that is not a non-empty
    * string or an `input_revision` that is not a positive integer, and when only one of the two is
-   * given. Throws `ApiResponseError`: `403` `role_not_permitted` for a role that may not change
-   * methods, such as a runner; `413` `payload_too_large` for an example larger than one stored item
+   * given. Throws `ApiResponseError`: `403` `auth.forbidden` for a role that may not change
+   * methods, such as a runner; `413` `request.too_large` for an example larger than one stored item
    * holds; `422` for a name that is empty, blank or over 200 characters, or inputs that are not a
    * JSON object; and the codes every example route answers. An answer whose `outcome` is neither
    * arm's, or whose `example` is not an example `readMethodExample` can read, is an answer the SDK
@@ -4205,9 +4204,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * target is short-lived and a bearer capability, so keep it out of logs. The route
    * never replays a grant: ask again for a new one rather than retrying; with a
    * `sha256`, a new grant answers the same file record. A declared `size` over the cap
-   * is a `413` `ApiResponseError` (`code` `payload_too_large`), a malformed `sha256` and
-   * a `size` other than the one the organization holds those bytes at are a `422`, and a
-   * deployment without the route answers a `404`. See `docs/input-preparation.md`.
+   * is a `413` `ApiResponseError` (`code` `request.too_large`), a malformed `sha256` and
+   * a `size` other than the one the organization holds those bytes at are a `422`
+   * (`request.invalid`), and a deployment without the route answers a `404`. See `docs/input-preparation.md`.
    */
   async requestUploadGrant(
     input: UploadGrantInput,
@@ -4417,9 +4416,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Sends `name` alone: the body is closed. Throws `RequestArgumentError` for a file id that is
    * empty, `.` or `..`, or holds a lone surrogate, and for a `name` that is not a string, before
-   * any request. Throws `ApiResponseError`: `403` `role_not_permitted` past the rule above; `404`
-   * `not_found` for a file that is not the organization's; `422` for a name over 512 characters or
-   * with nothing left once cleaned. An answer that is not an object is an answer the SDK cannot
+   * any request. Throws `ApiResponseError`: `403` `auth.forbidden` past the rule above; `404`
+   * `pipelex.storage.not_found` for a file that is not the organization's; `422` for a name over
+   * 512 characters or with nothing left once cleaned. An answer that is not an object is an answer the SDK cannot
    * read, thrown as an `ApiResponseError` too.
    */
   async renameFile(fileId: string, input: FileRenameInput): Promise<FileRecord> {
@@ -4665,14 +4664,15 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `expected_updated_at`, and nothing else: the body is closed, and a `null` token reads as not
    * given. Throws `RequestArgumentError` before any request for a `file_id` or a `path` that is not
    * a non-empty string, and an `expected_updated_at` that is not a string. Throws
-   * `ApiResponseError`: `403` `role_not_permitted` for a role that may not change methods; `404`
+   * `ApiResponseError`: `403` `auth.forbidden` for a role that may not change methods; `404`
    * for an unknown method or a file that is not the organization's; `409` `pipelex.catalog.being_deleted`,
    * `409` `pipelex.catalog.update_conflict` for a stale `expected_updated_at`, and `409` `conflict` for a
-   * file whose upload has not finished or whose stored bytes do not match its record; `422`
-   * `invalid_method_files` for a path the draft cannot hold, such as `.env` or `../logo.png`, and
-   * `422` `method_tree_too_large` past the deployment's limits. An answer whose `blob` is neither
-   * arm's, or whose `file` or `method` is not an object, is an answer the SDK cannot read, thrown
-   * as an `ApiResponseError` too.
+   * file whose upload has not finished or whose stored bytes do not match its record; and `422`
+   * `method.package_invalid` for a path the draft cannot hold, such as `.env` or `../logo.png`,
+   * naming the path in its `params`, and past the deployment's limits, its `params` carrying
+   * `reason` `too_large` and the integer `limit`. An answer whose `blob` is neither arm's, or
+   * whose `file` or `method` is not an object, is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too.
    */
   async copyFileIntoDraft(
     methodId: string,
@@ -4736,7 +4736,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `iterateRuns` does the latter for you.
    *
    * Each item is a `RunHistoryItem` — the id, status, timestamps, pipe and,
-   * for a failed run, its error report. The run's organization, creator,
+   * for a failed run, its own problem. The run's organization, creator,
    * method and workflow id are not on the list; `getRunDetail` returns them.
    *
    * `createdFrom` / `createdTo` are applied server-side as index key
@@ -5658,7 +5658,8 @@ function parseRetryAfter(headers: Headers): number | null {
  *   `error` the run's own problem, which the document nests as `run_error`, or `null` when it nests
  *   none that is a problem document;
  * - `run.not_finished`: the run is still going, and the answer is the running arm, waiting the
- *   document's `retry_after` (or the default) before the next read.
+ *   document's `retry_after`, rounded up to whole seconds, else the `Retry-After` header's (or the
+ *   default) before the next read.
  *
  * Any other `409`, a problem document of another code or a body that is none, is no answer about
  * the run's end, so it reads as `undefined` and the caller throws its `ApiResponseError`.
@@ -5667,11 +5668,15 @@ function runResultConflict(runId: string, res: RawResponse): RunResultState | un
   const problem = readProblemBody(res.body);
   if (problem === undefined) return undefined;
   if (problem.code === "run.not_finished") {
+    // The run's own delay, in whole seconds as the running arm counts them, else the header's.
+    const retryAfter =
+      problem.retry_after !== undefined
+        ? Math.ceil(problem.retry_after)
+        : parseRetryAfter(res.headers);
     return {
       state: "running",
       pipeline_run_id: runId,
-      retry_after_seconds:
-        problem.retry_after ?? parseRetryAfter(res.headers) ?? DEFAULT_DEGRADED_RETRY_SECONDS,
+      retry_after_seconds: retryAfter ?? DEFAULT_DEGRADED_RETRY_SECONDS,
     };
   }
   if (problem.code !== "run.failed") return undefined;

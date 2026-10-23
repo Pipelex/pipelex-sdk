@@ -466,7 +466,7 @@ export function eitherSignal(
 /**
  * The tree whose files are `contents`, each file's bytes or its text by tree path, a text encoded
  * in UTF-8. The keys are sent as they are, and the platform refuses one that is not a tree path,
- * with the `422` `invalid_method_files` naming it. `call` names the caller's method in a refusal.
+ * with the `422` `method.package_invalid` naming it. `call` names the caller's method in a refusal.
  *
  * Throws `RequestArgumentError` for `contents` holding no file, for a value that is neither a
  * string nor bytes, and for a text holding a lone surrogate, which no file can hold. `sending` says

@@ -34,10 +34,9 @@ _BASE_URL = "http://localhost:8081"
 
 
 class _FakeUploadClient:
-    """A fake `upload` client: records the wire body, returns a canned URI (or raises); `api_key` is the key it sends, empty for none."""
+    """A fake `upload` client: records the wire body, returns a canned URI (or raises)."""
 
-    def __init__(self, *, uri: str = "pipelex-storage://user/assets/abc.bin", error: Exception | None = None, api_key: str = "test-token") -> None:
-        self.api_key = api_key
+    def __init__(self, *, uri: str = "pipelex-storage://user/assets/abc.bin", error: Exception | None = None) -> None:
         self.calls: list[UploadInput] = []
         self._uri = uri
         self._error = error
@@ -109,8 +108,14 @@ class TestUploadFile:
         assert exc_info.value.status == 413
         assert str(exc_info.value) == 'The server rejected "big.pdf": asset exceeds the service size limit.'
 
-    @pytest.mark.parametrize("status", [401, 403])
-    def test_401_403_map_to_upload_authentication(self, status: int) -> None:
+    @pytest.mark.parametrize(
+        ("status", "problem_code"),
+        [
+            pytest.param(401, "auth.missing_credential", id="a bare 401"),
+            pytest.param(403, "auth.invalid_credential", id="a bare 403"),
+        ],
+    )
+    def test_401_403_map_to_upload_authentication(self, status: int, problem_code: str) -> None:
         error = _api_error(status)
         client = _FakeUploadClient(error=error)
         with pytest.raises(UploadAuthenticationError) as exc_info:
@@ -118,15 +123,8 @@ class TestUploadFile:
         assert exc_info.value.status == status
         assert exc_info.value.filename == "scan.pdf"
         assert exc_info.value.__cause__ is error
-        # The client sent its key, so the key is what was refused.
-        assert exc_info.value.problem.code == "auth.invalid_credential"
-
-    @pytest.mark.parametrize("status", [401, 403])
-    def test_401_403_to_a_client_without_a_key_is_a_missing_credential(self, status: int) -> None:
-        client = _FakeUploadClient(error=_api_error(status), api_key="")
-        with pytest.raises(UploadAuthenticationError) as exc_info:
-            asyncio.run(upload_file(client, bytes([1]), filename="scan.pdf"))
-        assert exc_info.value.problem.code == "auth.missing_credential"
+        # A bare refusal does not say whether a credential was sent, so it reads by its status, as `@pipelex/sdk` reads it.
+        assert exc_info.value.problem.code == problem_code
         assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("account", "no")
 
     def test_404_maps_to_unsupported_capability(self) -> None:

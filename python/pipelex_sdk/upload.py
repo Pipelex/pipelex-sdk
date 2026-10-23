@@ -169,12 +169,7 @@ def checked_upload_kind(*, kind: object, method_id: object, refusal: str, field:
 
 
 class _UploadClient(Protocol):
-    """The client surface `upload_file` needs — the raw base64 `upload` wire call, and the API key the
-    client sends, empty for a client that sends none, which decides the problem of a refused credential.
-    """
-
-    @property
-    def api_key(self) -> str: ...
+    """The client surface `upload_file` needs — the raw base64 `upload` wire call."""
 
     async def upload(self, upload_input: UploadInput) -> UploadedFile: ...
 
@@ -257,16 +252,13 @@ def _without_final_period(text: str) -> str:
     return text.removesuffix(".")
 
 
-def _map_upload_error(
-    error: ApiResponseError | ApiUnreachableError, filename: str, *, credential_sent: bool, method_id: str | None
-) -> InputPreparationError:
+def _map_upload_error(error: ApiResponseError | ApiUnreachableError, filename: str, *, method_id: str | None) -> InputPreparationError:
     """Translate a raw `upload()` transport error into the matching preparation error, as `@pipelex/sdk`'s
     `mapUploadError` does.
 
     The wrapped error is passed as the new error's `cause`, whose problem it carries: the refusal as the API or
-    its edge answered it. `credential_sent` says whether the request carried a credential, which decides the
-    problem of a `401` or `403` that wraps none. `method_id` is the method a test file named, which a refusal
-    must name to be read as one of a test file.
+    its edge answered it, and a bare `401` or `403` reads by its status. `method_id` is the method a test file
+    named, which a refusal must name to be read as one of a test file.
     """
     if isinstance(error, ApiUnreachableError):
         msg = f'Upload of "{filename}" could not reach the Pipelex API ({error.network_code or "unreachable"}).'
@@ -308,7 +300,6 @@ def _map_upload_error(
                 f'Upload of "{filename}" was not authorized ({error.status}). Check the configured Pipelex API key.',
                 status=error.status,
                 filename=filename,
-                credential_sent=credential_sent,
                 cause=error,
             )
         case 404:
@@ -366,5 +357,5 @@ async def upload_file(
             UploadInput(filename=resolved_name, data=encoded, content_type=resolved_type, kind=claimed.kind, method_id=claimed.method_id)
         )
     except (ApiResponseError, ApiUnreachableError) as exc:
-        raise _map_upload_error(exc, resolved_name, credential_sent=bool(client.api_key), method_id=claimed.method_id) from exc
+        raise _map_upload_error(exc, resolved_name, method_id=claimed.method_id) from exc
     return UploadRecord(uri=uploaded.uri, filename=uploaded.filename, content_type=resolved_type, size=len(data))

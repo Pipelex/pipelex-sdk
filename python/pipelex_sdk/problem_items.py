@@ -8,7 +8,8 @@ belongs to: an entry that is no object, or whose `code` or `detail` is not a str
 skipped, and each optional member the standard declares (`params`, `location`, `suggestions`, `suggested_fix`) is
 kept only when the standard's own model accepts it (`mthds.protocol.problem.models.ProblemItem`), and left out of
 its item otherwise. A member the standard does not declare is kept as received, and so is a `code` that breaks the
-standard's code pattern.
+standard's code pattern. An entry that already is a `ProblemItem`, as when a caller constructs a verdict in code, was
+checked when it was made and is kept as it is.
 """
 
 from __future__ import annotations
@@ -42,8 +43,11 @@ def read_problem_item(entry: object) -> ProblemItem | None:
         entry: The entry as the answer gave it.
 
     Returns:
-        The item, or `None` when the entry names no fault: it is no object, or its `code` or `detail` is no string.
+        The item, or `None` when the entry names no fault: it is no object, or its `code` or `detail` is no string. An
+        entry that already is a `ProblemItem` is returned as it is.
     """
+    if isinstance(entry, ProblemItem):
+        return entry
     if not isinstance(entry, dict):
         return None
     members = cast("dict[str, Any]", entry)

@@ -854,8 +854,9 @@ class UploadAuthenticationError(InputPreparationError):
     Its `problem` is the server's own when the wrapped error, which `upload_file` passes as `cause`, answered a
     problem document; pass the same error as `cause` and raise this one `from` it. Otherwise it is
     `auth.invalid_credential` when the request carried a credential and `auth.missing_credential` when it carried
-    none, as `credential_sent` says (`upload_file` passes it, false for a client holding no API key), and the
-    wrapped error's reading of the status when the caller does not say.
+    none, as `credential_sent` says, and the wrapped error's reading of the status when the caller does not say, as
+    `upload_file` does not: a bare `401` is then `auth.missing_credential` and a bare `403` `auth.invalid_credential`,
+    as `@pipelex/sdk` reads them.
     """
 
     def __init__(
@@ -1301,8 +1302,8 @@ class ArtifactAuthenticationError(ArtifactOperationError):
     (`verdict` is the download's result, not the error's own problem.) Its `problem` is the server's own when the
     wrapped error answered a problem document; otherwise `auth.invalid_credential`, or `auth.missing_credential`
     when `credential_sent` says the request carried no credential, and the wrapped error's reading of the status
-    when the caller does not say (`credential_sent` false, which
-    `download_artifacts` passes for a client holding no API key).
+    when the caller does not say, as `download_artifacts` does not: a bare `401` is then `auth.missing_credential`
+    and a bare `403` `auth.invalid_credential`, as `@pipelex/sdk` reads them.
     """
 
     def __init__(

@@ -1040,7 +1040,7 @@ export interface UploadGrantInput {
    * object is named after its bytes, so a file the organization already holds is not
    * sent again: the grant answers `stored: true`. Without it, the grant always names a
    * new object and asks for the bytes. Any other string is a `422`, and so is a `size`
-   * other than the one the organization holds those bytes at (`blob_mismatch`).
+   * other than the one the organization holds those bytes at (`request.invalid`).
    */
   sha256?: string;
   /** What the upload is recorded as; `uploaded` when omitted. */

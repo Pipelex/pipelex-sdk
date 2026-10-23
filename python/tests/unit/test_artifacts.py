@@ -78,16 +78,14 @@ _PNG_BYTES = b"\x89PNG tiny"
 
 
 class _FakeClient:
-    """The two client methods the artifact operations call, scripted per test and recorded, and the API key it sends, empty for none."""
+    """The two client methods the artifact operations call, scripted per test and recorded."""
 
     def __init__(
         self,
         *,
         resolve: Callable[[list[str]], BulkResolvedStorageUrls] | None = None,
         run_result: RunResultState | None = None,
-        api_key: str = "test-token",
     ) -> None:
-        self.api_key = api_key
         self._resolve = resolve
         self._run_result = run_result
         self.resolve_calls: list[list[str]] = []
@@ -988,37 +986,43 @@ class TestArtifacts:
         assert verdict.saved_paths == []
         assert [artifact.error.code for artifact in verdict.artifacts if artifact.error is not None] == ["aborted", "aborted"]
         assert [artifact.found_at for artifact in verdict.artifacts] == [["$.items[0].url"], ["$.items[1].url"]]
-        # The client sent its key, so the key is what was refused.
+        # A bare refusal does not say whether a credential was sent, so it reads by its status, as `@pipelex/sdk` reads it.
         assert caught.value.problem.code == "auth.invalid_credential"
 
-    @pytest.mark.parametrize("status", [401, 403])
-    def test_a_credential_failure_of_a_client_without_a_key_is_a_missing_credential(self, tmp_path: Path, status: int) -> None:
+    @pytest.mark.parametrize(
+        ("status", "problem_code"),
+        [
+            pytest.param(401, "auth.missing_credential", id="a bare 401"),
+            pytest.param(403, "auth.invalid_credential", id="a bare 403"),
+        ],
+    )
+    def test_a_credential_failure_reads_by_its_status(self, tmp_path: Path, status: int, problem_code: str) -> None:
         def _refuse(_: list[str]) -> BulkResolvedStorageUrls:
             raise _api_error(status)
 
-        client = _FakeClient(resolve=_refuse, api_key="")
+        client = _FakeClient(resolve=_refuse)
         with pytest.raises(ArtifactAuthenticationError) as caught:
             asyncio.run(download_artifacts(client, dir_path=tmp_path / "out", results=_results({"doc": _content(_URI_PDF)})))
 
-        assert caught.value.problem.code == "auth.missing_credential"
+        assert caught.value.problem.code == problem_code
         assert (caught.value.problem.domain, caught.value.problem.retry) == ("account", "no")
 
     @pytest.mark.parametrize(
-        ("api_key", "problem_code"),
+        ("status", "problem_code"),
         [
-            pytest.param("test-token", "auth.invalid_credential", id="a client sending a key"),
-            pytest.param("", "auth.missing_credential", id="a client sending none"),
+            pytest.param(401, "auth.missing_credential", id="a bare 401"),
+            pytest.param(403, "auth.invalid_credential", id="a bare 403"),
         ],
     )
     def test_raises_a_credential_failure_part_way_through_carrying_the_verdict_so_far(
-        self, mocker: MockerFixture, tmp_path: Path, api_key: str, problem_code: str
+        self, mocker: MockerFixture, tmp_path: Path, status: int, problem_code: str
     ) -> None:
         def _resolve(uris: list[str]) -> BulkResolvedStorageUrls:
             if len(uris) > 1:
                 return _answer(_resolved(_URI_PDF), _resolved(_URI_PNG, expires_in_seconds=1.0))
-            raise _api_error(401)
+            raise _api_error(status)
 
-        client = _FakeClient(resolve=_resolve, api_key=api_key)
+        client = _FakeClient(resolve=_resolve)
         _patch_storage(mocker, _serving(_PDF_BYTES))
         with pytest.raises(ArtifactAuthenticationError) as caught:
             asyncio.run(
@@ -1031,7 +1035,7 @@ class TestArtifacts:
             )
 
         verdict = caught.value.verdict
-        assert caught.value.status == 401
+        assert caught.value.status == status
         assert len(verdict.saved_paths) == 1
         assert verdict.artifacts[0].error is None
         second = verdict.artifacts[1].error

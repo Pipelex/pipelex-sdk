@@ -158,13 +158,7 @@ class BulkResolveClient(Protocol):
 
 
 class ArtifactCapableClient(BulkResolveClient, Protocol):
-    """What `download_artifacts` needs on top: the single-shot result lookup, for the `run_id` arm,
-    and the API key the client sends, empty for a client that sends none, which decides the problem
-    of a refused credential (`ArtifactAuthenticationError`).
-    """
-
-    @property
-    def api_key(self) -> str: ...
+    """What `download_artifacts` needs on top: the single-shot result lookup, for the `run_id` arm."""
 
     async def get_run_result(self, run_id: str, *, artifacts: Sequence[RunArtifact] | None = None) -> RunResultState: ...
 
@@ -851,7 +845,7 @@ async def download_artifacts(
             raise
         verdict = _assemble_verdict(scope, [_item_error(location, None, "aborted", _SKIPPED_CREDENTIAL) for location in locations])
         msg = f"The resolve route refused the credential ({exc.status}); no artifact was downloaded."
-        raise ArtifactAuthenticationError(msg, status=exc.status, verdict=verdict, credential_sent=bool(client.api_key), cause=exc) from exc
+        raise ArtifactAuthenticationError(msg, status=exc.status, verdict=verdict, cause=exc) from exc
 
     semaphore = asyncio.Semaphore(opts.concurrency)
     storage_client = _new_storage_client(bounds.timeout_seconds)
@@ -880,9 +874,7 @@ async def download_artifacts(
     if budget.credential_failure is not None:
         status = budget.credential_failure.status
         msg = f"The resolve route refused the credential ({status}) part-way through the download; the verdict so far is on this error."
-        raise ArtifactAuthenticationError(
-            msg, status=status, verdict=verdict, credential_sent=bool(client.api_key), cause=budget.credential_failure
-        ) from budget.credential_failure
+        raise ArtifactAuthenticationError(msg, status=status, verdict=verdict, cause=budget.credential_failure) from budget.credential_failure
     return verdict
 
 

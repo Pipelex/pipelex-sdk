@@ -390,6 +390,20 @@ describe("PipelexApiClient.getRunResult", () => {
     }
   });
 
+  it("reads a 409 run.not_finished as running, its fractional retry_after rounded up to whole seconds", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse("run.not_finished", 409, {
+        domain: "runtime",
+        retry: "yes",
+        retry_after: 2.4,
+        params: { pipeline_run_id: "run-1" },
+      }),
+    );
+    const state = await client.getRunResult("run-1");
+    expect(state).toEqual({ state: "running", pipeline_run_id: "run-1", retry_after_seconds: 3 });
+  });
+
   it("throws a 409 that is no run.failed or run.not_finished problem as ApiResponseError", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(

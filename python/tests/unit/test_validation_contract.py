@@ -19,6 +19,8 @@ from mthds.protocol.problem.models import (
     EnsureTableOp,
     FixSafety,
     MoveKeyOp,
+    ProblemItem,
+    ProblemLocation,
     RemapValueOp,
     RenameTableKeyOp,
     SetKeyOp,
@@ -369,6 +371,15 @@ class TestValidationContract:
         report = _parse({**INVALID_BODY, "errors": entries})
         assert isinstance(report, PipelexInvalidReport)
         assert [entry.model_dump(exclude_none=True) for entry in report.errors] == kept
+
+    def test_problem_items_constructed_in_code_are_kept_as_they_are(self) -> None:
+        """A verdict a caller builds in code keeps the `ProblemItem` instances it is given, on both arms."""
+        error = ProblemItem(code="method.syntax", detail="a fault", location=ProblemLocation(file="a.mthds"))
+        warning = ProblemItem(code="method.optional_force_redundant", detail="an advisory finding")
+        invalid = PipelexInvalidReport(message="invalid", errors=[error])
+        assert invalid.errors == [error]
+        valid = PipelexValidationReport(warnings=[warning])
+        assert valid.warnings == [warning]
 
     def test_pending_signatures_is_valid_but_not_runnable(self) -> None:
         """Pending signatures ride a runnability fact on a VALID arm, never an error item."""
