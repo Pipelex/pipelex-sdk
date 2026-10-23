@@ -372,7 +372,8 @@ export class RejectedAssetError extends InputPreparationError {
 
 /**
  * The configured deployment does not support upload (no `/v1/upload` route, seen
- * as a `404`). Upload is a hosted Pipelex-product capability even though the SDK
+ * as a `404` other than a test file's unknown method, which is a {@link TestFileRefusedError}).
+ * Upload is a hosted Pipelex-product capability even though the SDK
  * can be pointed at other base URLs. Its verdict is `config`, not retryable: the base URL
  * must point at a deployment that serves upload. `filename` is the file whose upload met it, as
  * `uploadFile` sent it.
@@ -388,7 +389,8 @@ export class UnsupportedUploadCapabilityError extends InputPreparationError {
 }
 
 /**
- * Upload was not authorized — a `401`/`403` from the upload route. Its verdict is `config`, not
+ * Upload was not authorized — a `401`, or a `403` from the upload route other than a test file's
+ * `role_not_permitted`, which is a {@link TestFileRefusedError}. Its verdict is `config`, not
  * retryable: the credential must change. `filename` is the file whose upload was refused, as
  * `uploadFile` sent it.
  */
@@ -402,6 +404,69 @@ export class UploadAuthenticationError extends InputPreparationError {
     this.status = status;
     this.filename = options?.filename;
   }
+}
+
+/**
+ * Why the upload route refused a test file, in a closed vocabulary a caller branches on rather
+ * than on the message. A test file is a statement about a method, so the route holds it to what
+ * changing that method takes:
+ *
+ * - `role_not_permitted` — a `403` coded `role_not_permitted`: the caller's role in the
+ *   organization may not change methods, as a runner's may not. Upload the file as `uploaded`,
+ *   or with the credential of a member who may change methods.
+ * - `method_not_found` — a `404` coded `not_found`: the method the test file names is not one of
+ *   the organization's.
+ * - `method_being_deleted` — a `409` coded `method_being_deleted`: the method the test file names
+ *   is being erased.
+ */
+export type TestFileRefusalCode =
+  "role_not_permitted" | "method_not_found" | "method_being_deleted";
+
+/**
+ * The upload route refused a test file (`kind: "test"`) for what it claims, never for its bytes:
+ * the caller's role may not change methods, or the method it names is unknown or being erased.
+ * `code` says which; the SDK sets it on every one it raises, so it is undefined only on one a
+ * caller constructs without it. `status` is the HTTP status, `filename` the file `uploadFile` was
+ * sending and `methodId` the method it named, and the wrapped `ApiResponseError` is reachable via
+ * `cause`.
+ *
+ * Its verdict is the wrapped error's when `cause` carries one, the server's own; otherwise `code`
+ * decides: `role_not_permitted` is `config`, since the caller's role must change, and the other
+ * two are `input`, since the request must name another method; none is retryable.
+ */
+export class TestFileRefusedError extends InputPreparationError {
+  public readonly status: number | undefined;
+  public readonly code: TestFileRefusalCode | undefined;
+  public readonly filename: string | undefined;
+  public readonly methodId: string | undefined;
+
+  constructor(
+    message: string,
+    options?: {
+      cause?: unknown;
+      status?: number;
+      code?: TestFileRefusalCode;
+      filename?: string;
+      methodId?: string;
+    },
+  ) {
+    super(message, {
+      ...options,
+      verdict: errorVerdictOf(options?.cause) ?? testFileRefusalVerdict(options?.code),
+    });
+    this.name = "TestFileRefusedError";
+    this.status = options?.status;
+    this.code = options?.code;
+    this.filename = options?.filename;
+    this.methodId = options?.methodId;
+  }
+}
+
+/** The verdict of a test file's refusal that wraps no error carrying one. */
+function testFileRefusalVerdict(code: TestFileRefusalCode | undefined): ErrorVerdict {
+  // A role is changed by an admin of the organization, never by sending the request again.
+  if (code === "role_not_permitted") return makeVerdict("config", false);
+  return makeVerdict("input", false);
 }
 
 /**
@@ -960,10 +1025,10 @@ export class RunLifecycleUnavailableError extends PipelexRequestError {
 }
 
 /**
- * Thrown when a paged-list iterator (`iterateMethods`, `iterateRuns`, `iterateMethodExamples`)
- * refuses to keep following cursors.
+ * Thrown when a paged-list iterator (`iterateMethods`, `iterateRuns`, `iterateMethodExamples`,
+ * `iterateFiles`) refuses to keep following cursors.
  *
- * The ceiling, `pageLimit` pages, sits far beyond any real catalog or run history, so reaching it
+ * The ceiling, `pageLimit` pages, sits far beyond any real catalog, run history or file list, so reaching it
  * is a server-side fault — an endpoint minting a fresh cursor forever — not a coverage limit the
  * caller can raise. Throwing beats returning, because a silently truncated list is exactly the bug
  * paging was introduced to remove. Its verdict is `runtime`, not retryable.
@@ -1018,6 +1083,57 @@ export type MethodErrorCode =
  * Either way the request is sent again under a new key, with the original body for the first.
  */
 export type IdempotencyErrorCode = "idempotency_key_in_use";
+
+/**
+ * The `code` of an `errors[]` entry when `updateOrganizationBranding` refuses a logo. The entry's
+ * `field` is the slot, `square_logo` or `wide_logo`, and its `detail` the sentence to show under
+ * that slot. The refusal itself is a `422` `validation_failed` naming both slots' failures at
+ * once, one entry per broken rule, and writes nothing:
+ *
+ * - `logo_not_an_upload`: the URI is neither a new upload of the organization nor the `uri` the
+ *   slot already holds: a run's or a method's file, a stale `branding/` copy, or the other slot's
+ *   logo, since a logo cannot move between slots by its URI.
+ * - `logo_not_found`: no such upload in the organization.
+ * - `logo_too_large`: the file is over 1 MiB.
+ * - `logo_type_not_accepted`: its bytes are not a PNG, JPEG, WebP or SVG image, whatever type
+ *   the upload declared, or they are an animated PNG (an APNG) or an animated WebP, since a logo
+ *   is a still image.
+ * - `logo_unreadable`: a raster that is damaged or cut short, its one frame being decoded whole,
+ *   or that has more than 4096 × 4096 pixels; or an SVG that is not well-formed, whose shape
+ *   cannot be read, that declares XML entities or external references, or one of whose sides
+ *   lies outside 0.001 to 1,000,000, in pixels for its `width` and `height` or in its own units
+ *   for its `viewBox`.
+ * - `logo_active_content`: an SVG that carries a `script` or a `foreignObject` element, any
+ *   element in the XHTML namespace, an `on…` event handler attribute, a `set` or an `animate`
+ *   that rewrites a link, an `xml-stylesheet` processing instruction, or a link that is neither
+ *   a reference inside the file (`#…`) nor an embedded PNG, JPEG, GIF or WebP image
+ *   (`data:image/…`), whether an `href`, an `xlink:href`, or a CSS `url()` or `src()`. Wherever
+ *   a browser reads CSS, a `<style>` element's text or an attribute such as `style` or `fill`, an
+ *   `@import`, an `image()` or `image-set()` and any CSS escape (a backslash) are refused too. A
+ *   `<style>` element itself is allowed, holding only references inside the file, such as
+ *   `fill:url(#grad)`.
+ * - `logo_not_square`: a square logo whose longer side is more than 10% longer than its shorter.
+ * - `logo_too_small`: a raster square logo under 128 px on a side.
+ * - `logo_not_wide`: a wide logo less than one and a half times as wide as it is tall.
+ * - `logo_too_short`: a raster wide logo under 64 px tall.
+ *
+ * Two refusals of a logo URI come before any file is read and name the slot the same way, with
+ * the platform's own code: `400` `invalid_storage_uri` for a URI that is not a storage URI, and
+ * `403` `forbidden` for another organization's file. A colour's refusal names its key instead
+ * (`colors.action`, `dark_colors.header`) with pydantic's code. `FieldError.code` stays a
+ * `string`, since the platform adds codes.
+ */
+export type LogoRefusalCode =
+  | "logo_not_an_upload"
+  | "logo_not_found"
+  | "logo_too_large"
+  | "logo_type_not_accepted"
+  | "logo_unreadable"
+  | "logo_active_content"
+  | "logo_not_square"
+  | "logo_too_small"
+  | "logo_not_wide"
+  | "logo_too_short";
 
 /**
  * The last constructor argument of `ApiResponseError`: the error's `cause`, the hosted problem
@@ -1172,7 +1288,11 @@ export class ApiResponseError extends PipelexRequestError {
   public readonly providerMetadata: ProviderErrorMetadata | undefined;
   /** The body's `migration`: a pending configuration migration that explains the failure. */
   public readonly migration: MigrationErrorBlock | undefined;
-  /** The platform's field-level `errors[]` — one item per offending request field. */
+  /**
+   * The platform's field-level `errors[]` — one item per offending request field. A refused
+   * branding write names the logo slot or the colour key each entry is about in its `field`,
+   * with a `LogoRefusalCode` for a logo the platform measured.
+   */
   public readonly errors: FieldError[] | undefined;
   /**
    * The decoded problem document whole — every member, named or not, such as a failed run's

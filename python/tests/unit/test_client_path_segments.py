@@ -18,7 +18,7 @@ import pytest
 
 from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
-from pipelex_sdk.product_models import MethodDraftInput, UpdateRunInput
+from pipelex_sdk.product_models import MethodDraftInput, OrganizationBrandingUpdate, UpdateRunInput
 from tests.unit.conftest import BASE_URL
 from tests.unit.test_data import MethodExampleBodies
 
@@ -135,6 +135,12 @@ _ROUTES: list[tuple[str, str, IdRouteCall, IdRouteUrl]] = [
         "rename_organization",
         lambda client, id_: client.rename_organization(id_, "n"),
         lambda seg: f"{BASE_URL}/v1/organizations/{seg}",
+    ),
+    (
+        "an organization id",
+        "update_organization_branding",
+        lambda client, id_: client.update_organization_branding(id_, OrganizationBrandingUpdate(colors=None)),
+        lambda seg: f"{BASE_URL}/v1/organizations/{seg}/branding",
     ),
     (
         "an API key id",

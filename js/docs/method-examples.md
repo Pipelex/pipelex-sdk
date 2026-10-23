@@ -1,6 +1,6 @@
 # A method's saved examples
 
-An **example** is a named set of inputs saved on a stored method, so the method can be run on them again in one gesture, together with the latest run of exactly those inputs. A method has any number of them. Like the method itself, an example belongs to the organization: any member reads, edits, runs and deletes any example of any of its methods, and `created_by_user_id` only records who saved it. The client reaches them on the hosted API's `/v1/methods/{method_id}/examples` routes, and the types are in `src/product-models.ts`.
+An **example** is a named set of inputs saved on a stored method, so the method can be run on them again in one gesture, together with the latest run of exactly those inputs. A method has any number of them. Like the method itself, an example belongs to the organization: every role of it reads and runs any example of any of its methods, every role that may change its methods (`admin` and `member`) saves, edits and deletes any of them and records their latest runs, and `created_by_user_id` only records who saved it. A runner is refused every example write with a `403` `role_not_permitted`. The client reaches them on the hosted API's `/v1/methods/{method_id}/examples` routes, and the types are in `src/product-models.ts`.
 
 ## The example
 
@@ -13,6 +13,7 @@ An **example** is a named set of inputs saved on a stored method, so the method 
 | `input_revision` | Starts at 1 and rises by one each time the inputs change. |
 | `latest_run_id` | The latest run of the current inputs, or `null`. It may name a run deleted since, whose read then answers `404`. |
 | `created_by_user_id`, `created_at`, `updated_at` | Who saved it, when, and when it last changed. |
+| `kept_by_assistant` | Whether the build assistant keeps this example's inputs current with its test inputs: `true` on an example the assistant's save created, `false` on every other, and `false` from the first inputs change a person makes. A rename leaves it as it is ([below](#the-build-assistants-example)). |
 
 An example holds no output and no baseline: its result is its latest run's, read by the run's id (`getRunResult`).
 
@@ -26,17 +27,18 @@ An example holds no output and no baseline: its result is its latest run's, read
 | `getMethodExample(methodId, exampleId)` | `GET /v1/methods/{id}/examples/{example_id}` | The `MethodExample`. |
 | `updateMethodExample(methodId, exampleId, { name?, inputs? })` | `PATCH /v1/methods/{id}/examples/{example_id}` | The `MethodExample` as it now stands. |
 | `recordMethodExampleLatestRun(methodId, exampleId, { run_id, input_revision })` | `PUT /v1/methods/{id}/examples/{example_id}/latest-run` | A `MethodExampleLatestRunResult`: `{ outcome: "recorded" \| "stale", example }`. |
+| `saveAssistantMethodExample(methodId, { name, inputs, example_id?, input_revision? })` | `POST /v1/methods/{id}/examples/assistant-save` | A `MethodExampleAssistantSaveResult`: `{ outcome: "kept" \| "created", example }`. |
 | `deleteMethodExample(methodId, exampleId)` | `DELETE /v1/methods/{id}/examples/{example_id}` | Nothing; the platform answers `204`. |
 
 Every method takes a bare catalog id and refuses a suffixed one (`mt_x@3`) with `RequestArgumentError` before sending, as the other method routes do, and refuses a method id or an example id that is empty, `.` or `..`, or that holds a lone surrogate, the same way, as every route that puts an id in its path does ([What is refused](#what-is-refused-and-where)). The bodies are closed on the platform, so the client sends the fields the route takes and nothing else an untyped caller adds.
 
-**Every example the client hands back has been checked.** Each route answering one, the page rows and the latest-run verdict's `example` included, checks it once, against every field the Python SDK's model requires, with the strict type that model holds it to: string `example_id`, `method_id`, `name`, `created_by_user_id`, `created_at` and `updated_at`, object `inputs`, `input_revision` an integer within `Number.MAX_SAFE_INTEGER` either way, and `latest_run_id` present as a string or `null`. An example breaking one is an answer the SDK cannot read, thrown as an `ApiResponseError` (`runtime`, not retryable) whose message names the field, so a missing `latest_run_id` never reads as an example with no latest run, and a revision of `"2"` or `true` is never read as one. Both SDKs refuse the same answers but one: a revision spelled `2.0`, which JavaScript reads as the number `2` and cannot tell from it, while the Python SDK refuses the float.
+**Every example the client hands back has been checked.** Each route answering one, the page rows and the verdicts' `example` included, checks it once, against every field the Python SDK's model requires, with the strict type that model holds it to: string `example_id`, `method_id`, `name`, `created_by_user_id`, `created_at` and `updated_at`, object `inputs`, `input_revision` an integer within `Number.MAX_SAFE_INTEGER` either way, `latest_run_id` present as a string or `null`, and `kept_by_assistant` a boolean. An example breaking one is an answer the SDK cannot read, thrown as an `ApiResponseError` (`runtime`, not retryable) whose message names the field, so a missing `latest_run_id` never reads as an example with no latest run, and a revision of `"2"` or `true` is never read as one. Both SDKs refuse the same answers but one: a revision spelled `2.0`, which JavaScript reads as the number `2` and cannot tell from it, while the Python SDK refuses the float.
 
 **The list is paged by an opaque cursor.** Pass `nextCursor` back as `cursor`; `null` is the last page. The platform reads examples whole and stops a read at 1 MB, so a page may be short while `nextCursor` is set: a caller that wants every example follows the cursor, which `iterateMethodExamples` does through the loop `iterateMethods` and `iterateRuns` share, stopping on a `null` cursor or one the server failed to advance and throwing `PagingNotTerminatingError` past the same page ceiling.
 
 ## Revisions and the latest run
 
-**New inputs raise the revision and clear the latest run.** An edit whose `inputs` differ from the stored ones sets `input_revision` to the next number and `latest_run_id` to `null`, since the run no longer shows what the inputs produce. The platform compares the inputs as canonical JSON with sorted keys, so the same inputs sent again, in another key order included, change nothing, while `3` becoming `3.0` is a change. A rename alone keeps both. The edit takes no revision or token of its own: concurrent edits are serialized on the platform, which answers a retryable `503` with nothing written when they kept landing under one.
+**New inputs raise the revision and clear the latest run.** An edit whose `inputs` differ from the stored ones sets `input_revision` to the next number and `latest_run_id` to `null`, since the run no longer shows what the inputs produce, and `kept_by_assistant` to `false`, since those inputs are a person's. The platform compares the inputs as canonical JSON with sorted keys, so the same inputs sent again, in another key order included, change nothing, while `3` becoming `3.0` is a change. A rename alone keeps both. The edit takes no revision or token of its own: concurrent edits are serialized on the platform, which answers a retryable `503` with nothing written when they kept landing under one.
 
 **A run is recorded against the revision the client names.** To run an example and keep its result, read the example, start a run with its `inputs`, and record that run with the `input_revision` you read:
 
@@ -53,6 +55,34 @@ if (verdict.outcome === "stale") {
 ```
 
 A run started this way sends the inputs the example holds, digit for digit, an integer past `Number.MAX_SAFE_INTEGER` included ([below](#numbers-in-an-examples-inputs)). The write is conditioned on the example still holding that revision. **A stale run is a verdict, not an error**: a run outlasting an edit is the expected course of events whenever someone edits an example while one of its runs is in flight, so the platform answers a `200` discriminated on `outcome`, as it does for a publish, and both arms carry the example as it stands. Branch on `outcome`; an answer whose `outcome` is neither, or whose `example` is not an example the client can read, is an answer the SDK cannot read, thrown as an `ApiResponseError` (`runtime`, not retryable). The platform trusts the revision and does not compare the run's own inputs with the example's, so record a run only against the revision whose inputs it was started with. A run recorded when the example is created goes in `createMethodExample`'s `run_id` instead.
+
+## The build assistant's example
+
+The build assistant writes test inputs for the method it is building and keeps one example of the method current with them, so that a person finds its latest inputs saved and can run them again. **A person's edit is never written over.** `saveAssistantMethodExample` is that save, and `kept_by_assistant` says whose an example is: `true` on an example the assistant's save created, `false` from the first inputs change made through `updateMethodExample`, after which the example is the person's. A rename leaves the flag as it is, and a create through `createMethodExample` is a person's and never flagged.
+
+The assistant names the example it read and the revision it read it at. Find its example as the method's newest with `kept_by_assistant` true, the last such in `listMethodExamples`' oldest-first order, and send its `example_id` with its `input_revision`:
+
+```ts
+let assistants: MethodExample | undefined;
+for await (const example of client.iterateMethodExamples(methodId)) {
+  if (example.kept_by_assistant) assistants = example;
+}
+const saved = await client.saveAssistantMethodExample(methodId, {
+  name: "Assistant test inputs",
+  inputs: testInputs,
+  ...(assistants && {
+    example_id: assistants.example_id,
+    input_revision: assistants.input_revision,
+  }),
+});
+if (saved.outcome === "created") {
+  // A person took the previous example, or there was none: saved.example is the assistant's now.
+}
+```
+
+The platform writes the inputs into the named example only while it still exists, still carries the flag and still holds that revision, in one conditional write it never retries, and answers `kept` with the example, its revision raised and its latest run cleared as any inputs change does, its name untouched since a person may have chosen it. Otherwise, when a person's edit, another save or a deletion landed first, and when no example is named, which is how the first save on a method creates the assistant's example, it saves the inputs as a new example flagged as the assistant's under `name`, at revision 1, and answers `created`. **Both are a `200` verdict**, since a person taking the example while the assistant works is the expected course of events; branch on `outcome`. A retry of a save that landed answers `kept` and writes nothing again. The SDK has no helper finding the assistant's example, since the caller already lists the examples it shows.
+
+The client sends `name`, `inputs` and, when given, `example_id` with `input_revision`, and nothing else, a `null` reading as not given. `name` is the name a new example takes, so it is required even when the save names an example, whose own name a `kept` save leaves alone.
 
 ## Numbers in an example's inputs
 
@@ -72,6 +102,7 @@ The client refuses before sending, with `RequestArgumentError` (`input`, not ret
 - a `createMethodExample` without its `name` or its `inputs` (a `null` one counting as not given), or whose `run_id` is given but is not a non-empty string, a `null` reading as not given;
 - an `updateMethodExample` naming neither `name` nor `inputs` (a `null` field counts as not given, as the platform reads it);
 - a `recordMethodExampleLatestRun` whose `run_id` is not a non-empty string or whose `input_revision` is not a positive integer, the example id checked first, then the run id, then the revision;
+- a `saveAssistantMethodExample` without its `name` or its `inputs`, whose `example_id` is given but is not a non-empty string, whose `input_revision` is given but is not a positive integer, or that gives only one of the two;
 - an `iterateMethodExamples` whose method id any method above refuses, at the call itself rather than when the iterator is first pulled;
 - a body JSON cannot carry, such as inputs holding a cycle, or a `bigint` on a runtime without `JSON.rawJSON` ([exact-integers.md](./exact-integers.md)).
 
@@ -81,8 +112,10 @@ The platform refuses the rest, each as an `ApiResponseError` whose `code` names 
 |---|---|---|
 | `not_found` | `404` | An unknown method or example, an example already deleted included. |
 | `run_not_found` | `404` | A `run_id`, on the create or the latest-run write, that is not one of this method's runs in the caller's organization; nothing is written. |
+| `role_not_permitted` | `403` | Any example write by a role that may not change methods, such as a runner, which an admin of the organization must change. |
 | `method_being_deleted` | `409` | The method's erasure has started. Its examples are erased with it. |
 | `payload_too_large` | `413` | An example larger than one stored item holds. |
+| `input_files_missing` | `422` | A save, the create, an inputs edit or the assistant's, whose inputs hold a file a run made whose object is no longer stored, since that run was deleted; its `missing_files` member names every such address, and nothing is saved. The platform copies a run's file an example takes into the organization's store, so the example outlives the run that made it. |
 | `validation_failed` | `422` | A name empty, blank or over 200 characters, inputs that are not a JSON object, a `limit` outside 1 to 100, or an example id longer than one can be (64 characters). |
 | `malformed_request` | `400` | A cursor the listing did not issue for this method. |
 

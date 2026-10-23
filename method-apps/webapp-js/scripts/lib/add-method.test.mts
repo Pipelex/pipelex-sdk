@@ -975,6 +975,21 @@ describe("renderForm", () => {
     expect(source).toContain("<ErrorDisplay error={state.error} runId={state.runId} />");
   });
 
+  it("paints the Run button with the button colour's tokens, never a hard-coded colour", () => {
+    // The organization's brand reaches the button only through `--primary` and
+    // `--primary-foreground`: a literal colour would keep every scaffolded app
+    // in the template's slate whatever its organization set.
+    for (const plan of [TEXT_STATS_PLAN, DOCUMENTS_PLAN, RECEIPTS_PLAN]) {
+      const source = renderForm(plan);
+      const button = source.slice(source.indexOf("<button"), source.indexOf("</button>"));
+      expect(button).toContain("bg-primary");
+      expect(button).toContain("text-primary-foreground");
+      expect(button).toContain("hover:bg-primary/90");
+      expect(button).not.toMatch(/\b(?:bg|text|border)-(?:slate|gray|zinc|white|black)\b/);
+      expect(button).not.toMatch(/\b(?:bg|text)-(?:slate|gray|zinc)-\d+/);
+    }
+  });
+
   it("names the method on its Run button, keeping an acronym's capitals", () => {
     expect(renderForm(TEXT_STATS_PLAN)).toContain('"Run text stats"');
     expect(

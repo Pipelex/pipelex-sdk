@@ -137,6 +137,12 @@ const OTHER_ID_ROUTES: [what: string, ...route: IdRoute][] = [
     (segment) => `${BASE_URL}/v1/organizations/${segment}`,
   ],
   [
+    "an organization id",
+    "updateOrganizationBranding",
+    (client, id) => client.updateOrganizationBranding(id, { colors: null }),
+    (segment) => `${BASE_URL}/v1/organizations/${segment}/branding`,
+  ],
+  [
     "an API key id",
     "revokePipelexApiKey",
     (client, id) => client.revokePipelexApiKey(id),

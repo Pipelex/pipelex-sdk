@@ -1,6 +1,17 @@
 # Changelog
 
-## [Unreleased]
+## [v0.49.1] - 2026-10-23
+
+### Added
+
+- **The web app wears its organization's branding**: an app made from the template shows the logo and colours of the organization its API key belongs to, read with `getBranding()` on each page view and kept for a minute: the wide logo, else the square one, else the organization's name, in a band across the top, each logo served from the app's own origin at `/api/branding/logo/<sha256>`; the colours derived through the form kernel's `deriveBrandRoles` onto the template's variables, the light set and the dark set each against its own page; and a "Made with Pipelex" credit at the end of the page, opening pipelex.com in a new tab. An organization that set no logo and no colour renders the page unbranded, and a read that fails or takes longer than three seconds keeps the branding the last successful read returned, or renders the page unbranded when none has succeeded yet; the template's `docs/branding.md` describes the rest.
+
+### Changed
+
+- **The web app template runs on `@pipelex/sdk` 0.49.0 and `@pipelex/mthds-form` 0.21.0**: the SDK moves from 0.48.1 for `getBranding`, the read the organization's branding is drawn from, and nothing else in its release reaches an app, since the template lists no files, records no test file and writes no branding. The kernel moves from 0.17.1, its `./brand` entry bringing the colour derivation the branding paints with, and an unbranded form looks and behaves as it did, since the template supplies no `FieldStrings` of its own, offers no team files or method examples to the form and gives the result view no PDF maker. `npm ls mthds` lists two copies, the kernel's 0.32.1 beside the SDK's 0.33.0, until a release of the kernel takes the SDK's range, and the CLI stays on `pipelex-sdk` 0.48.1, putting on the wire what it did, its recorded table of the kernel's payload rules unchanged but for the version it names.
+- **The web app's page renders per request, and its run chrome reads the kernel's tokens**: the page is no longer prerendered at build time, the Run button `make add-method` writes is painted with `bg-primary` and `text-primary-foreground` where it was slate, the method tabs with the kernel's border, foreground and muted colours, the selected one underlined in the accent's ink, and the run status with the pale accent fill and its ink where it was blue, so an unbranded app shows the kernel's neutral colours there. A form scaffolded before keeps its slate button until its `className` is changed the same way.
+
+## [v0.49.0] - 2026-10-23
 
 ### Changed
 

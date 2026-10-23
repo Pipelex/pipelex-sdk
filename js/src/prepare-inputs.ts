@@ -57,8 +57,8 @@ import type {
 } from "./models.js";
 import { treeShapeFault } from "./method-trees.js";
 import type { MethodTreeForm } from "./method-trees.js";
-import type { UploadCapableClient, UploadRecord } from "./upload.js";
-import { uploadFile } from "./upload.js";
+import type { UploadCapableClient, UploadKindOptions, UploadRecord } from "./upload.js";
+import { uploadFile, uploadKindFields } from "./upload.js";
 
 const PIPELEX_STORAGE_SCHEME = "pipelex-storage://";
 const HTTP_URL_RE = /^https?:\/\//i;
@@ -131,6 +131,17 @@ export interface PrepareInputsBase {
    * of its own because the caller named it. It is not sent to the server.
    */
   allowUploads?: boolean;
+  /**
+   * What every file this preparation uploads is recorded as, sent with each upload to
+   * `POST /v1/upload`: its `kind` and, for a test file, the `method_id` of the method it is for,
+   * such as `{ kind: "test", method_id: "mt_abc123" }` for the inputs a build assistant makes to
+   * try a method. Omitted, each upload is a person's file (`uploaded`). It is nested so that its
+   * `method_id`, the method a test file is for, never reads as the request's own `method_id`
+   * selector. It is checked before any request, as `uploadFile` checks it: `kind: "test"` needs a
+   * bare `method_id`, and only a test file names one. A file the upload route refuses for it is a
+   * `TestFileRefusedError`.
+   */
+  upload?: UploadKindOptions;
 }
 
 /**
@@ -201,6 +212,8 @@ interface PrepareContext {
   signal: AbortSignal | undefined;
   /** False under `allowUploads: false`: every upload-needing value is refused before it is read. */
   allowUploads: boolean;
+  /** The kind and method every upload of the walk is sent with, already checked. */
+  uploadAs: UploadKindOptions;
   uploads: UploadRecord[];
   /** Dedup by source identity: same source (string value / bytes reference) uploads once. */
   dedup: Map<unknown, Promise<string>>;
@@ -377,14 +390,21 @@ async function doResolveSource(
     case "data_url": {
       const { bytes, contentType } = decodeDataUrl(source.value, at);
       throwIfAborted(ctx.signal);
-      const record = await uploadFile(ctx.client, bytes, { contentType, signal: ctx.signal });
+      const record = await uploadFile(ctx.client, bytes, {
+        contentType,
+        signal: ctx.signal,
+        ...ctx.uploadAs,
+      });
       ctx.uploads.push(record);
       return record.uri;
     }
     case "local_path":
     case "bytes": {
       throwIfAborted(ctx.signal);
-      const record = await uploadFile(ctx.client, source.value, { signal: ctx.signal });
+      const record = await uploadFile(ctx.client, source.value, {
+        signal: ctx.signal,
+        ...ctx.uploadAs,
+      });
       ctx.uploads.push(record);
       return record.uri;
     }
@@ -739,6 +759,22 @@ function resolveAllowUploads(raw: unknown): boolean {
 }
 
 /**
+ * The request's `upload`, checked once before any request as `uploadFile` checks its own: absent
+ * or `null` sends neither member, and anything that is not an object of `kind` and `method_id`
+ * the route would take is an `InputPreparationError` naming `upload.kind` or `upload.method_id`.
+ */
+function resolveUploadAs(raw: unknown): UploadKindOptions {
+  if (raw === undefined || raw === null) return {};
+  if (!isPlainObject(raw)) {
+    throw new InputPreparationError(
+      "Cannot prepare inputs: `upload` must be an object of `kind` and `method_id`, got " +
+        `${describeNonMap(raw)}.`,
+    );
+  }
+  return uploadKindFields(raw, "Cannot prepare inputs", "upload.");
+}
+
+/**
  * Ask `POST /v1/pipe-io` for the pipe and its signature, whatever the selector,
  * and hand back the valid report.
  *
@@ -989,6 +1025,7 @@ export async function prepareInputs(
   const selector = resolveSelector(request);
   const pipeRef = normalizePipeRef(request.pipe_ref);
   const allowUploads = resolveAllowUploads((request as { allowUploads?: unknown }).allowUploads);
+  const uploadAs = resolveUploadAs((request as { upload?: unknown }).upload);
   throwIfAborted(request.signal);
   const report = await fetchSignature(client, selector, pipeRef, request.signal);
   throwIfAborted(request.signal);
@@ -1002,6 +1039,7 @@ export async function prepareInputs(
     client,
     signal: request.signal,
     allowUploads,
+    uploadAs,
     uploads: [],
     dedup: new Map(),
   };

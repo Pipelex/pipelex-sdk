@@ -53,6 +53,7 @@ import {
   RunStillRunningError,
   RunTimeoutError,
   ScopeUnavailableError,
+  TestFileRefusedError,
   UnsupportedUploadCapabilityError,
   UploadAuthenticationError,
   UploadNotAllowedError,
@@ -63,6 +64,7 @@ import {
   type ErrorVerdict,
   type MethodFileTransferCode,
   type RejectedAssetCode,
+  type TestFileRefusalCode,
   type UploadTransportCode,
 } from "../src/errors.js";
 import * as entry from "../src/index.js";
@@ -261,6 +263,12 @@ const BUILDERS: Record<string, (given: Given) => Promise<Error> | Error> = {
   UnsupportedUploadCapabilityError: () => new UnsupportedUploadCapabilityError("No upload here."),
   UploadAuthenticationError: (given) =>
     new UploadAuthenticationError("Not authorized.", given.status ?? 401),
+  TestFileRefusedError: async (given) =>
+    new TestFileRefusedError("The test file was refused.", {
+      cause: await causeFrom(given.cause),
+      status: given.status ?? undefined,
+      code: (given.code ?? undefined) as TestFileRefusalCode | undefined,
+    }),
   UploadTransportError: async (given) =>
     new UploadTransportError("The upload failed.", {
       cause: await causeFrom(given.cause),

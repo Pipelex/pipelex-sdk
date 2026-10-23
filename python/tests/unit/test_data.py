@@ -280,10 +280,160 @@ class MethodExampleBodies:
         "created_by_user_id": "user_1",
         "created_at": "2026-10-12T09:00:00+00:00",
         "updated_at": "2026-10-12T10:00:00+00:00",
+        "kept_by_assistant": False,
     }
 
     #: The same example after an edit of its inputs: the next revision, with no latest run.
     REVISED: ClassVar[dict[str, Any]] = {**EXAMPLE, "inputs": {"total": 4}, "input_revision": 3, "latest_run_id": None}
+
+
+class FileBodies:
+    """An organization's files, as the platform serializes them (`FileSummary`, `FilePublic`, `FileDetail`, the links,
+    an archive, a run's files and the copy into a draft), copied from `platform/docs/files.md`'s own examples.
+    """
+
+    FILE_ID: ClassVar[str] = "fl_0199a2b3"
+    URI: ClassVar[str] = "pipelex-storage://org_1/assets/5f0c.pdf"
+    SIGNED_URL: ClassVar[str] = "https://files.s3.amazonaws.com/org_1/assets/5f0c.pdf?X-Amz-Signature=deadbeef"
+    ARCHIVE_ID: ClassVar[str] = "arc_5f0c2d1e-8b3a-4c6e-9d2f-1a7b3c4d5e6f"
+    ARCHIVE_URL: ClassVar[str] = "https://archives.s3.amazonaws.com/org_1/arc_5f0c2d1e.zip?X-Amz-Signature=deadbeef"
+
+    SUMMARY: ClassVar[dict[str, Any]] = {
+        "file_id": FILE_ID,
+        "uri": URI,
+        "name": "March invoice.pdf",
+        "media_type": "application/pdf",
+        "format": "pdf",
+        "size": 48213,
+        "kind": "uploaded",
+        "origin": {"surface": "app", "run_id": None, "method_id": None, "method_version": None},
+        "created_at": "2026-10-22T09:14:03.120000+00:00",
+        "created_by": "user_1",
+    }
+
+    RECORD: ClassVar[dict[str, Any]] = {
+        **SUMMARY,
+        "source_uri": None,
+        "original_name": "March invoice.pdf",
+        "sha256": "5f0c" * 16,
+        "role": None,
+        "state": "stored",
+    }
+
+    OUTPUT_RECORD: ClassVar[dict[str, Any]] = {
+        **RECORD,
+        "file_id": "fl_out",
+        "uri": "pipelex-storage://org_1/mt_abc/run_7/outputs/summary.docx",
+        "name": "summary.docx",
+        "original_name": "summary.docx",
+        "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "format": "docx",
+        "kind": "generated",
+        "role": "final",
+        "sha256": None,
+        "origin": {"surface": None, "run_id": "run_7", "method_id": "mt_abc", "method_version": 3},
+    }
+
+    DETAIL: ClassVar[dict[str, Any]] = {
+        **RECORD,
+        "method_ids": ["mt_abc"],
+        "uses": {
+            "items": [
+                {"uri": URI, "holder_type": "example", "holder_id": "ex_1", "method_id": "mt_abc", "created_at": "2026-10-22T10:00:00+00:00"},
+                {"uri": URI, "holder_type": "run", "holder_id": "run_7", "method_id": "mt_abc", "created_at": "2026-10-22T11:00:00+00:00"},
+            ],
+            "next_cursor": "u2",
+        },
+    }
+
+    LINKED: ClassVar[dict[str, Any]] = {
+        "file_id": FILE_ID,
+        "uri": URI,
+        "name": "March invoice.pdf",
+        "media_type": "application/pdf",
+        "url": SIGNED_URL,
+        "expires_at": "2026-10-22T09:29:03Z",
+        "error": None,
+    }
+
+    REFUSED_LINK: ClassVar[dict[str, Any]] = {
+        "file_id": "fl_gone",
+        "uri": None,
+        "name": None,
+        "media_type": None,
+        "url": None,
+        "expires_at": None,
+        "error": {"code": "not_found", "detail": "No file fl_gone in this organization."},
+    }
+
+    QUEUED_ARCHIVE: ClassVar[dict[str, Any]] = {
+        "archive_id": ARCHIVE_ID,
+        "name": "March invoices.zip",
+        "state": "queued",
+        "source": "files",
+        "run_id": None,
+        "file_count": 2,
+        "total_bytes": 3145728,
+        "created_at": "2026-10-23T09:00:00.000000Z",
+        "expires_at": "2026-10-24T09:00:00.000000Z",
+        "archive_bytes": None,
+        "ready_at": None,
+        "failure": None,
+        "url": None,
+        "url_expires_at": None,
+    }
+
+    READY_ARCHIVE: ClassVar[dict[str, Any]] = {
+        **QUEUED_ARCHIVE,
+        "state": "ready",
+        "archive_bytes": 3101422,
+        "ready_at": "2026-10-23T09:00:07.512330Z",
+        "url": ARCHIVE_URL,
+        "url_expires_at": "2026-10-23T09:15:41.000000Z",
+    }
+
+    ARCHIVE_TOO_LARGE: ClassVar[dict[str, Any]] = {
+        "type": "about:blank",
+        "title": "Archive too large",
+        "status": 422,
+        "detail": "An archive holds at most 2000000000 bytes; this selection adds up to 2147483648.",
+        "code": "file_archive_too_large",
+        "error_domain": "input",
+        "retryable": False,
+        "limit": {"name": "max_total_bytes", "value": 2000000000, "reached": 2147483648},
+    }
+
+    RUN_FILES_PAGE: ClassVar[dict[str, Any]] = {
+        "pipeline_run_id": "run_7",
+        "state": "listed",
+        "inputs": [{"mark": "input", "input_name": "invoice", "uri": URI, "file": RECORD}],
+        "outputs": [{"mark": "final", "input_name": None, "uri": OUTPUT_RECORD["uri"], "file": OUTPUT_RECORD}],
+        "intermediates": [],
+        "links": [
+            {
+                "input_name": "logo",
+                "url": "https://example.com/logo.png",
+                "warning": "Replaying this run needs this link to still serve the same file.",
+            }
+        ],
+        "next_cursor": "c2",
+    }
+
+    METHOD: ClassVar[dict[str, Any]] = {
+        "method_id": "mt_abc",
+        "name": "Invoices",
+        "org_id": "org_1",
+        "created_by_user_id": "user_1",
+        "created_at": "2026-10-20T09:00:00+00:00",
+        "updated_at": "2026-10-23T09:00:00+00:00",
+        "draft_digest": "sha256:" + "a" * 64,
+    }
+
+    DRAFT_COPY: ClassVar[dict[str, Any]] = {
+        "blob": "copied",
+        "file": {"path": "assets/logo.png", "sha256": "b" * 64, "size": 18342},
+        "method": METHOD,
+    }
 
 
 class ModelCheckBodies:
@@ -636,4 +786,167 @@ class RunProgressBodies:
         "assembled_at": "2026-10-12T09:29:58.004Z",
         "summary": "Waiting to start",
         "invocations": [],
+    }
+
+
+class BrandingBodies:
+    """An organization's branding and the branding write's refusals, as the platform serializes them.
+
+    `BRANDED` and `UNBRANDED` are its `BrandingResponse`, which both branding routes answer; the refusals
+    are its problem documents, the logo ones carrying one `errors[]` entry per broken rule.
+    """
+
+    ORG_ID: ClassVar[str] = "0f6c2a4e-org"
+    #: What a write sends to set a new logo: a standalone upload of the organization.
+    SQUARE_UPLOAD_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/assets/7d1e.png"
+    WIDE_UPLOAD_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/assets/9a3c.svg"
+
+    #: What the answer names: the platform's own copy of an accepted logo, under `branding/`.
+    SQUARE_LOGO_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/3f9a1c2e-5b7d-4e8f-9a0b-1c2d3e4f5a6b.png"
+    WIDE_LOGO_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/8c7b6a5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d.svg"
+
+    #: A branding copy that no slot of the organization holds, which a write may not attach.
+    STRAY_BRANDING_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.svg"
+
+    SQUARE_LOGO: ClassVar[dict[str, Any]] = {
+        "uri": SQUARE_LOGO_URI,
+        "sha256": "9b2f6d0c1e4a7b3c5d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e",
+        "content_type": "image/png",
+        "width": 512.0,
+        "height": 512.0,
+    }
+
+    #: An SVG's size is its viewBox's, which may be fractional.
+    WIDE_SVG_LOGO: ClassVar[dict[str, Any]] = {
+        "uri": WIDE_LOGO_URI,
+        "sha256": "0d1c2b3a49586776a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f00f1e",
+        "content_type": "image/svg+xml",
+        "width": 240.5,
+        "height": 64.25,
+    }
+
+    #: A branded team: one logo, a partial light set, a partial dark set.
+    BRANDED: ClassVar[dict[str, Any]] = {
+        "org_id": ORG_ID,
+        "org_name": "Acme Corp",
+        "colors": {"action": "#14213d", "accent": "#fca311", "header": None},
+        "dark_colors": {"action": None, "accent": None, "header": "#e5e5e5"},
+        "square_logo": SQUARE_LOGO,
+        "wide_logo": None,
+    }
+
+    #: A personal workspace, or a team that set nothing: every colour and logo `None`.
+    UNBRANDED: ClassVar[dict[str, Any]] = {
+        "org_id": ORG_ID,
+        "org_name": "Ada's workspace",
+        "colors": {"action": None, "accent": None, "header": None},
+        "dark_colors": {"action": None, "accent": None, "header": None},
+        "square_logo": None,
+        "wide_logo": None,
+    }
+
+    SQUARE_TOO_SMALL: ClassVar[str] = "The square logo is 100 × 100 px; a square logo must be at least 128 px on each side."
+    WIDE_TOO_SHORT: ClassVar[str] = "The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall."
+
+    #: Both slots refused at once: one entry per broken rule, the problem's `detail` their sentences joined.
+    LOGOS_REFUSED: ClassVar[dict[str, Any]] = {
+        "type": "https://pipelex.com/errors/validation_failed",
+        "title": "Validation failed",
+        "status": 422,
+        "code": "validation_failed",
+        "detail": f"{SQUARE_TOO_SMALL} {WIDE_TOO_SHORT}",
+        "instance": "urn:pipelex:request:a9a249b93c024bf08ac9a5fd0704ea92",
+        "request_id": "a9a249b93c024bf08ac9a5fd0704ea92",
+        "errors": [
+            {"field": "square_logo", "code": "logo_too_small", "detail": SQUARE_TOO_SMALL},
+            {"field": "wide_logo", "code": "logo_too_short", "detail": WIDE_TOO_SHORT},
+        ],
+    }
+
+    #: The platform's own sentences, from `services/logo_inspection.py`.
+    ACTIVE_CONTENT: ClassVar[str] = "The wide logo is an SVG that carries active content, which a logo may not: a <script> element."
+    NOT_AN_UPLOAD: ClassVar[str] = (
+        "The wide logo must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) or the URI the wide logo already has."
+    )
+    PIXEL_CAP: ClassVar[str] = (
+        "The square logo looks like a PNG image but cannot be read: "
+        "at 5,000 × 5,000 px it has more than the 16,777,216 pixels (4096 × 4096) a logo may have."
+    )
+    CUT_SHORT: ClassVar[str] = "The square logo looks like a JPEG image but cannot be read: the file is damaged or incomplete."
+    ANIMATED_WEBP: ClassVar[str] = "The square logo is an animated WebP; a logo must be a still image."
+    ANIMATED_PNG: ClassVar[str] = "The wide logo is an animated PNG; a logo must be a still image."
+    SVG_SIDE_OUT_OF_RANGE: ClassVar[str] = (
+        "The square logo is an SVG that cannot be read: its width or height lies outside the 0.001 to 1,000,000 px a logo's side may measure."
+    )
+    SVG_VIEWBOX_OUT_OF_RANGE: ClassVar[str] = (
+        "The wide logo is an SVG that cannot be read: "
+        "its viewBox's width or height lies outside the 0.001 to 1,000,000 units a logo's side may measure."
+    )
+    #: The style an SVG logo may not carry, by kind: a style sheet's processing instruction and the CSS a browser
+    #: reads. Each is the slot, the upload sent for it, and the platform's sentence.
+    STYLE_ACTIVE_CONTENT: ClassVar[dict[str, tuple[str, str, str]]] = {
+        "xml-stylesheet": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            (
+                "The square logo is an SVG that carries active content, which a logo may not: "
+                "an xml-stylesheet processing instruction, which loads a style sheet."
+            ),
+        ),
+        "css-import": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            ("The square logo is an SVG that carries active content, which a logo may not: a CSS @import, which loads a style sheet."),
+        ),
+        "css-url": (
+            "wide_logo",
+            WIDE_UPLOAD_URI,
+            (
+                "The wide logo is an SVG that carries active content, which a logo may not: "
+                "a CSS url() that links to something outside the file, "
+                "where only a reference inside it or an embedded PNG, JPEG, GIF or WebP image is allowed."
+            ),
+        ),
+        "css-src": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            (
+                "The square logo is an SVG that carries active content, which a logo may not: "
+                "a CSS src() that links to something outside the file, "
+                "where only a reference inside it or an embedded PNG, JPEG, GIF or WebP image is allowed."
+            ),
+        ),
+        "css-image-set": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            (
+                "The square logo is an SVG that carries active content, which a logo may not: "
+                "a CSS image-set() function, which can load an image from outside the file."
+            ),
+        ),
+        "css-image": (
+            "wide_logo",
+            WIDE_UPLOAD_URI,
+            (
+                "The wide logo is an SVG that carries active content, which a logo may not: "
+                "a CSS image() function, which can load an image from outside the file."
+            ),
+        ),
+        "css-escape": (
+            "square_logo",
+            SQUARE_UPLOAD_URI,
+            ("The square logo is an SVG that carries active content, which a logo may not: a CSS escape (a backslash), which can disguise a link."),
+        ),
+    }
+
+    #: A colour that is not `#rrggbb`, refused by the body's validation and named by its dotted key.
+    COLOR_REFUSED: ClassVar[dict[str, Any]] = {
+        "type": "https://pipelex.com/errors/validation_failed",
+        "title": "Validation failed",
+        "status": 422,
+        "code": "validation_failed",
+        "detail": "Request body failed validation. See `errors` for the per-field breakdown.",
+        "errors": [
+            {"field": "dark_colors.header", "code": "string_pattern_mismatch", "detail": "String should match pattern '^#[0-9a-fA-F]{6}$'"},
+        ],
     }

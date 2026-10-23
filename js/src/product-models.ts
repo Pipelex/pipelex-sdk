@@ -1,8 +1,8 @@
 /**
  * Pipelex-product wire models — the snake_case JSON shapes the hosted-product
- * routes (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/billing/*`,
+ * routes (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/branding`, `/v1/billing/*`,
  * `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
- * `/v1/resolve-storage-url`, `/v1/upload`, `/v1/upload/grant`, `/v1/runs`) speak.
+ * `/v1/resolve-storage-url`, `/v1/upload`, `/v1/upload/grant`, `/v1/files`, `/v1/runs`) speak.
  *
  * These are the management surface a consumer (today `pipelex-app`) hand-rolls.
  * The wire is snake_case; any camelCase remap is a consumer's UI concern and
@@ -407,8 +407,8 @@ export interface MethodVersionPage {
 
 /**
  * One saved example of a method — what `createMethodExample`, `getMethodExample`,
- * `updateMethodExample` and both arms of `recordMethodExampleLatestRun` answer, and a row of
- * `listMethodExamples`.
+ * `updateMethodExample` and both arms of `recordMethodExampleLatestRun` and
+ * `saveAssistantMethodExample` answer, and a row of `listMethodExamples`.
  */
 export interface MethodExample {
   /** The example's id, `ex_…`, minted by the platform. */
@@ -447,6 +447,13 @@ export interface MethodExample {
   created_at: string;
   /** ISO-8601 UTC instant of its last change: its name, its inputs or its latest run. */
   updated_at: string;
+  /**
+   * Whether the build assistant keeps this example's inputs current with its test inputs: `true`
+   * on an example the assistant's save created (`saveAssistantMethodExample`), `false` on every
+   * other, and `false` from the first inputs change that is not the assistant's own. A rename
+   * leaves it as it is.
+   */
+  kept_by_assistant: boolean;
 }
 
 /** The create — `createMethodExample`, `POST /v1/methods/{id}/examples`. */
@@ -522,6 +529,55 @@ export interface MethodExampleLatestRunStale {
 export type MethodExampleLatestRunResult =
   MethodExampleLatestRunRecorded | MethodExampleLatestRunStale;
 
+/**
+ * The build assistant's save — `saveAssistantMethodExample`,
+ * `POST /v1/methods/{id}/examples/assistant-save`: its new test inputs, and the example it read as
+ * its own with the revision it read it at, both or neither.
+ */
+export interface MethodExampleAssistantSaveInput {
+  /** The name a new example takes, 1 to 200 characters and not blank; an example kept current keeps its own. */
+  name: string;
+  /** The assistant's test inputs, a JSON object; a `bigint` in them is sent as its exact digits. */
+  inputs: Record<string, unknown>;
+  /**
+   * The assistant's example the caller read, the method's newest with `kept_by_assistant` true,
+   * to keep current. Omitted, or `null`, the save creates a new example.
+   */
+  example_id?: string | null;
+  /** The `input_revision` the caller read that example at; given with `example_id` and only with it. */
+  input_revision?: number | null;
+}
+
+/** What an assistant save did — the discriminant of `MethodExampleAssistantSaveResult`. */
+export type MethodExampleAssistantSaveOutcome = "kept" | "created";
+
+/**
+ * The named example was still the assistant's at the revision read, and now holds the inputs;
+ * `example` is it as it now stands, its name untouched.
+ */
+export interface MethodExampleAssistantKept {
+  outcome: "kept";
+  example: MethodExample;
+}
+
+/**
+ * A new example, flagged as the assistant's, holds the inputs under the save's `name`: none was
+ * named, or a person's edit, another save or a deletion took the named one first.
+ */
+export interface MethodExampleAssistantCreated {
+  outcome: "created";
+  example: MethodExample;
+}
+
+/**
+ * The answer of `saveAssistantMethodExample`, a `200` discriminated on `outcome`. Finding that a
+ * person has taken the example is the expected course of events whenever a person edits the
+ * assistant's inputs while it works, so it is answered rather than thrown: remember the answer's
+ * `example` as the assistant's from then on.
+ */
+export type MethodExampleAssistantSaveResult =
+  MethodExampleAssistantKept | MethodExampleAssistantCreated;
+
 /** Query for one page of a method's examples. */
 export interface ListMethodExamplesQuery {
   /**
@@ -575,6 +631,105 @@ export interface Membership {
 export interface MembershipsResponse {
   memberships: Membership[];
   active_org_feature_flags: string[];
+}
+
+// ── Organization branding (`/v1/branding`, `/v1/organizations/{id}/branding`) ──
+//
+// An organization may set up to two logos and two colour sets of three colours, which its shared
+// method apps and the apps scaffolded from the method-app template wear. Every member and every
+// API key reads it with `getBranding`; an admin writes it with `updateOrganizationBranding`. Both
+// answer the same `OrganizationBranding`. See `docs/organization-branding.md`.
+
+/**
+ * One colour set: the button, accent and header colours, each `#rrggbb` in lower case, or `null`
+ * when not set. The platform always sends all three keys.
+ */
+export interface BrandingColors {
+  /** The button colour. */
+  action: string | null;
+  /** The accent colour: links, the active tab, the brand ink. */
+  accent: string | null;
+  /** The header band's colour. */
+  header: string | null;
+}
+
+/**
+ * What the platform recorded about a logo when it accepted it.
+ *
+ * `content_type` is the type the platform read from the file's own bytes, never the type the
+ * upload declared: `image/png`, `image/jpeg`, `image/webp` or `image/svg+xml`. `width` and
+ * `height` are the image's size in pixels for a raster, oriented as a browser draws it, and for an
+ * SVG its `width` and `height` in pixels when both are in absolute units, which is the size a
+ * browser draws it at, else the width and height of its `viewBox`; an SVG's may be fractional.
+ * Their ratio is the logo's shape, which sizes its box before the image loads.
+ */
+export interface LogoDescriptor {
+  /**
+   * The platform's own copy of the logo, `pipelex-storage://<org_id>/branding/<uuid>.<ext>`, never
+   * the upload URI the write sent: the platform copies a logo it accepts, under a fresh uuid each
+   * time, so the same bytes attached again get a new URI. Sending it back unchanged in its slot
+   * keeps the logo. `resolveStorageUrl` turns it into a short-lived link to its bytes.
+   */
+  uri: string;
+  /** The SHA-256 of the logo's bytes, 64 lower-case hexadecimal digits: a cache key for them. */
+  sha256: string;
+  content_type: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * An organization's branding — what `getBranding` and `updateOrganizationBranding` answer.
+ *
+ * `colors` is the light set and `dark_colors` the dark one, used in dark mode only: a dark colour
+ * that is `null` falls back to the light colour of the same role, and a light one that is `null`
+ * to Pipelex's own palette. A logo is `null` when its slot is empty. A personal workspace, or a
+ * team that set nothing, answers every colour and logo `null`.
+ */
+export interface OrganizationBranding {
+  org_id: string;
+  /** The organization's display name, the wordmark a client shows when it has no logo. */
+  org_name: string;
+  colors: BrandingColors;
+  dark_colors: BrandingColors;
+  /** The square logo, for the organization menu and small headers. */
+  square_logo: LogoDescriptor | null;
+  /** The wide logo, at least one and a half times as wide as it is tall, for an app's header. */
+  wide_logo: LogoDescriptor | null;
+}
+
+/**
+ * Changes to one colour set. A key set to a colour sets it, a key set to `null` clears it, and a
+ * key left out keeps its value. A colour is `#rrggbb` in either case, stored in lower case; the
+ * platform refuses anything else with a `422` `validation_failed` whose `errors[]` entry names the
+ * key, such as `colors.action`.
+ */
+export interface BrandingColorsUpdate {
+  action?: string | null;
+  accent?: string | null;
+  header?: string | null;
+}
+
+/**
+ * The body of `updateOrganizationBranding`: every key optional, a value sets it, `null` clears it,
+ * and a key left out keeps its value, so `{}` writes nothing and answers the branding as it
+ * stands.
+ *
+ * - `colors` and `dark_colors` take a `BrandingColorsUpdate`, or `null` to clear all three
+ *   colours of that set.
+ * - `square_logo` and `wide_logo` take the `pipelex-storage://` URI of a file the organization
+ *   uploaded on its own (`requestUploadGrant` or `upload`) to set a new logo, the `uri` the
+ *   branding answers for that slot to keep it, or `null` to remove it. Any other URI, a run's or
+ *   a method's file, a stale `branding/` copy or the other slot's logo, is refused as
+ *   `logo_not_an_upload`, so a logo cannot move between slots by its URI. The platform reads and
+ *   measures an upload before it accepts it, keeps its own copy under `branding/`, whose URI it
+ *   answers, and erases the copy a write replaces or clears; the upload is left as it is.
+ */
+export interface OrganizationBrandingUpdate {
+  colors?: BrandingColorsUpdate | null;
+  dark_colors?: BrandingColorsUpdate | null;
+  square_logo?: string | null;
+  wide_logo?: string | null;
 }
 
 // ── Billing (`/v1/billing/*`) ────────────────────────────────────────────
@@ -684,6 +839,13 @@ export interface UploadInput {
   filename: string;
   data: string;
   content_type: string;
+  /** What the upload is recorded as; `uploaded` when omitted. */
+  kind?: UploadKind;
+  /**
+   * The bare catalog id of the method a `test` file is for, required with `kind: "test"`
+   * and refused without it.
+   */
+  method_id?: string;
 }
 
 /** The answer to `POST /v1/upload`: the stored file's reference, its name and its record. */
@@ -782,6 +944,503 @@ export interface UploadGrant {
   expires_at: string | null;
   /** The largest file any grant allows, in bytes (the service's upload cap). */
   max_bytes: number;
+}
+
+// ── An organization's files (`/v1/files`) ────────────────────────────────
+//
+// A file is the record the platform keeps of a stored object: a member's upload, a test file
+// made for a method, or a file a run made that reached its result, each with the name a person
+// sees, its type, its size and where it came from. A run, a form or an example still points at
+// the bytes by their `pipelex-storage://` address, the record's `uri`, which a run's inputs take
+// as they take any address (see `docs/files.md`).
+
+/**
+ * What made a file: `uploaded`, a person's upload or a run's inline input; `generated`, a file a
+ * run made whose result reaches it; `test`, a test input made for one method, which its
+ * `origin.method_id` names.
+ */
+export type FileKind = "uploaded" | "generated" | "test";
+
+/**
+ * Who or what made a file, as far as the platform knows it. Each kind fills a different part, and
+ * the rest is `null`: an upload names the surface it came through; a generated file or a run's
+ * inline input names the run, its method and the version or draft that ran; a test file names the
+ * surface it came through and the method it was made for. The member a file is attributed to is
+ * the record's `created_by`, never repeated here.
+ */
+export interface FileOrigin {
+  /**
+   * The surface an upload came through, as its request's `User-Agent` declared it (`app`, `mcp`,
+   * `cli`, `n8n`, `hook`, `sdk`, `raw_http`, and more as surfaces are added); `null` for a run's
+   * files. Self-declared, so it is provenance to show, never authority.
+   */
+  surface: string | null;
+  /** The run that made the file; `null` for an upload. */
+  run_id: string | null;
+  /** The method whose run made the file, or the method a test file was made for; `null` otherwise. */
+  method_id: string | null;
+  /**
+   * The published version number or `"draft"` that ran, for a file made by a saved method's run;
+   * `null` otherwise.
+   */
+  method_version: number | "draft" | null;
+}
+
+/**
+ * One row of a file list, what a list or a picker shows. A list never holds a file a run made
+ * along the way, nor an upload whose bytes have not been seen stored.
+ */
+export interface FileSummary {
+  /** The record's id, `fl_…`. */
+  file_id: string;
+  /** The `pipelex-storage://` address of the bytes, which a run's inputs take as they take any address. */
+  uri: string;
+  /** The name shown and used for downloads; it starts as the name the file arrived with and changes with a rename. */
+  name: string;
+  /** The MIME type the object is stored under. */
+  media_type: string;
+  /** The format key the list's `format` filter matches: `pdf`, `docx`, `image`, `html` and the rest of the runtime's table. */
+  format: string;
+  /** The byte size. */
+  size: number;
+  kind: FileKind;
+  origin: FileOrigin;
+  /** ISO-8601 instant the record was made. */
+  created_at: string;
+  /** The member the file is attributed to: the uploader, or the member who started the run that made it. */
+  created_by: string;
+}
+
+/**
+ * Query for one page of an organization's files — `GET /v1/files`. Every member is optional, and
+ * each is sent only when given, so an empty string is sent and refused by the API rather than
+ * dropped into an unfiltered list.
+ *
+ * `methodId`, `runId` and `createdBy` choose which list serves the page: a method's list, a
+ * run's own list, one member's, or, with none of them, the organization's. The other members
+ * filter whichever list serves it, after the index read, so a filtered page can hold fewer rows
+ * than `limit`, or none, and still carry a `nextCursor`.
+ */
+export interface ListFilesQuery {
+  /** A case-insensitive search in a file's name and the name it arrived with, applied server-side; at most 200 characters. */
+  q?: string;
+  /** Only the files of this kind. */
+  kind?: FileKind;
+  /**
+   * Only the files of one of these format keys (`pdf`, `image`, …), sent as one repeated
+   * `format=` parameter per value; at most 100. An empty list names no format and is a
+   * `RequestArgumentError` before any request, since sent as no parameter it would list every
+   * format.
+   */
+  format?: readonly string[];
+  /**
+   * Only the files of one of these MIME types (`image/png`, …), sent as one repeated
+   * `media_type=` parameter per value; at most 100. An empty list is refused as `format`'s is.
+   */
+  mediaType?: readonly string[];
+  /** The method's list, by its bare catalog id: the files its runs and examples took or made. Sent as `method_id`. */
+  methodId?: string;
+  /**
+   * The run's own list: its final outputs and its inline inputs, in the order of their addresses
+   * rather than newest first. Beside `methodId`, the run's list when the method is the run's own,
+   * and an empty page otherwise. The files a run took from the organization as inputs are not in
+   * it. Sent as `run_id`.
+   */
+  runId?: string;
+  /** One member's files by user id, or `"me"` for the caller's own: their uploads and their runs' outputs. Sent as `created_by`. */
+  createdBy?: string;
+  /**
+   * Only the files created at or after this INSTANT, ISO-8601 with a UTC offset
+   * (`2026-10-01T00:00:00Z`), inclusive. A bare date or a naive timestamp is refused by the API
+   * with a `400`. Sent as `created_from`.
+   */
+  createdFrom?: string;
+  /** Only the files created at or before this instant. Same rules as `createdFrom`. Sent as `created_to`. */
+  createdTo?: string;
+  /** Page size, from 1 to 200; the API defaults to 50 and refuses one outside that range with a `422`. */
+  limit?: number;
+  /** Opaque `nextCursor` from the previous page, bound to the list and the filters that issued it. */
+  cursor?: string;
+}
+
+/**
+ * One page of an organization's files, newest first (in the order of their addresses under
+ * `runId`).
+ *
+ * `nextCursor` is opaque — pass it straight back to `listFiles` with the same filters to
+ * continue; `null` means this was the last page. A filtered page can hold fewer rows than
+ * `limit`, or none, and still carry a `nextCursor`: only a `null` cursor ends the list, and
+ * `iterateFiles` keeps following the cursor through such a page. There is deliberately no total.
+ */
+export interface FilePage {
+  items: FileSummary[];
+  nextCursor: string | null;
+}
+
+/**
+ * For a file a run made, whether the run's result reaches it: `final`, an output of the run, or
+ * `intermediate`, a file made along the way, which no list holds.
+ */
+export type FileRole = "final" | "intermediate";
+
+/** Whether a file's bytes are stored: `stored`, or `pending` while an upload's bytes have not been seen. */
+export type FileState = "stored" | "pending";
+
+/**
+ * One file's whole record — what `renameFile` answers, each record `getFilesByUri` lists, and the
+ * `file` of a run's file entry; `getFile` answers it with its methods and uses (`FileDetail`). It
+ * is a `FileSummary` with the members a list leaves out.
+ */
+export interface FileRecord extends FileSummary {
+  /**
+   * The address the record was written under, once another run or an example took the file and
+   * the platform copied it into the organization's `assets/`; `uri` is then the copy's. `null`
+   * until then.
+   */
+  source_uri: string | null;
+  /** The name the file arrived with, never changed: a rename changes `name` alone. */
+  original_name: string;
+  /**
+   * The SHA-256 of the bytes in lowercase hexadecimal, or `null` for a file stored before every
+   * writer sent one.
+   */
+  sha256: string | null;
+  /** For a file a run made, `final` or `intermediate`; `null` for the other kinds. */
+  role: FileRole | null;
+  /** `stored`, or `pending` while an upload's bytes have not been seen. */
+  state: FileState;
+}
+
+/** What holds an address a use links: a run that took it as an input, or an example that holds it. */
+export type FileUseHolderType = "run" | "example";
+
+/**
+ * An address taken as an input by a run, or held by an example. A use names an address, not a
+ * record, so every record holding the address shows the same uses; a file a run made names that
+ * run in its `origin`, never as a use.
+ */
+export interface FileUse {
+  /** The `pipelex-storage://` address used. */
+  uri: string;
+  holder_type: FileUseHolderType;
+  /** The run's id or the example's id. */
+  holder_id: string;
+  /** The method of the run or of the example; `null` for a run of no saved method. */
+  method_id: string | null;
+  /** ISO-8601 instant the use was recorded. */
+  created_at: string;
+}
+
+/**
+ * One page of a file's uses, the examples that hold its address first, then the runs that took
+ * it. It is a member of `FileDetail`, as the platform serializes it: pass `next_cursor` back to
+ * `getFile` as `usesCursor` for the next page; `null` means there is none.
+ */
+export interface FileUsePage {
+  items: FileUse[];
+  next_cursor: string | null;
+}
+
+/** One file with what links it to the organization's methods, runs and examples — `getFile`. */
+export interface FileDetail extends FileRecord {
+  /** The methods whose list of files holds this one, because one of their runs or examples took or made it. */
+  method_ids: string[];
+  /** One page of the file's uses. */
+  uses: FileUsePage;
+}
+
+/** Query of `getFile`, for the page of the file's uses it answers. */
+export interface GetFileQuery {
+  /** How many uses the page holds, from 1 to 200; the API defaults to 50. Sent as `uses_limit`. */
+  usesLimit?: number;
+  /** The previous answer's `uses.next_cursor`. Sent as `uses_cursor`. */
+  usesCursor?: string;
+}
+
+/** Options of `getFilesByUri`. */
+export interface GetFilesByUriOptions {
+  /**
+   * The run whose input the address is: the records of the member who started it come first, so
+   * a run's inputs show the name its starter gave the file. Sent as `run_id`.
+   */
+  runId?: string;
+}
+
+/**
+ * The records holding one address — `getFilesByUri` — in the order a surface picks the one to
+ * show, the first being it. Empty for an address no record holds, such as a file stored before
+ * the platform kept records.
+ */
+export interface FileRecordList {
+  items: FileRecord[];
+}
+
+/** The rename — `renameFile`, `PATCH /v1/files/{file_id}`. */
+export interface FileRenameInput {
+  /**
+   * The new name, at most 512 characters. The platform removes the characters no list or header
+   * can show, trims the ends, refuses a name with nothing left, and adds the file's own extension,
+   * the one its `original_name` ends with, when the name does not end with it, case aside.
+   */
+  name: string;
+}
+
+/** One file to link — `linkFiles` — named by exactly one of its record's id and its address. */
+export type FileLinkTarget = { file_id: string; uri?: never } | { uri: string; file_id?: never };
+
+/**
+ * Why one file got no link — a value, never a thrown error. `code` is `not_found` (an unknown file,
+ * or one deleted meanwhile), `conflict` (a file whose upload has not finished), `invalid_storage_uri`
+ * (a malformed address) or `forbidden` (another organization's address); `detail` is the sentence
+ * a person reads.
+ */
+export interface FileLinkError {
+  code: string;
+  detail: string;
+}
+
+/**
+ * One requested file's link, or why it has none. Either the link members are set and `error` is
+ * `null`, or `error` is set and they are `null`. Branch on `error`, never on the HTTP status: the
+ * request is a `200` whenever every file got a verdict.
+ */
+export type FileLink =
+  | {
+      /**
+       * The record linked: the one asked for, or for an address, the record whose name the link
+       * carries; `null` for an address no record holds, a file stored before records existed.
+       */
+      file_id: string | null;
+      /** The address the link reads. */
+      uri: string;
+      /** The name the download saves under, which the link's `Content-Disposition` carries. */
+      name: string;
+      /** The file's type, which decides whether a browser shows it in place or downloads it. */
+      media_type: string;
+      /** A presigned `GET` of the file, valid for fifteen minutes; a bearer capability, so keep it out of logs. */
+      url: string;
+      /** ISO-8601 UTC instant the link stops working. */
+      expires_at: string;
+      error: null;
+    }
+  | {
+      /** The file id as requested, or `null` when the file was named by its address. */
+      file_id: string | null;
+      /** The address as requested, or `null` when the file was named by its id. */
+      uri: string | null;
+      name: null;
+      media_type: null;
+      url: null;
+      expires_at: null;
+      error: FileLinkError;
+    };
+
+/** The answer of `linkFiles`: exactly one `FileLink` per requested file, in the request's order. */
+export interface FileLinksResult {
+  items: FileLink[];
+}
+
+/**
+ * Where an archive stands: `queued` and `building`, read it again shortly; `ready`, its `url`
+ * downloads the zip; `failed`, its `failure` says why, and a new request is the remedy.
+ */
+export type FileArchiveState = "queued" | "building" | "ready" | "failed";
+
+/** How an archive's files were chosen: `files`, by their ids, or `run`, as one run's files. */
+export type FileArchiveSource = "files" | "run";
+
+/**
+ * Why an archive failed: `file_gone`, a selected file was deleted before the zip was ready;
+ * `build_failed`, the build failed or did not finish within the hour. Asking again is the remedy
+ * for both.
+ */
+export type FileArchiveFailureCode = "file_gone" | "build_failed";
+
+/** What a failed archive says about its failure. */
+export interface FileArchiveFailure {
+  code: FileArchiveFailureCode;
+  /** A sentence for a person, naming the file when one was gone. */
+  detail: string;
+}
+
+/**
+ * One zip of an organization's files — what `requestFileArchive` (`queued`) and `getFileArchive`
+ * answer. An archive is never a file: no list shows it, and it is gone a day after it was asked
+ * for, past `expires_at`, when reading it answers `404`.
+ */
+export interface FileArchive {
+  /** The archive's id, `arc_…`. */
+  archive_id: string;
+  /** The name the zip downloads under, ending in `.zip`. */
+  name: string;
+  state: FileArchiveState;
+  source: FileArchiveSource;
+  /** The run whose files the archive holds, for a `run` archive; `null` otherwise. */
+  run_id: string | null;
+  /** How many files the zip holds. */
+  file_count: number;
+  /** The files' total size in bytes, before compression. */
+  total_bytes: number;
+  /** ISO-8601 instant the archive was asked for. */
+  created_at: string;
+  /** ISO-8601 instant after which the archive is gone and reads as unknown, a day after `created_at`. */
+  expires_at: string;
+  /** The zip's own size in bytes, once it is ready; `null` until then. */
+  archive_bytes: number | null;
+  /** ISO-8601 instant the zip was complete; `null` until then. */
+  ready_at: string | null;
+  /** Why the archive failed; `null` unless `state` is `failed`. */
+  failure: FileArchiveFailure | null;
+  /**
+   * A presigned `GET` of the zip, valid for fifteen minutes and signed with a `Content-Disposition`
+   * naming `name`, set only on a read of a `ready` archive; each read signs a fresh one. A bearer
+   * capability, so keep it out of logs.
+   */
+  url: string | null;
+  /** ISO-8601 instant `url` stops working; `null` without a link. */
+  url_expires_at: string | null;
+}
+
+/**
+ * The request — `requestFileArchive`, `POST /v1/files/archives` — naming the files by exactly one
+ * of `file_ids` and `run_id`.
+ *
+ * - `file_ids`: any of the organization's files, in the order the zip holds them, at least one; an
+ *   id given twice is zipped once. At most 500 files once duplicates are removed and 1,000 ids
+ *   listed.
+ * - `run_id`: a run of the organization, whose zip holds what went in and what came out, never a
+ *   file it made along the way nor an input given as a web link.
+ *
+ * `name` is the name the zip downloads under, `.zip` added when it does not end with it; omitted,
+ * or with nothing usable left once the platform cleans it, the platform names it
+ * `files-<run_id>.zip` or `files-<YYYYMMDD-HHMMSS>.zip`.
+ */
+export type FileArchiveRequest =
+  | { file_ids: readonly string[]; run_id?: never; name?: string }
+  | { run_id: string; file_ids?: never; name?: string };
+
+/**
+ * The cap a `422` `file_archive_too_large` names, read from the refusal's
+ * `ApiResponseError.problemDocument.limit`: `max_files` (500) or `max_total_bytes`
+ * (2,000,000,000), its `value`, and what the selection `reached`. For a run, the count stops as
+ * soon as it passes the cap, so `reached` is one more than `max_files` and means "at least".
+ */
+export interface FileArchiveLimit {
+  name: "max_files" | "max_total_bytes";
+  value: number;
+  reached: number;
+}
+
+/**
+ * The copy of a file into a method's draft — `copyFileIntoDraft`,
+ * `POST /v1/methods/{id}/draft/files/from-file`, "Add to method files".
+ */
+export interface DraftFileFromFileInput {
+  /** The file to copy, one of the organization's, `fl_…`. */
+  file_id: string;
+  /** The tree path the file takes in the draft, such as `assets/logo.png`; a file already there is replaced. */
+  path: string;
+  /**
+   * The draft token (`MethodData.updated_at`) the caller last read, echoed verbatim: a draft that
+   * moved since is refused with a `409` `method_update_conflict`. Omitted, the file is added to the
+   * draft as it stands when the request is served, never erasing another save.
+   */
+  expected_updated_at?: string;
+}
+
+/**
+ * What the copy did in the organization's blob store, the field the answer is discriminated on:
+ * `copied`, the bytes were copied under their SHA-256, or `already_held`, the store held them and
+ * nothing was copied.
+ */
+export type DraftFileBlob = "copied" | "already_held";
+
+/** The copied file as the draft's tree now names it. */
+export interface DraftFileAdded {
+  /** Its tree path. */
+  path: string;
+  /** The SHA-256 of its bytes, in lowercase hexadecimal. */
+  sha256: string;
+  /** Its size in bytes. */
+  size: number;
+}
+
+/**
+ * The answer of `copyFileIntoDraft`, a `200` discriminated on `blob`; both arms carry the file as
+ * the draft names it and the method as the draft write stored it, with its new draft token.
+ */
+export interface DraftFileFromFileResult {
+  blob: DraftFileBlob;
+  file: DraftFileAdded;
+  method: MethodData;
+}
+
+/** Whether a run's records are all written: `listed`, or `listing` while the platform is still recording them. */
+export type RunFilesState = "listing" | "listed";
+
+/** Where a file sits in its run: what went in, what came out, or what was made along the way. */
+export type RunFileMark = "input" | "final" | "intermediate";
+
+/** One file of a run, with its mark and the record a surface shows for it. */
+export interface RunFileEntry {
+  mark: RunFileMark;
+  /**
+   * For an input given by its address, the run's input that held it; `null` for an inline input
+   * and for the files the run made.
+   */
+  input_name: string | null;
+  /**
+   * The address the run took or wrote; a record a take moved to a copy says where it lives now in
+   * its own `uri`.
+   */
+  uri: string;
+  /**
+   * The record a surface shows for the file: for an input, the one of the member who started the
+   * run first, then the caller's, then the oldest. `null` for an input address no record holds,
+   * such as a file stored before records existed.
+   */
+  file: FileRecord | null;
+}
+
+/** A web link the run's inputs held, which gets no record: the platform neither fetched nor kept what it served. */
+export interface RunInputLink {
+  /** The run's input that held the link. */
+  input_name: string;
+  /** The link, as the run was given it. */
+  url: string;
+  /** Why the link matters to a replay of the run: it must still serve the same file. */
+  warning: string;
+}
+
+/** Query of `listRunFiles`, paging the run's own records. */
+export interface ListRunFilesQuery {
+  /** How many of the run's own records the page holds at most, from 1 to 200; the API defaults to 50. */
+  limit?: number;
+  /** Opaque `nextCursor` from the previous page. */
+  cursor?: string;
+}
+
+/**
+ * One page of a run's files, sorted by where they sit in the run — `listRunFiles`.
+ *
+ * The inputs given by their address and the web links come on the first page only; the run's own
+ * records, its inline inputs, its final outputs and the files it made along the way, are paged by
+ * address. `nextCursor` is opaque — pass it straight back to `listRunFiles`; `null` is the last
+ * page. `state` is `listing` until the platform has recorded every file of the run, a few seconds
+ * after it ends, so a client showing a run that just ended reads it again until it is `listed`.
+ */
+export interface RunFilesPage {
+  pipeline_run_id: string;
+  state: RunFilesState;
+  /** What went in: the inputs by address (first page only), then the inline inputs. */
+  inputs: RunFileEntry[];
+  /** What came out: the run's final outputs. */
+  outputs: RunFileEntry[];
+  /** What was made along the way. */
+  intermediates: RunFileEntry[];
+  /** The web links the inputs held (first page only). */
+  links: RunInputLink[];
+  nextCursor: string | null;
 }
 
 // ── Runs list / update (`/v1/runs`) ──────────────────────────────────────

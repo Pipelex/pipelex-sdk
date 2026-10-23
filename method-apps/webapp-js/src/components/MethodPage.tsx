@@ -64,10 +64,14 @@ function MethodTabs({ methods }: { methods: readonly RegisteredMethod[] }) {
     // `:not([hidden])` guard and would give the active panel a trailing margin on
     // every tab but the last.
     <div className="flex flex-col gap-6">
+      {/* The tabs read the kernel's tokens, so an organization's brand reaches
+          them: the selected tab is underlined in the accent's ink (`--brand`),
+          which reads against the page whatever accent was picked, and in the
+          button colour when the app is unbranded. */}
       <div
         role="tablist"
         aria-label="Methods"
-        className="flex flex-wrap gap-1 border-b border-slate-200"
+        className="flex flex-wrap gap-1 border-b border-border"
       >
         {methods.map((method) => {
           const selected = method.id === active;
@@ -82,8 +86,8 @@ function MethodTabs({ methods }: { methods: readonly RegisteredMethod[] }) {
               onClick={() => setActive(method.id)}
               className={
                 selected
-                  ? "border-b-2 border-slate-900 px-3 py-2 text-sm font-medium text-slate-900"
-                  : "border-b-2 border-transparent px-3 py-2 text-sm font-medium text-slate-500 hover:text-slate-800"
+                  ? "border-b-2 border-brand px-3 py-2 text-sm font-medium text-foreground"
+                  : "border-b-2 border-transparent px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
               }
             >
               {method.label}

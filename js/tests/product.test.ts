@@ -1280,6 +1280,8 @@ describe("a page the SDK cannot read", () => {
     ["iterateMethods", (client) => drain(client.iterateMethods()), "/v1/methods"],
     ["listRuns", (client) => client.listRuns("m1"), "/v1/runs?method_id=m1"],
     ["iterateRuns", (client) => drain(client.iterateRuns("m1")), "/v1/runs?method_id=m1"],
+    ["listFiles", (client) => client.listFiles(), "/v1/files"],
+    ["iterateFiles", (client) => drain(client.iterateFiles()), "/v1/files"],
   ];
   const CASES = ROUTES.flatMap(([name, call, path]) =>
     MALFORMED_PAGES.map(([shape, page, what]) => [name, shape, call, path, page, what] as const),

@@ -29,8 +29,11 @@
 @source "../../node_modules/@pipelex/mthds-form/dist/**/*.js";
 
 /* Dark mode is the `.dark` class convention, matching the kernel's theme.css.
- * This app's own chrome is light-only today; this is here so a consumer who
- * adds a dark theme gets the kernel's controls with it. */
+ * The app sets no dark class itself. What a consumer who adds one gets: the
+ * kernel's controls, the page colour below, the page heading, the
+ * organization's band and credit, the Run button, the tabs, the run status and
+ * the organization's dark colour set (`src/lib/brandStyle.ts`). The panels
+ * under a finished or failed run are still light-only. */
 @custom-variant dark (&:is(.dark *));
 
 /*
@@ -87,6 +90,46 @@
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
+
+  /* The organization's brand, beyond the button colour (`--primary`). A
+   * branded app sets these in the `<style>` its page renders
+   * (`src/lib/brandStyle.ts`), and none of them is defined anywhere else, so
+   * each falls back to what an unbranded app shows: the button colour for the
+   * brand's ink, the neutral muted fill for its pale fill, and the page for
+   * the header band.
+   *
+   * `--brand` is the accent's INK, the accent darkened or lightened until it
+   * reads as text on the page, never the raw accent: `text-brand` always
+   * reads. `--brand-muted` is the pale accent fill and
+   * `--brand-muted-foreground` the ink on it. The kernel's own controls read
+   * the same three tokens through arbitrary values that need no mapping here.
+   * `--app-header` is the band behind the logo, with `--app-header-foreground`
+   * on it.
+   *
+   * The pale fill falls back to `--muted`, never to a `color-mix()` of the
+   * button colour as the kernel's own classes do: Tailwind compiles a theme
+   * value holding `color-mix()` with a fallback for a browser without it, and
+   * that fallback is the mixed colour alone, here the button colour, solid,
+   * under text in that same colour. */
+  --color-brand: var(--brand, var(--primary));
+  --color-brand-muted: var(--brand-muted, var(--muted));
+  --color-brand-muted-foreground: var(--brand-muted-foreground, var(--brand, var(--primary)));
+  --color-app-header: var(--app-header, var(--page));
+  --color-app-header-foreground: var(--app-header-foreground, var(--page-foreground));
+}
+
+/* The page colour of each theme, which the organization's colours are derived
+ * against: `PAGE_COLORS` in `src/lib/brandStyle.ts` holds the same two values,
+ * and `globals.test.ts` holds the two to each other. The dark one is the
+ * kernel's own dark background. */
+:root {
+  --page: #f8fafc;
+  --page-foreground: #0f172a;
+}
+
+.dark {
+  --page: #09090b;
+  --page-foreground: #fafafa;
 }
 
 @layer base {
@@ -103,6 +146,6 @@
 
 html,
 body {
-  background-color: #f8fafc;
-  color: #0f172a;
+  background-color: var(--page);
+  color: var(--page-foreground);
 }
