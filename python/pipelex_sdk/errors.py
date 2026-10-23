@@ -1032,7 +1032,8 @@ class RejectedAssetError(InputPreparationError):
 
 class UnsupportedUploadCapabilityError(InputPreparationError):
     """The configured deployment does not support upload (no `/v1/upload` route, seen
-    as a `404`). Upload is a hosted Pipelex-product capability even though the SDK can
+    as a `404` other than a test file's unknown method, which is a `TestFileRefusedError`).
+    Upload is a hosted Pipelex-product capability even though the SDK can
     be pointed at other base URLs. `filename` is the file whose upload met it, as `upload_file`
     sent it; the route's `ApiResponseError` is its `__cause__`. Its verdict is `config`, not
     retryable: the base URL must point at a deployment that serves upload. Its `problem` is
@@ -1046,7 +1047,8 @@ class UnsupportedUploadCapabilityError(InputPreparationError):
 
 
 class UploadAuthenticationError(InputPreparationError):
-    """Upload was not authorized — a `401`/`403` from the upload route. `filename` is the file
+    """Upload was not authorized — a `401`, or a `403` from the upload route other than a test file's
+    `role_not_permitted`, which is a `TestFileRefusedError`. `filename` is the file
     whose upload was refused, as `upload_file` sent it. Its verdict is `config`, not retryable: the
     credential must change. Its `problem` is `auth.invalid_credential` when the request carried a
     credential, and `auth.missing_credential` when it carried none (`credential_sent` false, which
@@ -1059,6 +1061,96 @@ class UploadAuthenticationError(InputPreparationError):
         )
         self.status = status
         self.filename = filename
+
+
+class TestFileRefusalCode(StrEnum):
+    """Why the upload route refused a test file, in a closed vocabulary a caller branches on rather than
+    on the message. A test file is a statement about a method, so the route holds it to what changing
+    that method takes. The vocabulary is `@pipelex/sdk`'s, shared so a consumer of both SDKs branches on
+    one set.
+    """
+
+    # pytest collects a class whose name starts with `Test` from any test module that imports it; this
+    # one is no test. A dunder name is never an enum member.
+    __test__ = False
+
+    ROLE_NOT_PERMITTED = "role_not_permitted"
+    """A `403` coded `role_not_permitted`: the caller's role in the organization may not change methods,
+    as a runner's may not. Upload the file as `uploaded`, or with the credential of a member who may
+    change methods."""
+
+    METHOD_NOT_FOUND = "method_not_found"
+    """A `404` coded `not_found`, in the `input` domain: the method the test file names is not one of
+    the organization's."""
+
+    METHOD_BEING_DELETED = "method_being_deleted"
+    """A `409` coded `method_being_deleted`: the method the test file names is being erased."""
+
+
+class TestFileRefusedError(InputPreparationError):
+    """The upload route refused a test file (`kind="test"`) for what it claims, never for its bytes: the
+    caller's role may not change methods, or the method it names is unknown or being erased.
+
+    `code` says which: the SDK sets it on every one it raises, so it is `None` only on one a caller
+    constructs without it. `status` is the HTTP status, `filename` the file `upload_file` was sending and
+    `method_id` the method it named; from `upload_file` the `ApiResponseError` the client raised is its
+    `__cause__`. The twin of `@pipelex/sdk`'s class of the same name, whose `methodId` is `method_id` here.
+
+    Its verdict is the wrapped error's when `cause` carries one, the server's own: `upload_file` passes
+    the error the client's `upload()` raised. Pass the same error as `cause` and raise this one `from` it.
+    Otherwise `code` decides: `role_not_permitted` is `config`, since an admin of the organization must
+    change the caller's role, and the other two, and no code at all, are `input`, since the upload must
+    name another method; none is retryable.
+
+    Its `problem` is the wrapped error's when `cause` carries one. Otherwise it is `auth.forbidden` for
+    `role_not_permitted`, naming a role that may change methods as the requirement, and
+    `client.argument_invalid` naming `method_id` for the other two, the code as the reason.
+    """
+
+    # pytest collects a class whose name starts with `Test` from any test module that imports it; this
+    # one is no test.
+    __test__ = False
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        code: TestFileRefusalCode | None = None,
+        filename: str | None = None,
+        method_id: str | None = None,
+        cause: BaseException | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            verdict=error_verdict_of(cause) or _test_file_refusal_verdict(code),
+            problem=_wrapped_problem(cause) or _test_file_refusal_problem(code),
+        )
+        self.status = status
+        self.code = code
+        self.filename = filename
+        self.method_id = method_id
+
+
+def _test_file_refusal_verdict(code: TestFileRefusalCode | None) -> ErrorVerdict:
+    """The verdict of a test file's refusal that wraps no error carrying one."""
+    match code:
+        case TestFileRefusalCode.ROLE_NOT_PERMITTED:
+            # A role is changed by an admin of the organization, never by sending the request again.
+            return _verdict(ErrorDomain.CONFIG, retryable=False)
+        case TestFileRefusalCode.METHOD_NOT_FOUND | TestFileRefusalCode.METHOD_BEING_DELETED | None:
+            return _verdict(ErrorDomain.INPUT, retryable=False)
+
+
+def _test_file_refusal_problem(code: TestFileRefusalCode | None) -> Problem | None:
+    """The problem of a test file's refusal that wraps no error carrying one; `None` leaves the family's own."""
+    match code:
+        case TestFileRefusalCode.ROLE_NOT_PERMITTED:
+            return make_client_problem(CoreCode.AUTH_FORBIDDEN, params={"requirement": "a role that may change methods"})
+        case TestFileRefusalCode.METHOD_NOT_FOUND | TestFileRefusalCode.METHOD_BEING_DELETED:
+            return argument_invalid_problem(argument="method_id", reason=code)
+        case None:
+            return None
 
 
 class UploadTransportCode(StrEnum):

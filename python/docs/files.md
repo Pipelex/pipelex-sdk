@@ -1,6 +1,6 @@
 # An organization's files
 
-A **file** is the record the hosted platform keeps of a stored object: a member's upload, a test file made for a method, or a file a run made that reached its result. The bytes stay where they were written, and a run, a form or an example still points at them by their `pipelex-storage://` address; the record adds what the bytes lack, the name a person sees, a kind, a type, a size and where the file came from. A file belongs to the organization: every role of it reads every file of it, as every role reads every run. The client reaches them on the hosted API's `/v1/files` routes, a run's files on `GET /v1/runs/{run_id}/files` and the copy into a method's draft on `POST /v1/methods/{method_id}/draft/files/from-file`, and the models are in `pipelex_sdk/product_models.py`. This page is the twin of `@pipelex/sdk`'s `docs/files.md`; the platform's own contract is `platform/docs/files.md` in `pipelex-server`.
+A **file** is the record the hosted platform keeps of a stored object: a member's upload, a test file made for a method, or a file a run made that reached its result. The bytes stay where they were written, and a run, a form or an example still points at them by their `pipelex-storage://` address; the record adds what the bytes lack, the name a person sees, a kind, a type, a size and where the file came from. A file belongs to the organization: every role of it reads every file of it, as every role reads every run. The client reaches them on the hosted API's `/v1/files` routes, a run's files on `GET /v1/runs/{run_id}/files` and the copy into a method's draft on `POST /v1/methods/{method_id}/draft/files/from-file`, and the models are in `pipelex_sdk/product_models.py`. An upload is recorded as a method's test file by its `kind` and `method_id` ("[Uploading a test file](#uploading-a-test-file)" below). This page is the twin of `@pipelex/sdk`'s `docs/files.md`; the platform's own contract is `platform/docs/files.md` in `pipelex-server`.
 
 The point of the list for a program is the `uri` on every row: a run's inputs take it as they take any address, so an agent or an app can find "the invoice uploaded this morning" and run a method on it without uploading it again.
 
@@ -252,3 +252,28 @@ draft_token = added.method.updated_at
 ```
 
 **With `expected_updated_at`, the write is a compare-and-swap on the draft token**, refused with `409` `method_update_conflict` when the draft has moved on; without it, the file is added to the draft as it stands, never erasing someone else's save. It takes a bare catalog id, as `write_draft` does, and refuses a `file_id` or a `path` that is not a non-empty `str`, or an `expected_updated_at` that is not a `str`, before any request. It is a write of the method, so the platform answers `403` `role_not_permitted` to a role that may not change methods, such as a runner; and `404` for an unknown method or a file that is not the organization's, `409` `method_being_deleted`, `409` `conflict` for a file whose upload has not finished or whose stored bytes do not match its record, `422` `invalid_method_files` for a path the draft cannot hold, such as `.env` or `../logo.png`, and `422` `method_tree_too_large` past the deployment's limits.
+
+## Uploading a test file
+
+What an upload is recorded as travels with it to `POST /v1/upload`: its `kind`, an `UploadKind`, `uploaded` when omitted, and for a `test` file the bare catalog id of the method it is for, `method_id`. A test file is a statement about a method, so the platform holds it to what changing that method takes, and records it with the `kind` `test` and the method as its `origin.method_id`, so the same bytes and name uploaded as a person's file and as a test file are two records. The pair is spelled the same on every surface that sends it: `UploadInput`'s fields (the raw `upload`), `upload_file`'s keyword arguments and `prepare_inputs`' `upload`, an `UploadKindOptions` (`pipelex_sdk.upload`), which applies to every file the preparation uploads.
+
+```python
+from pipelex_sdk.product_models import UploadKind
+from pipelex_sdk.upload import UploadKindOptions
+
+# One file the build assistant made to try a method:
+await client.upload_file("cases/invoice.pdf", kind=UploadKind.TEST, method_id="mt_abc123")
+
+# Every file a preparation uploads, recorded as test files of the method it prepares:
+prepared = await client.prepare_inputs(
+    method_id="mt_abc123",
+    inputs={"invoice": "cases/invoice.pdf"},
+    upload=UploadKindOptions(kind=UploadKind.TEST, method_id="mt_abc123"),
+)
+```
+
+`upload` is an argument of its own so that its `method_id`, the method a test file is for, never reads as the request's own `method_id` selector, which names the method whose inputs are prepared and excludes `method_ref` and the method's tree.
+
+**The pair is checked before any file is read**, as the upload route checks it, so a request the route would refuse with a `422` is an `InputPreparationError` instead, its `problem` `client.argument_invalid` naming the member: a `kind` that is neither `uploaded` nor `test` (`generated` included, which only a run makes), a `method_id` that is not a catalog id or carries a version suffix, `kind="test"` without a `method_id`, and a `method_id` without `kind="test"`. `None` reads as absent, and a `kind` given as its string is read as the `UploadKind` it names. `prepare_inputs` names the members it refuses `upload.kind` and `upload.method_id`. The raw `upload` sends the pair as it is given and leaves the refusal to the route.
+
+**A test file the route refuses for what it claims is a `TestFileRefusedError`**, whose `code`, a `TestFileRefusalCode`, says why: `role_not_permitted`, the `403` of a caller whose role may not change methods, such as a runner, which an admin of the organization must change (`config`), or which the caller avoids by uploading the file as `uploaded`; `method_not_found`, the `404` of a method that is not one of the organization's (`input`); and `method_being_deleted`, the `409` of a method being erased (`input`). It carries the `status`, the `filename` it was sending and the `method_id` it named, and wraps the `ApiResponseError` as its `__cause__`, whose verdict and problem it takes. These refusals are read off the platform's code, never the status alone: a `403` without `role_not_permitted` is still a refused credential (`UploadAuthenticationError`), and a `404` is still a deployment without upload (`UnsupportedUploadCapabilityError`) unless the upload named a method and the platform answered its domain miss, `not_found` with the `input` domain, rather than the `config` `404` of a route it does not serve ([input-preparation.md](input-preparation.md#error-and-capability-behavior)).

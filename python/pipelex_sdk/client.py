@@ -165,7 +165,7 @@ from pipelex_sdk.runs import (
     WaitForResultOptions,
     is_fresher_run_progress,
 )
-from pipelex_sdk.upload import UploadRecord, UploadSource
+from pipelex_sdk.upload import UploadKindOptions, UploadRecord, UploadSource
 from pipelex_sdk.upload import upload_file as _upload_file_impl
 from pipelex_sdk.user_agent import AppInfo, build_user_agent
 from pipelex_sdk.validation_models import PipelexValidationResultAdapter
@@ -194,6 +194,7 @@ if TYPE_CHECKING:
         OrganizationBrandingUpdate,
         UpdateRunInput,
         UploadInput,
+        UploadKind,
     )
     from pipelex_sdk.runs import RunResultState
     from pipelex_sdk.validation_models import PipelexValidationResult
@@ -3137,7 +3138,15 @@ class PipelexAPIClient(MthdsAPIClient):
         return await _download_artifacts_impl(self, dir_path=dir_path, run_id=run_id, results=results, options=options)
 
     async def upload(self, upload_input: UploadInput) -> UploadedFile:
-        """Upload a base64 file — `POST /v1/upload`."""
+        """Upload a base64 file — `POST /v1/upload`.
+
+        `upload_input.kind` and `upload_input.method_id`, what the upload is recorded as, are sent only when
+        given and as given: the route refuses a pair it does not take with a `422`, and `upload_file` checks
+        the pair before reading any file. A test file the route refuses for what it claims is the
+        `ApiResponseError` the platform answered: `403` `role_not_permitted` for a role that may not change
+        methods, `404` `not_found` for a method that is not the organization's, `409`
+        `method_being_deleted` for one being erased, which `upload_file` raises as a `TestFileRefusedError`.
+        """
         body = upload_input.model_dump(mode="json", exclude_none=True)
         return await self._request_product("POST", "upload", body=body, read=UploadedFile.model_validate)
 
@@ -3702,14 +3711,18 @@ class PipelexAPIClient(MthdsAPIClient):
         *,
         filename: str | None = None,
         content_type: str | None = None,
+        kind: UploadKind | None = None,
+        method_id: str | None = None,
     ) -> UploadRecord:
         """Upload one local asset and return its `UploadRecord` — the single-asset convenience
         over `upload`. `source` is a filesystem path (`str`/`Path`) or raw `bytes`. The record
-        guarantees `uri`, `content_type`, `size`, and `filename`. Transport failures surface as
-        the semantic input-preparation errors (rejected asset, auth, unsupported capability,
-        transport). See `docs/input-preparation.md`.
+        guarantees `uri`, `content_type`, `size`, and `filename`. `kind` and `method_id` record the
+        upload as a method's test file (`kind=UploadKind.TEST` with its bare catalog id), checked before
+        the asset is read. Transport failures surface as the semantic input-preparation errors
+        (rejected asset, refused test file, auth, unsupported capability, transport). See
+        `docs/input-preparation.md` and `docs/files.md`.
         """
-        return await _upload_file_impl(self, source, filename=filename, content_type=content_type)
+        return await _upload_file_impl(self, source, filename=filename, content_type=content_type, kind=kind, method_id=method_id)
 
     async def prepare_inputs(
         self,
@@ -3723,6 +3736,7 @@ class PipelexAPIClient(MthdsAPIClient):
         pipe_ref: str | None = None,
         inputs: dict[str, Any],
         allow_uploads: bool = True,
+        upload: UploadKindOptions | None = None,
     ) -> PreparedInputs:
         """Prepare a pipe's inputs — resolve the declared signature, upload the file-bearing
         assets, and return copy-on-write rewritten inputs (canonical content carrying
@@ -3746,6 +3760,11 @@ class PipelexAPIClient(MthdsAPIClient):
         not decode, raises `InvalidInputValueError`, naming the input. With `allow_uploads=False` it
         uploads nothing and reads no file: a value that would need an upload raises
         `UploadNotAllowedError`, naming the input too.
+
+        `upload` says what every file the preparation uploads is recorded as, such as
+        `UploadKindOptions(kind=UploadKind.TEST, method_id="mt_abc")` for the inputs made to try a
+        method; omitted, each is a person's file. It is checked before any request, its members named
+        `upload.kind` and `upload.method_id` in a refusal, and is not sent to the pipe I/O route.
         """
         return await _prepare_inputs_impl(
             self,
@@ -3758,6 +3777,7 @@ class PipelexAPIClient(MthdsAPIClient):
             pipe_ref=pipe_ref,
             inputs=inputs,
             allow_uploads=allow_uploads,
+            upload=upload,
         )
 
     async def list_runs(
