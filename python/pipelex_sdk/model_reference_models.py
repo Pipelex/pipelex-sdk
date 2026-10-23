@@ -8,9 +8,9 @@ reference found `resolved` in a category is one a pipe of that category may name
 `not_found` is one a validation refuses.
 
 A verdict is a `200` whatever the resolution. Only a request that cannot produce one is a `422`
-problem, raised as `ApiResponseError`: `InvalidModelReference` for a reference that is blank, a
-sigil or a namespace alone, or too long; `InvalidModelCategory` for an unknown `type`;
-`ValidationError` for a missing or repeated parameter. This SDK checks none of it, so the runner's
+problem, raised as `ApiResponseError`: `request.invalid`, whose `location.field` names `reference` for a
+reference that is missing, repeated, blank, a sigil or a namespace alone, or too long, and `type` for a
+category that is repeated, empty or unknown. This SDK checks none of it, so the runner's
 rule is the only one.
 
 **The verdict is parsed on its own `kind`.** A `matches` entry carries no kind of its own, and two of

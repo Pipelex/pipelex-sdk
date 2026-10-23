@@ -418,8 +418,8 @@ export async function uploadWithGrant(
         );
       }
       // A 408 or a 429 refuses the request for its timing, never the file: storage timed it out
-      // or throttled it, so it falls through to the transport failure below, whose verdict reads
-      // its status as retryable.
+      // or throttled it, so it falls through to the transport failure below, whose problem reads
+      // its status as `runtime.unavailable`.
       if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
         const { reason, advice } = classifyRefusal(status, refusal, grant);
         throw new RejectedAssetError(

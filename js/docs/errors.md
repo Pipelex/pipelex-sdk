@@ -1,153 +1,78 @@
-# Errors — the verdict every error carries, a failed run's report and a refused request's problem
+# Errors — the problem every error carries
 
-Every error the SDK throws says two things a program needs before anything else: whether asking again can succeed, and who can fix the failure. That is the **verdict**, and the [first section](#the-verdict-every-error-carries) describes it. Beyond it, two things can go wrong when you call the hosted API, and the SDK hands each one back whole. A **run can fail** after it started: the runner stores why, as its error report, and the SDK gives you that report on the failed run. A **request can be refused**: the server answers a non-2xx RFC 9457 problem document, and the SDK throws an `ApiResponseError` carrying every member of it. This page covers both: which fields each carries, which ones a program branches on, which ones a person reads, and which one support asks for. Either can carry validation items, the structured account of a method refused for what it says, which the [last section](#a-validation-item--validationerroritem) describes.
+Every error `@pipelex/sdk` throws carries its failure as one **problem document**, the RFC 9457 document the MTHDS standard defines, under a registered code. A refusal the hosted API answers is read as the problem document it sends, a failed run as the problem the platform stored for it, and a failure the SDK detects itself (an argument it refuses, a request that got no answer, an answer it cannot read, a run that may have started without its id reaching the caller) as a problem the SDK builds under a `client.*` code or another core code. A program branches on the problem, never on a class, an HTTP status or the wording of a message. The Python SDK, `pipelex-sdk`, raises the same code for every failure, and a case file the two packages share holds them to it ([below](#the-case-file-both-sdks-run)).
 
-## The verdict every error carries
+## The problem every error carries
 
-Every error class the SDK exports carries `retryable`, a boolean, and `errorDomain`, one of three values, and neither is ever `undefined`: the SDK knows the API, so it decides, and no consumer has to choose its own default. The three domains say who can fix the failure:
+Every error class the SDK exports derives from the standard's `ProblemError` (from `mthds/protocol`), and every one thrown over a request from the abstract `PipelexRequestError`, itself the standard's `PipelineRequestError`. So `instanceof ProblemError`, `instanceof PipelineRequestError` and the standard's `isProblemError` match every SDK error, and every getter that reads the problem is on each of them:
 
-| `errorDomain` | Who fixes it | Examples |
-|---|---|---|
-| `input` | The caller, by changing the request: the inputs, the method, a reference, an argument. | A malformed bundle, a missing input, a stored method that does not exist. |
-| `config` | Someone changing the environment: the base URL, the credential, the plan, the deployment. | An invalid API key, a plan without credit, a base URL pointing at a bare runner. |
-| `runtime` | Nobody beforehand: a fault during execution or in the service. | A provider outage, a gateway timeout, a run still going when the wait ran out. |
+| Member | What it says |
+|---|---|
+| `problem` | The problem document whole, typed as the standard's `Problem`. A member the standard does not name, such as a Pipelex refusal's `limit`, rides it as received (`problem.limit`). |
+| `code` | The registered code a program branches on: a core code (`client.unreachable`, `auth.invalid_credential`, `request.invalid`, `run.failed`, `method.invalid`, `model.unavailable`, …) or a Pipelex one (`pipelex.catalog.not_found`, `pipelex.billing.plan_limit`, …). |
+| `domain` | Who must act: `input` (the caller changes the request), `method` (the method's author changes the method), `account` (the account's owner changes a credential, a plan or a role), `operator` (whoever runs the deployment changes its configuration) or `runtime` (nobody beforehand: a fault in the service). |
+| `retry` | Whether sending the same request again can succeed: `yes`, `no`, or `outcome_unknown` when the request may have taken effect and its outcome must be read before anything is sent again ([below](#a-run-that-may-have-started--outcome_unknown)). |
+| `retryAfter` | The seconds to wait before a repeat, when the problem gives them. |
+| `nextStep` | What to do, as a `kind` a program branches on and a `detail` a person reads. |
+| `requestId` | The id to hand to support, when the answer carried one. |
 
-Read the pair with `errorVerdictOf`, which takes anything a `catch` holds:
+The rest of the problem, `params`, `location`, `errors` and `pipeline_run_id`, is read off `problem`. The message stays the SDK's own sentence, as it always was: the standard's errors append the problem's next step to their message, and the SDK's do not, since `problem.detail` and `problem.next_step.detail` are there for whoever renders them.
 
 ```ts
-import { errorVerdictOf } from "@pipelex/sdk";
+import { isProblemError } from "mthds/protocol";
 
 try {
   await client.startAndWaitForResult({ method_id: "mt_abc123", inputs });
 } catch (err) {
-  const verdict = errorVerdictOf(err);
-  if (verdict === undefined) throw err; // not an SDK error: a bug, or the caller's own abort
-  if (verdict.retryable) return scheduleRetry();
-  if (verdict.errorDomain === "input") return askTheUserToFix(err);
-  return reportToOperator(err);
-}
-```
-
-`errorVerdictOf` checks the shape rather than the class: it returns the pair from any `Error` carrying a boolean `retryable` and a known `errorDomain`, and `undefined` otherwise. So it reads an error raised by another copy of the SDK installed beside yours and a subclass of your own. An error of the standard's own client, `mthds`, carries its verdict on its problem instead, as `domain` and `retry` in the standard's vocabulary, and `errorVerdictOf` reads it as that problem's verdict in this SDK's vocabulary, whatever the runner's body held beside it. `problemVerdict` does the translation for any problem of the standard: the standard's domain maps onto this SDK's by who acts — `input` and `method` read as `input`, `account` and `operator` as `config`, `runtime` as `runtime` — and only a `retry` of `yes` is retryable, since an outcome that is unknown may already have taken effect. A domain or a retry verdict the standard's reader does not know reads by its own fallbacks (`problemDomain`, `problemRetry`), and the Python SDK applies the same mapping. Every class also exposes the two members directly, and they derive from the abstract `PipelexRequestError`, itself a `PipelineRequestError`, so `instanceof PipelineRequestError` still matches all of them.
-
-**"Retryable" means a retry can succeed, and never one that could start a second paid run.** The verdict says whether asking again can plausibly succeed, and on most routes it says nothing about whether the first attempt had an effect. A request that may create a run, a `start` or a blocking `execute`, is the exception: when it failed in a way that may have started a run anyway, the error's `runMayHaveStarted` is `true` and its `retryable` is `false`, whatever the server sent and whatever the status says, since asking again could start the run twice. [A failed run start](#a-failed-run-start--runmayhavestarted) says when that is and what to tell a person.
-
-**A request the gateway cut off: `isGatewayCutOff`.** The hosted gateway gives up on a request it waits on at about 30 seconds and answers `503` or `504`, while the server may still be handling it: a blocking `execute`, or a `start` whose server is fetching a `method_ref`'s package. `isGatewayCutOff(error, elapsedMs)` tells such a failure from a refusal: it is `true` when, at least ~28 seconds after the request was sent, the failure is a `503` or `504` answer or the client's own time limit (`ApiUnreachableError` with the code `ABORT_TIMEOUT`), and `false` before then and for any other failure. The blocking `execute` applies it and throws `PipelineExecuteTimeoutError`, timing the request on the monotonic clock `performance.now`, since a change of the system's time moves `Date.now`. A caller no longer needs it to learn whether a failed start may have created a run: the error's `runMayHaveStarted` says so whatever the timing. The fetch API cannot say whether `ABORT_TIMEOUT` ran out before the connection was made, so the rule reads it as the gateway's; with Node's own dispatcher it never does past the threshold, since undici gives up a connection that does not come after ten seconds (`UND_ERR_CONNECT_TIMEOUT`), the TLS handshake included. The Python SDK's `is_gateway_cut_off` is the same rule.
-
-**What carries no verdict.** `errorVerdictOf` returns `undefined` for what is not an SDK failure: the `RangeError` or `TypeError` the SDK raises for an argument of the wrong type or range before any request is sent (a `timeoutMs` out of range, a malformed `appInfo`, an artifact selection that is not an array), which names a bug in the calling code; and the caller's own abort, which the client rethrows untouched. The per-reference errors inside a `downloadArtifacts` verdict are values with a `code`, not thrown errors, and carry none either. An argument the client refuses for what it asks, such as two method selectors given to `validate` or `execute`, or a base URL with a path, is a `RequestArgumentError`, which carries a verdict like every SDK error.
-
-### Each class's verdict
-
-On an error from a request that may have started a run, `retryable` is `false` whatever this table says ([below](#a-failed-run-start--runmayhavestarted)).
-
-| Class | `errorDomain` | `retryable` | Why |
-|---|---|---|---|
-| `ApiResponseError` | the server's, else the fallback | the server's, else no for a sent `input` or `config` domain, else the fallback | See [below](#a-refused-requests-verdict). |
-| `RequestArgumentError` | `input` | no | The client refused a call's arguments before sending any request: no run source given to `execute` or `start`, run sources or method selectors that exclude each other, a selector rule of `validate`, the method's tree given in two forms, holding no file, or in a directory the standard's lister refuses (its `MethodTreeError` as the `cause`), a tree past the inline limit of an API that keeps no blob store, a reserved key in `extra`, a `publishMethod` without its token, a `getMethodVersion` version that is not a positive integer, an id a route puts in its path (a method's, an example's, a run's, an organization's or an API key's) that is empty, `.` or `..` or is not a string, since the URL would resolve it into another route's path, or that holds a lone surrogate, which a URL cannot carry, a `createMethodExample` without its `name` or `inputs` or whose `run_id` is given but empty, an `updateMethodExample` naming neither `name` nor `inputs`, a `recordMethodExampleLatestRun` without a run id or a positive integer `input_revision`, a selector `parseMethodSelector` refuses, an artifact selection that is empty or names an unknown artifact, a `copyMethod` whose `destination_org_id` is not a non-empty string or whose `name` or `expected_draft_updated_at` is given but is not a string, a start's or a copy's `idempotencyKey` that is not 1 to 255 visible ASCII characters ([below](#a-starts-idempotency-key--idempotencykey)), or a request body JSON cannot carry, such as one holding a cycle, or a `bigint` on a runtime without `JSON.rawJSON` (the body is written with `stringifyExactJson`, which writes a `bigint` as its exact digits; see [exact-integers.md](./exact-integers.md)), with the failure as `cause`. Its options take an optional `verdict`, and the client declares `config` for a base URL that is not host-only, since it typically comes from `PIPELEX_BASE_URL`. That refusal shows the base URL's scheme and host alone and names the other parts it carried (credentials, a path, a query, a fragment) without their text, since those are where a secret travels in a URL; a value that is not an http or https URL is not shown at all. It is a `PipelineRequestError`, as the bare refusal it replaced was, and a refusal the standard's own run-source check raises keeps that original as `cause`. |
-| `ApiUnreachableError` | `config` | yes | The address or the network must be checked, and a later attempt can get through. With the code `ABORT_TIMEOUT`, the SDK's own request timeout, it is `runtime`: the API took the request and did not answer in time. |
-| `PipelineExecuteTimeoutError` | `input` | no | The blocking `execute` cannot outlast the gateway's limit; start the run and poll instead. The run goes on, so its `runMayHaveStarted` is always `true`. |
-| `RunFailedError` | the report's | the report's | See [a failed run](#a-failed-run--runerrorreport). |
-| `RunTimeoutError`, `RunStillRunningError` | `runtime` | yes | The run is still going; waiting again, by its id, can succeed. |
-| `RunLifecycleUnavailableError` | `config` | no | The base URL points at a bare runner without the run lifecycle. |
-| `MissingMainStuffError` | `runtime` | no | The API broke its own contract on a completed run. |
-| `PagingNotTerminatingError` | `runtime` | no | A server minting cursors forever; `pageLimit` is the ceiling `iterateMethods`, `iterateRuns`, `iterateMethodExamples` or `iterateFiles` stopped at. |
-| `InputPreparationError` and `InvalidLocalSourceError`, `InvalidInputValueError`, `UploadNotAllowedError`, `MethodLoadError`, `RejectedAssetError` | `input` | no | The asset, the inputs or the method selector must change. The family's base takes an optional `verdict` in its options, so a subclass of your own can declare another; `prepareInputs` declares `runtime` for a pipe I/O answer that breaks the route's contract: no boolean `is_valid`, an `input_form` that does not describe the pipe it selected, or a descriptor that is malformed or names a kind this SDK does not know. |
-| `TestFileRefusedError` | the cause's, else by `code` | no | The upload route refused a test file (`kind: "test"`) for what it claims, never for its bytes. `uploadFile` and `prepareInputs` wrap the platform's `ApiResponseError` and take its verdict; without such a cause, `code` decides: `role_not_permitted`, the `403` of a role that may not change methods, is `config`, since an admin must change the role, and `method_not_found` (`404`) and `method_being_deleted` (`409`) are `input`, since the upload must name another method ([files.md](./files.md#uploading-a-test-file)). |
-| `UnsupportedUploadCapabilityError`, `UploadAuthenticationError` | `config` | no | The deployment or the credential must change. |
-| `UploadTransportError` | the cause's, else by `code` | the cause's, else by `code` | `uploadFile` wraps the `ApiResponseError` or `ApiUnreachableError` the client threw, and takes its verdict, so a wrapped `402` is `config` and not retryable. Without such a cause, which is always the case from `uploadWithGrant`: `timeout`, `storage_timeout` and `conflict` are `runtime` and retryable, `conflict` because storage documents its `409 ConditionalRequestConflict` as retryable and the grant is not spent by it, even once `uploadWithGrant`'s own few attempts have all met it (a spent grant is the `412` of a `RejectedAssetError` with code `grant_used`, which only a grant asked for without the file's hash can meet); `server_error` is `runtime`, and retryable when [the fallback table](#a-refused-requests-verdict) would call its `status` retryable, any `5xx` but the `501` storage answers for a request it does not implement, or when it carries no status; `unexpected` is `runtime`, and retryable when that table would call its `status` retryable, which is the `408` or `429` storage answers when it times out or throttles the request rather than refusing the file, and not retryable for any other status or none; `unreachable` is `config` and retryable; `redirected` is `config` and not retryable; `invalid_grant_url` is `runtime` and not retryable. |
-| `MethodFileTransferError` | `runtime` | by `code` | A method's file could not be moved between this machine and storage: uploaded by `createMethod` or `writeDraft`, so the method was not saved, or by a run, `validate`, `resolve`, `codegen`, `pipeIo` or `prepareInputs` sending a `directory`, `tree` or `contents` by hash, so the request was not sent, or downloaded by `writeMethodTree`. `unreachable` (no answer), `storage_error` (`408`, `429` or a `5xx` other than `501`) and `mismatch` (downloaded bytes that are not the file listed) are retryable; `refused`, any other status, an expired link among them, is not. It carries `operation`, `code`, `sha256`, `path` and `status`, and neither the link, nor storage's error body, nor a cause ([method-trees.md](./method-trees.md#when-a-transfer-fails)). |
-| `ArtifactOperationError`, `ScopeUnavailableError` | `runtime` | no | The family's base also takes an optional `verdict`: the SDK declares `input` where it refuses an argument (a `scope`, a bound, a location) and `config` where the environment refuses the download (a runtime with no filesystem, a directory that cannot be created). |
-| `ArtifactAuthenticationError` | `config` | no | The credential must change. Its `verdict` member is the download's result so far, not the error's. |
-| `ArtifactFetchError` | by `code` | by `code` | `invalid_storage_uri`, `forbidden`, `unsupported_url`, `not_found` and `too_large` are `input` and not retryable; `plain_http_refused` is `config` and not retryable; `redirect_refused` and `store_refused` are `runtime` and not retryable; `timeout` and `network` are `runtime` and retryable; `store_error` is `runtime`, and retryable when [the fallback table](#a-refused-requests-verdict) would call its `status` retryable: a `408`, a `429`, or a `5xx` other than `501`. |
-| `CodegenLockError` | `input` | no | The lock is the caller's own file. It extends `Error`, since nothing was requested over the wire, and declares the two members itself. |
-| `ExactJsonUnsupportedError` | `config` | no | `parseExactJson` met a number past `Number.MAX_SAFE_INTEGER` on a runtime whose `JSON.parse` hands a reviver no source text, so it could only read it rounded; running on a runtime the package supports fixes it ([exact-integers.md](./exact-integers.md)). It extends `Error`, since nothing was requested, and declares the verdict's members itself. The client reports it as the `ApiResponseError` of an answer it cannot read, with this error as `cause`. |
-
-### A refused request's verdict
-
-An `ApiResponseError` takes each member the server sent validly: `retryable` is the problem document's `retryable` when it is a boolean, and `errorDomain` is its `error_domain` when it is one of the three domains. A member the server did not send, or sent with the wrong type, or (for the domain) outside the three, is absent, and an absent domain takes the fallback's. An absent `retryable` depends on the domain the server sent, since a runner often sends `error_domain` without `retryable`: a sent `input` or `config` domain is not retryable, as a stored report that says nothing is not, because the caller or the environment must change before asking again can succeed; a sent `runtime` domain, or no valid domain at all, takes the fallback's `retryable`. A `retryable` the server sent always wins, whatever the domain.
-
-The fallback reads the HTTP status, the platform's `code`, and whether the body is **named**: it carries a platform `code` or a runner `error_type`. A named `404` is something the caller asked for that does not exist; a bare one is a route the deployment does not serve.
-
-| Status | `errorDomain` | `retryable` | Why |
-|---|---|---|---|
-| `400`, `413`, `422`, and any `4xx` not listed here | `input` | no | The request itself was refused. |
-| `401`, `402`, `403` | `config` | no | The credential, the plan or the access must change. |
-| `404`, named | `input` | no | The caller named something that does not exist. |
-| `404`, bare | `config` | no | The base URL points at a deployment without the route. |
-| `405` | `config` | no | The deployment does not serve this method on the route. |
-| `408`, `429` | `runtime` | yes | Refused for its timing, not its content. |
-| `409` | `input` | no | The request conflicts with the stored state: a method being deleted, a stale draft token, a method never published addressed by its bare id, a taken label. |
-| `409` with code `pipelex_api_key_limit_reached` | `config` | no | The organization holds as many keys as it may; someone removes one. |
-| `409` with code `idempotency_key_in_use` | `runtime` | yes | An earlier request under the same idempotency key is still being handled, and the same request sent again under that key is answered with its outcome. |
-| `501` | `config` | no | The deployment does not implement it, and asking again will not change that. |
-| `500`, `502`, `503`, `504`, and any `5xx` not listed here | `runtime` | yes | A fault in the service, which may pass. |
-| Anything else | `runtime` | no | A status no refusal carries, such as the `2xx` of an answer the SDK could not read; nothing says a retry helps. |
-
-The members the server sent are read first, and the fallback answers only for one it did not send: a runner's problem usually carries its own, the platform sends them on the problems it renders itself once its deployment classifies them, and a route that sends neither, as the platform's Lambda-backed routes do not yet, gets the fallback for both. **Nothing on the error says which of the two a value came from**: `problemDocument` keeps the document whole, so a reader that must tell a server-sent verdict from a derived one reads it there, as the live suite `tests/e2e/error-verdicts.e2e.ts` does. A rejected API key always gets the fallback's verdict: the hosted gateway's authorizer refuses it before the platform sees the request, with a bare `403` whose body is `{"message":"Forbidden"}`, which carries no `code`, no `type` and no verdict, so the error reads it as `config` and not retryable from the status alone.
-
-**The verdicts are a contract with the Python SDK.** `pipelex-sdk` must apply the same fallback, declare the same verdict on each class it shares with this package, and read a failed run start the same way. `tests/fixtures/error-verdicts.json` holds every case the two must agree on, the fallback's rows, the server-sent resolution, each class's variants and the answers to a run-creating request (its `run_start` member, each row sent through a real `start` or `execute`), and this package's test suite drives its own code through it. The file is the source: `make shared-files` at the repository's root writes its byte for byte identical copy to `python/tests/fixtures/error-verdicts.json`, `make check-shared-files` fails on a stale copy, and the Python suite drives its own code through the same cases (`python/docs/errors.md`). A class or a variant only one SDK has is marked `only_in` in the file, and the other suite skips it. So a change to a verdict is made in the file here, copied, and then made in both packages.
-
-The shapes are not this SDK's invention. The report is the runner's `ErrorReport` (in `pipelex`), stored by the platform exactly as the runner wrote it and served through the runner's STRICT disclosure, as [below](#what-the-platform-serves-of-a-report), and the problem members are the ones the hosted-envelope spec names, `conformance/specs/pipelex-hosted-envelope.md` in the `conformance` repository, where the cross-repo specs sit beside the tests that verify them. The types live in `src/error-models.ts`; `pipelex-sdk` (Python) carries the same fields under snake_case names.
-
-### A failed run start — `runMayHaveStarted`
-
-Every error the SDK throws carries a third member beside the verdict, `runMayHaveStarted`, a boolean that is never `undefined`. It is `true` when the request that failed may have started a run whose id never reached the caller, and `false` otherwise, which includes every error from a request that cannot start a run. Read it with `runMayHaveStartedOf`, which takes anything a `catch` holds and, like `errorVerdictOf`, checks the shape rather than the class: it is `true` only for an `Error` whose `runMayHaveStarted` is `true`, so it reads an error raised by another copy of the SDK, and an `mthds` error, which never carries the member, reads as `false`.
-
-**The requests that may create a run** are `start` and the blocking `execute`, and inside `startAndWaitForResult` the start and the blocking execute it falls back to against a bare runner. Once `onStarted` has been called the run exists and the caller holds its id, so an error while the composite waits started nothing: its `runMayHaveStarted` is `false`, and its `retryable` is about waiting again on that id, never about calling the composite again. `RunStillRunningError`, the `202` a blocking execute answers for a run still going, names its run, so its member is `false` too; a `202` that names no run is an answer the SDK could not read, which may have started one.
-
-A failure of a request that may create a run may have started one in these cases, and only these:
-
-| Failure | May have started | Why |
-|---|---|---|
-| `ApiUnreachableError` that proves nothing was sent | no | The connection's set-up failed, so no request followed. |
-| Any other `ApiUnreachableError`, a body that could not be decoded included | yes | The request may have left, and the answer was lost or unreadable. |
-| `ApiResponseError` with a `2xx` status | yes | The server accepted the request; only its answer could not be read, which includes a `start` acknowledgement or an `execute` `202` without a string `pipeline_run_id`, and an `execute` answer that is not the completed run. |
-| `ApiResponseError` with a `408` | yes | A proxy in front of the platform may answer it for a request it forwarded. |
-| `ApiResponseError` with a `503` and the code `pipeline_start_unavailable` | no | The platform never reached the runner, and recorded the run as `FAILED`. |
-| `ApiResponseError` with a `501` | no | The deployment does not serve the route. |
-| `ApiResponseError` with any other `5xx` | yes | The server or a gateway failed while handling the request. |
-| `ApiResponseError` with any other status | no | The server refused the request before running anything. |
-| `PipelineExecuteTimeoutError` | yes | The gateway cut the execute off, and the run goes on. |
-| `RunLifecycleUnavailableError`, `RequestArgumentError`, an input preparation error | no | Nothing that starts a run was sent. |
-
-**The reading errs on the safe side.** A false "may have started" costs a look at the run history; a false "did not start" costs a second paid run. So every `5xx` counts unless the server says otherwise, as the `501` and the coded `503` do. A `503` without that code can follow a run the runner already started, since the platform answers a failure of its own storage with one after it has dispatched the start. Timing plays no part: a `503` or `504` that came back at once reads the same as one at the gateway's limit.
-
-**What proves nothing was sent** is a failure of the connection's set-up, which no request follows: the name lookup or the connect call failing (the system calls `getaddrinfo` and `connect`: an unknown host, a refused connection, no route to the host or the network, the system's connect time limit), undici's own connect time limit, which covers the TLS handshake (`UND_ERR_CONNECT_TIMEOUT`), and a server certificate the TLS handshake refused. Several addresses each failing so, which Node reports together as an `AggregateError`, prove it too. Anything else may have come once the request had left: a reset (`ECONNRESET`), which Node reports alike whether the connection dropped during the TLS handshake or after the request; another TLS failure; the SDK's own time limit (`ABORT_TIMEOUT`), which fetch cannot place before or after the connection was made; and a body that arrived and could not be decoded.
-
-**A run that may have started is never retryable.** When `runMayHaveStarted` is `true`, `retryable` is `false`, whatever the problem document sent and whatever the fallback table says; `errorDomain` is unchanged, and the server's own members stay on `problemDocument`. So a caller that branches on `retryable` alone never offers a retry that could start a second paid run. A caller that reads the member can say more: tell the person the run may exist, and to look it up in the run history (`listRuns`) before starting it again.
-
-```ts
-import { errorVerdictOf, runMayHaveStartedOf } from "@pipelex/sdk";
-
-try {
-  await client.start({ method_id: "mt_abc123", inputs });
-} catch (err) {
-  if (runMayHaveStartedOf(err)) {
-    return tell("The run may have started. Check the run history before starting it again.");
+  if (!isProblemError(err)) throw err; // not an SDK failure: a bug, or the caller's own abort
+  if (err.retry === "outcome_unknown") return lookUpTheRunBeforeStartingAgain(err);
+  if (err.retry === "yes") return scheduleRetry(err.retryAfter);
+  switch (err.domain) {
+    case "input":
+    case "method":
+      return askTheUserToFix(err.problem);
+    default:
+      return reportToOperator(err.problem);
   }
-  if (errorVerdictOf(err)?.retryable) return scheduleRetry();
-  throw err;
 }
 ```
 
-**An idempotency key makes the retry safe, and leaves the verdict as it is.** A `start`, and so `startAndWaitForResult`, takes an optional `idempotencyKey`, which the SDK sends as the `Idempotency-Key` header of `POST /v1/start`; without one it sends no header. The hosted API binds the key to the run before it dispatches it, so the same start sent again under the same key is answered with that run and starts nothing, however the first attempt ended. A caller that sent a key therefore answers a failure whose `runMayHaveStarted` is `true` by sending the same start again, with the same key and the same options, and gets the run back instead of paying for a second one ([below](#a-starts-idempotency-key--idempotencykey)). The error does not say so itself: `runMayHaveStarted` stays `true` and `retryable` stays `false` with a key, since the SDK cannot know that the server honours the key (a bare runner ignores it), and a retry under a new key, or with other options, would start a second run. The platform reads its own answer the same way: the `502` with the code `bad_gateway` it answers for a start whose acknowledgement it lost is not retryable whether or not a key was sent, and it names the run that may be running in `problemDocument.pipeline_run_id`.
+**What carries no problem.** The `RangeError` or `TypeError` the SDK raises for an argument of the wrong type or range before any request is sent (a `timeoutMs` out of range, a malformed `appInfo`, an artifact selection that is not an array) names a bug in the calling code, and the caller's own abort is rethrown untouched. The per-reference errors inside a `downloadArtifacts` verdict are values with a `code`, not thrown errors. An argument the client refuses for what it asks, such as two method selectors given to `validate` or `execute`, or a base URL with a path, is a `RequestArgumentError`, which carries a problem like every SDK error.
 
-The Python SDK carries the same member as `run_may_have_started`, with the reader `run_may_have_started_of`, and reads every failure the same way; the `run_start` rows of the shared case file hold the two to the same answer for every status.
+### A run that may have started — `outcome_unknown`
+
+A request that may create a run is a `start` or a blocking `execute`, and inside `startAndWaitForResult` the start and the blocking execute it falls back to against a bare runner. When one of them fails in a way that may have started a run whose id never reached the caller, its problem is `client.outcome_unknown`, whose `retry` is `outcome_unknown`: sending the start again could start a second paid run, so the caller looks the run up in the run history (`listRuns`) first, or sends it again under the same idempotency key ([below](#a-starts-idempotency-key--idempotencykey)). The problem names the run as its `pipeline_run_id` when the answer named one.
+
+| Failure of a start or an execute | Its problem |
+|---|---|
+| A problem document from the hosted API, whatever its status | As received: the platform's own `retry` says whether a run may exist, so a `503` it answers before dispatching the run says `yes`, and one it answers once a run may exist says `outcome_unknown`. |
+| An `ApiUnreachableError` that proves nothing was sent: the name lookup, the connection or the TLS handshake failed | `client.unreachable`, `retry` `yes`. |
+| Any other `ApiUnreachableError`: a reset, a time limit, a body that could not be decoded | `client.outcome_unknown`. |
+| A `2xx` the SDK could not read, a start acknowledgement or an execute `202` naming no run included | `client.outcome_unknown`: the server accepted the request. |
+| A `408`, or a `5xx` other than `501`, whose body is no problem document | `client.outcome_unknown`, whatever the time it took: a proxy or the gateway answered for a request it may have forwarded. |
+| A `501` whose body is no problem document | `client.response_unreadable`: the deployment does not serve the route. |
+| Any other status whose body is no problem document | The edge's reading of that status ([below](#an-answer-that-is-no-problem-document)). |
+| `PipelineExecuteTimeoutError` | `client.outcome_unknown`: the gateway cut the execute off, and the run goes on. |
+| `RunLifecycleUnavailableError`, `RequestArgumentError`, an input preparation error | Its own problem, never `outcome_unknown`: nothing that starts a run was sent. |
+
+Once `onStarted` has been called the run exists and the caller holds its id, so an error while `startAndWaitForResult` waits started nothing: its `retry` is about waiting again on that id, never about calling the composite again. `RunStillRunningError`, the `202` a blocking execute answers for a run still going, names its run, so it is `client.follow_failed`, whose `retry` is `outcome_unknown` too and whose next step is `read_run`: the run exists, and the caller reads it by the id the problem names rather than start it again.
+
+**A request the gateway cut off: `isGatewayCutOff`.** The hosted gateway gives up on a request it waits on at about 30 seconds and answers `503` or `504`, while the server may still be handling it. `isGatewayCutOff(error, elapsedMs)` tells such a failure from a refusal: it is `true` when, at least ~28 seconds after the request was sent, the failure is a `503` or `504` answer whose body is no problem document, or the client's own time limit (`ApiUnreachableError` whose `networkCode` is `ABORT_TIMEOUT`), and `false` before then and for any other failure, a problem document being the API's own answer however long it took. The blocking `execute` applies it and throws `PipelineExecuteTimeoutError`, timing the request on the monotonic clock `performance.now`. A caller no longer needs it to learn whether a failed start may have created a run, since the problem says so whatever the timing. The fetch API cannot say whether `ABORT_TIMEOUT` ran out before the connection was made, so the rule reads it as the gateway's; with Node's own dispatcher it never does past the threshold, since undici gives up a connection that does not come after ten seconds (`UND_ERR_CONNECT_TIMEOUT`), the TLS handshake included. The Python SDK's `is_gateway_cut_off` is the same rule.
 
 ### A start's idempotency key — `idempotencyKey`
 
-Generate one key per run you mean to start (a `crypto.randomUUID()` is a good one), and keep it with the options across that start's retries. A key is 1 to 255 visible ASCII characters, `!` to `~`; anything else, an empty string included, is a `RequestArgumentError` before anything is sent, since a start sent without the key its caller gave would lose the protection without a word.
+`start`, and so `startAndWaitForResult`, takes an optional `idempotencyKey`, which the SDK sends as the `Idempotency-Key` header of `POST /v1/start`; without one it sends no header. The hosted API binds the key to the run before it dispatches it, so the same start sent again under the same key is answered with that run and starts nothing, however the first attempt ended. A caller that sent a key therefore answers a failure whose `retry` is `outcome_unknown` by sending the same start again, with the same key and the same options, and gets the run back instead of paying for a second one. The problem does not say so itself: it stays `outcome_unknown` with a key, since the SDK cannot know that the server honours the key (a bare runner ignores it), and a retry under a new key, or with other options, would start a second run.
+
+Generate one key per run you mean to start (a `crypto.randomUUID()` is a good one), and keep it with the options across that start's retries. A key is 1 to 255 visible ASCII characters, `!` to `~`; anything else, an empty string included, is a `RequestArgumentError` naming `idempotency_key` before anything is sent, since a start sent without the key its caller gave would lose the protection without a word.
 
 ```ts
-import { errorVerdictOf, runMayHaveStartedOf } from "@pipelex/sdk";
-
 // One key per run, kept with the options, unchanged, across the start's retries.
 const options = { method_id: "mt_abc123", inputs, idempotencyKey: crypto.randomUUID() };
 try {
   return await client.start(options);
 } catch (err) {
   // Under the same key, a start that may have started a run is answered with that run.
-  if (runMayHaveStartedOf(err) || errorVerdictOf(err)?.retryable) return await client.start(options);
+  if (isProblemError(err) && err.retry !== "no") return await client.start(options);
   throw err;
 }
 ```
@@ -158,11 +83,11 @@ What the hosted API answers a start sent under a key:
 |---|---|
 | The first under the key | The run starts, the key bound to it before it is dispatched. |
 | The same options under the same key, once the first was answered or bound to its run | The first start's acknowledgement, the run's state as it stands, and nothing starts. A first start refused for its content is refused again; one refused for its timing, such as a `429` in front of the runner, freed the key, and the retry is handled afresh. |
-| The same options under the same key, while the first is still being handled | After a short wait, the first start's answer; failing that, a `409` with the code `idempotency_key_in_use`, `runtime` and retryable, with a `Retry-After` header that `ApiResponseError` does not expose. Nothing ran for it, so its `runMayHaveStarted` is `false`: send it again under the same key in a few seconds, never under a new one, which would start a second run. |
-| Other options under the same key | A `409` with the generic code `conflict`, `input` and not retryable: a key reused for another request is a bug in the caller. Send the new request under a new key. |
-| The same options under a key bound to a run since deleted | A `409` `conflict` too: send it under a new key to start a new run. |
+| The same options under the same key, while the first is still being handled | After a short wait, the first start's answer; failing that, a `409` `request.idempotency_key_in_use`, `retry` `yes`, whose `retryAfter` says how long to wait. Nothing ran for it: send it again under the same key, never under a new one, which would start a second run. |
+| Other options under the same key | A `409` `request.idempotency_conflict`, `retry` `no`: a key reused for another request is a bug in the caller. Send the new request under a new key. |
+| The same options under a key bound to a run since deleted | A `409` `request.idempotency_conflict` too: send it under a new key to start a new run. |
 
-`IdempotencyErrorCode` names the code a caller branches on, `idempotency_key_in_use`; the key's other refusals carry the generic `conflict`. The hosted API keeps a key for 24 hours, scoped to the caller and the organization, so a start sent again after that starts a new run.
+`IdempotencyErrorCode` names the two codes. The hosted API keeps a key for 24 hours, scoped to the caller and the organization, so a start sent again after that starts a new run.
 
 **Keep the body identical.** The hosted API compares the request's bytes, so the retry must carry the same options in the same form. The SDK builds the same body from the same options, but inputs prepared twice are not the same options: `prepareInputs` uploads a local file again and returns a new storage reference each time, so prepare the inputs once and reuse what it returned for every attempt.
 
@@ -170,194 +95,155 @@ What the hosted API answers a start sent under a key:
 
 **A copy takes a key too.** `copyMethod` sends an `idempotencyKey` the same way, held to the same rule, and the hosted API keeps it for the same 24 hours, scoped to the caller and the method's organization. A copy binds no run, so its answers under a key differ from a start's: [method-copy.md](./method-copy.md#retrying-a-copy--idempotencykey) gives them.
 
-## A failed run — `RunErrorReport`
+## Each class's problem
 
-A run that ends without completing (`FAILED`, `CANCELLED`, `TERMINATED` or `TIMED_OUT`) has no result, and the results read answers `409`. The body of that `409` says why: its `detail` names the status and then the report's message, its `run_status` member holds the status, and its `error` member holds the run's stored error report, or `null` when the run has none. The SDK reads the status from `run_status`, falling back to the status word of the `detail` sentence on a platform that does not send the member yet, and types the report as `RunErrorReport`.
+The classes remain, so a `catch` can still tell an argument refusal from a refused request or a failed run, but every one carries its failure as its problem, and the code is what a program branches on.
 
-The report reaches you wherever a failed run surfaces, always the same object:
-
-| Where | What you get |
+| Class | Its problem |
 |---|---|
-| `getRunResult(runId)` | the `failed` arm: `{ state: "failed", pipeline_run_id, status, message, error }` |
-| `waitForResult`, `startAndWaitForResult` on the hosted API, `downloadArtifacts({ run_id })` | a thrown `RunFailedError` with `runId`, `status`, `message` and `error` |
-| `getRunStatus(runId)` | `RunRead.error` on the run record |
-| `listRuns`, `iterateRuns` | `RunHistoryItem.error` on each history row |
-| `getRunDetail` | `PipelineRun.error` on the run record |
+| `ApiResponseError` | The answer read as its problem: the body when it is a problem document, otherwise the edge's reading of its status ([below](#a-refused-request--apiresponseerror)). |
+| `RequestArgumentError` | `client.argument_invalid`, naming the argument and why it was refused: no run source given to `execute` or `start`, run sources or method selectors that exclude each other, a selector rule of `validate`, the method's tree given in two forms, holding no file, or in a directory the standard's lister refuses, a tree past the inline limit of an API that keeps no blob store, a reserved key in `extra`, a `publishMethod` without its token, a `getMethodVersion` version that is not a positive integer, an id a route puts in its path that is empty, `.` or `..`, is not a string or holds a lone surrogate, an example write missing what it needs, a selector `parseMethodSelector` refuses, an artifact selection that is empty or names an unknown artifact, a `copyMethod` argument of the wrong type, an `idempotencyKey` outside its rule, or a request body JSON cannot carry. A base URL that is not host-only is `client.not_configured` naming `base_url` instead, since it typically comes from `PIPELEX_BASE_URL`; that refusal shows the base URL's scheme and host alone. One built from a message alone names the argument `arguments`, for the reason `unspecified`. |
+| `ApiUnreachableError` | `client.unreachable`, naming the base URL; `client.timeout`, naming the time limit, when the client's own limit ran out (`networkCode` `ABORT_TIMEOUT`); and `client.outcome_unknown` on a start or an execute that may have left ([above](#a-run-that-may-have-started--outcome_unknown)). `networkCode` is the underlying network error code when there is one. |
+| `PipelineExecuteTimeoutError` | `client.outcome_unknown`: the gateway cut the blocking execute off and the run goes on; start the next one and poll instead. |
+| `RunFailedError` | `run.failed`, naming the run and its status, with the run's own problem nested as `run_error` ([below](#a-failed-run--runfailederror)). |
+| `RunTimeoutError`, `RunStillRunningError` | `client.follow_failed`, naming the run, with `retry` `outcome_unknown` and the step `read_run`: the run keeps going, and is read again by its id, never started again. |
+| `RunLifecycleUnavailableError` | `runtime.unsupported`, naming the run lifecycle: the base URL points at a bare runner without it, or, for `getRunProgress`, at a hosted API older than the progress route. |
+| `MissingMainStuffError`, `PagingNotTerminatingError` | `client.response_unreadable`: the API broke its own contract on a completed run, or minted cursors forever (`pageLimit` is the ceiling the iterator stopped at). |
+| `InputPreparationError` | `client.argument_invalid` naming `inputs` when built from a message alone; the SDK passes the precise problem wherever it throws one, and `prepareInputs` gives `client.response_unreadable` for a pipe I/O answer that breaks the route's contract. |
+| `InvalidLocalSourceError`, `InvalidInputValueError` | `input.file_unreadable` for a local file the inputs name that cannot be read, and `input.invalid` for a value at a file input that is no file. |
+| `UploadNotAllowedError` | `client.argument_invalid`: a value that would be uploaded while uploads are off. |
+| `MethodLoadError` | `method.invalid`, whose `errors` are the pipe I/O answer's problem items ([below](#a-verdicts-problem-items)); `serverMessage` is the answer's own `message`. |
+| `RejectedAssetError` | The refusal as the API answered it, which `uploadFile` passes, and otherwise the reading of storage's status. `reason` (`too_large`, `grant_used`, `grant_expired`, `signature_mismatch`, `unsigned_header`, `store_refused`) says why. |
+| `UnsupportedUploadCapabilityError` | `runtime.unsupported`, naming file upload: the deployment does not serve `/v1/upload`. |
+| `UploadAuthenticationError`, `ArtifactAuthenticationError` | The credential refusal, read in this order: the server's own problem when the wrapped `ApiResponseError` answered a problem document; then what the caller knows of its own request, `auth.missing_credential` when `options.credentialSent` says it carried no credential and `auth.invalid_credential` when it says it did, since the edge's bare `401` or `403` does not say; then the wrapped error's reading of the status; and otherwise `auth.invalid_credential`. `ArtifactAuthenticationError`'s `verdict` member is the download's result so far, not the error's problem. |
+| `TestFileRefusedError` | The problem of the platform's refusal it wraps, which is how the SDK throws it. Built without a cause, `auth.forbidden` for `role_not_permitted`, and `client.argument_invalid` naming `method_id` for `method_not_found` and `method_being_deleted` ([files.md](./files.md#uploading-a-test-file)). |
+| `UploadTransportError` | The wrapped error's problem, when `cause` carries one. Otherwise by `reason`: `timeout`, `unreachable`, `storage_timeout` and `conflict` are `runtime.unavailable`; `server_error`, `unexpected` and no reason read storage's status (`runtime.unavailable` for a `408`, a `429` or a `5xx` other than `501`, `runtime.unsupported` for a `501`, `client.response_unreadable` for any other), a `server_error` with no status being `runtime.unavailable` and the others `runtime.unexpected`; `redirected` is `runtime.misconfigured`; `invalid_grant_url` is `client.response_unreadable`. |
+| `MethodFileTransferError` | By `reason`: `unreachable` and `storage_error` are `runtime.unavailable`; `refused` reads storage's status, as above, `runtime.unexpected` with none; `mismatch`, downloaded bytes that are not the file listed, is `client.response_unreadable`. It carries `operation`, `reason`, `sha256`, `path` and `status`, and neither the link, nor storage's error body, nor a cause ([method-trees.md](./method-trees.md#when-a-transfer-fails)). |
+| `ArtifactOperationError` | `runtime.unexpected` when built without a problem; the SDK gives `client.argument_invalid` where it refuses an argument (a `scope`, a bound, a location), `runtime.unsupported` for a runtime with no filesystem, `client.write_failed` for a directory that cannot be created, and `client.response_unreadable` for a resolution that answered the wrong count of items. |
+| `ScopeUnavailableError` | `client.response_unreadable`: the run's results carry no artifact in the scope asked for. |
+| `ArtifactFetchError` | The SDK gives `client.download_limit_exceeded` naming the cap for a file over it (`too_large`), `client.timeout` naming the budget for a download that ran out of time, and `client.unreachable` naming the store's origin for one that failed on the network. Otherwise by `reason`: `input.reference_not_found` naming the reference for `invalid_storage_uri`, `forbidden` and `not_found`; `client.link_refused` for `unsupported_url`, `plain_http_refused` and `redirect_refused`; `runtime.unavailable` for `store_error`, `store_refused`, `timeout` and `network`; and `runtime.unexpected` otherwise. |
+| `CodegenLockError` | `client.file_unreadable` naming `codegen.lock` for a lock that is malformed or tracks an unsafe path, `client.tool_outdated` naming this SDK for a lock newer than it reads, and `client.argument_invalid` naming `files` for a supplied tree holding an unsafe or duplicate path. It extends `ProblemError` rather than `PipelexRequestError`, since nothing was requested. |
+| `ExactJsonUnsupportedError` | `client.tool_outdated`, naming the JavaScript runtime: `parseExactJson` met a number past `Number.MAX_SAFE_INTEGER` on a runtime whose `JSON.parse` hands a reviver no source text ([exact-integers.md](./exact-integers.md)). It extends `ProblemError`; the client reports it as the `ApiResponseError` of an answer it cannot read, with this error as `cause`. |
 
-**A bare runner has no durable run, so its failure is a refused request.** Against a bare `pipelex-api` runner, `startAndWaitForResult` runs the method with the blocking `execute`, and a run that fails there answers a non-2xx problem document: the call throws an `ApiResponseError`, not a `RunFailedError`, and the same classification rides its members (`errorDomain`, `type`, `retryable`, `userAction`, `errorType`, `model`, …) as described [below](#a-refused-request--apiresponseerror). A caller that must work against both catches both, as the example does.
-
-**`RunFailedError`'s verdict comes from the report.** Its `errorDomain` is the report's `error_domain` when it is one of the three domains, and `runtime` otherwise, including a run with no report. Its `retryable` is true only when the report's `retryable` is `true`: a report that says nothing, and a run with none, read as not retryable, since starting the run again spends credit and nothing says it would succeed. The report keeps its own `retryable` as written, so a consumer that words the unknown differently still can.
-
-```ts
-import { ApiResponseError, RunFailedError } from "@pipelex/sdk";
-
-try {
-  const result = await client.startAndWaitForResult({ method_id: "mt_abc123", inputs });
-  console.log(result.main_stuff);
-} catch (err) {
-  if (err instanceof RunFailedError) {
-    const report = err.error; // RunErrorReport | null
-    console.error(err.message); // "Run finished with status FAILED: <the report's message>"
-    if (report?.user_action) console.error(`Next step: ${report.user_action.detail}`);
-    if (err.retryable) console.error("Running it again can succeed.");
-    console.error(`Run id for support: ${err.runId}`);
-  } else if (err instanceof ApiResponseError) {
-    // A refused request — or, against a bare runner, a run that failed on the blocking path.
-    console.error(err.serverMessage, err.userAction?.detail, `request id ${err.requestId}`);
-  } else {
-    throw err;
-  }
-}
-```
-
-The report's fields, all optional because the runner owns the shape:
-
-| Field | Meaning |
-|---|---|
-| `message` | What went wrong. For a run failure it is where the failing pipe is named. A hosted read serves the author's copy only when `caller_facing_message` is `true`, and the placeholder `An internal error occurred.` otherwise. |
-| `error_domain` | Who can fix it: `input` (the caller — a malformed method, a bad input), `config` (a configuration change — a model the backend does not serve, a missing secret), `runtime` (nobody beforehand — a provider outage). **A branch field.** |
-| `type_uri` | The stable URI naming the error class, the same on every occurrence. **A branch field.** |
-| `retryable` | Whether running it again can succeed. Absent means unknown, which is not `false`. **A branch field.** |
-| `user_action` | The next step, as `{ kind, detail }`: `detail` is the advice in words, `kind` its category (`wait_and_retry`, `check_billing`, `check_credentials`, `change_input`, `change_model`, `contact_support`, `unknown`). A hosted read serves it only beside caller-facing copy. |
-| `title` | The stable human label of the error class. |
-| `error_type` | The runner's exception class name — an open set, for display and support, never matched against. |
-| `error_category` | The finer class of an inference failure: `transient`, `configuration`, `content`, `capacity`, `ambiguous`, `unknown`. |
-| `model`, `provider` | The model and provider an inference failure involved. Absent on a hosted read. |
-| `provider_metadata` | What the provider's SDK said: `provider`, `sdk_exception_type`, `message`, `status_code`, `request_id` (the provider's own), `retry_after_seconds`, `provider_error_code`. A hosted read keeps only `status_code` and `retry_after_seconds`. |
-| `validation_errors` | The structured diagnostics of a method that failed validation, the same [items](#a-validation-item--validationerroritem) the validate report carries. |
-| `migration` | A pending configuration migration that explains the failure, present only when the runner's scan found one. Absent on a hosted read. |
-| `caller_facing_message` | `true` when `message` was written as caller-facing copy. A hosted read keeps it on a caller-facing report and leaves it out otherwise. |
-
-A field a newer runner adds is reachable through the interface's index signature before this SDK names it.
-
-**The report is checked field by field, never cast.** Every read that hands one back applies the same check: a value that is not an object reads as no report (`null`); each named field is kept when it has the type the table above gives it and is absent otherwise, so a `message` that is a number or a `retryable` of `"no"` never reaches you as typed; `null` is kept wherever the type allows it, and an empty string is kept, since deciding that a blank field says nothing is presentation. `provider_metadata` and `migration` are checked one level down, `validation_errors` keeps only the items that are objects with a string `category` and `message`, and members the SDK does not name, in the report or in a nested object, are relayed as sent. **`user_action` is kept whole or not at all**: an object whose `kind` and `detail` are both strings, which is what its type promises. This is the one place the check differs from the Python SDK's, which keeps a partial action, its stored-report action being a lenient type of its own. On the run records, the check runs only when the record carries the `error` key, so a server that does not serve it still leaves it absent.
-
-**A run the platform ends or settles itself carries the platform's report.** Some endings have no runner to write a report, and the platform writes one instead, in the runner's shape, so it reads like any other:
-
-| `error_type` | When | `error_domain` | `retryable` | `user_action.kind` |
-|---|---|---|---|---|
-| `WorkflowTaskKeptFailingError` | The run's workflow task kept failing for the whole failure window, and the platform ended the run `FAILED`. While the window runs, the status read says so as a `workflow_task_failing` degradation ([run-results.md](./run-results.md#a-degraded-status--degraded-and-degradation)). | `runtime` | `false` | `contact_support` |
-| `RunTimedOutError` | The workflow engine timed the run out, and it ended `TIMED_OUT`. | `runtime` | `false` | `contact_support` |
-| `RunWorkflowNotFoundError` | The run's workflow cannot be found: it aged out of the engine's retention, or the run was lost while starting. The run ends `FAILED`. | `runtime` | `true` | `wait_and_retry` |
-
-These reports are caller-facing copy: they quote nothing of the worker's own failure text, their `caller_facing_message` is `true`, and so they keep their message and their next step on a hosted read. The one exception is a `WorkflowTaskKeptFailingError` report rebuilt from a termination an earlier platform recorded, whose message quotes the worker's failure: it is not caller-facing, so it reads as the placeholder.
-
-**A cancelled, terminated or timed-out run holds a report when one was sent.** Its `error` holds the report a completion callback carried, or, on a `TIMED_OUT` run, the `RunTimedOutError` report the platform writes for the timeout. A run the platform ended because its workflow kept failing is `FAILED`, never `TERMINATED`.
-
-**The report is `null` when the run has none**: a completed run, one whose start failed, a blocking `execute` run, whose answer carried its reason, one cancelled, terminated or given its status by hand with no completion callback carrying a report, and one that ended before the platform wrote reports of its own. The status and the `detail` sentence still say what happened, and the absence of a report says nothing about why.
-
-### What the platform serves of a report
-
-**The platform serves the runner's STRICT projection, and the SDK strips nothing further.** The run row keeps the runner's report whole, as the record of the people who operate the platform, but every read that hands it to a caller (the status read, the run records and the results read's `409`) serves it through the rule the hosted runner applies to an error on `execute`:
-
-- `error_type`, `title`, `type_uri`, `error_domain`, `error_category`, `retryable` and `validation_errors` pass through when present;
-- `message` and `user_action` pass through only when the report's `caller_facing_message` is `true`, which the served report then keeps; otherwise `message` is the placeholder `An internal error occurred.`, and `user_action` and `caller_facing_message` are absent;
-- `provider_metadata` keeps only `status_code` and `retry_after_seconds`, and is absent when neither is present;
-- `model`, `provider` and `migration` are absent.
-
-So `caller_facing_message` is how a consumer tells the author's copy from the placeholder, and `message` can be shown as it comes: it never carries the worker's internal text or a provider's raw answer. `RunFailedError.message`, being the `detail`, already contains the served message. Every deployed environment serves the projection; a platform run locally with `ERROR_DISCLOSURE=verbose` serves the report whole, which is why the type still names every member the runner writes. Deciding what a person sees is still the consumer's decision.
-
-**Numbers in `provider_metadata` may arrive as strings.** A report read back from the platform's run store carries `status_code` and `retry_after_seconds` as strings (`"404"`, `"1.5"`), because the store returns its numbers as decimals that the platform serializes as strings; a problem document a runner renders carries them as numbers. Both are in the type, so read them with `Number(...)`.
+`RejectedAssetError`, `TestFileRefusedError`, `UploadTransportError`, `ArtifactFetchError` and `MethodFileTransferError` keep a `reason` from a closed vocabulary (`RejectedAssetReason`, `TestFileRefusalReason`, `UploadTransportReason`, `MethodFileTransferReason`), the same as the Python SDK's, which says what the SDK saw beside the problem's code.
 
 ## A refused request — `ApiResponseError`
 
-Every non-2xx answer from a `/v1` route is a problem document, and the SDK throws an `ApiResponseError` whose fields are its members. Each field is `undefined` when the document did not carry it, and a member of the wrong type (a numeric `type`, a `retryable` of `"no"`, a `user_action` without a `detail`) reads as absent rather than as a wrong value. The nested members are checked one level down, exactly as a [stored report's](#a-failed-run--runerrorreport) are: `providerMetadata` and `migration` keep each named field only when it has its type, `validationErrors` keeps only the items that are objects with a string `category` and `message`, and each item of `errors` keeps its `field`, `code` and `detail` only when they are strings; members the SDK does not name are relayed as sent. The verdict is the exception: `errorDomain` and `retryable` are always decided, the server's value when it sent a valid one and otherwise [as the verdict section says](#a-refused-requests-verdict).
+An `ApiResponseError` is an answer that came back and that the SDK cannot hand back as a result: a non-2xx refusal, a body that arrived and could not be decoded, or a `2xx` the SDK could not read (a body that is not JSON, JSON that is not the object the route answers, a stored method whose `python` field is not the serialized file list). Every route throws this one class for it: the protocol routes, the run lifecycle and every product route.
 
-**An answer the SDK could not read is an `ApiResponseError` too.** A `2xx` whose body is not JSON, such as a gateway's HTML page or an empty body where the route answers one, is no result the SDK can hand back, so every route throws an `ApiResponseError` for it instead of letting the runtime's `SyntaxError` escape. Every body is read by the rules the protocol reads a problem body by (`parseJsonBody` in `mthds/protocol`, as `pipelex-sdk` reads it), so JSON nested deeper than `MAX_BODY_NESTING`, or holding a number past the range of a double, such as `1e999` or an integer that long, which `JSON.parse` reads as `Infinity`, is a body that is not JSON too; a refusal whose body is such JSON carries no hosted member and no `problemDocument`. So is a `2xx` read exactly, such as a run's results or a method example, that holds a number past `Number.MAX_SAFE_INTEGER` on a runtime whose `JSON.parse` hands a reviver no source text, which could only read it rounded; its `cause` is the reader's `ExactJsonUnsupportedError` ([exact-integers.md](./exact-integers.md)). So is a `2xx` whose body is JSON but not the object the route answers — `null`, a number, a string, an array — on every protocol, extension and run-lifecycle route, on `health()`, and on the product routes whose answer the SDK or its caller reads before anything else (`listMethods`, `getMethod`, `createMethod`, `writeDraft`, `renameMethod`, `publishMethod`, `listMethodVersions`, `getMethodVersion`, the method example routes, `listRuns`, `getRunDetail`, `listRunFiles`, the files routes from `listFiles` to `copyFileIntoDraft`, `upload`, `requestUploadGrant`, `resolveStorageUrls`), instead of the `TypeError` that reading it would raise. So is an object missing the member those reads depend on: a page of `listMethods`, `listMethodVersions`, `listMethodExamples`, `listRuns` or `listFiles` whose `items` is not an array or whose `next_cursor` is neither a string nor `null`, which the iterators could not walk or would follow forever; a publish result whose `outcome` is not `published`, `unchanged` or `refused`, or whose `method` is not an object, a latest-run result whose `outcome` is not `recorded` or `stale`, or whose `example` is not an object, an assistant save result whose `outcome` is not `kept` or `created`, or whose `example` is not an object, a copy into a draft whose `blob` is not `copied` or `already_held`, or whose `file` or `method` is not an object, and an archive whose `state` is not `queued`, `building`, `ready` or `failed`, which a caller branching on that field could not read; a file whose `uses` is not a page, a page of a run's files whose `state` is unknown or whose lists are not arrays, and an answer of `linkFiles` that is not one item per requested file, each with its link or its error; a method example, as `createMethodExample`, `getMethodExample` and `updateMethodExample` answer it, as a row of `listMethodExamples` and as a latest-run or assistant save result's `example`, that misses a field the Python SDK's model of an example requires or holds one of another type, its message naming the field; an `upload` answer with no non-empty string `uri`, which names no stored file; a stored method or a published version, as `getMethod` and `getMethodVersion` answer it, whose `files` is not a listing of files, each with its string `path`, `url` and `expires_at`, a `sha256` of 64 lower-case hex digits and a non-negative integer `size`; and an answer of `POST /v1/blobs/missing` asking for a blob the tree being saved does not hold: that is server data no change to the call fixes, not an argument the caller passed. Its `status` is the `2xx`, `responseBody` the raw text, `cause` what made the answer unreadable (the parse failure; nothing for a body that parsed to something the route does not answer, nor for JSON the protocol refuses), `problemDocument` and the hosted problem members are `undefined`, `problem` is the standard's reading of such an answer (`client.response_unreadable`, or `client.outcome_unknown` on `start` and `execute`), an answer that carries signed links (a stored method, a published version, the upload targets of `POST /v1/blobs/missing`, the links of `linkFiles` and an archive of `requestFileArchive` or `getFileArchive`) has every link redacted in `responseBody`, each `url` member and each link's query replaced by `[redacted]`, and keeps no `cause` at all, since a link is a bearer credential; and its verdict is the fallback's for a status no refusal carries: `runtime`, not retryable. On `start` and `execute` its `runMayHaveStarted` is `true`, since the server accepted the request; that includes a start acknowledgement whose `pipeline_run_id` is not a string, and an `execute` `202` that names no run, which leave the caller a run it could not follow, and an `execute` answer that is not the completed run: one whose `pipeline_run_id` is not a string, or whose `pipe_output` carries no string `pipeline_run_id` or no `working_memory` with `root` and `aliases` objects, the members the Python SDK's model of the answer requires. A product route that answers a `2xx` with no body at all, such as `revokePipelexApiKey`, still resolves to `undefined`, and the other product routes hand their decoded body back as it came.
+| Member | What it is |
+|---|---|
+| `problem` | The answer read as its problem (`readHostedAnswer`): the body itself when it is a problem document, as the hosted API answers every refusal, its `pipelex.*` code and every member the standard does not name kept; otherwise the edge's reading of the status ([below](#an-answer-that-is-no-problem-document)). |
+| `code`, `domain`, `retry`, `nextStep` | The problem's, as on every error. |
+| `retryAfter` | The problem's `retry_after`, which the `Retry-After` header fills when the problem invites a retry and gives none. |
+| `requestId` | The problem's `request_id`, else the answer's `X-Request-ID` header: the id to hand to support. |
+| `status`, `statusText` | The answer's HTTP status, whatever the problem's own `status` says, and its reason phrase. |
+| `responseBody` | The raw text, so a member this SDK does not name stays reachable without re-reading the body. |
+| `apiUrl` | The base URL the request went to. |
 
-| Field | Wire member | Meaning |
-|---|---|---|
-| `errorDomain` | `error_domain`, else the fallback | Who can fix it: `input`, `config` or `runtime`. Always decided. **A branch field.** |
-| `type` | `type` | The stable URI naming the error class. **A branch field.** |
-| `retryable` | `retryable`, else `false` beside a sent `input` or `config` domain, else the fallback | Whether retrying the same request can succeed. Always decided, and `false` whenever `runMayHaveStarted` is `true`. |
-| `runMayHaveStarted` | none | Whether a `start` or a blocking `execute` that failed may have started a run anyway ([above](#a-failed-run-start--runmayhavestarted)). Always decided. |
-| `userAction` | `user_action` | The next step, `{ kind, detail }`. |
-| `requestId` | `request_id`, else the `X-Request-ID` header | The id to hand to support: it finds the server's log lines for the request. |
-| `title` | `title` | The stable human label of the error class. |
-| `serverMessage` | `detail` (or `message`) | The per-occurrence message. |
-| `instance` | `instance` | The occurrence: a request URN (`urn:pipelex:request:<id>`) or a request path. |
-| `code` | `code` | The platform's native code, a closed set (`conflict`, `not_found`, `validation_failed`, `pipelex_api_key_limit_reached`, …), one-to-one with `type`; `MethodErrorCode` names the method ones (see [The method codes](#the-method-codes)) and `IdempotencyErrorCode` the idempotency key's ([above](#a-starts-idempotency-key--idempotencykey)). **A branch field for a client of the platform**, absent on a refusal it relays from the runner. |
-| `errorType` | `error_type` | The runner's native code, its open exception class name. |
-| `errorCategory`, `model`, `provider`, `providerMetadata` | `error_category`, `model`, `provider`, `provider_metadata` | An inference failure's class and origin, as on the run report. |
-| `migration` | `migration` | A pending configuration migration that explains the failure. |
-| `validationErrors` | `validation_errors` | The structured diagnostics of a bundle that failed validation, as [validation items](#a-validation-item--validationerroritem). |
-| `errors` | `errors` | The platform's field-level failures, `{ field, code, detail }` each. |
-| `problemDocument` | the whole body | The decoded document, every member named or not; `undefined` when the body was not a JSON object. The record of what the server sent, verdict members included. |
-| `status`, `statusText`, `responseBody` | the transport | The HTTP status, its text and the raw body. |
-| `problem` | the answer, read by the standard | The same answer as the MTHDS standard reads it, the problem `mthds`'s own `ApiResponseError` carries (see below). |
+`ApiResponseErrorOptions` is `{ cause, problem, headers, mayStartRun }`: the client passes the `problem` it read and the answer's `headers`, and an error built by hand without them reads the answer itself, as the client would, `mayStartRun` saying the request was a start or an execute. The Python twin names the same option `problem`.
 
-**Branch on `errorDomain` and `type`, never on the HTTP status or the message.** That is the rule the hosted-envelope spec sets across surfaces: `errorDomain` tells the caller's own mistake from a fault it cannot fix, and `type` names the error class with a URI that stays the same on every occurrence, and both mean the same on the runner and the platform. `code` and `errorType` are each surface's finer native code, and a client of one surface may branch on that surface's code too. On the platform `type` is `https://pipelex.com/errors/<code>`, derived from `code` one to one, so branching on either reads the same answer; the platform may add codes, so a code the caller does not know gets its generic handling. A refusal the platform relays from the runner, such as a run route's refusal to run an invalid method, carries the runner's `type` and `errorType` and no `code`, so a caller branching on `code` reads its absence as a refusal the runner authored and branches on `type` or `errorType` there. Where the platform sends no `error_domain`, as its Lambda-backed routes do not yet, the fallback reads `errorDomain` from the status, so the branch below reads the same whichever decided it:
+A refusal locates its fault in the problem: `location.field` names the request field a `request.invalid` refused, its `errors` list one problem item per fault, each with its own `location`, and `params` carries what the code's registry entry names (a model, a limit, a status). A Pipelex refusal adds the members its code documents, such as `limit` for a copy past its bounds or an archive past its cap, read from `problem` as received.
 
-```ts
-import { ApiResponseError } from "@pipelex/sdk";
+### An answer that is no problem document
 
-try {
-  await client.createPipelexApiKey({ label: "ci" });
-} catch (err) {
-  if (!(err instanceof ApiResponseError)) throw err;
-  if (err.type === "https://pipelex.com/errors/pipelex_api_key_limit_reached") {
-    // revoke a key first
-  } else if (err.errorDomain === "input") {
-    console.error(err.serverMessage, err.userAction?.detail, err.errors);
-  } else {
-    console.error(`${err.serverMessage} (request id ${err.requestId ?? "unknown"})`);
-  }
-}
-```
+The hosted API answers every refusal with a problem document. A body that is not one comes from the hosted edge, a gateway or a proxy, which nobody configures, and reads by its status. These rules stay written in the SDK until the registry records them and every client generates them:
 
-**`problem` is the standard's reading of the same answer.** The MTHDS standard's own client, `mthds`, reads every answer that is not a route's result as one problem under a registry code, and `problem` is that reading, the problem `mthds`'s `ApiResponseError` carries, typed as the standard's `Problem`: the body as received when it is a core problem document, otherwise the problem the standard reads the answer as by its status (`readAnswer` in `mthds/protocol`), and `client.response_unreadable` for a `2xx` the SDK could not read. On `start` and `execute`, `runMayHaveStarted` decides: wherever a run may have started, which is a `2xx` the SDK could not read, a `408` and every `5xx` but a `501` and a `503` carrying `pipeline_start_unavailable`, it is `client.outcome_unknown`, naming the run when the body names one, such as the platform's `bad_gateway` for a start whose acknowledgement it lost, even when the body is a core problem document, since one inviting a retry would contradict `runMayHaveStarted`; wherever none did, it is the reading of an answer to a request that creates no run, `runtime.unavailable` for that `503` and `client.response_unreadable` for that `501`. A caller handling this SDK's errors and the standard client's alike branches on `problem.code`. The hosted plane's problem documents predate the core registry, so for them `problem` says little, and every member of the table above is read from the hosted document as it always was. The two never share a slot: `code` is the platform's code beside the registry's `problem.code`, and `errors` the platform's field-level failures beside the problem items of `problem.errors`. The error itself stays a `PipelineRequestError` rather than the standard's `ProblemError`, whose `code` is the registry's, so that `code` keeps meaning the platform's.
+| Status | Its problem |
+|---|---|
+| `401` | `auth.missing_credential`: the edge answers it before the platform when the request carries no credential. |
+| `403` | `auth.invalid_credential`: the edge's authorizer refused the credential, or the route is outside what it may call. |
+| `404` | `request.not_found`: no route matches. |
+| `405` | `request.method_not_allowed`. |
+| `408`, `429` | `runtime.unavailable`, with the `Retry-After` the answer gives: a proxy timed the request out, or the edge throttled it. The core registry's `account.rate_limited` names the limit and its window, which an edge throttle does not say, so a client cannot state it. |
+| `500` | `runtime.unexpected`. |
+| `502`, `503`, `504` | `runtime.unavailable`, with the `Retry-After` the answer gives. |
+| A `2xx` the SDK could not read, and any other status | `client.response_unreadable`, naming the status. |
+
+On a start or an execute, a `2xx` the SDK could not read, a `408` and a `5xx` other than `501` are `client.outcome_unknown` instead ([above](#a-run-that-may-have-started--outcome_unknown)).
+
+**A missing route is a `404` whose body is no problem document.** The run lifecycle's reads, the progress route among them, tell a deployment that does not serve them by that rule: a `404` problem document is the API naming something that does not exist (`run.not_found`, `request.not_found`), and a `404` whose body is no problem document, such as a bare runner's `{"detail": "Not Found"}`, is a route the deployment lacks, thrown as `RunLifecycleUnavailableError`.
+
+**An answer the SDK could not read.** Every body is decoded by the rules `mthds` reads a problem body by, its numbers kept as written, so a body nested deeper than the protocol's limit or holding `NaN`, `Infinity` or a number past the range of a double is a body that is not JSON. Its message is `API <METHOD> <path> answered <status> with <what>`, `what` naming the failure (`a body that is not JSON`, `a body that is not UTF-8`, `an empty body where JSON was expected`, `a body that is not an object`, or `a body that is not the answer the route returns`), the parse failure is its `cause`, and its problem is `client.response_unreadable`, or `client.outcome_unknown` on a start or an execute. `uploadFile` and `prepareInputs` wrap it, as they wrap every upload failure, in an `UploadTransportError` whose reason is `unexpected`, since whether and where the file was stored is unknown.
 
 ### The method codes
 
-A refusal about a saved method, one of its versions or a copy of it carries one of the platform codes the exported type `MethodErrorCode` names. `code` itself stays a `string`, since the platform adds codes; every one of these is `input` and not retryable by the fallback, since asking again unchanged meets the same answer.
+A refusal about a saved method, one of its versions or a copy of it carries one of the codes the exported type `MethodErrorCode` names. `code` itself stays a `string`, since the registry adds codes; every one of these has `domain` `input` and `retry` `no`, since asking again unchanged meets the same answer.
 
 | `code` | Status | When | What the caller does |
 |---|---|---|---|
-| `method_update_conflict` | `409` | The draft moved since the token a `writeDraft` (`expected_updated_at`) or a `publishMethod` (`expected_draft_updated_at`) sent; nothing was written or published. `errors[0].field` names the request field that carried the token. | Read the method again, and either load its draft or overwrite it by writing again with the fresh token. |
-| `method_being_deleted` | `409` | The method's erasure has started, on every route that addresses it; the detail tells an erasure in flight from a failed one. | Stop offering the method; retry the delete when the detail says it failed. |
-| `method_not_published` | `409` | A bare `method_id`, which names the latest published version, on a run or tooling route, for a method never published. The detail names `mt_…@draft` and publishing. | Publish the method, or address its draft as `mt_…@draft`. |
-| `method_version_not_found` | `404` | `mt_…@<n>`, or `getMethodVersion`, names a version the method never published. An unknown method is `not_found` instead, so the two are told apart by the code. | Pick a version `listMethodVersions` lists. |
-| `organization_not_found` | `404` | A `copyMethod` destination the caller does not belong to, whose invitation they have not accepted, that is still being set up or that does not exist, all answered alike, so the platform never says whether an organization exists. | Copy into an organization `listMemberships` lists, where the caller's role changes methods. |
-| `method_copy_too_large` | `422` | A `copyMethod` whose stored files pass one of the copy's bounds; `problemDocument.limit`, typed `MethodCopyLimit`, names the bound (`max_stored_files` or `max_stored_bytes`), its `value` and what the copy `reached`. | Remove examples, or the files their inputs name, from the original, then copy again. |
+| `pipelex.catalog.update_conflict` | `409` | The draft moved since the token a `writeDraft` (`expected_updated_at`) or a `publishMethod` (`expected_draft_updated_at`) sent; nothing was written or published. `location.field` names the request field that carried the token. | Read the method again, and either load its draft or overwrite it by writing again with the fresh token. |
+| `pipelex.catalog.being_deleted` | `409` | The method's erasure has started, on every route that addresses it; the detail tells an erasure in flight from a failed one. | Stop offering the method; retry the delete when the detail says it failed. |
+| `pipelex.catalog.not_published` | `409` | A bare `method_id`, which names the latest published version, on a run or tooling route, for a method never published. | Publish the method, or address its draft as `mt_…@draft`. |
+| `pipelex.catalog.not_found` | `404` | The method is not one of the organization's, or `mt_…@<n>`, or `getMethodVersion`, names a version the method never published. | Pick a method `listMethods` lists, or a version `listMethodVersions` lists. |
+| `pipelex.org.not_found` | `404` | A `copyMethod` destination the caller does not belong to, whose invitation they have not accepted, that is still being set up or that does not exist, all answered alike, so the platform never says whether an organization exists. | Copy into an organization `listMemberships` lists, where the caller's role changes methods. |
+| `pipelex.catalog.copy_too_large` | `422` | A `copyMethod` whose stored files pass one of the copy's bounds; the problem's `limit` member, typed `MethodCopyLimit`, names the bound (`max_stored_files` or `max_stored_bytes`), its `value` and what the copy `reached`. | Remove examples, or the files their inputs name, from the original, then copy again. |
 
-A malformed version suffix (`@0`, `@03`, `@Draft`, two suffixes) is a `422` `validation_failed` whose `errors` name the field `method_id`; `parseMethodSelector` refuses the same selectors locally with a `RequestArgumentError`, before anything is sent. So is any suffix on the run routes' linkage form, a `method_id` beside an inline source, which `execute` and `start` refuse locally the same way.
+A malformed version suffix (`@0`, `@03`, `@Draft`, two suffixes) is a `422` `request.invalid` whose `location.field` is `method_id`; `parseMethodSelector` refuses the same selectors locally with a `RequestArgumentError`, before anything is sent. So is any suffix on the run routes' linkage form, a `method_id` beside an inline source, which `execute` and `start` refuse locally the same way.
 
 ### The branding codes
 
-A refused branding write (`updateOrganizationBranding`) names each logo or colour it refused in `errors`: the entry's `field` is the logo's slot, `square_logo` or `wide_logo`, or the colour's dotted key, such as `colors.action`, and its `detail` the sentence a settings screen shows under that control. A logo the platform read and refused is a `422` `validation_failed` with one entry per broken rule, both slots at once, each `code` one the exported type `LogoRefusalCode` names (`logo_too_large`, `logo_not_square`, `logo_too_small`, …); a logo URI refused before any read names its slot the same way, under `400` `invalid_storage_uri` or `403` `forbidden`. [organization-branding.md](./organization-branding.md#when-a-write-is-refused) lists every code with a sentence of each.
+A refused branding write (`updateOrganizationBranding`) is one problem naming each logo or colour it refused as an item of its `errors`: the item's `location.field` is the logo's slot, `square_logo` or `wide_logo`, or the colour's dotted key, such as `colors.action`, and its `detail` the sentence a settings screen shows under that control. A logo the platform read and refused carries one item per broken rule, both slots at once, each item's code one the exported type `LogoRefusalCode` names (`logo_too_large`, `logo_not_square`, `logo_too_small`, …). [organization-branding.md](./organization-branding.md#when-a-write-is-refused) lists every code with a sentence of each.
 
 ### The files codes
 
-A zip asked for past a cap (`requestFileArchive`) is a `422` `file_archive_too_large`, `input` and not retryable, whose problem document carries a `limit` member beside the others, read from `problemDocument` and typed `FileArchiveLimit`: the cap's `name` (`max_files` or `max_total_bytes`), its `value` and what the selection `reached`, so a client can say how far over the selection is and split it. A rename by a role that may only rename its own files, and a copy into a draft by a role that may not change methods, are a `403` `role_not_permitted` whose `detail` names the caller's role. A file link refused for one file is not an error at all but that item's `error` in a `200` answer. [files.md](./files.md) gives every refusal of each files route.
+A zip asked for past a cap (`requestFileArchive`) carries a `limit` member beside the others, typed `FileArchiveLimit`: the cap's `name` (`max_files` or `max_total_bytes`), its `value` and what the selection `reached`, so a client can say how far over the selection is and split it. A file link refused for one file is not an error at all but that item's `error` in a `200` answer. [files.md](./files.md) gives every refusal of each files route.
 
-## A validation item — `ValidationErrorItem`
+## A failed run — `RunFailedError`
 
-A method refused for what it says, rather than for how its run went, comes back as a list of validation items. They ride the `/v1/validate` verdict (its invalid arm's `validation_errors[]`, and the advisory `warnings[]` of its valid arm) and the crate routes' invalid verdict (`CrateInvalidReport.validation_errors[]`), each a `200` because an invalid bundle is a produced verdict; the `422` a run route answers when the runner refuses the method for its validation errors, as `ApiResponseError.validationErrors`; and a failed run's report, as `validation_errors`. Each item has a `category` and a `message`; the other members locate the error and say what to do next, and each is present only when the runner knows it:
+A run that ended without success is `run.failed`, naming the run as its `pipeline_run_id` and its terminal status as the `run_status` parameter, with `retry` `no`: the run is over, and starting it again spends credit. Why it did not succeed is the **run's own problem**, which `run.failed` nests as `run_error`: a problem under its own code (`run.cancelled`, `run.timed_out`, a model's code such as `model.unavailable`, a method's such as `method.invalid` with its items), with its own `domain`, `retry` and `next_step`. Branch on it to tell a run worth starting again from one whose method or inputs must change.
+
+The SDK reads the failed run in three places, all the same object:
+
+| Where | What it carries |
+|---|---|
+| `RunFailedError`, thrown by `waitForResult`, `startAndWaitForResult` and the artifact download when the results read answers `409` | `problem` is the results read's `run.failed` document as the platform answered it, or the one the SDK builds for a failed run it learned of otherwise (`runFailedProblem`); `runError` is the nested run problem, `undefined` when the run ended with none stored; `status` is the terminal status and `runId` the run. |
+| `getRunResult`'s `failed` arm | `{ state: "failed", pipeline_run_id, status, message, problem, error }`: `problem` is the `run.failed` document, `status` the status its `run_status` names (`FAILED` when it names none the SDK knows), `message` its `detail`, and `error` the nested run problem, `null` when there is none. |
+| `getRunStatus`'s `error`, and a run row's `error` in `listRuns` | The run's own problem, as the status read serves it; `null` while the run has none, and when the platform serves something that is no problem document. |
+
+The results read's `409` is read for `run.failed` and for `run.not_finished` alone; any other `409` is an `ApiResponseError`.
+
+```ts
+try {
+  await client.waitForResult(runId);
+} catch (err) {
+  if (err instanceof RunFailedError) {
+    const why = err.runError;
+    if (why?.retry === "yes") return startAgain();
+    return showTheFailure(why?.detail ?? err.problem.detail, why?.next_step.detail);
+  }
+  throw err;
+}
+```
+
+**A model the deployment does not serve.** A run refused because no backend serves the model a pipe asks for nests `model.unavailable`, `domain` `operator` and `retry` `no`, whose `params` name the `model`, its `model_type` and the `reason`, and whose `next_step` is `fix_configuration`: the deployment's operator configures a backend for the model, or the method's author picks one the deployment serves.
+
+## A verdict's problem items
+
+A method refused for what it says, rather than for how its run went, comes back as a list of the standard's problem items. They ride the `/v1/validate` verdict (its invalid arm's `errors`, `PipelexInvalidReport`, and the advisory `warnings` of its valid arm), the crate routes' invalid verdict (`CrateInvalidReport.errors`), each a `200` because an invalid bundle is a produced verdict; the pipe I/O answer that does not load, as `MethodLoadError.problem.errors`; the `errors` of a refusal's problem, such as the `422` a run route answers when the runner refuses the method; and a failed run's `run_error.errors`. Each item is the standard's `ProblemItem`:
 
 | Member | Meaning |
 |---|---|
-| `category` | The stage that found the error: `blueprint_validation`, `pipe_factory`, `pipe_validation` or `dry_run`. |
-| `message` | What is wrong, in words. |
-| `error_type` | The error's code, such as `unknown_model`. |
-| `pipe_code`, `concept_code`, `domain_code` | The pipe, concept and domain the error is in. |
-| `source`, `field_path`, `field_name` | The file the error is in (its tree path in the tree the request sent), and the field, as a path such as `pipe.summarize.model` and by name. |
-| `missing_concept_code`, `missing_pipe_code`, `declared_concepts` | The concept or pipe a reference names that the bundle does not declare, and the concepts the domain does declare. |
-| `variable_names` | The input variables an input error concerns. |
-| `model_reference`, `model_type`, `suggestions` | On an `unknown_model` item: the model reference exactly as the author wrote it, the kind of model the field takes (`llm`, `img_gen`, …), and the close matches, each spelled as a reference the field accepts. |
-| `template_file`, `template_location` | On a `template_check_warning` item, which rides the valid verdict's `warnings[]`: the template file as the `PipeDocGen` step names it, `null` for a step of the server's own library, and the place in it the template check's finding names, in the engine's own words, `null` when it names none ([`method-trees.md`](./method-trees.md#the-template-checks-warnings)). |
-| `suggested_fix` | The runner's deterministic correction, when it has one: a `description` in words, `ops` that patch the `.mthds` document by table and key rather than by text, `safety` (`safe` to apply without asking, or `unsafe`) and the `source` file the ops apply to. An unknown model with exactly one close match carries a `rename-model` fix that remaps the reference to it. |
+| `code` | The fault's registered code, such as `method.concept_unresolved`, `method.pipe_unresolved` or `model.unknown`. |
+| `detail` | What is wrong, in words. |
+| `params` | What the code's registry entry names: the concept or pipe a reference names, the model reference exactly as the author wrote it, and the like. |
+| `location` | Where the fault is: its `file` (the tree path in the tree the request sent), `pipe`, `field`, `input`, `path`, `line` and `column`, each present when the runner knows it. |
+| `suggestions` | The close matches, each spelled as a value the field accepts. |
+| `suggested_fix` | The runner's deterministic correction, when it has one: the standard's `SuggestedFix`, with a `fix_code`, a `description` in words, a `safety` (`safe` to apply without asking, or `unsafe`), the `file` the ops apply to, and `ops` that patch the `.mthds` document by table and key rather than by text, each a `FixOp` of the standard's kinds. |
 
 ```ts
 const report = await client.validate({ directory: "methods/receipts" });
 if (!report.is_valid) {
-  for (const item of report.validation_errors) {
-    console.error(`${item.source ?? "?"} ${item.pipe_code ?? ""}: ${item.message}`);
+  for (const item of report.errors) {
+    console.error(`${item.location?.file ?? "?"} ${item.location?.pipe ?? ""}: ${item.detail}`);
     if (item.suggestions?.length) console.error(`Did you mean: ${item.suggestions.join(", ")}`);
     if (item.suggested_fix) console.error(`Fix: ${item.suggested_fix.description}`);
   }
 }
 ```
 
-**The shape is the hosted plane's.** It is the item the runner sends today, which predates the standard's problem items: from protocol 2.0.0 a validate verdict lists its faults as problem items under a registry `code`, which the hosted plane does not send yet, so this SDK declares the item it receives, in `src/models.ts`, and it is not the standard's. Its fix shares the standard's operation kinds (`FixOpKind`), safeties (`FixSafety`) and written values (`FixValue`, which this SDK also calls `TomlValue`), and a type-level test pins those to the standard's, so a kind added on one side and not the other fails `make check`. The standard's own `SuggestedFix` names its file `file` rather than `source` and is open to members it does not declare.
+**Items are read member by member.** One malformed member never costs the caller the fault it belongs to: an entry that is no object, or whose `code` or `detail` is not a string, names no fault and is skipped, and each optional member the standard declares (`params`, `location`, `suggestions`, `suggested_fix`) is kept only when the standard's own check accepts it, and left out of its item otherwise. A member the standard does not declare is kept as received. `readProblemItems` in `src/problem-items.ts` is that reader, and the Python twin's `pipelex_sdk.problem_items` reads them the same way.
 
-**An unset member can be `null`.** The verdict's valid arm, which carries the advisory `warnings[]`, sends an unset member as an explicit `null`, where every other channel leaves the key out, so every optional member is typed `| null`. Read a member with a truthiness check or `??`, never with `=== undefined`.
+## The case file both SDKs run
+
+**The problems are a contract with `pipelex-sdk`.** `tests/fixtures/sdk-problems.json` pins each failure both SDKs detect to its problem code: the answers the hosted API, its edge or a proxy can give (a problem document read as received, each bare status, each start or execute whose run may exist), the readings of a storage answer's status and of each transfer failure's reason, and each error class built from the arguments it takes, with the code and the members its problem must carry. It is the source: `make shared-files` at the repository's root writes the Python package's byte for byte identical copy, and `make check-shared-files` fails on a stale one, so a change to a problem is made here, copied, and then made in both packages. `tests/sdk-problems.test.ts` drives this package's code through every case, and the Python suite's `tests/unit/test_sdk_problems.py` drives the twin's.

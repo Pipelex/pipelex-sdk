@@ -1470,7 +1470,7 @@ export type FileArchiveRequest =
   | { run_id: string; file_ids?: never; name?: string };
 
 /**
- * The cap a `422` `file_archive_too_large` names, read from the refusal's problem
+ * The cap a `422` `pipelex.files.archive_too_large` names, read from the refusal's problem
  * (`ApiResponseError.problem`) as its `limit` member: `max_files` (500) or `max_total_bytes`
  * (2,000,000,000), its `value`, and what the selection `reached`. For a run, the count stops as
  * soon as it passes the cap, so `reached` is one more than `max_files` and means "at least".

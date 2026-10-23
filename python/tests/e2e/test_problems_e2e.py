@@ -9,7 +9,7 @@ reaches it — and `make agent-test` does not collect this directory at all.
 
 What the unit suite cannot prove: that the problem on an `ApiResponseError` is the one the server
 sent. The error reads a problem document as received, and builds one from the status by the edge's
-rules when the body is none (`docs/errors.md`, "A refused request's problem"), and `response_body`
+rules when the body is none (`docs/errors.md`, "An answer that is no problem document"), and `response_body`
 keeps the body as the server sent it, so each case asserts which it was. The cases are the JS twin's
 (`js/tests/e2e/problems.e2e.ts`).
 

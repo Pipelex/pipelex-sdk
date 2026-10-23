@@ -2264,9 +2264,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
   // serves both, verdict discipline intact (200 `is_valid:false`, 501, 422);
   // api-dev.pipelex.com has since 2026-08-13. `lint`/`format` are the two still
   // unexposed — see their section above for why that blocks nothing. `pipe-io` is
-  // newer: a runner serves it from `pipelex-api` v0.33.0, and types its selection
-  // refusals `EntryPipeNotFoundError` / `EntryPipeAmbiguousError` from v0.33.1
-  // (v0.33.0 typed them `ValidationError`), and a hosted origin
+  // newer: a runner serves it from `pipelex-api` v0.33.0, and codes its selection
+  // refusals `request.pipe_not_found`, `request.pipe_unspecified` and
+  // `request.pipe_ambiguous`, and a hosted origin
   // serves it once the platform's proxy and the gateway list it (see
   // `docs/crate-routes.md`).
   //
@@ -4013,17 +4013,17 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Throws `RequestArgumentError` for an organization id that is empty, `.` or `..`, before any
    * request. Throws `ApiResponseError`, refusing every change of the request when it refuses one:
-   * `403` `forbidden` when `orgId` is not the active organization, `403` `role_not_permitted` for
-   * a caller who is not its admin, `404` for a missing organization, `409` `conflict` for a
-   * personal workspace, which has no branding, and `422` `validation_failed` for a colour that is
-   * not `#rrggbb` or a key the body does not know. A logo's refusal names its slot in the error's
-   * `errors[]`, each entry's `field` being `square_logo` or `wide_logo` and its `detail` the
-   * sentence to show under that slot: `400` `invalid_storage_uri` for a URI that is not a storage
-   * URI, `403` `forbidden` for another organization's file, and `422` `validation_failed` with a
-   * `LogoRefusalCode` per broken rule for a file the platform refused. A failure of the platform's
-   * storage while reading or copying a logo is a `500` `storage_backend_failed`, retryable, with
-   * nothing written. A `503` `service_unavailable` is a failure of its database, after which the
-   * write may have landed or not: the same input sent again is safe.
+   * `403` `pipelex.org.mismatch` when `orgId` is not the active organization, `403`
+   * `auth.forbidden` for a caller who is not its admin, `404` `pipelex.org.not_found` for a missing
+   * organization, `409` `pipelex.org.not_manageable` for a personal workspace, which has no
+   * branding, and `422` `request.invalid` for a colour that is not `#rrggbb` or a key the body does
+   * not know. A logo's refusal names its slot in its problem's `errors`, each item's
+   * `location.field` being `square_logo` or `wide_logo` and its `detail` the sentence to show under
+   * that slot: `422` `pipelex.storage.uri_invalid` for a URI that is not a storage URI, `403`
+   * `pipelex.org.mismatch` for another organization's file, and `422` `request.invalid` with an
+   * item per broken rule, its code one `LogoRefusalCode` names, for a file the platform refused. A
+   * `503` `runtime.unavailable` is a failure of the platform's storage or its database, after which
+   * the write may have landed or not: the same input sent again is safe.
    */
   async updateOrganizationBranding(
     orgId: string,
@@ -4459,8 +4459,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Sends each file as `{ file_id }` or `{ uri }` and nothing else: the body is closed. Throws
    * `RequestArgumentError` before any request when `files` is not a list, or one of its items does
    * not name exactly one of `file_id` and `uri` as a non-empty string. Throws `ApiResponseError`:
-   * `422` for more than 100 files, or an id or address longer than one can be; `500` `config` when
-   * the platform cannot sign at all. An answer that is not one item per requested file, each an
+   * `422` `request.invalid` for more than 100 files, or an id or address longer than one can be;
+   * `500` `pipelex.storage.not_configured` when the platform cannot sign at all. An answer that is not one item per requested file, each an
    * object with its `url` or its `error`, is an answer the SDK cannot read, thrown as an
    * `ApiResponseError` whose body hides every link.
    */
@@ -4520,18 +4520,18 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * list of non-empty strings, when `run_id` is not a non-empty string, and when `name` is not a
    * string. Throws `ApiResponseError`:
    *
-   * - `422` `file_archive_too_large` past a cap, at most 500 files or 2,000,000,000 bytes, whose
-   *   problem's `limit` member names it (`FileArchiveLimit`), so the person can be told how far over
-   *   the selection is;
-   * - `422` `validation_failed` for more than 1,000 ids listed, or an id longer than one can be;
-   * - `404` `not_found` for a file that is not the organization's, the `detail` naming up to five
-   *   of them, or a run whose files hold nothing stored to zip; `404` `run.not_found` for a run
-   *   that is not the organization's;
-   * - `409` `conflict`: an `input` one, not retryable, for a selected file whose upload has not
-   *   finished; a `runtime` one, retryable, for a run whose files are not all recorded yet, which
-   *   the same request clears a few seconds after the run ends;
-   * - `503` `service_unavailable`, retryable, when the archive could not be queued: the same request
-   *   sent again asks for a new archive.
+   * - `422` `pipelex.files.archive_too_large` past a cap, at most 500 files or 2,000,000,000
+   *   bytes, whose problem's `limit` member names it (`FileArchiveLimit`), so the person can be told
+   *   how far over the selection is;
+   * - `422` `request.invalid` for more than 1,000 ids listed, or an id longer than one can be;
+   * - `404` `pipelex.storage.not_found` for a file that is not the organization's, the `detail`
+   *   naming up to five of them, or a run whose files hold nothing stored to zip; `404`
+   *   `run.not_found` for a run that is not the organization's;
+   * - `409` `run.not_finished`, `retry` `yes`, for a run whose files are not all recorded yet,
+   *   which the same request clears a few seconds after the run ends, and a `409` with `retry` `no`
+   *   for a selected file whose upload has not finished;
+   * - `503` `runtime.unavailable`, `retry` `yes`, when the archive could not be queued: the same
+   *   request sent again asks for a new archive.
    *
    * An answer that is not an archive, an object with a string `archive_id` and a known `state`, is
    * an answer the SDK cannot read, thrown as an `ApiResponseError` too.

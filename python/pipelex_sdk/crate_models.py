@@ -294,9 +294,9 @@ class PipeIORequest(CrateToolingRequest):
     as given. Omitted, the server's selection chain decides: the `main_pipe` of the `METHODS.toml`
     at the tree's root, whether the tree was sent or fetched, else the closure's single `main_pipe`
     declaration. A refused selection is a `422`
-    carrying the runner's entry-lookup `error_type` (pipelex-api >= 0.33.1): `EntryPipeNotFoundError`
-    for an unknown ref or a chain that finds no entry pipe, `EntryPipeAmbiguousError` for an
-    ambiguous bare code or a chain that finds several; under `all_pipes` a chain that finds none or
+    problem whose code is `request.pipe_not_found` for an unknown ref, `request.pipe_unspecified` for a chain
+    that finds no entry pipe, and `request.pipe_ambiguous` for an ambiguous bare code or a chain that finds
+    several; under `all_pipes` a chain that finds none or
     several is not refused. The server resolves a bare ref across domains today; `prepare_inputs`
     refuses one before sending it.
 

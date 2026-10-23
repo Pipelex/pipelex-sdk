@@ -71,14 +71,6 @@ if TYPE_CHECKING:
 PIPELEX_STORAGE_SCHEME = "pipelex-storage://"
 _HTTP_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
-# How `/v1/pipe-io` says it refused the pipe selection, which `_fetch_signature` turns into an
-# `InputPreparationError`: a `422` whose `error_type` is one of the engine's entry-lookup errors
-# (pipelex-api >= 0.33.1). `EntryPipeNotFoundError` is an unknown `pipe_ref`, a manifest
-# `main_pipe` the closure lacks, or no `pipe_ref` and no `main_pipe`; `EntryPipeAmbiguousError` is
-# a bare code matching pipes in several domains, or no `pipe_ref` and several `main_pipe`s. Every
-# other `422` — a malformed body, a `method_ref` that does not parse or fetch, a stored method with
-# no source — is not a selection and stays the `ApiResponseError` it is. The names are the
-# runner's exception classes; they live here alone, so a rename upstream is a one-line edit.
 # The problem codes of the route's pipe-selection refusals, the only refusals `prepare_inputs` turns into an
 # `InputPreparationError`: a ref that names no pipe (`request.pipe_not_found`), several pipes it could mean
 # (`request.pipe_ambiguous`), and no pipe named where the method has no entry pipe (`request.pipe_unspecified`).
@@ -742,8 +734,9 @@ async def prepare_inputs(
             (`GET /v1/version`) and before the pipe I/O request, `mthds`'s `MethodTreeError` as its
             `__cause__`; a bare `pipe_ref`, or one naming a dependency package's pipe
             (`alias->domain.pipe_code`); the closure did not resolve; the route refused the pipe
-            selection with the runner's entry-lookup `error_type` (pipelex-api >= 0.33.1) — an
-            unknown `pipe_ref`, or no `pipe_ref` and a method declaring no single entry pipe —
+            selection with one of its pipe-selection codes (`request.pipe_not_found`, `request.pipe_ambiguous`,
+            `request.pipe_unspecified`) — an unknown `pipe_ref`, or no `pipe_ref` and a method declaring no single
+            entry pipe —
             carrying the server's `detail`, with the `ApiResponseError` as its `__cause__`. Two of
             its subclasses name who must change: `MethodLoadError` when the closure does not load
             (the method), `InvalidInputValueError` when a value at a file position is unusable, a

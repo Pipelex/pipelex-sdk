@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`readProblemItems`**: reads a verdict's `errors` or `warnings` as the standard's `ProblemItem`s member by member, so an item whose `code` or `detail` is not a string is skipped and a member that does not fit is left out of its item, as every verdict of the SDK reads them.
+- **`RunFailedError.runError` and the failed arm's `problem`**: a failed run's error and the `failed` arm of `getRunResult` carry the results read's `run.failed` document as `problem`, and the run's own problem, which it nests as `run_error`, as `runError` on the error and `error` on the arm, under its own code (`run.cancelled`, `model.unavailable`, `method.invalid`, …).
+- **A shared case file of the problems the SDK builds**: `tests/fixtures/sdk-problems.json`, copied from `js/` into `python/`, pins every failure the SDK detects itself, every class's problem and the reading of every bare answer to its problem code, and both suites run it.
+
+### Changed
+
+- **Every error carries its failure as one problem document (Breaking)**: every error the SDK throws is the standard's `ProblemError`, carrying an RFC 9457 problem document with the MTHDS core members as `problem` and reading it through `code`, `domain`, `retry`, `nextStep`, `retryAfter` and `requestId`; a hosted refusal is the problem document the API answered, a failed run's problem is the one the platform stored, and a failure the SDK detects itself, such as a refused argument, a request that got no answer, an answer it cannot read or a start whose outcome is unknown, is a problem it builds under a `client.*` code or another core code. Branch on `code`, never on the class, the status or the message, which stays the SDK's own sentence.
+- **`ApiResponseError` reads the answer as its problem (Breaking)**: its `problem` is the body as received when it is a problem document, a `pipelex.*` code and every member the standard does not name included, and otherwise the reading of the edge's bare answer by its status, `client.outcome_unknown` for a `start` or an `execute` the gateway cut off; `apiUrl`, `status`, `statusText` and `responseBody` keep the answer itself. `ApiResponseErrorOptions` is `{ cause, problem, headers, mayStartRun }`: `details` is `problem` again, as the Python twin names it.
+- **A start whose outcome is unknown reads as `retry: "outcome_unknown"` (Breaking)**: an error from a `start` or a blocking `execute` that may have created a run although the call failed carries `client.outcome_unknown`, whose `retry` is `outcome_unknown`, where it carried `runMayHaveStarted: true`; `PipelineExecuteTimeoutError` always carries it.
+- **A failed run's error is the run's problem (Breaking)**: `RunPublic.error`, which the status read carries, the `failed` arm's `error`, `RunHistoryItem.error` and `PipelineRun.error` are the run's own problem document, or `null`, read leniently so that anything but a problem document reads as `null`, where they were the stored `RunErrorReport`; `RunFailedError` loses `error` for `runError`.
+- **Verdicts list their faults as problem items (Breaking)**: `PipelexInvalidReport.errors` and `CrateInvalidReport.errors`, a valid verdict's `warnings`, and `MethodLoadError`'s `problem.errors` are the standard's `ProblemItem`s, read from the answer's `errors` member by member, where they were `validation_errors` of `ValidationErrorItem`s; `MethodLoadError` loses `validationErrors`, and the `pipelex-sdk` command lists a method's faults from them.
+- **A missing route is a 404 whose body is no problem document (Breaking)**: the lifecycle and progress reads throw `RunLifecycleUnavailableError` for a `404` whose body is no problem document, such as a bare runner's `{"detail": "Not Found"}`, and leave every `404` problem document, such as `run.not_found`, to `ApiResponseError`.
+- **The method and idempotency codes are registry codes (Breaking)**: `MethodErrorCode` is `pipelex.catalog.update_conflict`, `pipelex.catalog.being_deleted`, `pipelex.catalog.not_published`, `pipelex.catalog.not_found`, `pipelex.org.not_found` and `pipelex.catalog.copy_too_large`, and `IdempotencyErrorCode` is `request.idempotency_key_in_use` and `request.idempotency_conflict`.
+- **A failure's own vocabulary is its `reason` (Breaking)**: `RejectedAssetError`, `TestFileRefusedError`, `UploadTransportError`, `ArtifactFetchError` and `MethodFileTransferError` name why they failed as `reason`, typed `RejectedAssetReason`, `TestFileRefusalReason`, `UploadTransportReason` and `MethodFileTransferReason`, so `code` is the problem's alone, and `ApiUnreachableError` names its network failure `networkCode`.
+- **The codegen and exact-integer errors carry problems (Breaking)**: `CodegenLockError` and `ExactJsonUnsupportedError` are `ProblemError`s, the first stating its cause (`client.file_unreadable` for a malformed lock, `client.tool_outdated` for a format this build does not read, `client.argument_invalid` for a caller's mistake), the second `client.tool_outdated` naming the JavaScript runtime.
+
+### Removed
+
+- **The verdict vocabulary (Breaking)**: `errorVerdictOf`, `problemVerdict`, `ErrorVerdict`, `ErrorDomain`, `runMayHaveStartedOf` and every error's `retryable`, `errorDomain` and `runMayHaveStarted` are gone, as is the fallback table that decided a verdict from the status; read `domain` and `retry` off the problem.
+- **The hosted members of `ApiResponseError` (Breaking)**: `errorType`, `serverMessage`, `code` (now the problem's), `type`, `title`, `instance`, `errorCategory`, `userAction`, `model`, `provider`, `providerMetadata`, `migration`, `errors`, `validationErrors` and `problemDocument` are gone; every one of them is a member of `problem`, read there.
+- **The hand-written error and verdict types (Breaking)**: `RunErrorReport`, `UserAction`, `ProviderErrorMetadata`, `MigrationErrorBlock`, `FieldError`, `ProblemDetails`, `ValidationErrorItem`, `ValidationErrorCategory`, `SuggestedFix`, `FixSafety`, `FixOpKind`, `FixOp` and its variants, and the `TomlScalar`, `TomlValue` and `FixValue` types are gone, replaced by the standard's `Problem`, `ProblemItem`, `SuggestedFix` and `FixOp` from `mthds/protocol`.
+
 ## [v0.51.0] - 2026-10-23
 
 ### Added

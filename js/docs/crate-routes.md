@@ -6,7 +6,7 @@ Three routes project a **closure** of MTHDS files into the artifacts downstream 
 >
 > Measured 2026-08-23 against `api.pipelex.com` (`pipelex-hosted@0.10.1`) with a real API key: an empty body to either route comes back as an RFC 7807 `422` naming the missing fields — a request-shape verdict only a route that reached the service can produce — and a real closure comes back as a `200` carrying the artifacts. `api-dev.pipelex.com` has served them since 2026-08-13. Use a key when re-measuring: unauthenticated, every path answers `401` whether or not it is allowlisted, so a keyless probe cannot tell the two states apart.
 >
-> **`pipe-io` is newer.** A runner serves it from `pipelex-api` v0.33.0, and types its pipe-selection refusals `EntryPipeNotFoundError` and `EntryPipeAmbiguousError` from v0.33.1, which is what `prepareInputs` branches on (see [What throws](#what-throws)); v0.33.0 typed them as the generic `ValidationError`. A hosted origin serves the route once the platform's tooling proxy and the gateway's allowlist both list it, and until then it answers the gateway's `403 {"message":"Forbidden"}`. `prepareInputs` reads this route, so it needs an origin that serves it.
+> **`pipe-io` is newer.** A runner serves it from `pipelex-api` v0.33.0, and codes its pipe-selection refusals `request.pipe_not_found`, `request.pipe_unspecified` and `request.pipe_ambiguous` from v0.90.0, which is what `prepareInputs` branches on (see [What throws](#what-throws)). A hosted origin serves the route once the platform's tooling proxy and the gateway's allowlist both list it, and until then it answers the gateway's `403 {"message":"Forbidden"}`. `prepareInputs` reads this route, so it needs an origin that serves it.
 >
 > **`lint` / `format` are the exception and answer `403` on both origins.** That blocks nothing, because linting and formatting `.mthds` are toolchain capabilities rather than hosted ones: `plxt` carries both, and the post-edit hook this repo builds (`npm run build:hook`, vendored into `pipelex-plugins`) runs them offline through `@pipelex/tools-wasm` with no credentials — from the published package, `client.lint` / `client.format` are the documented fallback, against a runner. Exposing them on the hosted origins is a known, non-critical item on the platform's list, tracked in the workspace ledger as L-260929-b58f26.
 
@@ -45,7 +45,7 @@ When the request carries a `read_scope`, the blob route is asked under it, as `P
 
 **Stopping a call.** Each route takes a second argument, `CrateRouteOptions`, whose `signal` is read before each step a `directory`, `tree` or `contents` costs — the version handshake, the directory's listing, the blob route, each read and each upload of a missing blob — and before the request itself, and is handed to each of those steps, so an abort stops the handshake, the blob route, a read or an upload already under way. Once it has aborted, nothing further starts and the call throws the abort; the route's own request, once sent, runs to its end, since the routes take no transport options (a static route's budget is the client's own). `prepareInputs` passes its `signal` here, so an abort during the handshake stops it and leaves the blob route, the uploads and `POST /v1/pipe-io` unasked.
 
-When the engine can attribute a diagnostic to a file, the `validation_errors[]` item's `source` names it by its tree path. Treat that attribution as best-effort, not a guarantee — which is why `ValidationErrorItem.source` is typed optional and why the `resolve` sample below reads `err.source ?? "?"`. Some arms don't populate it: graph-level `dry_run` and `pipe_factory` items have no single owning file, and a `main_pipe` naming a nonexistent pipe currently reports its provenance in the message prose while leaving the structured field unset.
+When the engine can attribute a fault to a file, the `errors[]` problem item's `location.file` names it by its tree path. Treat that attribution as best-effort, not a guarantee — which is why `location` and its `file` are optional and why the `resolve` sample below reads `item.location?.file ?? "?"`. Some items don't carry it: a fault of the graph as a whole has no single owning file, and a `main_pipe` naming a nonexistent pipe may report its provenance in the `detail` while leaving the location unset.
 
 `dependencies` carries the method packages the tree calls by address, each a `files` map keyed by its address, posted as given. They are loaded beside the method, never merged into it, so a cross-package call resolves without the server fetching anything. A call into a package nothing shipped makes the closure invalid, a `200` verdict whose `unresolved_package_dependency` item names the package; `dependencies` without the tree is the server's `422`.
 
@@ -71,7 +71,7 @@ Resolution is a first-class language operation alongside validation: the closure
 const result = await client.resolve({ files: { "method.mthds": src } });
 
 if (!result.is_valid) {
-  for (const err of result.validation_errors) console.error(`${err.source ?? "?"}: ${err.message}`);
+  for (const item of result.errors) console.error(`${item.location?.file ?? "?"}: ${item.detail}`);
   return;
 }
 
@@ -132,7 +132,7 @@ The request is the shared envelope plus three optional fields, posted verbatim:
 | `all_pipes`     | `false` | Describe every pipe the closure loads instead of the selected one.                                        |
 | `include_files` | `false` | Echo the text of the method's own `.mthds` bundles as `files`, a map from tree path to text.              |
 
-**Selection.** The request's `pipe_ref`; else the `main_pipe` of the `METHODS.toml` at the tree's root, sent in the tree or fetched with a package; else the closure's `main_pipe`, when exactly one domain declares one. A `pipe_ref` that names no pipe, and — without `all_pipes` — a chain that finds no entry pipe or several, are refused with a `422` whose `errorType` names the refusal (see [What throws](#what-throws)). The server does not refuse a bare code yet: a bare ref that matches one pipe resolves across domains, and the answer reports the qualified ref. With `all_pipes: true` the route never refuses for want of an entry pipe, so a method that declares none is still describable.
+**Selection.** The request's `pipe_ref`; else the `main_pipe` of the `METHODS.toml` at the tree's root, sent in the tree or fetched with a package; else the closure's `main_pipe`, when exactly one domain declares one. A `pipe_ref` that names no pipe, and — without `all_pipes` — a chain that finds no entry pipe or several, are refused with a `422` whose `code` names the refusal (see [What throws](#what-throws)). The server does not refuse a bare code yet: a bare ref that matches one pipe resolves across domains, and the answer reports the qualified ref. With `all_pipes: true` the route never refuses for want of an entry pipe, so a method that declares none is still describable.
 
 The valid arm (`PipeIOValidReport`):
 
@@ -146,25 +146,24 @@ The valid arm (`PipeIOValidReport`):
 
 ## The response is a verdict, not a payload
 
-All three routes return a **discriminated 200**, the same discipline as `validate`: an unresolvable closure is the _successful product_ of the call (the request was well-formed; the library was not), so it rides a 200 with `is_valid: false` and the shared `CrateInvalidReport`, carrying the same structured `validation_errors[]` as `validate`'s invalid arm.
+All three routes return a **discriminated 200**, the same discipline as `validate`: an unresolvable closure is the _successful product_ of the call (the request was well-formed; the library was not), so it rides a 200 with `is_valid: false` and the shared `CrateInvalidReport`, carrying the same `errors[]` of problem items as `validate`'s invalid arm, each read member by member ([errors.md](./errors.md#a-verdicts-problem-items)).
 
 **Branch on `is_valid` before reading the arm.** A consumer that only catches throws will render a success over an unusable result, because nothing threw.
 
 ## What throws
 
-Only a **no-verdict** condition, as the typed `ApiResponseError` — branch on its `status` and `errorType`, never on its message:
+Only a **no-verdict** condition, as the typed `ApiResponseError` — branch on its problem's `code`, never on its status or its message:
 
 | Status        | Cause                                                                                                     |
 | ------------- | --------------------------------------------------------------------------------------------------------- |
-| `422`         | Request shape: no closure selector or more than one, `dependencies` without the tree, an unknown `kind`/`target`, a `pipe_ref` on `kind: "types"`, a fetched package with no `.mthds` file, a stored method with no MTHDS source, a `method_id` whose version suffix is malformed. |
-| `422`         | The tree's refusals, as on `validate`: `InvalidMethodFiles` for a key or an entry the tree's rule refuses (a `files` that is not a map among them), `MissingBlobs` for a hash the server does not hold, `MethodTreeTooLarge` past the tree's limits, `InvalidBundle` for a tree holding no `.mthds` bundle. |
-| `422`         | On `pipeIo`, a pipe selection the route refuses: `errorType` `EntryPipeNotFoundError` for a `pipe_ref` that names no pipe or a method with no entry pipe, `EntryPipeAmbiguousError` for a code that matches pipes in several domains or several `main_pipe` declarations. The `serverMessage` names the candidates where there are some. |
-| `404`         | Unknown or foreign-org `method_id` (indistinguishable by design); no package at a `method_ref` address.     |
-| `404`         | `code` `method_version_not_found`: a `mt_…@<n>` naming a version the method never published.               |
-| `409`         | `code` `method_not_published`: a bare `method_id` of a method never published; `mt_…@draft` reaches its draft. |
+| `422`         | Request shape, `request.invalid` with its `location.field`: no closure selector or more than one, `dependencies` without the tree, an unknown `kind`/`target`, a `pipe_ref` on `kind: "types"`, a `method_id` whose version suffix is malformed; and a fetched package with no `.mthds` file or a stored method with no MTHDS source. |
+| `422`         | The tree's refusals, as on `validate`: `method.package_invalid` for a key, an entry or a size the tree's rule refuses (a `files` that is not a map among them), `request.blobs_missing` for a hash the server does not hold, and a tree holding no `.mthds` bundle. |
+| `422`         | On `pipeIo`, a pipe selection the route refuses: `request.pipe_not_found` for a `pipe_ref` that names no pipe, `request.pipe_unspecified` for a method with no entry pipe, `request.pipe_ambiguous` for a code that matches pipes in several domains or several `main_pipe` declarations. Its `params` name the candidates where there are some. |
+| `404`         | `pipelex.catalog.not_found`: an unknown or foreign-org `method_id` (indistinguishable by design), or a `mt_…@<n>` naming a version the method never published; no package at a `method_ref` address. |
+| `409`         | `pipelex.catalog.not_published`: a bare `method_id` of a method never published; `mt_…@draft` reaches its draft. |
 | `501`         | Registry-form `method_ref` — reserved, not implemented (the address form resolves).                         |
 | `401` / `403` | Auth, or on a hosted origin a route the gateway does not list yet (`403 {"message":"Forbidden"}`).          |
-| `403`         | `CustomCodeRequiresSandbox` for a tree holding a `.py` file on a deployment that is not sandbox-hosted, `MethodStructuresRefusedError` for one whose Python declares a structure class on one that is; `ReadScopeForbidden` for a `read_scope` a `jwt` caller may not read under. |
+| `403`         | A tree holding a `.py` file on a deployment that is not sandbox-hosted, one whose Python declares a structure class on one that is, or a `read_scope` a `jwt` caller may not read under. |
 | `502`         | On a hosted origin, a cold `method_ref` clone that outran the gateway's 30-second cap; a retry clears it.   |
 | `5xx`         | Server fault, including on `pipeIo` a pipe whose artifacts cannot be derived.                               |
 

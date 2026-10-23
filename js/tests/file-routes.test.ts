@@ -316,7 +316,7 @@ describe("renameFile", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("surfaces a runner renaming another member's file as a 403 role_not_permitted", async () => {
+  it("surfaces a runner renaming another member's file as a 403 auth.forbidden", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       problemResponse("auth.forbidden", 403, {
         domain: "account",

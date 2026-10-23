@@ -527,7 +527,7 @@ MethodCopyResultAdapter: TypeAdapter[MethodCopyResult] = TypeAdapter(MethodCopyR
 
 
 class MethodCopyLimit(BaseModel):
-    """The bound a `422` `pipelex.catalog.copy_too_large` names, in its problem document's `limit` member.
+    """The bound a `422` `pipelex.catalog.copy_too_large` names, in its problem's `limit` member.
 
     Read it with `MethodCopyLimit.model_validate((error.problem.model_extra or {})["limit"])`: `max_stored_files`, the most
     distinct stored files one copy copies, or `max_stored_bytes`, the most bytes they add up to, each set per
@@ -1567,7 +1567,7 @@ class FileArchive(BaseModel):
 
 
 class FileArchiveLimit(BaseModel):
-    """The cap a `422` `file_archive_too_large` names, in its problem document's `limit` member.
+    """The cap a `422` `pipelex.files.archive_too_large` names, in its problem's `limit` member.
 
     Read it with `FileArchiveLimit.model_validate((error.problem.model_extra or {})["limit"])`: `max_files` (500) or
     `max_total_bytes` (2,000,000,000), its `value`, and what the selection `reached`. For a run, the count

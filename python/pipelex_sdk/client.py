@@ -1500,7 +1500,7 @@ class PipelexAPIClient(MthdsAPIClient):
         engine and `status` is the last one recorded, `workflow_task_failing` when `status` is live and
         the run is stuck, its workflow task failing until the platform ends it at
         `degradation.ends_at`. `retry_after_seconds` carries the server's `Retry-After` hint when
-        present, and `request_id` the id to quote to support. A failed run's stored report, `error`,
+        present, and `request_id` the id to quote to support. A failed run's own problem, `error`,
         and the `degradation` are each read leniently, so neither ever fails the read.
 
         Raises:
@@ -1565,8 +1565,9 @@ class PipelexAPIClient(MthdsAPIClient):
         - HTTP 202 → `running` (in-flight, with the `Retry-After` hint)
         - HTTP 503 → `running` (DynamoDB/Temporal degraded — retry, never fail a poller)
         - HTTP 200 → `completed` (with the result artifacts)
-        - HTTP 409 → `failed` (terminal non-`COMPLETED`), carrying the problem's `detail` as `message`,
-          its `run_status` member as `status` and its `error` member, the run's stored report, typed
+        - HTTP 409 `run.failed` → `failed` (terminal non-`COMPLETED`), carrying the problem as `problem`, its
+          `detail` as `message`, the terminal status its `run_status` parameter names as `status`, and the run's
+          own problem, which it nests as `run_error`, as `error`; a `409` `run.not_finished` → `running`
 
         Args:
             run_id: The run to read.
@@ -3152,17 +3153,16 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `org_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`;
                 nothing is sent.
             ApiResponseError: The platform refuses every change of the request when it refuses one: `403`
-                `forbidden` when `org_id` is not the active organization, `403` `role_not_permitted` for a
-                caller who is not its admin, `404` for a missing organization, `409` `conflict` for a
-                personal workspace, which has no branding, and `422` `validation_failed` for a colour that
-                is not `#rrggbb`. A logo's refusal names its slot in the error's `errors`, each entry's
-                `field` being `square_logo` or `wide_logo` and its `detail` the sentence to show under that
-                slot: `400` `invalid_storage_uri` for a URI that is not a storage URI, `403` `forbidden`
-                for another organization's file, and `422` `validation_failed` with a `LogoRefusalCode` per
-                broken rule for a file the platform refused. A failure of the platform's storage while reading
-                or copying a logo is a `500` `storage_backend_failed`, retryable, with nothing written. A `503`
-                `service_unavailable` is a failure of its database, after which the write may have landed or
-                not: the same update sent again is safe.
+                `pipelex.org.mismatch` when `org_id` is not the active organization, `403` `auth.forbidden` for a
+                caller who is not its admin, `404` `pipelex.org.not_found` for a missing organization, `409`
+                `pipelex.org.not_manageable` for a personal workspace, which has no branding, and `422`
+                `request.invalid` for a colour that is not `#rrggbb`. A logo's refusal names its slot in its
+                problem's `errors`, each item's `location.field` being `square_logo` or `wide_logo` and its
+                `detail` the sentence to show under that slot: `422` `pipelex.storage.uri_invalid` for a URI that
+                is not a storage URI, `403` `pipelex.org.mismatch` for another organization's file, and `422`
+                `request.invalid` with an item per broken rule, its code one `LogoRefusalCode` names, for a file
+                the platform refused. A `503` `runtime.unavailable` is a failure of the platform's storage or its
+                database, after which the write may have landed or not: the same update sent again is safe.
         """
         endpoint = f"organizations/{_id_path_segment(org_id, call='update_organization_branding', what=_ORG_ID_ARGUMENT)}/branding"
         body = update.model_dump(mode="json", exclude_unset=True)
@@ -3506,9 +3506,10 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             TypeError: `files` is a bare `str` or a `FileLinkTarget` alone, rather than a list of them, or holds an
                 item that is not a `FileLinkTarget`, such as a plain `dict`; nothing is sent.
-            ApiResponseError: `422` for more than 100 files, or an id or address longer than one can be; `500`
-                `config` when the platform cannot sign at all. An answer that is not one item per requested file,
-                each with its link or its error, is one the SDK cannot read, raised as an `ApiResponseError` too.
+            ApiResponseError: `422` `request.invalid` for more than 100 files, or an id or address longer than one
+                can be; `500` `pipelex.storage.not_configured` when the platform cannot sign at all. An answer that is
+                not one item per requested file, each with its link or its error, is one the SDK cannot read, raised as
+                an `ApiResponseError` too.
         """
         if isinstance(cast("object", files), (str, FileLinkTarget)):
             msg = "link_files() takes a list of FileLinkTarget, one per file to link."
@@ -3555,13 +3556,13 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: Both or neither of `file_ids` and `run_id` are given, `file_ids` is empty or holds
                 an id that is not a non-empty `str`, `run_id` is not a non-empty `str`, or `name` is not a `str`;
                 nothing is sent.
-            ApiResponseError: `422` `file_archive_too_large` past a cap, at most 500 files or 2,000,000,000 bytes,
-                whose problem's `limit` member names it (`FileArchiveLimit`); `422` `validation_failed` for more
-                than 1,000 ids listed; `404` `not_found` for a file that is not the organization's or a run whose
-                files hold nothing stored to zip, `404` `run.not_found` for a run that is not the organization's;
-                `409` `conflict`, an `input` one for a selected file whose upload has not finished and a retryable
-                `runtime` one for a run whose files are not all recorded yet; and a retryable `503`
-                `service_unavailable` when the archive could not be queued.
+            ApiResponseError: `422` `pipelex.files.archive_too_large` past a cap, at most 500 files or
+                2,000,000,000 bytes, whose problem's `limit` member names it (`FileArchiveLimit`); `422`
+                `request.invalid` for more than 1,000 ids listed; `404` `pipelex.storage.not_found` for a file that
+                is not the organization's or a run whose files hold nothing stored to zip, `404` `run.not_found` for
+                a run that is not the organization's; `409` `run.not_finished`, `retry` `yes`, for a run whose files
+                are not all recorded yet, and a `409` with `retry` `no` for a selected file whose upload has not
+                finished; and a `503` `runtime.unavailable`, `retry` `yes`, when the archive could not be queued.
         """
         call = "request_file_archive"
         if (file_ids is None) == (run_id is None):
@@ -3756,8 +3757,9 @@ class PipelexAPIClient(MthdsAPIClient):
         Returns a 200 verdict: branch on `is_valid` before reading the arm. A no-verdict
         condition raises `ApiResponseError`: a refused selection (an unknown ref, or no
         `pipe_ref` and a chain that finds no entry pipe or several, without `all_pipes`) is a
-        `422` whose `error_type` is `EntryPipeNotFoundError` or `EntryPipeAmbiguousError`
-        (pipelex-api >= 0.33.1); a malformed request is a request-shape `422`; a tree the runner
+        `422` whose code is `request.pipe_not_found` (an unknown ref), `request.pipe_unspecified` (no entry
+        pipe) or `request.pipe_ambiguous` (an ambiguous code, several entry pipes), the candidates in its
+        `params`; a malformed request is a request-shape `422`; a tree the runner
         cannot read, the `method_ref` fetch failures and the `method_id` resolution failures are
         those of `resolve`; an artifact the server cannot derive is a `500`.
 
@@ -3836,10 +3838,11 @@ class PipelexAPIClient(MthdsAPIClient):
             category: The category to check in, or `None` for every category the check covers.
 
         Raises:
-            ApiResponseError: When the runner cannot produce a verdict, a `422` whose `error_type`
-                says why: `InvalidModelReference` (a blank reference, a sigil or a namespace alone,
-                or one past the runner's length limit), `InvalidModelCategory` (an unknown `type`) or
-                `ValidationError`. None of that is checked here, so the runner's rule is the only one.
+            ApiResponseError: When the runner cannot produce a verdict, a `422` `request.invalid` whose
+                `location.field` names the parameter it refused: `reference` for a missing, repeated or blank
+                reference, a sigil or a namespace alone, or one past the runner's length limit, and `type` for a
+                repeated, empty or unknown category. None of that is checked here, so the runner's rule is the
+                only one.
             ApiUnreachableError: No answer came back.
         """
         query: dict[str, str] = {"reference": reference}
@@ -4081,8 +4084,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Raises:
             ApiResponseError: The origin answered non-2xx, or a 2xx whose body is not a JSON object; the
-                message names `/health`, and the verdict is the fallback's reading of the status, since
-                the probe answers no problem document.
+                message names `/health`, and the problem is the edge's reading of the status, since the
+                probe answers no problem document.
             ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
         """
         url = f"{self.origin_url}/health"

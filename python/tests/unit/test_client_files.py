@@ -386,7 +386,7 @@ class TestClientFiles:
 
         send.assert_not_called()
 
-    def test_rename_raises_role_not_permitted_for_a_runner_renaming_anothers_file(
+    def test_rename_raises_auth_forbidden_for_a_runner_renaming_anothers_file(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
         patch_send(

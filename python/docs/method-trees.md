@@ -16,7 +16,7 @@ The platform keeps each file once per organization, as a blob named by its SHA-2
 
 A tree given as `tree` or `contents` is sent **inline** when its inline map weighs 256 KiB or less, written as JSON with no whitespace, or when the platform keeps no blob store, which its version handshake says (`blob_store`). A `tree` is held to the inline limit the platform announces too, `limits.method_tree.max_inline_bytes` in that handshake, when it is lower: the client asks the handshake once for each request carrying a `tree`, and the same answer gives the limits a path is listed under and serves `mthds`'s preparation, which asks it for a tree past the threshold. `contents` takes no handshake of its own and keeps the 256 KiB threshold alone, so a small one costs no round trip, as `@pipelex/sdk` sends one. Otherwise the client asks `POST /v1/blobs/missing` which files the organization lacks, naming the tree's digest, uploads each one it lacks once, straight to the upload target the platform names, and sends every file by hash. This is `mthds`'s `prepare_files` and `prepare_files_from_contents`, run before the save. A file uploaded once is never uploaded again, by this method or any other of the organization.
 
-An answer of `POST /v1/blobs/missing` this SDK cannot read, a body that is not JSON or not the route's answer, is the `ApiResponseError` of an answer the SDK cannot read, as on every other route. So is an answer asking for a blob the tree does not hold, which is the platform's fault and not the caller's: verdict `runtime`, not retryable, raised before any upload. Its upload targets are signed links, so `response_body` carries the answer with every link redacted, and the error chains at most a copy of pydantic's refusal whose values are redacted the same way. A call to `prepare_files` or `prepare_files_from_contents` of its own reads these answers the same way.
+An answer of `POST /v1/blobs/missing` this SDK cannot read, a body that is not JSON or not the route's answer, is the `ApiResponseError` of an answer the SDK cannot read, as on every other route. So is an answer asking for a blob the tree does not hold, which is the platform's fault and not the caller's: `client.response_unreadable`, raised before any upload. Its upload targets are signed links, so `response_body` carries the answer with every link redacted, and the error chains at most a copy of pydantic's refusal whose values are redacted the same way. A call to `prepare_files` or `prepare_files_from_contents` of its own reads these answers the same way.
 
 A text in `contents` is encoded in UTF-8, and a text a file cannot hold, one carrying a lone surrogate, is refused. A form of the wrong type is refused with `RequestArgumentError` before any request, naming the argument: a `files` or a `contents` that is not a map (`not_a_map`), a value in `contents` that is neither bytes nor text (`entry_mistyped`), and a `tree` that is neither a `MethodTree` nor a path (`not_a_tree`). Every file of a tree listed from a directory is read again before it is sent and checked against the hash its listing recorded, so a file changed since the listing raises `mthds`'s `TreeSourceError` rather than send another tree than the one listed.
 
@@ -40,11 +40,11 @@ The save is refused, with the `ApiResponseError` of its problem, when the platfo
 
 | Status and `code` | When |
 |---|---|
-| `422` `invalid_method_files` | The map breaks the standard's rules, a path that is not a tree path or two paths that collide among them; the problem's `tree_refusal` names the rule. |
-| `422` `method_tree_too_large` | The tree passes one of the deployment's limits, which the problem's `limit` names. |
-| `422` `blob_mismatch` | A hash entry states another size than the blob the organization holds under that hash. |
-| `422` `missing_blobs` | A hash entry names bytes the organization does not hold. A save built from `tree` or `contents` uploads every blob it names first, so it meets this only if a blob was removed between the upload and the save; the client does not retry it. |
-| `413` `payload_too_large` | The method would leave no room for the summary a publish adds. |
+| `422` `method.package_invalid` | The map breaks the standard's rules, a path that is not a tree path or two paths that collide among them; the problem names the path. |
+| `422` `method.package_invalid` | The tree passes one of the deployment's limits, which the problem's `params` name (`reason` `too_large` and the `limit`). |
+| `422` `request.invalid` | A hash entry states another size than the blob the organization holds under that hash. |
+| `422` `request.blobs_missing` | A hash entry names bytes the organization does not hold. A save built from `tree` or `contents` uploads every blob it names first, so it meets this only if a blob was removed between the upload and the save; the client does not retry it. |
+| `413` `request.too_large` | The method would leave no room for the summary a publish adds. |
 
 An upload that fails raises `MethodFileTransferError` with `operation` `upload`, and the method is not saved (below).
 
@@ -103,16 +103,16 @@ Each file is downloaded through its link, at most eight at a time, by an HTTP cl
 
 ## When a transfer fails
 
-`MethodFileTransferError` is raised when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a save, a run, a validation or a crate request, `download` for `write_method_tree`), `code` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps neither a cause nor a context: the `mthds` error an upload refusal starts as quotes that body, and httpx's error for a request that got no answer, or whose body httpx could not decode (`DecodingError`), holds the request and its URL.
+`MethodFileTransferError` is raised when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a save, a run, a validation or a crate request, `download` for `write_method_tree`), `reason` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps neither a cause nor a context: the `mthds` error an upload refusal starts as quotes that body, and httpx's error for a request that got no answer, or whose body httpx could not decode (`DecodingError`), holds the request and its URL.
 
-| `code` | When | Retryable |
+| `reason` | When | Its problem |
 |---|---|---|
-| `unreachable` | Storage gave no answer: the connection failed, the time limit ran out (`TimeoutError` in the message), or the body could not be decoded. An upload that got no answer carries no `sha256`, since `mthds` does not say which blob it was. | yes |
-| `storage_error` | Storage timed out or throttled the request (`408`, `429`) or failed (a `5xx` other than `501`). | yes |
-| `refused` | Storage refused the request with any other status, an expired link among them. Read the method again for fresh links. | no |
-| `mismatch` | A download's bytes are not the file the listing names: another size, or another SHA-256. | yes |
+| `unreachable` | Storage gave no answer: the connection failed, the time limit ran out (`TimeoutError` in the message), or the body could not be decoded. An upload that got no answer carries no `sha256`, since `mthds` does not say which blob it was. | `runtime.unavailable`, or the problem `mthds` stated for an upload that got no answer (`client.unreachable`, `client.timeout`) |
+| `storage_error` | Storage timed out or throttled the request (`408`, `429`) or failed (a `5xx` other than `501`). | `runtime.unavailable` |
+| `refused` | Storage refused the request with any other status, an expired link among them. Read the method again for fresh links. | `client.response_unreadable` naming the status, `runtime.unsupported` for a `501` |
+| `mismatch` | A download's bytes are not the file the listing names: another size, or another SHA-256. | `client.response_unreadable` |
 
-Its `error_domain` is always `runtime`. An upload to a target that asks for a create-only write and answers `412` is not a failure: the bytes are already stored.
+An upload to a target that asks for a create-only write and answers `412` is not a failure: the bytes are already stored.
 
 ## What changed from the source fields
 
