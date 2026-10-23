@@ -59,7 +59,7 @@ from pipelex_sdk.errors import (
     argument_invalid_problem,
     response_unreadable_problem,
 )
-from pipelex_sdk.upload import UploadRecord, UploadSource, upload_file
+from pipelex_sdk.upload import UploadKindOptions, UploadRecord, UploadSource, checked_upload_kind, upload_file
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -114,10 +114,12 @@ class _PrepareClient(Protocol):
 class _PrepareContext:
     """Mutable state threaded through one preparation walk."""
 
-    def __init__(self, client: _PrepareClient, *, allow_uploads: bool) -> None:
+    def __init__(self, client: _PrepareClient, *, allow_uploads: bool, upload_as: UploadKindOptions) -> None:
         self.client = client
         # False under `allow_uploads=False`: every upload-needing value is refused before it is read.
         self.allow_uploads = allow_uploads
+        # The kind and method every upload of the walk is sent with, already checked.
+        self.upload_as = upload_as
         self.uploads: list[UploadRecord] = []
         # Dedup by source identity: same source (str/bytes/Path value) uploads once.
         self.dedup: dict[UploadSource, str] = {}
@@ -322,9 +324,9 @@ async def _do_resolve_source(ctx: _PrepareContext, source: Any, kind: _Resolvabl
             return cast("str", source)  # already prepared, or a reachable URL — pass through
         case UploadNotAllowedKind.DATA_URL:
             data, content_type = _decode_data_url(source, at)
-            record = await upload_file(ctx.client, data, content_type=content_type)
+            record = await upload_file(ctx.client, data, content_type=content_type, kind=ctx.upload_as.kind, method_id=ctx.upload_as.method_id)
         case UploadNotAllowedKind.LOCAL_PATH | UploadNotAllowedKind.BYTES:
-            record = await upload_file(ctx.client, source)
+            record = await upload_file(ctx.client, source, kind=ctx.upload_as.kind, method_id=ctx.upload_as.method_id)
         case _:
             assert_never(kind)
     ctx.uploads.append(record)
@@ -580,6 +582,21 @@ def _checked_allow_uploads(allow_uploads: object) -> bool:
     raise InputPreparationError(msg, problem=argument_invalid_problem(argument="allow_uploads", reason="not_a_bool"))
 
 
+def _checked_upload_as(upload: object) -> UploadKindOptions:
+    """The caller's `upload`, checked once before any request as `upload_file` checks its own pair.
+
+    `None` sends neither member. An `UploadKindOptions` is held to the rules the upload route holds the
+    pair to (`checked_upload_kind`), each member named `upload.kind` or `upload.method_id` in a refusal,
+    and anything else is refused as not being one.
+    """
+    if upload is None:
+        return UploadKindOptions()
+    if not isinstance(upload, UploadKindOptions):
+        msg = f"Cannot prepare inputs: `upload` must be an UploadKindOptions of `kind` and `method_id`, got {type(upload).__name__}."
+        raise InputPreparationError(msg, problem=argument_invalid_problem(argument="upload", reason="not_upload_kind_options"))
+    return checked_upload_kind(kind=upload.kind, method_id=upload.method_id, refusal="Cannot prepare inputs", field="upload.")
+
+
 def _is_pipe_selection_refusal(exc: ApiResponseError) -> bool:
     """Whether a `/v1/pipe-io` error is the route refusing the pipe selection, and nothing else."""
     return exc.status == _HTTP_UNPROCESSABLE_ENTITY and exc.error_type in _PIPE_SELECTION_ERROR_TYPES
@@ -661,6 +678,7 @@ async def prepare_inputs(
     pipe_ref: str | None = None,
     inputs: dict[str, Any],
     allow_uploads: bool = True,
+    upload: UploadKindOptions | None = None,
 ) -> PreparedInputs:
     """Prepare a pipe's inputs: upload local/byte/data-URL assets at the signature's
     file-bearing positions and return copy-on-write rewritten inputs plus upload records.
@@ -700,6 +718,14 @@ async def prepare_inputs(
             to the upload route; `http(s)` URLs and `pipelex-storage://` references pass through
             as always. It is for a server preparing inputs on a caller's behalf, which must never
             read a file of its own because the caller named it. It is not sent to the server.
+        upload: What every file this preparation uploads is recorded as, sent with each upload to
+            `POST /v1/upload`: its `kind` and, for a test file, the `method_id` of the method it is
+            for, such as `UploadKindOptions(kind=UploadKind.TEST, method_id="mt_abc123")` for the inputs
+            a build assistant makes to try a method. Omitted, each upload is a person's file
+            (`uploaded`). It is an argument of its own so that its `method_id`, the method a test file
+            is for, never reads as the request's own `method_id` selector. It is checked before any
+            request, as `upload_file` checks its pair, and is not sent to the pipe I/O route; under
+            `allow_uploads=False` it records nothing, since nothing is uploaded.
 
     Returns:
         `PreparedInputs` — a copy of `inputs` with each file-bearing value rewritten to
@@ -724,7 +750,10 @@ async def prepare_inputs(
             `data:` URL that does not decode or a value of a type no file input takes (the inputs),
             beside `InvalidLocalSourceError` for a local path that cannot be read, and
             `UploadNotAllowedError` under `allow_uploads=False` for a value that would need an
-            upload; an `allow_uploads` that is not a `bool` is refused before any request. HTTP(S) URLs and existing
+            upload; an `allow_uploads` that is not a `bool` is refused before any request, and so is an
+            `upload` that is not an `UploadKindOptions` or holds a pair the upload route would refuse,
+            naming `upload.kind` or `upload.method_id`; `TestFileRefusedError` for a test file the
+            upload route refused for its role or its method. HTTP(S) URLs and existing
             `pipelex-storage://` URIs pass through unchanged, and every failure is raised
             BEFORE any run is created.
         ApiResponseError: Any other no-verdict condition from `/v1/pipe-io` — an unknown or
@@ -740,6 +769,7 @@ async def prepare_inputs(
     # on the same pre-request boundary as a mistyped selector.
     requested_pipe_ref = _checked_pipe_ref(pipe_ref)
     uploads_allowed = _checked_allow_uploads(allow_uploads)
+    upload_as = _checked_upload_as(upload)
     try:
         request = PipeIORequest(
             files=selection.files,
@@ -774,7 +804,7 @@ async def prepare_inputs(
         )
     declared = {field.name: field for field in descriptor.fields}
 
-    ctx = _PrepareContext(client, allow_uploads=uploads_allowed)
+    ctx = _PrepareContext(client, allow_uploads=uploads_allowed, upload_as=upload_as)
     rewritten = dict(inputs)
     for name, caller_value in inputs.items():
         field = declared.get(name)
