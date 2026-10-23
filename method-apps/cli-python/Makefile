@@ -1,6 +1,11 @@
 .DEFAULT_GOAL := help
 .PHONY: help install install-if-missing lock lint format format-check typecheck codegen codegen-check codegen-verify check test agent-check agent-test build all clean use-local use-published local-status ul un
 
+# The interpreter is the one .python-version names, unless PYTHON_VERSION or UV_PYTHON asks for another.
+# Exporting it hands the same version to every uv command, so `uv sync` never rebuilds .venv on the pin.
+PYTHON_VERSION ?= $(or $(UV_PYTHON),$(shell cat .python-version))
+export UV_PYTHON := $(PYTHON_VERSION)
+
 # ── Arguments ──────────────────────────────────────────────────────────────
 # A target that takes values reads them as make variables (`make use-local
 # SDK_DIR=…`). Two rules keep that faithful:
