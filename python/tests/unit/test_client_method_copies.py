@@ -131,6 +131,31 @@ class TestClientMethodCopies:
             "expected_draft_updated_at": "2026-10-08T09:00:00.123456+00:00",
         }
 
+    def test_copy_method_sends_a_lone_surrogate_escaped_as_the_js_twin_does(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        # The platform refuses the name with its own `422`; the client must send it rather than fail on `to_json`.
+        refusal = _problem(422, "validation_failed", error_domain="input", retryable=False)
+        send = patch_send(api_client, wire_response(422, json_body=refusal))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(
+                api_client.copy_method(
+                    "mt_receipts01", destination_org_id="org_team", name="Receipts \ud800", expected_draft_updated_at="2026-10-08\udc00"
+                )
+            )
+
+        assert send.call_args.kwargs["content"] == (
+            b'{"destination_org_id":"org_team","name":"Receipts \\ud800","expected_draft_updated_at":"2026-10-08\\udc00"}'
+        )
+        assert _sent_body(send) == {
+            "destination_org_id": "org_team",
+            "name": "Receipts \ud800",
+            "expected_draft_updated_at": "2026-10-08\udc00",
+        }
+        assert exc_info.value.status == 422
+        assert exc_info.value.code == "validation_failed"
+
     @pytest.mark.parametrize(
         ("destination", "got", "reason"),
         [

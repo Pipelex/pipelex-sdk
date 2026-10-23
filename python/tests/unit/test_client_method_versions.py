@@ -254,6 +254,29 @@ class TestClientMethodVersions:
         # A rename moves no token.
         assert method.updated_at == MethodVersionBodies.TOKEN
 
+    def test_rename_method_sends_a_name_holding_a_lone_surrogate_escaped_and_raises_the_platforms_422(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        # `to_json` refuses a lone surrogate before any request; `JSON.stringify` escapes it, and the platform
+        # refuses the text it cannot store with its own `422`, so the client sends what `@pipelex/sdk` sends.
+        problem = {
+            "type": "about:blank",
+            "title": "validation_failed",
+            "status": 422,
+            "code": "validation_failed",
+            "error_domain": "input",
+            "retryable": False,
+        }
+        send = patch_send(api_client, wire_response(422, json_body=problem))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.rename_method("mt_receipts01", "Renamed \ud800"))
+
+        assert send.call_args.kwargs["content"] == b'{"name":"Renamed \\ud800"}'
+        assert _sent_body(send) == {"name": "Renamed \ud800"}
+        assert exc_info.value.status == 422
+        assert exc_info.value.code == "validation_failed"
+
     # ----- publish_method ----------------------------------------------------------------------
 
     def test_publish_method_posts_the_token_and_reads_a_published_version(

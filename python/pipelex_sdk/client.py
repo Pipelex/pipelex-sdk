@@ -56,10 +56,10 @@ from mthds.runners.api.exceptions import ClientNotConfiguredError
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
 from mthds.runners.api.problem import REQUEST_ID_HEADER, lower_case_headers
 from pydantic import Field, TypeAdapter, ValidationError
-from pydantic_core import InitErrorDetails, to_json
+from pydantic_core import InitErrorDetails, PydanticSerializationError, to_json, to_jsonable_python
 from typing_extensions import override
 
-from pipelex_sdk._answer_json import decode_json_as_written
+from pipelex_sdk._answer_json import decode_json_as_written, dumps_as_javascript
 from pipelex_sdk.artifact_models import (
     BulkResolvedStorageUrls,
     DownloadArtifactsOptions,
@@ -737,7 +737,7 @@ class PipelexAPIClient(MthdsAPIClient):
 
     async def _product_answer(self, method: str, endpoint: str, *, body: object | None, request_timeout: float | None) -> httpx.Response:
         """Send a Pipelex-product request and return its 2xx answer, a non-2xx one raised as `ApiResponseError`."""
-        content = to_json(body) if body is not None else None
+        content = _json_body(body) if body is not None else None
         effective_timeout = request_timeout if request_timeout is not None else _POLL_REQUEST_TIMEOUT_SECONDS
         response = await self._send(method, self._url(endpoint), content=content, request_timeout=effective_timeout)
         if not 200 <= response.status_code < 300:
@@ -1466,7 +1466,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 body["method_ref"] = selected_method_ref
             if selected_method_id is not None:
                 body["method_id"] = selected_method_id
-            response = await self._send("POST", self._url("validate"), content=to_json(body), request_timeout=self.request_timeout_seconds)
+            response = await self._send("POST", self._url("validate"), content=_json_body(body), request_timeout=self.request_timeout_seconds)
             if not response.is_success:
                 self._raise_v1_refusal(method="POST", endpoint="validate", response=response)
         return self._read_v1_answer(PipelexValidationResultAdapter.validate_python, method="POST", endpoint="validate", response=response)
@@ -4216,6 +4216,22 @@ def _checked_run_extensions(
     _assert_method_ref_pairs_with_nothing(carries_tree=carries_tree, merged_extra=merged_extra)
     _assert_linkage_method_id_is_bare(carries_tree=carries_tree, merged_extra=merged_extra)
     return merged_extra
+
+
+def _json_body(body: object) -> bytes:
+    r"""A request body as JSON, written as `@pipelex/sdk` writes the same body.
+
+    `to_json` writes every body the client builds, but refuses a string holding a surrogate standing alone,
+    such as a name ending in `\ud800`, with a `PydanticSerializationError` before any request. `JSON.stringify`
+    escapes it as `\ud800` instead, so the JS twin sends the body and the platform refuses the text it cannot
+    store with its own `422` `validation_failed`, as the method routes document. Such a body is therefore
+    written as `JSON.stringify` writes it (`dumps_as_javascript`), so both SDKs send the same body and meet the
+    same refusal. A body `to_jsonable_python` cannot take either still raises its own error.
+    """
+    try:
+        return to_json(body)
+    except PydanticSerializationError:
+        return dumps_as_javascript(to_jsonable_python(body)).encode("utf-8")
 
 
 def _idempotency_key_of(value: object, *, request: str = "start the run") -> str | None:

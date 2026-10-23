@@ -9,6 +9,10 @@
 - **`copied_from` on a method**: `MethodData`, and so every method read, gains `copied_from`, a `MethodCopiedFrom` naming the original organization, method and draft digest on a copy, and `None` on a method created afresh or from a platform that predates copies.
 - **The copy's codes**: `MethodErrorCode` gains `ORGANIZATION_NOT_FOUND`, a destination the caller does not belong to or that does not exist, answered alike, and `METHOD_COPY_TOO_LARGE`, a copy past its bounds on the stored files it copies, whose problem document's `limit` the new `MethodCopyLimit` reads. `MethodCopyOutcome` and `MethodCopyRefusalReason` name the verdict's wire values.
 
+### Fixed
+
+- **A request body holding a lone surrogate**: a product request whose body holds a surrogate standing alone, such as a `rename_method`, `create_method_example` or `copy_method` name ending in `\ud800`, is sent with the surrogate escaped, as `@pipelex/sdk` sends it, and the platform's `422` `validation_failed` is raised as an `ApiResponseError`, rather than a raw `PydanticSerializationError` raised before any request.
+
 ## [v0.50.0] - 2026-10-23
 
 ### Added
