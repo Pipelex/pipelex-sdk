@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { brandingFromApi, isLogoDigest, logoPath, organizationLogos } from "@/lib/branding";
 import { BRANDED, SQUARE_LOGO, UNBRANDED, WIDE_LOGO, branding } from "@/test/fixtures/branding";
+import { SITE } from "@/site";
 
 describe("brandingFromApi", () => {
   it("leaves an app unbranded when the read failed or the team set nothing", () => {
@@ -27,6 +28,15 @@ describe("brandingFromApi", () => {
     );
     expect(result?.orgName).toBe("Acme");
     expect(result?.light).toEqual({ action: "#14213d", accent: null, header: null });
+  });
+
+  it("names the band after the app when the organization's name is blank or missing", () => {
+    for (const org_name of ["", "   ", undefined]) {
+      const result = brandingFromApi(
+        branding({ org_name: org_name as never, wide_logo: WIDE_LOGO }),
+      );
+      expect(result?.orgName).toBe(SITE.title);
+    }
   });
 
   it("treats a colour that is not #rrggbb as unset, so nothing the API sends breaks the page", () => {

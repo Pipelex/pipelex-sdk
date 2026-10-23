@@ -1,4 +1,5 @@
 import { resolveDarkSeeds, type BrandSeeds } from "@pipelex/mthds-form/brand";
+import { SITE } from "@/site";
 
 /**
  * The organization's branding as this app wears it — the pure half.
@@ -32,7 +33,11 @@ export interface BandLogo {
 
 /** The branding of a branded app; an unbranded app has none (`brandingFromApi` answers `null`). */
 export interface AppBranding {
-  /** The organization's display name: the logo's alt text, and the wordmark when no logo loads. */
+  /**
+   * The organization's display name: the logo's alt text, and the wordmark
+   * when no logo loads. The app's own title when the organization's is blank,
+   * so the band is never empty and the logo never unnamed.
+   */
   orgName: string;
   /** The light set, each colour `#rrggbb` in lower case or `null` when not set. */
   light: BrandSeeds;
@@ -111,7 +116,7 @@ export function brandingFromApi(answer: unknown): AppBranding | null {
 
   const dark = resolveDarkSeeds(light, darkSet);
   return {
-    orgName: typeof answer.org_name === "string" ? answer.org_name.trim() : "",
+    orgName: readName(answer.org_name),
     light,
     dark,
     logos: logos.map(bandLogo),
@@ -137,6 +142,11 @@ function bandLogo(logo: LogoRecord): BandLogo {
     width: Math.max(1, Math.round((logo.width / logo.height) * SHAPE_HEIGHT)),
     height: SHAPE_HEIGHT,
   };
+}
+
+function readName(value: unknown): string {
+  const name = typeof value === "string" ? value.trim() : "";
+  return name === "" ? SITE.title : name;
 }
 
 function readColors(value: unknown): Required<BrandSeeds> {

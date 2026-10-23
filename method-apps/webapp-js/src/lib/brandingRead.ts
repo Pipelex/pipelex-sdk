@@ -9,18 +9,22 @@ import { readClassifyEnv } from "@/lib/serverEnv";
  * key belongs to, for any role, so the app wears its team's logo and colours
  * without being told which team that is.
  *
- * **Branding never stops the app.** A read that fails or takes longer than
- * `BRANDING_TIMEOUT_MS` answers `null`, which renders the app unbranded, and
- * the failure is logged once: a deployment whose API serves no branding (a
- * self-hosted runner) would otherwise log the same line on every page view.
- * With no API key configured nothing is read, since the app cannot run a
- * method either and says so where it matters.
+ * **Branding never stops the app.** A read that fails, including one whose
+ * client cannot even be built, or that takes longer than `BRANDING_TIMEOUT_MS`
+ * answers the last branding a read returned, or `null` when none has yet, which
+ * renders the app unbranded. The failure is logged once: a deployment whose
+ * API serves no branding (a self-hosted runner) would otherwise log the same
+ * line on every page view. With no API key configured nothing is read, since
+ * the app cannot run a method either and says so where it matters.
  *
  * **One read serves many page views.** The page renders per request, and a
  * branding changes rarely, so an answer is kept `BRANDING_FRESH_MS` and a
  * failure `BRANDING_RETRY_MS`, per server process, and concurrent page views
  * share the read in flight. A read that outlasts its timeout still lands: the
- * page that gave up on it rendered unbranded, and the next one wears it.
+ * page that gave up on it rendered without it, and the next one wears it. The
+ * SDK's read takes no signal, so a read given up on is never cancelled, and
+ * only the newest read started may remember what it answers: an older one that
+ * settles late never overwrites a newer answer.
  */
 
 /** How long an answer serves before the next page view reads it again. */
@@ -29,7 +33,7 @@ export const BRANDING_FRESH_MS = 60_000;
 /** How long a failed or timed-out read is kept before the next page view tries again. */
 export const BRANDING_RETRY_MS = 15_000;
 
-/** How long a page waits for the read before it renders unbranded. */
+/** How long a page waits for the read before it renders without it. */
 export const BRANDING_TIMEOUT_MS = 3_000;
 
 interface Remembered {
@@ -38,10 +42,17 @@ interface Remembered {
 }
 
 let remembered: Remembered | null = null;
+/** The last branding a read returned, which a failed read keeps serving. */
+let lastRead: OrganizationBranding | null = null;
 let pending: Promise<OrganizationBranding | null> | null = null;
+/** The number of the newest read started: only that read may remember its answer. */
+let newest = 0;
 let lastReported: string | null = null;
 
-/** The organization's branding as `getBranding` answered it, or `null` when it could not be read. */
+/**
+ * The organization's branding as `getBranding` last answered it, or `null` when
+ * no read has succeeded. Never rejects.
+ */
 export function readOrganizationBranding(): Promise<OrganizationBranding | null> {
   if (!readClassifyEnv().hasApiKey) return Promise.resolve(null);
   if (remembered !== null && Date.now() < remembered.until) {
@@ -53,34 +64,44 @@ export function readOrganizationBranding(): Promise<OrganizationBranding | null>
   return pending;
 }
 
-async function readOnce(): Promise<OrganizationBranding | null> {
-  const read = getPipelexClient()
-    .getBranding()
-    .then(
-      (branding) => {
-        lastReported = null;
-        remember(branding, BRANDING_FRESH_MS);
-        return branding;
-      },
-      (err: unknown) => {
-        report(describeFailure(err));
-        remember(null, BRANDING_RETRY_MS);
-        return null;
-      },
-    );
+function readOnce(): Promise<OrganizationBranding | null> {
+  const generation = ++newest;
+  let gaveUp = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>((resolve) => {
+  return new Promise((resolve) => {
     timer = setTimeout(() => {
-      report(`no answer within ${BRANDING_TIMEOUT_MS / 1000} s`);
-      remember(null, BRANDING_RETRY_MS);
-      resolve(null);
+      gaveUp = true;
+      if (generation === newest) failed(`no answer within ${BRANDING_TIMEOUT_MS / 1000} s`);
+      resolve(lastRead);
     }, BRANDING_TIMEOUT_MS);
+    // Building the client is inside the chain: it throws on a misconfigured
+    // base URL, and that is a failed read like any other, never a failed page.
+    Promise.resolve()
+      .then(() => getPipelexClient().getBranding())
+      .then(
+        (branding) => {
+          clearTimeout(timer);
+          if (generation === newest) {
+            lastRead = branding;
+            lastReported = null;
+            remember(branding, BRANDING_FRESH_MS);
+          }
+          resolve(branding);
+        },
+        (err: unknown) => {
+          clearTimeout(timer);
+          // A read given up on has had its failure remembered already.
+          if (generation === newest && !gaveUp) failed(describeFailure(err));
+          resolve(lastRead);
+        },
+      );
   });
-  try {
-    return await Promise.race([read, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
+}
+
+/** Keep serving the last branding read, or none, until the failure window ends. */
+function failed(reason: string): void {
+  report(reason);
+  remember(lastRead, BRANDING_RETRY_MS);
 }
 
 function remember(value: OrganizationBranding | null, forMs: number): void {
@@ -91,8 +112,9 @@ function remember(value: OrganizationBranding | null, forMs: number): void {
 function report(reason: string): void {
   if (reason === lastReported) return;
   lastReported = reason;
+  const outcome = lastRead === null ? "rendering unbranded" : "keeping the last branding read";
   // eslint-disable-next-line no-console
-  console.warn(`[pipelex] branding not read, rendering unbranded: ${reason}`);
+  console.warn(`[pipelex] branding not read, ${outcome}: ${reason}`);
 }
 
 function describeFailure(err: unknown): string {

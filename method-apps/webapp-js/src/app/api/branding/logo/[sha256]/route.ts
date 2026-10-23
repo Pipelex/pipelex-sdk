@@ -47,10 +47,16 @@ interface RouteContext {
 const MAX_LOGO_BYTES = 1024 * 1024;
 const LOGO_TIMEOUT_MS = 15_000;
 
+/**
+ * A logo's bytes, over an `ArrayBuffer` of their own, which is what a response
+ * body takes; the response copies them, so the bytes held are never shared.
+ */
+type LogoBytes = Uint8Array<ArrayBuffer>;
+
 /** The current logos' bytes, by digest. */
-const held = new Map<string, Uint8Array>();
+const held = new Map<string, LogoBytes>();
 /** The reads in flight, by digest, so concurrent page views share one. */
-const reading = new Map<string, Promise<Uint8Array>>();
+const reading = new Map<string, Promise<LogoBytes>>();
 
 /** The bytes read did not hash to the digest the platform recorded. */
 class LogoDigestMismatch extends Error {}
@@ -71,20 +77,19 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     return new Response(null, { status: 304, headers: buildLogoHeaders(logo) });
   }
 
-  let bytes: Uint8Array;
+  let bytes: LogoBytes;
   try {
     bytes = await logoBytes(logo, new Set(logos.map((current) => current.sha256)));
   } catch (err) {
     return refusalFor(err);
   }
-  // A copy, so the body owns its buffer and a stream reading it never shares the one held.
-  return new Response(bytes.slice(), {
+  return new Response(bytes, {
     status: 200,
     headers: buildLogoHeaders(logo, bytes.byteLength),
   });
 }
 
-async function logoBytes(logo: LogoRecord, current: Set<string>): Promise<Uint8Array> {
+async function logoBytes(logo: LogoRecord, current: Set<string>): Promise<LogoBytes> {
   const kept = held.get(logo.sha256);
   if (kept !== undefined) return kept;
   let read = reading.get(logo.sha256);
@@ -102,7 +107,7 @@ async function logoBytes(logo: LogoRecord, current: Set<string>): Promise<Uint8A
   return read;
 }
 
-async function readLogo(logo: LogoRecord): Promise<Uint8Array> {
+async function readLogo(logo: LogoRecord): Promise<LogoBytes> {
   // No caller's signal: the read is shared, and one page view closing must not cancel it for another.
   const upstream = await getPipelexClient().fetchArtifact(logo.uri, {
     allowHttp: allowPlainHttpArtifacts(),
