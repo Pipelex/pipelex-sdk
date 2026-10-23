@@ -31,9 +31,11 @@ from mthds.method_tree.models import MethodTree
 from mthds.protocol.input_form import InputForm
 from mthds.protocol.output_form import OutputForm
 from mthds.protocol.pipe_io_contracts import PipeIOContracts
+from mthds.protocol.problem.models import ProblemItem
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from pipelex_sdk.validation_models import ValidationErrorItem
+from pipelex_sdk._pydantic_utils import empty_list_factory_of
+from pipelex_sdk.problem_items import ProblemItems
 
 
 class CrateRequestBase(BaseModel):
@@ -125,7 +127,10 @@ class CrateInvalidReport(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     is_valid: Literal[False]
-    validation_errors: list[ValidationErrorItem]
+    errors: ProblemItems = Field(default_factory=empty_list_factory_of(ProblemItem))
+    """One problem item per fault, the same items `/v1/validate` lists for the identical failure, read member by
+    member (`pipelex_sdk.problem_items.read_problem_items`): an item whose `code` or `detail` is not a string is
+    skipped, a malformed member is left out of its item, and a list that is absent or is no list reads as none."""
     message: str
 
 

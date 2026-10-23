@@ -3,7 +3,8 @@
 `start` and `start_and_wait` send `idempotency_key` as the `Idempotency-Key` header of `POST /v1/start` and
 send none without it, keep it and the body identical across a caller's retry, refuse a malformed key before
 anything is sent, and read the hosted API's refusals of a key by their code. A keyed start carries exactly
-the headers of an unkeyed one plus the key, which holds `_send_with_idempotency_key` to the base's `_send`.
+the headers of an unkeyed one plus the key, and an unkeyed request carries exactly the headers the base's `_send`
+sends, which holds the client's own sending, `_send_and_read`, to the base's.
 `@pipelex/sdk` holds its client to the same tests in `tests/start-idempotency-key.test.ts`. Every request goes
 through an `httpx.MockTransport`, below the client's `_send`, so the headers asserted are the ones on the wire.
 """
@@ -16,9 +17,9 @@ from typing import Any
 
 import httpx
 import pytest
+from mthds.runners.api.client import MthdsAPIClient
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import ErrorDomain
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, IdempotencyErrorCode, RequestArgumentError
 from tests.unit.test_data import IdempotencyKeyData
 
@@ -114,6 +115,21 @@ class TestStartIdempotencyKey:
         assert keyed.pop(_HEADER) == IdempotencyKeyData.KEY
         assert keyed == unkeyed
 
+    @pytest.mark.parametrize("content", [b'{"pipe_code":"p"}', None], ids=["with-a-body", "without-a-body"])
+    def test_an_unkeyed_request_carries_the_headers_the_bases_send_sends(self, content: bytes | None) -> None:
+        server = _RecordingServer({"/v1/start": [_ack(), _ack()]})
+        client = server.client()
+        url = f"{_BASE_URL}/v1/start"
+
+        async def scenario() -> None:
+            await MthdsAPIClient._send(client, "POST", url, content=content, request_timeout=5.0)
+            await client._send("POST", url, content=content, request_timeout=5.0)
+
+        asyncio.run(scenario())
+
+        by_base, by_client = (dict(request.headers) for request in server.requests)
+        assert by_client == by_base
+
     def test_sends_the_same_key_and_body_on_a_callers_retry_of_a_start_that_may_have_started_a_run(self) -> None:
         server = _RecordingServer(
             {"/v1/start": [httpx.ReadError, httpx.Response(202, json=IdempotencyKeyData.ACK, headers={"Idempotent-Replayed": "true"})]}
@@ -129,10 +145,9 @@ class TestStartIdempotencyKey:
 
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(attempt())
-        # The key changes what the caller can do, not the verdict: the run may have started, so the error
-        # stays not retryable, and the caller that sent a key sends the same start again.
-        assert exc_info.value.run_may_have_started is True
-        assert exc_info.value.retryable is False
+        # The key changes what the caller can do, not the problem: the run may have started, so the outcome is
+        # unknown, and the caller that sent a key sends the same start again.
+        assert (exc_info.value.problem.code, exc_info.value.problem.retry) == ("client.outcome_unknown", "outcome_unknown")
         asyncio.run(attempt())
 
         first, retry = server.requests
@@ -176,9 +191,8 @@ class TestStartIdempotencyKey:
         refused = exc_info.value
         assert fault in str(refused)
         assert "1 to 255 visible ASCII characters" in str(refused)
-        assert refused.error_domain == ErrorDomain.INPUT
-        assert refused.retryable is False
-        assert refused.run_may_have_started is False
+        assert refused.problem.code == "client.argument_invalid"
+        assert (refused.problem.domain, refused.problem.retry) == ("input", "no")
         assert server.requests == []
 
     def test_never_quotes_the_refused_key(self) -> None:
@@ -204,9 +218,9 @@ class TestStartIdempotencyKey:
             asyncio.run(server.client().start(method_id="mt_abc123", idempotency_key=IdempotencyKeyData.KEY))
 
         refused = exc_info.value
-        assert refused.code == "idempotency_key_in_use"
+        assert refused.problem.code == IdempotencyErrorCode.KEY_IN_USE
         assert refused.status == 409
-        assert (refused.error_domain, refused.retryable, refused.run_may_have_started) == (ErrorDomain.RUNTIME, True, False)
+        assert (refused.problem.domain, refused.problem.retry, refused.problem.retry_after) == ("runtime", "yes", 2)
 
     def test_reads_a_key_used_before_with_another_body_as_a_conflict_that_is_not_retryable(self) -> None:
         server = _RecordingServer({"/v1/start": [httpx.Response(409, json=IdempotencyKeyData.KEY_USED_WITH_ANOTHER_BODY)]})
@@ -215,11 +229,11 @@ class TestStartIdempotencyKey:
             asyncio.run(server.client().start(method_id="mt_abc123", idempotency_key=IdempotencyKeyData.KEY))
 
         refused = exc_info.value
-        assert refused.code == "conflict"
-        assert (refused.error_domain, refused.retryable, refused.run_may_have_started) == (ErrorDomain.INPUT, False, False)
+        assert refused.problem.code == IdempotencyErrorCode.CONFLICT
+        assert (refused.problem.domain, refused.problem.retry) == ("input", "no")
 
-    def test_names_the_one_idempotency_code(self) -> None:
-        assert [code.value for code in IdempotencyErrorCode] == ["idempotency_key_in_use"]
+    def test_names_the_idempotency_codes(self) -> None:
+        assert [str(code) for code in IdempotencyErrorCode] == ["request.idempotency_key_in_use", "request.idempotency_conflict"]
 
     def test_start_and_wait_sends_the_key_on_the_durable_start_and_on_no_other_request(self) -> None:
         server = _RecordingServer(

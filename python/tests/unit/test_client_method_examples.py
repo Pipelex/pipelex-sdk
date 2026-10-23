@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 import pytest
 from pydantic import ValidationError
 
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.product_models import (
     MethodExample,
@@ -24,7 +23,7 @@ from pipelex_sdk.product_models import (
     MethodExampleLatestRunRecorded,
     MethodExampleLatestRunStale,
 )
-from tests.unit.conftest import BASE_URL
+from tests.unit.conftest import BASE_URL, problem_document
 from tests.unit.test_data import MethodExampleBodies
 
 if TYPE_CHECKING:
@@ -48,7 +47,6 @@ _EXAMPLES_URL = f"{BASE_URL}/v1/methods/{_METHOD_ID}/examples"
 _EXAMPLE_URL = f"{_EXAMPLES_URL}/{_EXAMPLE_ID}"
 
 #: The verdict of an argument refused before anything is sent: the caller changes it, and asking again unchanged cannot pass.
-_INPUT_VERDICT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
 #: One call of each route that addresses one example, by the example id it is given.
 _EXAMPLE_ROUTES: list[tuple[str, ExampleRouteCall]] = [
@@ -164,7 +162,7 @@ class TestClientMethodExamples:
         assert str(exc_info.value) == (
             f"create_method_example() takes a run_id naming a run of this method that used these inputs, a non-empty string, or none; got {got}."
         )
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -191,7 +189,7 @@ class TestClientMethodExamples:
             asyncio.run(api_client.create_method_example(_METHOD_ID, name=cast("str", name), inputs=cast("dict[str, Any]", inputs)))
 
         assert str(exc_info.value) == f"create_method_example() needs the example's name and its inputs; got {got}."
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     def test_create_reads_the_inputs_exactly_as_saved(
@@ -209,26 +207,29 @@ class TestClientMethodExamples:
     def test_create_raises_run_not_found_for_a_run_not_the_methods(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(404, json_body={"status": 404, "code": "run_not_found", "detail": "No run run_9."}))
+        patch_send(api_client, wire_response(404, json_body=problem_document("run.not_found", 404, detail="No run run_9.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.create_method_example(_METHOD_ID, name="n", inputs={}, run_id="run_9"))
 
         assert exc_info.value.status == 404
-        assert exc_info.value.code == "run_not_found"
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert exc_info.value.problem.code == "run.not_found"
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
 
     def test_create_raises_payload_too_large_for_an_example_too_large_to_store(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(413, json_body={"status": 413, "code": "payload_too_large", "detail": "Over 400 KB."}))
+        patch_send(
+            api_client,
+            wire_response(413, json_body=problem_document("request.too_large", 413, detail="Over 400 KB.", params={"limit": 409600, "size": 500000})),
+        )
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.create_method_example(_METHOD_ID, name="n", inputs={"blob": "x"}))
 
         assert exc_info.value.status == 413
-        assert exc_info.value.code == "payload_too_large"
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert exc_info.value.problem.code == "request.too_large"
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
 
     def test_create_refuses_an_answer_that_is_no_example(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -242,7 +243,7 @@ class TestClientMethodExamples:
         unreadable = exc_info.value
         assert str(unreadable) == f"API POST /v1/methods/{_METHOD_ID}/examples answered 201 with a body that is not the answer the route returns"
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert (unreadable.problem.domain, unreadable.problem.retry) == ("runtime", "no")
 
     # ----- list_method_examples and iterate_method_examples ------------------------------------
 
@@ -287,7 +288,7 @@ class TestClientMethodExamples:
         unreadable = exc_info.value
         assert str(unreadable) == f"API GET /v1/methods/{_METHOD_ID}/examples answered 200 with a body that is not the answer the route returns"
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert (unreadable.problem.domain, unreadable.problem.retry) == ("runtime", "no")
 
     def test_iterate_follows_the_cursor_through_a_short_and_an_empty_page(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -328,7 +329,7 @@ class TestClientMethodExamples:
             api_client.iterate_method_examples(method_id)
 
         assert got in str(exc_info.value)
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     def test_iterate_stops_on_a_cursor_the_server_did_not_advance(
@@ -365,13 +366,13 @@ class TestClientMethodExamples:
     def test_get_raises_not_found_for_an_unknown_example(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(404, json_body={"status": 404, "code": "not_found", "detail": "No example."}))
+        patch_send(api_client, wire_response(404, json_body=problem_document("pipelex.catalog.not_found", 404, detail="No example.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.get_method_example(_METHOD_ID, _EXAMPLE_ID))
 
-        assert exc_info.value.code == "not_found"
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert exc_info.value.problem.code == "pipelex.catalog.not_found"
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
 
     # ----- update_method_example ---------------------------------------------------------------
 
@@ -420,7 +421,7 @@ class TestClientMethodExamples:
             asyncio.run(api_client.update_method_example(_METHOD_ID, _EXAMPLE_ID))
 
         assert str(exc_info.value) == "update_method_example() needs a new name, new inputs, or both; got neither."
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     def test_update_sends_back_inputs_read_from_an_example_as_they_were_saved(
@@ -448,12 +449,14 @@ class TestClientMethodExamples:
     def test_update_raises_a_retryable_503_when_concurrent_edits_kept_landing(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(503, json_body={"status": 503, "code": "service_unavailable", "detail": "Try again."}))
+        patch_send(
+            api_client, wire_response(503, json_body=problem_document("runtime.unavailable", 503, domain="runtime", retry="yes", detail="Try again."))
+        )
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.update_method_example(_METHOD_ID, _EXAMPLE_ID, inputs={"total": 5}))
 
-        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("runtime", "yes")
 
     # ----- record_method_example_latest_run ----------------------------------------------------
 
@@ -514,7 +517,7 @@ class TestClientMethodExamples:
             f"API PUT /v1/methods/{_METHOD_ID}/examples/{_EXAMPLE_ID}/latest-run answered 200 with a body that is not the answer the route returns"
         )
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert (unreadable.problem.domain, unreadable.problem.retry) == ("runtime", "no")
 
     @pytest.mark.parametrize(
         ("run_id", "input_revision", "field"),
@@ -546,18 +549,18 @@ class TestClientMethodExamples:
                 )
             )
 
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     def test_record_raises_not_found_for_an_example_deleted_since(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(404, json_body={"status": 404, "code": "not_found", "detail": "No example."}))
+        patch_send(api_client, wire_response(404, json_body=problem_document("pipelex.catalog.not_found", 404, detail="No example.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.record_method_example_latest_run(_METHOD_ID, _EXAMPLE_ID, run_id="run_2", input_revision=2))
 
-        assert exc_info.value.code == "not_found"
+        assert exc_info.value.problem.code == "pipelex.catalog.not_found"
 
     # ----- save_assistant_method_example -------------------------------------------------------
 
@@ -620,7 +623,7 @@ class TestClientMethodExamples:
             str(unreadable)
             == f"API POST /v1/methods/{_METHOD_ID}/examples/assistant-save answered 200 with a body that is not the answer the route returns"
         )
-        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert (unreadable.problem.domain, unreadable.problem.retry) == ("runtime", "no")
 
     @pytest.mark.parametrize(
         ("kwargs", "message"),
@@ -660,19 +663,19 @@ class TestClientMethodExamples:
         with pytest.raises(RequestArgumentError, match=rf"^save_assistant_method_example\(\) {message}") as exc_info:
             asyncio.run(api_client.save_assistant_method_example(_METHOD_ID, **kwargs))
 
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     def test_assistant_save_raises_role_not_permitted_for_a_runner(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
         detail = "Your role in this organization is runner: it runs the organization's published versions and changes no method."
-        patch_send(api_client, wire_response(403, json_body={"status": 403, "code": "role_not_permitted", "detail": detail}))
+        patch_send(api_client, wire_response(403, json_body=problem_document("auth.forbidden", 403, domain="account", detail=detail)))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.save_assistant_method_example(_METHOD_ID, name="n", inputs={}))
 
-        assert exc_info.value.code == "role_not_permitted"
+        assert exc_info.value.problem.code == "auth.forbidden"
 
     # ----- delete_method_example ---------------------------------------------------------------
 
@@ -691,7 +694,7 @@ class TestClientMethodExamples:
     def test_delete_raises_not_found_for_an_example_already_deleted(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(404, json_body={"status": 404, "code": "not_found", "detail": "No example."}))
+        patch_send(api_client, wire_response(404, json_body=problem_document("pipelex.catalog.not_found", 404, detail="No example.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.delete_method_example(_METHOD_ID, _EXAMPLE_ID))
@@ -712,7 +715,7 @@ class TestClientMethodExamples:
         ) as exc_info:
             asyncio.run(route(api_client, ""))
 
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     def test_an_example_route_refuses_an_example_id_that_is_not_a_string(
@@ -739,12 +742,12 @@ class TestClientMethodExamples:
     def test_an_example_route_raises_method_being_deleted(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(409, json_body={"status": 409, "code": "method_being_deleted", "detail": "Being deleted."}))
+        patch_send(api_client, wire_response(409, json_body=problem_document("pipelex.catalog.being_deleted", 409, detail="Being deleted.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.list_method_examples(_METHOD_ID))
 
-        assert exc_info.value.code == "method_being_deleted"
+        assert exc_info.value.problem.code == "pipelex.catalog.being_deleted"
 
     @pytest.mark.parametrize(("status", "answer", "call"), _EXAMPLE_READ_PARAMS)
     def test_an_example_without_its_latest_run_is_an_answer_the_sdk_cannot_read(
@@ -768,7 +771,7 @@ class TestClientMethodExamples:
         unreadable = exc_info.value
         assert str(unreadable).endswith(f"answered {status} with a body that is not the answer the route returns")
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert (unreadable.problem.domain, unreadable.problem.retry) == ("runtime", "no")
 
     @pytest.mark.parametrize(
         ("field", "value"),
@@ -807,4 +810,4 @@ class TestClientMethodExamples:
         unreadable = exc_info.value
         assert str(unreadable).endswith(f"answered {status} with a body that is not the answer the route returns")
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert (unreadable.problem.domain, unreadable.problem.retry) == ("runtime", "no")

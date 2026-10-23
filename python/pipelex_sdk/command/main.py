@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from mthds.protocol.exceptions import PipelineRequestError
+
 from pipelex_sdk.command.help import MAIN_HELP
 from pipelex_sdk.command.io import (
     EXIT_INTERRUPTED,
@@ -25,7 +27,6 @@ from pipelex_sdk.command.io import (
 from pipelex_sdk.command.present import present_error
 from pipelex_sdk.command.run import run_command_run
 from pipelex_sdk.command.script import run_command_script
-from pipelex_sdk.error_verdicts import run_may_have_started_of
 from pipelex_sdk.errors import MissingMainStuffError, RunFailedError
 from pipelex_sdk.version import __version__
 
@@ -57,11 +58,14 @@ def run_command(argv: Sequence[str], io: CommandIO) -> int:
         # A failed run, or a completed one without its output, is the run's own outcome. Any other
         # failure while waiting on a run that exists, an unreachable API or a refused poll, says
         # nothing of the run, which goes on: a wrapper must not read it as a failed run and pay for
-        # another. Before the API named the run, the SDK's error says whether one may have started:
-        # its answer was lost, unreadable, or the server or a gateway failed while handling it.
+        # another. Before the API named the run, the error's problem says whether one may have started,
+        # its `retry` being `outcome_unknown`: the SDK reads it so when the answer was lost to a time
+        # limit, a connection that closed once the request had left or a gateway that cut the request
+        # off, when it came back unreadable, or when the edge answered a server error with no problem
+        # document, and a problem document the API answered says it as received.
         if progress.waiting_on_run is not None and not isinstance(exc, (RunFailedError, MissingMainStuffError)):
             lines = [*lines, run_still_going_line(progress.waiting_on_run)]
-        elif progress.starting and run_may_have_started_of(exc):
+        elif progress.starting and isinstance(exc, PipelineRequestError) and exc.problem.outcome_is_unknown:
             lines = [*lines, RUN_MAY_HAVE_STARTED_LINE]
         write_lines(io, lines)
         return presented.exit_code

@@ -48,7 +48,7 @@ _CODEGEN_VALID = {
 _INVALID = {
     "is_valid": False,
     "message": "closure did not validate",
-    "validation_errors": [{"category": "blueprint_validation", "message": "unknown pipe type"}],
+    "errors": [{"code": "method.pipe_type_invalid", "detail": "unknown pipe type"}],
 }
 
 
@@ -99,7 +99,7 @@ class TestCrateRoutes:
         report = asyncio.run(client.resolve(ResolveRequest(method_ref=_METHOD_REF)))
 
         assert isinstance(report, CrateInvalidReport)
-        assert report.validation_errors[0].message == "unknown pipe type"
+        assert [(item.code, item.detail) for item in report.errors] == [("method.pipe_type_invalid", "unknown pipe type")]
 
     def test_resolve_no_verdict_raises_api_response_error(self, mocker: MockerFixture) -> None:
         """A selector-resolution failure (no package at the address, an unknown id) is a

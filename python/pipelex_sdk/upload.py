@@ -21,9 +21,9 @@ import mimetypes
 from pathlib import Path
 from typing import Protocol
 
+from mthds.protocol.problem.answers import read_problem_document
 from pydantic import BaseModel, ConfigDict
 
-from pipelex_sdk.error_verdicts import ErrorDomain
 from pipelex_sdk.errors import (
     ABORT_TIMEOUT_CODE,
     ApiResponseError,
@@ -31,15 +31,15 @@ from pipelex_sdk.errors import (
     InputPreparationError,
     InvalidLocalSourceError,
     MethodErrorCode,
-    RejectedAssetCode,
     RejectedAssetError,
+    RejectedAssetReason,
     RequestArgumentError,
-    TestFileRefusalCode,
+    TestFileRefusalReason,
     TestFileRefusedError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
-    UploadTransportCode,
     UploadTransportError,
+    UploadTransportReason,
     argument_invalid_problem,
 )
 from pipelex_sdk.method_selector import parse_method_selector
@@ -47,9 +47,6 @@ from pipelex_sdk.product_models import UploadedFile, UploadInput, UploadKind
 
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
 DEFAULT_FILENAME = "upload.bin"
-
-# The status of a test file's unknown method, beside the platform's `not_found` code in the `input` domain.
-_HTTP_NOT_FOUND = 404
 
 # A local asset `upload_file` accepts. A bare string in `upload_file` is a filesystem
 # path; `prepare_inputs` classifies strings (url vs path) before they reach here.
@@ -213,64 +210,69 @@ def _to_asset_bytes(source: UploadSource, filename: str | None, content_type: st
     return data, resolved_name, content_type or _guess_content_type(resolved_name)
 
 
-def _is_domain_miss(error: ApiResponseError) -> bool:
-    """Whether a refusal is the platform's miss of something the request named, its verdict `input`."""
-    match error.error_domain:
-        case ErrorDomain.INPUT:
-            return True
-        case ErrorDomain.CONFIG | ErrorDomain.RUNTIME:
-            return False
-
-
-def _test_file_refusal_of(error: ApiResponseError, method_id: str | None) -> TestFileRefusalCode | None:
+def _test_file_refusal_of(error: ApiResponseError, method_id: str | None) -> TestFileRefusalReason | None:
     """Which refusal of a test file an upload's error is, or `None` for any other.
 
-    Each is read off the platform's code, never the status alone: a `403` without `role_not_permitted` is a
-    refused credential, and a `404` is an unknown method only when the upload named one and the answer is
-    the platform's domain miss (`not_found`, `input`), not the `404` of a deployment without the route,
-    which the platform answers as `config` and a bare runner without a code.
+    Each is read off the problem's code, never the status alone, and only for an upload that named a method,
+    as a test file does: a `403` that is not `auth.forbidden` is a refused credential, and a `404` is an
+    unknown method only when the answer is the platform's `pipelex.catalog.not_found`, not the `404` of a
+    deployment without the route. `@pipelex/sdk`'s `testFileRefusalOf` reads the same codes.
     """
-    match error.code:
-        case "role_not_permitted":
-            return TestFileRefusalCode.ROLE_NOT_PERMITTED
-        case MethodErrorCode.METHOD_BEING_DELETED:
-            return TestFileRefusalCode.METHOD_BEING_DELETED
-        case "not_found" if error.status == _HTTP_NOT_FOUND and method_id is not None and _is_domain_miss(error):
-            return TestFileRefusalCode.METHOD_NOT_FOUND
+    if method_id is None:
+        return None
+    match error.problem.code:
+        case "auth.forbidden":
+            return TestFileRefusalReason.ROLE_NOT_PERMITTED
+        case MethodErrorCode.BEING_DELETED:
+            return TestFileRefusalReason.METHOD_BEING_DELETED
+        case MethodErrorCode.NOT_FOUND:
+            return TestFileRefusalReason.METHOD_NOT_FOUND
         case _:
             return None
 
 
-def _test_file_refusal_message(code: TestFileRefusalCode, error: ApiResponseError, filename: str, method_id: str | None) -> str:
+def _test_file_refusal_message(reason: TestFileRefusalReason, error: ApiResponseError, filename: str, method_id: str | None) -> str:
     """The message of a test file's refusal, naming the file, the method and what to do."""
     refused = f'Upload of "{filename}" as a test file was refused ({error.status})'
     method = "the method it names" if method_id is None else f'the method "{method_id}"'
-    match code:
-        case TestFileRefusalCode.ROLE_NOT_PERMITTED:
-            detail = error.server_message or "the caller's role may not change methods"
+    match reason:
+        case TestFileRefusalReason.ROLE_NOT_PERMITTED:
+            detail = _without_final_period(error.problem.detail)
             return f'{refused}: {detail}. Upload it as "uploaded", or with the credential of a member who may change methods.'
-        case TestFileRefusalCode.METHOD_NOT_FOUND:
+        case TestFileRefusalReason.METHOD_NOT_FOUND:
             return f"{refused}: {method} is not one of the organization's methods."
-        case TestFileRefusalCode.METHOD_BEING_DELETED:
+        case TestFileRefusalReason.METHOD_BEING_DELETED:
             return f"{refused}: {method} is being deleted."
+
+
+def _answered_detail(error: ApiResponseError) -> str | None:
+    """The problem's `detail`, without its final period, when the API answered a problem document; else `None`."""
+    if not error.problem.detail or read_problem_document(error.response_body, status=error.status, headers={}) is None:
+        return None
+    return _without_final_period(error.problem.detail)
+
+
+def _without_final_period(text: str) -> str:
+    """`text` without the period that ends it, for a sentence quoted inside another."""
+    return text.removesuffix(".")
 
 
 def _map_upload_error(
     error: ApiResponseError | ApiUnreachableError, filename: str, *, credential_sent: bool, method_id: str | None
 ) -> InputPreparationError:
-    """Translate a raw `upload()` transport error into the matching preparation error.
+    """Translate a raw `upload()` transport error into the matching preparation error, as `@pipelex/sdk`'s
+    `mapUploadError` does.
 
-    The wrapped error is passed as the `UploadTransportError`'s `cause`, whose verdict the wrapper takes:
-    its `code` is too coarse to judge by, a `402` plan limit being `unexpected` like any other status the
-    SDK has no mapping for. `credential_sent` says whether the request carried a credential, which
-    decides the problem of a `401` or `403`. `method_id` is the method a test file named, which a `404`
-    must name to be read as that method's absence.
+    The wrapped error is passed as the new error's `cause`, whose problem it carries: the refusal as the API or
+    its edge answered it. `credential_sent` says whether the request carried a credential, which decides the
+    problem of a `401` or `403` that wraps none. `method_id` is the method a test file named, which a refusal
+    must name to be read as one of a test file.
     """
     if isinstance(error, ApiUnreachableError):
-        msg = f'Upload of "{filename}" could not reach the Pipelex API ({error.code or "unreachable"}).'
+        msg = f'Upload of "{filename}" could not reach the Pipelex API ({error.network_code or "unreachable"}).'
         # The client's own request timeout surfaces as an unreachable host with this code.
-        code = UploadTransportCode.TIMEOUT if error.code == ABORT_TIMEOUT_CODE else UploadTransportCode.UNREACHABLE
-        return UploadTransportError(msg, filename=filename, code=code, cause=error)
+        reason = UploadTransportReason.TIMEOUT if error.network_code == ABORT_TIMEOUT_CODE else UploadTransportReason.UNREACHABLE
+        return UploadTransportError(msg, filename=filename, reason=reason, cause=error)
     if 200 <= error.status < 300:
         # A 2xx the client could not read: storage may hold the file, but under no reference the SDK
         # can return.
@@ -278,7 +280,7 @@ def _map_upload_error(
             f'Upload of "{filename}" was answered ({error.status}) with a body the SDK could not read, '
             "so whether and where the file was stored is unknown."
         )
-        return UploadTransportError(msg, status=error.status, filename=filename, code=UploadTransportCode.UNEXPECTED, cause=error)
+        return UploadTransportError(msg, status=error.status, filename=filename, reason=UploadTransportReason.UNEXPECTED, cause=error)
     # A test file refused for what it claims, its role or its method, before the status alone is read as a
     # refused credential or a deployment without upload.
     refusal = _test_file_refusal_of(error, method_id)
@@ -286,19 +288,19 @@ def _map_upload_error(
         return TestFileRefusedError(
             _test_file_refusal_message(refusal, error, filename, method_id),
             status=error.status,
-            code=refusal,
+            reason=refusal,
             filename=filename,
             method_id=method_id,
             cause=error,
         )
     match error.status:
         case 413:
-            detail = error.server_message or "asset exceeds the service size limit"
+            detail = _answered_detail(error) or "asset exceeds the service size limit"
             return RejectedAssetError(
                 f'The server rejected "{filename}": {detail}.',
                 filename=filename,
                 status=error.status,
-                code=RejectedAssetCode.TOO_LARGE,
+                reason=RejectedAssetReason.TOO_LARGE,
                 problem=error.problem,
             )
         case 401 | 403:
@@ -307,6 +309,7 @@ def _map_upload_error(
                 status=error.status,
                 filename=filename,
                 credential_sent=credential_sent,
+                cause=error,
             )
         case 404:
             return UnsupportedUploadCapabilityError(
@@ -314,10 +317,10 @@ def _map_upload_error(
                 filename=filename,
             )
         case _:
-            detail = error.server_message or error.status_text
-            code = UploadTransportCode.SERVER_ERROR if error.status >= 500 else UploadTransportCode.UNEXPECTED
+            detail = _answered_detail(error) or error.status_text
+            reason = UploadTransportReason.SERVER_ERROR if error.status >= 500 else UploadTransportReason.UNEXPECTED
             return UploadTransportError(
-                f'Upload of "{filename}" failed ({error.status}): {detail}.', status=error.status, filename=filename, code=code, cause=error
+                f'Upload of "{filename}" failed ({error.status}): {detail}.', status=error.status, filename=filename, reason=reason, cause=error
             )
 
 

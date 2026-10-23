@@ -14,8 +14,8 @@ def decode_json_as_written(text: str) -> DecodedBody:
     raise `RecursionError` on the nesting. That decoder reads an integral number such as `2.0` as the
     integer `2`, as a JavaScript reader sees it, so a body it accepts is read again by `json.loads`,
     which keeps every number as written: a pipe output's `10.0` stays a float. The guards keep the
-    reading in step with `@pipelex/sdk`, which holds every body to `parseJsonBody`. Both readers of a
-    body use it: a 2xx answer's (`pipelex_sdk.client`) and a refusal's members (`pipelex_sdk.error_models`).
+    reading in step with `@pipelex/sdk`, which holds every body to `parseJsonBody`. The reader of a 2xx
+    answer uses it (`pipelex_sdk.client`).
 
     Args:
         text: The body, as text.

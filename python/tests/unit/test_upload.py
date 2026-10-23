@@ -28,6 +28,7 @@ from pipelex_sdk.errors import (
 )
 from pipelex_sdk.product_models import UploadedFile, UploadInput
 from pipelex_sdk.upload import _to_asset_bytes, upload_file
+from tests.unit.conftest import problem_document
 
 _BASE_URL = "http://localhost:8081"
 
@@ -48,10 +49,10 @@ class _FakeUploadClient:
         return UploadedFile(uri=self._uri, filename=upload_input.filename)
 
 
-def _api_error(status: int, server_message: str = "boom") -> ApiResponseError:
-    return ApiResponseError(
-        f"HTTP {status}", api_url=f"{_BASE_URL}/v1/upload", status=status, status_text="Error", response_body="", server_message=server_message
-    )
+def _api_error(status: int, detail: str | None = None) -> ApiResponseError:
+    """The `ApiResponseError` of an upload answer: a problem document saying `detail`, or an empty body, as an edge may give."""
+    body = "" if detail is None else json.dumps(problem_document("runtime.unexpected", status, detail=detail))
+    return ApiResponseError(f"HTTP {status}", api_url=f"{_BASE_URL}/v1/upload", status=status, status_text="Error", response_body=body)
 
 
 class TestUploadFile:
@@ -101,11 +102,12 @@ class TestUploadFile:
         assert exc_info.value.source == str(missing)
 
     def test_413_maps_to_rejected_asset(self) -> None:
-        client = _FakeUploadClient(error=_api_error(413, "too big"))
+        client = _FakeUploadClient(error=_api_error(413))
         with pytest.raises(RejectedAssetError) as exc_info:
             asyncio.run(upload_file(client, bytes([1]), filename="big.pdf"))
         assert exc_info.value.filename == "big.pdf"
         assert exc_info.value.status == 413
+        assert str(exc_info.value) == 'The server rejected "big.pdf": asset exceeds the service size limit.'
 
     @pytest.mark.parametrize("status", [401, 403])
     def test_401_403_map_to_upload_authentication(self, status: int) -> None:
@@ -125,7 +127,7 @@ class TestUploadFile:
         with pytest.raises(UploadAuthenticationError) as exc_info:
             asyncio.run(upload_file(client, bytes([1]), filename="scan.pdf"))
         assert exc_info.value.problem.code == "auth.missing_credential"
-        assert (exc_info.value.error_domain, exc_info.value.retryable) == ("config", False)
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("account", "no")
 
     def test_404_maps_to_unsupported_capability(self) -> None:
         error = _api_error(404)
@@ -137,7 +139,7 @@ class TestUploadFile:
         assert exc_info.value.__cause__ is error
 
     def test_a_server_fault_maps_to_transport_with_its_status(self) -> None:
-        error = _api_error(500, "Storage is unavailable")
+        error = _api_error(500, "Storage is unavailable.")
         client = _FakeUploadClient(error=error)
         with pytest.raises(UploadTransportError) as exc_info:
             asyncio.run(upload_file(client, bytes([1]), filename="scan.pdf"))
@@ -147,7 +149,7 @@ class TestUploadFile:
         assert exc_info.value.__cause__ is error
 
     def test_an_unreachable_api_maps_to_transport_without_a_status(self) -> None:
-        error = ApiUnreachableError("down", api_url=_BASE_URL, code="ECONNREFUSED")
+        error = ApiUnreachableError("down", api_url=_BASE_URL, network_code="ECONNREFUSED")
         client = _FakeUploadClient(error=error)
         with pytest.raises(UploadTransportError) as exc_info:
             asyncio.run(upload_file(client, bytes([1]), filename="scan.pdf"))

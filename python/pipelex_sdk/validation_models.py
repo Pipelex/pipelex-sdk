@@ -3,21 +3,19 @@
 The MTHDS Protocol layer (`mthds.protocol.models`) declares the brand-neutral verdict
 shapes: `ValidationReport` (`is_valid: true`), `InvalidValidationReport` (`is_valid: false`),
 and the `ValidationResult` discriminated union, whose faults and warnings are the standard's
-`ProblemItem`s under registered codes. The hosted plane answers `validate` in its own shape today,
-which predates those items: the faults ride `validation_errors[]` as Pipelex items under the closed
-`ValidationErrorCategory` vocabulary, and the valid arm carries the runtime's structural artifacts.
-So the two arms here stand alone rather than narrowing the standard's, which name their faults
-`errors` and type them as problem items, and they move to the standard's shape with the hosted
-plane itself.
+`ProblemItem`s under registered codes. The hosted plane answers `validate` with the same items, the
+faults in `errors[]` and the advisory findings in `warnings[]`, and with members of its own beside them:
+the valid arm carries the runtime's structural artifacts. So the two arms here stand alone rather than
+narrowing the standard's, and type their items as the standard's `ProblemItem`, read member by member
+(`pipelex_sdk.problem_items.ProblemItems`), so that one malformed member never fails the verdict.
 
 These shapes are **Pipelex-branded implementation envelopes**, so they live here in
 `pipelex-sdk`, not in the brand-neutral `mthds` package — mirroring `pipelex-sdk-js/src/models.ts`
 and the documented brand boundary (`docs/architecture.md` → "Brand boundary"). The report/union
 types carry the `Pipelex` prefix; the supporting types (`DryRunStatus`, `ValidatedPipeEntry`,
-`ValidationErrorCategory`, `ValidationErrorItem`, `LiftablePipeEntry`, `TreeFileRead`,
-`TreeFileUse`, `SuggestedFix`, the `FixOp` variants, `FixOpKind`, `FixSafety`) stay neutrally named — branding the envelope,
-not the field names inside it. Fixes and lints are language-level concepts, and the runtime
-names them brand-neutrally too.
+`LiftablePipeEntry`, `TreeFileRead`, `TreeFileUse`) stay neutrally named — branding the envelope,
+not the field names inside it. The items, their suggested fixes and their fix operations are the
+standard's own (`ProblemItem`, `SuggestedFix`, `FixOp` in `mthds.protocol.problem.models`).
 
 Two members of the valid arm are deliberately **not** Pipelex's to declare. `pipe_io_contracts`
 and `input_form` are the standard's own recommended extension fields of the validate report, each
@@ -49,9 +47,11 @@ from typing import Annotated, Any, Final, Literal, TypeAlias
 from mthds.protocol.input_form import InputForm
 from mthds.protocol.output_form import OutputForm
 from mthds.protocol.pipe_io_contracts import PipeIOContracts
+from mthds.protocol.problem.models import ProblemItem
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from pipelex_sdk._pydantic_utils import empty_list_factory_of
+from pipelex_sdk.problem_items import ProblemItems
 
 VALIDATION_VIEW_INPUT_FORM: Final[str] = "input_form"
 """A `views` token — asks for `PipelexValidationReport.input_form`.
@@ -74,169 +74,6 @@ class DryRunStatus(StrEnum):
     SUCCESS = "SUCCESS"
     FAILURE = "FAILURE"
     SKIPPED = "SKIPPED"
-
-
-class ValidationErrorCategory(StrEnum):
-    """The closed `validation_errors[].category` vocabulary (locked).
-
-    This is the locked category vocabulary shared with the conformance corpus; keep the two
-    in sync — a category the corpus knows and this set does not fails the whole verdict parse.
-    """
-
-    BLUEPRINT_VALIDATION = "blueprint_validation"
-    PIPE_FACTORY = "pipe_factory"
-    PIPE_VALIDATION = "pipe_validation"
-    DRY_RUN = "dry_run"
-
-
-class FixSafety(StrEnum):
-    """Whether a suggested fix is safe to auto-apply (SAFE) or needs an explicit opt-in (UNSAFE)."""
-
-    SAFE = "safe"
-    UNSAFE = "unsafe"
-
-    @property
-    def is_safe(self) -> bool:
-        match self:
-            case FixSafety.SAFE:
-                return True
-            case FixSafety.UNSAFE:
-                return False
-
-
-class FixOpKind(StrEnum):
-    """The closed vocabulary of semantic patch operations a `SuggestedFix` is composed of.
-
-    A kind this SDK does not know fails the parse of the whole verdict, which is deliberate and
-    consistent with `ValidationErrorCategory`: the vocabulary is closed upstream, a new kind is a
-    runtime release this SDK mirrors, and a loud failure beats a silently unnarrowable op.
-    """
-
-    SET_KEY = "set_key"
-    ENSURE_TABLE = "ensure_table"
-    DELETE_KEY = "delete_key"
-    DELETE_TABLE = "delete_table"
-    RENAME_TABLE_KEY = "rename_table_key"
-    MOVE_KEY = "move_key"
-    REMAP_VALUE = "remap_value"
-
-
-TomlScalar: TypeAlias = str | int | float | bool
-"""What a `set_key` op can write as a bare TOML value."""
-
-TomlValue: TypeAlias = TomlScalar | dict[str, TomlScalar]
-"""A `set_key` value: a scalar, or a flat scalar mapping written as an inline table.
-
-Deeper nesting is not modelled because the server does not emit it — the fixes that create a
-whole table at once create a flat one.
-"""
-
-
-class _FixOpBase(BaseModel):
-    """Fields every fix op shares: the table it acts in.
-
-    These are **reader** models. The runtime declares its own copies `frozen`, `extra="forbid"`,
-    with validators that refuse the wildcard segment, because it *plans* fixes; this SDK only
-    reads them, so the ops follow the response-model convention (`extra="allow"`) and carry none
-    of those validators — a new server-side member on an op must not break parsing here.
-
-    The two runtime invariants a type cannot carry, recorded so a consumer knows them: `*` is the
-    wildcard path segment and is refused as a `key` on every kind but `remap_value`; `ensure_table`
-    and `delete_table` address the table itself rather than its parent, so their `table_path` is
-    never empty (that one *is* expressed below, mirroring the OpenAPI artifact's `minItems: 1`).
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    table_path: list[str]
-    """The table the op acts in, e.g. `["pipe", "my_seq"]`. Empty means the document root."""
-
-
-class SetKeyOp(_FixOpBase):
-    """Write `key = value` in the addressed table, whatever it currently holds."""
-
-    kind: Literal[FixOpKind.SET_KEY]
-    key: str
-    value: TomlValue
-
-
-class EnsureTableOp(_FixOpBase):
-    """Create the addressed table when it is absent, leaving an existing one untouched."""
-
-    kind: Literal[FixOpKind.ENSURE_TABLE]
-    table_path: list[str] = Field(min_length=1)
-
-
-class DeleteKeyOp(_FixOpBase):
-    """Drop `key` from the addressed table."""
-
-    kind: Literal[FixOpKind.DELETE_KEY]
-    key: str
-
-
-class DeleteTableOp(_FixOpBase):
-    """Drop the addressed table, including every chunk of one written out of order."""
-
-    kind: Literal[FixOpKind.DELETE_TABLE]
-    table_path: list[str] = Field(min_length=1)
-
-
-class RenameTableKeyOp(_FixOpBase):
-    """Rename `key` to `new_key` in place within the addressed table, keeping its position."""
-
-    kind: Literal[FixOpKind.RENAME_TABLE_KEY]
-    key: str
-    new_key: str
-
-
-class MoveKeyOp(_FixOpBase):
-    """Relocate `key` from the addressed table into `new_table_path`, under `new_key`."""
-
-    kind: Literal[FixOpKind.MOVE_KEY]
-    key: str
-    new_table_path: list[str]
-    new_key: str
-
-
-class RemapValueOp(_FixOpBase):
-    """Rewrite `key`'s value through `mapping`, doing nothing when it is not a mapped value.
-
-    This is the one kind for which `key` may be the wildcard segment `*`, meaning "each key of
-    the addressed table" — the only shape in which a renamed enumerated value beneath an open
-    mapping can be repaired at all.
-    """
-
-    kind: Literal[FixOpKind.REMAP_VALUE]
-    key: str
-    mapping: dict[str, str]
-
-
-FixOp: TypeAlias = Annotated[
-    SetKeyOp | EnsureTableOp | DeleteKeyOp | DeleteTableOp | RenameTableKeyOp | MoveKeyOp | RemapValueOp,
-    Field(discriminator="kind"),
-]
-"""One semantic patch operation, discriminated on `kind`.
-
-Narrow it with an exhaustive `match op: case SetKeyOp(): ...` — the Python spelling of the
-JS mirror's `kind` narrowing.
-"""
-
-
-class SuggestedFix(BaseModel):
-    """A deterministic fix for one validation error, ready for a style-preserving applier.
-
-    `fix_code` is the kebab-case rule id (e.g. `"match-sequence-output"`). `source` is the file
-    the ops target, when known (multi-file libraries) — an applier must only apply ops to the
-    file they target. The ops are the machine contract; any rendered diff is presentation.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    fix_code: str
-    description: str
-    safety: FixSafety
-    source: str | None = None
-    ops: list[FixOp]
 
 
 class LiftablePipeEntry(BaseModel):
@@ -305,45 +142,6 @@ class ValidatedPipeEntry(BaseModel):
     status: DryRunStatus
 
 
-class ValidationErrorItem(BaseModel):
-    """Pipelex's structured `validation_errors[]` item.
-
-    `category` is the closed `ValidationErrorCategory` set and `message` the fault in words; the
-    locators are populated per category and dropped from the wire when unset. Members this
-    version does not name ride `model_extra`. Built by pipelex's one shared builder, so the hosted
-    `InvalidReport` and the agent-CLI envelope cannot drift. The shape is the hosted plane's, which
-    predates the standard's `ProblemItem`, so it stands alone rather than extending it.
-
-    The same item type serves `PipelexValidationReport.warnings[]`, where the locators are
-    serialized as explicit `null` rather than dropped. Every optional member is therefore
-    `T | None = None` on purpose — pydantic reads a dropped key and an explicit `null` into the
-    same `None`, and tightening any of them to required would break the valid arm.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    category: ValidationErrorCategory
-    message: str
-    error_type: str | None = None
-    """Deliberately an open string, not an enum: the runtime union keeps gaining advisory
-    members (the `hint_*` lint types), and closing it here would turn every runtime addition
-    into an SDK break for no consumer benefit."""
-
-    pipe_code: str | None = None
-    concept_code: str | None = None
-    domain_code: str | None = None
-    source: str | None = None
-    field_path: str | None = None
-    field_name: str | None = None
-    missing_concept_code: str | None = None
-    missing_pipe_code: str | None = None
-    variable_names: list[str] | None = None
-    declared_concepts: list[str] | None = None
-    suggested_fix: SuggestedFix | None = None
-    """The structured repair proposal for this error, when the runtime's fix planner produced
-    one; absent otherwise."""
-
-
 class PipelexValidationReport(BaseModel):
     """The valid arm with pipelex's structural artifacts (`is_valid: true`).
 
@@ -397,11 +195,12 @@ class PipelexValidationReport(BaseModel):
     is_runnable: bool = True
     message: str = ""
     mthds_contents: list[str] | None = None
-    warnings: list[ValidationErrorItem] = Field(default_factory=empty_list_factory_of(ValidationErrorItem))
-    """Advisory lints on a bundle that is nonetheless valid — they never flip `is_valid`.
+    warnings: ProblemItems = Field(default_factory=empty_list_factory_of(ProblemItem))
+    """Advisory findings on a bundle that is nonetheless valid — they never flip `is_valid` — one problem
+    item each with the code its finding's type names.
 
-    Same item type as `validation_errors[]`, so one parser serves both channels. Defaults empty
-    rather than being required, so a body from a runner predating the field still parses; that
+    Same item type as the invalid arm's `errors[]`, so one reader serves both, member by member. Defaults
+    empty rather than being required, so a body from a runner predating the field still parses; that
     default is also what a clean bundle yields, so no caller can tell the two apart."""
 
     liftable_pipes: list[LiftablePipeEntry] = Field(default_factory=empty_list_factory_of(LiftablePipeEntry))
@@ -468,10 +267,12 @@ class PipelexValidationReport(BaseModel):
 
 
 class PipelexInvalidReport(BaseModel):
-    """The invalid arm carrying pipelex's structured `validation_errors[]` (`is_valid: false`).
+    """The invalid arm listing its faults as problem items (`is_valid: false`).
 
-    It carries the per-error items (`validation_errors[]`, always non-empty on an invalid verdict),
-    best-effort `pending_signatures`, `is_runnable: false` and a human-readable `message`. It gains
+    It carries one problem item per fault (`errors[]`, non-empty on every invalid verdict the server sends,
+    read member by member, so an item whose `code` or `detail` is not a string is skipped and a malformed
+    member is left out of its item), best-effort `pending_signatures`, `is_runnable: false` and a
+    human-readable `message`. It gains
     none of the valid arm's additions: `warnings` and `input_form` derive from a crate that was
     never assembled, so the invalid arm never carries them. Extension-open: a member a later server
     adds rides `model_extra`.
@@ -480,7 +281,11 @@ class PipelexInvalidReport(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     is_valid: Literal[False] = False
-    validation_errors: list[ValidationErrorItem]
+    errors: ProblemItems = Field(default_factory=empty_list_factory_of(ProblemItem))
+    """One problem item per fault, each with its own `code`, `detail`, `params`, `location` and, when the
+    server has one, its `suggested_fix`. A list that is absent or is no list reads as none, as `@pipelex/sdk`
+    reads it."""
+
     pending_signatures: list[str] = Field(default_factory=list)
     is_runnable: Literal[False] = False
     message: str

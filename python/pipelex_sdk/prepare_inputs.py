@@ -48,7 +48,6 @@ from mthds.protocol.input_form import (
 from pydantic import BaseModel, ValidationError
 
 from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIOValidReport
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
 from pipelex_sdk.errors import (
     ApiResponseError,
     InputPreparationError,
@@ -80,8 +79,11 @@ _HTTP_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 # other `422` — a malformed body, a `method_ref` that does not parse or fetch, a stored method with
 # no source — is not a selection and stays the `ApiResponseError` it is. The names are the
 # runner's exception classes; they live here alone, so a rename upstream is a one-line edit.
-_HTTP_UNPROCESSABLE_ENTITY = 422
-_PIPE_SELECTION_ERROR_TYPES: frozenset[str] = frozenset({"EntryPipeNotFoundError", "EntryPipeAmbiguousError"})
+# The problem codes of the route's pipe-selection refusals, the only refusals `prepare_inputs` turns into an
+# `InputPreparationError`: a ref that names no pipe (`request.pipe_not_found`), several pipes it could mean
+# (`request.pipe_ambiguous`), and no pipe named where the method has no entry pipe (`request.pipe_unspecified`).
+# They are the run routes' vocabulary too, and `@pipelex/sdk`'s `PIPE_SELECTION_CODES`.
+_PIPE_SELECTION_CODES: frozenset[str] = frozenset({"request.pipe_not_found", "request.pipe_ambiguous", "request.pipe_unspecified"})
 
 
 class PreparedInputs(BaseModel):
@@ -598,8 +600,8 @@ def _checked_upload_as(upload: object) -> UploadKindOptions:
 
 
 def _is_pipe_selection_refusal(exc: ApiResponseError) -> bool:
-    """Whether a `/v1/pipe-io` error is the route refusing the pipe selection, and nothing else."""
-    return exc.status == _HTTP_UNPROCESSABLE_ENTITY and exc.error_type in _PIPE_SELECTION_ERROR_TYPES
+    """Whether a `/v1/pipe-io` error is the route refusing the pipe selection, and nothing else, by its problem's code."""
+    return exc.problem.code in _PIPE_SELECTION_CODES
 
 
 def _tree_refusal_reason(exc: MethodTreeError) -> str:
@@ -635,10 +637,9 @@ async def _fetch_signature(client: _PrepareClient, *, request: PipeIORequest) ->
     preparation's. An `is_valid: false` arm still means the closure does not load, which IS a
     preparation failure: a `MethodLoadError` carrying the answer's items and its own message.
 
-    A refused selection — a `422` whose `error_type` is an entry-lookup error (see
-    `_PIPE_SELECTION_ERROR_TYPES`) — becomes an `InputPreparationError` carrying the server's
-    `detail`, which names the candidates where there are any, with the `ApiResponseError` kept as
-    its `__cause__` for a caller who needs the whole problem document. Every other non-2xx
+    A refused selection — a problem whose code is one of `_PIPE_SELECTION_CODES` — becomes an
+    `InputPreparationError` carrying the server's problem, whose `detail` names the candidates where
+    there are any, with the `ApiResponseError` kept as its `__cause__`. Every other non-2xx
     propagates as the `ApiResponseError` it is.
 
     A `tree` given as a `Path` is listed by the client as it sends the request, after the version
@@ -652,17 +653,16 @@ async def _fetch_signature(client: _PrepareClient, *, request: PipeIORequest) ->
     except ApiResponseError as exc:
         if not _is_pipe_selection_refusal(exc):
             raise
-        reason = exc.server_message or exc.title or exc.response_body or exc.status_text
-        msg = f"Cannot prepare inputs: the pipe could not be selected — {reason}"
+        msg = f"Cannot prepare inputs: the pipe could not be selected — {exc.problem.detail}"
         raise InputPreparationError(msg, problem=exc.problem) from exc
     except MethodTreeError as exc:
         msg = f"Cannot prepare inputs: the method's tree cannot be sent — {exc.message}"
         raise InputPreparationError(msg, problem=argument_invalid_problem(argument="tree", reason=_tree_refusal_reason(exc))) from exc
 
     if isinstance(response, CrateInvalidReport):
-        first = response.validation_errors[0].message if response.validation_errors else response.message
+        first = response.errors[0].detail if response.errors else response.message
         msg = f"Cannot prepare inputs: the method signature did not resolve — {first}"
-        raise MethodLoadError(msg, validation_errors=list(response.validation_errors), server_message=response.message)
+        raise MethodLoadError(msg, errors=list(response.errors), server_message=response.message)
     return response
 
 
@@ -762,7 +762,7 @@ async def prepare_inputs(
             (`422`), a registry-form `method_ref` (`501`), auth, a server fault, or an API that
             does not serve the route at all; and a 2xx answer the client cannot parse, an input-form
             descriptor that is malformed or names a kind the pinned `mthds` does not define
-            included, with a `runtime` verdict, before anything is walked or uploaded.
+            included, as `client.response_unreadable`, before anything is walked or uploaded.
     """
     selection = _resolve_selector(files=files, tree=tree, contents=contents, dependencies=dependencies, method_ref=method_ref, method_id=method_id)
     # Checked here rather than after the round-trip, so a mistyped or bare `pipe_ref` is refused
@@ -797,11 +797,9 @@ async def prepare_inputs(
         # The route promises the selected pipe's descriptor on every single-pipe valid answer.
         # Never a silent degrade to "no uploads": without it there is no signature to prepare
         # against, and the caller's local paths would travel to the runner verbatim.
-        # The API broke its own contract here, so the verdict is `runtime`, not the inputs' `input`.
+        # The API broke its own contract here, so the problem is `client.response_unreadable`, not the inputs'.
         msg = f"Cannot prepare inputs: the pipe-io answer carries no input-form descriptor for the selected pipe ({selected_pipe_ref!r})."
-        raise InputPreparationError(
-            msg, verdict=ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False), problem=response_unreadable_problem(status=200)
-        )
+        raise InputPreparationError(msg, problem=response_unreadable_problem(status=200))
     declared = {field.name: field for field in descriptor.fields}
 
     ctx = _PrepareContext(client, allow_uploads=uploads_allowed, upload_as=upload_as)

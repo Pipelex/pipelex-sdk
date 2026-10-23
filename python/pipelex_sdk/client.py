@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import secrets
@@ -48,18 +49,20 @@ from mthds.method_tree.models import MethodTree, TreeLimits
 from mthds.method_tree.tree_path import path_collisions, tree_path_violation
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import RunResultStart
+from mthds.protocol.problem.answers import read_problem_document
 from mthds.protocol.problem.client_problems import make_client_problem
 from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.client import DEFAULT_INLINE_TREE_MAX_BYTES, MthdsAPIClient
 from mthds.runners.api.exceptions import BlobUploadError as _MthdsBlobUploadError
 from mthds.runners.api.exceptions import ClientNotConfiguredError
 from mthds.runners.api.exceptions import RunStillRunningError as _MthdsRunStillRunningError
-from mthds.runners.api.problem import REQUEST_ID_HEADER, lower_case_headers
+from mthds.runners.api.problem import lower_case_headers
 from pydantic import Field, TypeAdapter, ValidationError
 from pydantic_core import InitErrorDetails, to_json
 from typing_extensions import override
 
 from pipelex_sdk._answer_json import decode_json_as_written
+from pipelex_sdk.answer_reading import outcome_unknown_problem, read_hosted_answer, run_id_named_by
 from pipelex_sdk.artifact_models import (
     BulkResolvedStorageUrls,
     DownloadArtifactsOptions,
@@ -83,15 +86,13 @@ from pipelex_sdk.crate_models import (
     ResolveResponse,
     ResolveResponseAdapter,
 )
-from pipelex_sdk.error_models import HostedProblemMembers
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
 from pipelex_sdk.errors import (
     ABORT_TIMEOUT_CODE,
     ApiResponseError,
     ApiUnreachableError,
-    MethodFileTransferCode,
     MethodFileTransferError,
     MethodFileTransferOperation,
+    MethodFileTransferReason,
     MissingMainStuffError,
     PagingNotTerminatingError,
     PipelexRequestError,
@@ -101,9 +102,10 @@ from pipelex_sdk.errors import (
     RunLifecycleUnavailableError,
     RunStillRunningError,
     RunTimeoutError,
-    answer_reading,
     argument_invalid_problem,
-    method_file_transfer_code_of_status,
+    method_file_transfer_reason_of_status,
+    nested_run_error,
+    response_unreadable_problem,
 )
 from pipelex_sdk.execute_result import PipelexExecuteResult, results_from_execute
 from pipelex_sdk.model_reference_models import ModelCheckCategory, ModelReferenceVerdict, ModelReferenceVerdictAdapter
@@ -178,7 +180,6 @@ if TYPE_CHECKING:
     from mthds.protocol.models import ModelCategory, ModelDeck, VersionInfo
     from mthds.protocol.pipe_output import VariableMultiplicity
     from mthds.protocol.pipeline_inputs import PipelineInputs
-    from mthds.protocol.problem.answers import AnswerReading
     from mthds.protocol.problem.models import Problem
     from mthds.protocol.stuff import StuffType
     from mthds.protocol.working_memory import WorkingMemoryAbstract
@@ -237,7 +238,8 @@ _REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEO
 
 # Whether the request in flight may create a run: `start`, `execute` and the blocking path's lift of an
 # execute set it (`_creating_run`), and `_send`, `_raise_v1_refusal`, `_api_response_error` and `_unreadable_answer` read it when
-# they build an error, so that the error says whether the run may have started (`run_may_have_started`).
+# they build an error, so that its problem says whether the run may have started (`client.outcome_unknown`,
+# whose `retry` is `outcome_unknown`).
 # The inherited routes build their requests and their errors deep inside the base, which is why the choice
 # travels as a context variable, kept to the task that made it as the time limit above is.
 _MAY_START_RUN: ContextVar[bool] = ContextVar("_MAY_START_RUN", default=False)
@@ -481,13 +483,13 @@ class PipelexAPIClient(MthdsAPIClient):
       `wait_for_result`) — the durable polling extension (added in Phase 2).
     - **product** (`/v1/me`, `/v1/methods`, `/v1/billing/*`, …) — the hosted product
       surface (added in Phase 3), reached through `_request_product` so callers branch
-      on the structured `ApiResponseError.code`, not the HTTP status. The two list routes
+      on the problem's code (`ApiResponseError.problem.code`), not the HTTP status. The two list routes
       are paged: `list_methods` / `list_runs` answer one `{items, next_cursor}` page, and
       `iterate_methods` / `iterate_runs` follow the cursors for the whole catalog.
 
     Every `/v1` route — protocol, lifecycle and product — raises this SDK's `ApiResponseError`
-    on a non-2xx answer, its message and members carrying the problem document's reason, the
-    next step the server advises and, for a refused run, the diagnostics naming the failing pipe.
+    on a non-2xx answer, its `problem` being the problem document the server answered: its reason,
+    its next step and, for a refused run, the faults naming the failing pipe as its `errors`.
     Every route, `health` included, raises `ApiUnreachableError` when no answer came back at all
     (a DNS failure, a refused connection, a TLS failure, a timeout), never httpx's own exception.
 
@@ -553,19 +555,15 @@ class PipelexAPIClient(MthdsAPIClient):
         # clear base-URL one. Trailing slashes are stripped first; any remaining
         # path/query/fragment/credentials is rejected. The refusal never quotes the value whole:
         # what the rule refuses is where a secret travels (a password, a token in a query), so it
-        # names those parts without their text, word for word as `@pipelex/sdk` does. Its verdict is
-        # `config`: the value typically comes from PIPELEX_BASE_URL, the environment.
+        # names those parts without their text, word for word as `@pipelex/sdk` does. Its problem is
+        # `client.not_configured`: the value typically comes from PIPELEX_BASE_URL, the environment.
         if not _is_valid_base_url(normalized_base_url):
             msg = (
                 f"Invalid API base URL {_describe_refused_base_url(normalized_base_url)}: it must be host-only "
                 "(http/https, no path, query, fragment, or credentials). "
                 "Endpoints compose as {base}/v1/{endpoint}."
             )
-            raise RequestArgumentError(
-                msg,
-                verdict=ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False),
-                problem=make_client_problem(CoreCode.CLIENT_NOT_CONFIGURED, params={"setting": "base_url"}),
-            )
+            raise RequestArgumentError(msg, problem=make_client_problem(CoreCode.CLIENT_NOT_CONFIGURED, params={"setting": "base_url"}))
         self.base_url: str = normalized_base_url
         #: Origin root derived from the base URL — `/health` lives here, not under `/v1`.
         self.origin_url: str = _origin_of(normalized_base_url)
@@ -611,7 +609,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
     @override
     async def _send(self, method: str, url: str, *, content: bytes | None, request_timeout: float) -> httpx.Response:
-        """Issue one request through the base's `_send`, mapping a request that got no answer to `ApiUnreachableError`.
+        """Issue one request, mapping a request that got no answer to `ApiUnreachableError` and an answer whose body
+        could not be decoded to `ApiResponseError`.
 
         Overrides the protected transport seam of the `mthds` base, which every route sends through: the
         inherited protocol routes (`execute`, `start`, `validate`, `models`, `version`) as well as this
@@ -620,50 +619,46 @@ class PipelexAPIClient(MthdsAPIClient):
         exception. Non-2xx interpretation stays the caller's: an answer is returned raw, whatever its status.
 
         Raises:
-            ApiUnreachableError: No answer came back. `code` is `ABORT_TIMEOUT` when the request reached
+            ApiUnreachableError: No answer came back. `network_code` is `ABORT_TIMEOUT` when the request reached
                 the server and the time limit ran out while it was sent or answered (`ReadTimeout`,
                 `WriteTimeout`), which is what the `execute` override reads to tell the hosted gateway's
                 cut-off. Any other failure carries the httpx exception's class name (`ConnectError`, …),
                 a `ConnectTimeout` or a `PoolTimeout` included: neither sent the request, so neither can be
-                the gateway's cut-off however long it took. A body httpx cannot decode, such as a broken
-                gzip stream, is `DecodingError`.
+                the gateway's cut-off however long it took. Its problem says whether a run the request may
+                create may have started (`client.outcome_unknown`).
+            ApiResponseError: An answer came back and its body could not be decoded, such as a broken gzip
+                stream: an answer the SDK cannot read, never an unreachable API, read as an answer with an
+                empty body (`_undecodable_answer`), as `@pipelex/sdk` reads it.
 
         Inside `_reading_inherited_answer` it also records the answer, which the inherited route then
         parses, so that an answer that route cannot read is reported as every other route reports it. Inside
         `_creating_run`, the error says whether the run the request may create may have started. While `start`
-        holds an idempotency key (`_IDEMPOTENCY_KEY`), the request carries it as the `Idempotency-Key` header
-        (`_send_with_idempotency_key`).
+        holds an idempotency key (`_IDEMPOTENCY_KEY`), the request carries it as the `Idempotency-Key` header.
         """
         timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
         effective_timeout = request_timeout if timeout is None else timeout
-        idempotency_key = _IDEMPOTENCY_KEY.get()
         try:
-            if idempotency_key is None:
-                response = await super()._send(method, url, content=content, request_timeout=effective_timeout)
-            else:
-                response = await self._send_with_idempotency_key(
-                    method, url, content=content, request_timeout=effective_timeout, idempotency_key=idempotency_key
-                )
+            response = await self._send_and_read(
+                method, url, content=content, request_timeout=effective_timeout, idempotency_key=_IDEMPOTENCY_KEY.get()
+            )
         except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
             msg = f"Could not reach Pipelex API at {self.base_url} (timeout)"
             raise ApiUnreachableError(
                 msg,
                 api_url=self.base_url,
-                code=ABORT_TIMEOUT_CODE,
+                network_code=ABORT_TIMEOUT_CODE,
                 may_start_run=_MAY_START_RUN.get(),
                 failure=exc,
                 request_url=url,
                 timeout_seconds=effective_timeout,
             ) from exc
-        except (httpx.TransportError, httpx.DecodingError) as exc:
-            # A body httpx cannot decode, a broken gzip stream for one, is lost on the way as surely as a
-            # dropped connection, and `@pipelex/sdk` reports it the same way (`Z_DATA_ERROR`).
-            code = type(exc).__name__
-            msg = f"Could not reach Pipelex API at {self.base_url} ({code})"
+        except httpx.TransportError as exc:
+            network_code = type(exc).__name__
+            msg = f"Could not reach Pipelex API at {self.base_url} ({network_code})"
             raise ApiUnreachableError(
                 msg,
                 api_url=self.base_url,
-                code=code,
+                network_code=network_code,
                 may_start_run=_MAY_START_RUN.get(),
                 failure=exc,
                 request_url=url,
@@ -674,26 +669,59 @@ class PipelexAPIClient(MthdsAPIClient):
             seen.response = response
         return response
 
-    async def _send_with_idempotency_key(
-        self, method: str, url: str, *, content: bytes | None, request_timeout: float, idempotency_key: str
+    async def _send_and_read(
+        self, method: str, url: str, *, content: bytes | None, request_timeout: float, idempotency_key: str | None
     ) -> httpx.Response:
-        """Send one request as the base's `_send` sends it, plus the `Idempotency-Key` header.
+        """Send one request with the headers the base's `_send` sets, plus the `Idempotency-Key` header when a start
+        holds a key, and read its body whole.
 
-        The base's `_send` builds its headers itself and takes none from its caller, so the one request that
-        carries a key, `start`'s, is sent here with the headers the base sets (`Accept`, `User-Agent`, and
-        `Content-Type` beside a body) and the key, through the same client. A unit test holds a keyed start to
-        the headers of an unkeyed one plus the key, so a header the base adds later fails that test rather than
-        going missing from a keyed start. The `_send` override maps this request's failures as it maps the
-        base's.
+        The base's `_send` reads the body inside httpx, so a body that cannot be decoded loses the answer it came
+        with; this method streams the answer and reads its body itself, so that such a body is reported as the
+        answer it is (`_undecodable_answer`), with its status and its headers. The headers are the base's
+        (`Accept`, `User-Agent`, and `Content-Type` beside a body): a unit test holds them to the ones the base's
+        `_send` sends, so a header the base adds later fails that test rather than going missing here.
+
+        Raises:
+            ApiResponseError: The body arrived and could not be decoded.
         """
         if self.client is None:
             self.start_client()
         # `start_client` opens the client, as the base's `_send` relies on.
         http_client = cast("httpx.AsyncClient", self.client)
-        headers = {"Accept": "application/json", "User-Agent": self.user_agent, _IDEMPOTENCY_KEY_HEADER: idempotency_key}
+        headers = {"Accept": "application/json", "User-Agent": self.user_agent}
         if content is not None:
             headers["Content-Type"] = "application/json"
-        return await http_client.request(method, url, content=content, headers=headers, timeout=request_timeout)
+        if idempotency_key is not None:
+            headers[_IDEMPOTENCY_KEY_HEADER] = idempotency_key
+        request = http_client.build_request(method, url, content=content, headers=headers, timeout=request_timeout)
+        response = await http_client.send(request, stream=True)
+        try:
+            await response.aread()
+        except httpx.DecodingError as exc:
+            raise self._undecodable_answer(method=method, url=url, response=response, failure=exc) from exc
+        finally:
+            await response.aclose()
+        return response
+
+    def _undecodable_answer(self, *, method: str, url: str, response: httpx.Response, failure: httpx.DecodingError) -> ApiResponseError:
+        """The `ApiResponseError` of an answer whose body arrived and could not be decoded.
+
+        It is the answer's status and headers, read as an answer with an empty body (`read_hosted_answer`), so a
+        `2xx` is `client.response_unreadable` naming its status, or `client.outcome_unknown` on a request that may
+        create a run, which the server accepted. The message names httpx's exception, `DecodingError`.
+        """
+        path = httpx.URL(url).path
+        msg = f"API {method} {path} answered {response.status_code} with a body that could not be decoded ({type(failure).__name__})"
+        return ApiResponseError(
+            msg,
+            api_url=self.base_url,
+            status=response.status_code,
+            status_text=response.reason_phrase,
+            response_body="",
+            headers=lower_case_headers(response.headers),
+            request_url=url,
+            may_start_run=_MAY_START_RUN.get(),
+        )
 
     async def _request_product(
         self,
@@ -785,7 +813,8 @@ class PipelexAPIClient(MthdsAPIClient):
             carries_links: Whether the answer holds signed links, which no error may carry.
 
         Raises:
-            ApiResponseError: The answer cannot be read; its verdict is `runtime`, not retryable.
+            ApiResponseError: The answer cannot be read: `client.response_unreadable`, or `client.outcome_unknown`
+                inside `_creating_run`.
         """
         try:
             return read(_decoded_answer(response))
@@ -859,27 +888,29 @@ class PipelexAPIClient(MthdsAPIClient):
         the answer the route returns: an object of the wrong shape, or anything but a list where the route
         answers a list, such as a `blobs/missing` answer asking for a blob the request did not list. It
         carries the answer's status, its raw text as `response_body`, its links redacted when it
-        `carries_links`, its headers, and the `X-Request-ID` header as `request_id`, but no hosted problem
-        member, since a success body is no problem document; its verdict is the fallback's for a status no
-        refusal carries, `runtime` and not retryable, since no change to the call fixes the answer. Its
-        `problem` is the standard's reading, `client.response_unreadable`, or `client.outcome_unknown`
-        inside `_creating_run`, where the run may have started: the server accepted the request. A caller
-        that has the standard's reading already passes it as `problem`. A caller that met a parse failure
-        raises it `from` the failure, which becomes its `__cause__`, or, for an answer that carries links,
-        with a redacted copy of it or none.
+        `carries_links`, its headers, and the `X-Request-ID` header as `request_id`. Its `problem` is
+        `client.response_unreadable` naming the status, or `client.outcome_unknown` inside `_creating_run`,
+        naming the run when the body names one, where the run may have started: the server accepted the
+        request. A caller that has the standard's reading already passes it as `problem`. A caller that met
+        a parse failure raises it `from` the failure, which becomes its `__cause__`, or, for an answer that
+        carries links, with a redacted copy of it or none.
         """
-        request_id = response.headers.get(REQUEST_ID_HEADER)
+        body = _redact_signed_links(response.text) if carries_links else response.text
+        may_start_run = _MAY_START_RUN.get()
         return ApiResponseError(
             f"API {method} {path} answered {response.status_code} with {what}",
             api_url=self.base_url,
             status=response.status_code,
             status_text=response.reason_phrase,
-            response_body=_redact_signed_links(response.text) if carries_links else response.text,
-            headers=dict(response.headers),
+            response_body=body,
+            headers=lower_case_headers(response.headers),
             request_url=request_url,
-            request_id=request_id or None,
-            problem=problem,
-            may_start_run=_MAY_START_RUN.get(),
+            problem=problem
+            or (
+                outcome_unknown_problem(pipeline_run_id=run_id_named_by(body))
+                if may_start_run
+                else response_unreadable_problem(status=response.status_code)
+            ),
         )
 
     @override
@@ -911,8 +942,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Overrides the protected seam the `mthds` base parses every protocol route's answer through
         (`execute`, `start`, `validate`, `models`, `version`). A non-2xx raises through
-        `_raise_api_response_error` with the problem the base reads it as, except that on a request that
-        may create a run it agrees with the error's `run_may_have_started` (`_refusal_reading`). A
+        `_raise_api_response_error` with the answer read as this SDK reads every answer
+        (`read_hosted_answer`), a request that may create a run reading as one. A
         2xx is read by `_read_v1_answer`, the one reader of this client's own routes, so a body it cannot
         read raises the `ApiResponseError` `_unreadable_answer` builds, naming what could not be read, with
         the parse failure as its `__cause__`, as on every other route.
@@ -932,7 +963,9 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiResponseError: If the answer is a non-2xx, or a 2xx the client cannot read.
         """
         if not response.is_success:
-            reading = _refusal_reading(response, may_start_run=creates_run)
+            reading = read_hosted_answer(
+                status=response.status_code, headers=lower_case_headers(response.headers), body=response.text, creates_run=creates_run
+            )
             self._raise_api_response_error(
                 method=method, endpoint=endpoint, response=response, problem=reading.problem, problem_from_body=reading.from_body
             )
@@ -956,10 +989,11 @@ class PipelexAPIClient(MthdsAPIClient):
             endpoint: The endpoint below `/v1`, query included, exactly as the route sent it: it
                 names the request in the message and gives `request_url`.
             response: The API's answer.
-            problem: The standard's reading of the answer, which the error carries as `problem`.
-            problem_from_body: Whether `problem` is the body's own problem document. The error's
-                message is the SDK's own, which reads the hosted members rather than quoting the body
-                by this flag, so it is not read here.
+            problem: The answer read as its problem, which the error carries as `problem`. The base reads
+                it by the standard's rules; this client reads a non-2xx again by its own
+                (`_api_response_error`), which agree with the standard's on every problem document.
+            problem_from_body: Whether `problem` is the body's own problem document, which
+                `_api_response_error` reads again, so it is not read here.
 
         Raises:
             ApiResponseError: Always.
@@ -975,73 +1009,48 @@ class PipelexAPIClient(MthdsAPIClient):
                 problem=problem,
                 carries_links=_carries_links(endpoint),
             )
-        raise self._api_response_error(method=method, path=path, request_url=self._url(endpoint), response=response, problem=problem)
+        raise self._api_response_error(method=method, path=path, request_url=self._url(endpoint), response=response)
 
     def _raise_v1_refusal(self, *, method: str, endpoint: str, response: httpx.Response) -> NoReturn:
         """Raise this SDK's `ApiResponseError` for a non-2xx answer to one of this client's own `/v1` routes.
 
-        The standard's reading of the answer is the one an inherited route's takes (`_refusal_reading`),
-        a request inside `_creating_run` reading as one that may create a run.
+        A request inside `_creating_run` reads as one that may create a run.
 
         Raises:
             ApiResponseError: Always.
         """
-        reading = _refusal_reading(response, may_start_run=_MAY_START_RUN.get())
-        self._raise_api_response_error(
-            method=method, endpoint=endpoint, response=response, problem=reading.problem, problem_from_body=reading.from_body
-        )
+        raise self._api_response_error(method=method, path=f"/{_API_PREFIX}/{endpoint}", request_url=self._url(endpoint), response=response)
 
-    def _api_response_error(
-        self, *, method: str, path: str, request_url: str, response: httpx.Response, problem: Problem | None = None
-    ) -> ApiResponseError:
+    def _api_response_error(self, *, method: str, path: str, request_url: str, response: httpx.Response) -> ApiResponseError:
         """Build this SDK's `ApiResponseError` for a non-2xx answer — the one place a refusal becomes an error.
 
-        The hosted members are read as the hosted plane sends them (`HostedProblemMembers`): the
-        RFC 9457 members, the runner's `error_type`, `error_domain`, `retryable`, `user_action`,
-        `error_category` and `validation_errors[]`, and the platform's own `code` and field-level
-        `errors[]`, whose names the standard's problem also uses and which are never read through it.
-        The standard's reading of the same answer rides beside them as `problem`: the one the caller
-        passes, else `_refusal_reading`'s done here. The error decides its verdict
-        from what the server sent and the fallback table, and, inside `_creating_run`, whether the run
-        the request may create may have started.
+        The answer is read as its problem (`read_hosted_answer`): the body as received when it is a problem
+        document, whose `detail` the message quotes, its `pipelex.*` code and every member the standard does
+        not name kept; and otherwise the problem the edge's bare answer reads as, the message quoting the body
+        as it came (`_bare_answer_reason`). Inside `_creating_run`, an answer that is no problem document is
+        read for whether the run may exist. `@pipelex/sdk`'s `throwApiResponseErrorAt` builds the same error.
 
         Args:
             method: The HTTP method of the request, for the message (`POST`).
             path: The path the message names (`/v1/start`, or `/health` at the origin).
             request_url: The URL the request was sent to.
             response: The API's non-2xx answer.
-            problem: The standard's reading of the answer, when the caller has it.
 
         Returns:
             The error, for the caller to raise.
         """
-        may_start_run = _MAY_START_RUN.get()
-        members = HostedProblemMembers.make_from_response(response)
-        msg = f"API {method} {path} failed ({response.status_code}): {_failure_reason(members, response)}"
+        headers = lower_case_headers(response.headers)
+        reading = read_hosted_answer(status=response.status_code, headers=headers, body=response.text, creates_run=_MAY_START_RUN.get())
+        said = reading.problem.detail if reading.from_body else _bare_answer_reason(response)
         return ApiResponseError(
-            msg,
+            f"API {method} {path} failed ({response.status_code}): {said}",
             api_url=self.base_url,
             status=response.status_code,
             status_text=response.reason_phrase,
             response_body=response.text,
-            headers=dict(response.headers),
+            headers=headers,
             request_url=request_url,
-            error_type=members.error_type,
-            server_message=members.server_message,
-            validation_errors=members.validation_errors,
-            type_uri=members.type_uri,
-            title=members.title,
-            instance=members.instance,
-            request_id=members.request_id,
-            error_domain=members.error_domain,
-            retryable=members.retryable,
-            user_action=members.user_action,
-            problem=problem or _refusal_reading(response, may_start_run=may_start_run).problem,
-            problem_document=members.members,
-            code=members.code,
-            error_category=members.error_category,
-            errors=members.errors,
-            may_start_run=may_start_run,
+            problem=reading.problem,
         )
 
     def _raise_if_lifecycle_unavailable(
@@ -1049,8 +1058,8 @@ class PipelexAPIClient(MthdsAPIClient):
     ) -> None:
         """Translate a "route absent" 404 (a bare pipelex-api with no platform block) into a clear
         `RunLifecycleUnavailableError`. A 404 the platform or the runner answered on purpose — a run not
-        found, a `method_ref` with no package — carries a problem document (`code` or `error_type`) and is
-        left for normal handling as `ApiResponseError`. `explanation` replaces the sentence saying why the
+        found, a `method_ref` with no package — is a problem document and is left for normal handling as
+        `ApiResponseError`. `explanation` replaces the sentence saying why the
         route is missing, for a route a hosted API may also lack.
         """
         if status != 404:
@@ -1144,7 +1153,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 and it is meaningless off-platform (an open-source runner answers a `422`
                 naming the key). Alone, the platform resolves and runs the stored method's
                 source: a bare `mt_…` runs its latest published version (a `409`
-                `method_not_published` for a method never published), `mt_…@<n>` the fixed
+                `pipelex.catalog.not_published` for a method never published), `mt_…@<n>` the fixed
                 version `n` (a `404` `method_version_not_found` for one never published) and
                 `mt_…@draft` its draft, the suffix riding the string untouched; the answer's
                 `method_version` says which ran. Alongside the method's tree, the tree is what
@@ -1172,7 +1181,7 @@ class PipelexAPIClient(MthdsAPIClient):
             RunStillRunningError: The server answered 202 (the protocol's optional async
                 degrade) — the run continues server-side; resume by `pipeline_run_id`.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
-                `422`, its diagnostics on `validation_errors`), a failed run, auth, a server fault.
+                `422`, its faults as the problem's `errors`), a failed run, auth, a server fault.
             ApiUnreachableError: No answer came back (DNS / connect / TLS), or a client-side
                 timeout came before the ~28s the gateway translation waits for.
         """
@@ -1202,7 +1211,7 @@ class PipelexAPIClient(MthdsAPIClient):
                     raise PipelineExecuteTimeoutError(_execute_timeout_message(elapsed_seconds), elapsed_seconds=elapsed_seconds) from exc
                 raise
             except PipelineRequestError as exc:
-                refined = _with_verdict(exc)
+                refined = _as_sdk_error(exc)
                 if refined is exc:
                     raise
                 raise refined from exc
@@ -1261,11 +1270,12 @@ class PipelexAPIClient(MthdsAPIClient):
                 across that start's retries. The hosted API binds the key to the run the first request
                 starts, before it dispatches it, so the same start sent again under the same key is
                 answered with that run's acknowledgement and starts nothing, whatever became of the first
-                attempt, for 24 hours: a failed start whose `run_may_have_started` is `True` can be sent
-                again unchanged, and recovers the run instead of paying for a second one. The same key with
-                a different body is refused (`409` `conflict`), as is a key whose earlier request is still
-                being handled (`409` `idempotency_key_in_use`, retryable: send it again under the same key
-                in a few seconds); see `docs/errors.md`. A bare runner ignores the header. A key is 1 to
+                attempt, for 24 hours: a failed start whose problem's `retry` is `outcome_unknown` can be
+                sent again unchanged, and recovers the run instead of paying for a second one. The same key
+                with a different body is refused (`409` `request.idempotency_conflict`), as is a key whose
+                earlier request is still being handled (`409` `request.idempotency_key_in_use`, whose
+                `retry` is `yes`: send it again under the same key after its `retry_after`); see
+                `docs/errors.md`. A bare runner ignores the header. A key is 1 to
                 255 visible ASCII characters (`!` to `~`, so no space); anything else, an empty string
                 included, is refused before any request is sent, since a start sent without the key the
                 caller asked for would lose the protection silently.
@@ -1288,8 +1298,9 @@ class PipelexAPIClient(MthdsAPIClient):
             TreeSourceError: A file of `tree` cannot be read, with the listing's own refusals, as on `execute`.
             RunLifecycleUnavailableError: The configured server has no run store.
             ApiResponseError: Any other non-2xx answer — a refusal to run an invalid method (a
-                `422`, its diagnostics on `validation_errors`), auth, a server fault, a key an earlier
-                start still holds (`idempotency_key_in_use`) or one used with another body (`conflict`).
+                `422`, its faults as the problem's `errors`), auth, a server fault, a key an earlier start
+                still holds (`request.idempotency_key_in_use`) or one used with another body
+                (`request.idempotency_conflict`).
             ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
         """
         checked_idempotency_key = _idempotency_key_of(idempotency_key)
@@ -1323,7 +1334,7 @@ class PipelexAPIClient(MthdsAPIClient):
                     self._raise_if_lifecycle_unavailable(status=exc.status, body=exc.response_body, url=exc.request_url or self._url("start"))
                     raise
                 except PipelineRequestError as exc:
-                    refined = _with_verdict(exc)
+                    refined = _as_sdk_error(exc)
                     if refined is exc:
                         raise
                     raise refined from exc
@@ -1393,7 +1404,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 string is treated as absent.
             method_id: A stored method's hosted catalog id (`mt_…`, `mt_…@<n>` or `mt_…@draft`),
                 platform-resolved. An unknown or foreign-org id is a `404` (indistinguishable by
-                design); a bare id of a method never published is a `409` `method_not_published`;
+                design); a bare id of a method never published is a `409` `pipelex.catalog.not_published`;
                 a version never published is a `404` `method_version_not_found`; a malformed suffix
                 or a stored method with no MTHDS source is a `422`. An empty string is treated as
                 absent.
@@ -1408,7 +1419,7 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Returns:
             The 200-diagnostic union: `PipelexValidationReport` (`is_valid: true`) or
-            `PipelexInvalidReport` (`is_valid: false`, with `validation_errors`), each
+            `PipelexInvalidReport` (`is_valid: false`, with its faults as problem items in `errors`), each
             carrying `rendered_markdown`. A valid report also carries `warnings` and
             `liftable_pipes`, plus `input_form` when `views` asked for it. `input_form` and
             `pipe_io_contracts` are typed by the standard's own models (`mthds.protocol`),
@@ -1447,7 +1458,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 # this client's `_raise_api_response_error`.
                 response = await self._post_validate(method_files or {}, allow_signatures, extensions)
             except PipelineRequestError as exc:
-                refined = _with_verdict(exc)
+                refined = _as_sdk_error(exc)
                 if refined is exc:
                     raise
                 raise refined from exc
@@ -1585,7 +1596,10 @@ class PipelexAPIClient(MthdsAPIClient):
                 retry_after_seconds=retry_after if retry_after is not None else _DEFAULT_DEGRADED_RETRY_SECONDS,
             )
         if status_code == 409:
-            return _run_result_failed(run_id, response)
+            conflict = _run_result_conflict(run_id, response)
+            if conflict is not None:
+                return conflict
+            self._raise_v1_refusal(method="GET", endpoint=endpoint, response=response)
 
         self._raise_if_lifecycle_unavailable(status=response.status_code, body=response.text, url=url)
         if not response.is_success:
@@ -1659,7 +1673,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 return state.result
             if isinstance(state, RunResultFailed):
                 msg = state.message
-                raise RunFailedError(msg, run_id=run_id, status=state.status, error=state.error)
+                raise RunFailedError(msg, run_id=run_id, status=state.status, problem=state.problem)
 
             # state is RunResultRunning — report its progress when asked, then decide whether to keep waiting.
             if on_progress is not None:
@@ -1861,11 +1875,13 @@ class PipelexAPIClient(MthdsAPIClient):
         exception it raises propagates before the request is sent.
 
         An error from the start, or from the blocking execute, says whether that request may still have
-        started a run whose id never reached the caller (`run_may_have_started`); when it may have, it is
-        not retryable, since calling this method again could pay for the run twice: look the run up in the
-        run history first. An error from the wait, once `on_started` has named the run, started nothing,
-        so its `run_may_have_started` is `False`, and its `retryable` is about waiting again on that id
-        with `wait_for_result`, never about calling this method again.
+        started a run whose id never reached the caller: its problem's `retry` is then `outcome_unknown`,
+        since calling this method again could pay for the run twice, unless it is made with the same
+        `idempotency_key`: look the run up in the run history first. An error from the wait, once
+        `on_started` has named the run, started nothing, and its problem is about that run:
+        `client.follow_failed` for a wait that ran out of time, whose step is to read the run again with
+        `wait_for_result`, or `run.failed` for a run that ended without success, never a reason to call
+        this method again.
 
         `idempotency_key` rides the durable start, as on `start`, so a call that failed while its start may
         have created a run can be made again with the same arguments and the same key: the hosted API
@@ -2083,7 +2099,7 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Raises:
             ApiResponseError: `404` `not_found` for an unknown or foreign-org method; `409`
-                `method_being_deleted` while its erasure runs; a `409` whose verdict is `runtime` for a
+                `pipelex.catalog.being_deleted` while its erasure runs; a `409` whose domain is `runtime` for a
                 method whose draft names a tree the platform holds no record of; a `200` the SDK cannot
                 read, a listing whose `sha256` is not 64 lowercase hex digits among them, reported with
                 every link redacted.
@@ -2094,7 +2110,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """Create a method — `POST /v1/methods`.
 
         The new method holds its tree as its draft and has no published version, so its bare id
-        answers `409 method_not_published` on the run and tooling routes until its first
+        answers `409 pipelex.catalog.not_published` on the run and tooling routes until its first
         `publish_method`; its draft runs as `mt_…@draft` at once.
 
         The tree is `write_input.files`, sent as given, or `tree` or `contents`, which the client
@@ -2164,8 +2180,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 no file.
             TreeSourceError: A `tree` given as a path is missing, or a file of `tree` cannot be read
                 or changed since it was listed.
-            ApiResponseError: `409` `method_update_conflict` for a draft that moved since the token;
-                `404` `not_found` for an unknown or foreign-org method; `409` `method_being_deleted`
+            ApiResponseError: `409` `pipelex.catalog.update_conflict` for a draft that moved since the token;
+                `404` `not_found` for an unknown or foreign-org method; `409` `pipelex.catalog.being_deleted`
                 while its erasure runs; the `422` refusals of a tree `create_method` lists; `413`
                 `payload_too_large` for a draft that would grow the method past the room a publish
                 needs; `403` for a read-only key; a `503` that wrote nothing, safe to retry, when the
@@ -2292,24 +2308,24 @@ class PipelexAPIClient(MthdsAPIClient):
                 problem = None
                 status_line = f"{exc.status} {exc.status_text or ''}".rstrip()
                 msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed ({status_line}), so {unsent}."
-                code = method_file_transfer_code_of_status(exc.status)
+                reason = method_file_transfer_reason_of_status(exc.status)
             else:
                 problem = exc.problem
                 match exc.problem.code:
                     case CoreCode.CLIENT_UNREACHABLE | CoreCode.CLIENT_TIMEOUT:
                         msg = f"Uploading the file with SHA-256 {exc.sha256} to {upload_host} failed: no answer came back, so {unsent}."
-                        code = MethodFileTransferCode.UNREACHABLE
+                        reason = MethodFileTransferReason.UNREACHABLE
                     case _:
                         msg = (
                             f"Uploading the file with SHA-256 {exc.sha256} failed: the API named an upload target the client cannot send to, "
                             f"so {unsent}."
                         )
-                        code = MethodFileTransferCode.REFUSED
+                        reason = MethodFileTransferReason.REFUSED
             transfer_error = MethodFileTransferError(
-                msg, operation=MethodFileTransferOperation.UPLOAD, code=code, sha256=exc.sha256, status=exc.status, problem=problem
+                msg, operation=MethodFileTransferOperation.UPLOAD, reason=reason, sha256=exc.sha256, status=exc.status, problem=problem
             )
         except PipelineRequestError as exc:
-            refined = _with_verdict(exc)
+            refined = _as_sdk_error(exc)
             if refined is exc:
                 raise
             raise refined from exc
@@ -2486,7 +2502,7 @@ class PipelexAPIClient(MthdsAPIClient):
             raise MethodFileTransferError(
                 msg,
                 operation=MethodFileTransferOperation.DOWNLOAD,
-                code=MethodFileTransferCode.UNREACHABLE,
+                reason=MethodFileTransferReason.UNREACHABLE,
                 sha256=saved_file.sha256,
                 path=saved_file.path,
             )
@@ -2501,7 +2517,7 @@ class PipelexAPIClient(MthdsAPIClient):
             raise MethodFileTransferError(
                 msg,
                 operation=MethodFileTransferOperation.DOWNLOAD,
-                code=MethodFileTransferCode.MISMATCH,
+                reason=MethodFileTransferReason.MISMATCH,
                 sha256=saved_file.sha256,
                 path=saved_file.path,
             )
@@ -2523,7 +2539,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 raise MethodFileTransferError(
                     msg,
                     operation=MethodFileTransferOperation.DOWNLOAD,
-                    code=method_file_transfer_code_of_status(response.status_code),
+                    reason=method_file_transfer_reason_of_status(response.status_code),
                     sha256=saved_file.sha256,
                     path=saved_file.path,
                     status=response.status_code,
@@ -2547,7 +2563,7 @@ class PipelexAPIClient(MthdsAPIClient):
             name: The new name.
 
         Raises:
-            ApiResponseError: `404` `not_found`; `409` `method_being_deleted`; `403` for a read-only
+            ApiResponseError: `404` `not_found`; `409` `pipelex.catalog.being_deleted`; `403` for a read-only
                 key; `422` for an empty name or one holding a lone surrogate; `413`
                 `payload_too_large` for a name so long it would leave the method too large to
                 publish; a `503` that wrote nothing, safe to retry, when draft writes kept landing
@@ -2586,8 +2602,8 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: `expected_draft_updated_at` is not a `str` — `None` included; nothing
                 is sent.
-            ApiResponseError: When no verdict was produced: `409` `method_update_conflict` for a draft
-                that moved since the token; `409` `method_being_deleted`; `404` `not_found`; `422`
+            ApiResponseError: When no verdict was produced: `409` `pipelex.catalog.update_conflict` for a draft
+                that moved since the token; `409` `pipelex.catalog.being_deleted`; `404` `not_found`; `422`
                 for a draft with no `.mthds` file or whose file names a run could not assemble (one
                 name used by a `.mthds` and a Python file); `413` `payload_too_large` for a draft too
                 large to publish; `403` for a read-only key; `502` or `503` from the runner, as above.
@@ -2620,7 +2636,7 @@ class PipelexAPIClient(MthdsAPIClient):
             reads versions whole. A method never published answers an empty page.
 
         Raises:
-            ApiResponseError: `404` `not_found` for an unknown method; `409` `method_being_deleted`;
+            ApiResponseError: `404` `not_found` for an unknown method; `409` `pipelex.catalog.being_deleted`;
                 `400` `malformed_request` for a cursor the listing did not issue for this method;
                 `422` for a `limit` outside 1 to 100.
         """
@@ -2642,7 +2658,7 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `version` is not a positive integer — a `bool`, a `float` such as
                 `2.0`, a numeric string and anything else that is not an `int` included; nothing is sent.
             ApiResponseError: `404` `method_version_not_found` for a version the method never
-                published; `404` `not_found` for an unknown method; `409` `method_being_deleted`; a
+                published; `404` `not_found` for an unknown method; `409` `pipelex.catalog.being_deleted`; a
                 `409` `conflict` for a version stored before methods were trees that the platform has
                 not rewritten as one (its `tree_digest` is `None`); a `200` the SDK cannot read,
                 reported with every link redacted.
@@ -2668,7 +2684,7 @@ class PipelexAPIClient(MthdsAPIClient):
         `get_method` refuses it with a `409`.
 
         A double-clicked delete is safe: the claim is a conditional write, so the second call is
-        an `ApiResponseError` (`409 method_being_deleted`) rather than a second cascade over the same
+        an `ApiResponseError` (`409 pipelex.catalog.being_deleted`) rather than a second cascade over the same
         runs. An unknown or foreign-org id is a `404`. The erasure deletes the method's published
         versions with the rest.
 
@@ -2685,7 +2701,7 @@ class PipelexAPIClient(MthdsAPIClient):
     # ----- method examples (`/v1/methods/{id}/examples`) -----------------------------------------
     #
     # Every example route takes a bare catalog id, as `get_method` does, and answers `404` `not_found`
-    # for an unknown method or example and `409` `method_being_deleted` while the method's erasure runs.
+    # for an unknown method or example and `409` `pipelex.catalog.being_deleted` while the method's erasure runs.
     # The writes are `403` to a read-only key, which may still read.
 
     async def create_method_example(
@@ -2714,7 +2730,7 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: `name` or `inputs` is `None`, or `run_id` is given but is empty or not a
                 `str`; nothing is sent.
-            ApiResponseError: `404` `run_not_found` for a `run_id` that is not one of this method's runs
+            ApiResponseError: `404` `run.not_found` for a `run_id` that is not one of this method's runs
                 in the caller's organization, with nothing written; `413` `payload_too_large` for an
                 example larger than one stored item holds; `422` for a name that is empty, blank or over
                 200 characters, or inputs that are not a JSON object; and the codes every example route
@@ -2864,7 +2880,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 non-empty `str`, or `input_revision` is not a positive integer (a `bool`, a `float` and a numeric string
                 included); nothing is sent.
             ApiResponseError: When no verdict was produced: `404` `not_found` for an example deleted since;
-                `404` `run_not_found` for a run that is not one of this method's, with nothing written; and
+                `404` `run.not_found` for a run that is not one of this method's, with nothing written; and
                 the codes every example route answers. An answer off the union is one the SDK cannot read,
                 raised as an `ApiResponseError` too.
         """
@@ -3045,7 +3061,7 @@ class PipelexAPIClient(MthdsAPIClient):
     async def change_plan(self, plan: str) -> ChangePlanResponse:
         """Switch the existing subscription's plan — `POST /v1/billing/change-plan`.
 
-        A 409 `conflict` (`ApiResponseError.code`) means there is no subscription to change —
+        A 409 `conflict` (`ApiResponseError.problem.code`) means there is no subscription to change —
         start one via `create_checkout` first.
         """
         return await self._request_product("POST", "billing/change-plan", body={"plan": plan}, read=ChangePlanResponse.model_validate)
@@ -3053,7 +3069,7 @@ class PipelexAPIClient(MthdsAPIClient):
     async def get_billing_portal(self) -> BillingPortalResponse:
         """A Stripe billing-portal session URL — `GET /v1/billing/portal`.
 
-        A 409 `conflict` (`ApiResponseError.code`) means there is no subscription yet.
+        A 409 `conflict` (`ApiResponseError.problem.code`) means there is no subscription yet.
         """
         return await self._request_product("GET", "billing/portal", read=BillingPortalResponse.model_validate)
 
@@ -3065,7 +3081,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """Mint a Pipelex API key — `POST /v1/pipelex-api-keys`.
 
         The plaintext `api_key` is returned ONCE. A 409 `pipelex_api_key_limit_reached`
-        (`ApiResponseError.code`) means the per-account key limit is hit.
+        (`ApiResponseError.problem.code`) means the per-account key limit is hit.
         """
         return await self._request_product("POST", "pipelex-api-keys", body={"label": label}, read=PipelexApiKeyCreated.model_validate)
 
@@ -3143,9 +3159,9 @@ class PipelexAPIClient(MthdsAPIClient):
         `upload_input.kind` and `upload_input.method_id`, what the upload is recorded as, are sent only when
         given and as given: the route refuses a pair it does not take with a `422`, and `upload_file` checks
         the pair before reading any file. A test file the route refuses for what it claims is the
-        `ApiResponseError` the platform answered: `403` `role_not_permitted` for a role that may not change
-        methods, `404` `not_found` for a method that is not the organization's, `409`
-        `method_being_deleted` for one being erased, which `upload_file` raises as a `TestFileRefusedError`.
+        `ApiResponseError` the platform answered: `403` `auth.forbidden` for a role that may not change
+        methods, `404` `pipelex.catalog.not_found` for a method that is not the organization's, `409`
+        `pipelex.catalog.being_deleted` for one being erased, which `upload_file` raises as a `TestFileRefusedError`.
         """
         body = upload_input.model_dump(mode="json", exclude_none=True)
         return await self._request_product("POST", "upload", body=body, read=UploadedFile.model_validate)
@@ -3207,7 +3223,7 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `formats` or `media_types` is empty, which sent as no parameter would list every
                 format; nothing is sent.
             ApiResponseError: `400` for a date bound that is not an instant with an offset, a range whose start is
-                after its end, or a cursor of another list or other filters; `404` `run_not_found` for a run that
+                after its end, or a cursor of another list or other filters; `404` `run.not_found` for a run that
                 is not the organization's; `422` for a `limit` out of range, an unknown `kind`, more than 100
                 values of a repeated filter or an id that cannot be one.
         """
@@ -3310,7 +3326,7 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: `uri` is not a non-empty `str`; nothing is sent.
             ApiResponseError: `400` `invalid_storage_uri` for a malformed address, `403` `forbidden` for another
-                organization's, `404` `run_not_found` for a run that is not the organization's, and `422` for an
+                organization's, `404` `run.not_found` for a run that is not the organization's, and `422` for an
                 address over 512 characters.
         """
         checked_uri = _require_non_empty_id(uri, call="get_files_by_uri", what=_STORAGE_URI_ARGUMENT)
@@ -3414,9 +3430,9 @@ class PipelexAPIClient(MthdsAPIClient):
                 an id that is not a non-empty `str`, `run_id` is not a non-empty `str`, or `name` is not a `str`;
                 nothing is sent.
             ApiResponseError: `422` `file_archive_too_large` past a cap, at most 500 files or 2,000,000,000 bytes,
-                whose `problem_document["limit"]` names it (`FileArchiveLimit`); `422` `validation_failed` for more
+                whose problem's `limit` member names it (`FileArchiveLimit`); `422` `validation_failed` for more
                 than 1,000 ids listed; `404` `not_found` for a file that is not the organization's or a run whose
-                files hold nothing stored to zip, `404` `run_not_found` for a run that is not the organization's;
+                files hold nothing stored to zip, `404` `run.not_found` for a run that is not the organization's;
                 `409` `conflict`, an `input` one for a selected file whose upload has not finished and a retryable
                 `runtime` one for a run whose files are not all recorded yet; and a retryable `503`
                 `service_unavailable` when the archive could not be queued.
@@ -3480,7 +3496,7 @@ class PipelexAPIClient(MthdsAPIClient):
             file_id: The file to copy, one of the organization's.
             path: The tree path the file takes in the draft, such as `assets/logo.png`.
             expected_updated_at: The draft token (`MethodData.updated_at`) the caller last read, echoed verbatim:
-                a draft that moved since is refused with a `409` `method_update_conflict`. `None` adds the file to
+                a draft that moved since is refused with a `409` `pipelex.catalog.update_conflict`. `None` adds the file to
                 the draft as it stands, never erasing another save.
 
         Returns:
@@ -3492,8 +3508,8 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `method_id` is refused as every method route refuses it, `file_id` or `path` is
                 not a non-empty `str`, or `expected_updated_at` is given but is not a `str`; nothing is sent.
             ApiResponseError: `403` `role_not_permitted` for a role that may not change methods; `404` for an
-                unknown method or a file that is not the organization's; `409` `method_being_deleted`, `409`
-                `method_update_conflict` for a stale token, and `409` `conflict` for a file whose upload has not
+                unknown method or a file that is not the organization's; `409` `pipelex.catalog.being_deleted`, `409`
+                `pipelex.catalog.update_conflict` for a stale token, and `409` `conflict` for a file whose upload has not
                 finished or whose stored bytes do not match its record; `422` `invalid_method_files` for a path
                 the draft cannot hold, and `422` `method_tree_too_large` past the deployment's limits.
         """
@@ -3962,24 +3978,22 @@ _RUN_ARTIFACTS: frozenset[RunArtifact] = frozenset(RunArtifact)
 _RUN_STATUSES: frozenset[RunStatus] = frozenset(RunStatus)
 
 
-def _with_verdict(exc: PipelineRequestError) -> PipelineRequestError:
-    """The error the inherited `execute` or `start` raised, as this SDK's class carrying a verdict.
+def _as_sdk_error(exc: PipelineRequestError) -> PipelineRequestError:
+    """The error the inherited `execute` or `start` raised, as this SDK's own class.
 
-    The base client raises errors of the standard's own classes, which carry none: a bare
-    `PipelineRequestError` refusing the arguments before any request (nothing to run was named, or
-    `extra` carries a protocol arg), answered here with a `RequestArgumentError` of the same message and
-    problem, and `mthds`'s `RunStillRunningError` on the protocol's 202 degrade, answered with this SDK's
-    subclass of it, the same members and problem carried over. The message is the base's without the
-    next step it appends, as this SDK's messages are (`_message_of`). An error that already carries a
-    verdict, such as the `ApiUnreachableError` the `_send` override raises, is returned as it is.
+    The base client raises errors of the standard's own classes: a bare `PipelineRequestError` refusing the
+    arguments before any request (nothing to run was named, or `extra` carries a protocol arg), answered here
+    with a `RequestArgumentError` of the same message and problem, and `mthds`'s `RunStillRunningError` on the
+    protocol's 202 degrade, answered with this SDK's subclass of it, the same members carried over and its
+    problem `client.follow_failed` naming the run. The message is the base's without the next step it
+    appends, as this SDK's messages are (`_message_of`). An error of this SDK's own, such as the
+    `ApiUnreachableError` the `_send` override raises, is returned as it is.
     """
     if isinstance(exc, PipelexRequestError):
         return exc
     message = _message_of(exc)
     if isinstance(exc, _MthdsRunStillRunningError):
-        return RunStillRunningError(
-            message, run_id=exc.run_id, retry_after_seconds=exc.retry_after_seconds, location=exc.location, problem=exc.problem
-        )
+        return RunStillRunningError(message, run_id=exc.run_id, retry_after_seconds=exc.retry_after_seconds, location=exc.location)
     return RequestArgumentError(message, problem=exc.problem)
 
 
@@ -4334,7 +4348,7 @@ def _status_filter(status: Sequence[RunStatus] | None) -> tuple[RunStatus, ...] 
 
     A bare `str`, a single `RunStatus` member included since a `StrEnum` member is one, is no
     filter: read as a sequence it would name its characters. It raises `TypeError`, a bug in the
-    calling code that carries no verdict.
+    calling code that carries no problem.
 
     Raises:
         TypeError: `status` is a bare `str`.
@@ -4363,7 +4377,7 @@ def _repeated_filter(values: Sequence[str] | None, *, call: str, name: str) -> l
     An empty filter names no value, and sending it as no parameter at all would list every value, a different
     question from the one asked, so it is refused before any request with `RequestArgumentError`. A bare `str` is
     no filter: read as a sequence it would name its characters, so it raises `TypeError`, a bug in the calling
-    code that carries no verdict, as does a value that is not iterable or not a `str`.
+    code that carries no problem, as does a value that is not iterable or not a `str`.
 
     The values are copied once, before anything reads them, so a one-shot iterable such as a generator is checked
     and sent whole: checking it in place would exhaust it, and the empty remainder would be sent as no parameter,
@@ -4793,7 +4807,7 @@ def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArt
 
     A bare `str`, a single `RunArtifact` member included since a `StrEnum` member is one, is no
     selection: read as a sequence it would name its characters. It raises `TypeError`, a bug in the
-    calling code that carries no verdict, as `@pipelex/sdk` throws one for a value that is not an array.
+    calling code that carries no problem, as `@pipelex/sdk` throws one for a value that is not an array.
 
     Raises:
         TypeError: `artifacts` is a bare `str`.
@@ -4819,24 +4833,26 @@ def is_gateway_cut_off(exc: BaseException, elapsed_seconds: float) -> bool:
     """Whether a request that failed `elapsed_seconds` after it was sent was cut off by the hosted
     gateway's ~30-second limit on a request it waits on, rather than refused.
 
-    It is when, after at least ~28 seconds, the failure is a `503` or `504` answer (`ApiResponseError`),
-    or the client's own time limit on a request that had reached the API (the `ApiUnreachableError` whose
-    `code` is `ABORT_TIMEOUT`, httpx's read or write timeout). A fast `503` is the API saying the request
-    was not handled, and any other unreachable host, a connect or pool timeout included, never sent the
+    It is when, after at least ~28 seconds, the failure is a `503` or `504` answer whose body is no problem
+    document (`ApiResponseError`), or the client's own time limit on a request that had reached the API (the
+    `ApiUnreachableError` whose `network_code` is `ABORT_TIMEOUT`, httpx's read or write timeout). A fast
+    `503` is the API saying the request was not handled, a problem document is the API's own answer however
+    long it took, and any other unreachable host, a connect or pool timeout included, never sent the
     request, so it is never the gateway's cut-off, however long it took. Any other exception is not either.
     `@pipelex/sdk`'s `isGatewayCutOff` reads the same failures.
 
-    The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. Whether a failed
-    `start` or `execute` may have started a run needs no timing: the error says it as
-    `run_may_have_started`, which reads every `503` but the platform's coded one as a run that may have
-    started, however quickly it came back.
+    The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`, for its message.
+    Whether a failed `start` or `execute` may have started a run needs no timing: the error's problem says
+    it, its `retry` being `outcome_unknown` for every answer from the edge that is no problem document past a
+    `5xx` but a `501`, however quickly it came back, while a `503` problem document from the platform says as
+    received whether it started one.
     """
     if elapsed_seconds < _GATEWAY_TIMEOUT_THRESHOLD_SECONDS:
         return False
     if isinstance(exc, ApiUnreachableError):
-        return exc.code == ABORT_TIMEOUT_CODE
+        return exc.network_code == ABORT_TIMEOUT_CODE
     if isinstance(exc, ApiResponseError):
-        return exc.status in {503, 504}
+        return exc.status in {503, 504} and read_problem_document(exc.response_body, status=exc.status, headers={}) is None
     return False
 
 
@@ -4850,25 +4866,16 @@ def _execute_timeout_message(elapsed_seconds: float) -> str:
     )
 
 
-# The members that make a 404 an answer rather than an absent route: every problem the platform renders
-# carries its `code`, and every problem the runner renders carries its `error_type` — the runner's own
-# refusals, relayed by the platform unchanged (a `method_ref` with no package behind it is a 404 of the
-# runner's). The same test the platform's relay applies to a runner body.
-_ANSWERED_404_MEMBERS: frozenset[str] = frozenset({"code", "error_type"})
-
-
 def _is_missing_route_404(body: str) -> bool:
     """Whether a 404's body is an unmatched-route 404 (no run store deployed) rather than a 404 the
-    platform or the runner answered on purpose.
+    platform or the runner answered on purpose: the body is no problem document.
 
-    The platform renders its 404s (a run not found) as problem documents carrying a stable `code`, and
-    the runner renders its own (a `method_ref` whose package does not exist) carrying its `error_type`;
-    a bare runner's unmatched route answers Starlette's default `{"detail": "Not Found"}`, which carries
-    neither. An empty, non-JSON or non-object body is no answer either. `type` is deliberately not read:
-    a generic RFC 9457 renderer puts `type: "about:blank"` on an unmatched route too.
+    The platform answers every 404 of its own as a problem document (`run.not_found`, `request.not_found`),
+    and so does the runner (a `method_ref` whose package does not exist); a bare runner's unmatched route
+    answers Starlette's default `{"detail": "Not Found"}`, which is none. An empty, non-JSON or non-object
+    body is none either. `@pipelex/sdk`'s `isMissingRoute404` reads the same rule.
     """
-    members = HostedProblemMembers.make_from_body(body).members
-    return members is None or _ANSWERED_404_MEMBERS.isdisjoint(members)
+    return read_problem_document(body, status=404, headers={}) is None
 
 
 def _parse_retry_after(headers: httpx.Headers) -> int | None:
@@ -4883,25 +4890,37 @@ def _parse_retry_after(headers: httpx.Headers) -> int | None:
     return seconds if seconds >= 0 else None
 
 
-def _run_result_failed(run_id: str, response: httpx.Response) -> RunResultFailed:
-    """Build the failed arm from the results read's `409` problem document.
+def _run_result_conflict(run_id: str, response: httpx.Response) -> RunResultRunning | RunResultFailed | None:
+    """Read the results read's `409` answer, which the platform answers with a problem document.
 
-    The platform's document carries `detail` (`Run finished with status <STATUS>: <message>`, or
-    `...; no result available` when the run has no report) and two extension members: `run_status`,
-    the run's terminal status — named so because a problem's own `status` is the HTTP status — and
-    `error`, the run's stored error report or `null`. The status is read from `run_status`, never
-    parsed back out of the sentence. A `409` without that member (the one this route answers for a
-    stored result it refuses to read, or one from a platform that predates the member) or with a
-    status this SDK does not know reads as `FAILED`, and its `detail` still says what happened.
+    - `run.failed`: the run ended without success, and the answer is the failed arm, its `problem` that
+      document as received, its `status` the terminal status its `run_status` parameter names (`FAILED` when
+      it names none this SDK knows), its `message` the document's `detail`, and its `error` the run's own
+      problem, which the document nests as `run_error`, or `None` when it nests none that is a problem
+      document;
+    - `run.not_finished`: the run is still going, and the answer is the running arm, waiting the document's
+      `retry_after` (or the `Retry-After` header, or the default) before the next read.
+
+    Any other `409`, a problem document of another code or a body that is none, is no answer about the run's
+    end, so it reads as `None` and the caller raises its `ApiResponseError`. `@pipelex/sdk`'s
+    `runResultConflict` reads the same answers.
     """
-    document = HostedProblemMembers.make_from_body(response.text)
-    body = document.members or {}
-    message = document.server_message or "Run finished without a result."
-    raw_status = body.get("run_status")
-    status = RunStatus(raw_status) if isinstance(raw_status, str) and raw_status in _KNOWN_RUN_STATUS_NAMES else RunStatus.FAILED
-    # `error` is validated by the field's own lenient type (`LenientRunErrorReport`): a report whose
-    # known fields do not fit keeps the ones that do, and one that is not a report reads as `None`.
-    return RunResultFailed.model_validate({"pipeline_run_id": run_id, "status": status, "message": message, "error": body.get("error")})
+    problem = read_problem_document(response.text, status=response.status_code, headers=lower_case_headers(response.headers))
+    if problem is None:
+        return None
+    match problem.code:
+        case "run.not_finished":
+            # The run's own delay, in whole seconds as the running arm counts them, else the header's.
+            retry_after = math.ceil(problem.retry_after) if problem.retry_after is not None else _parse_retry_after(response.headers)
+            return RunResultRunning(
+                pipeline_run_id=run_id, retry_after_seconds=retry_after if retry_after is not None else _DEFAULT_DEGRADED_RETRY_SECONDS
+            )
+        case "run.failed":
+            raw_status: object = problem.params.as_wire().get("run_status") if problem.params is not None else None
+            status = RunStatus(raw_status) if isinstance(raw_status, str) and raw_status in _KNOWN_RUN_STATUS_NAMES else RunStatus.FAILED
+            return RunResultFailed(pipeline_run_id=run_id, status=status, message=problem.detail, problem=problem, error=nested_run_error(problem))
+        case _:
+            return None
 
 
 def _is_valid_base_url(value: str) -> bool:
@@ -4998,16 +5017,10 @@ def _origin_of(base_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
-def _failure_reason(document: HostedProblemMembers, response: httpx.Response) -> str:
-    """The reason a non-2xx answer gives, in the order a person is best served by.
-
-    The problem's `detail`, else its `title`, else the raw body (cut short, since a gateway's HTML
-    page can be long), else the status text — the order `@pipelex/sdk`'s message uses, so a refusal
-    reads the same from either SDK.
+def _bare_answer_reason(response: httpx.Response) -> str:
+    """The reason a non-2xx answer that is no problem document gives: the raw body (cut short, since a gateway's
+    HTML page can be long), else the status text, as `@pipelex/sdk`'s message quotes it.
     """
-    for candidate in (document.server_message, document.title):
-        if candidate and candidate.strip():
-            return candidate
     body = response.text.strip()
     if body:
         return body if len(body) <= _REASON_BODY_LIMIT else f"{body[:_REASON_BODY_LIMIT]}…"
@@ -5063,19 +5076,6 @@ def _decoded_answer(response: httpx.Response) -> Any:
         msg = "The body is not JSON the protocol reads: it does not parse, nests too deeply, or holds a number JSON does not define"
         raise json.JSONDecodeError(msg, text, 0)
     return decoded.value
-
-
-def _refusal_reading(response: httpx.Response, *, may_start_run: bool) -> AnswerReading:
-    """The standard's reading of a non-2xx answer, agreeing with the `run_may_have_started` of the error it becomes.
-
-    It is `pipelex_sdk.errors.answer_reading` given the answer and the platform code its body carries,
-    which decides a `503`: the reading the `mthds` client gives, but for a request that may create a run,
-    where it follows the SDK's own reading of whether one may have started.
-    """
-    code = HostedProblemMembers.make_from_body(response.text).code
-    return answer_reading(
-        status=response.status_code, body=response.text, headers=lower_case_headers(response.headers), may_start_run=may_start_run, code=code
-    )
 
 
 def _carries_links(endpoint: str) -> bool:

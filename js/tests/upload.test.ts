@@ -176,6 +176,33 @@ describe("uploadFile", () => {
     }
   });
 
+  it("reads a refused credential's problem from the server's problem document, else from the status", async () => {
+    const answered = new ApiResponseError(
+      "HTTP 403",
+      "https://api.pipelex.com/v1/upload",
+      403,
+      "Forbidden",
+      JSON.stringify(problemDocument("auth.forbidden", 403, { domain: "account" })),
+    );
+    const fromServer = await uploadFile(throwingClient(answered), new Uint8Array([1])).catch(
+      (e: unknown) => e,
+    );
+    expect((fromServer as UploadAuthenticationError).code).toBe("auth.forbidden");
+
+    // A bare refusal says nothing of the credential: the status's reading stands.
+    const bare = await uploadFile(throwingClient(apiError(401)), new Uint8Array([1])).catch(
+      (e: unknown) => e,
+    );
+    expect((bare as UploadAuthenticationError).code).toBe("auth.missing_credential");
+
+    // What the caller knows of its own request outranks the status of a bare refusal.
+    const sentKey = new UploadAuthenticationError("refused", 401, {
+      cause: apiError(401),
+      credentialSent: true,
+    });
+    expect(sentKey.code).toBe("auth.invalid_credential");
+  });
+
   it("maps a 404 to UnsupportedUploadCapabilityError", async () => {
     const client = throwingClient(apiError(404));
     await expect(uploadFile(client, new Uint8Array([1]))).rejects.toBeInstanceOf(

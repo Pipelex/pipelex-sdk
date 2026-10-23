@@ -31,14 +31,18 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, NoReturn
 from unicodedata import category
 
+from mthds.protocol.problem.client_problems import make_client_problem
+from mthds.protocol.problem.models import Problem
+from mthds.protocol.problem.registry import CoreCode
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from pipelex_sdk._pydantic_utils import empty_list_factory_of
 from pipelex_sdk.codegen_stamp import STAMPABLE_SUFFIXES
-from pipelex_sdk.errors import CodegenError, CodegenLockError
+from pipelex_sdk.errors import CodegenError, CodegenLockError, lock_unreadable_problem
+from pipelex_sdk.version import __version__
 
-CODEGEN_LOCK_FILENAME = "codegen.lock"
-"""The one filename a codegen lock is written as and read from."""
+# `CODEGEN_LOCK_FILENAME`, the one filename a codegen lock is written as and read from, is defined beside the
+# errors whose problems name it, and read from here by the writer and the check.
 
 CODEGEN_LOCK_VERSION = 1
 """The lock format version this SDK reads, mirroring pipelex's `CODEGEN_LOCK_VERSION`."""
@@ -91,7 +95,11 @@ def parse_lock(content: str) -> CodegenLock:
     except ValidationError as exc:
         msg = f"Malformed codegen lock: {exc}"
         raise CodegenLockError(msg) from exc
-    validate_artifact_paths(entry.path for entry in lock.artifacts)
+    try:
+        validate_artifact_paths(entry.path for entry in lock.artifacts)
+    except CodegenError as exc:
+        # The lock is the file at fault, whichever path it tracks: it must be written again.
+        raise CodegenError(str(exc), problem=lock_unreadable_problem("unsafe_artifact_path")) from exc
     return lock
 
 
@@ -112,12 +120,12 @@ def load_lock(lock_path: Path) -> CodegenLock | None:
         content = lock_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         msg = f"Unreadable codegen lock at '{lock_path}': {exc}"
-        raise CodegenLockError(msg) from exc
+        raise CodegenLockError(msg, problem=lock_unreadable_problem("unreadable")) from exc
     try:
         return parse_lock(content)
     except CodegenLockError as exc:
         msg = f"Codegen lock at '{lock_path}': {exc}"
-        raise CodegenLockError(msg) from exc
+        raise CodegenLockError(msg, problem=exc.problem) from exc
 
 
 def validate_artifact_path(path: str) -> Path:
@@ -188,10 +196,12 @@ def resolve_output_path(*, root: Path, relative_path: Path, require_directory_co
 
     requested_root = Path(os.path.normpath(root.absolute()))
     if requested_root.is_symlink():
-        _raise_path_error(str(requested_root), reason="output root must not be a symbolic link")
+        _raise_path_error(str(requested_root), reason="output root must not be a symbolic link", problem=_unsafe_destination_problem(requested_root))
     normalized_root = requested_root.resolve(strict=False)
     if normalized_root.exists() and not normalized_root.is_dir():
-        _raise_path_error(str(normalized_root), reason="output root exists but is not a directory")
+        _raise_path_error(
+            str(normalized_root), reason="output root exists but is not a directory", problem=_unsafe_destination_problem(normalized_root)
+        )
 
     destination = normalized_root / relative_path
     _reject_unsafe_components(
@@ -200,9 +210,13 @@ def resolve_output_path(*, root: Path, relative_path: Path, require_directory_co
         require_directory_components=require_directory_components,
     )
     if not destination.resolve(strict=False).is_relative_to(normalized_root):
-        _raise_path_error(str(destination), reason=f"resolved path escapes output root '{normalized_root}'")
+        _raise_path_error(
+            str(destination), reason=f"resolved path escapes output root '{normalized_root}'", problem=_unsafe_destination_problem(destination)
+        )
     if destination.exists() and not destination.is_file():
-        _raise_path_error(str(destination), reason="output destination exists but is not a regular file")
+        _raise_path_error(
+            str(destination), reason="output destination exists but is not a regular file", problem=_unsafe_destination_problem(destination)
+        )
     return destination
 
 
@@ -211,14 +225,26 @@ def _reject_unsafe_components(*, root: Path, relative_path: Path, require_direct
     for depth, part in enumerate(relative_path.parts, start=1):
         current /= part
         if current.is_symlink():
-            _raise_path_error(str(root / relative_path), reason=f"symbolic link component is not allowed: '{current}'")
+            _raise_path_error(
+                str(root / relative_path), reason=f"symbolic link component is not allowed: '{current}'", problem=_unsafe_destination_problem(current)
+            )
         if require_directory_components and depth < len(relative_path.parts) and current.exists() and not current.is_dir():
-            _raise_path_error(str(root / relative_path), reason=f"a component on the way to it is not a directory: '{current}'")
+            _raise_path_error(
+                str(root / relative_path),
+                reason=f"a component on the way to it is not a directory: '{current}'",
+                problem=_unsafe_destination_problem(current),
+            )
 
 
-def _raise_path_error(path: str, *, reason: str) -> NoReturn:
+def _unsafe_destination_problem(path: Path) -> Problem:
+    """`client.write_failed`, naming what on disk stands in the way of a codegen tree, for the reason `unsafe_destination`."""
+    return make_client_problem(CoreCode.CLIENT_WRITE_FAILED, params={"path": str(path), "reason": "unsafe_destination"})
+
+
+def _raise_path_error(path: str, *, reason: str, problem: Problem | None = None) -> NoReturn:
+    """Refuse an artifact path: its problem is `problem` when the raise site states one, the family's default otherwise."""
     msg = f"Unsafe codegen artifact path '{path}': {reason}."
-    raise CodegenError(msg)
+    raise CodegenError(msg, problem=problem)
 
 
 def _reject_unknown_lock_version(data: dict[str, Any]) -> None:
@@ -241,4 +267,10 @@ def _reject_unknown_lock_version(data: dict[str, Any]) -> None:
     else:
         reason = f"lock_version {raw_version!r} is not a known codegen lock format version"
     msg = f"Unsupported codegen lock: this SDK reads lock_version {CODEGEN_LOCK_VERSION}, but {reason}."
-    raise CodegenLockError(msg)
+    # A newer lock is read once this SDK is upgraded; any other version names no format at all.
+    problem = (
+        make_client_problem(CoreCode.CLIENT_TOOL_OUTDATED, params={"tool": "pipelex-sdk", "version": __version__})
+        if is_version_number and raw_version > CODEGEN_LOCK_VERSION
+        else None
+    )
+    raise CodegenLockError(msg, problem=problem)

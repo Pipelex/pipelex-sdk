@@ -13,7 +13,7 @@
  * `ProblemError`s too.
  */
 
-import { ProblemError, buildProblem, isProblem, readAnswer } from "mthds/protocol";
+import { ProblemError, buildProblem, isProblem, readAnswer, readProblemBody } from "mthds/protocol";
 import type { AnswerHeaders, Problem, ProblemItem } from "mthds/protocol";
 import { outcomeUnknownProblem, readHostedAnswer } from "./answer-reading.js";
 import { requestMayHaveLeft } from "./transport-reading.js";
@@ -86,6 +86,21 @@ function credentialRefusedProblem(credentialSent: boolean): Problem {
 /** The problem an error wrapping another carries: the wrapped error's, when it carries one. */
 function wrappedProblem(cause: unknown): Problem | undefined {
   return cause instanceof ProblemError ? cause.problem : undefined;
+}
+
+/**
+ * The problem of a refused credential, in this order: the server's own, when the wrapped
+ * `ApiResponseError` answered a problem document; then what the caller knows of its own request,
+ * when it says whether the request carried a credential, which the edge's bare `401` or `403` does
+ * not say; then the wrapped error's problem, its reading of that status; and otherwise
+ * `auth.invalid_credential`.
+ */
+function credentialProblem(cause: unknown, credentialSent: boolean | undefined): Problem {
+  if (cause instanceof ApiResponseError && readProblemBody(cause.responseBody) !== undefined) {
+    return cause.problem;
+  }
+  if (credentialSent !== undefined) return credentialRefusedProblem(credentialSent);
+  return wrappedProblem(cause) ?? credentialRefusedProblem(true);
 }
 
 // ── The base every request error derives from ────────────────────────
@@ -378,11 +393,12 @@ export class UnsupportedUploadCapabilityError extends InputPreparationError {
 
 /**
  * Upload was not authorized — a `401`, or a `403` from the upload route other than a test file's
- * refused role, which is a {@link TestFileRefusedError}. Its problem is the wrapped error's when
- * `cause` carries one, the refusal as the API or its edge answered it, which `uploadFile` passes.
- * Otherwise it is `auth.invalid_credential` when the request carried a credential, and
- * `auth.missing_credential` when it carried none (`options.credentialSent` false). `filename` is
- * the file whose upload was refused, as `uploadFile` sent it.
+ * refused role, which is a {@link TestFileRefusedError}. Its problem is the server's own when the
+ * wrapped error, which `uploadFile` passes as `cause`, answered a problem document. Otherwise it is
+ * `auth.invalid_credential` when the request carried a credential and `auth.missing_credential`
+ * when it carried none, as `options.credentialSent` says, and the wrapped error's reading of the
+ * status when the caller does not say. `filename` is the file whose upload was refused, as
+ * `uploadFile` sent it.
  */
 export class UploadAuthenticationError extends InputPreparationError {
   public readonly status: number;
@@ -395,9 +411,7 @@ export class UploadAuthenticationError extends InputPreparationError {
   ) {
     super(message, {
       cause: options?.cause,
-      problem:
-        wrappedProblem(options?.cause) ??
-        credentialRefusedProblem(options?.credentialSent !== false),
+      problem: credentialProblem(options?.cause, options?.credentialSent),
     });
     this.name = "UploadAuthenticationError";
     this.status = status;
@@ -722,9 +736,10 @@ export function artifactFetchProblem(reason: string, uri: string): Problem {
  * carries the result as it stood: every item saved before the refusal, and
  * the rest marked `aborted`. `status` is the route's status; the wrapped
  * `ApiResponseError` is reachable via `cause`. (`verdict` is the download's result, not the
- * error's own problem.) Its problem is the wrapped error's when `cause` carries one, the refusal
- * as the route or its edge answered it; otherwise `auth.invalid_credential`, or
- * `auth.missing_credential` when the request carried no credential.
+ * error's own problem.) Its problem is the server's own when the wrapped error answered a problem
+ * document; otherwise `auth.invalid_credential`, or `auth.missing_credential` when
+ * `options.credentialSent` says the request carried no credential, and the wrapped error's reading
+ * of the status when the caller does not say.
  */
 export class ArtifactAuthenticationError extends ArtifactOperationError {
   public readonly status: number;
@@ -738,9 +753,7 @@ export class ArtifactAuthenticationError extends ArtifactOperationError {
   ) {
     super(message, {
       cause: options?.cause,
-      problem:
-        wrappedProblem(options?.cause) ??
-        credentialRefusedProblem(options?.credentialSent !== false),
+      problem: credentialProblem(options?.cause, options?.credentialSent),
     });
     this.name = "ArtifactAuthenticationError";
     this.status = status;

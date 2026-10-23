@@ -17,7 +17,6 @@ from mthds.method_tree.file_entry import HashFileEntry
 from pydantic import ValidationError
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import ApiResponseError, MethodErrorCode, RequestArgumentError
 from pipelex_sdk.product_models import (
     MethodData,
@@ -37,7 +36,7 @@ from pipelex_sdk.product_models import (
 )
 from pipelex_sdk.runs import PipelexRunResultStart, RunRead
 from pipelex_sdk.validation_models import PipelexInvalidReport, PipelexValidationReport
-from tests.unit.conftest import BASE_URL, refused_argument
+from tests.unit.conftest import BASE_URL, problem_document, refused_argument
 from tests.unit.test_data import MethodVersionBodies
 
 if TYPE_CHECKING:
@@ -54,7 +53,6 @@ MethodRouteCall: TypeAlias = "Callable[[PipelexAPIClient], Coroutine[Any, Any, o
 _SUFFIXED_ID = "mt_receipts01@3"
 
 #: The verdict of an argument refused before anything is sent: the caller changes it, and asking again unchanged cannot pass.
-_INPUT_VERDICT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
 #: One call of each method route, addressed by a suffixed id that every one of them refuses before sending.
 _SUFFIXED_ID_ROUTES: list[tuple[str, MethodRouteCall]] = [
@@ -195,7 +193,7 @@ class TestClientMethodVersions:
         with pytest.raises(RequestArgumentError, match="files=None empties the draft") as exc_info:
             asyncio.run(api_client.write_draft("mt_receipts01", MethodDraftInput(input_data={"total": 2})))
 
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         assert refused_argument(exc_info.value) == {"argument": "files", "reason": "missing"}
         send.assert_not_called()
 
@@ -218,23 +216,19 @@ class TestClientMethodVersions:
     def test_a_stale_draft_token_raises_the_update_conflict(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        body = {
-            "type": "https://docs.pipelex.com/errors/method-update-conflict",
-            "title": "Method update conflict",
-            "status": 409,
-            "detail": "The draft changed since you loaded it.",
-            "code": "method_update_conflict",
-            "errors": [{"field": "expected_updated_at", "code": "method_update_conflict", "detail": "stale"}],
-        }
+        body = problem_document(
+            "pipelex.catalog.update_conflict", 409, detail="The draft changed since you loaded it.", location={"field": "expected_updated_at"}
+        )
         patch_send(api_client, wire_response(409, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.write_draft("mt_receipts01", MethodDraftInput(files={"main.mthds": "src"}, expected_updated_at="old")))
 
         assert exc_info.value.status == 409
-        assert exc_info.value.code == "method_update_conflict"
-        assert exc_info.value.errors is not None
-        assert exc_info.value.errors[0].field == "expected_updated_at"
+        assert exc_info.value.problem.code == MethodErrorCode.UPDATE_CONFLICT
+        assert exc_info.value.problem.location is not None
+        assert exc_info.value.problem.location.field == "expected_updated_at"
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
 
     # ----- rename_method -----------------------------------------------------------------------
 
@@ -298,7 +292,7 @@ class TestClientMethodVersions:
         assert isinstance(result, MethodPublishRefused)
         assert result.reason == MethodPublishRefusalReason.INVALID
         assert isinstance(result.validation, PipelexInvalidReport)
-        assert result.validation.validation_errors[0].message == "Pipe 'review' has no output."
+        assert [item.detail for item in result.validation.errors] == ["Pipe 'review' has no output."]
         assert result.method.latest_version is None
 
     def test_publish_method_reads_a_not_runnable_refusal_with_the_valid_verdict(
@@ -343,18 +337,21 @@ class TestClientMethodVersions:
         assert str(unreadable) == "API POST /v1/methods/mt_receipts01/publish answered 200 with a body that is not the answer the route returns"
         assert unreadable.status == 200
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert (unreadable.problem.domain, unreadable.problem.retry) == ("runtime", "no")
 
     def test_publish_method_raises_the_update_conflict_for_a_stale_token(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
         """A stale token produces no verdict about the content, so it raises instead of answering an outcome."""
-        patch_send(api_client, wire_response(409, json_body={"status": 409, "code": "method_update_conflict"}))
+        conflict = problem_document("pipelex.catalog.update_conflict", 409, location={"field": "expected_draft_updated_at"})
+        patch_send(api_client, wire_response(409, json_body=conflict))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.publish_method("mt_receipts01", expected_draft_updated_at="old"))
 
-        assert exc_info.value.code == "method_update_conflict"
+        assert exc_info.value.problem.code == MethodErrorCode.UPDATE_CONFLICT
+        assert exc_info.value.problem.location is not None
+        assert exc_info.value.problem.location.field == "expected_draft_updated_at"
 
     @pytest.mark.parametrize(
         ("token", "type_name"),
@@ -372,7 +369,7 @@ class TestClientMethodVersions:
         with pytest.raises(RequestArgumentError, match=rf"needs expected_draft_updated_at: .*; got {type_name}\.$") as exc_info:
             asyncio.run(api_client.publish_method("mt_receipts01", expected_draft_updated_at=cast("str", token)))
 
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     def test_publish_method_takes_its_token_by_keyword_only(self, api_client: PipelexAPIClient) -> None:
@@ -433,19 +430,22 @@ class TestClientMethodVersions:
         with pytest.raises(RequestArgumentError, match="positive integer") as exc_info:
             asyncio.run(api_client.get_method_version("mt_receipts01", cast("int", version)))
 
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     def test_get_method_version_raises_the_version_not_found(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(404, json_body={"status": 404, "code": "method_version_not_found"}))
+        not_found = problem_document("pipelex.catalog.not_found", 404, detail="No version 9.", params={"resource": "version"})
+        patch_send(api_client, wire_response(404, json_body=not_found))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.get_method_version("mt_receipts01", 9))
 
         assert exc_info.value.status == 404
-        assert exc_info.value.code == "method_version_not_found"
+        assert exc_info.value.problem.code == MethodErrorCode.NOT_FOUND
+        assert exc_info.value.problem.params is not None
+        assert exc_info.value.problem.params.as_wire() == {"resource": "version"}
 
     # ----- the method routes take a bare id ----------------------------------------------------
 
@@ -463,7 +463,7 @@ class TestClientMethodVersions:
             "itself, never one of its versions. Strip the suffix with parse_method_selector, and read a published version "
             "with get_method_version."
         )
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     # ----- the run routes' linkage form takes a bare id ----------------------------------------
@@ -488,7 +488,7 @@ class TestClientMethodVersions:
             "tree is what runs, so a version suffix would claim a version that did not. Send the bare id "
             "(parse_method_selector(...).method_id), or drop the tree to run the version the selector names."
         )
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     def test_a_bare_id_beside_the_tree_is_sent_as_linkage(
@@ -505,24 +505,24 @@ class TestClientMethodVersions:
 
     # ----- the error codes ---------------------------------------------------------------------
 
-    def test_the_method_error_codes_are_the_platform_wire_strings(self) -> None:
-        assert [code.value for code in MethodErrorCode] == [
-            "method_update_conflict",
-            "method_being_deleted",
-            "method_not_published",
-            "method_version_not_found",
+    def test_the_method_error_codes_are_the_platform_problem_codes(self) -> None:
+        assert [str(code) for code in MethodErrorCode] == [
+            "pipelex.catalog.update_conflict",
+            "pipelex.catalog.being_deleted",
+            "pipelex.catalog.not_published",
+            "pipelex.catalog.not_found",
         ]
 
     def test_a_bare_id_of_a_method_never_published_raises_not_published(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        body = {"status": 409, "code": "method_not_published", "detail": "Publish the method, or run mt_receipts01@draft."}
+        body = problem_document("pipelex.catalog.not_published", 409, detail="Publish the method, or run mt_receipts01@draft.")
         patch_send(api_client, wire_response(409, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.start(method_id="mt_receipts01"))
 
-        assert exc_info.value.code == "method_not_published"
+        assert exc_info.value.problem.code == MethodErrorCode.NOT_PUBLISHED
 
     # ----- the version a run ran ---------------------------------------------------------------
 

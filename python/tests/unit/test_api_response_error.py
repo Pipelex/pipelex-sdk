@@ -1,50 +1,34 @@
-"""Tests for the members `ApiResponseError` carries off a problem document, driven through a product route."""
+"""Tests for the problem `ApiResponseError` carries off a refusal, driven through a product route."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import ErrorDomain
 from pipelex_sdk.errors import ApiResponseError
+from tests.unit.conftest import problem_document
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 _BASE_URL = "http://localhost:8081"
 
-# A platform request-validation 422 as its error handler renders it: every standard member, the
-# request id in the body and on the header, and the field-level `errors[]`.
-_PLATFORM_422: dict[str, Any] = {
-    "type": "https://pipelex.com/errors/validation_failed",
-    "title": "Unprocessable entity",
-    "status": 422,
-    "code": "validation_failed",
-    "detail": "Request validation failed.",
-    "instance": "urn:pipelex:request:req-422",
-    "request_id": "req-422",
-    "errors": [{"field": "body.label", "code": "string_too_long", "detail": "String should have at most 64 characters"}],
-}
+# A request-validation 422 as the platform renders it: a core code, the request id in the body, and the
+# fields its validation refused as problem items.
+_PLATFORM_422: dict[str, Any] = problem_document(
+    "request.malformed",
+    422,
+    request_id="req-422",
+    errors=[{"code": "request.malformed", "detail": "String should have at most 64 characters", "location": {"field": "label"}}],
+)
 
-# A runner-rendered problem (`ErrorReport.to_problem_document`) as the hosted API relays it: the
-# standard slots plus the classification extension members, including a member this SDK does not name.
-_RUNNER_PROBLEM: dict[str, Any] = {
-    "type": "https://docs.pipelex.com/latest/errors/pipeline-input-error/",
-    "title": "Pipeline input",
-    "status": 422,
-    "detail": "Input 'document' expects a Document, got an Image.",
-    "request_id": "req-runner",
-    "error_type": "PipelineInputError",
-    "error_domain": "input",
-    "error_category": "content",
-    "retryable": False,
-    "user_action": {"kind": "change_input", "detail": "Send a PDF for the 'document' input."},
-    "location": "cv_screening.mthds:screen",
-}
+# A refusal under a Pipelex extension code, with a member the standard does not name.
+_ARCHIVE_TOO_LARGE: dict[str, Any] = problem_document("pipelex.files.archive_too_large", 422, limit="max_files")
 
 
 def _response(status_code: int, *, json_body: object | None = None, text: str | None = None, headers: dict[str, str] | None = None) -> httpx.Response:
@@ -62,79 +46,30 @@ class TestApiResponseError:
             asyncio.run(client.get_subscription())
         return exc_info.value
 
-    def test_platform_problem_exposes_every_member(self, mocker: MockerFixture) -> None:
+    def test_reads_a_problem_document_as_received(self, mocker: MockerFixture) -> None:
         err = self._raise_from(mocker, _response(422, json_body=_PLATFORM_422, headers={"X-Request-ID": "req-422"}))
 
         assert err.status == 422
-        assert err.code == "validation_failed"
-        assert err.type_uri == "https://pipelex.com/errors/validation_failed"
-        assert err.title == "Unprocessable entity"
-        assert err.server_message == "Request validation failed."
-        assert err.request_id == "req-422"
-        assert err.errors is not None
-        assert [(item.field, item.code, item.detail) for item in err.errors] == [
-            ("body.label", "string_too_long", "String should have at most 64 characters"),
+        assert err.problem.as_wire() == _PLATFORM_422
+        assert err.problem.code == "request.malformed"
+        assert (err.problem.domain, err.problem.retry) == ("input", "no")
+        assert [(item.detail, item.location.field if item.location is not None else None) for item in err.problem.errors or []] == [
+            ("String should have at most 64 characters", "label"),
         ]
-        assert err.problem_document == _PLATFORM_422
-        # The platform sends no verdict of its own, so the fallback reads the status: a 422 is the caller's.
-        assert "error_domain" not in _PLATFORM_422
-        assert err.error_domain == ErrorDomain.INPUT
-        assert err.retryable is False
-        assert err.user_action is None
+        assert err.request_id == "req-422"
+        assert str(err) == "API GET /v1/billing/subscription failed (422): The detail of request.malformed."
 
-    def test_runner_problem_exposes_the_classification_members(self, mocker: MockerFixture) -> None:
-        err = self._raise_from(mocker, _response(422, json_body=_RUNNER_PROBLEM))
+    def test_keeps_a_pipelex_code_and_the_members_the_standard_does_not_name(self, mocker: MockerFixture) -> None:
+        err = self._raise_from(mocker, _response(422, json_body=_ARCHIVE_TOO_LARGE))
 
-        assert err.type_uri == "https://docs.pipelex.com/latest/errors/pipeline-input-error/"
-        assert err.title == "Pipeline input"
-        assert err.error_type == "PipelineInputError"
-        assert err.error_domain == "input"
-        assert err.error_category == "content"
-        assert err.retryable is False
-        assert err.user_action is not None
-        assert err.user_action.kind == "change_input"
-        assert err.user_action.detail == "Send a PDF for the 'document' input."
-        assert err.request_id == "req-runner"
-        assert err.server_message == "Input 'document' expects a Document, got an Image."
-        assert err.code is None
-        # A member the SDK does not name stays reachable on the decoded document.
-        assert err.problem_document is not None
-        assert err.problem_document["location"] == "cv_screening.mthds:screen"
+        assert err.problem.code == "pipelex.files.archive_too_large"
+        assert (err.problem.model_extra or {})["limit"] == "max_files"
 
-    def test_the_standard_s_reading_stands_beside_the_platform_s_members_without_colliding(self, mocker: MockerFixture) -> None:
-        err = self._raise_from(mocker, _response(422, json_body=_PLATFORM_422, headers={"X-Request-ID": "req-422"}))
+    def test_the_message_carries_no_next_step(self, mocker: MockerFixture) -> None:
+        err = self._raise_from(mocker, _response(422, json_body=_PLATFORM_422))
 
-        # The platform's own `code` and field-level `errors[]` read as they always have...
-        assert err.code == "validation_failed"
-        assert err.errors is not None
-        assert [item.field for item in err.errors] == ["body.label"]
-        # ...while the standard, which names neither, reads a document that is not one of its problems.
-        assert err.problem.code == "client.response_unreadable"
-        assert err.problem.params is not None
-        assert err.problem.params.model_extra == {"status": 422}
-
-    def test_a_core_problem_reads_its_registry_code_on_the_problem_and_leaves_the_platform_s_members_alone(self, mocker: MockerFixture) -> None:
-        core: dict[str, Any] = {
-            "type": "https://mthds.ai/errors/input.invalid",
-            "title": "An input does not fit its concept's structure",
-            "status": 422,
-            "detail": "The input 'a' does not fit its concept's structure at 'b'.",
-            "code": "input.invalid",
-            "domain": "input",
-            "retry": "no",
-            "next_step": {"kind": "change_input", "detail": "Correct the field 'b' of the input 'a', then send the request again."},
-            "params": {"input": "a", "field": "b"},
-        }
-        err = self._raise_from(mocker, _response(422, json_body=core))
-
-        assert err.problem.code == "input.invalid"
-        assert err.problem.next_step.kind == "change_input"
-        # The hosted members are read off the same document as they always were: its `code` is a string,
-        # and it carries no `user_action`, so the message has no next step of its own.
-        assert err.code == "input.invalid"
-        assert err.user_action is None
-        assert err.problem_document == core
         assert "Next step" not in str(err)
+        assert err.problem.next_step.detail == "The next step of request.malformed."
 
     def test_request_id_falls_back_to_the_header(self, mocker: MockerFixture) -> None:
         body = {key: value for key, value in _PLATFORM_422.items() if key != "request_id"}
@@ -146,7 +81,6 @@ class TestApiResponseError:
         err = self._raise_from(mocker, _response(502, text="Bad Gateway", headers={"X-Request-ID": "req-edge"}))
 
         assert err.request_id == "req-edge"
-        assert err.problem_document is None
         assert err.response_body == "Bad Gateway"
 
     def test_body_request_id_wins_over_the_header(self, mocker: MockerFixture) -> None:
@@ -155,103 +89,85 @@ class TestApiResponseError:
         assert err.request_id == "req-422"
 
     @pytest.mark.parametrize(
-        "body",
+        ("response", "code", "retry"),
         [
-            {"detail": "x", "retryable": "no", "user_action": "retry later", "errors": "none", "error_domain": 3, "type": None},
-            {"detail": "x", "user_action": ["retry"], "errors": [7]},
+            (_response(401, json_body={"message": "Unauthorized"}), "auth.missing_credential", "no"),
+            (_response(403, json_body={"message": "Forbidden"}), "auth.invalid_credential", "no"),
+            (_response(404, json_body={"detail": "Not Found"}), "request.not_found", "no"),
+            (_response(500, text="Internal Server Error"), "runtime.unexpected", "no"),
+            (_response(502, text="<html>Bad Gateway</html>"), "runtime.unavailable", "yes"),
+            (_response(503, text=""), "runtime.unavailable", "yes"),
+            (_response(504, json_body={"message": "Endpoint request timed out"}), "runtime.unavailable", "yes"),
+            (_response(405, text=""), "request.method_not_allowed", "no"),
+            (_response(409, json_body={"code": "conflict", "detail": "x"}), "client.response_unreadable", "no"),
         ],
     )
-    def test_members_of_the_wrong_shape_read_as_none(self, mocker: MockerFixture, body: dict[str, Any]) -> None:
-        err = self._raise_from(mocker, _response(409, json_body=body))
+    def test_reads_a_body_that_is_no_problem_document_by_the_edges_rules(
+        self, mocker: MockerFixture, response: httpx.Response, code: str, retry: str
+    ) -> None:
+        err = self._raise_from(mocker, response)
 
-        assert err.server_message == "x"
-        assert err.user_action is None
-        assert err.errors is None
-        # A verdict member of the wrong shape reads as absent, so the fallback decides it: a 409 is the caller's.
-        assert err.retryable is False
-        assert err.error_domain == ErrorDomain.INPUT
-        assert err.type_uri is None
-        assert err.request_id is None
-        assert err.problem_document == body
+        assert err.problem.code == code
+        assert err.problem.retry == retry
+        assert err.response_body == response.text
+
+    def test_reads_an_edge_throttle_as_runtime_unavailable_with_its_retry_after(self, mocker: MockerFixture) -> None:
+        err = self._raise_from(mocker, _response(429, json_body={"message": "Too Many Requests"}, headers={"Retry-After": "12"}))
+
+        assert err.problem.code == "runtime.unavailable"
+        assert err.problem.retry_after == 12
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param({**problem_document("request.malformed", 422), "retry": 5}, id="retry-not-a-string"),
+            pytest.param({**problem_document("request.malformed", 422), "next_step": None}, id="next-step-null"),
+            pytest.param({**problem_document("request.malformed", 422), "code": "NotACode"}, id="code-off-the-pattern"),
+            pytest.param(
+                {"detail": "x", "retryable": False, "error_domain": "input", "user_action": {"kind": "retry", "detail": "y"}}, id="old-shape"
+            ),
+        ],
+    )
+    def test_a_document_that_breaks_the_standard_is_read_by_its_status(self, mocker: MockerFixture, body: dict[str, Any]) -> None:
+        err = self._raise_from(mocker, _response(422, json_body=body))
+
+        assert err.problem.code == "client.response_unreadable"
+        assert err.response_body == json.dumps(body, separators=(",", ":"))
 
     @pytest.mark.parametrize(
         "body",
         [
             pytest.param("[" * 100_000 + "]" * 100_000, id="nested-past-the-limit"),
-            pytest.param('{"code": "conflict", "detail": "x", "retry_after": NaN}', id="nan"),
-            pytest.param('{"code": "conflict", "detail": "x", "retry_after": Infinity}', id="infinity"),
-            pytest.param('{"code": "conflict", "detail": "x", "retry_after": 1e999}', id="past-a-double"),
+            pytest.param('{"code": "request.malformed", "detail": "x", "retry_after": NaN}', id="nan"),
+            pytest.param('{"code": "request.malformed", "detail": "x", "retry_after": Infinity}', id="infinity"),
+            pytest.param('{"code": "request.malformed", "detail": "x", "retry_after": 1e999}', id="past-a-double"),
         ],
     )
-    def test_a_body_the_protocol_does_not_read_as_json_carries_no_member(self, mocker: MockerFixture, body: str) -> None:
-        """Decoded by the base's guarded decoder, as its `problem` is: never a bare `RecursionError`, never a `NaN` read."""
+    def test_a_body_the_protocol_does_not_read_as_json_is_read_by_its_status(self, mocker: MockerFixture, body: str) -> None:
+        """Decoded by the base's guarded decoder: never a bare `RecursionError`, never a `NaN` read."""
         err = self._raise_from(mocker, _response(409, text=body))
 
-        assert err.problem_document is None
-        assert err.code is None
-        assert err.server_message is None
         assert err.response_body == body
         assert err.problem.code == "client.response_unreadable"
-        # Nothing names what was refused, so the fallback reads the 409 alone: the caller's, not retryable.
-        assert err.error_domain == ErrorDomain.INPUT
-        assert err.retryable is False
-
-    @pytest.mark.parametrize(
-        "user_action",
-        [{"kind": 5, "detail": "Retry in a minute."}, {"kind": "wait_and_retry", "detail": ""}, {"kind": "wait_and_retry"}],
-    )
-    def test_a_user_action_that_is_no_next_step_reads_as_none_and_the_rest_stands(self, mocker: MockerFixture, user_action: dict[str, Any]) -> None:
-        body = {"detail": "x", "user_action": user_action, "errors": [{"field": "body.label", "code": 3}]}
-        err = self._raise_from(mocker, _response(422, json_body=body))
-
-        # The `mthds` `UserAction` is kept only whole — a string `kind` and a non-empty `detail`.
-        assert err.user_action is None
-        assert str(err) == "API GET /v1/billing/subscription failed (422): x"
-        # A field-level item keeps the fields that fit.
-        assert err.errors is not None
-        assert [(item.field, item.code) for item in err.errors] == [("body.label", None)]
-
-    def test_the_message_carries_the_next_step_on_its_own_line(self, mocker: MockerFixture) -> None:
-        err = self._raise_from(mocker, _response(422, json_body=_RUNNER_PROBLEM))
-
-        assert str(err) == (
-            "API GET /v1/billing/subscription failed (422): Input 'document' expects a Document, got an Image.\n"
-            "Next step: Send a PDF for the 'document' input."
-        )
 
     @pytest.mark.parametrize(
         ("response", "reason"),
         [
-            (_response(409, json_body={"title": "Conflict", "status": 409}), "Conflict"),
+            (
+                _response(409, json_body=problem_document("request.idempotency_conflict", 409, detail="The key was used before.")),
+                "The key was used before.",
+            ),
             (_response(502, text="<html>Bad Gateway</html>"), "<html>Bad Gateway</html>"),
             (_response(502, text="x" * 600), "x" * 500 + "…"),
             (_response(503, text="   "), "Service Unavailable"),
-            (_response(418, json_body={"detail": {"error_type": "PipeRunError", "message": "the input is empty"}}), "the input is empty"),
         ],
     )
-    def test_the_reason_falls_back_from_detail_to_title_to_body_to_status_text(
+    def test_the_reason_is_the_problems_detail_else_the_body_else_the_status_text(
         self, mocker: MockerFixture, response: httpx.Response, reason: str
     ) -> None:
         err = self._raise_from(mocker, response)
 
         assert str(err) == f"API GET /v1/billing/subscription failed ({response.status_code}): {reason}"
-
-    def test_the_older_detail_object_shape_reads_its_error_type_and_message(self, mocker: MockerFixture) -> None:
-        err = self._raise_from(mocker, _response(500, json_body={"detail": {"error_type": "PipeRunError", "message": "the input is empty"}}))
-
-        assert err.error_type == "PipeRunError"
-        assert err.server_message == "the input is empty"
-        assert err.code is None
-        assert err.validation_errors is None
-
-    def test_validation_errors_whose_category_this_sdk_does_not_know_read_as_none(self, mocker: MockerFixture) -> None:
-        items = [{"category": "a_category_from_tomorrow", "message": "boom", "pipe_code": "summarize"}]
-        err = self._raise_from(mocker, _response(422, json_body={"detail": "refused", "validation_errors": items}))
-
-        assert err.validation_errors is None
-        # The raw list stays reachable on the decoded document.
-        assert err.problem_document is not None
-        assert err.problem_document["validation_errors"] == items
 
     def test_headers_and_request_url_are_kept_as_plain_data(self, mocker: MockerFixture) -> None:
         err = self._raise_from(mocker, _response(429, json_body={"detail": "slow down"}, headers={"Retry-After": "12"}))

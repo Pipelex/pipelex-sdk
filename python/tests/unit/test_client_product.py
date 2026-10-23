@@ -33,6 +33,7 @@ from pipelex_sdk.product_models import (
     UploadInput,
 )
 from pipelex_sdk.runs import RunStatus
+from tests.unit.conftest import problem_document
 
 _BASE_URL = "http://localhost:8081"
 
@@ -449,24 +450,25 @@ class TestClientProduct:
 
     def test_change_plan_409_conflict_surfaces_code(self, mocker: MockerFixture) -> None:
         client = self._client()
-        self._mock_send(mocker, client, _response(409, json_body={"code": "conflict", "message": "No subscription to change."}))
+        body = problem_document("pipelex.billing.subscription_conflict", 409, detail="No subscription to change.")
+        self._mock_send(mocker, client, _response(409, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(client.change_plan("pro"))
 
         err = exc_info.value
         assert err.status == 409
-        assert err.code == "conflict"
-        assert err.server_message == "No subscription to change."
+        assert err.problem.code == "pipelex.billing.subscription_conflict"
+        assert err.problem.detail == "No subscription to change."
 
     def test_billing_portal_409_conflict_surfaces_code(self, mocker: MockerFixture) -> None:
         client = self._client()
-        self._mock_send(mocker, client, _response(409, json_body={"code": "conflict"}))
+        self._mock_send(mocker, client, _response(409, json_body=problem_document("pipelex.billing.subscription_conflict", 409)))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(client.get_billing_portal())
 
-        assert exc_info.value.code == "conflict"
+        assert exc_info.value.problem.code == "pipelex.billing.subscription_conflict"
 
     # ── Pipelex API keys ─────────────────────────────────────────────
 
@@ -491,14 +493,22 @@ class TestClientProduct:
         assert sent.body == {"label": "L"}
         assert result.api_key == "plx_sk_secret"
 
-    def test_create_pipelex_api_key_409_limit_surfaces_code(self, mocker: MockerFixture) -> None:
+    def test_create_pipelex_api_key_409_limit_surfaces_the_plan_limit(self, mocker: MockerFixture) -> None:
         client = self._client()
-        self._mock_send(mocker, client, _response(409, json_body={"code": "pipelex_api_key_limit_reached", "message": "Limit reached."}))
+        body = problem_document(
+            "pipelex.billing.plan_limit",
+            409,
+            domain="account",
+            detail="Limit reached.",
+            next_step={"kind": "check_account", "detail": "Revoke a key, then try again."},
+        )
+        self._mock_send(mocker, client, _response(409, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(client.create_pipelex_api_key("L"))
 
-        assert exc_info.value.code == "pipelex_api_key_limit_reached"
+        assert exc_info.value.problem.code == "pipelex.billing.plan_limit"
+        assert exc_info.value.problem.domain == "account"
 
     def test_revoke_pipelex_api_key_encodes_id(self, mocker: MockerFixture) -> None:
         client = self._client()
@@ -691,7 +701,7 @@ class TestClientProduct:
             "status": "FAILED",
             "created_at": "2026-10-01T10:00:00Z",
             "finished_at": "2026-10-01T10:00:05Z",
-            "error": {"message": "boom", "error_type": "PipeExecutionError"},
+            "error": problem_document("model.content_refused", 422, detail="boom"),
         }
         self._mock_send(mocker, client, _response(200, json_body={"items": [row], "next_cursor": None}))
 
@@ -716,8 +726,22 @@ class TestClientProduct:
         assert pipeline_run.pipe_code is None
         assert pipeline_run.model_extra == {}
         assert pipeline_run.error is not None
-        assert pipeline_run.error.message == "boom"
-        assert pipeline_run.error.error_type == "PipeExecutionError"
+        assert pipeline_run.error.code == "model.content_refused"
+        assert pipeline_run.error.detail == "boom"
+
+    def test_a_run_rows_error_that_is_no_problem_document_reads_none(self, mocker: MockerFixture) -> None:
+        client = self._client()
+        row = {
+            "pipeline_run_id": "r9",
+            "status": "FAILED",
+            "created_at": "2026-10-01T09:00:00Z",
+            "error": {"error_type": "PipeRunError", "message": "the model refused"},
+        }
+        self._mock_send(mocker, client, _response(200, json_body={"items": [row], "next_cursor": None}))
+
+        result = asyncio.run(client.list_runs("m1"))
+
+        assert result.items[0].error is None
 
     def test_get_run_detail_encodes_id_and_returns_what_ran(self, mocker: MockerFixture) -> None:
         """The detail read is the only one carrying `mthds_contents` and `inputs`."""
