@@ -4010,7 +4010,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `uses`, one page of the examples that hold its address, then the runs that took it. Page the
    * uses by passing `uses.next_cursor` back as `usesCursor`; `null` is the last page. A record whose
    * upload looked unfinished past the upload grant's lifespan is settled by the read, so it answers
-   * `stored` when its bytes are there.
+   * `stored` when its bytes are there. Each use's `created_by` names who started the run or saved
+   * the example; a use the platform answers without the member, as one that predates it does, reads
+   * as `null`.
    *
    * Throws `RequestArgumentError` for a file id that is empty, `.` or `..`, or holds a lone
    * surrogate, before any request. Throws `ApiResponseError`: `404` `not_found` for a file that is
@@ -4036,7 +4038,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
         "a file whose `uses` is not a page of `items` and `next_cursor`",
       );
     }
-    return detail as unknown as FileDetail;
+    const items: unknown[] = uses.items;
+    return {
+      ...detail,
+      uses: { ...uses, items: items.map(withUseCreator) },
+    } as unknown as FileDetail;
   }
 
   /**
@@ -5316,6 +5322,17 @@ function runResultFailed(runId: string, body: string): RunResultState {
 function withCheckedReport<T>(record: T): T {
   if (!isPlainObject(record) || !Object.hasOwn(record, "error")) return record;
   return { ...record, error: readRunErrorReport(record.error) } as T;
+}
+
+/**
+ * A file use with its `created_by` read as `null` when the answer leaves the member out, as a
+ * platform that predates it does, so the member is a string or `null` as `FileUse` declares it,
+ * never `undefined`. A use carrying the key keeps it as sent, and one that is not an object is
+ * returned as it came.
+ */
+function withUseCreator(use: unknown): unknown {
+  if (!isPlainObject(use) || Object.hasOwn(use, "created_by")) return use;
+  return { ...use, created_by: null };
 }
 
 /**

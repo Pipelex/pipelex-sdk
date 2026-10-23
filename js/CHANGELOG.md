@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Who made each file use's holder**: `FileUse`, each use in the page `getFile` answers, gains `created_by`, the member who started the run or saved the example, so a client tells its own runs among a file's uses without reading any run; it is `null` on a use recorded before the platform carried it, and `getFile` reads a use answered without it, by a platform that predates it, as `null` too (`docs/files.md`).
+
 ## [v0.50.0] - 2026-10-23
 
 ### Added
