@@ -9,7 +9,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ApiResponseError, type PipelexApiClient } from "@pipelex/sdk";
 
-import { assertSelectorSupport, explainSelectorFailure, selectorKindsOf } from "./api.mts";
+import {
+  assertSelectorSupport,
+  describeRequestFailure,
+  explainSelectorFailure,
+  selectorKindsOf,
+} from "./api.mts";
+import { methodNotFoundBody } from "./fixtures/problems.mts";
 
 /** A client whose `version()` answers with the given body, or throws. */
 function versionClient(
@@ -110,36 +116,78 @@ describe("selectorKindsOf", () => {
 });
 
 describe("explainSelectorFailure", () => {
-  function apiError(status: number, serverMessage: string): ApiResponseError {
+  /** A refused codegen call, as the SDK's client throws it: the body as received. */
+  function apiError(status: number, body: string): ApiResponseError {
     return new ApiResponseError(
       `API POST /v1/codegen failed (${status})`,
       "https://api.example/v1/codegen",
       status,
-      "Not Found",
-      "{}",
-      "MethodPackageNotFoundError",
-      serverMessage,
-      undefined,
-      undefined,
+      "",
+      body,
     );
   }
 
-  it("prints the server's own message verbatim under the selector it names", () => {
-    const line = explainSelectorFailure(apiError(404, "Packages it contains: a, b."), {
-      method_ref: "github.com/Pipelex/methods/nope",
-    });
+  it("prints the problem's detail and next step verbatim under the selector it names", () => {
+    const line = explainSelectorFailure(
+      apiError(404, methodNotFoundBody("github.com/Pipelex/methods/nope")),
+      { method_ref: "github.com/Pipelex/methods/nope" },
+    );
 
     expect(line).toContain("method_ref github.com/Pipelex/methods/nope");
-    expect(line).toContain("Packages it contains: a, b.");
+    expect(line).toContain(
+      "No method is found at 'github.com/Pipelex/methods/nope'. (method.not_found)",
+    );
+    expect(line).toContain("Next step: Correct the method's address");
   });
 
-  // Anything but a 404 is a different failure with a different remedy — a 403 is
-  // the capability question the handshake answers, a 5xx is the API's problem.
-  it("declines a non-404, leaving the general explanation in charge", () => {
-    expect(explainSelectorFailure(apiError(403, "Forbidden"), { method_id: "mt_x" })).toBeNull();
+  // A bare 404 is the route missing, which the SDK reads as `request.not_found`:
+  // the method was never looked for, so the general explanation names the route.
+  it("declines a route the base URL does not serve", () => {
+    expect(
+      explainSelectorFailure(apiError(404, '{"detail":"Not Found"}'), { method_id: "mt_x" }),
+    ).toBeNull();
+  });
+
+  // Anything but a not-found is a different failure with a different remedy — a
+  // 403 is the capability question the handshake answers, a 5xx is the API's problem.
+  it("declines a failure other than a not-found, leaving the general explanation in charge", () => {
+    expect(explainSelectorFailure(apiError(403, ""), { method_id: "mt_x" })).toBeNull();
   });
 
   it("declines a thrown value that is not an API response at all", () => {
     expect(explainSelectorFailure(new Error("socket hang up"), { method_id: "mt_x" })).toBeNull();
+  });
+});
+
+describe("describeRequestFailure", () => {
+  it("prints a refusal from its problem: status, route, detail, code, next step and request id", () => {
+    const err = new ApiResponseError(
+      "API POST /v1/codegen failed (404)",
+      "https://api.example/v1/codegen",
+      404,
+      "",
+      methodNotFoundBody("github.com/Pipelex/methods/nope"),
+    );
+    expect(describeRequestFailure(err, "POST /v1/codegen")).toBe(
+      [
+        "HTTP 404 from POST /v1/codegen — No method is found at 'github.com/Pipelex/methods/nope'. (method.not_found)",
+        "  Next step: Correct the method's address, then send the request again.",
+        "  Request id: req_method_404",
+      ].join("\n"),
+    );
+  });
+
+  it("prints a bare answer by the SDK's reading of its status, never its body", () => {
+    const err = new ApiResponseError("API POST /v1/codegen failed (503)", "x", 503, "", "<html>");
+    const line = describeRequestFailure(err, "POST /v1/codegen");
+    expect(line).toContain("HTTP 503 from POST /v1/codegen");
+    expect(line).toContain("(runtime.unavailable)");
+    expect(line).not.toContain("<html>");
+  });
+
+  it("keeps a thrown value with no problem as its message", () => {
+    expect(describeRequestFailure(new Error("socket hang up"), "POST /v1/codegen")).toBe(
+      "socket hang up",
+    );
   });
 });

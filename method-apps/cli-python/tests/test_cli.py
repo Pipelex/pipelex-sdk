@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 import typer
+from mthds.protocol.problem.models import Problem
 from pipelex_sdk.artifact_models import ArtifactItemError, DownloadArtifactsResult, DownloadedArtifact
 from pipelex_sdk.errors import (
     ApiResponseError,
@@ -427,7 +428,8 @@ class TestAttended:
         fake_client.start_answer = refused_start
         result = invoke(make_binding(), [])
         assert result.exit_code == 1
-        assert "Pipe: draft_pitch" in result.stderr
+        assert "In pipe draft_pitch, field model:" in result.stderr
+        assert "For support: method.invalid · request req_a3dd6900-7909-48d3-b551-0140e73ac7fc" in result.stderr
         assert fake_client.waited == []
 
 
@@ -441,14 +443,27 @@ class TestNoSilentDowngrade:
         assert fake_client.executed == []
 
     def test_a_synchronous_only_orchestration_is_an_error_naming_blocking(self, fake_client: FakeClient):
+        # The runner's refusal of a `/start` in its synchronous orchestration, as the problem document it answers.
+        problem = Problem.model_validate(
+            {
+                "type": "https://mthds.ai/errors/runtime.unsupported",
+                "title": "This runtime cannot do what was asked",
+                "status": 501,
+                "detail": "Asynchronous pipeline execution is not enabled on this deployment.",
+                "code": "runtime.unsupported",
+                "domain": "operator",
+                "retry": "no",
+                "next_step": {"kind": "change_input", "detail": "Send a request that does not need asynchronous execution."},
+                "params": {"capability": "asynchronous execution"},
+            }
+        )
         fake_client.start_answer = ApiResponseError(
-            "API POST /v1/start failed (400)",
+            "API POST /v1/start failed (501)",
             api_url="http://127.0.0.1:8081",
-            status=400,
-            status_text="Bad Request",
-            response_body="",
-            server_message="Orchestration mode 'direct' cannot honor fire-and-forget delivery. Use /execute instead.",
-            error_type="StartRequiresAsyncOrchestration",
+            status=501,
+            status_text="Not Implemented",
+            response_body=json.dumps(problem.as_wire()),
+            problem=problem,
         )
         result = invoke(make_binding(), [])
         assert result.exit_code == 1
@@ -473,8 +488,14 @@ class TestBlocking:
         assert "without --blocking" in result.stderr
 
     def test_a_502_on_the_blocking_path_gets_the_same_hint(self, fake_client: FakeClient):
+        # The client raises an `execute` answer as one that may have started a run, which a bare 502 then reads as.
         fake_client.execute_answer = ApiResponseError(
-            "API POST /v1/execute failed (502)", api_url="https://api.pipelex.com", status=502, status_text="Bad Gateway", response_body=""
+            "API POST /v1/execute failed (502)",
+            api_url="https://api.pipelex.com",
+            status=502,
+            status_text="Bad Gateway",
+            response_body="",
+            may_start_run=True,
         )
         result = invoke(make_binding(), ["--blocking"])
         assert result.exit_code == 1

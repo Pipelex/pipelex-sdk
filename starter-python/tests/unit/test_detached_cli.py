@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from pipelex_sdk.error_models import RunErrorReport, UserAction
-from pipelex_sdk.errors import ApiResponseError, RunFailedError
+from mthds.protocol.problem.models import Problem
+from pipelex_sdk.errors import ApiResponseError, RunFailedError, run_failed_problem
 from pipelex_sdk.runs import RunRead, RunResultCompleted, RunResultFailed, RunResultRunning, RunResults, RunStatus
 from pytest_mock import MockerFixture
 from typer.testing import CliRunner
@@ -14,14 +14,20 @@ ENTITIES_CONTENT = {"people": ["Marie Curie"], "orgs": ["University of Paris"], 
 # walks, plus the short-lived signed link beside it, which is never what gets downloaded.
 IMAGE_CONTENT = {"url": "pipelex-storage://run-1/cat.png", "public_url": "https://cdn.example.com/signed/cat.png"}
 RUN_ID = "run-abc123"
-# A failed run's stored report, and the platform's sentence about the run that carries it.
-MODEL_REPORT = RunErrorReport(
-    title="LLM completion",
-    message="The model refused the request.",
-    retryable=True,
-    user_action=UserAction(kind="change_input", detail="Rephrase the prompt, or pick another model."),
+# A failed run's own problem, as the runtime stores it, and the `run.failed` the results read nests it in.
+MODEL_ERROR = Problem.model_validate(
+    {
+        "type": "https://mthds.ai/errors/provider.unavailable",
+        "title": "The provider is unavailable",
+        "detail": "The provider 'openai' is unavailable.",
+        "code": "provider.unavailable",
+        "domain": "runtime",
+        "retry": "yes",
+        "next_step": {"kind": "retry", "detail": "Run the method again, since the provider may be back."},
+        "params": {"provider": "openai"},
+    }
 )
-REPORTED_DETAIL = "Run finished with status FAILED: The model refused the request."
+FAILED_RUN = run_failed_problem(run_id=RUN_ID, status=RunStatus.FAILED, run_error=MODEL_ERROR)
 
 
 # The lifecycle helpers hand back a whole `RunResults`; these offline tests carry no usage, so the
@@ -132,9 +138,11 @@ class TestDetachedCli:
         assert result.stdout == ""
         output = " ".join(result.output.split())
         assert "The API answered 422 Unprocessable Entity." in output
-        assert "Reason: Validate bundle — Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found" in output
-        assert "Pipe: draft_pitch" in output
-        assert "Next step: Edit the bundle as each validation error says" in output
+        assert "Reason: The method does not validate." in output
+        assert "In pipe draft_pitch, field model: Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found" in output
+        assert "Who acts: whoever authors the method, by changing it." in output
+        assert "Next step: Fix each fault the problem's errors list, then validate the method again." in output
+        assert "For support: method.invalid · request req_a3dd6900-7909-48d3-b551-0140e73ac7fc" in output
 
     def test_wait_prints_the_raw_main_stuff(self, mocker: MockerFixture):
         attend_mock = mocker.patch("widget.detached.cli.attend_run", return_value=_results(ENTITIES_CONTENT))
@@ -188,28 +196,33 @@ class TestDetachedCli:
         assert "Marie Curie" in result.output
 
     def test_result_exits_non_zero_when_the_run_failed(self, mocker: MockerFixture):
-        failed = RunResultFailed(pipeline_run_id=RUN_ID, status=RunStatus.FAILED, message="the pipe blew up")
+        failed = RunResultFailed(
+            pipeline_run_id=RUN_ID,
+            status=RunStatus.FAILED,
+            message="the pipe blew up",
+            problem=run_failed_problem(run_id=RUN_ID, status=RunStatus.FAILED),
+        )
         mocker.patch("widget.detached.cli.fetch_run_result", return_value=failed)
         result = runner.invoke(app, ["detached", "result", RUN_ID])
         assert result.exit_code == 1
         assert "the pipe blew up" in result.output
 
     def test_result_of_a_failed_run_reads_out_its_stored_report(self, mocker: MockerFixture):
-        failed = RunResultFailed(pipeline_run_id=RUN_ID, status=RunStatus.FAILED, message=REPORTED_DETAIL, error=MODEL_REPORT)
+        failed = RunResultFailed(pipeline_run_id=RUN_ID, status=RunStatus.FAILED, message=FAILED_RUN.detail, problem=FAILED_RUN, error=MODEL_ERROR)
         mocker.patch("widget.detached.cli.fetch_run_result", return_value=failed)
         result = runner.invoke(app, ["detached", "result", RUN_ID])
         assert result.exit_code == 1
         _assert_reads_out_the_report(result.output)
 
     def test_wait_on_a_failed_run_reads_out_its_stored_report(self, mocker: MockerFixture):
-        error = RunFailedError(REPORTED_DETAIL, run_id=RUN_ID, status=RunStatus.FAILED, error=MODEL_REPORT)
+        error = RunFailedError(FAILED_RUN.detail, run_id=RUN_ID, status=RunStatus.FAILED, problem=FAILED_RUN)
         mocker.patch("widget.detached.cli.attend_run", side_effect=error)
         result = runner.invoke(app, ["detached", "wait", RUN_ID])
         assert result.exit_code == 1
         _assert_reads_out_the_report(result.output)
 
     def test_status_of_a_failed_run_reads_out_its_stored_report(self, mocker: MockerFixture):
-        run = RunRead(pipeline_run_id=RUN_ID, status=RunStatus.FAILED, created_at="2026-07-13T10:00:00Z", error=MODEL_REPORT)
+        run = RunRead(pipeline_run_id=RUN_ID, status=RunStatus.FAILED, created_at="2026-07-13T10:00:00Z", error=MODEL_ERROR)
         mocker.patch("widget.detached.cli.fetch_run_status", return_value=run)
         result = runner.invoke(app, ["detached", "status", RUN_ID])
         assert result.exit_code == 0
@@ -245,8 +258,11 @@ class TestDetachedCli:
 
 
 def _assert_reads_out_the_report(output: str) -> None:
-    """The report's title and message, its next step and its retry advice, whatever the console wrapped."""
+    """The run's problem read out: its reason, who acts, its retry verdict and the support line, whatever the console wrapped."""
     flattened = " ".join(output.split())
-    assert "Reason: LLM completion — The model refused the request." in flattened
-    assert "Next step: Rephrase the prompt, or pick another model." in flattened
-    assert "Retry: running it again may succeed." in flattened
+    assert "Reason: The provider is unavailable — The provider 'openai' is unavailable." in flattened
+    assert "Who acts: nobody on your side: the service failed, and nothing you sent caused it." in flattened
+    # A step that only says to retry is the retry line's to say.
+    assert "Next step:" not in flattened
+    assert "Retry: running it again can succeed." in flattened
+    assert f"For support: run {RUN_ID} · provider.unavailable" in flattened

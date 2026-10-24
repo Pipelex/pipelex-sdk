@@ -144,39 +144,41 @@ async function serveAsset(
 
 /**
  * The reference's own refusals — the resolve route's per-reference verdicts
- * (`invalid_storage_uri`, `forbidden`) and a store that has no such object —
- * all answer `404`, so a `403` cannot be told from a `404` from outside.
+ * (the reference is not the key's, or not a storage reference) and a store
+ * that has no such object — are all one problem, `input.reference_not_found`,
+ * and all answer `404`, so a `403` cannot be told from a `404` from outside.
  * Everything else the fetch boundary reports is this side's failure to reach
- * the bytes, `store_refused` included: that is the store rejecting a signature
- * this route has just minted, which means a clock, a signing key or a bucket
- * policy — an outage to report as one, not an asset to call missing.
+ * the bytes, the store refusing a link included: that is the store rejecting a
+ * signature this route has just minted, which means a clock, a signing key or
+ * a bucket policy — an outage to report as one, not an asset to call missing.
+ * The error's class says only which hop failed; what it means is its problem's
+ * code, and the message names the fetch's finer `reason`.
  */
-const NOT_FOUND_CODES = new Set(["invalid_storage_uri", "forbidden", "not_found"]);
-
 function refusalFor(err: unknown): Response {
   if (err instanceof ArtifactFetchError) {
-    if (NOT_FOUND_CODES.has(err.code)) {
+    if (err.code === "input.reference_not_found") {
       return refusal(404, "asset_not_found", "No stored asset at this path.");
     }
     return refusal(
       502,
       "asset_unavailable",
-      `The stored asset could not be fetched (${err.code}).`,
+      `The stored asset could not be fetched (${err.reason}).`,
     );
   }
   if (err instanceof ApiResponseError) {
     // The resolve route refused the whole request: the key, the route's
     // absence on this deployment, or a malformed request — a server-side
-    // configuration problem, never the caller's. A 404 is the one worth
-    // naming: `fetchArtifact` mints its link through the platform's bulk
-    // resolve route, and a deployment that does not serve it cannot serve
-    // this route either, whatever the single-reference route says.
+    // configuration problem, never the caller's. A route the API does not
+    // serve (`request.not_found`) is the one worth naming: `fetchArtifact`
+    // mints its link through the platform's bulk resolve route, and a
+    // deployment that does not serve it cannot serve this route either,
+    // whatever the single-reference route says.
     return refusal(
       502,
       "resolve_failed",
-      err.status === 404
+      err.code === "request.not_found"
         ? "The configured Pipelex API does not serve POST /v1/resolve-storage-url/bulk, which the assets route needs to resolve a stored asset."
-        : `The Pipelex API refused to resolve the asset (HTTP ${err.status}).`,
+        : `The Pipelex API refused to resolve the asset (HTTP ${err.status}, ${err.code}).`,
     );
   }
   if (err instanceof ApiUnreachableError) {

@@ -16,7 +16,8 @@ from typing import Any
 
 import pytest
 from pipelex_sdk.codegen_check import run_codegen_check
-from pipelex_sdk.codegen_lock import CODEGEN_LOCK_FILENAME, load_lock
+from pipelex_sdk.codegen_lock import load_lock
+from pipelex_sdk.errors import CODEGEN_LOCK_FILENAME
 
 from scripts.codegen import METHODS_DIR, discover_method_dirs, generated_package_dir
 from widget.generated.extract_entities.models import ExtractedEntities

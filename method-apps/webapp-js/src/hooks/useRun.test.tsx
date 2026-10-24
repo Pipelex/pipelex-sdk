@@ -217,6 +217,32 @@ describe("useRun — durable", () => {
     expect(poll).toHaveBeenCalledTimes(2);
   });
 
+  it("waits the delay a transient poll failure's problem asks for before reading again", async () => {
+    const start = vi.fn().mockResolvedValueOnce({ ok: true, runId: "run-1" });
+    const poll = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        transient: true,
+        retryAfterSeconds: 5,
+        error: { kind: "server_error", title: "T", message: "rate limited", details: "d" },
+      })
+      .mockResolvedValueOnce({ ok: true, state: "completed", output: { value: "done" } });
+    const cfg = makeCfg({ mode: "durable", start, poll, intervalMs: 1000 });
+    const { result } = renderHook(() => useRun(cfg));
+
+    act(() => result.current.run("in"));
+    await flush(); // start resolves; first poll → transient, asking for 5 seconds
+    expect(asRunning(result.current.state).health).toBe("retrying");
+
+    await flush(1000); // the base interval alone does not read again
+    expect(poll).toHaveBeenCalledTimes(1);
+
+    await flush(4000); // the problem's delay has passed → completed
+    expect(poll).toHaveBeenCalledTimes(2);
+    expect(result.current.state.phase).toBe("done");
+  });
+
   it("maps a server-reported degraded running poll to health 'reconnecting'", async () => {
     const start = vi.fn().mockResolvedValueOnce({ ok: true, runId: "run-1" });
     const poll = vi.fn().mockResolvedValueOnce({

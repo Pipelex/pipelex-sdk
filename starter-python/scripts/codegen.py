@@ -47,6 +47,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
+from mthds.protocol.problem.models import ProblemItem
+from mthds.protocol.problem.registry import CoreCode
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.codegen_writer import write_codegen_tree
 from pipelex_sdk.crate_models import CodegenRequest, CodegenTarget, CodegenValidReport
@@ -190,33 +192,53 @@ def explain(exc: Exception, base_url: str, route: str = "POST /v1/codegen") -> s
     `route` is a parameter because `scripts/add_method.py` reuses this on `POST /v1/validate`, and a
     validate failure reported against the codegen route would send the reader to the wrong place.
     Every route of the SDK, `validate` among the protocol ones, raises `ApiResponseError` on a
-    non-2xx answer, so that one class carries the status, the server's reason and its next step.
+    non-2xx answer, carrying the answer as its problem document: what to say is read from the
+    problem's code, never from the status or the wording.
     """
     if not isinstance(exc, ApiResponseError):
         return str(exc)
-    status = exc.status
-    # A route this server lacks answers a bare 404, with neither the platform's `code` nor the
-    # runner's `error_type`. A 404 carrying either is an answer from the route itself — a
-    # `method_ref` whose package does not exist, say — and the base URL is not what to change.
-    if status == 404 and exc.code is None and exc.error_type is None:
-        return (
-            f"this base URL does not serve {route} (HTTP 404).\n"
-            f"    Base URL: {base_url}\n"
-            "    The hosted Pipelex API serves this route — check PIPELEX_BASE_URL in .env,\n"
-            "    or drop it to use the default."
-        )
-    if status == 403:
-        # Not a base-URL problem: a 403 on a product route is the platform's surface-access
-        # gate, so sending the user to edit PIPELEX_BASE_URL would be the wrong advice.
-        discriminant = f" {exc.code}" if exc.code else ""
-        return (
-            f"PIPELEX_API_KEY may not use {route} (HTTP 403{discriminant}).\n"
-            f"    Base URL: {base_url}\n"
-            "    The key was recognised; this surface is not enabled for it."
-        )
-    reason = exc.server_message or exc.title or exc.error_type or exc.code or exc.response_body.strip() or exc.status_text
-    next_step = f"\n    Next step: {exc.user_action.detail}" if exc.user_action else ""
-    return f"HTTP {status} from {route} — {reason}{next_step}"
+    problem = exc.problem
+    match problem.code:
+        case CoreCode.REQUEST_NOT_FOUND:
+            # A route this server lacks. A 404 the route answers itself, such as a `method_ref` whose
+            # package does not exist, carries its own code, and the base URL is not what to change.
+            return (
+                f"this base URL does not serve {route} (HTTP {exc.status}).\n"
+                f"    Base URL: {base_url}\n"
+                "    The hosted Pipelex API serves this route — check PIPELEX_BASE_URL in .env,\n"
+                "    or drop it to use the default."
+            )
+        case CoreCode.AUTH_MISSING_CREDENTIAL | CoreCode.AUTH_INVALID_CREDENTIAL | CoreCode.AUTH_CREDENTIAL_EXPIRED:
+            return (
+                f"PIPELEX_API_KEY was refused on {route} (HTTP {exc.status}, {problem.code}).\n"
+                f"    Base URL: {base_url}\n"
+                "    Check the key in .env — get one at https://app.pipelex.com."
+            )
+        case CoreCode.CLIENT_RESPONSE_UNREADABLE:
+            # No problem document came back, so the body as it came is the only reason there is.
+            reason = exc.response_body.strip() or problem.detail.strip()
+            return f"HTTP {exc.status} from {route} — {reason}"
+        case _:
+            reason = problem.detail.strip() or problem.title.strip() or problem.code
+            faults = "".join(f"\n{line}" for line in fault_lines(problem.errors))
+            next_step = f"\n    Next step: {problem.next_step.detail}" if problem.next_step.detail.strip() else ""
+            request = f" · request {exc.request_id}" if exc.request_id else ""
+            return f"HTTP {exc.status} from {route} — {reason}{faults}{next_step}\n    For support: {problem.code}{request}"
+
+
+def fault_lines(items: list[ProblemItem] | None) -> list[str]:
+    """The faults a verdict or a refusal lists, one line each: where the fault is, then what it is."""
+    return [f"    {fault_location(item)}: {item.detail}" for item in items or ()]
+
+
+def fault_location(item: ProblemItem) -> str:
+    """Where a fault is: the file of the method's tree its location names, with the line, else its pipe, its input or its field, else `?`."""
+    location = item.location
+    if location is None:
+        return "?"
+    if location.file:
+        return f"{location.file}:{location.line}" if location.line is not None else location.file
+    return location.pipe or location.input or location.field or "?"
 
 
 async def generate_method(client: PipelexAPIClient, method: MethodSource) -> bool:
@@ -238,8 +260,8 @@ async def generate_method(client: PipelexAPIClient, method: MethodSource) -> boo
     # resolve would describe a method that cannot run.
     if not isinstance(response, CodegenValidReport):
         print(f"\n✗ {method.name} — the closure does not resolve: {response.message}", file=sys.stderr)
-        for item in response.validation_errors:
-            print(f"    {item.source or '?'}: {item.message}", file=sys.stderr)
+        for line in fault_lines(response.errors):
+            print(line, file=sys.stderr)
         return False
 
     try:

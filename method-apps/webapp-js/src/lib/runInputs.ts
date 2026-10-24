@@ -129,6 +129,8 @@ function invalidInputsError(verdict: Extract<RunInputsGateResult, { ok: false }>
 
   return {
     kind: "bad_request",
+    // The person's inputs are what must change, as an API refusal of them says.
+    domain: "input",
     title: missingInputs.length ? "Input required" : "Invalid input",
     message: missingInputs.length
       ? `Fill in ${formatList(missingInputs)} before running this method.`

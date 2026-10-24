@@ -19,17 +19,7 @@ async function load(): Promise<ReadModule> {
 }
 
 function refused(status: number): ApiResponseError {
-  return new ApiResponseError(
-    `HTTP ${status}`,
-    "https://api.test",
-    status,
-    "",
-    "",
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-  );
+  return new ApiResponseError(`HTTP ${status}`, "https://api.test", status, "", "");
 }
 
 beforeEach(() => {

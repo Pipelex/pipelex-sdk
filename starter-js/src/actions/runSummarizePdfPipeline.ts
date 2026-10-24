@@ -87,10 +87,10 @@ export async function requestSummarizePdfUpload(request: UploadRequest): Promise
  * several is refused there, with no fallback — so the ref is stated, exactly as
  * `make add-method` scaffolds it, and the run is sent the same ref.
  *
- * On failure `prepareInputs` throws *before any run starts* (a typed
- * `InputPreparationError` — see `classifyInputPreparationError`). Because this
- * closure runs inside `executeBlockingRun` / `startDurableRun`'s try/catch, that
- * error is classified like any other SDK error — no new try/catch here. On the
+ * On failure `prepareInputs` throws *before any run starts*, an SDK error whose
+ * problem says what went wrong. Because this closure runs inside
+ * `executeBlockingRun` / `startDurableRun`'s try/catch, that error is classified
+ * from its problem like any other SDK error — no new try/catch here. On the
  * durable path the preparation happens once, at start; `poll` never rebuilds
  * options.
  */

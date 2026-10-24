@@ -13,9 +13,10 @@ from typing import Any, Protocol, cast
 
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import VersionInfo
-from pipelex_sdk.errors import ApiResponseError
+from mthds.protocol.problem.registry import CoreCode
+from pipelex_sdk.errors import ApiResponseError, MethodErrorCode
 
-from scripts.codegen_shared import CodegenSource
+from scripts.codegen_shared import CodegenSource, fault_lines
 
 
 class VersionClient(Protocol):
@@ -61,35 +62,55 @@ async def selector_support_refusal(client: VersionClient, base_url: str, source:
 
 
 def explain_selector_failure(exc: BaseException, source: CodegenSource) -> str | None:
-    """A `404` on a named method, said as the API not resolving it, with the server's own reason."""
-    if not isinstance(exc, ApiResponseError) or exc.status != 404 or source.selector is None:
+    """A named method the API could not resolve, said as such, with the problem's own reason.
+
+    The problem's code decides it: no method at the address or under the id, an address matching several
+    methods, or a catalog method never published. Any other refusal is left to `explain`.
+    """
+    if not isinstance(exc, ApiResponseError) or source.selector is None:
         return None
-    detail = exc.server_message or str(exc)
-    return f"the API could not resolve {source.describe()}.\n  {detail}"
+    match exc.problem.code:
+        case CoreCode.METHOD_NOT_FOUND | CoreCode.METHOD_AMBIGUOUS | MethodErrorCode.NOT_FOUND | MethodErrorCode.NOT_PUBLISHED:
+            detail = exc.problem.detail.strip() or str(exc)
+            return f"the API could not resolve {source.describe()}.\n  {detail}"
+        case _:
+            return None
 
 
 def explain(exc: BaseException, base_url: str, route: str, source: CodegenSource | None = None) -> str:
-    """A failed request as the line that says what to do about it, naming the route it came from."""
+    """A failed request as the line that says what to do about it, naming the route it came from, read from its problem."""
     if source is not None:
         selector_failure = explain_selector_failure(exc, source)
         if selector_failure is not None:
             return selector_failure
     if not isinstance(exc, ApiResponseError):
         return str(exc)
-    if exc.status in (403, 404) and exc.code is None and exc.error_type is None:
-        return "\n".join(
-            (
-                f"this base URL does not serve {route} (HTTP {exc.status}).",
-                f"  Base URL: {base_url}",
-                "  The hosted Pipelex API serves this route: check PIPELEX_BASE_URL in .env,",
-                "  or drop it to use the default.",
+    problem = exc.problem
+    match problem.code:
+        case CoreCode.REQUEST_NOT_FOUND:
+            # A route this server lacks. A refusal the route answers itself carries its own code.
+            return "\n".join(
+                (
+                    f"this base URL does not serve {route} (HTTP {exc.status}).",
+                    f"  Base URL: {base_url}",
+                    "  The hosted Pipelex API serves this route: check PIPELEX_BASE_URL in .env,",
+                    "  or drop it to use the default.",
+                )
             )
-        )
-    reason = exc.server_message or exc.title or exc.error_type or exc.code or exc.response_body.strip() or exc.status_text
-    next_step = f"\n  Next step: {exc.user_action.detail}" if exc.user_action is not None and exc.user_action.detail else ""
-    return f"HTTP {exc.status} from {route} — {reason}{next_step}"
-
-
-def about_the_method(exc: BaseException) -> bool:
-    """Whether a refusal is about the method rather than the route: the runner named an error type."""
-    return isinstance(exc, ApiResponseError) and exc.error_type is not None
+        case CoreCode.AUTH_MISSING_CREDENTIAL | CoreCode.AUTH_INVALID_CREDENTIAL | CoreCode.AUTH_CREDENTIAL_EXPIRED:
+            return "\n".join(
+                (
+                    f"PIPELEX_API_KEY was refused on {route} (HTTP {exc.status}, {problem.code}).",
+                    f"  Base URL: {base_url}",
+                    "  Check the key in .env; get one at https://app.pipelex.com.",
+                )
+            )
+        case CoreCode.CLIENT_RESPONSE_UNREADABLE:
+            # No problem document came back, so the body as it came is the only reason there is.
+            return f"HTTP {exc.status} from {route} — {exc.response_body.strip() or problem.detail.strip()}"
+        case _:
+            reason = problem.detail.strip() or problem.title.strip() or problem.code
+            faults = "".join(f"\n{line}" for line in fault_lines(problem.errors))
+            next_step = f"\n  Next step: {problem.next_step.detail}" if problem.next_step.detail.strip() else ""
+            request_id = f" · request {exc.request_id}" if exc.request_id else ""
+            return f"HTTP {exc.status} from {route} — {reason}{faults}{next_step}\n  For support: {problem.code}{request_id}"
