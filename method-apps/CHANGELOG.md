@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.52.0] - 2026-10-24
+
+### Changed
+
+- **The web app's brand tokens are named after their roles, and an unset colour keeps the template's own (Breaking)**: the web app template runs on `@pipelex/mthds-form` 0.23.1, and a branded page writes the accent's ink onto `--link` and `--ring` and its pale fill onto `--selected`, the form kernel's role-named tokens, where it wrote `--brand`, `--brand-muted` and `--brand-muted-foreground`, so a focused control is outlined in the team's accent too, and the template's utilities are `text-link`, `border-link` and `bg-selected`, where they were `text-brand`, `border-brand`, `bg-brand-muted` and `text-brand-muted-foreground`, which a project's own components rename the same way. Only the colours a team set are written: a team that set no button colour keeps the template's neutral `--primary` where it got Pipelex green, one that set neither an accent nor a button colour keeps the template's link ink, selected fill and focus ring, one that set no header colour keeps the page as its band, and one that set logos and no colour renders no colour sheet at all.
+
 ## [v0.51.0] - 2026-10-23
 
 ### Added

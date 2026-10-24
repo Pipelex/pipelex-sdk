@@ -1,8 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { contrastRatio, deriveBrandRoles, PIPELEX_GREEN } from "@pipelex/mthds-form/brand";
-import { brandStyleSheet, brandTokens, PAGE_COLORS } from "@/lib/brandStyle";
+import { contrastRatio, deriveBrandRoles } from "@pipelex/mthds-form/brand";
+import {
+  brandStyleSheet,
+  brandTokens,
+  PAGE_COLORS,
+  type BrandTokenName,
+  type BrandTokens,
+} from "@/lib/brandStyle";
 
 const NAVY = "#14213d";
 const AMBER = "#fca311";
@@ -20,6 +26,13 @@ function contrast(a: string, b: string): number {
   return contrastRatio(srgb(a), srgb(b));
 }
 
+/** One token the seeds must have produced: a missing one fails the test by name. */
+function token(tokens: BrandTokens, name: BrandTokenName): string {
+  const value = tokens[name];
+  if (value === undefined) throw new Error(`${name} was not written`);
+  return value;
+}
+
 /** The declarations of one rule of the sheet, as a name-to-value map. */
 function rule(sheet: string, selector: string): Record<string, string> {
   const match = sheet.match(new RegExp(`^${selector.replace(".", "\\.")}\\{([^}]*)\\}$`, "m"));
@@ -35,35 +48,64 @@ function rule(sheet: string, selector: string): Record<string, string> {
 describe("brandTokens", () => {
   it("maps the button colour onto --primary as a fill, with black or white on it", () => {
     const tokens = brandTokens({ action: NAVY }, PAGE_COLORS.light);
-    expect(tokens["--primary"]).toBe(NAVY);
+    expect(token(tokens, "--primary")).toBe(NAVY);
     expect(tokens["--primary-foreground"]).toBe("#ffffff");
     expect(brandTokens({ action: AMBER }, PAGE_COLORS.light)["--primary-foreground"]).toBe(
       "#000000",
     );
   });
 
-  it("puts the accent's ink on --brand, never the raw accent, so brand text always reads", () => {
+  it("puts the accent's ink on --link, never the raw accent, so accent text always reads", () => {
     const tokens = brandTokens({ action: NAVY, accent: AMBER }, PAGE_COLORS.light);
+    const link = token(tokens, "--link");
     // Amber on the light page is a fill, not a text colour: the ink is a deeper amber.
     expect(contrast(AMBER, PAGE_COLORS.light)).toBeLessThan(4.5);
-    expect(tokens["--brand"]).not.toBe(AMBER);
-    expect(contrast(tokens["--brand"], PAGE_COLORS.light)).toBeGreaterThanOrEqual(4.5);
-    // The ink on the pale fill, the kernel's selected pill and this app's run status.
-    expect(tokens["--brand-muted-foreground"]).toBe(tokens["--brand"]);
-    expect(contrast(tokens["--brand"], tokens["--brand-muted"])).toBeGreaterThanOrEqual(4.5);
+    expect(link).not.toBe(AMBER);
+    expect(contrast(link, PAGE_COLORS.light)).toBeGreaterThanOrEqual(4.5);
+    // The ink on the selected fill, the kernel's selected pill and this app's run status.
+    expect(contrast(link, token(tokens, "--selected"))).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("paints the band with the header colour, and with the page when none is set", () => {
+  it("draws focus in the accent's ink, so a branded focus reads against the page", () => {
+    const tokens = brandTokens({ action: NAVY, accent: AMBER }, PAGE_COLORS.light);
+    expect(token(tokens, "--ring")).toBe(token(tokens, "--link"));
+  });
+
+  it("lets the accent follow a button colour set alone", () => {
+    const tokens = brandTokens({ action: NAVY }, PAGE_COLORS.light);
+    const roles = deriveBrandRoles({ action: NAVY }, PAGE_COLORS.light);
+    expect(token(tokens, "--link")).toBe(roles.accentInk);
+    expect(token(tokens, "--selected")).toBe(roles.accentFill);
+    expect(token(tokens, "--ring")).toBe(roles.accentInk);
+  });
+
+  it("paints the band with the header colour, and leaves the band to the page when none is set", () => {
     expect(brandTokens({ header: NAVY }, PAGE_COLORS.light)["--app-header"]).toBe(NAVY);
     expect(brandTokens({ header: NAVY }, PAGE_COLORS.light)["--app-header-foreground"]).toBe(
       "#ffffff",
     );
-    expect(brandTokens({}, PAGE_COLORS.light)["--app-header"]).toBe(PAGE_COLORS.light);
-    expect(brandTokens({}, PAGE_COLORS.dark)["--app-header"]).toBe(PAGE_COLORS.dark);
+    // No header colour writes no band token, so `globals.css` falls back to the page.
+    for (const page of [PAGE_COLORS.light, PAGE_COLORS.dark]) {
+      const tokens = brandTokens({ action: NAVY }, page);
+      expect(tokens).not.toHaveProperty("--app-header");
+      expect(tokens).not.toHaveProperty("--app-header-foreground");
+    }
   });
 
-  it("falls back to Pipelex green for a button colour a branded team did not set", () => {
-    expect(brandTokens({ header: NAVY }, PAGE_COLORS.light)["--primary"]).toBe(PIPELEX_GREEN);
+  it("keeps the template's own --primary for a button colour a branded team did not set", () => {
+    const tokens = brandTokens({ header: NAVY }, PAGE_COLORS.light);
+    expect(tokens).not.toHaveProperty("--primary");
+    expect(tokens).not.toHaveProperty("--primary-foreground");
+    // With no button colour and no accent, nothing follows either: the link
+    // ink, the selected fill and the focus ring stay the template's too.
+    expect(tokens).not.toHaveProperty("--link");
+    expect(tokens).not.toHaveProperty("--selected");
+    expect(tokens).not.toHaveProperty("--ring");
+  });
+
+  it("writes no token at all for a theme whose team set no colour", () => {
+    expect(brandTokens({}, PAGE_COLORS.light)).toEqual({});
+    expect(brandTokens({ action: null, accent: null, header: null }, PAGE_COLORS.dark)).toEqual({});
   });
 
   it("is the kernel's derivation, role for role, on each theme's page", () => {
@@ -73,9 +115,9 @@ describe("brandTokens", () => {
       expect(brandTokens(seeds, page)).toEqual({
         "--primary": roles.action,
         "--primary-foreground": roles.onAction,
-        "--brand": roles.accentInk,
-        "--brand-muted": roles.accentFill,
-        "--brand-muted-foreground": roles.accentInk,
+        "--link": roles.accentInk,
+        "--selected": roles.accentFill,
+        "--ring": roles.accentInk,
         "--app-header": roles.header,
         "--app-header-foreground": roles.onHeader,
       });
@@ -98,14 +140,14 @@ describe("brandTokens", () => {
       for (const seed of sweep) {
         const tokens = brandTokens({ action: seed, accent: seed, header: seed }, page);
         expect(
-          contrast(tokens["--primary-foreground"], tokens["--primary"]),
+          contrast(token(tokens, "--primary-foreground"), token(tokens, "--primary")),
         ).toBeGreaterThanOrEqual(4.5);
         expect(
-          contrast(tokens["--app-header-foreground"], tokens["--app-header"]),
+          contrast(token(tokens, "--app-header-foreground"), token(tokens, "--app-header")),
         ).toBeGreaterThanOrEqual(4.5);
-        expect(contrast(tokens["--brand"], page)).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(token(tokens, "--link"), page)).toBeGreaterThanOrEqual(4.5);
         expect(
-          contrast(tokens["--brand-muted-foreground"], tokens["--brand-muted"]),
+          contrast(token(tokens, "--link"), token(tokens, "--selected")),
         ).toBeGreaterThanOrEqual(4.5);
       }
     }
@@ -124,6 +166,12 @@ describe("brandStyleSheet", () => {
     expect(rule(sheet, ".dark")).toEqual(
       brandTokens({ action: AMBER, accent: AMBER, header: NAVY }, PAGE_COLORS.dark),
     );
+  });
+
+  it("writes no rule for a theme that sets no token, and no sheet for a team that set no colour", () => {
+    const sheet = brandStyleSheet({ light: { header: NAVY }, dark: {} });
+    expect(sheet).toBe(`:root{--app-header:${NAVY};--app-header-foreground:#ffffff;}`);
+    expect(brandStyleSheet({ light: {}, dark: {} })).toBe("");
   });
 
   it("holds nothing but token names and hex colours, so it is safe as a <style>'s text", () => {
