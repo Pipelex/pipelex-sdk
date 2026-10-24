@@ -26,7 +26,7 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@pipelex/mthds-form": "github:Pipelex/mthds-form#1fd1964548e972e41e1a9332f44978801d23e4bd",
+    "@pipelex/mthds-form": "^0.23.1",
     "@pipelex/sdk": "^0.50.0",
     "next": "^16.3.8",
     "react": "^19.2.4",
