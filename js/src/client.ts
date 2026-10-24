@@ -430,12 +430,12 @@ export interface MethodCopyRequestOptions {
    * can be sent again unchanged and makes one copy, not two. A verdict and a `4xx` refusal of the
    * copy are stored alike, so the same copy under the same key is answered the same again; a `5xx`
    * and a refusal for its timing (a `408`, `425` or `429`) are not stored, and a copy that failed
-   * with one left nothing visible, so the same key sends it afresh.
-   * The same key with a different body is refused (`409` `request.idempotency_conflict`), as is a
-   * key whose earlier request is still being handled (`409` `request.idempotency_key_in_use`,
-   * whose `retry` is `yes`: send it again under the same key in a few seconds); a changed copy,
-   * such as one with a fresh draft token,
-   * goes under a new key. See `docs/method-copy.md`.
+   * with one left nothing visible, but for the `503` whose `detail` names the copy (see
+   * `copyMethod`), so the same key sends it afresh. The same key with a different body is refused
+   * (`409` `request.idempotency_conflict`, whose `retry` is `no`), as is a key whose earlier
+   * request is still being handled (`409` `request.idempotency_key_in_use`, whose `retry` is
+   * `yes`: send it again under the same key in a few seconds); a changed copy, such as one with a
+   * fresh draft token, goes under a new key. See `docs/method-copy.md`.
    *
    * A key is held to the rule a start's is (`PipelexStartRequestOptions.idempotencyKey`): 1 to
    * 255 visible ASCII characters, anything else a `RequestArgumentError` before any request.
@@ -3530,7 +3530,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * The answer is a `MethodCopyResult` discriminated on `outcome` — branch on it: `copied` with
    * the copy as `method`, `examples_copied` and `stored_files_copied`; `refused` with the
    * `reason` `bundle_names_other_storage`, a `message` and every `references` entry (`{ path, uri
-   * }`) a `.mthds` file of the draft holds that the destination cannot read, nothing written.
+   * }`) a `.mthds` file of the draft holds that the destination cannot read and, in a duplicate,
+   * that names a file under the original's run files, which erasing the original would remove,
+   * nothing written.
    *
    * The route serves web sessions only: a Pipelex API key belongs to one organization and cannot
    * speak for another. `options.idempotencyKey` is sent as the `Idempotency-Key` header, so a copy
@@ -3543,21 +3545,31 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `destination_org_id` that is not a non-empty string, a `name` or an
    * `expected_draft_updated_at` given that is not a string, and a malformed idempotency key.
    * Throws `ApiResponseError` when no verdict was produced, each refusal writing nothing a reader
-   * sees: `403` `auth.forbidden` for a request that is not from a web session, or for a role
-   * that may not change methods, in the method's organization or in the destination; `404`
-   * `pipelex.org.not_found` for a destination the caller does not belong to, still being set up
-   * or unknown, alike; `404` `pipelex.catalog.not_found` for an unknown method; `409`
-   * `pipelex.catalog.being_deleted`; `409` `pipelex.catalog.update_conflict` for a draft that
-   * moved since `expected_draft_updated_at`; a `409` for a draft whose tree the organization holds
-   * no full record of; `413` `request.too_large` for an example or a copy too large for one
-   * stored item; `422` `request.invalid` for a body that does not validate, such as a name holding
-   * a lone surrogate; `422` `pipelex.catalog.copy_too_large` past one of the copy's bounds on the
-   * stored files it copies, named by the problem's `limit` member (`MethodCopyLimit`); and, each
-   * with `retry` `yes`, a `502` `runtime.unavailable` when the platform could not read the
-   * caller's memberships, a `503` `pipelex.storage.unavailable` when storage failed, and a `503`
-   * `runtime.unavailable` past the copy's deadline. An answer whose `outcome` is neither arm's, a
-   * `copied` one whose `method` is not an object or a `refused` one whose `references` is not an
-   * array, is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * sees but for the `503` whose `detail` names the copy: `403` `auth.forbidden` for a request
+   * that is not from a web session, or for a role that may not change methods, in the method's
+   * organization or in the destination; `404` `pipelex.org.not_found` for a destination the
+   * caller does not belong to, still being set up or unknown, alike; `404`
+   * `pipelex.catalog.not_found` for an unknown method; `409` `pipelex.catalog.being_deleted`;
+   * `409` `pipelex.catalog.update_conflict` for a draft that moved since
+   * `expected_draft_updated_at`; a `409` whose `domain` is `runtime` and `retry` `no`, for a
+   * draft whose tree the method's organization holds no record of or no longer holds every file
+   * of; `413`
+   * `request.too_large` for a copied example, or the copy's row, too large for one stored item,
+   * the row keeping room for the summary a publish adds, so a `name` that would leave none is
+   * refused; `422` `request.invalid` for a body that does not validate, such as a name holding a
+   * lone surrogate; `422` `pipelex.catalog.copy_too_large` past one of the copy's bounds on the
+   * stored files it copies, named by the problem's `limit` member (`MethodCopyLimit`); a `502`
+   * `runtime.unavailable`, with `retry` `yes`, when the platform could not read the caller's
+   * memberships; a `503` `pipelex.storage.unavailable`, with `retry` `yes`, when storage failed,
+   * and a `500` `pipelex.storage.not_configured`, with `retry` `no`, when the platform has no
+   * usable credentials for storage; and a `503` `runtime.unavailable`, with `retry` `yes`, past
+   * the copy's deadline, when a stored file it copies is written over meanwhile, or when DynamoDB
+   * fails. When DynamoDB failed both the copy's row write and the read that would confirm it,
+   * that `503`'s `detail` names the copy's method id: the copy may stand in the destination, so
+   * look for that id there before copying again, since a retry may make a second copy. An answer
+   * whose `outcome` is neither arm's, a `copied` one whose `method` is not an object or a
+   * `refused` one whose `references` is not an array, is an answer the SDK cannot read, thrown as
+   * an `ApiResponseError` too.
    */
   async copyMethod(
     methodId: string,

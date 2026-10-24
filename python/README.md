@@ -148,7 +148,7 @@ async for saved in client.iterate_method_examples("mt_123"):  # every example, o
 
 ### Copy a method into a team
 
-A copy is a new, unpublished method in an organization you may change methods in, holding the original's draft, its form inputs and its examples, the stored files they name copied with it, and `copied_from` naming the original. Only a web session may copy. A bundle naming storage the destination cannot read answers `refused`, a verdict rather than an error, and the idempotency key makes a retry copy once ([`docs/method-copy.md`](docs/method-copy.md)):
+A copy is a new, unpublished method in an organization you may change methods in, holding the original's draft, its form inputs and its examples, the stored files they name copied with it, and `copied_from` naming the original. Only a web session may copy. A bundle naming storage the destination cannot read, or, in a duplicate, a file under the original's run files, which erasing the original would remove, answers `refused`, a verdict rather than an error, and the idempotency key makes a retry copy once ([`docs/method-copy.md`](docs/method-copy.md)):
 
 ```python
 import uuid
