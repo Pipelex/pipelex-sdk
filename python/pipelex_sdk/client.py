@@ -2699,35 +2699,44 @@ class PipelexAPIClient(MthdsAPIClient):
                 copies nothing more: a copy whose answer was lost, as on a client timeout, can be sent again
                 unchanged and makes one copy, not two. A verdict and a `4xx` refusal of the copy are stored alike,
                 so the same copy under the same key is answered the same again; a `5xx` and a refusal for its timing
-                (a `408`, `425` or `429`) are not stored, and a copy that failed with one left nothing visible, so
-                the same key sends it afresh. The same key with a different body
-                is refused (`409` `conflict`), as is a key whose earlier request is still being handled (`409`
-                `idempotency_key_in_use`, retryable); a changed copy, such as one with a fresh draft token, goes
-                under a new key. See `docs/method-copy.md`. A key is held to the rule a start's is: 1 to 255
-                visible ASCII characters.
+                (a `408`, `425` or `429`) are not stored, and a copy that failed with one left nothing visible, but
+                for the `503` whose `detail` names the copy (below), so the same key sends it afresh. The same key
+                with a different body is refused (`409` `conflict`, `input` and not retryable, which its
+                `error_domain` tells from the `runtime` `conflict` of an incomplete tree), as is a key whose earlier
+                request is still being handled (`409` `idempotency_key_in_use`, retryable); a changed copy, such as
+                one with a fresh draft token, goes under a new key. See `docs/method-copy.md`. A key is held to the
+                rule a start's is: 1 to 255 visible ASCII characters.
 
         Returns:
             A `MethodCopyResult` discriminated on `outcome` — branch on it: `MethodCopied` with the copy as `method`,
             `examples_copied` and `stored_files_copied`; `MethodCopyRefused` with the `reason`
             `bundle_names_other_storage`, a `message` and every `references` entry (`path`, `uri`) a `.mthds` file
-            of the draft holds that the destination cannot read, nothing written.
+            of the draft holds that the destination cannot read and, in a duplicate, that names a file under the
+            original's run files, which erasing the original would remove, nothing written.
 
         Raises:
             RequestArgumentError: `method_id` is refused as every method route refuses it, `destination_org_id` is
                 not a non-empty `str`, `name` or `expected_draft_updated_at` is given but is not a `str`, or
                 `idempotency_key` is not 1 to 255 visible ASCII characters; nothing is sent.
-            ApiResponseError: When no verdict was produced, each refusal writing nothing a reader sees: `403`
+            ApiResponseError: When no verdict was produced, each refusal writing nothing a reader sees but for the
+                `503` whose `detail` names the copy: `403`
                 `forbidden` for a request that is not from a web session; `403` `role_not_permitted` for a role that
                 may not change methods, in the method's organization or in the destination; `404`
                 `organization_not_found` for a destination the caller does not belong to, still being set up or
                 unknown, alike; `404` `not_found` for an unknown method; `409` `method_being_deleted`; `409`
                 `method_update_conflict` for a draft that moved since `expected_draft_updated_at`; `409` `conflict`,
-                `runtime`, for a draft whose tree the organization holds no full record of; `413`
-                `payload_too_large` for an example or a copy too large for one stored item; `422`
-                `validation_failed` for a body that does not validate; `422` `method_copy_too_large` past one of the
-                copy's bounds on the stored files it copies, whose `problem_document["limit"]` names it
-                (`MethodCopyLimit`); and, each retryable, a `502` when the platform could not read the caller's
-                memberships, a `500` `storage_backend_failed` and a `503` past the copy's deadline.
+                `runtime` and not retryable, for a draft whose tree the method's organization holds no record of or
+                no longer holds every file of; `413` `payload_too_large` for a copied example, or the copy's row,
+                too large for one stored item, the row keeping room for the summary a publish adds, so a `name`
+                that would leave none is refused; `422` `validation_failed` for a body that does not validate;
+                `422` `method_copy_too_large` past one of the copy's bounds on the stored files it copies, whose
+                `problem_document["limit"]` names it (`MethodCopyLimit`); a retryable `502` when the platform could
+                not read the caller's memberships; a `500` `storage_backend_failed`, retryable unless the platform
+                has no usable credentials for storage; and a retryable `503` past the copy's deadline, when a
+                stored file it copies is written over meanwhile, or when DynamoDB fails. When DynamoDB failed both
+                the copy's row write and the read that would confirm it, that `503`'s `detail` names the copy's
+                method id: the copy may stand in the destination, so look for that id there before copying again,
+                since a retry may make a second copy.
         """
         call = "copy_method"
         endpoint = f"{_method_path(method_id, call=call)}/copy"

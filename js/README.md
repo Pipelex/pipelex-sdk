@@ -168,8 +168,9 @@ for await (const saved of client.iterateMethodExamples(created.method_id)) {
 }
 
 // Copy a method into a team, or into your personal workspace, with its draft, its form inputs and
-// its examples (web sessions only). A bundle naming storage the destination cannot read answers
-// `refused`, a verdict rather than an error; the key makes a retry copy once.
+// its examples (web sessions only). A bundle naming storage the destination cannot read, or, in a
+// duplicate, a file under the original's run files, which erasing the original would remove,
+// answers `refused`, a verdict rather than an error; the key makes a retry copy once.
 const copy = await client.copyMethod(
   created.method_id,
   { destination_org_id: "org_team", expected_draft_updated_at: draft.updated_at },
