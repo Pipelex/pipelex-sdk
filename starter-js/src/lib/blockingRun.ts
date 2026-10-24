@@ -59,7 +59,8 @@ export async function executeBlockingRun<T>(
     const results = resultsFromExecute(response);
     return { ok: true, output: parse(results), usage: buildUsageReport(results), runId };
   } catch (err) {
-    // `blocking: true` maps the gateway's 502/504 cap response to execute_timeout.
+    // `blocking: true` reads `client.outcome_unknown`, the gateway's 502/504 cap
+    // response among it, as execute_timeout.
     const error = classifyPipelineError(err, readClassifyEnv(), { blocking: true });
     return runId === undefined ? { ok: false, error } : { ok: false, error, runId };
   }

@@ -23,8 +23,7 @@ from __future__ import annotations
 import sys
 
 from pipelex_sdk.codegen_check import run_codegen_check
-from pipelex_sdk.codegen_lock import CODEGEN_LOCK_FILENAME
-from pipelex_sdk.errors import CodegenLockError
+from pipelex_sdk.errors import CODEGEN_LOCK_FILENAME, CodegenLockError
 
 from scripts.codegen import METHODS_DIR, REPO_ROOT, discover_method_dirs, generated_package_dir
 

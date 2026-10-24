@@ -76,6 +76,7 @@ import {
   TEXT_STATS_OUTPUT_FORM,
   TEXT_STATS_LOCK,
 } from "./fixtures/add-method-fixtures.mts";
+import { catalogNotFoundBody, methodNotFoundBody } from "./fixtures/problems.mts";
 
 // The recorded artifacts are trimmed to their export lines and so carry no
 // codegen stamp, which `fetchGenerated`'s self-verify would call `hand-edited`.
@@ -1294,18 +1295,16 @@ describe("runAddMethod", () => {
             "https://api.example/v1/codegen",
             404,
             "Not Found",
-            "{}",
-            "MethodPackageNotFoundError",
-            "No package at address 'github.com/Pipelex/methods/__nope__'.",
-            undefined,
-            undefined,
+            methodNotFoundBody("github.com/Pipelex/methods/__nope__"),
           ),
         ),
     });
 
     expect(await runAddMethod(["github.com/Pipelex/methods/__nope__"], deps(client))).toBe(1);
 
-    expect(errors.join("\n")).toContain("No package at address");
+    expect(errors.join("\n")).toContain(
+      "No method is found at 'github.com/Pipelex/methods/__nope__'.",
+    );
     expect(await written()).toEqual(["src/components/ExampleTabs.tsx"]);
   });
 
@@ -1731,11 +1730,7 @@ describe("runAddMethod", () => {
             "https://api.example/v1/methods/mt_missing",
             404,
             "Not Found",
-            "{}",
-            "MethodNotFoundError",
-            "Method mt_missing not found",
-            undefined,
-            undefined,
+            catalogNotFoundBody("mt_missing"),
           ),
         ),
     });
@@ -1747,9 +1742,69 @@ describe("runAddMethod", () => {
     expect(await runAddMethod(["mt_missing"], deps(client))).toBe(1);
 
     expect(errors.join("\n")).toContain("could not resolve");
-    expect(errors.join("\n")).toContain("Method mt_missing not found");
+    expect(errors.join("\n")).toContain(
+      "The organization's catalog holds no method matching the request for the method 'mt_missing'.",
+    );
     expect(errors.join("\n")).not.toMatch(/\n\s+at /);
     expect(await written()).toEqual(["src/components/ExampleTabs.tsx"]);
+  });
+
+  it("names both the key and the base URL when the catalog read gets a bare 403, with no stack", async () => {
+    const client = fakeClient({
+      getMethod: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new ApiResponseError(
+            "API GET /v1/methods/mt_somewhere failed (403)",
+            "https://api.example/v1/methods/mt_somewhere",
+            403,
+            "Forbidden",
+            "",
+          ),
+        ),
+    });
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation(
+      (line: unknown) => void errors.push(String(line)),
+    );
+
+    expect(await runAddMethod(["mt_somewhere"], deps(client))).toBe(1);
+
+    const printed = errors.join("\n");
+    expect(printed).toContain(
+      "HTTP 403 from GET /v1/methods/mt_somewhere, with no problem document",
+    );
+    expect(printed).toContain("PIPELEX_API_KEY");
+    expect(printed).toContain("PIPELEX_BASE_URL (https://api.example)");
+    expect(printed).not.toMatch(/\n\s+at /);
+    expect(await written()).toEqual(["src/components/ExampleTabs.tsx"]);
+  });
+
+  it("reads any other refusal of the catalog read from its problem, with no stack", async () => {
+    const client = fakeClient({
+      getMethod: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new ApiResponseError(
+            "API GET /v1/methods/mt_somewhere failed (401)",
+            "https://api.example/v1/methods/mt_somewhere",
+            401,
+            "Unauthorized",
+            "",
+          ),
+        ),
+    });
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation(
+      (line: unknown) => void errors.push(String(line)),
+    );
+
+    expect(await runAddMethod(["mt_somewhere"], deps(client))).toBe(1);
+
+    const printed = errors.join("\n");
+    expect(printed).toContain("HTTP 401 from GET /v1/methods/mt_somewhere");
+    expect(printed).toContain("(auth.missing_credential)");
+    expect(printed).not.toMatch(/\n\s+at /);
   });
 
   it("refuses a registry whose anchor is gone, before writing anything", async () => {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiResponseError } from "@pipelex/sdk";
+import { ApiResponseError, buildProblem, type Problem } from "@pipelex/sdk";
 
 const requestUploadGrant = vi.fn();
 
@@ -37,17 +37,14 @@ const STORED_GRANT = {
 };
 
 /** The SDK's error for a product route answering `status`, as `requestProduct` builds it. */
-function responseError(status: number, serverMessage?: string) {
+/** A refused grant request, as the SDK's client throws it: the body as received, read as its problem. */
+function responseError(status: number, body: string | Problem = "") {
   return new ApiResponseError(
     `API POST /v1/upload/grant failed (${status})`,
     "https://api.example.com",
     status,
     "",
-    serverMessage ? JSON.stringify({ detail: serverMessage }) : "",
-    undefined,
-    serverMessage,
-    undefined,
-    undefined,
+    typeof body === "string" ? body : JSON.stringify(body),
   );
 }
 
@@ -116,13 +113,15 @@ describe("grantFileUpload", () => {
   });
 
   it("takes the platform's own word on a file too large", async () => {
-    requestUploadGrant.mockRejectedValueOnce(
-      responseError(413, "Declared file size exceeds the 50 MiB limit."),
-    );
+    const body = {
+      ...buildProblem("request.too_large", { size: 60_000_000, limit: MAX_FILE_BYTES }),
+      status: 413,
+    };
+    requestUploadGrant.mockRejectedValueOnce(responseError(413, body));
     const outcome = await grantFileUpload(REQUEST, OPTS);
     expect(outcome).toMatchObject({
       ok: false,
-      error: { kind: "file_too_large", message: "Declared file size exceeds the 50 MiB limit." },
+      error: { kind: "file_too_large", message: body.detail, code: "request.too_large" },
     });
   });
 

@@ -120,6 +120,8 @@ class TestBlockingCli:
         assert result.exit_code == 1
         output = " ".join(result.output.split())
         assert "The API answered 422 Unprocessable Entity." in output
-        assert "Reason: Validate bundle — Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found" in output
-        assert "Pipe: draft_pitch" in output
-        assert "Next step: Edit the bundle as each validation error says" in output
+        assert "Reason: The method does not validate." in output
+        assert "In pipe draft_pitch, field model: Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found" in output
+        assert "Who acts: whoever authors the method, by changing it." in output
+        assert "Next step: Fix each fault the problem's errors list, then validate the method again." in output
+        assert "For support: method.invalid · request req_a3dd6900-7909-48d3-b551-0140e73ac7fc" in output

@@ -137,17 +137,7 @@ describe("GET /api/assets/[...path]", () => {
 
   it("answers 502 when the resolve route refused the request or the API is unreachable", async () => {
     fetchArtifact.mockRejectedValueOnce(
-      new ApiResponseError(
-        "forbidden",
-        "https://api.test",
-        403,
-        "Forbidden",
-        "",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-      ),
+      new ApiResponseError("forbidden", "https://api.test", 403, "Forbidden", ""),
     );
     let response = await get(["org", "x.png"]);
     expect(response.status).toBe(502);
@@ -156,17 +146,7 @@ describe("GET /api/assets/[...path]", () => {
     // A deployment without the bulk route is named, because the single
     // `resolveStorageUrl` route working beside it is exactly what misleads.
     fetchArtifact.mockRejectedValueOnce(
-      new ApiResponseError(
-        "not found",
-        "https://api.test",
-        404,
-        "Not Found",
-        "",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-      ),
+      new ApiResponseError("not found", "https://api.test", 404, "Not Found", ""),
     );
     response = await get(["org", "x.png"]);
     expect(response.status).toBe(502);

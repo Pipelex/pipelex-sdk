@@ -58,6 +58,7 @@ Each of these replaced a way the gates could be silently wrong, and each has its
 - **The self-check runs before anything is written**, as step 3 says.
 - **The models and the contracts describe one revision**, as step 5 says, or nothing is written.
 - **A failed request is caught by what it can raise**, and nothing else: the SDK's request errors, which cover a refusal and an API that gave no answer alike, and a body that is not the answer. Anything else is a bug, which surfaces with its traceback rather than as a refusal.
+- **A refusal is worded from its problem's code**, never from the error's class or its HTTP status alone: a method the API could not resolve names the method, a route this base URL does not serve (`request.not_found`) names the base URL, a refused key (the `auth.*` credential codes) names `PIPELEX_API_KEY`, a bare `403` with no problem document, which a gateway answers both to a key it refuses and to a path it does not route, names both the key and the base URL, and any other refusal gives the problem's reason, each fault its `errors` list with the file and line or the pipe it names, its next step, and the line to quote to support, its code and request id.
 
 ## Two staleness gates
 

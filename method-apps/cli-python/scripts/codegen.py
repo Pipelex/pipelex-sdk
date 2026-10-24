@@ -48,7 +48,7 @@ from pipelex_sdk.errors import CodegenError
 from pipelex_method_cli_python.lib import client as api
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.contracts import LOCK_FILENAME, SOURCES_SIDECAR
-from scripts.codegen_api import VersionClient, about_the_method, explain, selector_support_refusal
+from scripts.codegen_api import VersionClient, explain, selector_support_refusal
 from scripts.codegen_shared import (
     PACKAGE_LAYOUT,
     WRITER_OWNED,
@@ -182,7 +182,7 @@ async def fetch_pipe_io(client: CodegenClient, source: CodegenSource, *, include
         response = await client.pipe_io(source.pipe_io_request(include_files=include_files))
     except (PipelineRequestError, ValueError) as exc:
         # A refusal or an unreachable API, both the SDK's request errors, or a body that is not the answer.
-        raise GenerateFailure(explain(exc, client.base_url, "POST /v1/pipe-io", source if about_the_method(exc) else None)) from exc
+        raise GenerateFailure(explain(exc, client.base_url, "POST /v1/pipe-io", source)) from exc
     if not isinstance(response, PipeIOValidReport):
         raise GenerateFailure("\n".join(invalid_lines(response)))
     reason = not_runnable_reason(response)

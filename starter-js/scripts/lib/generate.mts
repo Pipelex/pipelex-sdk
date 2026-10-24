@@ -26,7 +26,6 @@ import process from "node:process";
 // because Playwright transpiles its config to CJS first.)
 import nextEnv from "@next/env";
 import {
-  ApiResponseError,
   DEFAULT_API_BASE_URL,
   PipelexApiClient,
   runCodegenCheck,
@@ -38,7 +37,14 @@ import {
 } from "@pipelex/sdk";
 import { parse as parseToml } from "smol-toml";
 
-import { assertSelectorSupport, explainSelectorFailure, selectorKindsOf } from "./api.mts";
+import {
+  assertSelectorSupport,
+  describeItems,
+  describeRequestFailure,
+  explainSelectorFailure,
+  isRouteMissing,
+  selectorKindsOf,
+} from "./api.mts";
 import {
   assertSecureBaseUrl,
   CONTRACTS_FILENAME,
@@ -190,12 +196,12 @@ export async function writeTree(
 /**
  * Turn a thrown value into an actionable line, naming the fix where we know it.
  *
- * `source` is passed for a selector method so a 404 can be read the right way
- * round: on a files method a 404 means the route is missing, while on a selector
- * method the route answered and the *method* is missing — two failures with
- * nothing in common but their status code. A call made after the selector has
- * already resolved passes it only for a 404 the API typed: an untyped one there
- * is its own route missing.
+ * `source` is passed for a selector method so a not-found can be read the
+ * right way round: a route the base URL does not serve (`request.not_found`)
+ * names the route, while a not-found the API answered with a problem of its
+ * own means the route answered and the *method* is missing — two failures
+ * with nothing in common but their status code. Anything else is printed from
+ * its problem: its detail, code and next step.
  */
 function explain(
   error: unknown,
@@ -207,18 +213,15 @@ function explain(
     const selectorFailure = explainSelectorFailure(error, source.selector);
     if (selectorFailure !== null) return selectorFailure;
   }
-  if (error instanceof ApiResponseError && (error.status === 403 || error.status === 404)) {
+  if (isRouteMissing(error)) {
     return [
-      `this base URL does not serve ${route} (HTTP ${error.status}).`,
+      `this base URL does not serve ${route} (request.not_found).`,
       `  Base URL: ${baseUrl}`,
       "  The hosted Pipelex API serves this route — check PIPELEX_BASE_URL in",
       "  .env.local, or drop it to use the default.",
     ].join("\n");
   }
-  if (error instanceof ApiResponseError) {
-    return `HTTP ${error.status} from ${route} — ${error.serverMessage ?? error.message}`;
-  }
-  return error instanceof Error ? error.message : String(error);
+  return describeRequestFailure(error, route, baseUrl);
 }
 
 /** The files `writeTree` writes itself, which no server artifact may land on. */
@@ -360,9 +363,7 @@ export async function fetchPipeIoArtifacts(
     const response = await client.pipeIo(pipeIoRequest(source));
     if (!response.is_valid) {
       console.error(`\n✗ ${source.name} — the method does not resolve:`);
-      for (const item of response.validation_errors) {
-        console.error(`    ${item.source ?? "?"}: ${item.message}`);
-      }
+      for (const line of describeItems(response.errors)) console.error(line);
       return null;
     }
     const notRunnable = notRunnableReason(response);
@@ -379,14 +380,11 @@ export async function fetchPipeIoArtifacts(
     };
   } catch (error) {
     // `fetchGenerated` calls this only after `/v1/codegen` resolved the same
-    // selector, so an untyped 404 here is a runner older than the route, and the
-    // message names the route. A 404 the API typed is still its own answer about
-    // the method, so that one keeps the selector reading.
-    const aboutTheMethod = error instanceof ApiResponseError && error.errorType !== undefined;
-    console.error(
-      `\n✗ ${source.name} — ` +
-        explain(error, baseUrl, "POST /v1/pipe-io", aboutTheMethod ? source : undefined),
-    );
+    // selector, so a route the base URL does not serve here is a runner older
+    // than the route, and `explain` names the route. A not-found the API
+    // answered with a problem of its own is still its answer about the method,
+    // so that one keeps the selector reading.
+    console.error(`\n✗ ${source.name} — ` + explain(error, baseUrl, "POST /v1/pipe-io", source));
     return null;
   }
 }
@@ -425,9 +423,7 @@ export async function fetchGenerated(
     );
     if (!response.is_valid) {
       console.error(`\n✗ ${source.name} — the closure does not resolve:`);
-      for (const item of response.validation_errors) {
-        console.error(`    ${item.source ?? "?"}: ${item.message}`);
-      }
+      for (const line of describeItems(response.errors)) console.error(line);
       return null;
     }
     report = response;

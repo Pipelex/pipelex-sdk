@@ -35,17 +35,7 @@ describe("resolveShareUrl", () => {
 
   it("answers undefined rather than throwing when the mint fails — the kernel then copies the display URL", async () => {
     resolveStorageUrl.mockRejectedValueOnce(
-      new ApiResponseError(
-        "forbidden",
-        "https://api.test",
-        403,
-        "Forbidden",
-        "",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-      ),
+      new ApiResponseError("forbidden", "https://api.test", 403, "Forbidden", ""),
     );
     await expect(resolveShareUrl("pipelex-storage://org/x.png")).resolves.toBeUndefined();
   });

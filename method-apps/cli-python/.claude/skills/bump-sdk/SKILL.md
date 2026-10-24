@@ -28,7 +28,7 @@ These are the files to check after a bump, and the tests that catch a change und
 | `src/<package>/lib/inputs.py`, `lib/wire.py`, `lib/contracts.py` | `mthds.protocol`'s input-form and output-form models, the IO contracts and `render_inputs_template` | `tests/test_inputs.py`, `tests/test_wire.py`, `tests/test_wire_table.py` and `tests/test_contracts.py`, and the command itself, which parses the committed `contracts.json` into those models when it loads |
 | `src/<package>/lib/artifacts.py` | `collect_artifacts`, `download_artifacts` and the result they return | `tests/test_artifacts.py` |
 | `src/<package>/lib/narrow.py`, `lib/output.py` | `RunResults` and the shapes its `main_stuff` arrives in | `tests/test_narrow.py`, `tests/test_output.py` |
-| `src/<package>/lib/errors.py`, `lib/usage.py`, `cli.py` | The error classes and what each carries, the run's stored error report, the problem document, and `summarize_usage` | `tests/test_errors.py`, `tests/test_usage.py` |
+| `src/<package>/lib/errors.py`, `lib/usage.py`, `cli.py` | The problem document every error carries (`exc.problem`), its readers and the registry's codes, domains, retry verdicts and step kinds, the run's own problem nested in `run.failed` (`nested_run_error`), the few data members the presentation reads off a class, and `summarize_usage` | `tests/test_errors.py`, `tests/test_usage.py` |
 | `scripts/`, `src/<package>/lib/method_source.py` | `codegen`, `pipe_io`, `version`, `write_codegen_tree`, `run_codegen_check`, and the request, report and file models they take and return | `tests/test_codegen.py`, `tests/test_method_source.py`, and `make codegen-check` over the committed tree |
 
 Two more seams are not code:

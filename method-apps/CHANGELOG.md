@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The web app reads every failure from its problem document (Breaking)**: `classifyPipelineError` classifies an SDK error by the code of the MTHDS problem it carries, never by its class, HTTP status or message, and shows the problem's title, detail, next step and retry verdict, the domain as who must act (`<ErrorDisplay>` tinting a fault on the person's side amber and the service's red), and a support line with the run, the code and the request id. A failed run is read from its own problem, nested in `run.failed`, a refused run lists each of its `errors` items with where it is and its close matches, a durable start whose outcome is unknown is the new kind `outcome_unknown`, and `PipelineError` gains `domain`, `code` and `requestId` while `retry` becomes `{ verdict, summary, afterSeconds? }`. A failed poll is read again only when its problem's verdict says a retry can pass, waiting at least its `retry_after`, and `make add-method`, `make codegen` and `make codegen-verify` word a refusal from its problem's code and detail and list its faults from `errors`, a bare `403` with no problem document naming both the key and the base URL.
+- **The CLI template reads a failure from its problem document (Breaking)**: `lib/errors.py` presents every SDK error from the MTHDS problem it carries, `exc.problem`, never from its class, so a refusal, or a failed run read from its own problem nested in `run.failed`, prints its reason, each fault with where it is, who acts, its next step, whether running it again can succeed (an unknown outcome with a hint naming `--resume <id>` when the run's id is known) and a line to quote to support with the run, the code and the request id; `problem_lines` takes a problem where it took the error, `present_failed_run` takes the run's problem as `run_error` where it took a stored report, and `report_lines` is gone. A server without durable runs is recognised from its `runtime.unsupported` problem, and a failed wait is retried only when the problem's retry verdict is yes, the SDK's wait itself honouring `Retry-After`. `make codegen`, `make codegen-verify` and `make create` word a refusal from its problem's code and list its faults from `errors`, and a bare `403` with no problem document names both the key and the base URL, since a gateway answers it both to a key it refuses and to a path it does not route.
+
 ## [v0.51.0] - 2026-10-23
 
 ### Added

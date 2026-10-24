@@ -162,10 +162,12 @@ async def attend_run(client: PipelexAPIClient, *, run_id: str, stderr: Console) 
 
     Cancelling the wait, which is what Ctrl-C does under `asyncio.run`, is the way out: it leaves the
     run going on the server, prints the command that reattaches to it and lets the cancellation
-    through, which the command's boundary turns into exit code 130. Losing the API mid-wait,
-    unreachable or answering a server fault or a rate limit, says the same before the boundary
-    presents the error, since the run may well still be going; a refusal such as a `404` for an
-    unknown id says nothing of the kind.
+    through, which the command's boundary turns into exit code 130. Losing the API mid-wait, a failure
+    whose problem says that the same read can succeed again (its `retry` is `yes`: the API out of
+    reach, a fault of the service, a rate limit), says the same before the boundary presents the
+    error, since the run may well still be going; a refusal such as a `404` for an unknown id says
+    nothing of the kind. The SDK's wait honours a `Retry-After` the status read answers with, so no
+    pause is added here.
     """
     short_id = escape(run_id[:8])
     started_at = time.monotonic()
@@ -188,7 +190,7 @@ async def attend_run(client: PipelexAPIClient, *, run_id: str, stderr: Console) 
             stderr.print(f"\nInterrupted. The run is still going on the server; resume it with: [bold]{escape(resume_command(run_id))}[/bold]")
             raise
         except (ApiUnreachableError, ApiResponseError) as exc:
-            if isinstance(exc, ApiResponseError) and not _is_transient(exc):
+            if not _is_transient(exc):
                 raise
             stderr.print(
                 f"\nLost contact with the API while waiting. The run may still be going on the server; "
@@ -197,9 +199,9 @@ async def attend_run(client: PipelexAPIClient, *, run_id: str, stderr: Console) 
             raise
 
 
-def _is_transient(exc: ApiResponseError) -> bool:
-    """Whether a poll's refusal says nothing about the run: a server fault, or a rate limit."""
-    return exc.status >= 500 or exc.status == 429
+def _is_transient(exc: PipelineRequestError) -> bool:
+    """Whether a poll's failure says nothing about the run: its problem says that sending the same read again can succeed."""
+    return exc.problem.is_retryable
 
 
 async def run_blocking(client: PipelexAPIClient, *, binding: MethodBinding, inputs: dict[str, Any], stderr: Console) -> RunResults:
