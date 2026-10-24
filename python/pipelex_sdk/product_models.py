@@ -346,8 +346,10 @@ class MethodPublishRefused(BaseModel):
     """A publish the draft's content refused: nothing was published.
 
     `message` says why — for `not_runnable`, that the draft "is valid but does not run yet" — and
-    `validation` is the runner's `POST /v1/validate` answer for the draft, verbatim: an invalid
-    arm whose `errors`, problem items, say what to fix, or, for `not_runnable`, the valid arm.
+    `validation` is the runner's `POST /v1/validate` answer for the draft, read member by member as
+    `validate` reads it (`pipelex_sdk.problem_items.ProblemItems`): an invalid arm whose `errors`,
+    problem items, say what to fix, or, for `not_runnable`, the valid arm. An entry that names no fault
+    is left out, and a member the standard declares is kept only when it is well-formed.
     """
 
     model_config = ConfigDict(extra="allow")

@@ -379,8 +379,10 @@ export interface MethodPublishRefused {
   /** Says why; for `not_runnable`, that the draft "is valid but does not run yet". */
   message: string;
   /**
-   * The runner's `POST /v1/validate` answer for the draft, verbatim: an invalid arm whose
-   * `errors`, problem items, say what to fix, or, for `not_runnable`, the valid arm.
+   * The runner's `POST /v1/validate` answer for the draft, read member by member as `validate`
+   * reads it: an invalid arm whose `errors`, problem items, say what to fix, or, for
+   * `not_runnable`, the valid arm. An entry that names no fault is left out, and a member the
+   * standard declares is kept only when it is well-formed.
    */
   validation: PipelexValidationResult;
   method: MethodData;
@@ -437,9 +439,9 @@ export interface MethodCopyInput {
   /** The copy's name, under the creation's rules; the original's when omitted or `null`. */
   name?: string | null;
   /**
-   * The original's draft token (`MethodData.updated_at`) the caller last saw, echoed verbatim:
-   * a draft that moved since is refused with a `409` `method_update_conflict`, and nothing is
-   * copied. Omitted or `null`, the copy takes the draft as it stands when the request is served.
+   * The original's draft token (`MethodData.updated_at`) the caller last saw, echoed verbatim: a
+   * draft that moved since is refused with a `409` `pipelex.catalog.update_conflict`, and nothing
+   * is copied. Omitted or `null`, the copy takes the draft as it stands when the request is served.
    */
   expected_draft_updated_at?: string | null;
 }

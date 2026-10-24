@@ -1,7 +1,8 @@
 /**
  * How the SDK reads the problem items a verdict lists: the `errors` of an invalid validate verdict
  * (`PipelexInvalidReport`), of an invalid crate verdict (`CrateInvalidReport`) and of a pipe I/O
- * answer that does not load, and the `warnings` of a valid validate verdict. The Python twin,
+ * answer that does not load, and the `warnings` of a valid validate verdict, the runner's verdict
+ * a refused publish carries (`MethodPublishRefused.validation`) included. The Python twin,
  * `pipelex-sdk`, reads them the same way in `pipelex_sdk.problem_items`.
  *
  * The items are read tolerantly, member by member, so that one malformed member never costs the

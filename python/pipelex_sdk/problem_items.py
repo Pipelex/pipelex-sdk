@@ -1,7 +1,7 @@
 """How the SDK reads the problem items a verdict lists: the `errors` of an invalid validate verdict
 (`PipelexInvalidReport`), of an invalid crate verdict (`CrateInvalidReport`) and of a pipe I/O answer that does not
-load, and the `warnings` of a valid validate verdict. `@pipelex/sdk` reads them the same way in its
-`problem-items.ts`.
+load, and the `warnings` of a valid validate verdict, the runner's verdict a refused publish carries
+(`MethodPublishRefused.validation`) included. `@pipelex/sdk` reads them the same way in its `problem-items.ts`.
 
 The items are read tolerantly, member by member, so that one malformed member never costs the caller the fault it
 belongs to: an entry that is no object, or whose `code` or `detail` is not a string, names no fault and is

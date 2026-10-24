@@ -86,7 +86,7 @@ An empty draft lists no file and has a `draft_digest` of `None`. The listing pag
 
 An answer of these two routes the SDK cannot read, a listing whose `sha256` is not 64 lower-case hex digits or whose `size` is negative among them, is an `ApiResponseError` that reaches no link either: `response_body` has every `url` member and every link's query replaced by `[redacted]`, and the error's chain holds no failure that holds the body. A pydantic refusal is chained as a copy keeping each error's type and location, so a caller can still read which member was refused, its values redacted the same way; a body that is not JSON chains nothing, since `json.JSONDecodeError` holds the whole document. Neither the cause nor the context of the error is the original failure, so no traceback prints it.
 
-A method whose draft names a tree the platform holds no record of answers `get_method` with a `409` whose verdict is `runtime`, and a version stored before methods were trees and never rewritten as one names no tree to serve, so `get_method_version` answers it with `409` `conflict`, whose verdict is `runtime` too.
+A method whose draft names a tree the platform holds no record of answers `get_method` with a `500` `runtime.unexpected`, and a version stored before methods were trees and never rewritten as one names no tree to serve, so `get_method_version` answers it with `500` `runtime.unexpected` too.
 
 ## Writing a tree to disk
 

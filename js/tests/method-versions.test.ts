@@ -107,6 +107,13 @@ const METHOD: MethodData = WIRE_METHOD as MethodData;
 /** The method with its draft's files, as `getMethod` reads it. */
 const METHOD_DETAIL: MethodDetail = { ...METHOD, files: FILES };
 
+/** A well-formed problem item of an invalid verdict, as the runner lists one. */
+const VERDICT_ITEM = {
+  code: "method.signature_mismatch",
+  detail: "Pipe 'review' has no output.",
+  location: { pipe: "review" },
+};
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
@@ -272,10 +279,10 @@ describe("publishMethod", () => {
   });
 
   it.each([
-    ["invalid", { is_valid: false, validation_errors: [], message: "bad" }],
+    ["invalid", { is_valid: false, errors: [VERDICT_ITEM], message: "bad" }],
     ["not_runnable", { is_valid: true, bundle_blueprint: {} }],
   ] as const)(
-    "hands back a refused outcome, reason %s, with the runner's verdict verbatim",
+    "hands back a refused outcome, reason %s, with the runner's verdict",
     async (reason, validation) => {
       const client = makeClient();
       const message =
@@ -302,6 +309,68 @@ describe("publishMethod", () => {
       expect(result.method.draft_digest).toBe(OTHER_DIGEST);
     },
   );
+
+  /** The answer of a publish the draft's content refused, carrying `validation` as given. */
+  function refusedWith(validation: unknown): Response {
+    return jsonResponse(200, {
+      outcome: "refused",
+      reason: "invalid",
+      message: "Invalid.",
+      ...(validation === undefined ? {} : { validation }),
+      method: WIRE_METHOD,
+    });
+  }
+
+  it("reads a refusal whose invalid verdict lists no errors as one listing none", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      refusedWith({ is_valid: false, message: "Invalid.", is_runnable: false }),
+    );
+
+    const result = await makeClient().publishMethod("mt_receipts01", {
+      expected_draft_updated_at: WIRE_METHOD.updated_at,
+    });
+
+    if (result.outcome !== "refused") throw new Error("expected a refusal");
+    if (result.validation.is_valid) throw new Error("expected the invalid arm");
+    expect(result.validation.errors).toEqual([]);
+  });
+
+  it("keeps only the well-formed items of a refusal's verdict", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      refusedWith({ is_valid: false, errors: [null, { code: 7 }, VERDICT_ITEM] }),
+    );
+
+    const result = await makeClient().publishMethod("mt_receipts01", {
+      expected_draft_updated_at: WIRE_METHOD.updated_at,
+    });
+
+    if (result.outcome !== "refused") throw new Error("expected a refusal");
+    if (result.validation.is_valid) throw new Error("expected the invalid arm");
+    expect(result.validation.errors).toEqual([VERDICT_ITEM]);
+  });
+
+  it.each([
+    ["no validation", undefined],
+    ["a validation that is not an object", "invalid"],
+    ["a validation with no is_valid", { errors: [VERDICT_ITEM] }],
+  ])("throws a typed ApiResponseError for a refusal with %s", async (_, validation) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(refusedWith(validation));
+
+    const err = await makeClient()
+      .publishMethod("mt_receipts01", { expected_draft_updated_at: "t0" })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      "API POST /v1/methods/mt_receipts01/publish answered 200 with a publish result whose " +
+        "`validation` is not an object",
+    );
+    expect((err as ProblemError).problem).toMatchObject({
+      code: "client.response_unreadable",
+      domain: "runtime",
+      retry: "no",
+    });
+  });
 
   it("narrows on outcome", () => {
     expectTypeOf<Extract<MethodPublishResult, { outcome: "refused" }>>().toHaveProperty("reason");

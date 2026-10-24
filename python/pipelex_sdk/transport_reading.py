@@ -66,11 +66,11 @@ def _proves_nothing_sent(failure: BaseException) -> bool:
     step of the connection's set-up, which no request follows, and one `@pipelex/sdk` can tell from a failure
     that came once the request had left, so that both SDKs decide the same for it.
 
-    Anything else may have come once the request had left: a read or write timeout, a connection that closed or
-    was reset once the request had left, and a body httpx could not decode. Only a `ConnectError` is searched
-    for a failed handshake. A `ConnectTimeout` that ran out during the handshake carries the
-    `ssl.SSLWantReadError` of the read it interrupted, and proves nothing was sent all the same, as undici's
-    connect time limit, which covers the handshake too, does in `@pipelex/sdk`.
+    Anything else may have come once the request had left: a read or write timeout, or a connection that closed or
+    was reset once the request had left. Only a `ConnectError` is searched for a failed handshake. A
+    `ConnectTimeout` that ran out during the handshake carries the `ssl.SSLWantReadError` of the read it
+    interrupted, and proves nothing was sent all the same, as undici's connect time limit, which covers the
+    handshake too, does in `@pipelex/sdk`.
     """
     if not isinstance(failure, _NOTHING_SENT):
         return False

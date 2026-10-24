@@ -50,7 +50,8 @@ A request that may create a run is a `start` or a blocking `execute`, and inside
 |---|---|
 | A problem document from the hosted API, whatever its status | As received: the platform's own `retry` says whether a run may exist, so a `503` it answers before dispatching the run says `yes`, and one it answers once a run may exist says `outcome_unknown`. |
 | An `ApiUnreachableError` that proves nothing was sent | `client.unreachable`, `retry` `yes`. What proves it is a failure of the connection's set-up, which no request follows: an httpx `ConnectError` (an unknown host, a refused connection, no route, a server certificate the TLS handshake refused), a `ConnectTimeout`, a `PoolTimeout` and an `UnsupportedProtocol`. A `ConnectError` raised from any other failure of the TLS handshake, or from a connection dropped during it, does not prove it, since `@pipelex/sdk`'s fetch reports those as failures that can come once the request has left. |
-| Any other `ApiUnreachableError`: a read or write timeout, a connection closed or reset, a body httpx could not decode | `client.outcome_unknown`. |
+| Any other `ApiUnreachableError`: a read or write timeout, a connection closed or reset | `client.outcome_unknown`. |
+| A body that arrived and httpx could not decode | No `ApiUnreachableError`, since an answer came back: an `ApiResponseError` read by its status with an empty body, as the rows below read an answer, so a `2xx` is `client.outcome_unknown`. |
 | A `2xx` the SDK could not read, a start acknowledgement or an execute `202` naming no run included | `client.outcome_unknown`: the server accepted the request. |
 | A `408`, or a `5xx` other than `501`, whose body is no problem document | `client.outcome_unknown`, whatever the time it took: a proxy or the gateway answered for a request it may have forwarded. |
 | A `501` whose body is no problem document | `client.response_unreadable`: the deployment does not serve the route. |

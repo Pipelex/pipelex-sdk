@@ -33,7 +33,7 @@ Both take a bare catalog id, as every method route does, and refuse a suffixed o
 
 **The copy's body is closed.** The client sends `destination_org_id` and, when given, `name` and `expected_draft_updated_at`, and nothing else; a `None` reads as not given. `destination_org_id` is the canonical id of the destination, as a membership's `org_id` gives it; `name` is the copy's name, the original's when it is left out; `expected_draft_updated_at` is the original's draft token the caller last saw (`MethodData.updated_at`), echoed verbatim. A `destination_org_id` that is not a non-empty `str`, and a `name` or a token given that is not a `str`, are refused with a `RequestArgumentError` before any request, its `refused_argument` naming the argument.
 
-**Only a web session may copy.** A Pipelex API key belongs to one organization and cannot speak for another, so the platform refuses a copy sent with one `403` `forbidden`, whatever its role. The listing is a read, open to every member of the method's organization and to every credential.
+**Only a web session may copy.** A Pipelex API key belongs to one organization and cannot speak for another, so the platform refuses a copy sent with one `403` `auth.forbidden`, whatever its role. The listing is a read, open to every member of the method's organization and to every credential.
 
 ## What a copy holds
 
@@ -49,7 +49,7 @@ Both take a bare catalog id, as every method route does, and refuse a suffixed o
 | `method_id`, `org_id`, `created_by_user_id`, `created_at` | A new id, the destination, the copier and the moment of the copy |
 | `copied_from` | `{ org_id, method_id, draft_digest }` of the original, as it stood at the copy |
 
-**The copy takes the draft, never the latest published version.** The draft is what the person sees in the editor, and the copy goes through its own first publish anyway; an invalid draft is copied as it is, and the copy's publish refuses it as it would any draft. With `expected_draft_updated_at`, the copy takes exactly the draft the caller last saw: a draft that moved since is a `409` `method_update_conflict`, and nothing is copied. A client that has just saved the editor's pending edits sends the token that save answered.
+**The copy takes the draft, never the latest published version.** The draft is what the person sees in the editor, and the copy goes through its own first publish anyway; an invalid draft is copied as it is, and the copy's publish refuses it as it would any draft. With `expected_draft_updated_at`, the copy takes exactly the draft the caller last saw: a draft that moved since is a `409` `pipelex.catalog.update_conflict`, and nothing is copied. A client that has just saved the editor's pending edits sends the token that save answered.
 
 **A stored file named by an input is copied.** A `pipelex-storage://` address resolves only inside the organization it names, so every such address in the original's organization, in the form inputs and in each example's inputs, is copied into the destination's `assets/` under a new address, and the value is rewritten to it; a file named twice is copied once. A duplicate keeps an upload's address as it is, since the organization is the same, and copies only the files the original method's own runs stored, which erasing the original would sweep away. An address of another organization, a malformed one and one whose file is gone are kept unchanged. `stored_files_copied` counts the distinct files copied.
 

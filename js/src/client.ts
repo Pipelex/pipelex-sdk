@@ -903,10 +903,10 @@ function idPathSegment(value: unknown, call: string, what: CallArgument): string
  * The path of a method route, `methods/{id}`, for a bare catalog id, its segment refused as
  * `idPathSegment` refuses one; `call` names the method in the message. The method routes address
  * the method itself, never one of its versions, and the platform does not parse a suffix there:
- * `mt_x@3` would be looked up as an id of its own and answer `404 not_found`, which reads as a
- * method that does not exist. So a suffixed id is refused before anything is sent, saying how to
- * read what it names. Stripping it instead would answer the draft for a caller that named a
- * version.
+ * `mt_x@3` would be looked up as an id of its own and answer `404` `pipelex.catalog.not_found`,
+ * which reads as a method that does not exist. So a suffixed id is refused before anything is sent,
+ * saying how to read what it names. Stripping it instead would answer the draft for a caller that
+ * named a version.
  */
 function methodPath(methodId: string, call: string): string {
   const segment = idPathSegment(methodId, call, METHOD_ID_ARGUMENT);
@@ -2856,10 +2856,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * and for an id that is empty, `.` or `..`, which the URL would resolve into another route's
    * path.
    *
-   * Throws `ApiResponseError`: `404` `not_found` for an unknown or foreign-org method, `409`
-   * `pipelex.catalog.being_deleted` while its erasure runs, and a `409` whose domain is `runtime` for a
-   * method whose draft names a tree the platform holds no record of. An answer whose `files` is
-   * not a listing is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown or foreign-org
+   * method, `409` `pipelex.catalog.being_deleted` while its erasure runs, and a `500`
+   * `runtime.unexpected` for a method whose draft names a tree the platform holds no record of. An
+   * answer whose `files` is not a listing is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too.
    */
   async getMethod(methodId: string): Promise<MethodDetail> {
     const endpoint = methodPath(methodId, "getMethod");
@@ -2869,8 +2870,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * Create a method — `POST /v1/methods`. The new method holds its tree as its draft and has no
-   * published version, so its bare id answers `409 method_not_published` on the run and tooling
-   * routes until its first `publishMethod`; its draft runs as `mt_…@draft` at once.
+   * published version, so its bare id answers `409` `pipelex.catalog.not_published` on the run and
+   * tooling routes until its first `publishMethod`; its draft runs as `mt_…@draft` at once.
    *
    * The tree is `files`, sent as given, or `tree` or `contents`, which the client sends inline
    * when its inline map weighs 256 KiB or less, or when the platform keeps no blob store, and
@@ -3396,8 +3397,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * The answer is a `MethodPublishResult` discriminated on `outcome` — branch on it:
    * `published` with the new `version`; `unchanged` with the existing latest `version`;
    * `refused` with a `reason` (`invalid`, or `not_runnable` for a draft that validates with
-   * pending signatures), a `message` and the runner's `validation` verdict. Every arm carries the
-   * `method`. A publish moves no token.
+   * pending signatures), a `message` and the runner's `validation` verdict, whose problem items
+   * are read member by member as `validate` reads them. Every arm carries the `method`. A publish
+   * moves no token.
    *
    * Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` when
    * `expected_draft_updated_at` is not a string, before any request. Throws `ApiResponseError`
@@ -3413,8 +3415,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * itself is relayed under its own status. A retry of a publish that landed while its answer was
    * lost, as on a client timeout, answers `unchanged` with the version it wrote.
    *
-   * An answer whose `outcome` is not one of the outcomes above, or that carries no `method`
-   * object, is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * An answer whose `outcome` is not one of the outcomes above, that carries no `method` object,
+   * or a refusal whose `validation` is not a verdict object with a boolean `is_valid`, is an answer
+   * the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async publishMethod(methodId: string, input: MethodPublishInput): Promise<MethodPublishResult> {
     const token: unknown = (input as Partial<MethodPublishInput> | undefined)
@@ -3435,7 +3438,27 @@ export class PipelexApiClient implements HostedProtocolSurface {
       outcomes: ["published", "unchanged", "refused"],
       member: "method",
     });
-    return { ...answer, outcome, method: subject as unknown as MethodData } as MethodPublishResult;
+    const method = subject as unknown as MethodData;
+    if (outcome !== "refused") {
+      return { ...answer, outcome, method } as MethodPublishResult;
+    }
+    // The refused arm carries the runner's verdict, whose problem items are read member by
+    // member as `validate` reads them, so one malformed item never costs the caller the others.
+    const validation = answer.validation;
+    if (!isPlainObject(validation) || typeof validation.is_valid !== "boolean") {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a publish result whose `validation` is not an object",
+      );
+    }
+    return {
+      ...answer,
+      outcome,
+      validation: withVerdictItems(validation),
+      method,
+    } as MethodPublishResult;
   }
 
   /**
@@ -3469,9 +3492,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Takes a bare catalog id, as `getMethod` does, and the version number. Throws
    * `RequestArgumentError` for a `version` that is not a positive integer, before any request.
    * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for a version the method never
-   * published, `404` `not_found` for an unknown method, `409` `pipelex.catalog.being_deleted`, and `409`
-   * `conflict`, whose domain is `runtime`, for a version stored before methods were trees and
-   * never rewritten as one, which names no tree to serve.
+   * published and for an unknown method, `409` `pipelex.catalog.being_deleted`, and `500`
+   * `runtime.unexpected` for a version stored before methods were trees and never rewritten as
+   * one, which names no tree to serve.
    */
   async getMethodVersion(methodId: string, version: number): Promise<MethodVersion> {
     if (!Number.isSafeInteger(version) || version < 1) {
@@ -3653,8 +3676,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
   // ── Method examples (`/v1/methods/{id}/examples`) ──────────────────────
   //
   // Every example route takes a bare catalog id, as `getMethod` does, and answers `404`
-  // `not_found` for an unknown method or example and `409` `pipelex.catalog.being_deleted` while the
-  // method's erasure runs. The writes are `403` to a read-only key, which may still read.
+  // `pipelex.catalog.not_found` for an unknown method or example and `409`
+  // `pipelex.catalog.being_deleted` while the method's erasure runs. The writes are `403` to a
+  // read-only key, which may still read.
   //
   // Every answer carrying an example is read with `parseExactJson`, so an integer past
   // `Number.MAX_SAFE_INTEGER` in its inputs, which another client may have saved, is a `bigint`
@@ -3822,13 +3846,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * since and nothing was written. A stale run is the expected end of a run that outlasted an
    * edit, so it is answered, never thrown. Both arms carry the `example` as it stands.
    *
-   * Throws `RequestArgumentError` before any request, checking in this order: an example id that
-   * is empty, `.` or `..`, or holds a lone surrogate, a `run_id` that is not a non-empty string,
-   * and an `input_revision` that is not a positive integer. Throws `ApiResponseError` when no
-   * verdict was produced: `404` `not_found` for an example deleted since, `404` `run.not_found`
-   * for a run that is not one of this method's, with nothing written, and the codes every example
-   * route answers. An answer whose `outcome` is neither arm's, or whose `example` is not an
-   * example `readMethodExample` can read, is an answer the SDK cannot read, thrown as an
+   * Throws `RequestArgumentError` before any request, checking in this order: an example id that is
+   * empty, `.` or `..`, or holds a lone surrogate, a `run_id` that is not a non-empty string, and
+   * an `input_revision` that is not a positive integer. Throws `ApiResponseError` when no verdict
+   * was produced: `404` `pipelex.catalog.not_found` for an example deleted since, `404`
+   * `run.not_found` for a run that is not one of this method's, with nothing written, and the codes
+   * every example route answers. An answer whose `outcome` is neither arm's, or whose `example` is
+   * not an example `readMethodExample` can read, is an answer the SDK cannot read, thrown as an
    * `ApiResponseError` too, read as `publishMethod` reads its verdict.
    */
   async recordMethodExampleLatestRun(
@@ -3959,10 +3983,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Delete an example — `DELETE /v1/methods/{id}/examples/{example_id}`. The platform answers
    * `204`. Deleting the example leaves its latest run in the method's history.
    *
-   * Throws `RequestArgumentError` for an example id that is empty, `.` or `..`, before any
-   * request: `..` would address the method, and its erasure would answer the delete. Throws
-   * `ApiResponseError`: `404` `not_found` when there is no such example, one already deleted
-   * included, and the codes every example route answers.
+   * Throws `RequestArgumentError` for an example id that is empty, `.` or `..`, before any request:
+   * `..` would address the method, and its erasure would answer the delete. Throws
+   * `ApiResponseError`: `404` `pipelex.catalog.not_found` when there is no such example, one
+   * already deleted included, and the codes every example route answers.
    */
   async deleteMethodExample(methodId: string, exampleId: string): Promise<void> {
     await this.requestProduct(
@@ -4341,10 +4365,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `stored` when its bytes are there.
    *
    * Throws `RequestArgumentError` for a file id that is empty, `.` or `..`, or holds a lone
-   * surrogate, before any request. Throws `ApiResponseError`: `404` `not_found` for a file that is
-   * not the organization's; `422` for a `usesLimit` outside 1 to 200 or an id that cannot be one.
-   * An answer that is not an object, or whose `uses` is not a page of `items` and `next_cursor`, is
-   * an answer the SDK cannot read, thrown as an `ApiResponseError` too. See `docs/files.md`.
+   * surrogate, before any request. Throws `ApiResponseError`: `404` `pipelex.storage.not_found` for
+   * a file that is not the organization's; `422` for a `usesLimit` outside 1 to 200 or an id that
+   * cannot be one. An answer that is not an object, or whose `uses` is not a page of `items` and
+   * `next_cursor`, is an answer the SDK cannot read, thrown as an `ApiResponseError` too. See
+   * `docs/files.md`.
    */
   async getFile(fileId: string, query: GetFileQuery = {}): Promise<FileDetail> {
     const search = productQuery({ uses_limit: query.usesLimit, uses_cursor: query.usesCursor });
@@ -4379,10 +4404,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * kept records.
    *
    * Throws `RequestArgumentError` for a `uri` that is not a non-empty string, before any request.
-   * Throws `ApiResponseError`: `400` `invalid_storage_uri` for a malformed address, `403`
-   * `forbidden` for another organization's, `404` `run.not_found` for a run that is not the
-   * organization's, and `422` for an address over 512 characters. An answer whose `items` is not an
-   * array is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * Throws `ApiResponseError`: `pipelex.storage.uri_invalid` for a malformed address, `403`
+   * `pipelex.org.mismatch` for another organization's, `404` `run.not_found` for a run that is not
+   * the organization's, and `422` for an address over 512 characters. An answer whose `items` is
+   * not an array is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async getFilesByUri(uri: string, options: GetFilesByUriOptions = {}): Promise<FileRecordList> {
     const checkedUri = requireNonEmptyId(uri, "getFilesByUri", STORAGE_URI_ARGUMENT);
@@ -4601,10 +4626,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * still `queued` or `building` an hour after it was asked for reads as `failed`.
    *
    * Throws `RequestArgumentError` for an archive id that is empty, `.` or `..`, or holds a lone
-   * surrogate, before any request. Throws `ApiResponseError`: `404` `not_found` for an archive that
-   * is not the organization's, never existed, or has expired, a day after `created_at`; `500` when
-   * the link cannot be signed. An answer that is not an archive is an answer the SDK cannot read,
-   * thrown as an `ApiResponseError` whose body hides the link.
+   * surrogate, before any request. Throws `ApiResponseError`: `404` `pipelex.storage.not_found` for
+   * an archive that is not the organization's, never existed, or has expired, a day after
+   * `created_at`; `500` when the link cannot be signed. An answer that is not an archive is an
+   * answer the SDK cannot read, thrown as an `ApiResponseError` whose body hides the link.
    */
   async getFileArchive(archiveId: string): Promise<FileArchive> {
     const segment = idPathSegment(archiveId, "getFileArchive", ARCHIVE_ID_ARGUMENT);

@@ -1160,7 +1160,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 naming the key). Alone, the platform resolves and runs the stored method's
                 source: a bare `mt_…` runs its latest published version (a `409`
                 `pipelex.catalog.not_published` for a method never published), `mt_…@<n>` the fixed
-                version `n` (a `404` `method_version_not_found` for one never published) and
+                version `n` (a `404` `pipelex.catalog.not_found` for one never published) and
                 `mt_…@draft` its draft, the suffix riding the string untouched; the answer's
                 `method_version` says which ran. Alongside the method's tree, the tree is what
                 RUNS (precedence) and the id is recorded as run-history linkage on the Run
@@ -1411,7 +1411,7 @@ class PipelexAPIClient(MthdsAPIClient):
             method_id: A stored method's hosted catalog id (`mt_…`, `mt_…@<n>` or `mt_…@draft`),
                 platform-resolved. An unknown or foreign-org id is a `404` (indistinguishable by
                 design); a bare id of a method never published is a `409` `pipelex.catalog.not_published`;
-                a version never published is a `404` `method_version_not_found`; a malformed suffix
+                a version never published is a `404` `pipelex.catalog.not_found`; a malformed suffix
                 or a stored method with no MTHDS source is a `422`. An empty string is treated as
                 absent.
             render: Optional Pipelex-API presentation hints; `"markdown"` is always added.
@@ -2100,8 +2100,8 @@ class PipelexAPIClient(MthdsAPIClient):
         that holds a lone surrogate, which a URL cannot carry.
 
         Raises:
-            ApiResponseError: `404` `not_found` for an unknown or foreign-org method; `409`
-                `pipelex.catalog.being_deleted` while its erasure runs; a `409` whose domain is `runtime` for a
+            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown or foreign-org method; `409`
+                `pipelex.catalog.being_deleted` while its erasure runs; a `500` `runtime.unexpected` for a
                 method whose draft names a tree the platform holds no record of; a `200` the SDK cannot
                 read, a listing whose `sha256` is not 64 lowercase hex digits among them, reported with
                 every link redacted.
@@ -2658,9 +2658,9 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: `version` is not a positive integer — a `bool`, a `float` such as
                 `2.0`, a numeric string and anything else that is not an `int` included; nothing is sent.
-            ApiResponseError: `404` `method_version_not_found` for a version the method never
-                published; `404` `not_found` for an unknown method; `409` `pipelex.catalog.being_deleted`; a
-                `409` `conflict` for a version stored before methods were trees that the platform has
+            ApiResponseError: `404` `pipelex.catalog.not_found` for a version the method never
+                published and for an unknown method; `409` `pipelex.catalog.being_deleted`; a
+                `500` `runtime.unexpected` for a version stored before methods were trees that the platform has
                 not rewritten as one (its `tree_digest` is `None`); a `200` the SDK cannot read,
                 reported with every link redacted.
         """
@@ -2821,7 +2821,7 @@ class PipelexAPIClient(MthdsAPIClient):
 
     # ----- method examples (`/v1/methods/{id}/examples`) -----------------------------------------
     #
-    # Every example route takes a bare catalog id, as `get_method` does, and answers `404` `not_found`
+    # Every example route takes a bare catalog id, as `get_method` does, and answers `404` `pipelex.catalog.not_found`
     # for an unknown method or example and `409` `pipelex.catalog.being_deleted` while the method's erasure runs.
     # The writes are `403` to a read-only key, which may still read.
 
@@ -3000,7 +3000,7 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`, `run_id` is not a
                 non-empty `str`, or `input_revision` is not a positive integer (a `bool`, a `float` and a numeric string
                 included); nothing is sent.
-            ApiResponseError: When no verdict was produced: `404` `not_found` for an example deleted since;
+            ApiResponseError: When no verdict was produced: `404` `pipelex.catalog.not_found` for an example deleted since;
                 `404` `run.not_found` for a run that is not one of this method's, with nothing written; and
                 the codes every example route answers. An answer off the union is one the SDK cannot read,
                 raised as an `ApiResponseError` too.
@@ -3092,7 +3092,7 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: `example_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`; nothing is sent: `..`
                 would address the method, and its erasure would answer the delete.
-            ApiResponseError: `404` `not_found` when there is no such example, one already deleted
+            ApiResponseError: `404` `pipelex.catalog.not_found` when there is no such example, one already deleted
                 included, and the codes every example route answers.
         """
         endpoint = _method_example_path(method_id, example_id, call="delete_method_example")
@@ -3428,8 +3428,8 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: `file_id` is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate;
                 nothing is sent.
-            ApiResponseError: `404` `not_found` for a file that is not the organization's; `422` for a `uses_limit`
-                outside 1 to 200 or an id that cannot be one.
+            ApiResponseError: `404` `pipelex.storage.not_found` for a file that is not the organization's; `422` for a
+                `uses_limit` outside 1 to 200 or an id that cannot be one.
         """
         query = _product_query({"uses_limit": uses_limit, "uses_cursor": uses_cursor})
         endpoint = f"{_FILES}/{_id_path_segment(file_id, call='get_file', what=_FILE_ID_ARGUMENT)}{query}"
@@ -3446,8 +3446,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Raises:
             RequestArgumentError: `uri` is not a non-empty `str`; nothing is sent.
-            ApiResponseError: `400` `invalid_storage_uri` for a malformed address, `403` `forbidden` for another
-                organization's, `404` `run.not_found` for a run that is not the organization's, and `422` for an
+            ApiResponseError: `pipelex.storage.uri_invalid` for a malformed address, `403` `pipelex.org.mismatch` for
+                another organization's, `404` `run.not_found` for a run that is not the organization's, and `422` for an
                 address over 512 characters.
         """
         checked_uri = _require_non_empty_id(uri, call="get_files_by_uri", what=_STORAGE_URI_ARGUMENT)
@@ -3593,8 +3593,8 @@ class PipelexAPIClient(MthdsAPIClient):
         Raises:
             RequestArgumentError: `archive_id` is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate;
                 nothing is sent.
-            ApiResponseError: `404` `not_found` for an archive that is not the organization's, never existed, or has
-                expired, a day after `created_at`; `500` when the link cannot be signed.
+            ApiResponseError: `404` `pipelex.storage.not_found` for an archive that is not the organization's, never
+                existed, or has expired, a day after `created_at`; `500` when the link cannot be signed.
         """
         segment = _id_path_segment(archive_id, call="get_file_archive", what=_ARCHIVE_ID_ARGUMENT)
         return await self._request_product("GET", f"{_FILES}/archives/{segment}", read=FileArchive.model_validate, carries_links=True)
@@ -4914,7 +4914,7 @@ def _method_path(method_id: str, *, call: str) -> str:
 
     The method routes address the method itself, never one of its versions, and the platform does
     not parse a suffix there: `mt_x@3` would be looked up as an id of its own and answer
-    `404 not_found`, which reads as a method that does not exist. So a suffixed id is refused
+    `404` `pipelex.catalog.not_found`, which reads as a method that does not exist. So a suffixed id is refused
     before anything is sent, saying how to read what it names. Stripping it instead would answer
     the draft for a caller that named a version. `call` names the method in the message.
 

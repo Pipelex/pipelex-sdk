@@ -332,12 +332,57 @@ class TestClientMethodVersions:
         assert result.validation.pending_signatures == ["review"]
 
     @pytest.mark.parametrize(
+        ("errors", "expected_details"),
+        [
+            pytest.param(None, [], id="no-errors"),
+            pytest.param(
+                [None, {"code": 7}, MethodVersionBodies.INVALID_VERDICT["errors"][0]], ["Pipe 'review' has no output."], id="malformed-entries"
+            ),
+        ],
+    )
+    def test_publish_method_reads_a_refusals_verdict_member_by_member(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+        errors: list[Any] | None,
+        expected_details: list[str],
+    ) -> None:
+        """The refusal's verdict is read as `validate` reads one: a verdict listing no `errors` lists none, and an entry
+        that names no fault is left out while the well-formed one is kept.
+        """
+        verdict = {key: value for key, value in MethodVersionBodies.INVALID_VERDICT.items() if key != "errors"}
+        if errors is not None:
+            verdict["errors"] = errors
+        body = {
+            "outcome": "refused",
+            "reason": "invalid",
+            "message": "The draft does not validate.",
+            "validation": verdict,
+            "method": MethodVersionBodies.METHOD,
+        }
+        patch_send(api_client, wire_response(200, json_body=body))
+
+        result = asyncio.run(api_client.publish_method("mt_receipts01", expected_draft_updated_at=MethodVersionBodies.TOKEN))
+
+        assert isinstance(result, MethodPublishRefused)
+        assert isinstance(result.validation, PipelexInvalidReport)
+        assert [item.detail for item in result.validation.errors] == expected_details
+
+    @pytest.mark.parametrize(
         "body",
         [
             pytest.param({"version": MethodVersionBodies.SUMMARY, "method": MethodVersionBodies.METHOD}, id="no-outcome"),
             pytest.param({"outcome": "skipped", "version": MethodVersionBodies.SUMMARY, "method": MethodVersionBodies.METHOD}, id="unknown-outcome"),
             pytest.param({"outcome": "published", "version": MethodVersionBodies.SUMMARY}, id="no-method"),
             pytest.param({"outcome": "refused", "reason": "late", "message": "m", "validation": {}, "method": {}}, id="unknown-reason"),
+            pytest.param(
+                {"outcome": "refused", "reason": "invalid", "message": "m", "method": MethodVersionBodies.METHOD}, id="refusal-without-validation"
+            ),
+            pytest.param(
+                {"outcome": "refused", "reason": "invalid", "message": "m", "validation": "invalid", "method": MethodVersionBodies.METHOD},
+                id="refusal-whose-validation-is-no-object",
+            ),
         ],
     )
     def test_publish_method_refuses_an_answer_off_the_union(
