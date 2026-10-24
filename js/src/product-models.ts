@@ -449,11 +449,18 @@ export type MethodCopyOutcome = "copied" | "refused";
 
 /**
  * Why a copy was refused: `bundle_names_other_storage`, a `.mthds` file of the draft holds a
- * `pipelex-storage://` reference the destination cannot read, which every run there would refuse.
+ * `pipelex-storage://` reference the copy cannot rely on: one the destination cannot read, which
+ * every run there would refuse, or, in a duplicate, one under the original method's own run files
+ * (`pipelex-storage://<org_id>/<method_id>/…`), which erasing the original would remove, failing
+ * every run of the duplicate.
  */
 export type MethodCopyRefusalReason = "bundle_names_other_storage";
 
-/** One stored file a bundle of the draft names that the destination cannot read. */
+/**
+ * One stored file a bundle of the draft names that keeps it from being copied: a file the
+ * destination cannot read, or, in a duplicate, a file under the original's run files, which
+ * erasing the original would remove.
+ */
 export interface BundleStorageReference {
   /** The tree path of the `.mthds` file that holds the reference. */
   path: string;
@@ -472,22 +479,27 @@ export interface MethodCopied {
 }
 
 /**
- * A copy refused before anything was written: a bundle of the draft names stored files the
- * destination cannot read. The person removes or replaces each reference in the original and
- * copies again, since rewriting the bundle would change the author's code without asking them.
+ * A copy refused before anything was written: a bundle of the draft names stored files the copy
+ * cannot rely on, files the destination cannot read, which every run there would refuse, and, in a
+ * duplicate, files under the original method's own run files, which erasing the original would
+ * remove. The person removes or replaces each reference in the original and copies again, since
+ * rewriting the bundle would change the author's code without asking them.
  */
 export interface MethodCopyRefused {
   outcome: "refused";
   reason: MethodCopyRefusalReason;
   /** What was refused and what to do, for a person. */
   message: string;
-  /** Every reference the destination cannot read, ordered by bundle path, then by reference. */
+  /**
+   * Every reference the destination cannot read and, in a duplicate, every reference under the
+   * original's run files, ordered by bundle path, then by reference.
+   */
   references: BundleStorageReference[];
 }
 
 /**
- * The answer of `copyMethod`, a `200` discriminated on `outcome`, because a bundle the destination
- * cannot run is a verdict about the method, not a failure of the request. Branch on `outcome`,
+ * The answer of `copyMethod`, a `200` discriminated on `outcome`, because a bundle the copy cannot
+ * rely on is a verdict about the method, not a failure of the request. Branch on `outcome`,
  * never on the status: a destination the caller may not write to, a stale token, a method being
  * deleted or a copy past its bounds are thrown as `ApiResponseError` instead, since they produce
  * no verdict.
