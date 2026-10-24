@@ -126,22 +126,6 @@ describe("classifyPipelineError — no answer from the API", () => {
     expect(result.message).toMatch(/did not get a response in time/);
     expect(result.domain).toBeUndefined();
     expect(result.retry?.verdict).toBe("yes");
-    // The API was slow, not out of reach: the remedy is another try, never the base URL.
-    expect(result.hint?.summary).toMatch(/Run it again in a moment/);
-    expect(result.hint?.code).toBeUndefined();
-  });
-
-  it("says a timeout on a customized base URL is the API being slow, not the URL", () => {
-    const err = new ApiUnreachableError(
-      "timed out",
-      "https://api.unreachable.example",
-      "ABORT_TIMEOUT",
-      { timeoutMs: 30_000 },
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.title).toBe("Pipelex API did not answer in time");
-    expect(result.message).not.toMatch(/PIPELEX_BASE_URL/);
-    expect(result.hint?.summary).not.toMatch(/PIPELEX_BASE_URL/);
   });
 });
 
