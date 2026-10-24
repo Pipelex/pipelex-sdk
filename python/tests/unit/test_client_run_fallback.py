@@ -16,6 +16,7 @@ from mthds.protocol.pipe_io_contracts import PipeIOContract
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, MissingMainStuffError, RunLifecycleUnavailableError
 from pipelex_sdk.runs import PipelexRunResultStart, TokensUsageRecord, WaitForResultOptions
+from tests.unit.conftest import problem_document
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -606,12 +607,12 @@ class TestClientRunFallback:
     @pytest.mark.parametrize(
         "body",
         [
-            {"type": "about:blank", "title": "Not Found", "status": 404, "error_type": "MethodPackageNotFoundError", "detail": "No package."},
-            {"type": "https://pipelex.com/errors/not_found", "title": "Not found", "status": 404, "code": "not_found", "detail": "No method."},
+            pytest.param(problem_document("method.not_found", 404, domain="method", detail="No package."), id="a-runner-refusal"),
+            pytest.param(problem_document("pipelex.catalog.not_found", 404, detail="No method."), id="a-platform-refusal"),
         ],
     )
     def test_a_404_answered_on_purpose_neither_falls_back_nor_demotes_the_client(self, mocker: MockerFixture, body: dict[str, Any]) -> None:
-        """A runner's or the platform's own 404 on start is a refusal: raised as is, with the lifecycle still believed served."""
+        """A runner's or the platform's own 404 on start, a problem document, is a refusal: raised as is, with the lifecycle still believed served."""
         client = self._client()
         send = mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=[_response(200, json=_HOSTED_VERSION), _response(404, json=body)]))
 
@@ -619,13 +620,69 @@ class TestClientRunFallback:
             asyncio.run(client.start_and_wait(pipe_code="p"))
         assert not isinstance(exc_info.value, RunLifecycleUnavailableError)
         assert exc_info.value.status == 404
+        assert exc_info.value.problem.code == body["code"]
         assert _urls(send) == [f"{_BASE_URL}/v1/version", f"{_BASE_URL}/v1/start"]
+        assert client._lifecycle_available is True
+
+    def test_self_heals_on_a_runners_request_not_found_document(self, mocker: MockerFixture) -> None:
+        """pipelex-api 0.90 and later answers a path no route serves with a `request.not_found` problem document
+        rather than the framework's default body: the route is still missing, so the run falls back to execute.
+        """
+        client = self._client()
+        missing = problem_document("request.not_found", 404, detail="No route serves this path")
+        send = mocker.patch.object(
+            client,
+            "_send",
+            mocker.AsyncMock(side_effect=[_response(200, json=_BASE_ONLY_VERSION), _response(404, json=missing), _response(200, json=_EXECUTE_BODY)]),
+        )
+
+        result = asyncio.run(client.start_and_wait(pipe_code="p"))
+
+        assert result.pipeline_run_id == "run-x"
+        assert _urls(send) == [f"{_BASE_URL}/v1/version", f"{_BASE_URL}/v1/start", f"{_BASE_URL}/v1/execute"]
+        assert client._lifecycle_available is False
+
+    def test_a_native_coded_404_on_start_is_the_starts_refusal_on_every_call(self, mocker: MockerFixture) -> None:
+        """Today's platform answers a method it does not know with a native body naming its code: the route exists and
+        refused the request, so nothing falls back to the blocking execute, no negative is cached, and the next call
+        still tries the durable start.
+        """
+        native_not_found = {
+            "type": "https://pipelex.com/errors/not_found",
+            "title": "Not found",
+            "status": 404,
+            "detail": "Method mt_typo not found.",
+            "code": "not_found",
+            "error_domain": "input",
+            "retryable": False,
+        }
+        client = self._client()
+        send = mocker.patch.object(
+            client,
+            "_send",
+            mocker.AsyncMock(
+                side_effect=[_response(200, json=_HOSTED_VERSION), _response(404, json=native_not_found), _response(404, json=native_not_found)]
+            ),
+        )
+
+        with pytest.raises(ApiResponseError) as first:
+            asyncio.run(client.start_and_wait(pipe_code="p"))
+        assert not isinstance(first.value, RunLifecycleUnavailableError)
+        assert first.value.status == 404
+        assert client._lifecycle_available is True
+
+        with pytest.raises(ApiResponseError) as second:
+            asyncio.run(client.start_and_wait(pipe_code="p"))
+        assert not isinstance(second.value, RunLifecycleUnavailableError)
+        assert _urls(send) == [f"{_BASE_URL}/v1/version", f"{_BASE_URL}/v1/start", f"{_BASE_URL}/v1/start"]
         assert client._lifecycle_available is True
 
     def test_handshake_failure_assumes_hosted(self, mocker: MockerFixture) -> None:
         """When the /v1/version handshake itself fails, assume hosted and let start surface the real error."""
         client = self._client()
-        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(500, json={"detail": "boom"})))
+        mocker.patch.object(
+            client, "_send", mocker.AsyncMock(return_value=_response(500, json=problem_document("runtime.unexpected", 500, detail="boom")))
+        )
 
         # version 500 → assume hosted → start hits the same 500 → ApiResponseError, naming the start.
         with pytest.raises(ApiResponseError) as exc_info:
@@ -730,7 +787,8 @@ class TestClientRunFallback:
 
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client.start_and_wait(pipe_code="p"))
-        assert exc_info.value.code == "ConnectTimeout"
+        assert exc_info.value.network_code == "ConnectTimeout"
+        assert exc_info.value.problem.code == "client.unreachable"
         assert [path for path, _ in server.requests] == ["/v1/version"]
         assert client._lifecycle_available is None
 

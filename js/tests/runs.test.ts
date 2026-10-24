@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import type { InputForm, OutputForm, PipeIOContracts } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
 import {
   ApiResponseError,
-  errorVerdictOf,
   MissingMainStuffError,
   RequestArgumentError,
   RunFailedError,
@@ -22,6 +22,7 @@ import type {
   TokensUsageRecord,
 } from "../src/runs.js";
 import * as sdk from "../src/index.js";
+import { problemDocument, problemResponse } from "./helpers/problems.js";
 
 const BASE_URL = "http://localhost:8081";
 
@@ -114,9 +115,9 @@ describe("PipelexApiClient.getRunStatus", () => {
     expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8081/v1/runs/a%2Fb/status");
   });
 
-  it("maps a route-absent 404 (no `code` field) to RunLifecycleUnavailableError", async () => {
+  it("maps a route-absent 404 (no problem document) to RunLifecycleUnavailableError", async () => {
     // A bare runner serves Starlette's default `{"detail": "Not Found"}` — no
-    // structured `code` — meaning the lifecycle routes are simply not there.
+    // problem document — meaning the lifecycle routes are simply not there.
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(404, { detail: "Not Found" }));
     const err = await client.getRunStatus("run-1").catch((e: unknown) => e);
@@ -125,14 +126,65 @@ describe("PipelexApiClient.getRunStatus", () => {
     expect((err as RunLifecycleUnavailableError).message).toContain("bare runner");
   });
 
-  it("leaves a structured run-not-found 404 (with `code`) as ApiResponseError", async () => {
+  it("leaves a run-not-found 404 problem document as ApiResponseError", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, { detail: "Run not found", code: "run_not_found" }),
+      problemResponse("run.not_found", 404, { detail: "Run not found" }),
     );
     const err = await client.getRunStatus("run-1").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiResponseError);
     expect(err).not.toBeInstanceOf(RunLifecycleUnavailableError);
+    expect((err as ApiResponseError).code).toBe("run.not_found");
+  });
+
+  // A 404 is a missing route when its body names no non-empty string `code`, or names
+  // `request.not_found`, which a runner answers for a path no route serves (pipelex-api 0.90 on).
+  it.each([
+    [
+      "a runner's request.not_found problem document",
+      () => problemResponse("request.not_found", 404),
+    ],
+    ["an empty code", () => jsonResponse(404, { code: "", detail: "Not Found" })],
+    ["a code that is not a string", () => jsonResponse(404, { code: 404, detail: "Not Found" })],
+    ["a JSON array", () => jsonResponse(404, ["Not Found"])],
+    ["a body that is not JSON", () => new Response("Not Found", { status: 404 })],
+    ["an empty body", () => emptyResponse(404)],
+  ])("maps a 404 with %s to RunLifecycleUnavailableError", async (_name, answer) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(answer());
+    const err = await makeClient()
+      .getRunStatus("run-1")
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RunLifecycleUnavailableError);
+  });
+
+  // A route that answers a 404 on purpose names its code, even in a document with a defect or in
+  // the native body the platform still answers.
+  it.each([
+    [
+      "a run.not_found document with a defect",
+      () => jsonResponse(404, { ...problemDocument("run.not_found", 404), next_step: "retry" }),
+    ],
+    [
+      "the platform's native run_not_found body",
+      () =>
+        jsonResponse(404, {
+          type: "https://pipelex.com/errors/run_not_found",
+          title: "Run not found",
+          status: 404,
+          detail: "Run run-1 not found.",
+          code: "run_not_found",
+          error_domain: "input",
+          retryable: false,
+        }),
+    ],
+  ])("leaves a 404 with %s as ApiResponseError", async (_name, answer) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(answer());
+    const err = await makeClient()
+      .getRunStatus("run-1")
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect(err).not.toBeInstanceOf(RunLifecycleUnavailableError);
+    expect((err as ApiResponseError).status).toBe(404);
   });
 });
 
@@ -150,6 +202,7 @@ interface StatusReadCase {
     degradation: Record<string, unknown> | null;
     request_id: string | null;
     retry_after_seconds: number | null;
+    error_code: string | null;
   };
 }
 
@@ -174,6 +227,7 @@ describe("PipelexApiClient.getRunStatus over the shared status reads", () => {
     expect(Object.hasOwn(run, "degradation")).toBe(Object.hasOwn(statusRead.body, "degradation"));
     expect(run.request_id ?? null).toBe(expected.request_id);
     expect(run.retry_after_seconds ?? null).toBe(expected.retry_after_seconds);
+    expect(run.error?.code ?? null).toBe(expected.error_code);
   });
 
   it("keeps the rest of the read as the server sent it", async () => {
@@ -345,15 +399,19 @@ describe("PipelexApiClient.getRunResult", () => {
     }
   });
 
-  it("maps 409 to a failed state, with the status from its `run_status` member", async () => {
+  it("maps a 409 run.failed to a failed state, with the status from its `run_status` parameter", async () => {
     const client = makeClient();
+    const runError = problemDocument("run.timed_out", 409, {
+      domain: "runtime",
+      detail: "The run timed out.",
+    });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, {
-        type: "https://pipelex.com/errors/conflict",
-        code: "conflict",
+      problemResponse("run.failed", 409, {
+        domain: "runtime",
         detail: "Run finished with status TIMED_OUT; no result available",
-        run_status: "TIMED_OUT",
-        error: null,
+        params: { pipeline_run_id: "run-1", run_status: "TIMED_OUT" },
+        pipeline_run_id: "run-1",
+        run_error: runError,
       }),
     );
     const state = await client.getRunResult("run-1");
@@ -361,8 +419,49 @@ describe("PipelexApiClient.getRunResult", () => {
     if (state.state === "failed") {
       expect(state.status).toBe("TIMED_OUT");
       expect(state.message).toContain("TIMED_OUT");
+      expect(state.problem.code).toBe("run.failed");
+      expect(state.error).toEqual(runError);
+    }
+  });
+
+  it("reads a 409 run.failed carrying no run_error as a failed state with no error", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse("run.failed", 409, {
+        domain: "runtime",
+        params: { pipeline_run_id: "run-1", run_status: "CANCELLED" },
+      }),
+    );
+    const state = await client.getRunResult("run-1");
+    expect(state.state).toBe("failed");
+    if (state.state === "failed") {
+      expect(state.status).toBe("CANCELLED");
       expect(state.error).toBeNull();
     }
+  });
+
+  it("reads a 409 run.not_finished as running, its fractional retry_after rounded up to whole seconds", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse("run.not_finished", 409, {
+        domain: "runtime",
+        retry: "yes",
+        retry_after: 2.4,
+        params: { pipeline_run_id: "run-1" },
+      }),
+    );
+    const state = await client.getRunResult("run-1");
+    expect(state).toEqual({ state: "running", pipeline_run_id: "run-1", retry_after_seconds: 3 });
+  });
+
+  it("throws a 409 that is no run.failed or run.not_finished problem as ApiResponseError", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(409, { code: "conflict", run_status: "FAILED" }),
+    );
+    const err = await client.getRunResult("run-1").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).code).toBe("client.response_unreadable");
   });
 
   it("treats 503 (Temporal degraded) as a running/retry state, never an error", async () => {
@@ -389,10 +488,10 @@ describe("PipelexApiClient.getRunResult", () => {
     expect((err as RunLifecycleUnavailableError).message).toContain("/v1/runs");
   });
 
-  it("surfaces a structured 404 (run not found) as ApiResponseError", async () => {
+  it("surfaces a run.not_found 404 as ApiResponseError", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, { detail: "Run not found", code: "run_not_found" }),
+      problemResponse("run.not_found", 404, { detail: "Run not found" }),
     );
     await expect(client.getRunResult("run-1")).rejects.toBeInstanceOf(ApiResponseError);
   });
@@ -501,12 +600,12 @@ describe("PipelexApiClient.getRunResult artifact selection", () => {
       expect(err).toBeInstanceOf(RequestArgumentError);
       expect((err as RequestArgumentError).message).toMatch(message);
       // The caller must change the selection: input, and asking again cannot help.
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+      expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
       expect(fetchSpy).not.toHaveBeenCalled();
     },
   );
 
-  it("refuses a selection that is not an array with a TypeError carrying no verdict", async () => {
+  it("refuses a selection that is not an array with a TypeError carrying no problem", async () => {
     const client = makeClient();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const err = await client
@@ -516,7 +615,7 @@ describe("PipelexApiClient.getRunResult artifact selection", () => {
         (thrown: unknown) => thrown,
       );
     expect(err).toBeInstanceOf(TypeError);
-    expect(errorVerdictOf(err)).toBeUndefined();
+    expect(err).not.toBeInstanceOf(ProblemError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -595,12 +694,10 @@ describe("PipelexApiClient.waitForResult", () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(emptyResponse(202, { "Retry-After": "0" }))
       .mockResolvedValueOnce(
-        jsonResponse(409, {
-          type: "https://pipelex.com/errors/conflict",
-          code: "conflict",
+        problemResponse("run.failed", 409, {
+          domain: "runtime",
           detail: "Run finished with status FAILED; no result available",
-          run_status: "FAILED",
-          error: null,
+          params: { pipeline_run_id: "run-1", run_status: "FAILED" },
         }),
       );
 
@@ -608,6 +705,8 @@ describe("PipelexApiClient.waitForResult", () => {
     expect(error).toBeInstanceOf(RunFailedError);
     expect((error as RunFailedError).runId).toBe("run-1");
     expect((error as RunFailedError).status).toBe("FAILED");
+    expect((error as RunFailedError).code).toBe("run.failed");
+    expect((error as RunFailedError).retry).toBe("no");
   });
 
   it("throws RunTimeoutError when the deadline elapses before terminal", async () => {

@@ -13,14 +13,10 @@ import { inspect } from "node:util";
 import { listMethodTree, TreeLimitExceededError } from "mthds";
 import type { MethodFiles } from "mthds/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 
 import { PipelexApiClient } from "../src/client.js";
-import {
-  ApiResponseError,
-  errorVerdictOf,
-  MethodFileTransferError,
-  RequestArgumentError,
-} from "../src/errors.js";
+import { ApiResponseError, MethodFileTransferError, RequestArgumentError } from "../src/errors.js";
 import { writeMethodTreeTo } from "../src/method-trees.js";
 import type { SavedMethodFile } from "../src/product-models.js";
 
@@ -433,7 +429,7 @@ describe("saving a method's tree", () => {
 
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toBe(message);
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
     expect(platform.api).toEqual([]);
   });
 
@@ -471,7 +467,7 @@ describe("saving a method's tree", () => {
     );
     expect(unreadable.status).toBe(200);
     // The platform's fault, which no change to the call fixes.
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
     expectNoLink(unreadable);
     expect(platform.storage).toEqual([]);
     expect(platform.sent("POST", "/v1/methods")).toEqual([]);
@@ -617,12 +613,15 @@ describe("saving a method's tree", () => {
       );
 
       expect(err.operation).toBe("upload");
-      expect(err.code).toBe(code);
+      expect(err.reason).toBe(code);
       expect(err.status).toBe(status);
       expect(err.sha256).toBe(sha256(LARGE));
       expect(err.message).toContain("app-bucket.s3.amazonaws.com");
       expect(err.message).toContain("the method was not saved");
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable });
+      expect((err as ProblemError).problem).toMatchObject({
+        domain: "runtime",
+        retry: retryable ? "yes" : "no",
+      });
       expect(platform.sent("POST", "/v1/methods")).toEqual([]);
     },
   );
@@ -636,10 +635,10 @@ describe("saving a method's tree", () => {
     );
 
     expect(err.operation).toBe("upload");
-    expect(err.code).toBe("unreachable");
+    expect(err.reason).toBe("unreachable");
     expect(err.status).toBeUndefined();
     expect(err.message).toContain("(ECONNREFUSED)");
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: true });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "yes" });
     expect(platform.sent("POST", "/v1/methods")).toEqual([]);
   });
 
@@ -827,11 +826,14 @@ describe("writeMethodTree", () => {
       );
 
       expect(err.operation).toBe("download");
-      expect(err.code).toBe("mismatch");
+      expect(err.reason).toBe("mismatch");
       expect(err.path).toBe("main.mthds");
       expect(err.sha256).toBe(sha256(MAIN));
       expect(err.message).toContain(cameBack);
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: true });
+      expect((err as ProblemError).problem).toMatchObject({
+        code: "client.response_unreadable",
+        retry: "no",
+      });
       expect(await readdir(scratch)).toEqual([]);
     },
   );
@@ -852,11 +854,14 @@ describe("writeMethodTree", () => {
       );
 
       expect(err.operation).toBe("download");
-      expect(err.code).toBe(code);
+      expect(err.reason).toBe(code);
       expect(err.status).toBe(status);
       expect(err.path).toBe("main.mthds");
       expect(err.message).toContain("read the method again for fresh links");
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable });
+      expect((err as ProblemError).problem).toMatchObject({
+        domain: "runtime",
+        retry: retryable ? "yes" : "no",
+      });
       expect(await readdir(scratch)).toEqual([]);
     },
   );
@@ -872,7 +877,7 @@ describe("writeMethodTree", () => {
     );
 
     expect(err.operation).toBe("download");
-    expect(err.code).toBe("unreachable");
+    expect(err.reason).toBe("unreachable");
     expect(err.message).toContain("(ECONNREFUSED)");
     expect(await readdir(scratch)).toEqual([]);
   });
@@ -885,7 +890,7 @@ describe("writeMethodTree", () => {
     const err = await transferError(writeMethodTreeTo(listing, destination, { timeoutMs: 20 }));
 
     // The transfer's own time limit names the failure, whatever error the aborted read raised.
-    expect(err.code).toBe("unreachable");
+    expect(err.reason).toBe("unreachable");
     expect(err.message).toContain("(ABORT_TIMEOUT)");
     expect(await readdir(scratch)).toEqual([]);
   });

@@ -36,7 +36,7 @@ from mthds.method_tree.file_entry import FileEntry
 from mthds.method_tree.models import MethodTree
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, TypeAdapter, ValidationInfo, model_validator
 
-from pipelex_sdk.error_models import LenientRunErrorReport
+from pipelex_sdk.answer_reading import LenientProblem
 from pipelex_sdk.runs import RunStatus
 from pipelex_sdk.validation_models import PipelexValidationResult
 
@@ -296,7 +296,7 @@ class MethodDraftInput(BaseModel):
     expected_updated_at: str | None = None
     """The draft token the caller last saw — the `updated_at` of the method it last read or wrote,
     echoed verbatim. With it the write is a compare-and-swap: a draft that moved since is refused
-    with a `409` whose `code` is `method_update_conflict`, and nothing is written. Unset or `None`,
+    with a `409` whose `code` is `pipelex.catalog.update_conflict`, and nothing is written. Unset or `None`,
     the write is last-writer-wins."""
 
 
@@ -346,8 +346,10 @@ class MethodPublishRefused(BaseModel):
     """A publish the draft's content refused: nothing was published.
 
     `message` says why — for `not_runnable`, that the draft "is valid but does not run yet" — and
-    `validation` is the runner's `POST /v1/validate` answer for the draft, verbatim: an invalid
-    arm whose `validation_errors` say what to fix, or, for `not_runnable`, the valid arm.
+    `validation` is the runner's `POST /v1/validate` answer for the draft, read member by member as
+    `validate` reads it (`pipelex_sdk.problem_items.ProblemItems`): an invalid arm whose `errors`,
+    problem items, say what to fix, or, for `not_runnable`, the valid arm. An entry that names no fault
+    is left out, and a member the standard declares is kept only when it is well-formed.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -536,9 +538,9 @@ MethodCopyResultAdapter: TypeAdapter[MethodCopyResult] = TypeAdapter(MethodCopyR
 
 
 class MethodCopyLimit(BaseModel):
-    """The bound a `422` `method_copy_too_large` names, in its problem document's `limit` member.
+    """The bound a `422` `pipelex.catalog.copy_too_large` names, in its problem's `limit` member.
 
-    Read it with `MethodCopyLimit.model_validate(error.problem_document["limit"])`: `max_stored_files`, the most
+    Read it with `MethodCopyLimit.model_validate((error.problem.model_extra or {})["limit"])`: `max_stored_files`, the most
     distinct stored files one copy copies, or `max_stored_bytes`, the most bytes they add up to, each set per
     deployment; its `value`, and what the copy `reached`. Removing examples, or the files they hold, brings the
     copy under it.
@@ -1576,9 +1578,9 @@ class FileArchive(BaseModel):
 
 
 class FileArchiveLimit(BaseModel):
-    """The cap a `422` `file_archive_too_large` names, in its problem document's `limit` member.
+    """The cap a `422` `pipelex.files.archive_too_large` names, in its problem's `limit` member.
 
-    Read it with `FileArchiveLimit.model_validate(error.problem_document["limit"])`: `max_files` (500) or
+    Read it with `FileArchiveLimit.model_validate((error.problem.model_extra or {})["limit"])`: `max_files` (500) or
     `max_total_bytes` (2,000,000,000), its `value`, and what the selection `reached`. For a run, the count
     stops as soon as it passes the cap, so `reached` is one more than `max_files` and means "at least".
     """
@@ -1742,10 +1744,10 @@ class RunHistoryItem(BaseModel):
     """The pipe that ran, when it was named. A run that let the bundle's `main_pipe` decide
     has none to report, so the platform serves this as null."""
 
-    error: LenientRunErrorReport = None
-    """The run's stored report, served as on the run detail (the runner's STRICT projection), so
-    opening a failed run from history shows why without another read. `None` on a completed run and
-    on one that ended without a report (see `RunErrorReport`)."""
+    error: LenientProblem = None
+    """The problem the run ended with, served as on the run detail, so opening a failed run from history
+    shows why without another read. `None` on a completed run, on one that ended without a problem stored,
+    and when what the platform served is no problem document (see `RunRead.error`)."""
 
     method_version: int | Literal["draft"] | None = None
     """Which version of the method the run ran — a number, `"draft"`, or `None` for an inline
@@ -1775,7 +1777,9 @@ class PipelineRun(BaseModel):
     workflow_id: str | None = None
     status: RunStatus
     result_url: str | None = None
-    error: LenientRunErrorReport = None
+    error: LenientProblem = None
+    """The problem the run ended with (see `RunRead.error`), `None` when there is none or what the platform
+    served is no problem document."""
     created_at: str
     finished_at: str | None = None
     method_version: int | Literal["draft"] | None = None

@@ -7,6 +7,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +17,6 @@ import {
   ArtifactOperationError,
   InvalidLocalSourceError,
   RequestArgumentError,
-  errorVerdictOf,
 } from "../src/errors.js";
 import { listDirectoryTree, writeMethodTreeTo } from "../src/method-trees.js";
 import { PipelexApiClient } from "../src/client.js";
@@ -78,7 +78,10 @@ describe("the operations that need Node, outside it", () => {
       "validate() got a directory, which only Node can list. In the browser or an edge runtime, " +
         "give the method's tree as contents, tree or files instead.",
     );
-    expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "input", retryable: false });
+    expect((refusal as ProblemError).problem).toMatchObject({
+      code: "runtime.unsupported",
+      retry: "no",
+    });
   });
 
   it("refuse a directory given to the client before any request, the handshake included", async () => {
@@ -135,7 +138,7 @@ describe("the operations that need Node, outside it", () => {
 
       expect(refusal).toBeInstanceOf(RequestArgumentError);
       expect((refusal as Error).message).toMatch(/^writeMethodTree\(\) writes to a file system/);
-      expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "config", retryable: false });
+      expect((refusal as ProblemError).code).toBe("runtime.unsupported");
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       await rm(destination, { recursive: true, force: true });
@@ -164,6 +167,6 @@ describe("the operations that need Node, outside it", () => {
       "downloadArtifacts writes to a filesystem and is Node-only. In another runtime, resolve " +
         "with resolveArtifacts or stream with fetchArtifact instead.",
     );
-    expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "config", retryable: false });
+    expect((refusal as ProblemError).code).toBe("runtime.unsupported");
   });
 });

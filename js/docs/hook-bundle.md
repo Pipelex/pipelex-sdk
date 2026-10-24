@@ -1,6 +1,6 @@
 # The `.mthds` hook bundle
 
-`dist-hooks/check.mjs` is the post-edit hook that checks a `.mthds` file after a coding agent edits it. It is built from `src/hooks/` by `npm run build:hook` and vendored by `pipelex-plugins`, which runs it after edits in Claude Code, Codex and Mistral Vibe (see [`architecture.md`](./architecture.md#hook-bundle-distcheckmjs) for how it is built and distributed). This page covers which file the hook checks on each platform, and in particular how it finds the file a Codex patch wrote.
+`dist-hooks/check.mjs` is the post-edit hook that checks a `.mthds` file after a coding agent edits it. It is built from `src/hooks/` by `npm run build:hook` and vendored by `pipelex-plugins`, which runs it after edits in Claude Code, Codex and Mistral Vibe (see [`architecture.md`](./architecture.md#hook-bundle-dist-hookscheckmjs) for how it is built and distributed). This page covers which file the hook checks on each platform, and in particular how it finds the file a Codex patch wrote.
 
 ## What the hook does with a file
 

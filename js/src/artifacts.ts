@@ -37,28 +37,14 @@ import {
   RunStillRunningError,
   ScopeUnavailableError,
 } from "./errors.js";
-import type { ErrorVerdict } from "./errors.js";
+import { argumentInvalidProblem, responseUnreadableProblem } from "./errors.js";
+import { buildProblem } from "mthds/protocol";
+import type { Problem } from "mthds/protocol";
 import type { GetRunResultOptions, RunResults, RunResultState } from "./runs.js";
 import { absenceCause, loadNodeHost } from "./node-host.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // ── Constants ────────────────────────────────────────────────────────
-
-/**
- * The verdict of an argument the artifact operations refuse (a `scope`, a bound, a location):
- * the caller's to fix, and asking again unchanged cannot pass.
- */
-const ARGUMENT_REFUSED: { verdict: ErrorVerdict } = {
-  verdict: { errorDomain: "input", retryable: false },
-};
-
-/**
- * The verdict of an environment that cannot hold a download (a runtime with no filesystem, a
- * directory that cannot be created): someone changes the environment first.
- */
-const ENVIRONMENT_REFUSED: { verdict: ErrorVerdict } = {
-  verdict: { errorDomain: "config", retryable: false },
-};
 
 /** The scheme of a durable storage reference. */
 export const PIPELEX_STORAGE_SCHEME = "pipelex-storage://";
@@ -510,7 +496,7 @@ export function artifactFilename(
   if (typeof uri !== "string") {
     throw new ArtifactOperationError(
       `artifactFilename needs a location carrying its reference as a string "uri"; got ${String(uri)}.`,
-      ARGUMENT_REFUSED,
+      { problem: argumentInvalidProblem("location", "not_a_location") },
     );
   }
   const foundAt: unknown = loose?.found_at;
@@ -520,7 +506,7 @@ export function artifactFilename(
     throw new ArtifactOperationError(
       `artifactFilename needs a location whose first "found_at" entry is a path such as ` +
         `"$.items[0].url"; got ${typeof first === "string" ? JSON.stringify(first) : String(first)}.`,
-      ARGUMENT_REFUSED,
+      { problem: argumentInvalidProblem("location", "not_a_path") },
     );
   }
   return filenameFor(segments, uri, contentType, scope);
@@ -605,7 +591,7 @@ function requireScope(scope: unknown): asserts scope is ArtifactScope {
   if (scope !== "main_stuff" && scope !== "working_memory") {
     throw new ArtifactOperationError(
       `"scope" must be "main_stuff" or "working_memory", got ${String(scope)}.`,
-      ARGUMENT_REFUSED,
+      { problem: argumentInvalidProblem("scope", "unknown_value") },
     );
   }
 }
@@ -638,6 +624,7 @@ export async function resolveArtifacts(
         `The bulk resolve route answered ${Array.isArray(resolved) ? resolved.length : "no"} ` +
           `item(s) for ${chunk.length} reference(s) — a malformed answer, so no reference can be ` +
           "matched to its verdict.",
+        { problem: responseUnreadableProblem(200) },
       );
     }
     items.push(...resolved);
@@ -701,7 +688,7 @@ function fetchBounds(options: FetchArtifactOptions): FetchBounds {
     throw new ArtifactOperationError(
       `"timeoutMs" must be a positive number no larger than ${MAX_TIMER_DELAY_MS}, got ` +
         `${String(timeoutMs)}.`,
-      ARGUMENT_REFUSED,
+      { problem: argumentInvalidProblem("timeoutMs", "not_positive") },
     );
   }
   return { maxBytes, timeoutMs, allowHttp: options.allowHttp ?? false, signal: options.signal };
@@ -709,10 +696,9 @@ function fetchBounds(options: FetchArtifactOptions): FetchBounds {
 
 function requirePositive(name: string, value: number): void {
   if (!Number.isFinite(value) || value <= 0) {
-    throw new ArtifactOperationError(
-      `"${name}" must be a positive number, got ${String(value)}.`,
-      ARGUMENT_REFUSED,
-    );
+    throw new ArtifactOperationError(`"${name}" must be a positive number, got ${String(value)}.`, {
+      problem: argumentInvalidProblem(name, "not_positive"),
+    });
   }
 }
 
@@ -829,7 +815,10 @@ async function fetchResolvedUrl(
         uri,
         "timeout",
         undefined,
-        { cause: err },
+        {
+          cause: err,
+          problem: buildProblem("client.timeout", { seconds: bounds.timeoutMs / 1000 }),
+        },
       );
     }
     // The caller's reason, not `err`: a browser rejects the fetch, and errors a body
@@ -841,7 +830,7 @@ async function fetchResolvedUrl(
       uri,
       "network",
       undefined,
-      { cause: err },
+      { cause: err, problem: buildProblem("client.unreachable", { base_url: url.origin }) },
     );
   };
 
@@ -882,6 +871,7 @@ async function fetchResolvedUrl(
       uri,
       "too_large",
       response.status,
+      { problem: downloadLimitProblem(bounds.maxBytes) },
     );
   }
 
@@ -934,6 +924,7 @@ async function fetchResolvedUrl(
             uri,
             "too_large",
             response.status,
+            { problem: downloadLimitProblem(bounds.maxBytes) },
           ),
         );
         return;
@@ -979,6 +970,11 @@ function decodedHeaders(headers: Headers): Headers {
   decoded.delete("content-encoding");
   decoded.delete("content-length");
   return decoded;
+}
+
+/** `client.download_limit_exceeded`, naming the cap in bytes. */
+function downloadLimitProblem(maxBytes: number): Problem {
+  return buildProblem("client.download_limit_exceeded", { limit: maxBytes });
 }
 
 function statusRefusal(uri: string, response: Response): ArtifactFetchError | undefined {
@@ -1174,7 +1170,7 @@ async function readCompletedResults(
     );
   }
   if (state.state === "failed") {
-    throw new RunFailedError(state.message, runId, state.status, { error: state.error });
+    throw new RunFailedError(state.message, runId, state.status, { problem: state.problem });
   }
   return state.result;
 }
@@ -1212,7 +1208,10 @@ export async function downloadArtifacts(
         ? "downloadArtifacts writes to a filesystem and is Node-only. In another runtime, resolve " +
             "with resolveArtifacts or stream with fetchArtifact instead."
         : `downloadArtifacts cannot write to the filesystem: ${loaded.reason}`,
-      { ...ENVIRONMENT_REFUSED, ...absenceCause(loaded) },
+      {
+        ...absenceCause(loaded),
+        problem: buildProblem("runtime.unsupported", { capability: "writing to the filesystem" }),
+      },
     );
   }
   const host = loaded.host;
@@ -1223,7 +1222,7 @@ export async function downloadArtifacts(
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new ArtifactOperationError(
       `"concurrency" must be a positive integer, got ${String(concurrency)}.`,
-      ARGUMENT_REFUSED,
+      { problem: argumentInvalidProblem("concurrency", "not_positive") },
     );
   }
   requirePositive("maxTotalBytes", maxTotalBytes);
@@ -1235,7 +1234,7 @@ export async function downloadArtifacts(
     throw new ArtifactOperationError(
       "downloadArtifacts takes exactly one of `run_id` (the results are re-read) or `results` " +
         "(a RunResults in hand).",
-      ARGUMENT_REFUSED,
+      { problem: argumentInvalidProblem("run_id", "not_exactly_one_selector") },
     );
   }
   const results = hasResults
@@ -1269,7 +1268,10 @@ export async function downloadArtifacts(
   } catch (cause) {
     throw new ArtifactOperationError(
       `The download directory "${dir}" cannot be created or used: ${cause instanceof Error ? cause.message : String(cause)}.`,
-      { cause, ...ENVIRONMENT_REFUSED },
+      {
+        cause,
+        problem: buildProblem("client.write_failed", { path: dir, reason: osErrorReason(cause) }),
+      },
     );
   }
 
@@ -1569,13 +1571,24 @@ function assembleVerdict(
   return verdict;
 }
 
-/** An item's `[code, detail]` for an error thrown while fetching or reading it. */
+/**
+ * An item's `[code, detail]` for an error thrown while fetching or reading it: the fetch's own
+ * reason for an `ArtifactFetchError`, `aborted` for the caller's abort, and `unknown` for any other
+ * error, which is no network failure but a fault the SDK cannot place, such as a defect of its own
+ * or of the caller's code, so it is never read as one a retry can pass.
+ */
 function classifyFailure(err: unknown, signal: AbortSignal | undefined): [string, string] {
-  if (err instanceof ArtifactFetchError) return [err.code, err.message];
+  if (err instanceof ArtifactFetchError) return [err.reason, err.message];
   if (signal?.aborted === true)
     return ["aborted", "The download was aborted while this artifact was being fetched."];
   return [
-    "network",
+    "unknown",
     `The artifact could not be read: ${err instanceof Error ? err.message : String(err)}.`,
   ];
+}
+
+/** Why a directory could not be made, as the operating system's code (`EACCES`), or `unwritable`. */
+function osErrorReason(cause: unknown): string {
+  const code = (cause as { code?: unknown } | null)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "unwritable";
 }

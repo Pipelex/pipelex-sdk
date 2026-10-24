@@ -40,7 +40,7 @@ from typing import NoReturn
 
 from pydantic import BaseModel, ConfigDict
 
-from pipelex_sdk.errors import CodegenError
+from pipelex_sdk.errors import CodegenError, argument_invalid_problem
 
 _BEGIN_MARKER = ">>> pipelex-codegen-stamp >>>"
 _END_MARKER = "<<< pipelex-codegen-stamp <<<"
@@ -89,7 +89,7 @@ def comment_prefix_for(artifact_path: str) -> str:
     if prefix is None:
         expected = ", ".join(sorted(STAMPABLE_SUFFIXES))
         msg = f"No codegen stamp syntax for '{artifact_path}': its file type is not stampable (expected one of: {expected})."
-        raise CodegenError(msg)
+        raise CodegenError(msg, problem=argument_invalid_problem(argument="artifact_path", reason="not_stampable"))
     return prefix
 
 

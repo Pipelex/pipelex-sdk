@@ -1,12 +1,12 @@
 """What the command prints: a finished run's result on stdout, and every failure on stderr.
 
-A failure is worded by the command from the error's typed fields, never from an SDK message whose
-wording is the SDK's own, wherever the fields carry what a person needs: the API's reason, the next
-step it advises and the request id support asks for. That keeps this command and its JavaScript
-twin saying the same thing for the same answer, which is what the recorded case table
+A failure is worded by the command from the error's problem, never from an SDK message whose wording
+is the SDK's own, wherever the problem carries what a person needs: its reason (`detail`), the faults it
+lists (`errors`), the next step it advises and the request id support asks for. That keeps this command
+and its JavaScript twin saying the same thing for the same answer, which is what the recorded case table
 holds them to.
 
-Where no field carries the reason, the command prints the SDK's message as it: a file that could
+Where the problem does not carry the reason, the command prints the SDK's message as it is: a file that could
 not be uploaded, whose message says what the upload route's status means for an upload, and a 2xx
 answer the SDK could not read, which carries no problem document, so that its message alone names
 what could not be read (`API POST /v1/start answered 202 with a body that is not JSON`). Both SDKs
@@ -37,8 +37,9 @@ from pipelex_sdk.errors import (
 )
 
 if TYPE_CHECKING:
+    from mthds.protocol.problem.models import Problem, ProblemItem
+
     from pipelex_sdk.command.io import CommandIO
-    from pipelex_sdk.validation_models import ValidationErrorItem
 
 #: The first line of a method that does not load, after `Error: `.
 METHOD_DOES_NOT_LOAD_SENTENCE = "the method does not load."
@@ -64,12 +65,11 @@ def present_error(exc: Exception) -> PresentedError:
     if isinstance(exc, CommandError):
         return PresentedError(lines=[f"Error: {exc.message}", *exc.details], exit_code=exc.exit_code)
     if isinstance(exc, RunFailedError):
-        report = exc.error
-        lines = [f"Error: run {exc.run_id} ended with status {exc.status}."]
-        reason = report.message if report is not None and report.message is not None else str(exc)
-        lines.append(f"Reason: {reason}")
-        if report is not None and report.user_action is not None and report.user_action.detail:
-            lines.append(f"Next step: {report.user_action.detail}")
+        # The run's own problem when it reports one, else the problem the API answered the read with.
+        run_error = exc.run_error
+        lines = [f"Error: run {exc.run_id} ended with status {exc.status}.", f"Reason: {_reason_of(run_error or exc.problem)}"]
+        if run_error is not None:
+            lines.extend(_next_step_lines(run_error))
         return PresentedError(lines=lines, exit_code=EXIT_FAILED)
     if isinstance(exc, InvalidLocalSourceError):
         # A file the inputs name that cannot be read is the inputs' fault, as an unreadable inputs
@@ -89,7 +89,7 @@ def present_error(exc: Exception) -> PresentedError:
         # The same lines whichever route said so: the input preparation here, the pipe I/O call of
         # `--inputs-template` and `script` in `source.py`.
         return PresentedError(
-            lines=[f"Error: {METHOD_DOES_NOT_LOAD_SENTENCE}", *load_failure_lines(exc.validation_errors, exc.server_message)],
+            lines=[f"Error: {METHOD_DOES_NOT_LOAD_SENTENCE}", *load_failure_lines(exc.problem.errors or [], exc.server_message)],
             exit_code=EXIT_FAILED,
         )
     if isinstance(exc, (RejectedAssetError, UploadAuthenticationError, UnsupportedUploadCapabilityError, UploadTransportError)):
@@ -100,7 +100,7 @@ def present_error(exc: Exception) -> PresentedError:
         return _present_refusal(exc)
     if isinstance(exc, ApiUnreachableError):
         return PresentedError(
-            lines=[f"Error: could not reach the Pipelex API at {exc.api_url} ({exc.code or 'network error'})."],
+            lines=[f"Error: could not reach the Pipelex API at {exc.api_url} ({exc.network_code or 'network error'})."],
             exit_code=EXIT_FAILED,
         )
     if isinstance(exc, PipelineRequestError):
@@ -113,8 +113,8 @@ def _present_upload_failure(
 ) -> PresentedError:
     """A file the inputs name that could not be uploaded: which file, the status the upload route
     answered when it answered, and the SDK's own sentence, which says what the status means for an
-    upload (a file past the size limit, a deployment without upload), followed by the advice and the
-    request id of the API's answer when it carries them.
+    upload (a file past the size limit, a deployment without upload), followed by the next step and the
+    request id of the API's answer when there is one.
     """
     cause = exc.__cause__ if isinstance(exc.__cause__, ApiResponseError) else None
     # A deployment without upload carries no status of its own: its 404 is the cause's.
@@ -123,20 +123,22 @@ def _present_upload_failure(
         status = cause.status
     what = "an upload failed" if exc.filename is None else f'the upload of "{exc.filename}" failed'
     lines = [f"Error: {what}{'' if status is None else f' (status {status})'}.", f"Reason: {exc}"]
-    if cause is not None and cause.user_action is not None and cause.user_action.detail:
-        lines.append(f"Next step: {cause.user_action.detail}")
+    if cause is not None:
+        lines.extend(_next_step_lines(cause.problem))
     if cause is not None and cause.request_id:
         lines.append(f"Request id: {cause.request_id}")
     return PresentedError(lines=lines, exit_code=EXIT_FAILED)
 
 
 def _present_refusal(exc: ApiResponseError) -> PresentedError:
-    """An answer the API gave instead of a result: its status, its reason and its advice.
+    """An answer the API gave instead of a result: its status, its reason, the faults it lists, its next step
+    and its request id.
 
     A 2xx status is an answer the SDK could not read, the one `ApiResponseError` it raises with a
     success status: its reason is the SDK's message, which names the route and what could not be
-    read, since the answer is no problem document. A refusal's reason is the problem's `detail`,
-    else its `title`, and a problem that gives neither is said to give no reason.
+    read, since the answer is no problem document. A refusal's reason is its problem's `detail`, the
+    API's own sentence when the answer was a problem document and the sentence of the code the SDK read
+    from the status otherwise, and a problem whose `detail` is empty is said to give no reason.
     """
     lines: list[str]
     reason: str
@@ -145,33 +147,38 @@ def _present_refusal(exc: ApiResponseError) -> PresentedError:
         reason = str(exc)
     else:
         lines = [f"Error: the API refused the request (status {exc.status})."]
-        if exc.server_message is not None:
-            reason = exc.server_message
-        elif exc.title is not None:
-            reason = exc.title
-        else:
-            reason = "the answer gives no reason"
+        reason = _reason_of(exc.problem)
     lines.append(f"Reason: {reason}")
-    lines.extend(validation_line(source=item.source, message=item.message) for item in exc.validation_errors or [])
-    if exc.user_action is not None and exc.user_action.detail:
-        lines.append(f"Next step: {exc.user_action.detail}")
+    lines.extend(problem_item_line(item) for item in exc.problem.errors or [])
+    lines.extend(_next_step_lines(exc.problem))
     if exc.request_id:
         lines.append(f"Request id: {exc.request_id}")
     return PresentedError(lines=lines, exit_code=EXIT_FAILED)
 
 
-def load_failure_lines(items: list[ValidationErrorItem], message: str | None) -> list[str]:
-    """The lines under "the method does not load": one per validation item, and when there is none,
-    the answer's own message.
+def _reason_of(problem: Problem) -> str:
+    """A problem's reason: its `detail`, or a sentence saying it gives none."""
+    return problem.detail or "the answer gives no reason"
+
+
+def _next_step_lines(problem: Problem) -> list[str]:
+    """The line of a problem's next step, or none when the step says nothing."""
+    return [f"Next step: {problem.next_step.detail}"] if problem.next_step.detail else []
+
+
+def load_failure_lines(items: list[ProblemItem], message: str | None) -> list[str]:
+    """The lines under "the method does not load": one per problem item, as the SDK reads a failed load's
+    `errors` (`pipelex_sdk.problem_items.read_problem_items`), and when there is none, the answer's own message.
     """
-    lines = [validation_line(source=item.source, message=item.message) for item in items]
+    lines = [problem_item_line(item) for item in items]
     return lines or [f"  - {message if message is not None else 'the answer gives no reason'}"]
 
 
-def validation_line(*, source: str | None, message: str) -> str:
-    """One validation error, as an indented line naming its file when it has one."""
-    prefix = f"{source}: " if source else ""
-    return f"  - {prefix}{message}"
+def problem_item_line(item: ProblemItem) -> str:
+    """One problem item, as an indented line naming the file it is in when its location names one."""
+    file = item.location.file if item.location is not None else None
+    prefix = f"{file}: " if file else ""
+    return f"  - {prefix}{item.detail}"
 
 
 def is_absence(main_stuff: Any) -> bool:

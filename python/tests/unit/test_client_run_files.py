@@ -18,7 +18,6 @@ from mthds.method_tree.file_entry import HashFileEntry
 from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import RequestArgumentError
 from tests.unit.conftest import refused_argument
 
@@ -38,8 +37,6 @@ _EXECUTE_BODY: dict[str, object] = {
         "pipeline_run_id": "run_1",
     },
 }
-
-_ARGUMENT_VERDICT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
 
 def _response(status_code: int, *, json_body: object) -> httpx.Response:
@@ -123,7 +120,7 @@ class TestClientRunFiles:
         with pytest.raises(RequestArgumentError, match="files holds no file") as caught:
             asyncio.run(getattr(client, route)(pipe_code="p", files={}))
 
-        assert error_verdict_of(caught.value) == _ARGUMENT_VERDICT
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
         assert refused_argument(caught.value) == {"argument": "files", "reason": "empty"}
         send.assert_not_called()
 
@@ -147,7 +144,7 @@ class TestClientRunFiles:
         with pytest.raises(RequestArgumentError, match="files") as caught:
             asyncio.run(client.start(pipe_code="p", extra={"files": {"main.mthds": _MAIN}}))
 
-        assert error_verdict_of(caught.value) == _ARGUMENT_VERDICT
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     @pytest.mark.parametrize(

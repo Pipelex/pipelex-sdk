@@ -39,12 +39,15 @@ from collections.abc import Iterator
 from enum import StrEnum
 from pathlib import Path
 
+from mthds.protocol.problem.client_problems import make_client_problem
+from mthds.protocol.problem.models import Problem
+from mthds.protocol.problem.registry import CoreCode
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from pipelex_sdk._pydantic_utils import empty_list_factory_of
-from pipelex_sdk.codegen_lock import CODEGEN_LOCK_FILENAME, CodegenLock, load_lock, resolve_artifact_path, resolve_output_path
+from pipelex_sdk.codegen_lock import CodegenLock, load_lock, resolve_artifact_path, resolve_output_path
 from pipelex_sdk.codegen_stamp import comment_prefix_for, compute_content_hash, has_stamp, is_stampable_artifact_path, parse_stamped
-from pipelex_sdk.errors import CodegenError, CodegenLockError
+from pipelex_sdk.errors import CODEGEN_LOCK_FILENAME, CodegenError, CodegenLockError
 
 _SKIP_DIRS = frozenset(
     {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", ".next", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
@@ -178,7 +181,7 @@ def run_codegen_check(*, root: Path) -> CodegenCheckReport:
         raise
     except CodegenError as exc:
         msg = f"Unsafe codegen artifact tree at '{root}': {exc}"
-        raise CodegenLockError(msg) from exc
+        raise CodegenLockError(msg, problem=_unreadable_problem(path=root, reason="unsafe_artifact_path")) from exc
 
 
 def _check_locked_artifacts(*, root: Path, lock: CodegenLock) -> list[CodegenDrift]:
@@ -212,7 +215,7 @@ def _locate_locked_artifact(*, root: Path, path: str) -> Path | None:
         return file_path if file_path.is_file() else None
     except OSError as exc:
         msg = f"Unreadable path under the codegen output root at '{root / path}': {exc}"
-        raise CodegenLockError(msg) from exc
+        raise CodegenLockError(msg, problem=_unreadable_problem(path=root / path)) from exc
 
 
 def _check_present_artifact(*, path: str, file_path: Path, locked_hash: str) -> CodegenDrift | None:
@@ -263,7 +266,7 @@ def _iter_stampable_files(*, directory: Path) -> Iterator[Path]:
         entries = sorted(directory.iterdir())
     except OSError as exc:
         msg = f"Unreadable directory under the codegen output root at '{directory}': {exc}"
-        raise CodegenLockError(msg) from exc
+        raise CodegenLockError(msg, problem=_unreadable_problem(path=directory)) from exc
     for entry in entries:
         try:
             # `is_symlink` first and inside the same guard, because it is what keeps a link out of the walk:
@@ -275,7 +278,7 @@ def _iter_stampable_files(*, directory: Path) -> Iterator[Path]:
             is_directory = entry.is_dir()
         except OSError as exc:
             msg = f"Unreadable entry under the codegen output root at '{entry}': {exc}"
-            raise CodegenLockError(msg) from exc
+            raise CodegenLockError(msg, problem=_unreadable_problem(path=entry)) from exc
         if is_directory:
             if entry.name not in _SKIP_DIRS:
                 yield from _iter_stampable_files(directory=entry)
@@ -299,4 +302,9 @@ def _read_text_or_none(path: Path) -> str | None:
         return None
     except OSError as exc:
         msg = f"Unreadable file under the codegen output root at '{path}': {exc}"
-        raise CodegenLockError(msg) from exc
+        raise CodegenLockError(msg, problem=_unreadable_problem(path=path)) from exc
+
+
+def _unreadable_problem(*, path: Path, reason: str = "unreadable") -> Problem:
+    """`client.file_unreadable`, naming what under the output root the check cannot read, and why."""
+    return make_client_problem(CoreCode.CLIENT_FILE_UNREADABLE, params={"path": str(path), "reason": reason})

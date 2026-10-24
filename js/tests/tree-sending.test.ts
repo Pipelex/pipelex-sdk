@@ -384,6 +384,15 @@ describe("the inline limit of an API keeping no blob store", () => {
   });
 });
 
+/** The problem a runner refuses a tree past one of its limits with, coded from the registry. */
+function tooLarge(): unknown {
+  return buildProblem(
+    "method.package_invalid",
+    { reason: "too_large", limit: 1024 },
+    { status: 422 },
+  );
+}
+
 describe("the version handshake", () => {
   it("is kept for HANDSHAKE_TTL_MS, then asked again", async () => {
     const api = playApi();
@@ -419,9 +428,7 @@ describe("the version handshake", () => {
     const api = playApi({
       version: (n) => (n === 1 ? {} : { limits: { method_tree: { max_inline_bytes: 16 } } }),
       route: (path, _body, n) =>
-        path === "/v1/validate" && n === 1
-          ? jsonResponse(422, { code: "method_tree_too_large", detail: "too large" })
-          : undefined,
+        path === "/v1/validate" && n === 1 ? jsonResponse(422, tooLarge()) : undefined,
     });
 
     const verdict = await makeClient().validate({ contents: { "main.mthds": MAIN } });
@@ -442,16 +449,10 @@ describe("the version handshake", () => {
     });
   });
 
-  it.each([
-    ["pipelex-api's error type", { error_type: "MethodTreeTooLarge", message: "too large" }],
-    [
-      "the registry's method.package_invalid naming a limit",
-      { code: "method.package_invalid", params: { limit: 1024 }, detail: "too large" },
-    ],
-  ])("reads %s as a tree refused as too large", async (_, refusal) => {
+  it("reads the registry's method.package_invalid naming a limit as a tree refused as too large", async () => {
     const api = playApi({
       route: (path, _body, n) =>
-        path === "/v1/execute" && n === 1 ? jsonResponse(422, refusal) : undefined,
+        path === "/v1/execute" && n === 1 ? jsonResponse(422, tooLarge()) : undefined,
     });
 
     await makeClient().execute({ contents: { "main.mthds": MAIN } });
@@ -459,12 +460,26 @@ describe("the version handshake", () => {
     expect(api.paths).toEqual(["/v1/version", "/v1/execute", "/v1/version", "/v1/execute"]);
   });
 
+  it.each([
+    ["a body in the retired envelope", { error_type: "MethodTreeTooLarge", message: "too large" }],
+    [
+      "a method.package_invalid naming no limit",
+      buildProblem("method.package_invalid", { reason: "no_mthds_file" }, { status: 422 }),
+    ],
+  ])("does not read %s as a tree refused as too large", async (_, refusal) => {
+    const api = playApi({
+      route: (path) => (path === "/v1/execute" ? jsonResponse(422, refusal) : undefined),
+    });
+
+    await expect(makeClient().execute({ contents: { "main.mthds": MAIN } })).rejects.toMatchObject({
+      status: 422,
+    });
+    expect(api.paths).toEqual(["/v1/version", "/v1/execute"]);
+  });
+
   it("sends a files map given as is only once when it is refused as too large", async () => {
     const api = playApi({
-      route: (path) =>
-        path === "/v1/validate"
-          ? jsonResponse(422, { code: "method_tree_too_large", detail: "too large" })
-          : undefined,
+      route: (path) => (path === "/v1/validate" ? jsonResponse(422, tooLarge()) : undefined),
     });
 
     await expect(makeClient().validate({ files: { "main.mthds": MAIN } })).rejects.toMatchObject({
@@ -475,10 +490,7 @@ describe("the version handshake", () => {
 
   it("does not send again a start under an idempotency key refused as too large", async () => {
     const api = playApi({
-      route: (path) =>
-        path === "/v1/start"
-          ? jsonResponse(422, { code: "method_tree_too_large", detail: "too large" })
-          : undefined,
+      route: (path) => (path === "/v1/start" ? jsonResponse(422, tooLarge()) : undefined),
     });
 
     await expect(

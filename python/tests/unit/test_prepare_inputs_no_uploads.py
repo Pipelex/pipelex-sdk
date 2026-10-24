@@ -28,7 +28,6 @@ from pytest_mock import MockerFixture
 
 from pipelex_sdk import upload as upload_module
 from pipelex_sdk.crate_models import PipeIORequest, PipeIOValidReport
-from pipelex_sdk.error_verdicts import ErrorDomain, error_verdict_of
 from pipelex_sdk.errors import InputPreparationError, InvalidInputValueError, UploadNotAllowedError, UploadNotAllowedKind
 from pipelex_sdk.prepare_inputs import prepare_inputs
 from pipelex_sdk.product_models import UploadedFile, UploadInput
@@ -144,14 +143,13 @@ class TestPrepareInputsWithoutUploads:
 
         assert (error.input_name, error.input_path) == ("photo", "photo")
 
-    def test_keeps_the_value_out_of_the_message_and_carries_the_input_verdict(self) -> None:
+    def test_keeps_the_value_out_of_the_message_and_carries_the_input_problem(self) -> None:
         error = _refused(_image_client(), {"photo": "/home/someone/secret-plans.png"})
 
         assert isinstance(error, InputPreparationError)
         assert "secret-plans" not in str(error)
-        verdict = error_verdict_of(error)
-        assert verdict is not None
-        assert (verdict.error_domain, verdict.retryable) == (ErrorDomain.INPUT, False)
+        assert (error.problem.domain, error.problem.retry) == ("input", "no")
+        assert "secret-plans" not in str(error.problem.as_wire())
 
     def test_rewrites_urls_and_storage_references_uploading_nothing(self, read_spy: Any) -> None:
         client = _FakeClient(

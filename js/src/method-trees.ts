@@ -17,7 +17,7 @@
  * `listDirectoryTree` need Node, which each gets from the Node host when called.
  */
 
-import { parseJsonBody, readProblemBody } from "mthds/protocol";
+import { buildProblem, readProblemBody } from "mthds/protocol";
 import type {
   BlobRef,
   FileEntry,
@@ -27,11 +27,12 @@ import type {
   MissingBlob,
 } from "mthds/protocol";
 
-import { fallbackVerdict } from "./error-verdicts.js";
 import {
   MethodFileTransferError,
   RequestArgumentError,
-  type MethodFileTransferCode,
+  argumentInvalidProblem,
+  type MethodFileTransferReason,
+  isTransientStorageStatus,
 } from "./errors.js";
 import { absenceCause, loadNodeHost, type NodeHost, type TreeLister } from "./node-host.js";
 import type { SavedMethodFile } from "./product-models.js";
@@ -222,6 +223,7 @@ export function emptyTreeRefusal(
   const remedy = sending.emptyRemedy === undefined ? "." : `; ${sending.emptyRemedy}.`;
   return new RequestArgumentError(
     `${call}() got ${what} holding no file, and a method tree holds at least one${remedy}`,
+    { problem: argumentInvalidProblem(what === "contents" ? "contents" : "tree", "empty") },
   );
 }
 
@@ -403,20 +405,13 @@ export async function forEachConcurrently<T>(
 /**
  * Whether an answer refuses a tree as past one of the receiver's limits, as `mthds`'s
  * `MthdsApiClient` reads one: a `422` whose problem is the core registry's
- * `method.package_invalid` carrying its numeric `limit` parameter, the hosted platform's
- * `method_tree_too_large` code, or pipelex-api's `MethodTreeTooLarge` error type.
+ * `method.package_invalid` carrying its numeric `limit` parameter.
  */
 export function isMethodTreeTooLarge(status: number, body: string): boolean {
   if (status !== 422) return false;
-  const reading = parseJsonBody(body);
-  if (!reading.ok || !isJsonObject(reading.value)) return false;
-  const answer = reading.value;
-  if (answer["code"] === "method.package_invalid") {
-    const params = answer["params"];
-    return isJsonObject(params) && typeof params["limit"] === "number";
-  }
+  const problem = readProblemBody(body);
   return (
-    answer["code"] === "method_tree_too_large" || answer["error_type"] === "MethodTreeTooLarge"
+    problem?.code === "method.package_invalid" && typeof problem.params?.["limit"] === "number"
   );
 }
 
@@ -466,16 +461,12 @@ export function eitherSignal(
   return { signal: controller.signal, dispose };
 }
 
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 // ── A tree from bytes in memory ──────────────────────────────────────
 
 /**
  * The tree whose files are `contents`, each file's bytes or its text by tree path, a text encoded
  * in UTF-8. The keys are sent as they are, and the platform refuses one that is not a tree path,
- * with the `422` `invalid_method_files` naming it. `call` names the caller's method in a refusal.
+ * with the `422` `method.package_invalid` naming it. `call` names the caller's method in a refusal.
  *
  * Throws `RequestArgumentError` for `contents` holding no file, for a value that is neither a
  * string nor bytes, and for a text holding a lone surrogate, which no file can hold. `sending` says
@@ -493,6 +484,7 @@ export async function contentsTreeSource(
         throw new RequestArgumentError(
           `${call}() got contents['${treePath}'] holding a lone surrogate, which is no text a file ` +
             "can hold: give its bytes instead.",
+          { problem: argumentInvalidProblem("contents", "lone_surrogate") },
         );
       }
       bytesByPath.set(treePath, UTF8_ENCODER.encode(content));
@@ -501,6 +493,7 @@ export async function contentsTreeSource(
     } else {
       throw new RequestArgumentError(
         `${call}() got contents['${treePath}'] that is neither a string nor a Uint8Array.`,
+        { problem: argumentInvalidProblem("contents", "entry_mistyped") },
       );
     }
   }
@@ -542,7 +535,10 @@ export async function treeListerFor(directory: string, call: string): Promise<Tr
         ? `${call}() got a directory, which only Node can list. In the browser or an edge ` +
             "runtime, give the method's tree as contents, tree or files instead."
         : `${call}() cannot list the directory '${directory}': ${loaded.reason}`,
-      absenceCause(loaded),
+      {
+        ...absenceCause(loaded),
+        problem: buildProblem("runtime.unsupported", { capability: "listing a directory" }),
+      },
     );
   }
   return loaded.host.loadTreeLister();
@@ -572,7 +568,7 @@ export async function listDirectoryTree(
     if (err instanceof MethodTreeError) {
       throw new RequestArgumentError(
         `${call}() could not list the method's tree at '${directory}': ${err.message}`,
-        { cause: err },
+        { problem: argumentInvalidProblem("directory", err.code), cause: err },
       );
     }
     throw err;
@@ -710,7 +706,7 @@ export async function uploadBlob(
       new MethodFileTransferError(
         `Uploading the file with SHA-256 ${sha256} to ${host} failed: no answer came back ` +
           `(${code}), so ${options.unsent}.`,
-        { operation: "upload", code: "unreachable", sha256 },
+        { operation: "upload", reason: "unreachable", sha256 },
       ),
     async (response) => {
       // Storage's body is read and dropped: it can echo the signed request.
@@ -721,7 +717,7 @@ export async function uploadBlob(
           `so ${options.unsent}.`,
         {
           operation: "upload",
-          code: methodFileTransferCodeOfStatus(response.status),
+          reason: methodFileTransferReasonOfStatus(response.status),
           sha256,
           status: response.status,
         },
@@ -731,11 +727,11 @@ export async function uploadBlob(
 }
 
 /**
- * The code of a transfer storage answered with a non-2xx `status`: `storage_error` for one the
- * fallback table calls retryable (`408`, `429`, a `5xx` other than `501`), `refused` otherwise.
+ * The reason of a transfer storage answered with a non-2xx `status`: `storage_error` for a status
+ * a later attempt can pass (`408`, `429`, a `5xx` other than `501`), `refused` otherwise.
  */
-export function methodFileTransferCodeOfStatus(status: number): MethodFileTransferCode {
-  return fallbackVerdict(status, undefined, true).retryable ? "storage_error" : "refused";
+export function methodFileTransferReasonOfStatus(status: number): MethodFileTransferReason {
+  return isTransientStorageStatus(status) ? "storage_error" : "refused";
 }
 
 /**
@@ -756,7 +752,10 @@ export async function writeMethodTreeTo(
         ? "writeMethodTree() writes to a file system, which only Node has. In the browser or an " +
             "edge runtime, download each file of the listing from its url instead."
         : `writeMethodTree() cannot write to the file system: ${loaded.reason}`,
-      { verdict: { errorDomain: "config", retryable: false }, ...absenceCause(loaded) },
+      {
+        ...absenceCause(loaded),
+        problem: buildProblem("runtime.unsupported", { capability: "writing to the file system" }),
+      },
     );
   }
   const { fs, path } = loaded.host;
@@ -796,7 +795,7 @@ async function downloadMethodFile(
   const unreachable = (code: string): MethodFileTransferError =>
     new MethodFileTransferError(
       `Downloading '${file.path}' from ${host} failed: no answer came back (${code}).`,
-      { operation: "download", code: "unreachable", sha256: file.sha256, path: file.path },
+      { operation: "download", reason: "unreachable", sha256: file.sha256, path: file.path },
     );
   const received = await storageExchange(
     file.url,
@@ -811,7 +810,7 @@ async function downloadMethodFile(
             "link may have expired: read the method again for fresh links.",
           {
             operation: "download",
-            code: methodFileTransferCodeOfStatus(response.status),
+            reason: methodFileTransferReasonOfStatus(response.status),
             sha256: file.sha256,
             path: file.path,
             status: response.status,
@@ -834,7 +833,7 @@ async function downloadMethodFile(
     throw new MethodFileTransferError(
       `The bytes downloaded for '${file.path}' are not the file listed: the listing names ` +
         `${file.size} bytes hashing to ${file.sha256}, and ${cameBack}`,
-      { operation: "download", code: "mismatch", sha256: file.sha256, path: file.path },
+      { operation: "download", reason: "mismatch", sha256: file.sha256, path: file.path },
     );
   }
   return received;
@@ -936,11 +935,13 @@ export function refuseUnwritableListing(files: readonly SavedMethodFile[]): void
       throw new RequestArgumentError(
         `The listing holds '${file.path}', which is not a tree path (${violation}), so the tree ` +
           "cannot be written.",
+        { problem: argumentInvalidProblem("files", "not_a_tree_path") },
       );
     }
     if (seen.has(file.path)) {
       throw new RequestArgumentError(
         `The listing holds '${file.path}' twice, so the tree cannot be written.`,
+        { problem: argumentInvalidProblem("files", "duplicate_path") },
       );
     }
     seen.add(file.path);
@@ -950,6 +951,7 @@ export function refuseUnwritableListing(files: readonly SavedMethodFile[]): void
     throw new RequestArgumentError(
       "The listing holds paths that collide once case-folded, or where one names a directory of " +
         `another: ${colliding.join(", ")}.`,
+      { problem: argumentInvalidProblem("files", "colliding_paths") },
     );
   }
 }
@@ -1040,6 +1042,7 @@ function occupied(target: string): RequestArgumentError {
   return new RequestArgumentError(
     `Cannot write a method tree at '${target}': it already exists and is not an empty ` +
       "directory, and a written tree holds nothing but its files.",
+    { problem: argumentInvalidProblem("destination", "not_empty") },
   );
 }
 

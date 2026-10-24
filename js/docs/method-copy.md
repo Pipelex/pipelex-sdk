@@ -30,7 +30,7 @@ Both take a bare catalog id, as every method route does, and refuse a suffixed o
 
 **The copy's body is closed.** The client sends `destination_org_id` and, when given, `name` and `expected_draft_updated_at`, and nothing else; a `null` reads as not given. `destination_org_id` is the canonical id of the destination, as a membership's `org_id` gives it; `name` is the copy's name, the original's when it is left out; `expected_draft_updated_at` is the original's draft token the caller last saw (`MethodData.updated_at`). A `destination_org_id` that is not a non-empty string, and a `name` or a token given that is not a string, are refused with a `RequestArgumentError` before any request.
 
-**Only a web session may copy.** A Pipelex API key belongs to one organization and cannot speak for another, so the platform refuses a copy sent with one `403` `forbidden`, whatever its role. The listing is a read, open to every member of the method's organization and to every credential.
+**Only a web session may copy.** A Pipelex API key belongs to one organization and cannot speak for another, so the platform refuses a copy sent with one `403` `auth.forbidden`, whatever its role. The listing is a read, open to every member of the method's organization and to every credential.
 
 ## What a copy holds
 
@@ -46,7 +46,7 @@ Both take a bare catalog id, as every method route does, and refuse a suffixed o
 | `method_id`, `org_id`, `created_by_user_id`, `created_at` | A new id, the destination, the copier and the moment of the copy |
 | `copied_from` | `{ org_id, method_id, draft_digest }` of the original, as it stood at the copy, its `draft_digest` `null` when the original's draft held no files |
 
-**The copy takes the draft, never the latest published version.** The draft is what the person sees in the editor, and the copy goes through its own first publish anyway; an invalid draft is copied as it is, and the copy's publish refuses it as it would any draft. With `expected_draft_updated_at`, the copy takes exactly the draft the caller last saw: a draft that moved since is a `409` `method_update_conflict`, and nothing is copied. A client that has just saved the editor's pending edits sends the token that save answered.
+**The copy takes the draft, never the latest published version.** The draft is what the person sees in the editor, and the copy goes through its own first publish anyway; an invalid draft is copied as it is, and the copy's publish refuses it as it would any draft. With `expected_draft_updated_at`, the copy takes exactly the draft the caller last saw: a draft that moved since is a `409` `pipelex.catalog.update_conflict`, and nothing is copied. A client that has just saved the editor's pending edits sends the token that save answered.
 
 **A stored file named by an input is copied.** A `pipelex-storage://` address resolves only inside the organization it names, so every such address in the original's organization, in the form inputs and in each example's inputs, is copied into the destination's `assets/` under a new address, and the value is rewritten to it; a file named twice is copied once. A duplicate keeps every address of the organization as it is, an upload's above all, since the organization is the same, and copies only the files the original method's own runs stored, under `pipelex-storage://<org_id>/<method_id>/…`, which erasing the original would sweep away. An address of another organization, a malformed one and one whose file is gone are kept unchanged. The destination records each copied file among its files, attributed to the copier. `stored_files_copied` counts the distinct files copied.
 
@@ -63,29 +63,29 @@ The answer is a `200` discriminated on `outcome`, as `publishMethod`'s is, becau
 
 A refused copy is fixed in the original: the person removes or replaces each reference the verdict names, then copies again. The platform does not rewrite the bundle, since that would change the author's code and the tree's digest without asking them.
 
-The client checks the member a caller branches on before it hands the answer back: an `outcome` that is neither arm's, a `copied` answer whose `method` is not an object, and a `refused` one whose `references` is not an array are each an answer the SDK cannot read, thrown as an `ApiResponseError`, `runtime` and not retryable.
+The client checks the member a caller branches on before it hands the answer back: an `outcome` that is neither arm's, a `copied` answer whose `method` is not an object, and a `refused` one whose `references` is not an array are each an answer the SDK cannot read, thrown as an `ApiResponseError` whose problem is `client.response_unreadable`.
 
 ## What is refused, and where
 
-A non-2xx answer means no verdict could be produced, and none of them leaves anything a reader sees, but for the `503` whose `detail` names the copy (below). Each is an `ApiResponseError`; branch on `code` and on the verdict, never on the status alone.
+A non-2xx answer means no verdict could be produced, and none of them leaves anything a reader sees, but for the `503` whose `detail` names the copy (below). Each is an `ApiResponseError` whose `problem` is the platform's problem document; branch on its `code` and its `retry`, never on the status alone.
 
 | Status | `code` | When |
 |---|---|---|
-| `403` | `forbidden` | The request is not from a web session. |
-| `403` | `role_not_permitted` | The caller's role changes no method, `runner` or a role the platform does not know, in the method's organization or in the destination. `config`: the role must change. |
-| `404` | `organization_not_found` | The destination is one the caller does not belong to, one whose invitation they have not accepted, one still being set up, or one that does not exist. The platform answers them alike, so it never says whether an organization exists. |
-| `404` | `not_found` | An unknown method. The destination is judged first, so an unknown method in a destination the caller may not write to reads `organization_not_found`. |
-| `409` | `method_being_deleted` | The original's erasure has started. |
-| `409` | `method_update_conflict` | The draft moved since `expected_draft_updated_at`; `errors[0].field` names that member. Read the method again and copy with the fresh token. |
-| `409` | `conflict` | The method's organization holds no record of the draft's tree, or no longer holds every file of it: `runtime` and not retryable, a stored record contradicting itself that neither the caller nor a retry can mend. Its `errorDomain` tells it from the `input` `conflict` of an idempotency key reused with other arguments (below). |
-| `413` | `payload_too_large` | A copied example, or the copy's row, does not fit in one stored item. The row keeps room for the summary a publish adds, so a `name` that would leave none is refused. |
-| `422` | `validation_failed` | A body that does not validate, such as a name holding a lone surrogate. |
-| `422` | `method_copy_too_large` | The copy passes one of its bounds on the stored files it copies. Its `problemDocument.limit`, typed `MethodCopyLimit`, names the bound, `max_stored_files` or `max_stored_bytes`, its `value` and what the copy `reached`. Removing examples, or the files they hold, brings it under. |
-| `502` | `bad_gateway` | The platform could not read the caller's memberships. Retryable. |
-| `500` | `storage_backend_failed` | Storage failed a read, a copy or a write, retryable; or the platform has no usable credentials for storage, not retryable. |
-| `503` | `service_unavailable` | The copy did not finish inside its deadline, a stored file it copied was written over meanwhile, or DynamoDB failed a read or a write. Retryable. When DynamoDB failed both the write of the copy's row and the read that would confirm it, the `detail` names the copy's method id and says that a retry may make a second copy: the copy may stand in the destination, without the original's marker of it and without the destination's records of its files, so look for that id in the destination before copying again. |
+| `403` | `auth.forbidden` | The request is not from a web session, or the caller's role changes no method, `runner` or a role the platform does not know, in the method's organization or in the destination: the role must change. |
+| `404` | `pipelex.org.not_found` | The destination is one the caller does not belong to, one whose invitation they have not accepted, one still being set up, or one that does not exist. The platform answers them alike, so it never says whether an organization exists. |
+| `404` | `pipelex.catalog.not_found` | An unknown method. The destination is judged first, so an unknown method in a destination the caller may not write to reads `pipelex.org.not_found`. |
+| `409` | `pipelex.catalog.being_deleted` | The original's erasure has started. |
+| `409` | `pipelex.catalog.update_conflict` | The draft moved since `expected_draft_updated_at`; `location.field` names that member. Read the method again and copy with the fresh token. |
+| `409` | | The method's organization holds no record of the draft's tree, or no longer holds every file of it: its `domain` is `runtime` and its `retry` `no`, a stored record contradicting itself that neither the caller nor a retry can mend. No registered code names this refusal yet; it is not the `request.idempotency_conflict` of an idempotency key reused with other arguments (below). |
+| `413` | `request.too_large` | A copied example, or the copy's row, does not fit in one stored item. The row keeps room for the summary a publish adds, so a `name` that would leave none is refused. |
+| `422` | `request.invalid` | A body that does not validate, such as a name holding a lone surrogate. |
+| `422` | `pipelex.catalog.copy_too_large` | The copy passes one of its bounds on the stored files it copies. Its problem's `limit` member, typed `MethodCopyLimit`, names the bound, `max_stored_files` or `max_stored_bytes`, its `value` and what the copy `reached`. Removing examples, or the files they hold, brings it under. |
+| `502` | `runtime.unavailable` | The platform could not read the caller's memberships. Its `retry` is `yes`. |
+| `500` | `pipelex.storage.not_configured` | The platform has no usable credentials for storage. Its `retry` is `no`. |
+| `503` | `pipelex.storage.unavailable` | Storage failed a read, a copy or a write. Its `retry` is `yes`. |
+| `503` | `runtime.unavailable` | The copy did not finish inside its deadline, a stored file it copied was written over meanwhile, or DynamoDB failed a read or a write. Its `retry` is `yes`. When DynamoDB failed both the write of the copy's row and the read that would confirm it, the `detail` names the copy's method id and says that a retry may make a second copy: the copy may stand in the destination, without the original's marker of it and without the destination's records of its files, so look for that id in the destination before copying again. |
 
-`MethodErrorCode` names `organization_not_found` and `method_copy_too_large` beside the other method codes ([errors.md](./errors.md#the-method-codes)).
+`MethodErrorCode` names `pipelex.org.not_found` and `pipelex.catalog.copy_too_large` beside the other method codes ([errors.md](./errors.md#the-method-codes)).
 
 ```ts
 import { ApiResponseError } from "@pipelex/sdk";
@@ -94,8 +94,8 @@ import type { MethodCopyLimit } from "@pipelex/sdk";
 try {
   await client.copyMethod("mt_abc123", { destination_org_id: "org_team" });
 } catch (err) {
-  if (err instanceof ApiResponseError && err.code === "method_copy_too_large") {
-    const limit = err.problemDocument?.limit as MethodCopyLimit;
+  if (err instanceof ApiResponseError && err.code === "pipelex.catalog.copy_too_large") {
+    const limit = err.problem.limit as MethodCopyLimit;
     console.error(`${limit.name}: ${limit.reached} of at most ${limit.value}`);
   } else throw err;
 }
@@ -110,8 +110,8 @@ try {
 | The first under the key | The copy is made, or refused, and its answer is stored under the key for 24 hours, scoped to the caller and the method's organization, unless it is a `5xx` or a refusal for its timing (`408`, `425` or `429`). |
 | The same arguments under the same key, once the first was answered with a verdict, or with a `4xx` refusal other than one for its timing | The stored answer, and nothing more is copied: a copy whose answer was lost, as on a client timeout, makes one copy, not two, and a copy refused for its content is refused again. |
 | The same arguments under the same key, after a `5xx` or a refusal for its timing, such as a `429` | A fresh attempt: neither is stored, the key was freed, and the failed copy left nothing visible, but for the `503` whose `detail` names the copy, which may stand. |
-| The same arguments under the same key, while the first is still being handled, or while its stored answer cannot be read | A `409` `idempotency_key_in_use`, `runtime` and retryable, answered by the key and never stored: send it again under the same key in a few seconds. |
-| Other arguments under the same key | A `409` `conflict`, `input` and not retryable. A changed copy, such as one with a fresh draft token, goes under a new key. |
+| The same arguments under the same key, while the first is still being handled, or while its stored answer cannot be read | A `409` `request.idempotency_key_in_use`, `retry` `yes`, answered by the key and never stored: send it again under the same key after its `retryAfter`. |
+| Other arguments under the same key | A `409` `request.idempotency_conflict`, `retry` `no`. A changed copy, such as one with a fresh draft token, goes under a new key. |
 
 Without a key, a copy whose answer was lost cannot be told from one that never ran, and sending it again may make a second copy. Even with one, two rare windows can make a second copy on a retry. A platform process can die after writing the copy and before storing its answer, a window the creation of a method shares. And the `503` whose `detail` names the copy released the key while the copy may stand, which is why it names the copy: look for that method id in the destination before copying again.
 
@@ -121,7 +121,7 @@ The original keeps a marker of each copy made of it, and `listMethodCopies` page
 
 Pass the page's `nextCursor` back as `cursor` to continue; `null` is the last page. A method never copied lists an empty page, as does a copy, which names its original through `copied_from` and has no copies of its own. A marker stays when its copy is erased, and the copy then reads as not found. The marker is written once the copy exists, and a failure to write it does not fail the copy, so a copy can, rarely, be missing from the list. The original's erasure and its discard delete its markers with it.
 
-The listing answers `404` `not_found` for an unknown method, `409` `method_being_deleted` while its erasure runs, `400` `malformed_request` for a cursor it did not issue for that method, and `422` for a `limit` outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a string nor `null` is an answer the SDK cannot read.
+The listing answers `404` `pipelex.catalog.not_found` for an unknown method, `409` `pipelex.catalog.being_deleted` while its erasure runs, and `422` `request.invalid` for a cursor it did not issue for that method or a `limit` outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a string nor `null` is an answer the SDK cannot read.
 
 ## `copied_from` on a method
 

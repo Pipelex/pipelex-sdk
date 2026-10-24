@@ -18,7 +18,6 @@ import pytest
 from pydantic import ValidationError
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import ApiResponseError, IdempotencyErrorCode, MethodErrorCode, RequestArgumentError
 from pipelex_sdk.product_models import (
     MethodCopied,
@@ -28,7 +27,7 @@ from pipelex_sdk.product_models import (
     MethodCopyRefusalReason,
     MethodCopyRefused,
 )
-from tests.unit.conftest import BASE_URL, refused_argument
+from tests.unit.conftest import BASE_URL, problem_document, refused_argument
 from tests.unit.test_data import MethodCopyBodies
 
 if TYPE_CHECKING:
@@ -38,7 +37,6 @@ if TYPE_CHECKING:
 
 _COPY_PATH = "/v1/methods/mt_receipts01/copy"
 _HEADER = "idempotency-key"
-_INPUT_VERDICT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
 
 def _sent_method(send: MockType) -> str:
@@ -54,19 +52,9 @@ def _sent_body(send: MockType) -> Any:
     return None if content is None else json.loads(content)
 
 
-def _problem(status: int, code: str, *, error_domain: str, retryable: bool, **members: object) -> dict[str, Any]:
-    """A problem document as the platform renders one of its own refusals."""
-    return {
-        "type": f"https://pipelex.com/errors/{code}",
-        "title": code,
-        "status": status,
-        "code": code,
-        "detail": f"Refused: {code}.",
-        "instance": _COPY_PATH,
-        "error_domain": error_domain,
-        "retryable": retryable,
-        **members,
-    }
+def _problem(status: int, code: str, **members: Any) -> dict[str, Any]:
+    """A problem document as the platform renders one of its refusals of the copy."""
+    return problem_document(code, status, instance=_COPY_PATH, **members)
 
 
 class _ScriptedServer:
@@ -135,7 +123,7 @@ class TestClientMethodCopies:
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
         # The platform refuses the name with its own `422`; the client must send it rather than fail on `to_json`.
-        refusal = _problem(422, "validation_failed", error_domain="input", retryable=False)
+        refusal = _problem(422, "request.invalid")
         send = patch_send(api_client, wire_response(422, json_body=refusal))
 
         with pytest.raises(ApiResponseError) as exc_info:
@@ -154,7 +142,7 @@ class TestClientMethodCopies:
             "expected_draft_updated_at": "2026-10-08\udc00",
         }
         assert exc_info.value.status == 422
-        assert exc_info.value.code == "validation_failed"
+        assert exc_info.value.problem.code == "request.invalid"
 
     @pytest.mark.parametrize(
         ("destination", "got", "reason"),
@@ -182,7 +170,11 @@ class TestClientMethodCopies:
             f"copy_method() takes a destination_org_id, the canonical id of the organization to copy into, a non-empty string; got {got}."
         )
         assert refused_argument(exc_info.value) == {"argument": "destination_org_id", "reason": reason}
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.code, exc_info.value.problem.domain, exc_info.value.problem.retry) == (
+            "client.argument_invalid",
+            "input",
+            "no",
+        )
         send.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -252,7 +244,7 @@ class TestClientMethodCopies:
 
     def test_copy_method_sends_the_same_key_and_body_on_a_callers_retry(self) -> None:
         server = _ScriptedServer(
-            httpx.Response(503, json=_problem(503, "service_unavailable", error_domain="runtime", retryable=True)),
+            httpx.Response(503, json=_problem(503, "runtime.unavailable", domain="runtime", retry="yes")),
             httpx.Response(200, json=MethodCopyBodies.COPIED),
         )
         client = server.client()
@@ -260,7 +252,7 @@ class TestClientMethodCopies:
         async def scenario() -> object:
             with pytest.raises(ApiResponseError) as exc_info:
                 await client.copy_method("mt_receipts01", destination_org_id="org_team", name="Receipts", idempotency_key=MethodCopyBodies.KEY)
-            assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
+            assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("runtime", "yes")
             return await client.copy_method("mt_receipts01", destination_org_id="org_team", name="Receipts", idempotency_key=MethodCopyBodies.KEY)
 
         result = asyncio.run(scenario())
@@ -307,21 +299,24 @@ class TestClientMethodCopies:
         assert fault in message
         assert "1 to 255 visible ASCII characters" in message
         assert message.endswith("Leave it out to copy the method without one.")
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.code, exc_info.value.problem.domain, exc_info.value.problem.retry) == (
+            "client.argument_invalid",
+            "input",
+            "no",
+        )
         send.assert_not_called()
 
-    def test_copy_method_reads_a_key_an_earlier_copy_still_holds_as_retryable(
+    def test_copy_method_reads_a_key_an_earlier_copy_still_holds_as_worth_sending_again(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        body = _problem(409, "idempotency_key_in_use", error_domain="runtime", retryable=True)
+        body = _problem(409, "request.idempotency_key_in_use", domain="runtime", retry="yes")
         patch_send(api_client, wire_response(409, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.copy_method("mt_receipts01", destination_org_id="org_team", idempotency_key=MethodCopyBodies.KEY))
 
-        assert exc_info.value.code == IdempotencyErrorCode.IDEMPOTENCY_KEY_IN_USE
-        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
-        assert exc_info.value.run_may_have_started is False
+        assert exc_info.value.problem.code == IdempotencyErrorCode.KEY_IN_USE
+        assert exc_info.value.problem.retry == "yes"
 
     # ----- the verdict -----------------------------------------------------------------------------------------
 
@@ -361,84 +356,76 @@ class TestClientMethodCopies:
         unreadable = exc_info.value
         assert str(unreadable) == f"API POST {_COPY_PATH} answered 200 with a body that is not the answer the route returns"
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert (unreadable.problem.code, unreadable.problem.domain, unreadable.problem.retry) == ("client.response_unreadable", "runtime", "no")
 
     # ----- the refusals ----------------------------------------------------------------------------------------
 
     @pytest.mark.parametrize(
-        ("status", "code", "error_domain", "retryable"),
+        ("status", "code", "domain", "retry"),
         [
-            pytest.param(403, "forbidden", ErrorDomain.CONFIG, False, id="not-a-web-session"),
-            pytest.param(403, "role_not_permitted", ErrorDomain.CONFIG, False, id="role"),
-            pytest.param(404, "organization_not_found", ErrorDomain.INPUT, False, id="destination"),
-            pytest.param(404, "not_found", ErrorDomain.INPUT, False, id="unknown-method"),
-            pytest.param(409, "method_being_deleted", ErrorDomain.INPUT, False, id="being-deleted"),
-            pytest.param(409, "method_update_conflict", ErrorDomain.INPUT, False, id="stale-token"),
-            pytest.param(409, "conflict", ErrorDomain.RUNTIME, False, id="tree-not-held"),
-            pytest.param(413, "payload_too_large", ErrorDomain.INPUT, False, id="too-large-for-an-item"),
-            pytest.param(422, "validation_failed", ErrorDomain.INPUT, False, id="body"),
-            pytest.param(502, "bad_gateway", ErrorDomain.RUNTIME, True, id="workos"),
-            pytest.param(500, "storage_backend_failed", ErrorDomain.RUNTIME, True, id="storage"),
-            pytest.param(503, "service_unavailable", ErrorDomain.RUNTIME, True, id="deadline"),
+            pytest.param(403, "auth.forbidden", "account", "no", id="not-a-web-session"),
+            pytest.param(403, "auth.forbidden", "account", "no", id="role"),
+            pytest.param(404, MethodErrorCode.ORGANIZATION_NOT_FOUND, "input", "no", id="destination"),
+            pytest.param(404, MethodErrorCode.NOT_FOUND, "input", "no", id="unknown-method"),
+            pytest.param(409, MethodErrorCode.BEING_DELETED, "input", "no", id="being-deleted"),
+            pytest.param(409, MethodErrorCode.UPDATE_CONFLICT, "input", "no", id="stale-token"),
+            pytest.param(413, "request.too_large", "input", "no", id="too-large-for-an-item"),
+            pytest.param(422, "request.invalid", "input", "no", id="body"),
+            pytest.param(502, "runtime.unavailable", "runtime", "yes", id="workos"),
+            pytest.param(503, "pipelex.storage.unavailable", "runtime", "yes", id="storage"),
+            pytest.param(503, "runtime.unavailable", "runtime", "yes", id="deadline"),
         ],
     )
-    def test_copy_method_raises_each_refusal_with_its_code_and_verdict(
+    def test_copy_method_raises_each_refusal_with_its_problem(
         self,
         api_client: PipelexAPIClient,
         wire_response: ResponseBuilder,
         patch_send: SendPatcher,
         status: int,
         code: str,
-        error_domain: ErrorDomain,
-        retryable: bool,
+        domain: str,
+        retry: str,
     ) -> None:
-        patch_send(api_client, wire_response(status, json_body=_problem(status, code, error_domain=error_domain, retryable=retryable)))
+        patch_send(api_client, wire_response(status, json_body=_problem(status, code, domain=domain, retry=retry)))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.copy_method("mt_receipts01", destination_org_id="org_team"))
 
         assert exc_info.value.status == status
-        assert exc_info.value.code == code
-        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=error_domain, retryable=retryable)
+        assert (exc_info.value.problem.code, exc_info.value.problem.domain, exc_info.value.problem.retry) == (code, domain, retry)
 
     @pytest.mark.parametrize(
-        ("status", "code", "error_domain"),
+        ("status", "code"),
         [
-            pytest.param(404, MethodErrorCode.ORGANIZATION_NOT_FOUND, ErrorDomain.INPUT, id="destination"),
-            pytest.param(403, "role_not_permitted", ErrorDomain.CONFIG, id="role"),
-            pytest.param(422, MethodErrorCode.METHOD_COPY_TOO_LARGE, ErrorDomain.INPUT, id="too-large"),
+            pytest.param(404, "request.not_found", id="a-404"),
+            pytest.param(403, "auth.invalid_credential", id="a-403"),
+            pytest.param(422, "client.response_unreadable", id="a-422"),
         ],
     )
-    def test_copy_method_reads_the_fallback_verdict_when_the_platform_sends_none(
-        self,
-        api_client: PipelexAPIClient,
-        wire_response: ResponseBuilder,
-        patch_send: SendPatcher,
-        status: int,
-        code: str,
-        error_domain: ErrorDomain,
+    def test_copy_method_reads_a_body_that_is_no_problem_document_by_its_status(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, status: int, code: str
     ) -> None:
-        patch_send(api_client, wire_response(status, json_body={"status": status, "code": code, "detail": "Refused."}))
+        patch_send(api_client, wire_response(status, json_body={"status": status, "code": "organization_not_found", "detail": "Refused."}))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.copy_method("mt_receipts01", destination_org_id="org_team"))
 
-        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=error_domain, retryable=False)
+        assert exc_info.value.problem.code == code
 
     def test_copy_method_reads_a_copy_past_its_bounds_with_the_limit_it_names(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        body = _problem(422, "method_copy_too_large", error_domain="input", retryable=False, limit=MethodCopyBodies.LIMIT)
+        body = _problem(422, MethodErrorCode.COPY_TOO_LARGE, limit=MethodCopyBodies.LIMIT)
         patch_send(api_client, wire_response(422, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.copy_method("mt_receipts01", destination_org_id="org_team"))
 
         refused = exc_info.value
-        assert refused.code == MethodErrorCode.METHOD_COPY_TOO_LARGE
-        assert refused.problem_document is not None
-        assert MethodCopyLimit.model_validate(refused.problem_document["limit"]) == MethodCopyLimit(name="max_stored_files", value=200, reached=201)
-        assert error_verdict_of(refused) == _INPUT_VERDICT
+        assert refused.problem.code == MethodErrorCode.COPY_TOO_LARGE
+        limit = MethodCopyLimit.model_validate((refused.problem.model_extra or {})["limit"])
+        assert limit == MethodCopyLimit(name="max_stored_files", value=200, reached=201)
+        assert (refused.problem.domain, refused.problem.retry) == ("input", "no")
 
     # ----- the copies of a method ------------------------------------------------------------------------------
 
@@ -502,22 +489,21 @@ class TestClientMethodCopies:
     @pytest.mark.parametrize(
         ("status", "code"),
         [
-            pytest.param(404, "not_found", id="unknown-method"),
-            pytest.param(409, "method_being_deleted", id="being-deleted"),
-            pytest.param(400, "malformed_request", id="foreign-cursor"),
-            pytest.param(422, "validation_failed", id="limit"),
+            pytest.param(404, MethodErrorCode.NOT_FOUND, id="unknown-method"),
+            pytest.param(409, MethodErrorCode.BEING_DELETED, id="being-deleted"),
+            pytest.param(422, "request.invalid", id="foreign-cursor"),
+            pytest.param(422, "request.invalid", id="limit"),
         ],
     )
-    def test_list_method_copies_raises_each_refusal_with_its_code(
+    def test_list_method_copies_raises_each_refusal_with_its_problem(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, status: int, code: str
     ) -> None:
-        patch_send(api_client, wire_response(status, json_body={"status": status, "code": code, "detail": "Refused."}))
+        patch_send(api_client, wire_response(status, json_body=problem_document(code, status, detail="Refused.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.list_method_copies("mt_receipts01"))
 
-        assert exc_info.value.code == code
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.code, exc_info.value.problem.domain, exc_info.value.problem.retry) == (code, "input", "no")
 
     def test_list_method_copies_refuses_a_page_without_its_cursor(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher

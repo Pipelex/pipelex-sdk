@@ -5,8 +5,8 @@ The file's source is `js/tests/fixtures/malformed-input-forms.json`, which `@pip
 this copy is written by `make shared-files` at the repository root and never edited here, and
 `make check-shared-files` fails when the two differ, so both SDKs refuse the same answers. Here the client
 parses the answer into the standard's closed models, so every case is refused before `prepare_inputs` walks
-anything, as the `ApiResponseError` the client raises for a 2xx it cannot read: `runtime` and not retryable,
-the verdict `@pipelex/sdk` gives its `InputPreparationError` for the same answer. Every request goes through
+anything, as the `ApiResponseError` the client raises for a 2xx it cannot read: `client.response_unreadable`,
+the code `@pipelex/sdk` gives its `InputPreparationError` for the same answer. Every request goes through
 an `httpx.MockTransport`, below the client's `_send`, so a case also shows that nothing was uploaded.
 """
 
@@ -24,7 +24,6 @@ from pydantic import ValidationError
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.crate_models import PipeIORequest, PipeIOValidReport
-from pipelex_sdk.error_verdicts import error_verdict_of
 from pipelex_sdk.errors import ApiResponseError
 from tests.unit.conftest import BASE_URL
 from tests.unit.test_data import MalformedInputFormData
@@ -87,5 +86,5 @@ class TestPrepareInputsMalformedForm:
         assert str(refused) == "API POST /v1/pipe-io answered 200 with a body that is not the answer the route returns"
         assert isinstance(refused.__cause__, ValidationError)
         # The route broke its own contract, which no change to the request fixes.
-        assert error_verdict_of(refused) == MalformedInputFormData.UNREADABLE_VERDICT
+        assert refused.problem.code == MalformedInputFormData.UNREADABLE_CODE
         assert seen == ["/v1/pipe-io"]

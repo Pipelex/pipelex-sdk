@@ -12,10 +12,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.product_models import FileArchiveFailureCode, FileArchiveLimit, FileArchiveSource, FileArchiveState
-from tests.unit.conftest import BASE_URL, refused_argument
+from tests.unit.conftest import BASE_URL, problem_document, refused_argument
 from tests.unit.test_data import FileBodies
 
 if TYPE_CHECKING:
@@ -25,8 +24,6 @@ if TYPE_CHECKING:
     from tests.unit.conftest import ResponseBuilder, SendPatcher
 
 _ARCHIVES_URL = f"{BASE_URL}/v1/files/archives"
-
-_INPUT_VERDICT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
 
 def _sent_body(send: MockType) -> Any:
@@ -102,7 +99,7 @@ class TestClientFileArchives:
         with pytest.raises(RequestArgumentError, match=rf"^request_file_archive\(\) .*{message}") as exc_info:
             asyncio.run(api_client.request_file_archive(**kwargs))
 
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         assert refused_argument(exc_info.value) == {"argument": argument, "reason": reason}
         send.assert_not_called()
 
@@ -119,22 +116,22 @@ class TestClientFileArchives:
             asyncio.run(api_client.request_file_archive(file_ids=["fl_1", "fl_2"]))
 
         refusal = exc_info.value
-        assert refusal.code == "file_archive_too_large"
-        assert error_verdict_of(refusal) == _INPUT_VERDICT
-        assert refusal.problem_document is not None
-        limit = FileArchiveLimit.model_validate(refusal.problem_document["limit"])
+        # The code is the platform's; the SDK keeps the problem's `limit` member as received.
+        assert refusal.problem.code == "pipelex.files.archive_too_large"
+        assert (refusal.problem.domain, refusal.problem.retry) == ("input", "no")
+        limit = FileArchiveLimit.model_validate((refusal.problem.model_extra or {})["limit"])
         assert limit == FileArchiveLimit(name="max_total_bytes", value=2000000000, reached=2147483648)
 
     def test_request_surfaces_a_run_not_yet_recorded_as_a_retryable_conflict(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        body = {"status": 409, "code": "conflict", "error_domain": "runtime", "retryable": True, "detail": "Not all recorded yet."}
+        body = problem_document("run.not_finished", 409, domain="runtime", retry="yes", detail="Not all recorded yet.")
         patch_send(api_client, wire_response(409, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.request_file_archive(run_id="run_7"))
 
-        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("runtime", "yes")
 
     def test_get_reads_a_ready_archive_with_its_link(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -217,9 +214,9 @@ class TestClientFileArchives:
     def test_get_raises_not_found_for_an_expired_archive(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(404, json_body={"status": 404, "code": "not_found", "detail": "Item not found."}))
+        patch_send(api_client, wire_response(404, json_body=problem_document("pipelex.storage.not_found", 404, detail="Item not found.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.get_file_archive(FileBodies.ARCHIVE_ID))
 
-        assert exc_info.value.code == "not_found"
+        assert exc_info.value.problem.code == "pipelex.storage.not_found"

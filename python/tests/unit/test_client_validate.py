@@ -12,6 +12,7 @@ from pytest_mock import MockerFixture, MockType
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError
 from pipelex_sdk.validation_models import VALIDATION_VIEW_INPUT_FORM, PipelexInvalidReport, PipelexValidationReport
+from tests.unit.conftest import problem_document
 
 _BASE_URL = "http://localhost:8081"
 
@@ -22,7 +23,7 @@ _INVALID_BODY = {
     "is_valid": False,
     "is_runnable": False,
     "message": "bundle failed",
-    "validation_errors": [{"category": "blueprint_validation", "message": "boom"}],
+    "errors": [{"code": "method.syntax", "detail": "boom"}],
     "rendered_markdown": "## errors",
 }
 
@@ -78,7 +79,7 @@ class TestClientValidate:
         assert isinstance(result, PipelexInvalidReport)
         assert result.is_valid is False
         assert result.rendered_markdown == "## errors"
-        assert result.validation_errors[0].message == "boom"
+        assert [(item.code, item.detail) for item in result.errors] == [("method.syntax", "boom")]
 
     # ── views ────────────────────────────────────────────────────────
 
@@ -160,15 +161,9 @@ class TestClientValidate:
             (
                 {"method_id": "mt_missing"},
                 404,
-                {
-                    "type": "https://pipelex.com/errors/not_found",
-                    "title": "Not found",
-                    "status": 404,
-                    "code": "not_found",
-                    "detail": "Method not found.",
-                },
+                problem_document("pipelex.catalog.not_found", 404, detail="Method not found."),
             ),
-            ({"files": _FILES}, 422, {"title": "Unprocessable entity", "status": 422, "detail": "files holds an invalid tree path."}),
+            ({"files": _FILES}, 422, problem_document("request.invalid", 422, detail="files holds an invalid tree path.")),
         ],
     )
     def test_a_no_verdict_answer_raises_api_response_error(
@@ -184,6 +179,7 @@ class TestClientValidate:
         assert exc_info.value.status == status
         assert exc_info.value.request_url == f"{_BASE_URL}/v1/validate"
         assert str(exc_info.value) == f"API POST /v1/validate failed ({status}): {problem['detail']}"
+        assert exc_info.value.problem.code == problem["code"]
 
     @pytest.mark.parametrize(
         "kwargs",
