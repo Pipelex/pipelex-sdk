@@ -103,10 +103,10 @@ describe("globals.css", () => {
     const required: ReadonlyArray<[string, string]> = [
       ["bg-app-header", "background-color"],
       ["text-app-header-foreground", "color"],
-      ["bg-brand-muted", "background-color"],
-      ["text-brand-muted-foreground", "color"],
-      ["border-brand", "border-color"],
-      ["border-t-brand", "border-top-color"],
+      ["bg-selected", "background-color"],
+      ["text-link", "color"],
+      ["border-link", "border-color"],
+      ["border-t-link", "border-top-color"],
       ["bg-primary", "background-color"],
       ["text-primary-foreground", "color"],
     ];
@@ -119,17 +119,16 @@ describe("globals.css", () => {
   it("falls each brand token back to what an unbranded app shows", async () => {
     const css = await build(SOURCE);
 
-    // Only a branded app's page defines the brand tokens, so an unbranded one
-    // reads these fallbacks: the button colour for the ink, the neutral muted
-    // fill for the pale fill, the page for the band.
-    expect(css).toMatch(/\.border-brand\s*\{\s*border-color:\s*var\(--brand,\s*var\(--primary\)\)/);
+    // Only a branded app's page defines the brand tokens, and only for the
+    // colours its team set, so an unbranded one, or a team that set no accent
+    // and no button colour, reads these fallbacks: the button colour for the
+    // ink, the neutral muted fill for the selected fill, the page for the band.
+    expect(css).toMatch(/\.border-link\s*\{\s*border-color:\s*var\(--link,\s*var\(--primary\)\)/);
+    expect(css).toMatch(/\.text-link\s*\{\s*color:\s*var\(--link,\s*var\(--primary\)\)/);
     // A plain fallback, so no browser is handed the `color-mix()`-less
     // fallback Tailwind writes: the button colour, solid, under its own ink.
     expect(css).toMatch(
-      /\.bg-brand-muted\s*\{\s*background-color:\s*var\(--brand-muted,\s*var\(--muted\)\);\s*\}/,
-    );
-    expect(css).toMatch(
-      /\.text-brand-muted-foreground\s*\{\s*color:\s*var\(--brand-muted-foreground,\s*var\(--brand,\s*var\(--primary\)\)\)/,
+      /\.bg-selected\s*\{\s*background-color:\s*var\(--selected,\s*var\(--muted\)\);\s*\}/,
     );
     expect(css).toMatch(
       /\.bg-app-header\s*\{\s*background-color:\s*var\(--app-header,\s*var\(--page\)\)/,

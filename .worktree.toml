@@ -13,3 +13,9 @@ prerelease = "gh workflow run release.yml --repo Pipelex/pipelex-sdk --ref dev -
 
 [pins.mthds]
 site = "python/pyproject.toml"
+
+# Two templates take the form kernel: the method-app template reads its brand tokens and
+# follows each kernel change, while starter-js only renders its forms through mthds-ui, so a
+# sprint pins the kernel where the tokens are read.
+[pins."@pipelex/mthds-form"]
+site = "method-apps/webapp-js/package.json"

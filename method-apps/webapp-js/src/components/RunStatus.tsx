@@ -48,11 +48,11 @@ function statusLabel(status: string): string {
  * `aria-live="polite"` announces progress to assistive tech without stealing
  * focus.
  *
- * Progress wears the accent: the card is the pale accent fill
- * (`--brand-muted`) and its text the accent's ink on it
- * (`--brand-muted-foreground`), which reads at 4.5:1 there whatever colour an
- * organization picked, so every line keeps the one ink and none is faded. An
- * unbranded app shows the neutral muted fill with the button colour as ink.
+ * Progress wears the accent: the card is the pale accent fill (`--selected`)
+ * and its text the accent's ink (`--link`), which reads at 4.5:1 there
+ * whatever colour an organization picked, so every line keeps the one ink and
+ * none is faded. An unbranded app, or a team that set neither an accent nor a
+ * button colour, shows the neutral muted fill with the button colour as ink.
  */
 export function RunStatus({ status, elapsedMs, health, runId }: RunStatusProps) {
   const seconds = (elapsedMs / 1000).toFixed(1);
@@ -60,11 +60,11 @@ export function RunStatus({ status, elapsedMs, health, runId }: RunStatusProps) 
     <div
       role="status"
       aria-live="polite"
-      className="flex items-center gap-3 rounded-lg border border-brand/25 bg-brand-muted p-4 text-sm text-brand-muted-foreground"
+      className="flex items-center gap-3 rounded-lg border border-link/25 bg-selected p-4 text-sm text-link"
     >
       <span
         aria-hidden="true"
-        className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-brand/30 border-t-brand"
+        className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-link/30 border-t-link"
       />
       <div className="space-y-0.5">
         <p className="font-medium">
