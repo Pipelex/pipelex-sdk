@@ -12,6 +12,8 @@ from typing import Any
 
 import httpx
 import pytest
+from mthds.protocol.problem.models import Problem
+from mthds.protocol.problem.registry import ProblemDomain, RetryVerdict, StepKind
 from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
@@ -167,7 +169,12 @@ class TestClientRunProgress:
         assert retried.path == "filings.review_filings/step_3/item_2/step_2"
         assert retried.attempts == 2
         assert retried.last_failure is not None
-        assert retried.last_failure.message == "An internal error occurred."
+        assert isinstance(retried.last_failure.problem, Problem)
+        assert retried.last_failure.problem.code == "runtime.unexpected"
+        assert retried.last_failure.problem.effective_domain is ProblemDomain.RUNTIME
+        assert retried.last_failure.problem.effective_retry is RetryVerdict.NO
+        assert retried.last_failure.problem.effective_step_kind is StepKind.REPORT
+        assert retried.last_failure.problem.as_wire() == RunProgressBodies.RETRIED_PROBLEM
         assert retried.last_failure.at == "2026-10-12T09:30:52.317Z"
         assert retried.degradation is None
 
@@ -235,6 +242,16 @@ class TestClientRunProgress:
             pytest.param("condition", {}, id="a-condition-without-its-outcome"),
             pytest.param("attempts", True, id="attempts-that-are-a-boolean"),
             pytest.param("last_failure", "An internal error occurred.", id="a-last-failure-that-is-not-an-object"),
+            pytest.param(
+                "last_failure",
+                {"message": "An internal error occurred.", "at": "2026-10-12T09:30:52.317Z"},
+                id="a-last-failure-with-a-message-and-no-problem",
+            ),
+            pytest.param(
+                "last_failure",
+                {"problem": {**RunProgressBodies.RETRIED_PROBLEM, "next_step": None}, "at": "2026-10-12T09:30:52.317Z"},
+                id="a-last-failure-whose-problem-is-not-a-problem-document",
+            ),
         ],
     )
     def test_get_run_progress_reads_an_optional_invocation_member_that_does_not_fit_as_none(
@@ -249,6 +266,22 @@ class TestClientRunProgress:
         assert getattr(invocation, member) is None
         assert invocation.path == "filings.review_filings/step_3/item_3"
         assert invocation.degradation is not None
+
+    def test_get_run_progress_keeps_a_failures_problem_whole_and_reads_a_time_that_does_not_fit_as_none(self, patch_send: SendPatcher) -> None:
+        """The problem keeps every member it carries, a `pipelex.*` code and undeclared members included."""
+        problem = problem_document("pipelex.inference.provider_refused", 502, domain="model", retry="yes", provider_hint="upstream")
+        client = PipelexAPIClient(api_key="test-token", base_url=BASE_URL)
+        patch_send(client, _json(200, _snapshot(invocations=[_invocation(last_failure={"problem": problem, "at": 52, "later": True})])))
+
+        progress = asyncio.run(client.get_run_progress("run-1"))
+
+        last_failure = progress.invocations[0].last_failure
+        assert last_failure is not None
+        assert last_failure.at is None
+        assert last_failure.problem.code == "pipelex.inference.provider_refused"
+        assert last_failure.problem.effective_retry is RetryVerdict.YES
+        assert last_failure.problem.as_wire() == problem
+        assert last_failure.model_extra == {"later": True}
 
     @pytest.mark.parametrize(
         ("member", "value"),
