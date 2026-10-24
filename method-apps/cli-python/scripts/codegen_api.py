@@ -13,6 +13,7 @@ from typing import Any, Protocol, cast
 
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.models import VersionInfo
+from mthds.protocol.problem.answers import read_problem_document
 from mthds.protocol.problem.registry import CoreCode
 from pipelex_sdk.errors import ApiResponseError, MethodErrorCode
 
@@ -61,6 +62,16 @@ async def selector_support_refusal(client: VersionClient, base_url: str, source:
     )
 
 
+def is_bare_forbidden(exc: ApiResponseError) -> bool:
+    """Whether a refusal is a bare `403`, one that carried no problem document.
+
+    A gateway answers a path it does not route with exactly that, as it answers a key it refuses, so the
+    answer cannot say which it was: the SDK reads the status as `auth.invalid_credential`, but a base URL
+    that does not serve the route is just as likely, and the line names both.
+    """
+    return exc.status == 403 and read_problem_document(exc.response_body, status=exc.status, headers={}) is None
+
+
 def explain_selector_failure(exc: BaseException, source: CodegenSource) -> str | None:
     """A named method the API could not resolve, said as such, with the problem's own reason.
 
@@ -85,6 +96,16 @@ def explain(exc: BaseException, base_url: str, route: str, source: CodegenSource
             return selector_failure
     if not isinstance(exc, ApiResponseError):
         return str(exc)
+    if is_bare_forbidden(exc):
+        return "\n".join(
+            (
+                f"HTTP 403 from {route}, with no problem document: either PIPELEX_API_KEY was refused, "
+                f"or this base URL does not serve {route}, which a gateway answers alike.",
+                f"  Base URL: {base_url}",
+                "  Check the key in .env (get one at https://app.pipelex.com), and that PIPELEX_BASE_URL",
+                "  points at a Pipelex API that serves this route, or drop it to use the default.",
+            )
+        )
     problem = exc.problem
     match problem.code:
         case CoreCode.REQUEST_NOT_FOUND:

@@ -76,12 +76,17 @@ export const EXIT_FAILED = 1;
  * URL does not serve (`request.not_found`, which is also how the SDK reads a
  * bare `404`) is never that reading: it is the route missing, not the method.
  */
-function requestDetail(error: unknown, route: string, source?: MethodSource): string {
+function requestDetail(
+  error: unknown,
+  route: string,
+  baseUrl: string,
+  source?: MethodSource,
+): string {
   if (source?.kind === "selector") {
     const selectorFailure = explainSelectorFailure(error, source.selector);
     if (selectorFailure !== null) return selectorFailure;
   }
-  return describeRequestFailure(error, route);
+  return describeRequestFailure(error, route, baseUrl);
 }
 
 async function runVerifyInner(): Promise<number> {
@@ -190,7 +195,9 @@ async function runVerifyInner(): Promise<number> {
       liveFingerprint = response.crate_fingerprint;
       liveEngine = response.engine_version;
     } catch (error) {
-      console.error(`\n✗ ${method.name} — ${requestDetail(error, "POST /v1/codegen", method)}`);
+      console.error(
+        `\n✗ ${method.name} — ${requestDetail(error, "POST /v1/codegen", baseUrl, method)}`,
+      );
       failed = true;
       continue;
     }
@@ -237,7 +244,9 @@ async function runVerifyInner(): Promise<number> {
         continue;
       }
     } catch (error) {
-      console.error(`\n✗ ${method.name} — ` + requestDetail(error, "POST /v1/pipe-io", method));
+      console.error(
+        `\n✗ ${method.name} — ` + requestDetail(error, "POST /v1/pipe-io", baseUrl, method),
+      );
       failed = true;
       continue;
     }

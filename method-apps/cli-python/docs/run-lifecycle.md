@@ -42,7 +42,7 @@ Every error the SDK raises carries its failure as one problem document, `exc.pro
 
 - `Reason:` its title and its detail;
 - one line per fault its `errors` list, where the fault is (the pipe, the input, the field, the file and line) and what it is, with the close matches it suggests;
-- `Who acts:` who must act, from its `domain`: you, by changing the inputs; whoever authors the method; whoever owns the account; whoever runs the deployment; or nobody on your side, when the service failed;
+- `Who acts:` who must act, from its `domain`: you, by changing the inputs; whoever authors the method; whoever owns the account; whoever runs the deployment; or nobody on your side, when the service failed. An API out of reach or silent past the time limit (`client.unreachable`, `client.timeout`) gets no such line, since the URL or the network is as likely a cause as the service;
 - `Next step:` the step's own sentence, from its `next_step`, except a step to retry or to wait, which the retry line says;
 - `Retry:` whether running it again can succeed, from its `retry`: `yes`, after the `retry_after` seconds it gives; `no`, since it fails the same way unchanged; and `outcome_unknown`, when the run may already have started, so it is looked up by its id with `--resume` before another is started, or it is paid for twice;
 - `For support:` the run's id, the problem's `code` and the request's id, each when there is one, the line to quote to whoever runs the API.

@@ -234,6 +234,17 @@ class TestPresentError:
         assert presentation.hint is not None
         assert "PIPELEX_BASE_URL" in presentation.hint
         assert RETRY_YES in presentation.details
+        # No answer came to read: the URL or the network is as likely the cause as the service.
+        assert not any(line.startswith("Who acts:") for line in presentation.details)
+
+    def test_timeout_reads_as_unreachable_in_time(self):
+        error = ApiUnreachableError("timed out", api_url="http://slow.invalid", network_code="ABORT_TIMEOUT", timeout_seconds=30.0)
+        assert error.problem.code == "client.timeout"
+        presentation = present_error(error)
+        assert presentation.message == "The Pipelex API at http://slow.invalid did not answer in time."
+        assert presentation.hint is not None
+        assert "PIPELEX_BASE_URL" in presentation.hint
+        assert not any(line.startswith("Who acts:") for line in presentation.details)
 
     def test_a_wait_that_gave_up_says_how_to_wait_again(self):
         presentation = present_error(RunTimeoutError("too slow", run_id="run-9", timeout_seconds=1200.0))

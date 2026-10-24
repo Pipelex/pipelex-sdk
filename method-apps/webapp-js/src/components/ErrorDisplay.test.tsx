@@ -43,7 +43,9 @@ describe("ErrorDisplay — a failed run", () => {
     ).toBeInTheDocument();
     expect(alert).not.toHaveTextContent(/run it again\./);
     expect(
-      screen.getByText("run run-1 · input.wrong_multiplicity · failed 2026-09-26T10:01:00Z"),
+      screen.getByText(
+        "run run-1 · input.wrong_multiplicity · failed 2026-09-26T10:01:00Z · request req_results_409",
+      ),
     ).toBeInTheDocument();
     expect(alert).toHaveTextContent(/For support:/);
     // A fault on the caller's side is a caution, not an alarm.

@@ -248,7 +248,10 @@ describe("pollDurableRun", () => {
     expect(result.error.message).toBe(RATE_LIMITED.detail);
     expect(result.error.hint).toBeUndefined(); // a `wait` step is the retry line's to say
     expect(result.error.retry?.verdict).toBe("yes");
-    expect(result.error.support).toBe("run run-1 · provider.rate_limited");
+    // The run's problem names no request, so the results read's is the one to quote.
+    expect(result.error.support).toBe(
+      "run run-1 · provider.rate_limited · request req_results_409",
+    );
   });
 
   it("keeps the lookup's sentence for a run that ended with no problem", async () => {

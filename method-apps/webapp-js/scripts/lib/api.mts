@@ -13,6 +13,7 @@ import {
   ApiResponseError,
   formatItem,
   isProblemError,
+  readProblemBody,
   type PipelexApiClient,
   type ProblemItem,
   type ValidateMethodSelector,
@@ -85,6 +86,21 @@ export function isRouteMissing(error: unknown): boolean {
 }
 
 /**
+ * Whether a refusal is a bare `403`, one that carried no problem document. A
+ * gateway answers a path it does not route with exactly that, as it answers a
+ * key it refuses, so the answer cannot say which it was: the SDK reads the
+ * status as `auth.invalid_credential`, but a base URL that does not serve the
+ * route is just as likely.
+ */
+export function isBareForbidden(error: unknown): error is ApiResponseError {
+  return (
+    error instanceof ApiResponseError &&
+    error.status === 403 &&
+    readProblemBody(error.responseBody) === undefined
+  );
+}
+
+/**
  * The one line a selector-resolution failure reads as.
  *
  * A method the API cannot find, answered with a problem of its own, means
@@ -116,8 +132,21 @@ export function explainSelectorFailure(
  * and the route, the problem's detail and code, then its next step and the
  * request's id on lines of their own. A failure that got no answer (the API
  * unreachable, a refused argument) is its problem's detail and code alone.
+ *
+ * A bare `403` ({@link isBareForbidden}) names both of its possible causes,
+ * the key and the base URL, rather than the SDK's reading of the status alone,
+ * which would send the developer to a key that may well be fine.
  */
-export function describeRequestFailure(error: unknown, route: string): string {
+export function describeRequestFailure(error: unknown, route: string, baseUrl?: string): string {
+  if (isBareForbidden(error)) {
+    return [
+      `HTTP 403 from ${route}, with no problem document: either the API key was refused, or the base URL does not serve this route, which a gateway answers alike.`,
+      "  Check PIPELEX_API_KEY in .env.local, and that PIPELEX_BASE_URL" +
+        (baseUrl !== undefined ? ` (${baseUrl})` : "") +
+        ` points at a Pipelex API that serves ${route}.`,
+      ...(error.requestId !== undefined ? [`  Request id: ${error.requestId}`] : []),
+    ].join("\n");
+  }
   if (error instanceof ApiResponseError) {
     return [
       `HTTP ${error.status} from ${route} — ${error.problem.detail} (${error.code})`,

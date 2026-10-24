@@ -221,7 +221,7 @@ function explain(
       "  .env.local, or drop it to use the default.",
     ].join("\n");
   }
-  return describeRequestFailure(error, route);
+  return describeRequestFailure(error, route, baseUrl);
 }
 
 /** The files `writeTree` writes itself, which no server artifact may land on. */

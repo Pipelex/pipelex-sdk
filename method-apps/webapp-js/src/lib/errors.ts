@@ -239,6 +239,7 @@ function classifyProblem(
   if (
     err.code === "auth.missing_credential" ||
     err.code === "auth.invalid_credential" ||
+    err.code === "auth.credential_expired" ||
     problemStepKind(err.problem) === "check_credentials"
   ) {
     return classifyCredentials(err, env);
@@ -453,6 +454,10 @@ function classifyUnreachable(err: ProblemError, env: ClassifyEnv): PipelineError
       ? "the request did not get a response in time"
       : "the request did not get a response";
   const details = `${err.name}: ${err.message}${err.cause instanceof Error ? `\nCaused by: ${err.cause.message}` : ""}\n${problemLines(err.problem, err.requestId).join("\n")}`;
+  // The SDK detected this itself, with no answer to read: the problem's
+  // `runtime` domain would tell the person the service failed, beside a
+  // message that suspects the URL or the network, so no domain is claimed.
+  const { domain: _clientDetected, ...parts } = errorParts(err);
 
   // Split on whether PIPELEX_BASE_URL was *customized*, not merely set — see
   // `isCustomApiUrl`. With a custom URL in play it is the first suspect; on the
@@ -469,7 +474,7 @@ function classifyUnreachable(err: ProblemError, env: ClassifyEnv): PipelineError
         code: "PIPELEX_BASE_URL=https://api.pipelex.com",
         codeLanguage: "env",
       },
-      ...errorParts(err),
+      ...parts,
       details,
     };
   }
@@ -483,15 +488,15 @@ function classifyUnreachable(err: ProblemError, env: ClassifyEnv): PipelineError
       code: `PIPELEX_BASE_URL=${url}`,
       codeLanguage: "env",
     },
-    ...errorParts(err),
+    ...parts,
     details,
   };
 }
 
 /**
  * A credential the API refused or did not receive: `auth.missing_credential`,
- * `auth.invalid_credential`, or any problem whose next step is
- * `check_credentials`. The key is the deployment's, so the copy speaks to
+ * `auth.invalid_credential`, `auth.credential_expired`, or any problem whose
+ * next step is `check_credentials`. The key is the deployment's, so the copy speaks to
  * whoever runs the app, whatever step the API wrote for a caller who does not
  * own the account. Whether a key was sent at all is what this app knows and
  * the answer may not say, so it decides the copy.
@@ -775,20 +780,22 @@ function classifyRunFailed(err: ProblemError, finishedAt?: string | null): Pipel
 
   const title = nonEmpty(nested.title);
   const hint = nextStepHint(nested);
-  const requestId = problemRequestId(nested);
+  // The run's own problem names a request when it has one; else the results
+  // read that answered `run.failed` is the request to quote.
+  const requestId = problemRequestId(nested) ?? err.requestId;
   return {
     kind: "run_failed",
     title: title ? `The pipeline run failed: ${title}` : "The pipeline run failed",
     message: nonEmpty(nested.detail) ?? "The run failed, and its problem does not say why.",
     ...(hint ? { hint } : {}),
-    ...problemParts(nested),
+    ...problemParts(nested, requestId),
     support: [`run ${runId}`, nested.code, endedAt && `failed ${endedAt}`]
       .concat(requestId !== undefined ? [`request ${requestId}`] : [])
       .filter(Boolean)
       .join(" · "),
     details: [
       `${err.name}: run ${runId} ended ${String(err.problem.params?.run_status ?? "without success")}`,
-      ...problemLines(nested),
+      ...problemLines(nested, requestId),
     ].join("\n"),
   };
 }
@@ -939,6 +946,9 @@ function classifyUploadTransport(err: UploadTransportError): PipelineError {
   const details = `${err.name}: ${err.message}${err.status === undefined ? "" : `\nstatus: ${err.status}`}\nreason: ${err.reason ?? "(none)"}\n${problemLines(err.problem, err.requestId).join("\n")}`;
   const parts = errorParts(err);
   const canPass = parts.retry?.verdict === "yes";
+  // A timeout or storage out of reach is the connection's, not the service's
+  // failure, and the messages say so: no domain is claimed for them.
+  const { domain: _connection, ...connectionParts } = parts;
   switch (err.reason) {
     case "timeout":
     case "storage_timeout":
@@ -949,8 +959,8 @@ function classifyUploadTransport(err: UploadTransportError): PipelineError {
           err.reason === "timeout"
             ? "The file did not finish uploading in the time allowed for its size, so it was abandoned. A slow connection is the usual cause."
             : "Pipelex storage stopped waiting for the file's bytes, so nothing was stored. A slow connection is the usual cause.",
-        hint: { summary: "Drop the file again, or try a smaller one." },
-        ...parts,
+        ...(canPass ? { hint: { summary: "Drop the file again, or try a smaller one." } } : {}),
+        ...connectionParts,
         details,
       };
     case "unreachable":
@@ -959,8 +969,14 @@ function classifyUploadTransport(err: UploadTransportError): PipelineError {
         title: "Could not reach Pipelex storage",
         message:
           "The browser couldn't send the file to Pipelex storage. The network may have dropped, or a browser extension or the page's security policy may have blocked the request.",
-        hint: { summary: "Drop the file again. If it keeps failing, check the browser console." },
-        ...parts,
+        ...(canPass
+          ? {
+              hint: {
+                summary: "Drop the file again. If it keeps failing, check the browser console.",
+              },
+            }
+          : {}),
+        ...connectionParts,
         details,
       };
     case "server_error":

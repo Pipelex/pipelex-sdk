@@ -79,7 +79,9 @@ describe("classifyPipelineError — no answer from the API", () => {
     expect(result.message).toMatch(/PIPELEX_BASE_URL is set/);
     expect(result.hint?.code).toBe("PIPELEX_BASE_URL=https://api.pipelex.com");
     expect(result.code).toBe("client.unreachable");
-    expect(result.domain).toBe("runtime");
+    // The SDK found no answer to read: blaming the service would contradict
+    // a message that suspects the URL, so no domain is claimed.
+    expect(result.domain).toBeUndefined();
     expect(result.retry?.verdict).toBe("yes");
     expect(result.details).toContain("code: client.unreachable");
   });
@@ -122,6 +124,7 @@ describe("classifyPipelineError — no answer from the API", () => {
     expect(result.kind).toBe("api_unreachable");
     expect(result.code).toBe("client.timeout");
     expect(result.message).toMatch(/did not get a response in time/);
+    expect(result.domain).toBeUndefined();
     expect(result.retry?.verdict).toBe("yes");
   });
 });
@@ -145,6 +148,14 @@ describe("classifyPipelineError — a credential the API refused", () => {
     expect(result.kind).toBe("auth_invalid");
     expect(result.message).toContain(API_URL);
     expect(result.code).toBe("auth.invalid_credential");
+  });
+
+  it("reads an expired key as a refused one, keeping the API's words", () => {
+    const body = { ...buildProblem("auth.credential_expired", {}), status: 401 };
+    const result = classifyPipelineError(refusal(401, body), CLOUD_ENV);
+    expect(result.kind).toBe("auth_invalid");
+    expect(result.hint?.code).toBe("PIPELEX_API_KEY=your-key-here");
+    expect(result.apiMessage).toBe(body.detail);
   });
 
   it("shows the API's own words beside the app's when it sent a problem document", () => {
@@ -464,7 +475,7 @@ describe("classifyPipelineError — a failed run", () => {
     expect(result.retry?.verdict).toBe("no");
     expect(result.code).toBe("input.wrong_multiplicity");
     expect(result.support).toBe(
-      "run run-1 · input.wrong_multiplicity · failed 2026-09-26T10:01:00Z",
+      "run run-1 · input.wrong_multiplicity · failed 2026-09-26T10:01:00Z · request req_results_409",
     );
     expect(result.details).toContain("params: ");
     expect(result.details).toContain('"provided_count":3');
@@ -482,6 +493,14 @@ describe("classifyPipelineError — a failed run", () => {
     expect(result.hint).toBeUndefined();
   });
 
+  it("quotes the results read's request when the run's problem names none", () => {
+    const result = failed(WRONG_ITEM_COUNT);
+    expect(WRONG_ITEM_COUNT.request_id).toBeUndefined();
+    expect(result.requestId).toBe("req_results_409");
+    expect(result.support).toContain("request req_results_409");
+    expect(result.details).toContain("request_id: req_results_409");
+  });
+
   it("names the request the run's problem carries in the support line", () => {
     const result = failed(MODEL_NOT_SERVED);
     expect(result.domain).toBe("operator");
@@ -497,7 +516,9 @@ describe("classifyPipelineError — a failed run", () => {
   });
 
   it("leaves the time out of the support line when the run's end is unknown", () => {
-    expect(failed(WRONG_ITEM_COUNT, null).support).toBe("run run-1 · input.wrong_multiplicity");
+    expect(failed(WRONG_ITEM_COUNT, null).support).toBe(
+      "run run-1 · input.wrong_multiplicity · request req_results_409",
+    );
   });
 
   it("keeps the lookup's sentence and the bare run id for a run with no problem of its own", () => {
@@ -597,6 +618,27 @@ describe("classifyUploadError — a file's upload, in the browser", () => {
       expect(result.title).toBe(title);
       expect(result.hint !== undefined).toBe(retry);
       expect(result.details).toContain(`reason: ${reason ?? "(none)"}`);
+    },
+  );
+
+  it.each(["timeout", "storage_timeout", "unreachable"] as const)(
+    "blames no one for an upload that failed on the connection (%s)",
+    (reason) => {
+      const result = classifyUploadError(new UploadTransportError("upload failed", { reason }));
+      expect(result.domain).toBeUndefined();
+      expect(result.retry?.verdict).toBe("yes");
+    },
+  );
+
+  it.each(["timeout", "storage_timeout", "unreachable"] as const)(
+    "offers no drop-again hint for a %s failure whose problem says a retry fails alike",
+    (reason) => {
+      const problem = buildProblem("runtime.unsupported", { capability: "this upload" });
+      const result = classifyUploadError(
+        new UploadTransportError("upload failed", { reason, problem }),
+      );
+      expect(result.retry?.verdict).toBe("no");
+      expect(result.hint).toBeUndefined();
     },
   );
 

@@ -47,6 +47,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
+from mthds.protocol.problem.answers import read_problem_document
 from mthds.protocol.problem.models import ProblemItem
 from mthds.protocol.problem.registry import CoreCode
 from pipelex_sdk.client import PipelexAPIClient
@@ -186,6 +187,16 @@ def insecure_base_url_reason(base_url: str) -> str | None:
     )
 
 
+def _is_bare_forbidden(exc: ApiResponseError) -> bool:
+    """Whether a refusal is a bare `403`, one that carried no problem document.
+
+    A gateway answers a path it does not route with exactly that, as it answers a key it refuses, so the
+    answer cannot say which it was: the SDK reads the status as `auth.invalid_credential`, but a base URL
+    that does not serve the route is just as likely, and the line names both.
+    """
+    return exc.status == 403 and read_problem_document(exc.response_body, status=exc.status, headers={}) is None
+
+
 def explain(exc: Exception, base_url: str, route: str = "POST /v1/codegen") -> str:
     """Turn a failure into an actionable line, naming the route it came from and the fix where we know it.
 
@@ -197,6 +208,14 @@ def explain(exc: Exception, base_url: str, route: str = "POST /v1/codegen") -> s
     """
     if not isinstance(exc, ApiResponseError):
         return str(exc)
+    if _is_bare_forbidden(exc):
+        return (
+            f"HTTP 403 from {route}, with no problem document: either PIPELEX_API_KEY was refused,\n"
+            f"    or this base URL does not serve {route}, which a gateway answers alike.\n"
+            f"    Base URL: {base_url}\n"
+            "    Check the key in .env — get one at https://app.pipelex.com — and that PIPELEX_BASE_URL\n"
+            "    points at a Pipelex API that serves this route, or drop it to use the default."
+        )
     problem = exc.problem
     match problem.code:
         case CoreCode.REQUEST_NOT_FOUND:

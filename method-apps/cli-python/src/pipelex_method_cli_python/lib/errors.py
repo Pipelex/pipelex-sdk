@@ -57,6 +57,11 @@ _WHO_ACTS: dict[ProblemDomain, str] = {
     ProblemDomain.RUNTIME: "nobody on your side: the service failed, and nothing you sent caused it",
 }
 
+#: The failures the SDK detects itself with no answer to read: the API out of reach, or silent past the time
+#: limit. Their problems sit in the `runtime` domain, but the URL or the network is as likely a cause as the
+#: service, so no "Who acts" line blames either.
+_CLIENT_DETECTED = frozenset({CoreCode.CLIENT_UNREACHABLE, CoreCode.CLIENT_TIMEOUT})
+
 #: The capabilities a `runtime.unsupported` names when the server runs no durable run: the SDK's reading of a
 #: server with no run store, and a runner whose orchestration is synchronous only.
 _DURABLE_CAPABILITIES = frozenset({"the durable run lifecycle", "asynchronous execution"})
@@ -142,7 +147,8 @@ def problem_lines(problem: Problem, *, request_id: str | None = None, run_id: st
     - one line per fault its `errors` list, located by the pipe, the input, the field and the file it
       names, with the close matches it suggests; an item whose detail the reason already says is
       reduced to where it is;
-    - `Who acts:` who must act, from its `domain`;
+    - `Who acts:` who must act, from its `domain`, except for a failure the SDK detected with no answer to
+      read (`client.unreachable`, `client.timeout`), where the URL or the network is as likely a cause;
     - `Next step:` its `next_step`, the step's own sentence, except for a step that is to retry or to
       wait, which the retry line says with its delay;
     - `Retry:` whether running it again can succeed, from its `retry`: after `retry_after` seconds when
@@ -157,7 +163,8 @@ def problem_lines(problem: Problem, *, request_id: str | None = None, run_id: st
         lines.append(f"Reason: {reason}")
     said = _text(problem.detail)
     lines.extend(line for item in problem.errors or () if (line := _item_line(item, said=said)))
-    lines.append(f"Who acts: {_WHO_ACTS[problem.effective_domain]}.")
+    if problem.code not in _CLIENT_DETECTED:
+        lines.append(f"Who acts: {_WHO_ACTS[problem.effective_domain]}.")
     next_step = _next_step(problem)
     if next_step:
         lines.append(f"Next step: {next_step}")
@@ -196,7 +203,9 @@ def _message(exc: PipelineRequestError, *, mode: RunMode | None) -> str:
     problem = exc.problem
     match problem.code:
         case CoreCode.CLIENT_UNREACHABLE:
-            return f"Could not reach the Pipelex API at {_param(problem, 'base_url') or _api_url(exc) or 'the configured base URL'}."
+            return f"Could not reach the Pipelex API at {_api_location(exc)}."
+        case CoreCode.CLIENT_TIMEOUT:
+            return f"The Pipelex API at {_api_location(exc)} did not answer in time."
         case CoreCode.CLIENT_OUTCOME_UNKNOWN if mode is RunMode.BLOCKING:
             elapsed = f" after {exc.elapsed_seconds:.0f}s" if isinstance(exc, PipelineExecuteTimeoutError) else ""
             return (
@@ -209,11 +218,16 @@ def _message(exc: PipelineRequestError, *, mode: RunMode | None) -> str:
             return str(exc)
 
 
+def _api_location(exc: PipelineRequestError) -> str:
+    """The base URL a failure to reach the API names: the problem's own `base_url`, else the error's, else a phrase."""
+    return _param(exc.problem, "base_url") or _api_url(exc) or "the configured base URL"
+
+
 def _hint(exc: PipelineRequestError, *, mode: RunMode | None) -> str | None:
     """The CLI's own action for a problem, chosen by its code, then by its step's kind; `None` when the next step says it all."""
     problem = exc.problem
     match problem.code:
-        case CoreCode.CLIENT_UNREACHABLE:
+        case CoreCode.CLIENT_UNREACHABLE | CoreCode.CLIENT_TIMEOUT:
             return "Check PIPELEX_BASE_URL, and if you run your own runner, make sure it is up."
         case CoreCode.CLIENT_OUTCOME_UNKNOWN if mode is RunMode.BLOCKING:
             return "Run the same command without --blocking: a durable run has no such cap, and its id comes back at once."

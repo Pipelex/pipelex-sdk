@@ -132,11 +132,35 @@ class TestMethodSources:
     def test_dashes_become_underscores(self):
         assert codegen.generated_package_dir("summarize-pdf").name == "summarize_pdf"
 
+    def test_a_bare_403_names_both_the_key_and_the_route(self):
+        """A gateway answers a path it does not route with a bare 403, as it answers a key it refuses."""
+        exc = ApiResponseError("nope", api_url="https://api.example.com", status=403, status_text="Forbidden", response_body="")
+        # The SDK reads the bare status as a refused key, which the answer alone cannot prove.
+        assert exc.problem.code == "auth.invalid_credential"
+        message = codegen.explain(exc, "https://api.example.com", route="POST /v1/validate")
+        assert message == (
+            "HTTP 403 from POST /v1/validate, with no problem document: either PIPELEX_API_KEY was refused,\n"
+            "    or this base URL does not serve POST /v1/validate, which a gateway answers alike.\n"
+            "    Base URL: https://api.example.com\n"
+            "    Check the key in .env — get one at https://app.pipelex.com — and that PIPELEX_BASE_URL\n"
+            "    points at a Pipelex API that serves this route, or drop it to use the default."
+        )
+
     def test_a_protocol_route_refusal_names_the_route_and_the_key(self):
         """`validate` is a protocol route, and it raises the SDK's typed error like a product route does."""
-        exc = ApiResponseError("nope", api_url="https://api.example.com", status=403, status_text="Forbidden", response_body="")
+        body = {
+            "type": "https://mthds.ai/errors/auth.invalid_credential",
+            "title": "The credential is not valid",
+            "status": 403,
+            "detail": "The API key is not valid.",
+            "code": "auth.invalid_credential",
+            "domain": "account",
+            "retry": "no",
+            "next_step": {"kind": "check_credentials", "detail": "Check the API key the request sends."},
+        }
+        exc = ApiResponseError("nope", api_url="https://api.example.com", status=403, status_text="Forbidden", response_body=json.dumps(body))
         message = codegen.explain(exc, "https://api.example.com", route="POST /v1/validate")
-        # A bare 403 is a refused credential in the SDK's reading, whose fix on this side is the key.
+        # A refused credential the API said in a problem document: the fix on this side is the key.
         assert message == (
             "PIPELEX_API_KEY was refused on POST /v1/validate (HTTP 403, auth.invalid_credential).\n"
             "    Base URL: https://api.example.com\n"

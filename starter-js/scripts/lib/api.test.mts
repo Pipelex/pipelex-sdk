@@ -7,7 +7,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiResponseError, type PipelexApiClient } from "@pipelex/sdk";
+import { ApiResponseError, buildProblem, type PipelexApiClient } from "@pipelex/sdk";
 
 import {
   assertSelectorSupport,
@@ -183,6 +183,34 @@ describe("describeRequestFailure", () => {
     expect(line).toContain("HTTP 503 from POST /v1/codegen");
     expect(line).toContain("(runtime.unavailable)");
     expect(line).not.toContain("<html>");
+  });
+
+  it("names both the key and the base URL for a bare 403, which a gateway answers to either", () => {
+    const err = new ApiResponseError(
+      "API POST /v1/pipe-io failed (403)",
+      "x",
+      403,
+      "Forbidden",
+      "",
+    );
+    // The SDK reads the bare status as a refused key, which the answer cannot prove.
+    expect(err.code).toBe("auth.invalid_credential");
+    const text = describeRequestFailure(err, "POST /v1/pipe-io", "https://proxy.example");
+    expect(text).toContain("HTTP 403 from POST /v1/pipe-io, with no problem document");
+    expect(text).toContain(
+      "either the API key was refused, or the base URL does not serve this route",
+    );
+    expect(text).toContain("PIPELEX_API_KEY");
+    expect(text).toContain("PIPELEX_BASE_URL (https://proxy.example)");
+    expect(text).not.toContain("auth.invalid_credential");
+  });
+
+  it("reads a 403 that carried a problem document from that problem", () => {
+    const body = JSON.stringify({ ...buildProblem("auth.invalid_credential", {}), status: 403 });
+    const err = new ApiResponseError("API POST /v1/codegen failed (403)", "x", 403, "", body);
+    const text = describeRequestFailure(err, "POST /v1/codegen", "https://api.pipelex.com");
+    expect(text).toContain("(auth.invalid_credential)");
+    expect(text).not.toContain("with no problem document");
   });
 
   it("keeps a thrown value with no problem as its message", () => {
