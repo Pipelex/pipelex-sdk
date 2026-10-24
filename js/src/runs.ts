@@ -1,3 +1,4 @@
+import { isProblem } from "mthds/protocol";
 import type { InputForm, OutputForm, PipeIOContracts, Problem } from "mthds/protocol";
 
 import {
@@ -309,12 +310,16 @@ export interface ProgressCondition {
 
 /**
  * The latest failure of an invocation's work — `ProgressInvocation.last_failure`, a health
- * annotation. `message` keeps the disclosure of a run's error report: under the hosted plane's
- * strict disclosure it is the failure's own message only when that message was written for the
- * caller, and `An internal error occurred.` otherwise.
+ * annotation. Its `problem` is a problem document in the caller's view, as the run reads serve a
+ * failed run's problem: the problem that ended the invocation when it is `failed`, and otherwise
+ * the problem of the latest failure of an attempt its engine is trying again. A failure only the
+ * engine observed, which is no problem document, is served as `runtime.unexpected`. The client
+ * keeps a failure only when its `problem` is a problem document (`isProblem` in `mthds/protocol`),
+ * and keeps its `at` only when it is a string.
  */
 export interface ProgressFailure {
-  message: string;
+  /** The failure, the standard's `Problem`: branch on its `code`, never on the wording of its `detail`. */
+  problem: Problem;
   /** When it failed, an RFC 3339 timestamp in UTC; absent when not recorded. */
   at?: string;
 }
@@ -367,7 +372,7 @@ export interface ProgressInvocation {
   condition?: ProgressCondition;
   /** Health: how many times its work has been tried, present only when more than once. */
   attempts?: number;
-  /** Health: the latest failure of its work. */
+  /** Health: the latest failure of its work, its problem in the caller's view and when it happened. */
   last_failure?: ProgressFailure;
   /**
    * Health: the run is stuck at this invocation — the run status's own `degradation`, with the
@@ -534,16 +539,35 @@ export function runProgressFault(snapshot: Record<string, unknown>): string | un
 }
 
 /**
- * A readable snapshot with its degradations checked by `readRunDegradation`, the snapshot's own
- * and each invocation's, so that neither ever fails the read: one that cannot be read, its
- * `reason` not a string, is dropped, since an optional member is absent rather than `null`.
+ * An invocation's `last_failure`, checked so that it never fails the read carrying it: a value that
+ * is not an object, or whose `problem` is not a problem document (`isProblem` in `mthds/protocol`),
+ * reads as `undefined`, since a failure without its problem cannot be branched on; `at` is kept
+ * when it is a string and dropped otherwise; members this SDK does not name are relayed as sent.
+ *
+ * Internal: `withCheckedProgressHealth` applies it.
+ */
+export function readProgressFailure(value: unknown): ProgressFailure | undefined {
+  if (!isPlainObject(value) || !isProblem(value.problem)) return undefined;
+  const failure: Record<string, unknown> = { ...value };
+  if (Object.hasOwn(failure, "at") && typeof failure.at !== "string") delete failure.at;
+  return failure as unknown as ProgressFailure;
+}
+
+/**
+ * A readable snapshot with its health annotations checked, so that none ever fails the read: its
+ * own `degradation` and each invocation's by `readRunDegradation`, one whose `reason` is not a
+ * string dropped, and each invocation's `last_failure` by `readProgressFailure`, one whose
+ * `problem` is not a problem document dropped, since an optional member is absent rather than
+ * `null`.
  *
  * Internal: `getRunProgress` applies it to an answer `runProgressFault` passed.
  */
-export function withCheckedProgressDegradations(snapshot: RunProgress): RunProgress {
+export function withCheckedProgressHealth(snapshot: RunProgress): RunProgress {
   return {
     ...withCheckedDegradationMember(snapshot),
-    invocations: snapshot.invocations.map(withCheckedDegradationMember),
+    invocations: snapshot.invocations.map((invocation) =>
+      withCheckedFailureMember(withCheckedDegradationMember(invocation)),
+    ),
   };
 }
 
@@ -552,6 +576,13 @@ function withCheckedDegradationMember<T extends { degradation?: RunDegradation }
   const { degradation, ...rest } = record;
   const checked = readRunDegradation(degradation);
   return (checked === null ? rest : { ...rest, degradation: checked }) as T;
+}
+
+function withCheckedFailureMember(invocation: ProgressInvocation): ProgressInvocation {
+  if (!Object.hasOwn(invocation, "last_failure")) return invocation;
+  const { last_failure: failure, ...rest } = invocation;
+  const checked = readProgressFailure(failure);
+  return (checked === undefined ? rest : { ...rest, last_failure: checked }) as ProgressInvocation;
 }
 
 /**
