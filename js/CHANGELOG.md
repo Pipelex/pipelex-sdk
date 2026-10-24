@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **A duplicate refused for a bundle naming the original's run files**: `MethodCopyRefused`, `MethodCopyRefusalReason`, `BundleStorageReference`, `copyMethod` and `docs/method-copy.md` describe the refusal the platform now answers a duplicate too, when a `.mthds` file names a stored file under the original method's own run files (`pipelex-storage://<org_id>/<method_id>/…`), which erasing the original would remove, beside the references the destination cannot read; the verdict, its reason `bundle_names_other_storage` and its shape are unchanged, so a caller branching on `outcome` needs nothing new.
+
+### Fixed
+
+- **The copy's documented refusals**: `copyMethod`'s JSDoc, `MethodCopyRequestOptions` and `docs/method-copy.md` match the platform's answers: the `409` `conflict` of a tree the organization no longer holds whole is `runtime` and told from a reused key's `input` one by `errorDomain`, the `413` also refuses a `name` that leaves the copy's row no room for a publish, the `500` is not retryable when the platform has no storage credentials, and the `503` also covers a DynamoDB failure, its `detail` naming the copy's method id when the row could not be confirmed, a copy that may stand and that a retry may make twice; a copy of an empty draft, and its `copied_from`, carry a `null` `draft_digest`.
+
 ## [v0.51.0] - 2026-10-23
 
 ### Added
