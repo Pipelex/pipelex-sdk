@@ -59,6 +59,14 @@ describe("AppPage", () => {
     expect(sheet).toMatch(/^\.dark\{[^}]*--app-header:#14213d;/m);
   });
 
+  it("keeps the template's colours for a team that set logos and no colour", () => {
+    const { container } = render(
+      <AppPage branding={brandingFromApi(branding({ wide_logo: WIDE_LOGO }))} />,
+    );
+    expect(band()).not.toBeNull();
+    expect(brandStyle(container)).toBeNull();
+  });
+
   it("credits Pipelex at the end of the page, opening pipelex.com in a new tab", () => {
     render(<AppPage branding={brandingFromApi(branding({ wide_logo: WIDE_LOGO }))} />);
     const credit = screen.getByRole("link", { name: "Made with Pipelex (opens in a new tab)" });
