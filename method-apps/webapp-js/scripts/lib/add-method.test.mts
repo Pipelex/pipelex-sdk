@@ -1767,6 +1767,64 @@ describe("runAddMethod", () => {
     expect(await written()).toEqual(["src/methods.ts"]);
   });
 
+  it("names both the key and the base URL when the catalog read gets a bare 403, with no stack", async () => {
+    const client = fakeClient({
+      getMethod: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new ApiResponseError(
+            "API GET /v1/methods/mt_somewhere failed (403)",
+            "https://api.example/v1/methods/mt_somewhere",
+            403,
+            "Forbidden",
+            "",
+          ),
+        ),
+    });
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation(
+      (line: unknown) => void errors.push(String(line)),
+    );
+
+    expect(await runAddMethod(["mt_somewhere"], deps(client))).toBe(1);
+
+    const printed = errors.join("\n");
+    expect(printed).toContain(
+      "HTTP 403 from GET /v1/methods/mt_somewhere, with no problem document",
+    );
+    expect(printed).toContain("PIPELEX_API_KEY");
+    expect(printed).toContain("PIPELEX_BASE_URL (https://api.example)");
+    expect(printed).not.toMatch(/\n\s+at /);
+    expect(await written()).toEqual(["src/methods.ts"]);
+  });
+
+  it("reads any other refusal of the catalog read from its problem, with no stack", async () => {
+    const client = fakeClient({
+      getMethod: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new ApiResponseError(
+            "API GET /v1/methods/mt_somewhere failed (401)",
+            "https://api.example/v1/methods/mt_somewhere",
+            401,
+            "Unauthorized",
+            "",
+          ),
+        ),
+    });
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation(
+      (line: unknown) => void errors.push(String(line)),
+    );
+
+    expect(await runAddMethod(["mt_somewhere"], deps(client))).toBe(1);
+
+    const printed = errors.join("\n");
+    expect(printed).toContain("HTTP 401 from GET /v1/methods/mt_somewhere");
+    expect(printed).toContain("(auth.missing_credential)");
+    expect(printed).not.toMatch(/\n\s+at /);
+  });
+
   it("refuses a registry whose anchor is gone, before writing anything", async () => {
     const registryPath = path.join(root, "src/methods.ts");
     const stripped = (await readFile(registryPath, "utf-8"))

@@ -227,8 +227,13 @@ def _hint(exc: PipelineRequestError, *, mode: RunMode | None) -> str | None:
     """The CLI's own action for a problem, chosen by its code, then by its step's kind; `None` when the next step says it all."""
     problem = exc.problem
     match problem.code:
-        case CoreCode.CLIENT_UNREACHABLE | CoreCode.CLIENT_TIMEOUT:
+        case CoreCode.CLIENT_UNREACHABLE:
             return "Check PIPELEX_BASE_URL, and if you run your own runner, make sure it is up."
+        case CoreCode.CLIENT_TIMEOUT:
+            # The API was reached and was slow, so the base URL is not the suspect.
+            if problem.effective_retry is RetryVerdict.YES:
+                return "The API was slow to answer, not out of reach: run the same command again in a moment."
+            return _step_hint(problem, run_id=problem.pipeline_run_id)
         case CoreCode.CLIENT_OUTCOME_UNKNOWN if mode is RunMode.BLOCKING:
             return "Run the same command without --blocking: a durable run has no such cap, and its id comes back at once."
         case CoreCode.RUNTIME_UNSUPPORTED if _param(problem, "capability") == _UPLOAD_CAPABILITY:

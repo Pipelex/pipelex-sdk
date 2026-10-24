@@ -192,6 +192,9 @@ describe("describeRequestFailure", () => {
       403,
       "Forbidden",
       "",
+      {
+        headers: { "x-request-id": "req_gw_1" },
+      },
     );
     // The SDK reads the bare status as a refused key, which the answer cannot prove.
     expect(err.code).toBe("auth.invalid_credential");
@@ -203,6 +206,7 @@ describe("describeRequestFailure", () => {
     expect(text).toContain("PIPELEX_API_KEY");
     expect(text).toContain("PIPELEX_BASE_URL (https://proxy.example)");
     expect(text).not.toContain("auth.invalid_credential");
+    expect(text).toContain("  Request id: req_gw_1");
   });
 
   it("reads a 403 that carried a problem document from that problem", () => {

@@ -47,7 +47,7 @@ Every error the SDK raises carries its failure as one problem document, `exc.pro
 - `Retry:` whether running it again can succeed, from its `retry`: `yes`, after the `retry_after` seconds it gives; `no`, since it fails the same way unchanged; and `outcome_unknown`, when the run may already have started, so it is looked up by its id with `--resume` before another is started, or it is paid for twice;
 - `For support:` the run's id, the problem's `code` and the request's id, each when there is one, the line to quote to whoever runs the API.
 
-The hint under it is the command's own action, chosen by the problem's code or its step's kind: the API key for a refused credential, `PIPELEX_BASE_URL` for an API out of reach, `--blocking` for a deployment with no durable runs, dropping `--blocking` for a blocking run cut off, and `--resume <run-id>` for a run still going. A failed run with no problem stored keeps the platform's sentence, and its hint says by its status what is left: to contact support with the run's id, or to start it again.
+The hint under it is the command's own action, chosen by the problem's code or its step's kind: the API key for a refused credential, `PIPELEX_BASE_URL` for an API out of reach, another try in a moment for an API that answered too slowly (`client.timeout`) when its verdict allows one, `--blocking` for a deployment with no durable runs, dropping `--blocking` for a blocking run cut off, and `--resume <run-id>` for a run still going. A failed run with no problem stored keeps the platform's sentence, and its hint says by its status what is left: to contact support with the run's id, or to start it again.
 
 ## Ctrl-C
 

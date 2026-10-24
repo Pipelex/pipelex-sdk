@@ -104,6 +104,7 @@ def explain(exc: BaseException, base_url: str, route: str, source: CodegenSource
                 f"  Base URL: {base_url}",
                 "  Check the key in .env (get one at https://app.pipelex.com), and that PIPELEX_BASE_URL",
                 "  points at a Pipelex API that serves this route, or drop it to use the default.",
+                *((f"  Request id: {exc.request_id}",) if exc.request_id else ()),
             )
         )
     problem = exc.problem

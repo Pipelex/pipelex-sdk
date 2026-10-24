@@ -134,7 +134,14 @@ class TestMethodSources:
 
     def test_a_bare_403_names_both_the_key_and_the_route(self):
         """A gateway answers a path it does not route with a bare 403, as it answers a key it refuses."""
-        exc = ApiResponseError("nope", api_url="https://api.example.com", status=403, status_text="Forbidden", response_body="")
+        exc = ApiResponseError(
+            "nope",
+            api_url="https://api.example.com",
+            status=403,
+            status_text="Forbidden",
+            response_body="",
+            headers={"x-request-id": "req_gw_1"},
+        )
         # The SDK reads the bare status as a refused key, which the answer alone cannot prove.
         assert exc.problem.code == "auth.invalid_credential"
         message = codegen.explain(exc, "https://api.example.com", route="POST /v1/validate")
@@ -143,7 +150,8 @@ class TestMethodSources:
             "    or this base URL does not serve POST /v1/validate, which a gateway answers alike.\n"
             "    Base URL: https://api.example.com\n"
             "    Check the key in .env — get one at https://app.pipelex.com — and that PIPELEX_BASE_URL\n"
-            "    points at a Pipelex API that serves this route, or drop it to use the default."
+            "    points at a Pipelex API that serves this route, or drop it to use the default.\n"
+            "    Request id: req_gw_1"
         )
 
     def test_a_protocol_route_refusal_names_the_route_and_the_key(self):

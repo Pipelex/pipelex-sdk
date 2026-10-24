@@ -525,7 +525,12 @@ class TestHandshake:
     def test_a_bare_403_names_both_the_key_and_the_route(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
         # A gateway that does not route /v1/codegen answers a bare 403, as it answers a key it refuses.
         api.codegen_answer = ApiResponseError(
-            "API POST /v1/codegen failed (403)", api_url=API_URL, status=403, status_text="Forbidden", response_body=""
+            "API POST /v1/codegen failed (403)",
+            api_url=API_URL,
+            status=403,
+            status_text="Forbidden",
+            response_body="",
+            headers={"x-request-id": "req_gw_1"},
         )
         assert api.codegen_answer.problem.code == "auth.invalid_credential"
         assert generate(layout) == 1
@@ -534,6 +539,7 @@ class TestHandshake:
         assert "or this base URL does not serve POST /v1/codegen" in err
         assert "PIPELEX_BASE_URL" in err
         assert "PIPELEX_API_KEY was refused on" not in err
+        assert "  Request id: req_gw_1" in err
 
     def test_a_403_problem_document_reads_as_a_refused_key(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
         problem = Problem.model_validate(

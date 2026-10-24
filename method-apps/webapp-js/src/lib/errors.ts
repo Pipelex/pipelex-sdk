@@ -443,21 +443,32 @@ function baseUrlOf(err: ProblemError, env: ClassifyEnv): string {
 
 /**
  * `client.unreachable` or `client.timeout`: the request got no answer from the
- * API, or none in time.
+ * API, or none in time. A timeout reached an API that was slow to answer, so
+ * its remedy is another try when the verdict allows one, never the base URL;
+ * an API out of reach points at the base URL or the network.
  */
 function classifyUnreachable(err: ProblemError, env: ClassifyEnv): PipelineError {
   const url = baseUrlOf(err, env);
   const networkCode = err instanceof ApiUnreachableError ? err.networkCode : undefined;
   const codeSuffix = networkCode ? ` (${networkCode})` : "";
-  const noAnswer =
-    err.code === "client.timeout"
-      ? "the request did not get a response in time"
-      : "the request did not get a response";
   const details = `${err.name}: ${err.message}${err.cause instanceof Error ? `\nCaused by: ${err.cause.message}` : ""}\n${problemLines(err.problem, err.requestId).join("\n")}`;
   // The SDK detected this itself, with no answer to read: the problem's
   // `runtime` domain would tell the person the service failed, beside a
   // message that suspects the URL or the network, so no domain is claimed.
   const { domain: _clientDetected, ...parts } = errorParts(err);
+
+  if (err.code === "client.timeout") {
+    return {
+      kind: "api_unreachable",
+      title: "Pipelex API did not answer in time",
+      message: `Tried to reach ${url}${codeSuffix}, but the request did not get a response in time: the API was slow to answer, which is usually temporary.`,
+      ...(parts.retry?.verdict === "yes"
+        ? { hint: { summary: "Run it again in a moment: the API was slow, not out of reach." } }
+        : {}),
+      ...parts,
+      details,
+    };
+  }
 
   // Split on whether PIPELEX_BASE_URL was *customized*, not merely set — see
   // `isCustomApiUrl`. With a custom URL in play it is the first suspect; on the
@@ -467,7 +478,7 @@ function classifyUnreachable(err: ProblemError, env: ClassifyEnv): PipelineError
     return {
       kind: "api_unreachable",
       title: "Pipelex API not reachable",
-      message: `Tried to reach ${url}${codeSuffix}, but ${noAnswer}. PIPELEX_BASE_URL is set, so start there: make sure it targets a Pipelex API environment.`,
+      message: `Tried to reach ${url}${codeSuffix}, but the request did not get a response. PIPELEX_BASE_URL is set, so start there: make sure it targets a Pipelex API environment.`,
       hint: {
         summary:
           "Verify PIPELEX_BASE_URL in .env.local targets a Pipelex API environment, or remove the override to fall back to the default:",
@@ -482,7 +493,7 @@ function classifyUnreachable(err: ProblemError, env: ClassifyEnv): PipelineError
   return {
     kind: "api_unreachable",
     title: "Pipelex API not reachable",
-    message: `Tried to reach the Pipelex API at its default URL, ${url}${codeSuffix}, but ${noAnswer}. Check your network connection.`,
+    message: `Tried to reach the Pipelex API at its default URL, ${url}${codeSuffix}, but the request did not get a response. Check your network connection.`,
     hint: {
       summary: "Check your network connection, then retry. The URL the app is using is:",
       code: `PIPELEX_BASE_URL=${url}`,
@@ -935,6 +946,18 @@ function classifyRejectedAsset(err: RejectedAssetError): PipelineError {
 }
 
 /**
+ * The problems the SDK builds itself for an upload that never got storage's
+ * verdict: `client.timeout` and `client.unreachable` from `uploadWithGrant`,
+ * and `runtime.unavailable`, its reading of a timeout or an unreachable
+ * storage by the reason alone. None says who failed.
+ */
+const CONNECTION_READINGS: ReadonlySet<string> = new Set([
+  "client.timeout",
+  "client.unreachable",
+  "runtime.unavailable",
+]);
+
+/**
  * What an upload that never got storage's verdict means, by the `reason` the
  * SDK sets on it. The reasons fold by what the user can do: wait on a faster
  * connection, check what blocks the request, try again in a moment, or nothing
@@ -947,8 +970,12 @@ function classifyUploadTransport(err: UploadTransportError): PipelineError {
   const parts = errorParts(err);
   const canPass = parts.retry?.verdict === "yes";
   // A timeout or storage out of reach is the connection's, not the service's
-  // failure, and the messages say so: no domain is claimed for them.
-  const { domain: _connection, ...connectionParts } = parts;
+  // failure, and the messages say so. When the problem is the SDK's own reading
+  // of it, which knows no more than that, no domain is claimed; a problem
+  // storage or the API answered with keeps its domain, so whoever must act is
+  // still named.
+  const { domain: _connection, ...withoutDomain } = parts;
+  const connectionParts = CONNECTION_READINGS.has(err.code) ? withoutDomain : parts;
   switch (err.reason) {
     case "timeout":
     case "storage_timeout":

@@ -214,8 +214,9 @@ class TestPresentError:
         assert error.problem.code == "client.timeout"
         presentation = present_error(error)
         assert presentation.message == "The Pipelex API at http://slow.invalid did not answer in time."
-        assert presentation.hint is not None
-        assert "PIPELEX_BASE_URL" in presentation.hint
+        # The API was reached and slow: the remedy is another try, never the base URL.
+        assert presentation.hint == "The API was slow to answer, not out of reach: run the same command again in a moment."
+        assert RETRY_YES in presentation.details
         assert not any(line.startswith("Who acts:") for line in presentation.details)
 
     def test_run_timeout_hints_status_and_wait(self):

@@ -215,6 +215,7 @@ def explain(exc: Exception, base_url: str, route: str = "POST /v1/codegen") -> s
             f"    Base URL: {base_url}\n"
             "    Check the key in .env — get one at https://app.pipelex.com — and that PIPELEX_BASE_URL\n"
             "    points at a Pipelex API that serves this route, or drop it to use the default."
+            + (f"\n    Request id: {exc.request_id}" if exc.request_id else "")
         )
     problem = exc.problem
     match problem.code:

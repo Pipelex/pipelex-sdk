@@ -126,6 +126,22 @@ describe("classifyPipelineError — no answer from the API", () => {
     expect(result.message).toMatch(/did not get a response in time/);
     expect(result.domain).toBeUndefined();
     expect(result.retry?.verdict).toBe("yes");
+    // The API was slow, not out of reach: the remedy is another try, never the base URL.
+    expect(result.hint?.summary).toMatch(/Run it again in a moment/);
+    expect(result.hint?.code).toBeUndefined();
+  });
+
+  it("says a timeout on a customized base URL is the API being slow, not the URL", () => {
+    const err = new ApiUnreachableError(
+      "timed out",
+      "https://api.unreachable.example",
+      "ABORT_TIMEOUT",
+      { timeoutMs: 30_000 },
+    );
+    const result = classifyPipelineError(err, OVERRIDE_ENV);
+    expect(result.title).toBe("Pipelex API did not answer in time");
+    expect(result.message).not.toMatch(/PIPELEX_BASE_URL/);
+    expect(result.hint?.summary).not.toMatch(/PIPELEX_BASE_URL/);
   });
 });
 
@@ -655,16 +671,31 @@ describe("classifyUploadError — a file's upload, in the browser", () => {
   );
 
   it.each(["timeout", "storage_timeout", "unreachable"] as const)(
-    "offers no drop-again hint for a %s failure whose problem says a retry fails alike",
+    "keeps the domain and verdict of a problem the server answered a %s failure with, offering no drop-again hint",
     (reason) => {
+      // An operator-domain refusal: whoever runs the deployment must act, and
+      // dropping the file again fails alike.
       const problem = buildProblem("runtime.unsupported", { capability: "this upload" });
       const result = classifyUploadError(
         new UploadTransportError("upload failed", { reason, problem }),
       );
+      expect(result.domain).toBe("operator");
       expect(result.retry?.verdict).toBe("no");
       expect(result.hint).toBeUndefined();
     },
   );
+
+  it.each([
+    ["timeout", buildProblem("client.timeout", { seconds: 30 })],
+    ["unreachable", buildProblem("client.unreachable", { base_url: "https://storage.example" })],
+  ] as const)("claims no domain for the SDK's own reading of a %s failure", (reason, problem) => {
+    const result = classifyUploadError(
+      new UploadTransportError("upload failed", { reason, problem }),
+    );
+    expect(result.domain).toBeUndefined();
+    expect(result.retry?.verdict).toBe("yes");
+    expect(result.hint).toBeDefined();
+  });
 
   it("keeps the status storage answered with, and claims no outcome the SDK calls unknown", () => {
     const err = new UploadTransportError("storage answered 503", {
