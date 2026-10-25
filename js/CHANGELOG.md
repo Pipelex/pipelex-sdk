@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The `.mthds` check hook's lint engine moves to `@pipelex/tools-wasm` 0.6.1**: the bundle built by `npm run build:hook` now embeds `@pipelex/tools-wasm` 0.6.1, a dependency refresh whose engine is built past its dependencies' security advisories and loads its WebAssembly through `@wasm-tool/rollup-plugin-rust` 3; its MTHDS schema and its API are those of 0.6.0, so the hook blocks and passes the same forms as before. The published package is unchanged, since the engine is a development dependency.
+
 ## [v0.54.1] - 2026-10-25
 
 ### Added
