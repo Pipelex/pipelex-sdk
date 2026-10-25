@@ -24,6 +24,10 @@
 - **The codegen and exact-integer errors carry problems (Breaking)**: `CodegenLockError` and `ExactJsonUnsupportedError` are `ProblemError`s, the first stating its cause (`client.file_unreadable` for a malformed lock, `client.tool_outdated` for a format this build does not read, `client.argument_invalid` for a caller's mistake), the second `client.tool_outdated` naming the JavaScript runtime.
 - **The `.mthds` check hook names the verdict's problem items**: when the server sends no Markdown, the hook built by `npm run build:hook` words its block from the invalid verdict's `errors[]`, naming each MTHDS problem item by its code, its sentence and where it happened, with its suggested fix on a line of its own, and it no longer reads `validation_errors[]`. The items are read as every verdict of the SDK reads them (`readProblemItems`), so an entry with no code or sentence is skipped and a location or a fix the standard's check refuses is left out of its item (`docs/hook-bundle.md`).
 
+### Fixed
+
+- **A download failure the SDK cannot place reads as `unknown`**: an item of `downloadArtifacts` that failed for a reason neither the fetch nor the write of its file names carries the `error.code` `unknown`, where it carried `network`, which read as a failure a retry can pass, as `pipelex-sdk` labels it.
+
 ### Removed
 
 - **The verdict vocabulary (Breaking)**: `errorVerdictOf`, `problemVerdict`, `ErrorVerdict`, `ErrorDomain`, `runMayHaveStartedOf` and every error's `retryable`, `errorDomain` and `runMayHaveStarted` are gone, as is the fallback table that decided a verdict from the status; read `domain` and `retry` off the problem.
