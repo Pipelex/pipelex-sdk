@@ -4374,7 +4374,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `uses`, one page of the examples that hold its address, then the runs that took it. Page the
    * uses by passing `uses.next_cursor` back as `usesCursor`; `null` is the last page. A record whose
    * upload looked unfinished past the upload grant's lifespan is settled by the read, so it answers
-   * `stored` when its bytes are there.
+   * `stored` when its bytes are there. Each use's `created_by` names who started the run or saved
+   * the example; a use the platform answers without the member, as one that predates it does, or
+   * with a member that is not a string, reads as `null`.
    *
    * Throws `RequestArgumentError` for a file id that is empty, `.` or `..`, or holds a lone
    * surrogate, before any request. Throws `ApiResponseError`: `404` `pipelex.storage.not_found` for
@@ -4401,7 +4403,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
         "a file whose `uses` is not a page of `items` and `next_cursor`",
       );
     }
-    return detail as unknown as FileDetail;
+    const items: unknown[] = uses.items;
+    return {
+      ...detail,
+      uses: { ...uses, items: items.map(withUseCreator) },
+    } as unknown as FileDetail;
   }
 
   /**
@@ -5759,6 +5765,17 @@ function withVerdictItems<T>(answer: T): T {
 function withCheckedProblem<T>(record: T): T {
   if (!isPlainObject(record) || !Object.hasOwn(record, "error")) return record;
   return { ...record, error: isProblem(record.error) ? record.error : null } as T;
+}
+
+/**
+ * A file use with its `created_by` kept only when it is a string, and read as `null` otherwise:
+ * when the answer leaves the member out, as a platform that predates it does, sends `null`, or
+ * sends any other type. So the member is a string or `null` as `FileUse` declares it, never
+ * `undefined` nor anything else. A use that is not an object is returned as it came.
+ */
+function withUseCreator(use: unknown): unknown {
+  if (!isPlainObject(use)) return use;
+  return { ...use, created_by: typeof use.created_by === "string" ? use.created_by : null };
 }
 
 /**
