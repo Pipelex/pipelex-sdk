@@ -24,6 +24,7 @@ from typing import NoReturn
 
 import pytest
 from mthds.protocol.models import VersionInfo
+from mthds.protocol.problem.models import Problem
 from pipelex_sdk.codegen_check import run_codegen_check
 from pipelex_sdk.codegen_writer import write_codegen_tree
 from pipelex_sdk.crate_models import CodegenRequest, CodegenResponse, CodegenValidReport, CrateInvalidReport, PipeIORequest, PipeIOResponse
@@ -215,7 +216,7 @@ class TestGenerate:
         assert tree_bytes(layout) == before
 
     def test_a_confirming_request_that_fails_writes_nothing(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
-        api.codegen_queue = [recorded_codegen(), ApiUnreachableError("timed out", api_url=API_URL, code="ABORT_TIMEOUT")]
+        api.codegen_queue = [recorded_codegen(), ApiUnreachableError("timed out", api_url=API_URL, network_code="ABORT_TIMEOUT")]
         assert generate(layout) == 1
         assert "timed out" in capsys.readouterr().err
         assert tree_bytes(layout) == {}
@@ -223,7 +224,7 @@ class TestGenerate:
     @pytest.mark.parametrize(
         "error",
         [
-            pytest.param(ApiUnreachableError("connection refused", api_url=API_URL, code="ConnectError"), id="an unreachable API"),
+            pytest.param(ApiUnreachableError("connection refused", api_url=API_URL, network_code="ConnectError"), id="an unreachable API"),
             pytest.param(ValueError("the body is not JSON"), id="a body that is not the answer"),
             pytest.param(RequestArgumentError("the request was refused"), id="an SDK error"),
         ],
@@ -239,7 +240,7 @@ class TestGenerate:
     @pytest.mark.parametrize(
         "error",
         [
-            pytest.param(ApiUnreachableError("connection refused", api_url=API_URL, code="ConnectError"), id="an unreachable API"),
+            pytest.param(ApiUnreachableError("connection refused", api_url=API_URL, network_code="ConnectError"), id="an unreachable API"),
             pytest.param(ValueError("the body is not JSON"), id="a body that is not the answer"),
         ],
     )
@@ -280,7 +281,7 @@ class TestGenerate:
             {
                 "is_valid": False,
                 "message": "1 error",
-                "validation_errors": [{"category": "pipe_validation", "message": "Unknown concept", "source": "method/main.mthds"}],
+                "errors": [{"code": "method.concept_unresolved", "detail": "Unknown concept", "location": {"file": "method/main.mthds"}}],
             }
         )
         assert generate(layout) == 1
@@ -435,7 +436,7 @@ class TestHandshake:
         "error",
         [
             pytest.param(_not_found("GET /v1/version"), id="a refusal"),
-            pytest.param(ApiUnreachableError("connection refused", api_url=API_URL, code="ConnectError"), id="an unreachable API"),
+            pytest.param(ApiUnreachableError("connection refused", api_url=API_URL, network_code="ConnectError"), id="an unreachable API"),
             pytest.param(ValueError("the body is not JSON"), id="a body that is not a version"),
         ],
     )
@@ -459,16 +460,112 @@ class TestHandshake:
     def test_a_404_on_a_named_method_says_the_api_could_not_resolve_it(
         self, api: FakeCodegenClient, named: Layout, capsys: pytest.CaptureFixture[str]
     ):
+        problem = Problem.model_validate(
+            {
+                "type": "https://mthds.ai/errors/method.not_found",
+                "title": "No method is found at the address",
+                "status": 404,
+                "detail": "No package at github.com/Pipelex/methods.",
+                "code": "method.not_found",
+                "domain": "input",
+                "retry": "no",
+                "next_step": {"kind": "change_input", "detail": "Check the method's address."},
+            }
+        )
         api.codegen_answer = ApiResponseError(
             "API POST /v1/codegen failed (404)",
             api_url="https://api.example.com",
             status=404,
             status_text="Not Found",
-            response_body="",
-            server_message="No package at github.com/Pipelex/methods.",
+            response_body=json.dumps(problem.as_wire()),
+            problem=problem,
         )
         assert generate(named) == 1
-        assert "could not resolve method_ref github.com/Pipelex/methods/summarize_pdf@v1.0.0" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "could not resolve method_ref github.com/Pipelex/methods/summarize_pdf@v1.0.0" in err
+        assert "No package at github.com/Pipelex/methods." in err
+
+    def test_a_refusal_of_the_method_lists_its_faults_the_next_step_and_the_support_line(
+        self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]
+    ):
+        problem = Problem.model_validate(
+            {
+                "type": "https://mthds.ai/errors/method.invalid",
+                "title": "The method does not validate",
+                "status": 422,
+                "detail": "The method does not validate.",
+                "code": "method.invalid",
+                "domain": "method",
+                "retry": "no",
+                "next_step": {"kind": "change_method", "detail": "Fix each fault the problem's errors list."},
+                "request_id": "req_1",
+                "errors": [{"code": "method.syntax", "detail": "Unexpected token.", "location": {"file": "main.mthds", "line": 3}}],
+            }
+        )
+        api.codegen_answer = ApiResponseError(
+            "API POST /v1/codegen failed (422)",
+            api_url=API_URL,
+            status=422,
+            status_text="Unprocessable Entity",
+            response_body=json.dumps(problem.as_wire()),
+            problem=problem,
+        )
+        assert generate(layout) == 1
+        assert (
+            capsys.readouterr()
+            .err.strip()
+            .endswith(
+                "HTTP 422 from POST /v1/codegen — The method does not validate.\n"
+                "    main.mthds:3: Unexpected token.\n"
+                "  Next step: Fix each fault the problem's errors list.\n"
+                "  For support: method.invalid · request req_1"
+            )
+        )
+
+    def test_a_bare_403_names_both_the_key_and_the_route(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
+        # A gateway that does not route /v1/codegen answers a bare 403, as it answers a key it refuses.
+        api.codegen_answer = ApiResponseError(
+            "API POST /v1/codegen failed (403)",
+            api_url=API_URL,
+            status=403,
+            status_text="Forbidden",
+            response_body="",
+            headers={"x-request-id": "req_gw_1"},
+        )
+        assert api.codegen_answer.problem.code == "auth.invalid_credential"
+        assert generate(layout) == 1
+        err = capsys.readouterr().err
+        assert "HTTP 403 from POST /v1/codegen, with no problem document: either PIPELEX_API_KEY was refused," in err
+        assert "or this base URL does not serve POST /v1/codegen" in err
+        assert "PIPELEX_BASE_URL" in err
+        assert "PIPELEX_API_KEY was refused on" not in err
+        assert "  Request id: req_gw_1" in err
+
+    def test_a_403_problem_document_reads_as_a_refused_key(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
+        problem = Problem.model_validate(
+            {
+                "type": "https://mthds.ai/errors/auth.invalid_credential",
+                "title": "The credential is not valid",
+                "status": 403,
+                "detail": "The API key is not valid.",
+                "code": "auth.invalid_credential",
+                "domain": "account",
+                "retry": "no",
+                "next_step": {"kind": "check_credentials", "detail": "Check the API key the request sends."},
+            }
+        )
+        api.codegen_answer = ApiResponseError(
+            "API POST /v1/codegen failed (403)",
+            api_url=API_URL,
+            status=403,
+            status_text="Forbidden",
+            response_body=json.dumps(problem.as_wire()),
+            problem=problem,
+        )
+        assert generate(layout) == 1
+        err = capsys.readouterr().err
+        assert "PIPELEX_API_KEY was refused on POST /v1/codegen (HTTP 403, auth.invalid_credential)." in err
+        assert "with no problem document" not in err
 
 
 class TestCheck:
@@ -628,7 +725,7 @@ class TestVerify:
 
     def test_a_codegen_request_that_raises_is_reported(self, api: FakeCodegenClient, layout: Layout, capsys: pytest.CaptureFixture[str]):
         generate(layout)
-        api.codegen_answer = ApiUnreachableError("connection refused", api_url=API_URL, code="ConnectError")
+        api.codegen_answer = ApiUnreachableError("connection refused", api_url=API_URL, network_code="ConnectError")
         assert verify(layout) == 1
         assert "connection refused" in capsys.readouterr().err
 

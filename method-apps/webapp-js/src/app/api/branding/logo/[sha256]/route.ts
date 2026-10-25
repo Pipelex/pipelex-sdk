@@ -129,13 +129,13 @@ function refusalFor(err: unknown): Response {
     );
   }
   if (err instanceof ArtifactFetchError) {
-    return refusal(502, "logo_unavailable", `The logo could not be fetched (${err.code}).`);
+    return refusal(502, "logo_unavailable", `The logo could not be fetched (${err.reason}).`);
   }
   if (err instanceof ApiResponseError) {
     return refusal(
       502,
       "resolve_failed",
-      `The Pipelex API refused to resolve the logo (HTTP ${err.status}).`,
+      `The Pipelex API refused to resolve the logo (HTTP ${err.status}, ${err.code}).`,
     );
   }
   if (err instanceof ApiUnreachableError) {

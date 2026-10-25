@@ -185,9 +185,9 @@ def status(run_id: Annotated[str, typer.Argument(help="The pipeline run id print
     if run.degraded:
         output_console.print("[yellow]Status is degraded — last-known value, the status backend was unreachable; retry shortly.[/yellow]")
     if run.status.is_terminal and not run.status.is_success:
-        # The status read carries the run's stored error report, read out as a failed `wait` reads it.
-        # The reason is part of the answer (stdout); the hint, for a run that recorded none, is chatter (stderr).
-        failure = present_failed_run(run_id=run.pipeline_run_id, status=run.status, report=run.error, platform_message=None)
+        # The status read carries the run's own problem, read out as a failed `wait` reads it.
+        # The reason is part of the answer (stdout); the hint is chatter (stderr).
+        failure = present_failed_run(run_id=run.pipeline_run_id, status=run.status, run_error=run.error, platform_message=None)
         for line in failure.details or ("No reason was recorded for this run.",):
             output_console.print(escape(line))
         if failure.hint:
@@ -213,7 +213,7 @@ def result(
             # The failed arm carries what `RunFailedError` carries, so it reads exactly as a failed `wait` does.
             print_error(
                 progress_console,
-                present_failed_run(run_id=state.pipeline_run_id, status=state.status, report=state.error, platform_message=state.message),
+                present_failed_run(run_id=state.pipeline_run_id, status=state.status, run_error=state.error, platform_message=state.message),
             )
             raise typer.Exit(1)
 

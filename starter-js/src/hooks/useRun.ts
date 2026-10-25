@@ -75,7 +75,10 @@ export interface UseRunConfig<TInput, TOutput> {
   start: (input: TInput) => Promise<StartOutcome>;
   /** Durable Server Action — poll one tick of a run by id. */
   poll: (runId: string) => Promise<PollOutcome<TOutput>>;
-  /** Base durable poll interval (ms). Honors a larger `Retry-After`. Default 2000. */
+  /**
+   * Base durable poll interval (ms). Honors a larger `Retry-After` on a running
+   * read, and a larger `retry_after` on a failed read's problem. Default 2000.
+   */
   intervalMs?: number;
   /** Durable poll ceiling (ms): stop waiting after this. Default 300_000 (5 min). */
   maxDurationMs?: number;
@@ -100,8 +103,8 @@ const MAX_TRANSIENT_POLL_FAILURES = 5;
  * - **blocking**: a single awaited Server Action; resolve → done, reject →
  *   transport error.
  * - **durable**: `start`, then a self-rescheduling `setTimeout` poll loop (no
- *   overlap) that honors `Retry-After`, enforces a wall-clock ceiling, and
- *   reports live status each tick.
+ *   overlap) that honors `Retry-After` and a failed read's `retry_after`,
+ *   enforces a wall-clock ceiling, and reports live status each tick.
  *
  * Shared concerns: a staleness token invalidates a superseded or unmounted
  * run's late results; an elapsed ticker drives a smooth counter; every awaited
@@ -237,15 +240,17 @@ export function useRun<TInput, TOutput>(
 
         // A tick that failed to get a verdict: keep polling unless the streak
         // exceeds the budget. Surface `retrying` so the UI shows we hit a blip
-        // but are still trying — the run keeps executing server-side.
-        const onTransient = (error: PipelineError) => {
+        // but are still trying — the run keeps executing server-side. The next
+        // read waits at least as long as the problem's `retry_after` asks, so a
+        // rate-limited read is not repeated before the API takes one again.
+        const onTransient = (error: PipelineError, retryAfterSeconds?: number | null) => {
           transientFailures += 1;
           if (transientFailures > MAX_TRANSIENT_POLL_FAILURES) {
             fail(error);
             return;
           }
           setState((prev) => (prev.phase === "running" ? { ...prev, health: "retrying" } : prev));
-          scheduleNext(intervalMs);
+          scheduleNext(Math.max(intervalMs, (retryAfterSeconds ?? 0) * 1000));
         };
 
         let outcome: PollOutcome<TOutput>;
@@ -261,7 +266,7 @@ export function useRun<TInput, TOutput>(
         if (!isCurrent()) return;
 
         if (!outcome.ok) {
-          if (outcome.transient) onTransient(outcome.error);
+          if (outcome.transient) onTransient(outcome.error, outcome.retryAfterSeconds);
           else fail(outcome.error);
           return;
         }

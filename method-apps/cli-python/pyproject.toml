@@ -1,6 +1,6 @@
 [project]
 name = "pipelex-method-cli-python"
-version = "0.53.0"
+version = "0.54.0"
 description = "A command-line tool that runs one MTHDS method through the Pipelex API."
 license = "MIT"
 readme = "README.md"
@@ -29,7 +29,7 @@ classifiers = [
 # range is the SDK's own, since the generated models are pydantic 2 models.
 dependencies = [
   "mthds>=0.25.0",
-  "pipelex-sdk>=0.48.1",
+  "pipelex-sdk>=0.53.0",
   "pydantic>=2.10.6,<3.0.0",
   "python-dotenv>=1.0.0",
   "rich>=13.0.0",

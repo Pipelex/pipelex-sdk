@@ -152,16 +152,15 @@ describe("executeBlockingRun", () => {
 
   it("maps the gateway's 502 cap response to execute_timeout (the real blocking cap)", async () => {
     execute.mockRejectedValueOnce(
+      // The gateway's own 502 carries no problem document, and `execute` may
+      // have started the run, which is how the SDK's client raises it.
       new ApiResponseError(
         "API POST /v1/execute failed (502)",
         "https://api.pipelex.com",
         502,
         "Bad Gateway",
-        "",
-        undefined,
-        "The runner did not complete the request (/execute).",
-        undefined,
-        undefined,
+        "<html>Bad Gateway</html>",
+        { mayStartRun: true },
       ),
     );
     const result = await executeBlockingRun(async () => OPTIONS, parseFixture);

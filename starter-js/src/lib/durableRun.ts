@@ -24,32 +24,40 @@ export type PollOutcome<T> =
       retryAfterSeconds: number | null;
     }
   | { ok: true; state: "completed"; output: T; usage: UsageReport }
-  | { ok: false; error: PipelineError; transient: boolean };
+  | {
+      ok: false;
+      error: PipelineError;
+      transient: boolean;
+      /**
+       * On a transient failure, the seconds the API asked to wait before the
+       * next read (the problem's `retry_after`), or `null` when it named none.
+       */
+      retryAfterSeconds?: number | null;
+    };
 
 /**
  * A poll tick that failed to *get a verdict* is transient when reading the
  * status again can pass: the run is still executing server-side, so the client
- * should keep polling rather than abandon it. A refused read says which it is
- * through the SDK's verdict, always decided: a gateway 5xx, a rate limit (429)
- * or a timeout (408) can pass, while a 501 or any other 4xx cannot. A failure
- * that carries no verdict is judged by its kind: a network blip
- * (`api_unreachable`) is transient, and a classified application failure
- * (`lifecycle_unavailable`), a narrower's deterministic bad-output or a
- * configuration the SDK refused is terminal.
+ * should keep polling rather than abandon it. The problem says which it is,
+ * through its `retry`: `yes` for a gateway 5xx, a rate limit, a timeout or a
+ * network blip, which a second read can pass, and `no` for anything a second
+ * read meets again. A failure that carries no problem, such as a narrower's
+ * deterministic bad output, is terminal.
  */
 function isTransientPollError(error: PipelineError): boolean {
-  if (error.retry) return error.retry.retryable;
-  return error.kind === "server_error" || error.kind === "api_unreachable";
+  return error.retry?.verdict === "yes";
 }
 
 /**
  * Start a pipeline the **durable** way — `POST /v1/start` (202) — and return
  * the run id to poll. Server-only.
  *
- * When the configured URL doesn't serve the run lifecycle, the SDK throws
- * `RunLifecycleUnavailableError` (raw `start()` does NOT auto-fall-back to
- * blocking); it is classified into a `lifecycle_unavailable` error that steers
- * the user to check PIPELEX_BASE_URL.
+ * When the configured URL doesn't serve the run lifecycle, the SDK throws an
+ * error whose problem is `runtime.unsupported` (raw `start()` does NOT
+ * auto-fall-back to blocking); it is classified into a `lifecycle_unavailable`
+ * error that steers the user to check PIPELEX_BASE_URL. A start that failed
+ * after it left is `client.outcome_unknown`, classified as `outcome_unknown`:
+ * the run may have started, so it is looked up before another is started.
  */
 export async function startDurableRun(
   buildOptions: () => Promise<PipelexStartOptions>,
@@ -79,21 +87,23 @@ export async function startDurableRun(
  *    status + degraded flag + the server's `Retry-After` hint.
  * 2. On a terminal status, `getRunResult`:
  *    - `completed` → narrow `result` and report `completed`.
- *    - `failed`    → classify a constructed `RunFailedError` carrying the run's
- *                    stored error report (the result lookup's, else the status
- *                    read's), so the person sees the runtime's reason, next
- *                    step and retry verdict rather than the lookup's sentence.
+ *    - `failed`    → classify a constructed `RunFailedError` carrying the
+ *                    lookup's `run.failed` problem with the run's own problem
+ *                    nested in it (the result lookup's, else the status
+ *                    read's), so the person sees the run's reason, next step
+ *                    and retry verdict rather than the lookup's sentence.
  *    - `running`   → mid-write race (status flipped terminal but `main_stuff` /
  *                    `graph_spec` aren't written yet) → report `running` so the
  *                    client polls once more.
- * A thrown SDK error — including a narrower throwing `BadPipelineOutputError` /
- * `BadImageOutputError`, or `RunLifecycleUnavailableError` — is classified, and
+ * A thrown error — an SDK error carrying its problem, or a narrower throwing
+ * `BadPipelineOutputError` / `BadImageOutputError` — is classified, and
  * the failure carries a `transient` flag (see `isTransientPollError`) so the
  * client poll loop can keep polling through a momentary 5xx, rate limit or
  * network blip instead of abandoning a run that is still completing
- * server-side. Its retry line is dropped: the verdict judged the read, not the
- * run, and offering a re-run of a run that may still be executing would start
- * a second one.
+ * server-side, with the delay the problem asks for (`retryAfterSeconds`). Its
+ * retry line is dropped: the verdict judged the read, not the run, and
+ * offering a re-run of a run that may still be executing would start a second
+ * one.
  */
 export async function pollDurableRun<T>(
   runId: string,
@@ -126,17 +136,18 @@ export async function pollDurableRun<T>(
       };
     }
     if (res.state === "failed") {
-      // A genuine run failure is terminal — never retried. Its stored error
-      // report says why: the results read carries it on a platform that serves
-      // it there, and the status read just made carries it on any hosted
-      // platform, even one whose results read does not yet, so the reason
-      // reaches the person either way. The status read also says when the run
-      // ended, for the support line.
-      const report = res.error ?? read.error ?? null;
+      // A genuine run failure is terminal — never retried. The results read
+      // answers `run.failed`, and the run's own problem, nested in it as
+      // `run_error`, says why. A platform whose results read nests none may
+      // still carry it on the status read just made, so the reason reaches the
+      // person either way. The status read also says when the run ended, for
+      // the support line.
+      const problem =
+        res.error === null && read.error ? { ...res.problem, run_error: read.error } : res.problem;
       return {
         ok: false,
         error: classifyPipelineError(
-          new RunFailedError(res.message, runId, res.status, { error: report }),
+          new RunFailedError(res.message, runId, res.status, { problem }),
           readClassifyEnv(),
           { finishedAt: read.finished_at },
         ),
@@ -154,7 +165,10 @@ export async function pollDurableRun<T>(
   } catch (err) {
     const error = classifyPipelineError(err, readClassifyEnv());
     const transient = isTransientPollError(error);
+    const retryAfterSeconds = error.retry?.afterSeconds ?? null;
     delete error.retry;
-    return { ok: false, error, transient };
+    return transient
+      ? { ok: false, error, transient, retryAfterSeconds }
+      : { ok: false, error, transient };
   }
 }

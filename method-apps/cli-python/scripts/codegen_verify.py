@@ -29,7 +29,7 @@ from pipelex_method_cli_python.lib import client as api
 from pipelex_method_cli_python.lib.app import AppError
 from pipelex_method_cli_python.lib.contracts import CONTRACTS_FILENAME, LOCK_FILENAME
 from scripts.codegen import CodegenClient
-from scripts.codegen_api import about_the_method, explain, selector_support_refusal
+from scripts.codegen_api import explain, selector_support_refusal
 from scripts.codegen_shared import (
     PACKAGE_LAYOUT,
     CodegenSetupError,
@@ -94,7 +94,7 @@ async def verify(client: CodegenClient, source: CodegenSource, layout: Layout) -
         answer = await client.pipe_io(source.pipe_io_request())
     except (PipelineRequestError, ValueError) as exc:
         # A refusal or an unreachable API, both the SDK's request errors, or a body that is not the answer.
-        return _fail(f"\n✗ {explain(exc, client.base_url, 'POST /v1/pipe-io', source if about_the_method(exc) else None)}")
+        return _fail(f"\n✗ {explain(exc, client.base_url, 'POST /v1/pipe-io', source)}")
     if not isinstance(answer, PipeIOValidReport):
         return _fail("\n✗", *invalid_lines(answer, lead="the method no longer resolves"))
     reason = not_runnable_reason(answer)

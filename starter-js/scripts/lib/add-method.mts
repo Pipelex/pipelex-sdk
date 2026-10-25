@@ -50,6 +50,7 @@ import process from "node:process";
 import nextEnv from "@next/env";
 import {
   DEFAULT_API_BASE_URL,
+  isProblemError,
   parseMethodSelector,
   PipelexApiClient,
   RequestArgumentError,
@@ -62,7 +63,7 @@ import {
   type ValidateMethodSelector,
 } from "@pipelex/sdk";
 
-import { assertSelectorSupport, explainSelectorFailure } from "./api.mts";
+import { assertSelectorSupport, describeRequestFailure, explainSelectorFailure } from "./api.mts";
 import {
   fetchGenerated,
   methodVocabulary,
@@ -1864,12 +1865,20 @@ export async function planAddMethod(
     // label — a person chose it. A published address has no such name.
     if (selectorKind(selector) === "method_id") {
       let method;
+      // The method routes take the bare id: the name belongs to the method,
+      // whichever version the app runs.
+      const methodId = parseMethodSelector(selector.method_id!).method_id;
       try {
-        // The method routes take the bare id: the name belongs to the method,
-        // whichever version the app runs.
-        method = await client.getMethod(parseMethodSelector(selector.method_id!).method_id);
+        method = await client.getMethod(methodId);
       } catch (error) {
-        const explained = explainSelectorFailure(error, selector);
+        // A catalog id the API does not know names the method; any other
+        // refusal, a bare 403 among them, is read from its problem as every
+        // keyed script reads one, never printed as a stack.
+        const explained =
+          explainSelectorFailure(error, selector) ??
+          (isProblemError(error)
+            ? describeRequestFailure(error, `GET /v1/methods/${methodId}`, baseUrl)
+            : null);
         if (explained !== null) throw new AddMethodError(explained);
         throw error;
       }

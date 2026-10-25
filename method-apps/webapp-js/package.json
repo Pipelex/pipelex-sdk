@@ -1,6 +1,6 @@
 {
   "name": "pipelex-method-webapp-js",
-  "version": "0.53.0",
+  "version": "0.54.0",
   "private": true,
   "description": "A Next.js app that runs MTHDS methods through the Pipelex API, with each method's input form and result view generated from its own contract.",
   "scripts": {
@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@pipelex/mthds-form": "^0.23.1",
-    "@pipelex/sdk": "^0.50.0",
+    "@pipelex/sdk": "^0.53.0",
     "next": "^16.4.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

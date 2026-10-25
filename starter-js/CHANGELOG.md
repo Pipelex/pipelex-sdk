@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.54.0] - 2026-10-25
+
+### Changed
+
+- **The starter reads every failure from its problem document (Breaking)**: the starter runs on `@pipelex/sdk` 0.53.0, moved from 0.50.0, whose every error carries its failure as an MTHDS problem document, and `classifyPipelineError` classifies an SDK error by the code of the MTHDS problem it carries, never by its class, HTTP status or message, and shows the problem's title, detail, next step and retry verdict, the domain as who must act (`<ErrorDisplay>` tinting a fault on the person's side amber and the service's red), and a support line with the run, the code and the request id. A failed run is read from its own problem, nested in `run.failed`, a refused run lists each of its `errors` items with where it is and its close matches, a durable start whose outcome is unknown is the new kind `outcome_unknown`, and `PipelineError` gains `domain`, `code` and `requestId` while `retry` becomes `{ verdict, summary, afterSeconds? }`. A failed poll is read again only when its problem's verdict says a retry can pass, waiting at least its `retry_after`, the progress route reads a run it does not know yet from `run.not_found` and a final refusal from the problem's verdict and domain, and `make add-method`, `make codegen` and `make codegen-verify` word a refusal from its problem's code and detail and list its faults from `errors`, a bare `403` with no problem document naming both the key and the base URL. The progress route reads an invocation's `last_failure`, now a problem too, and still sends the timeline only its fixed sentence and its time; the SDK's other changes in between, copying a method into another organization among them, reach nothing the starter calls.
+
 ## [v0.53.0] - 2026-10-25
 
 ### Security
