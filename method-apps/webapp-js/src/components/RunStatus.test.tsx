@@ -88,7 +88,7 @@ describe("the brand", () => {
     const region = screen.getByRole("status");
     // The pale accent fill with the accent's ink on it, which reads there at
     // 4.5:1 whatever accent was picked, on every line.
-    expect(region).toHaveClass("bg-brand-muted", "text-brand-muted-foreground");
+    expect(region).toHaveClass("bg-selected", "text-link");
     const classes = [region, ...region.querySelectorAll("*")].map((el) => el.className).join(" ");
     expect(classes).not.toMatch(/\b(?:bg|text|border)(?:-t)?-(?:blue|slate|gray|zinc)-\d+/);
   });
