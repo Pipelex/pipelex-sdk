@@ -402,8 +402,22 @@ class FileBodies:
         "method_ids": ["mt_abc"],
         "uses": {
             "items": [
-                {"uri": URI, "holder_type": "example", "holder_id": "ex_1", "method_id": "mt_abc", "created_at": "2026-10-22T10:00:00+00:00"},
-                {"uri": URI, "holder_type": "run", "holder_id": "run_7", "method_id": "mt_abc", "created_at": "2026-10-22T11:00:00+00:00"},
+                {
+                    "uri": URI,
+                    "holder_type": "example",
+                    "holder_id": "ex_1",
+                    "method_id": "mt_abc",
+                    "created_at": "2026-10-22T10:00:00+00:00",
+                    "created_by": "user_1",
+                },
+                {
+                    "uri": URI,
+                    "holder_type": "run",
+                    "holder_id": "run_7",
+                    "method_id": "mt_abc",
+                    "created_at": "2026-10-22T11:00:00+00:00",
+                    "created_by": None,
+                },
             ],
             "next_cursor": "u2",
         },

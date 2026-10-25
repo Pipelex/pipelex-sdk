@@ -85,6 +85,7 @@ const DETAIL: FileDetail = {
         holder_id: "ex_1",
         method_id: "mt_abc",
         created_at: "2026-10-22T10:00:00+00:00",
+        created_by: "user_1",
       },
       {
         uri: URI,
@@ -92,6 +93,7 @@ const DETAIL: FileDetail = {
         holder_id: "run_1",
         method_id: "mt_abc",
         created_at: "2026-10-22T11:00:00+00:00",
+        created_by: null,
       },
     ],
     next_cursor: "u2",
@@ -131,6 +133,44 @@ describe("getFile", () => {
     expect(detail).toEqual(DETAIL);
     expectTypeOf(detail).toEqualTypeOf<FileDetail>();
     expectTypeOf(detail.uses.next_cursor).toEqualTypeOf<string | null>();
+    expectTypeOf(detail.uses.items[0].created_by).toEqualTypeOf<string | null>();
+  });
+
+  it("reads a use answered without created_by, as a platform that predates it answers, as null", async () => {
+    const [example, run] = DETAIL.uses.items.map(({ created_by: _creator, ...use }) => use);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...DETAIL, uses: { items: [example, run], next_cursor: null } }),
+    );
+
+    const detail = await makeClient().getFile(FILE_ID);
+
+    expect(detail.uses.items.map((use) => use.created_by)).toEqual([null, null]);
+    expect(detail.uses.items[0]).toEqual({ ...DETAIL.uses.items[0], created_by: null });
+    expect(detail.uses.next_cursor).toBeNull();
+  });
+
+  it("keeps the created_by each use carries", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, DETAIL));
+
+    const detail = await makeClient().getFile(FILE_ID);
+
+    expect(detail.uses.items.map((use) => use.created_by)).toEqual(["user_1", null]);
+  });
+
+  it("reads a created_by that is not a string as null", async () => {
+    const [example] = DETAIL.uses.items;
+    const items = [42, true, { user_id: "user_1" }, ["user_1"]].map((created_by) => ({
+      ...example,
+      created_by,
+    }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...DETAIL, uses: { items, next_cursor: null } }),
+    );
+
+    const detail = await makeClient().getFile(FILE_ID);
+
+    expect(detail.uses.items.map((use) => use.created_by)).toEqual([null, null, null, null]);
+    expect(detail.uses.items[0]).toEqual({ ...example, created_by: null });
   });
 
   it("pages the uses with uses_limit and uses_cursor", async () => {

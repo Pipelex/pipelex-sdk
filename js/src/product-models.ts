@@ -1293,6 +1293,14 @@ export interface FileUse {
   method_id: string | null;
   /** ISO-8601 instant the use was recorded. */
   created_at: string;
+  /**
+   * The member who started the run, or who saved the example: the holder's own creator, copied
+   * onto the use when it was recorded, so a client tells its own runs among a file's uses without
+   * reading any run. `null` on a use recorded before uses carried it, until the platform's
+   * stored-files migration fills it, and on every use from a platform that predates the member,
+   * which leaves it out and `getFile` reads as `null`, as it reads a member that is not a string.
+   */
+  created_by: string | null;
 }
 
 /**

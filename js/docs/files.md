@@ -89,11 +89,13 @@ Every member is optional, and each is sent only when given, so an empty `q`, cur
 
 ## One file and its uses
 
-`getFile` answers a `FileDetail`: the file's `FileRecord`, its `method_ids`, the methods whose lists hold it, and `uses`, a `FileUsePage` of the examples that hold its address, then the runs that took it. Each `FileUse` names the `uri` it holds, its `holder_type` (`example` or `run`), its `holder_id`, the `method_id` it belongs to and its `created_at`. A use names an address, so every record holding that address shows the same uses.
+`getFile` answers a `FileDetail`: the file's `FileRecord`, its `method_ids`, the methods whose lists hold it, and `uses`, a `FileUsePage` of the examples that hold its address, then the runs that took it. Each `FileUse` names the `uri` it holds, its `holder_type` (`example` or `run`), its `holder_id`, the `method_id` it belongs to, its `created_at` and its `created_by`. A use names an address, so every record holding that address shows the same uses.
+
+**`created_by` names who made the use's holder**: the member who started the run, or who saved the example, copied onto the use when it was recorded, so a client tells its own runs among a file's uses by comparing it with the `user_id` that `getMe()` answers, without reading any run. It is `null` on a use recorded before uses carried it, until the platform's stored-files migration fills it, and on every use from a platform that predates the member, which leaves it out and `getFile` reads as `null`, never `undefined`; `getFile` reads a member that is not a string as `null` too, so the field is always a string or `null`. A `null` therefore says that the creator is unknown, never that nobody made the holder.
 
 ```ts
 const detail = await client.getFile("fl_0199");
-for (const use of detail.uses.items) console.log(use.holder_type, use.holder_id);
+for (const use of detail.uses.items) console.log(use.holder_type, use.holder_id, use.created_by);
 if (detail.uses.next_cursor !== null) {
   const more = await client.getFile("fl_0199", { usesCursor: detail.uses.next_cursor });
 }
