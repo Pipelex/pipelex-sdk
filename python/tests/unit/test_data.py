@@ -1,73 +1,93 @@
 """Test data constants for the unit suite, grouped by what they stand for."""
 
+import json
 from typing import Any, ClassVar
 
 from mthds.method_tree.file_entry import FileEntry
 
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict
-
 
 class RefusedRunBodies:
-    """Problem documents the dev plane answered when it refused to run a method, as they came off the wire.
-
-    Copied byte for byte from `mthds-python`'s `tests/unit/test_data.py` (`RefusedRunBodies`), where
-    they were captured on 2026-09-27 through `MthdsAPIClient` against `https://api-dev.pipelex.com`
-    (pipelex-api v0.29.0 on pipelex 0.67.0): a bundle the runner refused at load with an itemized
-    diagnostic, a run that failed at a pipe's combine step, and a run that failed on a model the deck
-    does not serve. Keeping the same bytes in both clients' suites is what shows the two read a refusal
-    alike.
+    """Problem documents the hosted API answers when it refuses to run a method, as raw text: a method refused at
+    load with one problem item per fault, a run that failed at a pipe's combine step, and a run that failed on a
+    model the deck does not serve. Their sentences are the runtime's own, from what the dev plane answered on
+    2026-09-27; their members are the problem document's (`docs/errors.md`).
     """
 
-    UNKNOWN_MODEL_AT_LOAD: ClassVar[str] = (
-        '{"type":"https://docs.pipelex.com/latest/errors/validate-bundle-error/","title":"Validate bundle","status":422,'
-        "\"detail\":\"Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found in the model deck\\n\\n"
-        'Did you mean: gpt-5.5, gpt-5.4, gpt-5.6-sol, gpt-5.4-pro, gpt-5.6-luna","instance":"/v1/execute",'
-        '"request_id":"req_a3dd6900-7909-48d3-b551-0140e73ac7fc","error_category":"configuration","error_domain":"input",'
-        '"retryable":false,"error_type":"ValidateBundleError","validation_errors":[{"category":"pipe_validation",'
-        "\"message\":\"Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found in the model deck\\n\\n"
-        'Did you mean: gpt-5.5, gpt-5.4, gpt-5.6-sol, gpt-5.4-pro, gpt-5.6-luna","error_type":"unknown_model",'
-        '"pipe_code":"draft_pitch","domain_code":"sales_copy","field_path":"pipe.draft_pitch.model","field_name":"model",'
-        '"model_reference":"gpt-5.1","model_type":"llm","suggestions":["gpt-5.5","gpt-5.4","gpt-5.6-sol","gpt-5.4-pro","gpt-5.6-luna"]}],'
-        '"user_action":{"kind":"change_input","detail":"Edit the bundle as each validation error says: apply its suggested fix '
-        'where it has one, after confirming an unsafe one"}}'
-    )
     UNKNOWN_MODEL_DETAIL: ClassVar[str] = (
         "Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found in the model deck\n\n"
         "Did you mean: gpt-5.5, gpt-5.4, gpt-5.6-sol, gpt-5.4-pro, gpt-5.6-luna"
     )
-    UNKNOWN_MODEL_NEXT_STEP: ClassVar[str] = (
-        "Edit the bundle as each validation error says: apply its suggested fix where it has one, after confirming an unsafe one"
+    UNKNOWN_MODEL_NEXT_STEP: ClassVar[str] = "Fix each fault the problem's errors list, then validate the method again."
+    UNKNOWN_MODEL_SUGGESTIONS: ClassVar[list[str]] = ["gpt-5.5", "gpt-5.4", "gpt-5.6-sol", "gpt-5.4-pro", "gpt-5.6-luna"]
+    UNKNOWN_MODEL_AT_LOAD: ClassVar[str] = json.dumps(
+        {
+            "type": "https://mthds.ai/errors/method.invalid",
+            "title": "The method does not validate",
+            "status": 422,
+            "detail": "The method does not validate.",
+            "code": "method.invalid",
+            "domain": "method",
+            "retry": "no",
+            "next_step": {"kind": "change_method", "detail": UNKNOWN_MODEL_NEXT_STEP},
+            "request_id": "req_a3dd6900-7909-48d3-b551-0140e73ac7fc",
+            "errors": [
+                {
+                    "code": "model.unknown",
+                    "detail": UNKNOWN_MODEL_DETAIL,
+                    "params": {"model": "gpt-5.1", "model_type": "llm", "suggestions": UNKNOWN_MODEL_SUGGESTIONS},
+                    "location": {"pipe": "draft_pitch", "field": "model"},
+                }
+            ],
+        },
+        ensure_ascii=False,
     )
 
-    COMBINE_FAILURE_AT_RUN: ClassVar[str] = (
-        '{"type":"https://docs.pipelex.com/latest/errors/stuff-factory-error/","title":"Stuff factory","status":422,'
-        "\"detail\":\"Pipe 'analyze_topics' failed (review_topics → analyze_topics): PipeParallel 'analyze_topics' cannot "
+    COMBINE_FAILURE_DETAIL: ClassVar[str] = (
+        "Pipe 'analyze_topics' failed (review_topics → analyze_topics): PipeParallel 'analyze_topics' cannot "
         "combine its branch results into its output 'TopicReview'. Branch 'draft_ideas' gives result 'ideas' as a list, "
-        "'Idea[]', but field 'ideas' of 'TopicReview' holds a single item. Declare the field as a list in the structure of "
-        "'TopicReview', with type 'list', item_type 'concept' and item_concept_ref 'Idea', or make branch 'draft_ideas' output "
-        'a single \'Idea\'.","instance":"/v1/execute","request_id":"req_d4212542-63a6-4ddb-87c9-4b968785c8c5",'
-        '"error_domain":"input","error_type":"StuffFactoryError","user_action":{"kind":"change_input","detail":"Branch '
-        "'draft_ideas' gives result 'ideas' as a list, 'Idea[]', but field 'ideas' of 'TopicReview' holds a single item. "
-        "Declare the field as a list in the structure of 'TopicReview', with type 'list', item_type 'concept' and "
-        "item_concept_ref 'Idea', or make branch 'draft_ideas' output a single 'Idea'.\"}}"
+        "'Idea[]', but field 'ideas' of 'TopicReview' holds a single item."
     )
     COMBINE_FAILURE_NEXT_STEP: ClassVar[str] = (
-        "Branch 'draft_ideas' gives result 'ideas' as a list, 'Idea[]', but field 'ideas' of 'TopicReview' holds a single item. "
         "Declare the field as a list in the structure of 'TopicReview', with type 'list', item_type 'concept' and "
         "item_concept_ref 'Idea', or make branch 'draft_ideas' output a single 'Idea'."
     )
-
-    UNSERVED_MODEL_AT_RUN: ClassVar[str] = (
-        '{"type":"https://docs.pipelex.com/latest/errors/model-not-found-error/","title":"Model not found","status":422,'
-        "\"detail\":\"Pipe 'condense_article' failed (digest_article → condense_article): Model handle 'gpt-5.1' was not "
-        'found in the model deck.","instance":"/v1/execute","request_id":"req_b7d2c66f-b2d5-4dc7-bd4f-6cf98abfbdc0",'
-        '"error_category":"configuration","error_domain":"input","retryable":false,"error_type":"ModelNotFoundError",'
-        '"user_action":{"kind":"change_model","detail":"Change the model \'gpt-5.1\' to an LLM the model deck serves."}}'
+    COMBINE_FAILURE_AT_RUN: ClassVar[str] = json.dumps(
+        {
+            "type": "https://mthds.ai/errors/pipe.output_multiplicity",
+            "title": "A pipe's output has the wrong multiplicity",
+            "status": 422,
+            "detail": COMBINE_FAILURE_DETAIL,
+            "code": "pipe.output_multiplicity",
+            "domain": "method",
+            "retry": "no",
+            "next_step": {"kind": "change_method", "detail": COMBINE_FAILURE_NEXT_STEP},
+            "params": {"pipe": "analyze_topics", "output": "ideas", "declared": "single", "produced": "list"},
+            "location": {"pipe": "analyze_topics"},
+            "request_id": "req_d4212542-63a6-4ddb-87c9-4b968785c8c5",
+        },
+        ensure_ascii=False,
     )
+
     UNSERVED_MODEL_DETAIL: ClassVar[str] = (
         "Pipe 'condense_article' failed (digest_article → condense_article): Model handle 'gpt-5.1' was not found in the model deck."
     )
     UNSERVED_MODEL_NEXT_STEP: ClassVar[str] = "Change the model 'gpt-5.1' to an LLM the model deck serves."
+    UNSERVED_MODEL_AT_RUN: ClassVar[str] = json.dumps(
+        {
+            "type": "https://mthds.ai/errors/model.unknown",
+            "title": "The model is unknown",
+            "status": 422,
+            "detail": UNSERVED_MODEL_DETAIL,
+            "code": "model.unknown",
+            "domain": "method",
+            "retry": "no",
+            "next_step": {"kind": "change_model", "detail": UNSERVED_MODEL_NEXT_STEP},
+            "params": {"model": "gpt-5.1", "model_type": "llm", "suggestions": []},
+            "location": {"pipe": "condense_article"},
+            "request_id": "req_b7d2c66f-b2d5-4dc7-bd4f-6cf98abfbdc0",
+        },
+        ensure_ascii=False,
+    )
 
 
 class PipeIOBodies:
@@ -135,55 +155,49 @@ class PipeIOBodies:
     }
     INVALID: ClassVar[dict[str, Any]] = {
         "is_valid": False,
-        "validation_errors": [
+        "errors": [
             {
-                "category": "blueprint_validation",
-                "message": "Input 'doc' is declared but never read by the template.",
-                "error_type": "extraneous_input_variable",
-                "pipe_code": "echo",
-                "domain_code": "smoke",
-                "source": "smoke.mthds",
+                "code": "method.input_unused",
+                "detail": "Input 'doc' is declared but never read by the template.",
+                "location": {"file": "smoke.mthds", "pipe": "smoke.echo", "input": "doc"},
             }
         ],
         "message": "1 validation error",
     }
-    #: The selection refusals, as a local `pipelex-api` at `db9daa4` (the v0.33.1 fix) answered them on
-    #: 2026-09-30, less the per-request `request_id` and with the not-found `detail` shortened: the
-    #: runner's entry-lookup error class is the `error_type`, and the candidates, where there are any,
-    #: are named in `detail` alone.
+    #: The selection refusals, as the runner answers them less the per-request `request_id`: the candidates, where
+    #: there are any, are named in `detail` and in the problem's parameters.
     UNKNOWN_PIPE_REFUSAL: ClassVar[dict[str, Any]] = {
-        "type": "https://docs.pipelex.com/latest/errors/entry-pipe-not-found-error/",
-        "title": "Entry pipe not found",
+        "type": "https://mthds.ai/errors/request.pipe_not_found",
+        "title": "The pipe was not found",
         "status": 422,
         "detail": "Pipe 'smoke.absent' not found in the submitted closure.",
-        "instance": "/v1/pipe-io",
-        "error_type": "EntryPipeNotFoundError",
-        "error_domain": "input",
-        "user_action": {
-            "kind": "change_input",
-            "detail": "Check the pipe code for typos and make sure the bundle in scope for this operation declares it.",
-        },
+        "code": "request.pipe_not_found",
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": "Check the pipe code for typos and make sure the bundle in scope declares it."},
+        "params": {"pipe": "smoke.absent", "suggestions": []},
     }
     AMBIGUOUS_PIPE_REFUSAL: ClassVar[dict[str, Any]] = {
-        "type": "https://docs.pipelex.com/latest/errors/entry-pipe-ambiguous-error/",
-        "title": "Entry pipe ambiguous",
+        "type": "https://mthds.ai/errors/request.pipe_unspecified",
+        "title": "No pipe was named",
         "status": 422,
         "detail": "No `pipe_ref` was given and the closure declares several `main_pipe`s (alpha.run, beta.run) — name the pipe explicitly.",
-        "instance": "/v1/pipe-io",
-        "error_type": "EntryPipeAmbiguousError",
-        "error_domain": "input",
-        "user_action": {"kind": "change_input", "detail": "Send a `pipe_ref` naming one of the declared `main_pipe`s."},
+        "code": "request.pipe_unspecified",
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": "Send a `pipe_ref` naming one of the declared `main_pipe`s."},
+        "params": {"candidates": ["alpha.run", "beta.run"]},
     }
     #: A `422` that is not a selection: the request-shape refusal the runner renders for a malformed body.
     REQUEST_SHAPE_REFUSAL: ClassVar[dict[str, Any]] = {
-        "type": "https://docs.pipelex.com/latest/errors/validation-error/",
-        "title": "Validation error",
+        "type": "https://mthds.ai/errors/request.invalid",
+        "title": "The request is invalid",
         "status": 422,
         "detail": "body: Value error, provide exactly one of `files` or `method_ref`",
-        "error_type": "ValidationError",
-        "error_domain": "input",
-        "retryable": False,
-        "instance": "/v1/pipe-io",
+        "code": "request.invalid",
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": "Correct the request and send it again."},
     }
 
 
@@ -255,7 +269,7 @@ class MethodVersionBodies:
     INVALID_VERDICT: ClassVar[dict[str, Any]] = {
         "is_valid": False,
         "message": "The bundle does not validate.",
-        "validation_errors": [{"category": "pipe_validation", "message": "Pipe 'review' has no output."}],
+        "errors": [{"code": "method.signature_mismatch", "detail": "Pipe 'review' has no output.", "location": {"pipe": "review"}}],
     }
 
 
@@ -442,13 +456,14 @@ class FileBodies:
     }
 
     ARCHIVE_TOO_LARGE: ClassVar[dict[str, Any]] = {
-        "type": "about:blank",
+        "type": "https://docs.pipelex.com/errors/pipelex.files.archive_too_large",
         "title": "Archive too large",
         "status": 422,
         "detail": "An archive holds at most 2000000000 bytes; this selection adds up to 2147483648.",
-        "code": "file_archive_too_large",
-        "error_domain": "input",
-        "retryable": False,
+        "code": "pipelex.files.archive_too_large",
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": "Select fewer or smaller files."},
         "limit": {"name": "max_total_bytes", "value": 2000000000, "reached": 2147483648},
     }
 
@@ -569,34 +584,37 @@ class ModelCheckBodies:
         "other_categories": [],
     }
     INVALID_REFERENCE_REFUSAL: ClassVar[dict[str, Any]] = {
-        "type": "https://docs.pipelex.com/latest/errors/invalid-model-reference/",
-        "title": "Invalid model reference",
+        "type": "https://mthds.ai/errors/request.invalid",
+        "title": "The request is invalid",
         "status": 422,
         "detail": "Waterfall reference '~' has no name after '~' prefix",
-        "instance": "/v1/models/check",
-        "error_type": "InvalidModelReference",
-        "error_domain": "input",
-        "retryable": False,
+        "code": "request.invalid",
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": "Correct the model reference and send it again."},
+        "location": {"field": "reference"},
     }
     INVALID_CATEGORY_REFUSAL: ClassVar[dict[str, Any]] = {
-        "type": "https://docs.pipelex.com/latest/errors/invalid-model-category/",
-        "title": "Invalid model category",
+        "type": "https://mthds.ai/errors/request.invalid",
+        "title": "The request is invalid",
         "status": 422,
         "detail": "Invalid model category. Valid values: doc_gen, extract, img_gen, judgment, llm, search",
-        "instance": "/v1/models/check",
-        "error_type": "InvalidModelCategory",
-        "error_domain": "input",
-        "retryable": False,
+        "code": "request.invalid",
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": "Name one of the valid model categories."},
+        "location": {"field": "category"},
     }
     REPEATED_PARAMETER_REFUSAL: ClassVar[dict[str, Any]] = {
-        "type": "https://docs.pipelex.com/latest/errors/validation-error/",
-        "title": "Validation error",
+        "type": "https://mthds.ai/errors/request.invalid",
+        "title": "The request is invalid",
         "status": 422,
         "detail": "The `reference` query parameter accepts a single value",
-        "instance": "/v1/models/check",
-        "error_type": "ValidationError",
-        "error_domain": "input",
-        "retryable": False,
+        "code": "request.invalid",
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": "Send the parameter once."},
+        "location": {"field": "reference"},
     }
 
 
@@ -604,38 +622,40 @@ class MalformedInputFormData:
     """What the malformed input-form cases send beside the shared case file's answer."""
 
     FILES: ClassVar[dict[str, FileEntry]] = {"smoke.mthds": 'domain = "smoke"'}
-    # The verdict the client gives a 2xx it cannot read, and `@pipelex/sdk` its `InputPreparationError`.
-    UNREADABLE_VERDICT: ClassVar[ErrorVerdict] = ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+    # The problem code the client gives a 2xx it cannot read, and `@pipelex/sdk` its `InputPreparationError`.
+    UNREADABLE_CODE: ClassVar[str] = "client.response_unreadable"
 
 
 class IdempotencyKeyData:
     """A run start's idempotency key, and what the hosted API answers about one.
 
     The two refusals are the platform's problem documents for a key: one an earlier start under the same
-    key and body still holds (`idempotency_key_in_use`, sent with `Retry-After`), and one used before with
-    another body (the generic `conflict`). `@pipelex/sdk`'s `tests/start-idempotency-key.test.ts` answers
-    its client with the same documents.
+    key and body still holds (`request.idempotency_key_in_use`, sent with `Retry-After`), and one used before with
+    another body (`request.idempotency_conflict`). `@pipelex/sdk`'s `tests/start-idempotency-key.test.ts` answers
+    its client with the same codes.
     """
 
     KEY: ClassVar[str] = "5f0c6a52-2d3e-4c8b-9a51-7e1f0b6c2d44"
     ACK: ClassVar[dict[str, Any]] = {"pipeline_run_id": "run-1", "state": "STARTED", "created_at": "t0"}
     KEY_IN_USE: ClassVar[dict[str, Any]] = {
-        "type": "https://pipelex.com/errors/idempotency_key_in_use",
-        "title": "Idempotency key in use",
+        "type": "https://mthds.ai/errors/request.idempotency_key_in_use",
+        "title": "The idempotency key is in use",
         "status": 409,
-        "code": "idempotency_key_in_use",
+        "code": "request.idempotency_key_in_use",
         "detail": "An earlier request with idempotency key 'k' and the same body is still being processed.",
-        "error_domain": "runtime",
-        "retryable": True,
+        "domain": "runtime",
+        "retry": "yes",
+        "next_step": {"kind": "wait", "detail": "Wait for the earlier request to finish, then send the request again."},
     }
     KEY_USED_WITH_ANOTHER_BODY: ClassVar[dict[str, Any]] = {
-        "type": "https://pipelex.com/errors/conflict",
-        "title": "Conflict",
+        "type": "https://mthds.ai/errors/request.idempotency_conflict",
+        "title": "The idempotency key was used with another request",
         "status": 409,
-        "code": "conflict",
+        "code": "request.idempotency_conflict",
         "detail": "The idempotency key 'k' was already used with a different request body.",
-        "error_domain": "input",
-        "retryable": False,
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": "Send the request under a new idempotency key."},
     }
     # Keys a start refuses before sending anything, each with the words that say what is wrong with it.
     MALFORMED_KEYS: ClassVar[list[tuple[str, object, str]]] = [
@@ -666,6 +686,17 @@ class RunProgressBodies:
         "failed_attempts": 4,
         "failing_since": "2026-10-12T09:30:33.480Z",
         "ends_at": "2026-10-12T09:45:33.480Z",
+    }
+    #: The problem the platform serves for a failure only the engine observed, the retried attempt of item 2's
+    #: second step: `runtime.unexpected`, in the caller's view.
+    RETRIED_PROBLEM: ClassVar[dict[str, Any]] = {
+        "type": "https://mthds.ai/errors/runtime.unexpected",
+        "title": "An unexpected error occurred",
+        "detail": "The runtime met an unexpected error.",
+        "code": "runtime.unexpected",
+        "domain": "runtime",
+        "retry": "no",
+        "next_step": {"kind": "report", "detail": "Report this to whoever runs the runtime."},
     }
     WORKED_EXAMPLE: ClassVar[dict[str, Any]] = {
         "pipeline_run_id": "run_7Qd2kV",
@@ -802,7 +833,7 @@ class RunProgressBodies:
                 "started_at": "2026-10-12T09:30:31.930Z",
                 "ended_at": None,
                 "attempts": 2,
-                "last_failure": {"message": "An internal error occurred.", "at": "2026-10-12T09:30:52.317Z"},
+                "last_failure": {"problem": RETRIED_PROBLEM, "at": "2026-10-12T09:30:52.317Z"},
             },
             {
                 "path": "filings.review_filings/step_3/item_3",
@@ -897,18 +928,21 @@ class BrandingBodies:
     SQUARE_TOO_SMALL: ClassVar[str] = "The square logo is 100 × 100 px; a square logo must be at least 128 px on each side."
     WIDE_TOO_SHORT: ClassVar[str] = "The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall."
 
-    #: Both slots refused at once: one entry per broken rule, the problem's `detail` their sentences joined.
+    #: Both slots refused at once: one problem item per broken rule, naming its slot, the problem's `detail` their
+    #: sentences joined.
     LOGOS_REFUSED: ClassVar[dict[str, Any]] = {
-        "type": "https://pipelex.com/errors/validation_failed",
-        "title": "Validation failed",
+        "type": "https://mthds.ai/errors/request.invalid",
+        "title": "The request is invalid",
         "status": 422,
-        "code": "validation_failed",
+        "code": "request.invalid",
         "detail": f"{SQUARE_TOO_SMALL} {WIDE_TOO_SHORT}",
-        "instance": "urn:pipelex:request:a9a249b93c024bf08ac9a5fd0704ea92",
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": "Change the branding and send it again."},
         "request_id": "a9a249b93c024bf08ac9a5fd0704ea92",
         "errors": [
-            {"field": "square_logo", "code": "logo_too_small", "detail": SQUARE_TOO_SMALL},
-            {"field": "wide_logo", "code": "logo_too_short", "detail": WIDE_TOO_SHORT},
+            {"code": "request.invalid", "detail": SQUARE_TOO_SMALL, "location": {"field": "square_logo"}},
+            {"code": "request.invalid", "detail": WIDE_TOO_SHORT, "location": {"field": "wide_logo"}},
         ],
     }
 
@@ -990,12 +1024,15 @@ class BrandingBodies:
 
     #: A colour that is not `#rrggbb`, refused by the body's validation and named by its dotted key.
     COLOR_REFUSED: ClassVar[dict[str, Any]] = {
-        "type": "https://pipelex.com/errors/validation_failed",
-        "title": "Validation failed",
+        "type": "https://mthds.ai/errors/request.invalid",
+        "title": "The request is invalid",
         "status": 422,
-        "code": "validation_failed",
+        "code": "request.invalid",
         "detail": "Request body failed validation. See `errors` for the per-field breakdown.",
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": "Change the branding and send it again."},
         "errors": [
-            {"field": "dark_colors.header", "code": "string_pattern_mismatch", "detail": "String should match pattern '^#[0-9a-fA-F]{6}$'"},
+            {"code": "request.invalid", "detail": "String should match pattern '^#[0-9a-fA-F]{6}$'", "location": {"field": "dark_colors.header"}},
         ],
     }

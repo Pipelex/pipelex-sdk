@@ -59,7 +59,7 @@ def parse_method_selector(selector: str) -> ParsedMethodSelector:
             letters, digits, `_` or `-`, or a suffix the platform refuses with a `422` — an empty
             one, `@0`, a number with a leading zero or a sign, any word but `draft`, `draft` in
             another case, or two suffixes. Also for a value that is not a `str` at all. Its
-            verdict is `input`, not retryable: the selector, which may come from a model's tool
+            problem is `client.argument_invalid`: the selector, which may come from a model's tool
             arguments, is what must change.
     """
     # Checked as an `object`: the annotation is a promise to the type checker, not to a caller

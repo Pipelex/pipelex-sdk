@@ -261,7 +261,7 @@ describe("uploadWithGrant — a grant for bytes already stored", () => {
 
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(error).toBeInstanceOf(UploadTransportError);
-    expect((error as UploadTransportError).code).toBe("invalid_grant_url");
+    expect((error as UploadTransportError).reason).toBe("invalid_grant_url");
     expect((error as Error).message).toContain("not stored yet");
   });
 
@@ -332,7 +332,7 @@ describe("uploadWithGrant — a grant that names its bytes", () => {
     const hashed = await uploadWithGrant({ ...HASHED_GRANT, uri: GRANT.uri }, pdfFile());
 
     expect(hashlessError).toBeInstanceOf(RejectedAssetError);
-    expect((hashlessError as RejectedAssetError).code).toBe("grant_used");
+    expect((hashlessError as RejectedAssetError).reason).toBe("grant_used");
     expect(hashed).toEqual({ uri: GRANT.uri, file_id: GRANT.file_id });
   });
 
@@ -349,10 +349,10 @@ describe("uploadWithGrant — a grant that names its bytes", () => {
     expect(error).toBeInstanceOf(RejectedAssetError);
     const rejected = error as RejectedAssetError;
     expect(rejected.status).toBe(400);
-    expect(rejected.code).toBe("store_refused");
+    expect(rejected.reason).toBe("store_refused");
     expect(rejected.message).toContain("400 BadDigest");
     expect(rejected.message).toContain("bytes differ from the ones whose SHA-256");
-    expect(rejected.retryable).toBe(false);
+    expect(rejected.retry).toBe("no");
   });
 
   it("advises a retry that finds the file stored, not a used grant", async () => {
@@ -436,15 +436,14 @@ describe("uploadWithGrant — storage's 409 ConditionalRequestConflict", () => {
     expect(error).not.toBeInstanceOf(RejectedAssetError);
     const transport = error as UploadTransportError;
     expect(transport.status).toBe(409);
-    expect(transport.code).toBe("conflict");
+    expect(transport.reason).toBe("conflict");
     expect(transport.message).toContain("409 ConditionalRequestConflict");
     expect(transport.message).toContain("another write of the same object");
     expect(transport.message).toContain("on each of its 5 attempts");
     expect(transport.message).toContain(
       `Retrying with the same grant before it expires at ${GRANT.expires_at}`,
     );
-    expect(transport.errorDomain).toBe("runtime");
-    expect(transport.retryable).toBe(true);
+    expect(transport.retry).toBe("yes");
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -472,7 +471,7 @@ describe("uploadWithGrant — storage's 409 ConditionalRequestConflict", () => {
 
     const error = await upload.outcome;
     expect(error).toBeInstanceOf(UploadTransportError);
-    expect((error as UploadTransportError).code).toBe("conflict");
+    expect((error as UploadTransportError).reason).toBe("conflict");
     expect((error as UploadTransportError).status).toBe(409);
     expect((error as Error).message).toContain(
       "on each of its 2 attempts before the 0.6 s allowed ran out",
@@ -491,7 +490,7 @@ describe("uploadWithGrant — storage's 409 ConditionalRequestConflict", () => {
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(error).toBeInstanceOf(RejectedAssetError);
-    expect((error as RejectedAssetError).code).toBe("store_refused");
+    expect((error as RejectedAssetError).reason).toBe("store_refused");
   });
 });
 
@@ -649,7 +648,7 @@ describe("uploadWithGrant — the time limit", () => {
       const error = await upload.outcome;
       expect(error).toBeInstanceOf(UploadTransportError);
       const transport = error as UploadTransportError;
-      expect(transport.code).toBe("timeout");
+      expect(transport.reason).toBe("timeout");
       expect(transport.status).toBeUndefined();
       expect(transport.cause).toBeUndefined();
       expect(transport.message).toContain(
@@ -677,7 +676,7 @@ describe("uploadWithGrant — the time limit", () => {
     await vi.advanceTimersByTimeAsync(1);
 
     const error = await upload.outcome;
-    expect((error as UploadTransportError).code).toBe("timeout");
+    expect((error as UploadTransportError).reason).toBe("timeout");
     expect((error as Error).message).toContain(`within the ${seconds} s allowed`);
   });
 
@@ -806,7 +805,7 @@ describe("uploadWithGrant — the time limit", () => {
       const error = await upload.outcome;
       expect(error).toBeInstanceOf(RejectedAssetError);
       expect((error as RejectedAssetError).status).toBe(403);
-      expect((error as RejectedAssetError).code).toBe("store_refused");
+      expect((error as RejectedAssetError).reason).toBe("store_refused");
       expect((error as Error).message).toContain("403 AccessDenied");
       expect(vi.getTimerCount()).toBe(0);
     },
@@ -830,7 +829,7 @@ describe("uploadWithGrant — the time limit", () => {
 
     const error = await upload.outcome;
     expect(error).toBeInstanceOf(UploadTransportError);
-    expect((error as UploadTransportError).code).toBe("conflict");
+    expect((error as UploadTransportError).reason).toBe("conflict");
     expect((error as UploadTransportError).status).toBe(409);
     // The limit has run out, so no new PUT is sent after it.
     expect((error as Error).message).toContain(
@@ -864,8 +863,8 @@ describe("uploadWithGrant — the time limit", () => {
     );
 
     if (status === 200) expect(outcome).toEqual(STORED);
-    if (status === 307) expect((outcome as UploadTransportError).code).toBe("redirected");
-    if (status === 403) expect((outcome as RejectedAssetError).code).toBe("grant_expired");
+    if (status === 307) expect((outcome as UploadTransportError).reason).toBe("redirected");
+    if (status === 403) expect((outcome as RejectedAssetError).reason).toBe("grant_expired");
   });
 });
 
@@ -903,7 +902,7 @@ describe("uploadWithGrant — reading storage's error body", () => {
     const error = await refusalFor(new Response(stream, { status: 403 }));
 
     expect(error).toBeInstanceOf(RejectedAssetError);
-    expect((error as RejectedAssetError).code).toBe("grant_expired");
+    expect((error as RejectedAssetError).reason).toBe("grant_expired");
     expect(served.bytes).toBe(16 * 1024);
     expect(served.cancelled).toBe(true);
   });
@@ -917,7 +916,7 @@ describe("uploadWithGrant — reading storage's error body", () => {
     const error = await refusalFor(new Response(stream, { status: 403, statusText: "Forbidden" }));
 
     expect(error).toBeInstanceOf(RejectedAssetError);
-    expect((error as RejectedAssetError).code).toBe("store_refused");
+    expect((error as RejectedAssetError).reason).toBe("store_refused");
     expect((error as Error).message).toContain("403 Forbidden");
   });
 
@@ -946,7 +945,7 @@ describe("uploadWithGrant — storage's refusals", () => {
     expect(error).toBeInstanceOf(InputPreparationError);
     const rejected = error as RejectedAssetError;
     expect(rejected.status).toBe(412);
-    expect(rejected.code).toBe("grant_used");
+    expect(rejected.reason).toBe("grant_used");
     expect(rejected.filename).toBe("report.pdf");
     expect(rejected.message).toContain("412 PreconditionFailed");
     expect(rejected.message).toContain("already used");
@@ -968,7 +967,7 @@ describe("uploadWithGrant — storage's refusals", () => {
     expect(error).toBeInstanceOf(RejectedAssetError);
     const rejected = error as RejectedAssetError;
     expect(rejected.status).toBe(403);
-    expect(rejected.code).toBe("signature_mismatch");
+    expect(rejected.reason).toBe("signature_mismatch");
     expect(rejected.message).toContain("403 SignatureDoesNotMatch");
     expect(rejected.message).toContain("size, content type or metadata");
     expect(rejected.message).not.toContain(ECHOED_TOKEN);
@@ -982,7 +981,7 @@ describe("uploadWithGrant — storage's refusals", () => {
     );
 
     expect(error).toBeInstanceOf(RejectedAssetError);
-    expect((error as RejectedAssetError).code).toBe("grant_expired");
+    expect((error as RejectedAssetError).reason).toBe("grant_expired");
     expect((error as RejectedAssetError).message).toContain(
       `the grant expired at ${GRANT.expires_at}`,
     );
@@ -997,7 +996,7 @@ describe("uploadWithGrant — storage's refusals", () => {
     );
 
     expect(error).toBeInstanceOf(RejectedAssetError);
-    expect((error as RejectedAssetError).code).toBe("unsigned_header");
+    expect((error as RejectedAssetError).reason).toBe("unsigned_header");
     expect((error as RejectedAssetError).message).toContain("a header the grant did not sign");
   });
 
@@ -1012,7 +1011,7 @@ describe("uploadWithGrant — storage's refusals", () => {
     expect(error).toBeInstanceOf(RejectedAssetError);
     const rejected = error as RejectedAssetError;
     expect(rejected.status).toBe(400);
-    expect(rejected.code).toBe("store_refused");
+    expect(rejected.reason).toBe("store_refused");
     expect(rejected.message).toContain("400 EntityTooSmall");
     expect(rejected.message).toContain("smaller than the minimum");
   });
@@ -1051,7 +1050,7 @@ describe("uploadWithGrant — transport failures", () => {
     expect(error).toBeInstanceOf(UploadTransportError);
     expect(error).toBeInstanceOf(InputPreparationError);
     expect((error as UploadTransportError).status).toBe(503);
-    expect((error as UploadTransportError).code).toBe("server_error");
+    expect((error as UploadTransportError).reason).toBe("server_error");
     expect((error as UploadTransportError).cause).toBeUndefined();
     expect((error as Error).message).toContain("503 SlowDown");
     expect((error as Error).message).toContain("Please reduce your request rate.");
@@ -1060,8 +1059,7 @@ describe("uploadWithGrant — transport failures", () => {
       `Retrying with the same grant before it expires at ${GRANT.expires_at}`,
     );
     // A fault in storage may pass.
-    expect((error as UploadTransportError).errorDomain).toBe("runtime");
-    expect((error as UploadTransportError).retryable).toBe(true);
+    expect((error as UploadTransportError).retry).toBe("yes");
   });
 
   it("maps a 501 onto a server_error that invites no retry, since storage stored nothing", async () => {
@@ -1078,15 +1076,14 @@ describe("uploadWithGrant — transport failures", () => {
     expect(error).toBeInstanceOf(UploadTransportError);
     const transport = error as UploadTransportError;
     expect(transport.status).toBe(501);
-    expect(transport.code).toBe("server_error");
+    expect(transport.reason).toBe("server_error");
     expect(transport.message).toContain("501 NotImplemented");
     expect(transport.message).toContain("functionality that is not implemented. Storage does not");
     expect(transport.message).toContain("so it stored nothing");
     expect(transport.message).not.toContain("same grant");
     expect(transport.message).not.toContain("Whether the file was stored is unknown");
     // Storage does not implement the request, so asking again meets the same answer.
-    expect(transport.errorDomain).toBe("runtime");
-    expect(transport.retryable).toBe(false);
+    expect(transport.retry).toBe("no");
   });
 
   it("prints one period after a 5xx message that already ends with one", async () => {
@@ -1097,7 +1094,7 @@ describe("uploadWithGrant — transport failures", () => {
       ),
     );
 
-    expect((error as UploadTransportError).code).toBe("server_error");
+    expect((error as UploadTransportError).reason).toBe("server_error");
     expect((error as Error).message).toContain("Please try again. Whether the file was stored");
     expect((error as Error).message).not.toContain("..");
   });
@@ -1115,7 +1112,7 @@ describe("uploadWithGrant — transport failures", () => {
 
     expect(error).toBeInstanceOf(UploadTransportError);
     expect((error as UploadTransportError).status).toBe(400);
-    expect((error as UploadTransportError).code).toBe("storage_timeout");
+    expect((error as UploadTransportError).reason).toBe("storage_timeout");
     expect((error as Error).message).toContain("400 RequestTimeout");
     expect((error as Error).message).toContain("wrote nothing");
     expect((error as Error).message).toContain(`expires at ${GRANT.expires_at}`);
@@ -1153,7 +1150,7 @@ describe("uploadWithGrant — transport failures", () => {
       expect(error).not.toBeInstanceOf(RejectedAssetError);
       const transport = error as UploadTransportError;
       expect(transport.status).toBe(status);
-      expect(transport.code).toBe("unexpected");
+      expect(transport.reason).toBe("unexpected");
       expect(transport.cause).toBeUndefined();
       expect(transport.message).toContain(described);
       expect(transport.message).toContain(
@@ -1164,8 +1161,7 @@ describe("uploadWithGrant — transport failures", () => {
       );
       expect(transport.message).not.toContain("request a new grant");
       // Refused for its timing, so a later attempt can pass.
-      expect(transport.errorDomain).toBe("runtime");
-      expect(transport.retryable).toBe(true);
+      expect(transport.retry).toBe("yes");
     },
   );
 
@@ -1179,7 +1175,7 @@ describe("uploadWithGrant — transport failures", () => {
 
     expect(error).toBeInstanceOf(UploadTransportError);
     expect((error as UploadTransportError).status).toBe(307);
-    expect((error as UploadTransportError).code).toBe("redirected");
+    expect((error as UploadTransportError).reason).toBe("redirected");
     expect((error as Error).message).toContain("redirect was refused");
   });
 
@@ -1190,7 +1186,7 @@ describe("uploadWithGrant — transport failures", () => {
 
     expect(error).toBeInstanceOf(UploadTransportError);
     expect((error as UploadTransportError).status).toBeUndefined();
-    expect((error as UploadTransportError).code).toBe("unreachable");
+    expect((error as UploadTransportError).reason).toBe("unreachable");
     expect((error as Error).message).toContain(
       "could not reach storage at https://pipelex-app-dev.s3.amazonaws.com (TypeError)",
     );
@@ -1267,7 +1263,7 @@ describe("uploadWithGrant — transport failures", () => {
 
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(error).toBeInstanceOf(UploadTransportError);
-    expect((error as UploadTransportError).code).toBe("invalid_grant_url");
+    expect((error as UploadTransportError).reason).toBe("invalid_grant_url");
     expect((error as Error).message).toContain("was not sent");
     expect((error as UploadTransportError).cause).toBeUndefined();
     expectNoSentinel(error);

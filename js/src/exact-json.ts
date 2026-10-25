@@ -19,10 +19,10 @@
  * example's inputs and a run's inputs, outputs and working memory, and writes every request body
  * with `stringifyExactJson`, so such data goes back to the platform digit for digit. The barrel
  * exports both and the error, for a caller that shows such data as JSON text or reads it back from
- * it. This module imports nothing but a type.
+ * it. This module imports nothing but the standard's problem builder.
  */
 
-import type { ErrorDomain } from "./errors.js";
+import { ProblemError, buildProblem } from "mthds/protocol";
 
 /** An integer as JSON spells one: a sign and digits, with no fraction and no exponent. */
 const INTEGER_TOKEN = /^-?\d+$/;
@@ -50,22 +50,30 @@ interface ReviverContext {
  * text, such a number cannot be told from a float of the same value, so the reader refuses it
  * rather than read it rounded. Every runtime this package supports hands the source text.
  *
- * Outside the `PipelexRequestError` family, since nothing was requested, it declares the verdict
- * every SDK error carries itself, so `errorVerdictOf` reads it like any other: `config`, not
- * retryable, since running on a runtime the package supports is what fixes it.
+ * Outside the `PipelexRequestError` family, since nothing was requested, it is a `ProblemError`
+ * (from `mthds/protocol`) all the same, so a caller reads it as it reads every SDK error: its
+ * problem is `client.tool_outdated`, naming the JavaScript runtime and its version when it is
+ * Node's, since running on a runtime the package supports is what fixes it. Its message is the
+ * reader's own sentence.
  */
-export class ExactJsonUnsupportedError extends Error {
-  /** Whether asking again can succeed: never, on this runtime. */
-  public readonly retryable: boolean = false;
-  /** Who can fix it: the environment, by moving to a runtime the package supports. */
-  public readonly errorDomain: ErrorDomain = "config";
-  /** Reading JSON starts no run. */
-  public readonly runMayHaveStarted: boolean = false;
-
+export class ExactJsonUnsupportedError extends ProblemError {
   constructor(message: string) {
-    super(message);
+    super(
+      buildProblem("client.tool_outdated", {
+        tool: "JavaScript runtime",
+        version: runtimeVersion(),
+      }),
+    );
     this.name = "ExactJsonUnsupportedError";
+    this.message = message;
   }
+}
+
+/** The version of the JavaScript runtime, as Node names its own, or `unknown` on another. */
+function runtimeVersion(): string {
+  const node = (globalThis as { process?: { versions?: { node?: unknown } } }).process?.versions
+    ?.node;
+  return typeof node === "string" ? `Node.js ${node}` : "unknown";
 }
 
 /**

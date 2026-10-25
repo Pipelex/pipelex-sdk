@@ -16,9 +16,11 @@ import {
   UploadAuthenticationError,
   UploadTransportError,
   UnsupportedUploadCapabilityError,
+  argumentInvalidProblem,
 } from "./errors.js";
-import type { TestFileRefusalCode } from "./errors.js";
-import { ApiResponseError, ApiUnreachableError } from "./errors.js";
+import type { TestFileRefusalReason } from "./errors.js";
+import { ABORT_TIMEOUT, ApiResponseError, ApiUnreachableError } from "./errors.js";
+import { readProblemBody } from "mthds/protocol";
 import { parseMethodSelector } from "./method-selector.js";
 import { absenceCause, loadNodeHost } from "./node-host.js";
 import type { UploadInput, UploadKind } from "./product-models.js";
@@ -113,6 +115,7 @@ export function uploadKindFields(
   if (kind !== undefined && !(UPLOAD_KINDS as readonly unknown[]).includes(kind)) {
     throw new InputPreparationError(
       `${refusal}: \`${field}kind\` is "uploaded" or "test", got ${describedArgument(kind)}.`,
+      { problem: argumentInvalidProblem(`${field}kind`, "unknown_value") },
     );
   }
   if (methodId !== undefined) {
@@ -120,6 +123,7 @@ export function uploadKindFields(
       throw new InputPreparationError(
         `${refusal}: \`${field}method_id\` names a method by its bare catalog id, got ` +
           `${describedArgument(methodId)}.`,
+        { problem: argumentInvalidProblem(`${field}method_id`, "not_a_string") },
       );
     }
     let bare: boolean;
@@ -129,13 +133,14 @@ export function uploadKindFields(
       throw new InputPreparationError(
         `${refusal}: \`${field}method_id\` ${JSON.stringify(methodId)} is not a catalog id, ` +
           "which is mt_ followed by letters, digits, _ or -.",
-        { cause },
+        { problem: argumentInvalidProblem(`${field}method_id`, "not_a_catalog_id"), cause },
       );
     }
     if (!bare) {
       throw new InputPreparationError(
         `${refusal}: \`${field}method_id\` names the method a test file is for by its bare ` +
           `catalog id, with no version suffix, got ${JSON.stringify(methodId)}.`,
+        { problem: argumentInvalidProblem(`${field}method_id`, "version_suffix") },
       );
     }
   }
@@ -143,12 +148,14 @@ export function uploadKindFields(
     throw new InputPreparationError(
       `${refusal}: a test file names the method it is for; give \`${field}method_id\` with ` +
         `\`${field}kind: "test"\`.`,
+      { problem: argumentInvalidProblem(`${field}method_id`, "missing") },
     );
   }
   if (kind !== "test" && methodId !== undefined) {
     throw new InputPreparationError(
       `${refusal}: only a test file names a method; give \`${field}method_id\` with ` +
         `\`${field}kind: "test"\` alone.`,
+      { problem: argumentInvalidProblem(`${field}method_id`, "without_test_kind") },
     );
   }
   return {
@@ -308,41 +315,42 @@ export async function uploadFile(
 
 /**
  * Which refusal of a test file an upload's error is, or `undefined` for any other. Each is read
- * off the platform's code, never the status alone: a `403` without `role_not_permitted` is a
- * refused credential, and a `404` is an unknown method only when the upload named one and the
- * answer is the platform's domain miss (`not_found`, `input`), not the `404` of a deployment
- * without the route, which the platform answers as `config` and a bare runner without a code.
+ * off the problem's code, never the status alone, and only for an upload that named a method, as
+ * a test file does: `auth.forbidden` is a role that may not change methods (any other `403` is a
+ * refused credential), `pipelex.catalog.being_deleted` a method being erased, and
+ * `pipelex.catalog.not_found` an unknown method, never the `404` of a deployment without the
+ * route, whose body is no problem document of that code.
  */
 function testFileRefusalOf(
   error: ApiResponseError,
   methodId: string | undefined,
-): TestFileRefusalCode | undefined {
-  if (error.code === "role_not_permitted") return "role_not_permitted";
-  if (error.code === "method_being_deleted") return "method_being_deleted";
-  if (
-    error.status === 404 &&
-    error.code === "not_found" &&
-    error.errorDomain === "input" &&
-    methodId !== undefined
-  ) {
-    return "method_not_found";
+): TestFileRefusalReason | undefined {
+  if (methodId === undefined) return undefined;
+  switch (error.code) {
+    case "auth.forbidden":
+      return "role_not_permitted";
+    case "pipelex.catalog.being_deleted":
+      return "method_being_deleted";
+    case "pipelex.catalog.not_found":
+      return "method_not_found";
+    default:
+      return undefined;
   }
-  return undefined;
 }
 
 /** The message of a test file's refusal, naming the file, the method and what to do. */
 function testFileRefusalMessage(
-  code: TestFileRefusalCode,
+  reason: TestFileRefusalReason,
   error: ApiResponseError,
   filename: string,
   methodId: string | undefined,
 ): string {
   const refused = `Upload of "${filename}" as a test file was refused (${error.status})`;
   const method = methodId === undefined ? "the method it names" : `the method "${methodId}"`;
-  switch (code) {
+  switch (reason) {
     case "role_not_permitted":
       return (
-        `${refused}: ${error.serverMessage ?? "the caller's role may not change methods"}. ` +
+        `${refused}: ${withoutFinalPeriod(error.problem.detail)}. ` +
         'Upload it as "uploaded", or with the credential of a member who may change methods.'
       );
     case "method_not_found":
@@ -361,7 +369,7 @@ function mapUploadError(error: unknown, filename: string, methodId?: string): Er
       return new UploadTransportError(
         `Upload of "${filename}" was answered (${error.status}) with a body the SDK could not ` +
           "read, so whether and where the file was stored is unknown.",
-        { cause: error, status: error.status, code: "unexpected", filename },
+        { cause: error, status: error.status, reason: "unexpected", filename },
       );
     }
     // A test file refused for what it claims, its role or its method, before the status alone is
@@ -371,7 +379,7 @@ function mapUploadError(error: unknown, filename: string, methodId?: string): Er
       return new TestFileRefusedError(testFileRefusalMessage(refusal, error, filename, methodId), {
         cause: error,
         status: error.status,
-        code: refusal,
+        reason: refusal,
         filename,
         ...(methodId === undefined ? {} : { methodId }),
       });
@@ -379,10 +387,10 @@ function mapUploadError(error: unknown, filename: string, methodId?: string): Er
     switch (error.status) {
       case 413:
         return new RejectedAssetError(
-          `The server rejected "${filename}": ${error.serverMessage ?? "asset exceeds the service size limit"}.`,
+          `The server rejected "${filename}": ${answeredDetail(error) ?? "asset exceeds the service size limit"}.`,
           filename,
           error.status,
-          { cause: error, code: "too_large" },
+          { cause: error, reason: "too_large", problem: error.problem },
         );
       case 401:
       case 403:
@@ -399,11 +407,11 @@ function mapUploadError(error: unknown, filename: string, methodId?: string): Er
         );
       default:
         return new UploadTransportError(
-          `Upload of "${filename}" failed (${error.status}): ${error.serverMessage ?? error.statusText}.`,
+          `Upload of "${filename}" failed (${error.status}): ${answeredDetail(error) ?? error.statusText}.`,
           {
             cause: error,
             status: error.status,
-            code: error.status >= 500 ? "server_error" : "unexpected",
+            reason: error.status >= 500 ? "server_error" : "unexpected",
             filename,
           },
         );
@@ -411,9 +419,13 @@ function mapUploadError(error: unknown, filename: string, methodId?: string): Er
   }
   if (error instanceof ApiUnreachableError) {
     return new UploadTransportError(
-      `Upload of "${filename}" could not reach the Pipelex API (${error.code ?? "unreachable"}).`,
+      `Upload of "${filename}" could not reach the Pipelex API (${error.networkCode ?? "unreachable"}).`,
       // The client's own request timeout surfaces as an unreachable host with this code.
-      { cause: error, code: error.code === "ABORT_TIMEOUT" ? "timeout" : "unreachable", filename },
+      {
+        cause: error,
+        reason: error.networkCode === ABORT_TIMEOUT ? "timeout" : "unreachable",
+        filename,
+      },
     );
   }
   // Only errors thrown by the `client.upload()` call reach here — the local-source
@@ -424,7 +436,22 @@ function mapUploadError(error: unknown, filename: string, methodId?: string): Er
   const detail = error instanceof Error ? error.message : String(error);
   return new UploadTransportError(`Upload of "${filename}" failed unexpectedly: ${detail}.`, {
     cause: error,
-    code: "unexpected",
+    reason: "unexpected",
     filename,
   });
+}
+
+/**
+ * The `detail` of the problem document a refusal answered with, or `undefined` when its body was
+ * none, so a message never quotes the sentence the SDK built for a bare answer as the server's.
+ */
+function answeredDetail(error: ApiResponseError): string | undefined {
+  return error.problem.detail !== "" && readProblemBody(error.responseBody) !== undefined
+    ? withoutFinalPeriod(error.problem.detail)
+    : undefined;
+}
+
+/** `text` without the period that ends it, for a sentence quoted inside another. */
+function withoutFinalPeriod(text: string): string {
+  return text.endsWith(".") ? text.slice(0, -1) : text;
 }

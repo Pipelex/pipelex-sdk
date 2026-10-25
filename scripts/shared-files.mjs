@@ -37,9 +37,9 @@ export const SETS = [
     copies: ["python/tests/fixtures/cli-cases.json"],
   },
   {
-    // The error verdicts both SDKs decide (js/docs/errors.md, python/docs/errors.md).
-    source: "js/tests/fixtures/error-verdicts.json",
-    copies: ["python/tests/fixtures/error-verdicts.json"],
+    // The problems both SDKs read and build (js/docs/errors.md, python/docs/errors.md).
+    source: "js/tests/fixtures/sdk-problems.json",
+    copies: ["python/tests/fixtures/sdk-problems.json"],
   },
   {
     // What both SDKs read from a run's status read (js/docs/run-results.md, python/docs/run-results.md).

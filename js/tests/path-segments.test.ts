@@ -7,8 +7,9 @@
  * parser `fetch` itself applies (`new Request(url).url`), not by comparing raw strings.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
-import { RequestArgumentError, errorVerdictOf } from "../src/errors.js";
+import { RequestArgumentError } from "../src/errors.js";
 
 const BASE_URL = "http://localhost:8081";
 const METHOD_ID = "mt_receipts01";
@@ -204,7 +205,7 @@ describe.each(ROUTES)("%s given to %s", (what, name, call, url) => {
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toMatch(new RegExp(`^${name}\\(\\) takes ${what}, `));
     expect((err as Error).message.endsWith(`; got ${got}.`)).toBe(true);
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
     expect(spy).not.toHaveBeenCalled();
   });
 

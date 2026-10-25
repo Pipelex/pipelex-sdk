@@ -9,21 +9,28 @@
  *
  * **This module is the browser-safe entry, `@pipelex/sdk/upload`.** Its runtime
  * import graph must never reach a Node builtin, `undici` or the client: a page
- * bundles it as is, with nothing marked external. It imports the error classes,
+ * bundles it as is, with nothing marked external. It imports the error classes, the
+ * standard's problem builder,
  * the timer bound in `timers.ts` and the wire types only, hashes with Web Crypto,
  * and `tests/upload-grant.test.ts` bundles it for the browser with esbuild to hold
  * it to that.
  */
 
-import { InputPreparationError, RejectedAssetError, UploadTransportError } from "./errors.js";
-import type { RejectedAssetCode } from "./errors.js";
+import { buildProblem } from "mthds/protocol";
+import {
+  InputPreparationError,
+  RejectedAssetError,
+  UploadTransportError,
+  argumentInvalidProblem,
+} from "./errors.js";
+import type { RejectedAssetReason } from "./errors.js";
 import type { UploadGrant } from "./product-models.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 export type { UploadGrant, UploadGrantInput, UploadKind } from "./product-models.js";
 // The classes `uploadWithGrant` raises, so a page can branch on them without the main entry.
 export { InputPreparationError, RejectedAssetError, UploadTransportError } from "./errors.js";
-export type { RejectedAssetCode, UploadTransportCode } from "./errors.js";
+export type { RejectedAssetReason, UploadTransportReason } from "./errors.js";
 
 /**
  * The default time limit on the `PUT`: a minute to open the exchange and hear back,
@@ -138,12 +145,14 @@ export async function describeUpload(
     throw new InputPreparationError(
       "The file to describe has no name: pass a File, or give a Blob its name as the " +
         "filename option.",
+      { problem: argumentInvalidProblem("filename", "missing") },
     );
   }
   const maxBytes = options.maxBytes ?? DEFAULT_DESCRIBE_MAX_BYTES;
   if (!(typeof maxBytes === "number" && Number.isFinite(maxBytes) && maxBytes > 0)) {
     throw new InputPreparationError(
       `"maxBytes" must be a positive number, got ${String(options.maxBytes)}.`,
+      { problem: argumentInvalidProblem("maxBytes", "not_positive") },
     );
   }
   const description: UploadDescription = { filename, content_type: file.type, size: file.size };
@@ -159,7 +168,10 @@ export async function describeUpload(
     throw new InputPreparationError(
       `"${filename}" could not be read to compute its SHA-256 (${describeFailureChain(error)}). ` +
         "Pick the file again.",
-      { cause: error },
+      {
+        problem: buildProblem("client.file_unreadable", { path: filename, reason: "unreadable" }),
+        cause: error,
+      },
     );
   }
   return { ...description, sha256: hex(await digest("SHA-256", bytes)) };
@@ -237,7 +249,7 @@ export interface GrantedUpload {
  * Storage's refusals map onto the input-preparation errors, so a caller that
  * already handles `uploadFile` needs no new case:
  *
- * - `RejectedAssetError` (`status` is storage's, `code` says why) — a `412` for a
+ * - `RejectedAssetError` (`status` is storage's, `reason` says why) — a `412` for a
  *   grant that names no bytes, when the grant was already used (`grant_used`: such a
  *   grant writes one object, once); a `403` when the file's size, type or metadata
  *   differ from what the grant signed (`signature_mismatch`), when the request carried
@@ -246,7 +258,7 @@ export interface GrantedUpload {
  *   `400 BadDigest` among them, for bytes other than the ones whose SHA-256 the grant
  *   was requested with. Each asks for a new grant, or for the file the grant was
  *   requested for.
- * - `UploadTransportError` (`status` is storage's when it answered, `code` says
+ * - `UploadTransportError` (`status` is storage's when it answered, `reason` says
  *   which) — the time limit running out (`timeout`), storage unreachable
  *   (`unreachable`), a `5xx` (`server_error`), storage timing out on the body
  *   (`storage_timeout`, a `400 RequestTimeout`, which wrote nothing), another write of
@@ -273,8 +285,10 @@ export interface GrantedUpload {
  * expires either stores it or finds it stored, and then the grant's `uri` names the
  * file. After a `408` or a `429` the same retry applies, later, since storage refused
  * the request for its timing. A `501` is the exception: storage does not implement the
- * request it was sent, stored nothing, and answers a retry the same way, so its error
- * is not retryable. The grant is a bearer capability: nothing here logs it, and no
+ * request it was sent, stored nothing, and answers a retry the same way, so its error's
+ * problem says no retry can pass. Every error carries its problem (see `docs/errors.md`):
+ * `client.timeout` naming the time limit, `client.unreachable` naming storage's origin, and
+ * for the others the one `uploadTransportProblem` reads from the reason. The grant is a bearer capability: nothing here logs it, and no
  * error this throws carries its URL, storage's error body or a runtime error that
  * could hold either.
  */
@@ -333,7 +347,10 @@ export async function uploadWithGrant(
             "looks the same: check that the page may connect to the storage origin (its CSP " +
             "connect-src). If the connection failed after the file went out, storage may have " +
             `stored it anyway. ${sameGrantRetry(grant)}`,
-          { code: "unreachable" },
+          {
+            reason: "unreachable",
+            problem: buildProblem("client.unreachable", { base_url: target.origin }),
+          },
         );
       }
 
@@ -355,7 +372,7 @@ export async function uploadWithGrant(
           `Upload of "${label}" was redirected by storage, and the redirect was refused: a ` +
             "presigned upload is valid only at the URL it was signed for.",
           // A refused redirect in a browser is opaque, with status 0: no status reached us.
-          { status: response.status || undefined, code: "redirected" },
+          { status: response.status || undefined, reason: "redirected" },
         );
       }
 
@@ -373,7 +390,7 @@ export async function uploadWithGrant(
           `Upload of "${label}" timed out at storage (${describeStatus(response, refusal)}): ` +
             "storage stopped waiting for the file's bytes and wrote nothing. Retry with the " +
             `same grant${beforeExpiry(grant)}, or with a new one.`,
-          { status, code: "storage_timeout" },
+          { status, reason: "storage_timeout" },
         );
       }
       // S3 answers this while another write or a delete of the key is in flight, and documents
@@ -397,19 +414,19 @@ export async function uploadWithGrant(
             (attempts === 1 ? "on its one attempt" : `on each of its ${attempts} attempts`) +
             (timedOut ? ` before the ${formatSeconds(limitMs)} s allowed ran out` : "") +
             `, so whether the file was stored is unknown. ${sameGrantRetry(grant)}`,
-          { status, code: "conflict" },
+          { status, reason: "conflict" },
         );
       }
       // A 408 or a 429 refuses the request for its timing, never the file: storage timed it out
-      // or throttled it, so it falls through to the transport failure below, whose verdict reads
-      // its status as retryable.
+      // or throttled it, so it falls through to the transport failure below, whose problem reads
+      // its status as `runtime.unavailable`.
       if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
-        const { code, advice } = classifyRefusal(status, refusal, grant);
+        const { reason, advice } = classifyRefusal(status, refusal, grant);
         throw new RejectedAssetError(
           `Storage refused the upload of "${label}" (${describeStatus(response, refusal)}): ${advice}`,
           label,
           status,
-          { code },
+          { reason },
         );
       }
       const failure =
@@ -422,19 +439,19 @@ export async function uploadWithGrant(
         throw new UploadTransportError(
           `${failure}. Storage does not implement the request it was sent, so it stored ` +
             "nothing, and sending the file again will meet the same answer.",
-          { status, code: "server_error" },
+          { status, reason: "server_error" },
         );
       }
       if (status === 408 || status === 429) {
         throw new UploadTransportError(
           `${failure}. Storage ${status === 429 ? "throttled" : "timed out"} the request rather ` +
             `than refusing the file, so a later attempt can succeed. ${sameGrantRetry(grant)}`,
-          { status, code: "unexpected" },
+          { status, reason: "unexpected" },
         );
       }
       throw new UploadTransportError(
         `${failure}. Whether the file was stored is unknown. ${sameGrantRetry(grant)}`,
-        { status, code: status >= 500 ? "server_error" : "unexpected" },
+        { status, reason: status >= 500 ? "server_error" : "unexpected" },
       );
     }
   } finally {
@@ -493,6 +510,7 @@ function requireTimeout(timeoutMs: number): void {
     throw new InputPreparationError(
       `"timeoutMs" must be a positive number no larger than ${MAX_TIMER_DELAY_MS}, got ` +
         `${String(timeoutMs)}.`,
+      { problem: argumentInvalidProblem("timeoutMs", "not_positive") },
     );
   }
 }
@@ -502,7 +520,10 @@ function timeoutError(label: string, limitMs: number, grant: UploadGrant): Uploa
     `Upload of "${label}" did not finish within the ${formatSeconds(limitMs)} s allowed, so ` +
       "whether storage stored the file is unknown. On a slow link, pass a longer timeoutMs. " +
       sameGrantRetry(grant),
-    { code: "timeout" },
+    {
+      reason: "timeout",
+      problem: buildProblem("client.timeout", { seconds: limitMs / 1000 }),
+    },
   );
 }
 
@@ -608,7 +629,7 @@ function storageTarget(grant: UploadGrant, label: string): StorageTarget {
       `Upload of "${label}" was not sent: the grant says the file is not stored yet, and its ` +
         "url is not an absolute http(s) URL free of user info, so it is not the one " +
         "requestUploadGrant returned. Pass the grant on unchanged.",
-      { code: "invalid_grant_url" },
+      { reason: "invalid_grant_url" },
     );
   }
   return { href: grant.url, origin: target.origin };
@@ -674,11 +695,11 @@ function classifyRefusal(
   status: number,
   refusal: StorageRefusal,
   grant: UploadGrant,
-): { code: RejectedAssetCode; advice: string } {
+): { reason: RejectedAssetReason; advice: string } {
   // A grant that names its bytes never gets here with a 412: the object it names is the file.
   if (status === 412) {
     return {
-      code: "grant_used",
+      reason: "grant_used",
       advice:
         "this grant was already used. A grant that does not name the file by its bytes " +
         "writes one object, once. If an earlier attempt with it failed at storage, that " +
@@ -687,7 +708,7 @@ function classifyRefusal(
   }
   if (refusal.code === "BadDigest") {
     return {
-      code: "store_refused",
+      reason: "store_refused",
       advice:
         "the file's bytes differ from the ones whose SHA-256 the grant was requested with. " +
         "Send exactly the file the grant was requested for, or describe the file again and " +
@@ -696,7 +717,7 @@ function classifyRefusal(
   }
   if (refusal.code === "SignatureDoesNotMatch") {
     return {
-      code: "signature_mismatch",
+      reason: "signature_mismatch",
       advice:
         "the file's size, content type or metadata differ from what the grant signed. Send " +
         "exactly the file the grant was requested for, with the grant's headers unchanged.",
@@ -704,20 +725,20 @@ function classifyRefusal(
   }
   if (refusal.message && /expired/i.test(refusal.message)) {
     return {
-      code: "grant_expired",
+      reason: "grant_expired",
       advice: `the grant expired${grant.expires_at ? ` at ${grant.expires_at}` : ""}. Request a new grant.`,
     };
   }
   if (refusal.message && /not signed/i.test(refusal.message)) {
     return {
-      code: "unsigned_header",
+      reason: "unsigned_header",
       advice:
         "the request carried a header the grant did not sign. Send the grant's headers and " +
         "no other storage header.",
     };
   }
   return {
-    code: "store_refused",
+    reason: "store_refused",
     advice:
       refusal.message ??
       "request a new grant, or check the file against the one it was requested for.",

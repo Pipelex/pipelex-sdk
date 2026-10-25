@@ -19,8 +19,7 @@ from mthds.method_tree.models import MethodTree
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.crate_models import CodegenRequest, PipeIORequest, PipeIOValidReport, ResolveRequest
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
-from pipelex_sdk.errors import MethodFileTransferCode, MethodFileTransferError, MethodFileTransferOperation, RequestArgumentError
+from pipelex_sdk.errors import MethodFileTransferError, MethodFileTransferOperation, MethodFileTransferReason, RequestArgumentError
 from tests.unit.conftest import BASE_URL, refused_argument
 from tests.unit.test_data import PipeIOBodies
 
@@ -189,9 +188,9 @@ class TestCrateRouteTrees:
             asyncio.run(client.resolve(ResolveRequest(contents={"data/big.txt": _LARGE})))
 
         error = caught.value
-        assert (error.operation, error.code, error.sha256, error.status) == (
+        assert (error.operation, error.reason, error.sha256, error.status) == (
             MethodFileTransferOperation.UPLOAD,
-            MethodFileTransferCode.REFUSED,
+            MethodFileTransferReason.REFUSED,
             _sha256(_LARGE),
             403,
         )
@@ -244,6 +243,5 @@ class TestCrateRouteTrees:
             asyncio.run(route(request))
 
         assert str(caught.value) == f"{call}() got a tree holding no file, and a method tree holds at least one."
-        assert error_verdict_of(caught.value) == ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
         assert refused_argument(caught.value) == {"argument": "tree", "reason": "empty"}
         assert not api.requests

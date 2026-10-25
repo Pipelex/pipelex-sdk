@@ -47,11 +47,12 @@ from mthds.protocol.input_form import InputForm
 from mthds.protocol.models import RunResultStart
 from mthds.protocol.output_form import OutputForm
 from mthds.protocol.pipe_io_contracts import PipeIOContracts
+from mthds.protocol.problem.models import Problem
 from mthds.runners.api.models import DictPipeOutputAbstract, DictWorkingMemoryAbstract
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidatorFunctionWrapHandler, WrapValidator, field_validator
 
 from pipelex_sdk._pydantic_utils import none_when_it_does_not_fit
-from pipelex_sdk.error_models import LenientRunErrorReport
+from pipelex_sdk.answer_reading import LenientProblem
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -200,17 +201,13 @@ class RunPublic(BaseModel):
     status: RunStatus
     created_at: str
     finished_at: str | None = None
-    #: Why the run failed — the stored report as the platform serves it, the runner's STRICT
-    #: projection, whole and typed (see `pipelex_sdk.error_models`). The runner writes it for a run
-    #: that fails while it runs; the platform writes one in the runner's shape for a run it ends or
-    #: settles itself (a workflow task that kept failing, a timeout, a workflow that vanished). A
-    #: cancelled, terminated or timed-out run holds a report when a completion callback carried one,
-    #: and a timed-out run otherwise the platform's timeout report. `None` for a completed run, and
-    #: for one that ended with no stored report (one whose start failed, a blocking `execute` run, one
-    #: cancelled, terminated or given its status by hand with no completion callback carrying a
-    #: report, one that ended before the platform wrote reports of its own). Read leniently, so a
-    #: report written by another runner version never fails the read carrying it.
-    error: LenientRunErrorReport = None
+    #: Why the run failed: the run's own problem document, as the platform serves it to its caller,
+    #: under its own code (`run.cancelled`, `run.timed_out`, a model's or a method's code) with its own
+    #: `domain`, `retry` and `next_step`. `None` for a completed run and for one that ended with no
+    #: problem stored. Read leniently (`LenientProblem`): anything but a problem document reads as
+    #: `None`, so a read never fails on it. The results read of the same run nests the same problem as
+    #: the `run_error` of its `409`.
+    error: LenientProblem = None
     #: Which version of its stored method the run ran: the version number for a run addressed by a
     #: bare `method_id` (the latest published version) or by `mt_…@<n>`, `"draft"` for one
     #: addressed by `mt_…@draft`, and `None` for a run of an inline source. A hosted extension,
@@ -389,16 +386,26 @@ class ProgressCondition(BaseModel):
 class ProgressFailure(BaseModel):
     """The latest failure of an invocation's work — `ProgressInvocation.last_failure`, a health annotation.
 
-    `message` keeps the disclosure of a run's error report: under the hosted plane's strict disclosure it
-    is the failure's own message only when that message was written for the caller, and
-    `An internal error occurred.` otherwise.
+    Its `problem` is a problem document in the caller's view, as the run reads serve a failed run's
+    problem: the problem that ended the invocation when it is `failed`, and otherwise the problem of the
+    latest failure of an attempt its engine is trying again. A failure only the engine observed, which is
+    no problem document, is served as `runtime.unexpected`. A failure whose `problem` is not a problem
+    document reads as `None` on its invocation, as any optional member that does not fit does, and an `at`
+    that is not a string reads as `None`, the problem kept. Extension-open, so a member a later platform
+    adds rides `model_extra`.
     """
 
     model_config = ConfigDict(extra="allow")
 
-    message: str
+    #: The failure, the standard's `Problem`: branch on its `code`, never on the wording of its `detail`.
+    problem: Problem
     #: When it failed, an RFC 3339 timestamp in UTC; `None` when not recorded.
     at: str | None = None
+
+    @field_validator("at", mode="wrap")
+    @classmethod
+    def _read_a_time_that_does_not_fit_as_none(cls, value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
+        return none_when_it_does_not_fit(value, handler)
 
 
 class ProgressAttempt(BaseModel):
@@ -460,7 +467,7 @@ class ProgressInvocation(BaseModel):
     condition: ProgressCondition | None = None
     #: Health: how many times its work has been tried, present only when more than once.
     attempts: StrictInt | None = None
-    #: Health: the latest failure of its work.
+    #: Health: the latest failure of its work, its problem in the caller's view and when it happened.
     last_failure: ProgressFailure | None = None
     #: Health: the run is stuck at this invocation — the run status's own `degradation`, with the same
     #: members and meanings, placed on the invocation it concerns (the run's root, or the batch item whose
@@ -785,18 +792,19 @@ class RunResultCompleted(BaseModel):
 class RunResultFailed(BaseModel):
     """HTTP 409 — the run reached a terminal non-`COMPLETED` status.
 
-    Built from the platform's problem document: `message` is its `detail`, which names the status and
-    then the report's own message (`Run finished with status FAILED: <message>`), `status` is its
-    `run_status` member, and `error` is its `error` member, the run's stored report typed whole — the
-    same object the status read serves as `RunRead.error`. `error` is `None` for a run that ended with
-    no stored report.
+    Built from the platform's `run.failed` problem document: `problem` is that problem as the platform
+    answered it, `status` the terminal status its `run_status` parameter names (`FAILED` when it names none
+    the SDK knows), `message` its `detail`, and `error` the run's own problem, which `run.failed` nests as
+    `run_error` — the same object the status read serves as `RunRead.error`. `error` is `None` for a run
+    that ended with no problem stored.
     """
 
     state: Literal["failed"] = "failed"
     pipeline_run_id: str
     status: RunStatus
     message: str
-    error: LenientRunErrorReport = None
+    problem: Problem
+    error: LenientProblem = None
 
 
 RunResultState: TypeAlias = Annotated[

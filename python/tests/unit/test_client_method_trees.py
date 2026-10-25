@@ -30,12 +30,11 @@ from typing_extensions import override
 
 from pipelex_sdk import client as client_module
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import (
     ApiResponseError,
-    MethodFileTransferCode,
     MethodFileTransferError,
     MethodFileTransferOperation,
+    MethodFileTransferReason,
     RequestArgumentError,
 )
 from pipelex_sdk.product_models import MethodDraftInput, MethodWriteInput, SavedMethodFile
@@ -64,8 +63,6 @@ _LARGE = b"x" * (300 * 1024)
 #: Bytes no UTF-8 decoder takes, so an inline map carries them in Base64.
 _BINARY = b"\x89PNG\r\n\x1a\n\x00\xff\xfe"
 
-_ARGUMENT_VERDICT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
-_UNREADABLE_VERDICT = ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
 
 #: The signature every link of `MethodVersionBodies.FILES` carries.
 _LISTING_SIGNATURE = "X-Amz-Signature="
@@ -267,7 +264,7 @@ def _unreadable(caught: pytest.ExceptionInfo[ApiResponseError], *, signature: st
     error = caught.value
     assert signature not in _everything_shown(error)
     assert error.__context__ is None
-    assert error_verdict_of(error) == _UNREADABLE_VERDICT
+    assert error.problem.code == "client.response_unreadable"
     return error
 
 
@@ -375,7 +372,7 @@ class TestClientMethodTrees:
         with pytest.raises(RequestArgumentError, match=f"got {named}") as caught:
             asyncio.run(client.write_draft("mt_receipts01", MethodDraftInput(**forms)))
 
-        assert error_verdict_of(caught.value) == _ARGUMENT_VERDICT
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
         assert refused_argument(caught.value) == {"argument": "files", "reason": "mutually_exclusive"}
         assert not platform.api_requests
 
@@ -480,14 +477,14 @@ class TestClientMethodTrees:
     # ── Saving: an upload that fails ──────────────────────────────────
 
     @pytest.mark.parametrize(
-        ("status", "code", "retryable"),
+        ("status", "reason", "problem_code"),
         [
-            (403, MethodFileTransferCode.REFUSED, False),
-            (503, MethodFileTransferCode.STORAGE_ERROR, True),
+            (403, MethodFileTransferReason.REFUSED, "client.response_unreadable"),
+            (503, MethodFileTransferReason.STORAGE_ERROR, "runtime.unavailable"),
         ],
     )
     def test_an_upload_storage_refuses_fails_the_save_without_the_link(
-        self, mocker: MockerFixture, status: int, code: MethodFileTransferCode, retryable: bool
+        self, mocker: MockerFixture, status: int, reason: MethodFileTransferReason, problem_code: str
     ) -> None:
         platform = _Platform(storage_status=status)
         client = _client(platform, mocker)
@@ -496,16 +493,16 @@ class TestClientMethodTrees:
             asyncio.run(client.create_method(MethodWriteInput(name="Receipts", contents={"data/big.txt": _LARGE})))
 
         error = _transfer_error(caught)
-        assert (error.operation, error.code, error.sha256, error.status, error.path) == (
+        assert (error.operation, error.reason, error.sha256, error.status, error.path) == (
             MethodFileTransferOperation.UPLOAD,
-            code,
+            reason,
             _sha256(_LARGE),
             status,
             None,
         )
         assert "app-bucket.s3.amazonaws.com" in str(error)
         # The standard's error quotes storage's body, so it is kept neither as the cause nor as the context.
-        assert error_verdict_of(error) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=retryable)
+        assert error.problem.code == problem_code
         assert not platform.sent("POST", "/v1/methods")
 
     def test_a_problem_document_an_upload_target_answers_with_is_not_kept(self, mocker: MockerFixture) -> None:
@@ -517,7 +514,7 @@ class TestClientMethodTrees:
             asyncio.run(client.create_method(MethodWriteInput(name="Receipts", contents={"data/big.txt": _LARGE})))
 
         error = _transfer_error(caught)
-        assert (error.code, error.status, error.problem.code) == (MethodFileTransferCode.REFUSED, 403, "client.response_unreadable")
+        assert (error.reason, error.status, error.problem.code) == (MethodFileTransferReason.REFUSED, 403, "client.response_unreadable")
         assert not platform.sent("POST", "/v1/methods")
 
     @pytest.mark.parametrize(
@@ -535,13 +532,13 @@ class TestClientMethodTrees:
 
         error = _transfer_error(caught)
         # The standard's client names the blob whose upload got no answer.
-        assert (error.operation, error.code, error.sha256, error.status) == (
+        assert (error.operation, error.reason, error.sha256, error.status) == (
             MethodFileTransferOperation.UPLOAD,
-            MethodFileTransferCode.UNREACHABLE,
+            MethodFileTransferReason.UNREACHABLE,
             _sha256(_LARGE),
             None,
         )
-        assert error_verdict_of(error) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
+        assert (error.problem.domain, error.problem.retry) == ("runtime", "yes")
         assert not platform.sent("POST", "/v1/methods")
 
     def test_an_upload_storage_already_holds_counts_as_uploaded(self, mocker: MockerFixture) -> None:
@@ -718,7 +715,7 @@ class TestClientMethodTrees:
         with pytest.raises(RequestArgumentError, match=refusal) as caught:
             asyncio.run(client.write_method_tree(listing, destination=tmp_path / "receipts"))
 
-        assert error_verdict_of(caught.value) == _ARGUMENT_VERDICT
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
         assert refused_argument(caught.value) == {"argument": "files", "reason": reason}
         assert not platform.storage_requests
         assert not any(tmp_path.iterdir())
@@ -742,26 +739,26 @@ class TestClientMethodTrees:
             asyncio.run(client.write_method_tree(_listing(contents), destination=tmp_path / "receipts"))
 
         error = _transfer_error(caught)
-        assert (error.operation, error.code, error.sha256, error.path) == (
+        assert (error.operation, error.reason, error.sha256, error.path) == (
             MethodFileTransferOperation.DOWNLOAD,
-            MethodFileTransferCode.MISMATCH,
+            MethodFileTransferReason.MISMATCH,
             _sha256(_MAIN.encode()),
             "main.mthds",
         )
-        assert error_verdict_of(error) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
+        assert (error.problem.code, error.problem.retry) == ("client.response_unreadable", "no")
         assert not any(tmp_path.iterdir())
 
     @pytest.mark.parametrize(
-        ("status", "code", "retryable"),
+        ("status", "reason", "problem_code"),
         [
-            (403, MethodFileTransferCode.REFUSED, False),
-            (404, MethodFileTransferCode.REFUSED, False),
-            (503, MethodFileTransferCode.STORAGE_ERROR, True),
-            (429, MethodFileTransferCode.STORAGE_ERROR, True),
+            (403, MethodFileTransferReason.REFUSED, "client.response_unreadable"),
+            (404, MethodFileTransferReason.REFUSED, "client.response_unreadable"),
+            (503, MethodFileTransferReason.STORAGE_ERROR, "runtime.unavailable"),
+            (429, MethodFileTransferReason.STORAGE_ERROR, "runtime.unavailable"),
         ],
     )
     def test_a_download_storage_refuses_fails_the_write_without_the_link(
-        self, mocker: MockerFixture, tmp_path: Path, status: int, code: MethodFileTransferCode, retryable: bool
+        self, mocker: MockerFixture, tmp_path: Path, status: int, reason: MethodFileTransferReason, problem_code: str
     ) -> None:
         platform = _Platform(storage_status=status)
         client = _client(platform, mocker)
@@ -772,8 +769,8 @@ class TestClientMethodTrees:
             asyncio.run(client.write_method_tree(_listing({"main.mthds": _MAIN.encode()}), destination=destination))
 
         error = _transfer_error(caught)
-        assert (error.operation, error.code, error.status, error.path) == (MethodFileTransferOperation.DOWNLOAD, code, status, "main.mthds")
-        assert error_verdict_of(error) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=retryable)
+        assert (error.operation, error.reason, error.status, error.path) == (MethodFileTransferOperation.DOWNLOAD, reason, status, "main.mthds")
+        assert error.problem.code == problem_code
         assert [path.name for path in tmp_path.iterdir()] == ["receipts"]
         assert not any(destination.iterdir())
 
@@ -785,8 +782,8 @@ class TestClientMethodTrees:
             asyncio.run(client.write_method_tree(_listing({"main.mthds": _MAIN.encode()}), destination=tmp_path / "receipts"))
 
         error = _transfer_error(caught)
-        assert (error.operation, error.code, error.status) == (MethodFileTransferOperation.DOWNLOAD, MethodFileTransferCode.UNREACHABLE, None)
-        assert error_verdict_of(error) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
+        assert (error.operation, error.reason, error.status) == (MethodFileTransferOperation.DOWNLOAD, MethodFileTransferReason.UNREACHABLE, None)
+        assert (error.problem.domain, error.problem.retry) == ("runtime", "yes")
         assert not any(tmp_path.iterdir())
 
     def test_a_download_whose_body_httpx_cannot_decode_fails_the_write(self, mocker: MockerFixture, tmp_path: Path) -> None:
@@ -796,7 +793,7 @@ class TestClientMethodTrees:
             asyncio.run(client.write_method_tree(_listing({"main.mthds": _MAIN.encode()}), destination=tmp_path / "receipts"))
 
         error = _transfer_error(caught)
-        assert (error.operation, error.code) == (MethodFileTransferOperation.DOWNLOAD, MethodFileTransferCode.UNREACHABLE)
+        assert (error.operation, error.reason) == (MethodFileTransferOperation.DOWNLOAD, MethodFileTransferReason.UNREACHABLE)
         assert not any(tmp_path.iterdir())
 
     def test_a_body_that_stalls_times_out_with_the_whole_exchange(self, mocker: MockerFixture, tmp_path: Path) -> None:
@@ -807,7 +804,11 @@ class TestClientMethodTrees:
             asyncio.run(client.write_method_tree(_listing(contents), destination=tmp_path / "receipts"))
 
         error = _transfer_error(caught)
-        assert (error.operation, error.code, error.path) == (MethodFileTransferOperation.DOWNLOAD, MethodFileTransferCode.UNREACHABLE, "main.mthds")
+        assert (error.operation, error.reason, error.path) == (
+            MethodFileTransferOperation.DOWNLOAD,
+            MethodFileTransferReason.UNREACHABLE,
+            "main.mthds",
+        )
         assert not any(tmp_path.iterdir())
 
     def test_the_first_failure_stops_the_downloads_still_running(self, mocker: MockerFixture, tmp_path: Path) -> None:
@@ -823,7 +824,7 @@ class TestClientMethodTrees:
             asyncio.run(write())
 
         error = _transfer_error(caught)
-        assert (error.code, error.path) == (MethodFileTransferCode.REFUSED, "helper.py")
+        assert (error.reason, error.path) == (MethodFileTransferReason.REFUSED, "helper.py")
         assert not any(tmp_path.iterdir())
 
     def test_a_cancelled_write_leaves_nothing_behind(self, mocker: MockerFixture, tmp_path: Path) -> None:

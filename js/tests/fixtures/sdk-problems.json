@@ -1,0 +1,867 @@
+{
+  "about": [
+    "The problem each SDK builds for a failure it detects itself, and the problem it reads from an answer that is not the route's result, pinned code by code for both SDKs.",
+    "`answers` are answers the hosted API, its edge or a proxy gave: each SDK reads one with `readHostedAnswer` (JavaScript) or `read_hosted_answer` (Python), `creates_run` true for a start or an execute. A case gives the body as JSON (`body`) or as raw text (`text`, an empty one for no body), and `expect` the members the problem must carry, `from_body` saying whether the body was the problem document read, `run_error_code` the code of a failed run's own problem.",
+    "`storage_statuses`, `upload_transport`, `artifact_fetch` and `method_file_transfer` are the readings of a storage answer's status and of each transfer failure's reason with the status storage answered (`null` for none). `classes` are the error classes both SDKs raise, each built by its suite from the arguments the class takes, with the code and the members its problem must carry.",
+    "The source is js/tests/fixtures/sdk-problems.json. Its copy, python/tests/fixtures/sdk-problems.json, is written by `make shared-files` at the repository root, and is never edited."
+  ],
+  "answers": [
+    {
+      "name": "document/as-received",
+      "summary": "A problem document is read as received, every member kept.",
+      "creates_run": false,
+      "status": 409,
+      "headers": {},
+      "body": {
+        "type": "https://mthds.ai/errors/run.not_finished",
+        "title": "The run has not finished",
+        "detail": "The run 'run-1' has not finished yet.",
+        "code": "run.not_finished",
+        "domain": "runtime",
+        "retry": "yes",
+        "next_step": {
+          "kind": "wait",
+          "detail": "Do the step the code names."
+        },
+        "status": 409,
+        "params": {
+          "pipeline_run_id": "run-1"
+        },
+        "pipeline_run_id": "run-1"
+      },
+      "expect": {
+        "code": "run.not_finished",
+        "from_body": true,
+        "status": 409,
+        "retry": "yes",
+        "pipeline_run_id": "run-1"
+      }
+    },
+    {
+      "name": "document/status-filled",
+      "summary": "A problem document that leaves its status out takes the answer's.",
+      "creates_run": false,
+      "status": 422,
+      "headers": {},
+      "body": {
+        "type": "https://mthds.ai/errors/input.invalid",
+        "title": "An input is invalid",
+        "detail": "The input 'receipt' is invalid at 'total'.",
+        "code": "input.invalid",
+        "domain": "input",
+        "retry": "no",
+        "next_step": {
+          "kind": "change_input",
+          "detail": "Do the step the code names."
+        },
+        "params": {
+          "input": "receipt",
+          "field": "total"
+        }
+      },
+      "expect": {
+        "code": "input.invalid",
+        "from_body": true,
+        "status": 422,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "document/retry-after-filled",
+      "summary": "A retryable problem document with no retry_after takes the Retry-After header's.",
+      "creates_run": false,
+      "status": 503,
+      "headers": {
+        "Retry-After": "7"
+      },
+      "body": {
+        "type": "https://mthds.ai/errors/runtime.unavailable",
+        "title": "The runtime or a service it depends on is unavailable",
+        "detail": "The runner could not be reached.",
+        "code": "runtime.unavailable",
+        "domain": "runtime",
+        "retry": "yes",
+        "next_step": {
+          "kind": "retry",
+          "detail": "Do the step the code names."
+        },
+        "status": 503,
+        "params": {
+          "dependency": "runner"
+        }
+      },
+      "expect": {
+        "code": "runtime.unavailable",
+        "from_body": true,
+        "status": 503,
+        "retry": "yes",
+        "retry_after": 7
+      }
+    },
+    {
+      "name": "document/extension-code",
+      "summary": "A problem document with a pipelex.* code is read as received, its request id kept.",
+      "creates_run": false,
+      "status": 402,
+      "headers": {},
+      "body": {
+        "type": "https://docs.pipelex.com/errors/pipelex.billing.plan_limit",
+        "title": "A plan limit is reached",
+        "detail": "The plan allows 3 runs at once.",
+        "code": "pipelex.billing.plan_limit",
+        "domain": "account",
+        "retry": "no",
+        "next_step": {
+          "kind": "upgrade",
+          "detail": "Do the step the code names."
+        },
+        "status": 402,
+        "params": {
+          "limit": "concurrent_runs",
+          "value": 3
+        },
+        "request_id": "req_402"
+      },
+      "expect": {
+        "code": "pipelex.billing.plan_limit",
+        "from_body": true,
+        "status": 402,
+        "retry": "no",
+        "request_id": "req_402"
+      }
+    },
+    {
+      "name": "document/start-says-what-it-did",
+      "summary": "On a start, a problem document says as received whether a run may exist: a 503 runtime.unavailable started none.",
+      "creates_run": true,
+      "status": 503,
+      "headers": {},
+      "body": {
+        "type": "https://mthds.ai/errors/runtime.unavailable",
+        "title": "The runtime or a service it depends on is unavailable",
+        "detail": "The runner could not be reached.",
+        "code": "runtime.unavailable",
+        "domain": "runtime",
+        "retry": "yes",
+        "next_step": {
+          "kind": "retry",
+          "detail": "Do the step the code names."
+        },
+        "status": 503,
+        "params": {
+          "dependency": "runner"
+        }
+      },
+      "expect": {
+        "code": "runtime.unavailable",
+        "from_body": true,
+        "status": 503,
+        "retry": "yes"
+      }
+    },
+    {
+      "name": "document/failed-run",
+      "summary": "A failed run's results 409 carries the run's own problem as run_error.",
+      "creates_run": false,
+      "status": 409,
+      "headers": {},
+      "body": {
+        "type": "https://mthds.ai/errors/run.failed",
+        "title": "The run failed",
+        "detail": "Run 'run-1' finished with status FAILED.",
+        "code": "run.failed",
+        "domain": "method",
+        "retry": "no",
+        "next_step": {
+          "kind": "read_run",
+          "detail": "Do the step the code names."
+        },
+        "status": 409,
+        "params": {
+          "pipeline_run_id": "run-1",
+          "run_status": "FAILED"
+        },
+        "pipeline_run_id": "run-1",
+        "run_error": {
+          "type": "https://mthds.ai/errors/runtime.unexpected",
+          "title": "An unexpected error occurred",
+          "detail": "The model refused the receipt.",
+          "code": "runtime.unexpected",
+          "domain": "runtime",
+          "retry": "no",
+          "next_step": {
+            "kind": "report",
+            "detail": "Do the step the code names."
+          }
+        }
+      },
+      "expect": {
+        "code": "run.failed",
+        "from_body": true,
+        "status": 409,
+        "retry": "no",
+        "pipeline_run_id": "run-1",
+        "run_error_code": "runtime.unexpected"
+      }
+    },
+    {
+      "name": "legacy/envelope-is-no-document",
+      "summary": "The retired hosted envelope is no problem document, so its status alone is read.",
+      "creates_run": false,
+      "status": 422,
+      "headers": {},
+      "body": {
+        "status": 422,
+        "title": "Unprocessable Entity",
+        "detail": "The method failed validation.",
+        "error_type": "ValidationError",
+        "error_domain": "input",
+        "retryable": false,
+        "validation_errors": [
+          {
+            "category": "blueprint_validation",
+            "message": "Unknown concept 'Receipt'."
+          }
+        ]
+      },
+      "expect": {
+        "code": "client.response_unreadable",
+        "from_body": false,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "bare/401",
+      "summary": "A bare 401 is the edge refusing a request that carries no credential.",
+      "creates_run": false,
+      "status": 401,
+      "headers": {},
+      "text": "",
+      "expect": {
+        "code": "auth.missing_credential",
+        "from_body": false,
+        "status": 401,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "bare/403",
+      "summary": "A bare 403 is the edge's authorizer refusing the credential.",
+      "creates_run": false,
+      "status": 403,
+      "headers": {},
+      "text": "{\"message\":\"Forbidden\"}",
+      "expect": {
+        "code": "auth.invalid_credential",
+        "from_body": false,
+        "status": 403,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "bare/404",
+      "summary": "A bare 404 is no route matching.",
+      "creates_run": false,
+      "status": 404,
+      "headers": {},
+      "text": "{\"message\":\"Not Found\"}",
+      "expect": {
+        "code": "request.not_found",
+        "from_body": false,
+        "status": 404,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "bare/405",
+      "summary": "A bare 405 reads as the standard reads it.",
+      "creates_run": false,
+      "status": 405,
+      "headers": {},
+      "text": "",
+      "expect": {
+        "code": "request.method_not_allowed",
+        "from_body": false,
+        "status": 405,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "bare/408",
+      "summary": "A bare 408 is a proxy timing the request out, which a later attempt can pass.",
+      "creates_run": false,
+      "status": 408,
+      "headers": {},
+      "text": "",
+      "expect": {
+        "code": "runtime.unavailable",
+        "from_body": false,
+        "status": 408,
+        "retry": "yes"
+      }
+    },
+    {
+      "name": "bare/429",
+      "summary": "A bare 429 is the edge throttling the request, with the Retry-After it gives.",
+      "creates_run": false,
+      "status": 429,
+      "headers": {
+        "Retry-After": "30"
+      },
+      "text": "{\"message\":\"Too Many Requests\"}",
+      "expect": {
+        "code": "runtime.unavailable",
+        "from_body": false,
+        "status": 429,
+        "retry": "yes",
+        "retry_after": 30
+      }
+    },
+    {
+      "name": "bare/500",
+      "summary": "A bare 500 is a fault no one placed.",
+      "creates_run": false,
+      "status": 500,
+      "headers": {},
+      "text": "Internal Server Error",
+      "expect": {
+        "code": "runtime.unexpected",
+        "from_body": false,
+        "status": 500,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "bare/502",
+      "summary": "A bare 502 is a gateway failing behind the edge.",
+      "creates_run": false,
+      "status": 502,
+      "headers": {},
+      "text": "{\"message\":\"Internal server error\"}",
+      "expect": {
+        "code": "runtime.unavailable",
+        "from_body": false,
+        "status": 502,
+        "retry": "yes"
+      }
+    },
+    {
+      "name": "bare/503",
+      "summary": "A bare 503 is the service unavailable.",
+      "creates_run": false,
+      "status": 503,
+      "headers": {},
+      "text": "",
+      "expect": {
+        "code": "runtime.unavailable",
+        "from_body": false,
+        "status": 503,
+        "retry": "yes"
+      }
+    },
+    {
+      "name": "bare/504",
+      "summary": "A bare 504 is a gateway timing out.",
+      "creates_run": false,
+      "status": 504,
+      "headers": {},
+      "text": "{\"message\":\"Endpoint request timed out\"}",
+      "expect": {
+        "code": "runtime.unavailable",
+        "from_body": false,
+        "status": 504,
+        "retry": "yes"
+      }
+    },
+    {
+      "name": "bare/other-status",
+      "summary": "Any other bare status names itself as an answer the SDK cannot read.",
+      "creates_run": false,
+      "status": 418,
+      "headers": {},
+      "text": "",
+      "expect": {
+        "code": "client.response_unreadable",
+        "from_body": false,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "bare/unreadable-success",
+      "summary": "A 2xx the SDK cannot read is client.response_unreadable.",
+      "creates_run": false,
+      "status": 200,
+      "headers": {},
+      "text": "accepted",
+      "expect": {
+        "code": "client.response_unreadable",
+        "from_body": false,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "start/bare-503",
+      "summary": "On a start, a bare 503 may hide a run that started behind the edge.",
+      "creates_run": true,
+      "status": 503,
+      "headers": {},
+      "text": "",
+      "expect": {
+        "code": "client.outcome_unknown",
+        "from_body": false,
+        "retry": "outcome_unknown"
+      }
+    },
+    {
+      "name": "start/bare-500",
+      "summary": "On a start, a bare 500 may come after the run started.",
+      "creates_run": true,
+      "status": 500,
+      "headers": {},
+      "text": "Internal Server Error",
+      "expect": {
+        "code": "client.outcome_unknown",
+        "from_body": false,
+        "retry": "outcome_unknown"
+      }
+    },
+    {
+      "name": "start/bare-504",
+      "summary": "On a start, a bare 504 is a gateway that stopped waiting on a request it forwarded.",
+      "creates_run": true,
+      "status": 504,
+      "headers": {},
+      "text": "{\"message\":\"Endpoint request timed out\"}",
+      "expect": {
+        "code": "client.outcome_unknown",
+        "from_body": false,
+        "retry": "outcome_unknown"
+      }
+    },
+    {
+      "name": "start/bare-408",
+      "summary": "On a start, a bare 408 is a proxy that may have forwarded the request.",
+      "creates_run": true,
+      "status": 408,
+      "headers": {},
+      "text": "",
+      "expect": {
+        "code": "client.outcome_unknown",
+        "from_body": false,
+        "retry": "outcome_unknown"
+      }
+    },
+    {
+      "name": "start/bare-501",
+      "summary": "On a start, a bare 501 started nothing: the request is not implemented.",
+      "creates_run": true,
+      "status": 501,
+      "headers": {},
+      "text": "",
+      "expect": {
+        "code": "client.response_unreadable",
+        "from_body": false,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "start/bare-401",
+      "summary": "On a start, a bare 401 refused the request before anything ran.",
+      "creates_run": true,
+      "status": 401,
+      "headers": {},
+      "text": "",
+      "expect": {
+        "code": "auth.missing_credential",
+        "from_body": false,
+        "status": 401,
+        "retry": "no"
+      }
+    },
+    {
+      "name": "start/unreadable-success",
+      "summary": "On a start, a 2xx the SDK cannot read accepted a run whose acknowledgement was lost.",
+      "creates_run": true,
+      "status": 202,
+      "headers": {},
+      "text": "accepted",
+      "expect": {
+        "code": "client.outcome_unknown",
+        "from_body": false,
+        "retry": "outcome_unknown"
+      }
+    },
+    {
+      "name": "start/unreadable-success-naming-run",
+      "summary": "On a start, a 2xx the SDK cannot use names the run when its body names one.",
+      "creates_run": true,
+      "status": 202,
+      "headers": {},
+      "text": "{\"pipeline_run_id\":\"run-1\",\"state\":\"NOT_A_STATE\"}",
+      "expect": {
+        "code": "client.outcome_unknown",
+        "from_body": false,
+        "retry": "outcome_unknown",
+        "pipeline_run_id": "run-1"
+      }
+    }
+  ],
+  "storage_statuses": [
+    {
+      "status": 408,
+      "code": "runtime.unavailable"
+    },
+    {
+      "status": 429,
+      "code": "runtime.unavailable"
+    },
+    {
+      "status": 500,
+      "code": "runtime.unavailable"
+    },
+    {
+      "status": 503,
+      "code": "runtime.unavailable"
+    },
+    {
+      "status": 501,
+      "code": "runtime.unsupported"
+    },
+    {
+      "status": 400,
+      "code": "client.response_unreadable"
+    },
+    {
+      "status": 403,
+      "code": "client.response_unreadable"
+    },
+    {
+      "status": 404,
+      "code": "client.response_unreadable"
+    }
+  ],
+  "upload_transport": [
+    {
+      "reason": "timeout",
+      "status": null,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "unreachable",
+      "status": null,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "storage_timeout",
+      "status": 400,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "conflict",
+      "status": 409,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "server_error",
+      "status": 502,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "server_error",
+      "status": 501,
+      "code": "runtime.unsupported"
+    },
+    {
+      "reason": "server_error",
+      "status": null,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "unexpected",
+      "status": 429,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "unexpected",
+      "status": 418,
+      "code": "client.response_unreadable"
+    },
+    {
+      "reason": "unexpected",
+      "status": null,
+      "code": "runtime.unexpected"
+    },
+    {
+      "reason": "redirected",
+      "status": 302,
+      "code": "runtime.misconfigured"
+    },
+    {
+      "reason": "invalid_grant_url",
+      "status": null,
+      "code": "client.response_unreadable"
+    },
+    {
+      "reason": null,
+      "status": 503,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": null,
+      "status": null,
+      "code": "runtime.unexpected"
+    }
+  ],
+  "artifact_fetch": [
+    {
+      "reason": "invalid_storage_uri",
+      "status": null,
+      "code": "input.reference_not_found"
+    },
+    {
+      "reason": "forbidden",
+      "status": null,
+      "code": "input.reference_not_found"
+    },
+    {
+      "reason": "not_found",
+      "status": null,
+      "code": "input.reference_not_found"
+    },
+    {
+      "reason": "unsupported_url",
+      "status": null,
+      "code": "client.link_refused"
+    },
+    {
+      "reason": "plain_http_refused",
+      "status": null,
+      "code": "client.link_refused"
+    },
+    {
+      "reason": "redirect_refused",
+      "status": null,
+      "code": "client.link_refused"
+    },
+    {
+      "reason": "store_refused",
+      "status": 403,
+      "code": "client.response_unreadable"
+    },
+    {
+      "reason": "store_refused",
+      "status": null,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "store_error",
+      "status": 400,
+      "code": "client.response_unreadable"
+    },
+    {
+      "reason": "store_error",
+      "status": 405,
+      "code": "client.response_unreadable"
+    },
+    {
+      "reason": "store_error",
+      "status": 501,
+      "code": "runtime.unsupported"
+    },
+    {
+      "reason": "store_error",
+      "status": 429,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "store_error",
+      "status": 503,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "store_error",
+      "status": null,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "timeout",
+      "status": null,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "network",
+      "status": null,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "unknown",
+      "status": null,
+      "code": "runtime.unexpected"
+    },
+    {
+      "reason": "a_reason_this_version_does_not_know",
+      "status": null,
+      "code": "runtime.unexpected"
+    }
+  ],
+  "method_file_transfer": [
+    {
+      "reason": "unreachable",
+      "status": null,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "storage_error",
+      "status": 503,
+      "code": "runtime.unavailable"
+    },
+    {
+      "reason": "refused",
+      "status": 403,
+      "code": "client.response_unreadable"
+    },
+    {
+      "reason": "refused",
+      "status": 501,
+      "code": "runtime.unsupported"
+    },
+    {
+      "reason": "refused",
+      "status": null,
+      "code": "runtime.unexpected"
+    },
+    {
+      "reason": "mismatch",
+      "status": null,
+      "code": "client.response_unreadable"
+    }
+  ],
+  "classes": [
+    {
+      "class": "RequestArgumentError",
+      "summary": "An argument refused with no problem stated names `arguments`.",
+      "code": "client.argument_invalid",
+      "params": {
+        "argument": "arguments",
+        "reason": "unspecified"
+      }
+    },
+    {
+      "class": "InputPreparationError",
+      "summary": "A preparation refused with no problem stated names `inputs`.",
+      "code": "client.argument_invalid",
+      "params": {
+        "argument": "inputs",
+        "reason": "unspecified"
+      }
+    },
+    {
+      "class": "InvalidLocalSourceError",
+      "summary": "A local file the inputs name that cannot be read.",
+      "code": "input.file_unreadable"
+    },
+    {
+      "class": "InvalidInputValueError",
+      "summary": "A value at a file input that is no file.",
+      "code": "input.invalid",
+      "params": {
+        "input": "receipt",
+        "field": "receipt"
+      }
+    },
+    {
+      "class": "UploadNotAllowedError",
+      "summary": "A value that would be uploaded while uploads are off.",
+      "code": "client.argument_invalid"
+    },
+    {
+      "class": "MethodLoadError",
+      "summary": "A method that does not load, its problem items as `errors`.",
+      "code": "method.invalid"
+    },
+    {
+      "class": "UnsupportedUploadCapabilityError",
+      "summary": "A deployment without the upload route.",
+      "code": "runtime.unsupported",
+      "params": {
+        "capability": "file upload"
+      }
+    },
+    {
+      "class": "UploadAuthenticationError",
+      "summary": "An upload refused for its credential, the request carrying one.",
+      "code": "auth.invalid_credential"
+    },
+    {
+      "class": "PipelineExecuteTimeoutError",
+      "summary": "A blocking execute the gateway cut off may have run.",
+      "code": "client.outcome_unknown",
+      "retry": "outcome_unknown"
+    },
+    {
+      "class": "MissingMainStuffError",
+      "summary": "A completed run whose results carry no main output.",
+      "code": "client.response_unreadable",
+      "pipeline_run_id": "run-1"
+    },
+    {
+      "class": "RunTimeoutError",
+      "summary": "A wait that ran out of time on a run that keeps going: read the run again.",
+      "code": "client.follow_failed",
+      "retry": "outcome_unknown",
+      "pipeline_run_id": "run-1"
+    },
+    {
+      "class": "RunStillRunningError",
+      "summary": "A blocking execute degraded to a run still going: read the run again.",
+      "code": "client.follow_failed",
+      "retry": "outcome_unknown",
+      "pipeline_run_id": "run-1"
+    },
+    {
+      "class": "RunLifecycleUnavailableError",
+      "summary": "A runner without the durable run lifecycle.",
+      "code": "runtime.unsupported"
+    },
+    {
+      "class": "PagingNotTerminatingError",
+      "summary": "A listing whose pages never end.",
+      "code": "client.response_unreadable"
+    },
+    {
+      "class": "ArtifactOperationError",
+      "summary": "An artifact operation failed with no problem stated.",
+      "code": "runtime.unexpected"
+    },
+    {
+      "class": "ScopeUnavailableError",
+      "summary": "A run's results carry no artifact in the scope asked for.",
+      "code": "client.response_unreadable",
+      "pipeline_run_id": "run-1"
+    },
+    {
+      "class": "ApiUnreachableError/unreachable",
+      "summary": "A request that got no answer and creates no run.",
+      "code": "client.unreachable",
+      "retry": "yes"
+    },
+    {
+      "class": "ApiUnreachableError/timeout",
+      "summary": "A request the client's own time limit stopped, creating no run.",
+      "code": "client.timeout",
+      "retry": "yes"
+    },
+    {
+      "class": "ApiUnreachableError/start-may-have-left",
+      "summary": "A start that got no answer after it may have left may have created a run.",
+      "code": "client.outcome_unknown",
+      "retry": "outcome_unknown"
+    },
+    {
+      "class": "ApiUnreachableError/start-nothing-sent",
+      "summary": "A start whose connection was refused sent nothing, so it created no run.",
+      "code": "client.unreachable",
+      "retry": "yes"
+    }
+  ]
+}

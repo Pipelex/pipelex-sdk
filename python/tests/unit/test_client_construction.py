@@ -7,7 +7,6 @@ from mthds.protocol.exceptions import PipelineRequestError
 from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import ErrorDomain
 from pipelex_sdk.errors import RequestArgumentError
 
 
@@ -121,8 +120,9 @@ class TestClientConstruction:
         """
         with pytest.raises(RequestArgumentError) as raised:
             PipelexAPIClient(base_url="http://ex\x7fample.com")
-        assert raised.value.error_domain == ErrorDomain.CONFIG
         assert raised.value.problem.code == "client.not_configured"
+        assert raised.value.problem.params is not None
+        assert raised.value.problem.params.as_wire() == {"setting": "base_url"}
         assert str(raised.value).startswith("Invalid API base URL (not shown: it is not an absolute URL): it must be host-only")
 
     def test_set_but_empty_base_url_env_raises(self, mocker: MockerFixture) -> None:

@@ -30,8 +30,10 @@
 
 import { parse as parseToml } from "smol-toml";
 
-import { isPlainObject } from "./error-models.js";
-import type { ErrorDomain } from "./errors.js";
+import { ProblemError, buildProblem } from "mthds/protocol";
+import type { Problem } from "mthds/protocol";
+import { isPlainObject } from "./records.js";
+import { SDK_VERSION } from "./version.js";
 
 // ── Stamp grammar (mirror of pipelex's `codegen/stamp.py`) ───────────────
 
@@ -245,28 +247,52 @@ async function computeContentHash(body: string): Promise<string> {
 
 // ── Errors ──────────────────────────────────────────────────────────────
 
-/**
- * A no-verdict condition: the lock is malformed, or a path (in the lock or in the
- * supplied tree) is not a safe canonical artifact path.
- *
- * Deliberately NOT a drift and NOT a `PipelineRequestError`: nothing was requested
- * over the wire, and the check could not produce a verdict at all. A CLI consumer
- * maps a drift report to its exit-1 path and this error to exit 2, per the codegen
- * spec's exit-code policy.
- *
- * Being outside the `PipelexRequestError` family, it declares the error verdict every SDK
- * error carries itself, so `errorVerdictOf` reads it like any other: `input`, not retryable,
- * since the lock and the tree are the caller's own files.
- */
-export class CodegenLockError extends Error {
-  /** Whether asking again can succeed: never, until the lock or the tree changes. */
-  public readonly retryable: boolean = false;
-  /** Who can fix it: the caller, whose own files the lock and the tree are. */
-  public readonly errorDomain: ErrorDomain = "input";
+/** The name of the lock a codegen tree carries, which this check reads. */
+const CODEGEN_LOCK_FILENAME = "codegen.lock";
 
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
+/** `client.file_unreadable` for the codegen lock, `reason` saying why in one identifier. */
+function lockUnreadableProblem(reason: string): Problem {
+  return buildProblem("client.file_unreadable", { path: CODEGEN_LOCK_FILENAME, reason });
+}
+
+/** The problem of an unsafe or unstampable path the lock tracks. */
+const LOCK_PATH_REFUSED: Problem = lockUnreadableProblem("unsafe_artifact_path");
+
+/** The problem of an unsafe or duplicate path in the tree the caller supplied. */
+const TREE_PATH_REFUSED: Problem = buildProblem("client.argument_invalid", {
+  argument: "files",
+  reason: "unsafe_artifact_path",
+});
+
+/**
+ * A no-verdict condition: the lock is malformed or of a format version this build does not read,
+ * or a path (in the lock or in the supplied tree) is not a safe canonical artifact path.
+ *
+ * Deliberately NOT a drift and NOT a `PipelexRequestError`: nothing was requested over the wire,
+ * and the check could not produce a verdict at all. A CLI consumer maps a drift report to its
+ * exit-1 path and this error to exit 2, per the codegen spec's exit-code policy.
+ *
+ * It is a `ProblemError` (from `mthds/protocol`) all the same, so a caller reads it as it reads
+ * every SDK error, by its problem's `code`:
+ *
+ * - `client.file_unreadable`, naming `codegen.lock`, for a lock that is malformed (the reason
+ *   `malformed`) or that tracks an unsafe or unstampable path (the reason
+ *   `unsafe_artifact_path`): the lock is the caller's own file, and must be written again;
+ * - `client.tool_outdated`, naming this SDK and its version, for a lock that declares a newer
+ *   `lock_version` than this build reads: the SDK must be upgraded;
+ * - `client.argument_invalid`, naming `files`, for a supplied tree holding an unsafe or duplicate
+ *   path.
+ *
+ * Its message is the check's own sentence.
+ */
+export class CodegenLockError extends ProblemError {
+  constructor(message: string, options?: { cause?: unknown; problem?: Problem }) {
+    super(
+      options?.problem ?? lockUnreadableProblem("malformed"),
+      options?.cause === undefined ? undefined : { cause: options.cause },
+    );
     this.name = "CodegenLockError";
+    this.message = message;
   }
 }
 
@@ -448,9 +474,9 @@ function indexTreeFiles(files: readonly CodegenTreeFile[]): Map<string, string> 
   for (const file of files) {
     // The suffix rule is NOT applied here: a non-stampable file (a `sources.json`
     // sidecar, say) is legitimately present in the tree and is simply skipped.
-    validateCanonicalPath(file.path);
+    validateCanonicalPath(file.path, TREE_PATH_REFUSED);
     if (contentByPath.has(file.path)) {
-      raisePathError(file.path, "Duplicate artifact path");
+      raisePathError(file.path, "Duplicate artifact path", TREE_PATH_REFUSED);
     }
     contentByPath.set(file.path, normalizeNewlines(file.content));
   }
@@ -551,6 +577,14 @@ function rejectUnknownLockVersion(data: Record<string, unknown>): void {
       : `lock_version ${describeLockVersion(rawVersion)} is not a known codegen lock format version`;
   throw new CodegenLockError(
     `Unsupported codegen lock version: this build reads lock_version ${CODEGEN_LOCK_VERSION}, but ${reason}.`,
+    isVersionNumber && rawVersion > CODEGEN_LOCK_VERSION
+      ? {
+          problem: buildProblem("client.tool_outdated", {
+            tool: "@pipelex/sdk",
+            version: SDK_VERSION,
+          }),
+        }
+      : undefined,
   );
 }
 
@@ -601,21 +635,21 @@ const WINDOWS_DRIVE = /^.:/su;
  * an absolute path, a drive prefix, a `..` escape, a backslash a Windows caller would
  * resolve differently, a control character. They apply to every path the check sees.
  */
-function validateCanonicalPath(path: string): void {
+function validateCanonicalPath(path: string, problem: Problem = LOCK_PATH_REFUSED): void {
   if (path === "") {
-    raisePathError(path, "path is empty");
+    raisePathError(path, "path is empty", problem);
   }
   if (path.includes("\\")) {
-    raisePathError(path, "backslashes are not allowed; use forward slashes");
+    raisePathError(path, "backslashes are not allowed; use forward slashes", problem);
   }
   if (CONTROL_CHARACTER.test(path)) {
-    raisePathError(path, "control characters are not allowed");
+    raisePathError(path, "control characters are not allowed", problem);
   }
   if (path.startsWith("/") || WINDOWS_DRIVE.test(path)) {
-    raisePathError(path, "absolute paths and drive prefixes are not allowed");
+    raisePathError(path, "absolute paths and drive prefixes are not allowed", problem);
   }
   if (path.split("/").some((part) => part === "" || part === "." || part === "..")) {
-    raisePathError(path, "empty, '.', and '..' path components are not allowed");
+    raisePathError(path, "empty, '.', and '..' path components are not allowed", problem);
   }
 }
 
@@ -628,8 +662,8 @@ function validateArtifactPath(path: string): void {
   }
 }
 
-function raisePathError(path: string, reason: string): never {
-  throw new CodegenLockError(`Unsafe codegen artifact path '${path}': ${reason}.`);
+function raisePathError(path: string, reason: string, problem: Problem = LOCK_PATH_REFUSED): never {
+  throw new CodegenLockError(`Unsafe codegen artifact path '${path}': ${reason}.`, { problem });
 }
 
 // ── Small helpers ───────────────────────────────────────────────────────

@@ -33,10 +33,11 @@ goes, and whatever a project writes beside the tree. The function takes one resp
 
 from pathlib import Path
 
+from mthds.protocol.problem.client_problems import make_client_problem
+from mthds.protocol.problem.registry import CoreCode
 from pydantic import BaseModel, ConfigDict, Field
 
 from pipelex_sdk.codegen_lock import (
-    CODEGEN_LOCK_FILENAME,
     load_lock,
     parse_lock,
     resolve_artifact_path,
@@ -46,7 +47,8 @@ from pipelex_sdk.codegen_lock import (
 )
 from pipelex_sdk.codegen_stamp import comment_prefix_for, has_stamp
 from pipelex_sdk.crate_models import CodegenValidReport
-from pipelex_sdk.errors import CodegenError, CodegenLockError
+from pipelex_sdk.errors import CODEGEN_LOCK_FILENAME, CodegenError, CodegenLockError, response_unreadable_problem
+from pipelex_sdk.version import __version__
 
 
 class CodegenTreeWriteReport(BaseModel):
@@ -81,8 +83,12 @@ def write_codegen_tree(report: CodegenValidReport, *, output_dir: Path) -> Codeg
             f"Refusing to write a codegen tree whose lock is named '{report.lock_filename}': this SDK writes and reads "
             f"'{CODEGEN_LOCK_FILENAME}' only, so a lock under another name would guard nothing. Upgrade pipelex-sdk."
         )
-        raise CodegenError(msg)
-    validate_artifact_paths(artifact.path for artifact in report.artifacts)
+        raise CodegenError(msg, problem=make_client_problem(CoreCode.CLIENT_TOOL_OUTDATED, params={"tool": "pipelex-sdk", "version": __version__}))
+    try:
+        validate_artifact_paths(artifact.path for artifact in report.artifacts)
+    except CodegenError as exc:
+        # The path came in the codegen answer, which is unsafe as it stands.
+        raise CodegenError(str(exc), problem=response_unreadable_problem(status=200)) from exc
     _validate_response_lock(report)
 
     lock_path = resolve_output_path(root=output_dir, relative_path=Path(CODEGEN_LOCK_FILENAME))
@@ -128,7 +134,10 @@ def _validate_response_lock(report: CodegenValidReport) -> None:
         lock = parse_lock(report.lock)
     except CodegenLockError as exc:
         msg = f"Refusing to write a codegen tree whose lock this SDK cannot read: {exc}"
-        raise CodegenError(msg) from exc
+        raise CodegenError(msg, problem=response_unreadable_problem(status=200)) from exc
+    except CodegenError as exc:
+        # A lock in the codegen answer that tracks an unsafe path: the answer is at fault, not a file on disk.
+        raise CodegenError(str(exc), problem=response_unreadable_problem(status=200)) from exc
     artifact_paths = {artifact.path for artifact in report.artifacts}
     lock_paths = lock.paths()
     if lock_paths != artifact_paths:
@@ -136,7 +145,7 @@ def _validate_response_lock(report: CodegenValidReport) -> None:
             "Refusing to write a codegen tree whose lock does not track exactly its artifacts: "
             f"untracked artifacts {sorted(artifact_paths - lock_paths)}, tracked paths with no artifact {sorted(lock_paths - artifact_paths)}."
         )
-        raise CodegenError(msg)
+        raise CodegenError(msg, problem=response_unreadable_problem(status=200))
 
 
 def _previous_tracked_paths(lock_path: Path) -> set[str]:
@@ -178,7 +187,7 @@ def _preflight_destinations(*, report: CodegenValidReport, destinations: dict[st
         if artifact.path in previous_paths or _is_stamped(existing, artifact_path=artifact.path):
             continue
         msg = f"Refusing to overwrite unowned file '{destination}'. Move it or choose a different codegen output directory."
-        raise CodegenError(msg)
+        raise CodegenError(msg, problem=make_client_problem(CoreCode.CLIENT_TARGET_EXISTS, params={"path": str(destination)}))
 
 
 def _prune_delisted(*, stale_destinations: dict[str, Path]) -> list[str]:

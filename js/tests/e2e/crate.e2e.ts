@@ -21,7 +21,7 @@
  *
  * The through-line is the verdict discipline the crate routes share with
  * `validate`: an unresolvable CLOSURE is a produced verdict on a **200**
- * (`is_valid: false` + `validation_errors[]`), while an unresolvable REQUEST — a
+ * (`is_valid: false` + `errors[]`, problem items), while an unresolvable REQUEST — a
  * `pipe_ref` on the concept-set-wide `types` kind, the reserved `method_ref` — is
  * non-2xx and surfaces as the typed `ApiResponseError`.
  *
@@ -146,8 +146,8 @@ describe("e2e resolve (/v1/resolve)", () => {
     expect(result.is_valid).toBe(false);
     const report = result as CrateInvalidReport;
     // Non-empty on every invalid verdict — the structured-info invariant.
-    expect(report.validation_errors.length).toBeGreaterThan(0);
-    expect(report.validation_errors[0]!.message).toEqual(expect.any(String));
+    expect(report.errors.length).toBeGreaterThan(0);
+    expect(report.errors[0]!.detail).toEqual(expect.any(String));
   });
 
   it("answers 501 for the reserved method_ref selector", async () => {
@@ -224,7 +224,7 @@ describe("e2e codegen (/v1/codegen)", () => {
     });
 
     expect(result.is_valid).toBe(false);
-    expect((result as CrateInvalidReport).validation_errors.length).toBeGreaterThan(0);
+    expect((result as CrateInvalidReport).errors.length).toBeGreaterThan(0);
   });
 
   it("rejects a pipe_ref on the concept-set-wide types kind as a request-shape 422", async () => {
@@ -361,7 +361,7 @@ describe("e2e pipe-io (/v1/pipe-io)", () => {
 
     expect(result.is_valid).toBe(false);
     const report = result as CrateInvalidReport;
-    expect(report.validation_errors.length).toBeGreaterThan(0);
+    expect(report.errors.length).toBeGreaterThan(0);
     expect("files" in report).toBe(false);
   });
 

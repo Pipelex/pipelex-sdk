@@ -2,7 +2,7 @@
 
 What the call sends (the reference and the category in an encoded query), how a verdict parses (one
 arm per kind, chosen by the wire's own `kind`, so a preset entry never passes for an alias), and what
-raises (a `422` problem, its `error_type` intact).
+raises (a `422` problem, as received).
 """
 
 import asyncio
@@ -211,16 +211,16 @@ class TestClientModelCheck:
     # ── What raises ──────────────────────────────────────────────────
 
     @pytest.mark.parametrize(
-        ("body", "error_type"),
+        ("body", "field"),
         [
-            (ModelCheckBodies.INVALID_REFERENCE_REFUSAL, "InvalidModelReference"),
-            (ModelCheckBodies.INVALID_CATEGORY_REFUSAL, "InvalidModelCategory"),
-            (ModelCheckBodies.REPEATED_PARAMETER_REFUSAL, "ValidationError"),
+            (ModelCheckBodies.INVALID_REFERENCE_REFUSAL, "reference"),
+            (ModelCheckBodies.INVALID_CATEGORY_REFUSAL, "category"),
+            (ModelCheckBodies.REPEATED_PARAMETER_REFUSAL, "reference"),
         ],
     )
-    def test_a_refusal_raises_api_response_error_with_its_error_type(self, mocker: MockerFixture, body: dict[str, Any], error_type: str) -> None:
+    def test_a_refusal_raises_api_response_error_with_its_problem(self, mocker: MockerFixture, body: dict[str, Any], field: str) -> None:
         """A request the runner cannot produce a verdict for is a `422` problem, raised as the typed
-        error with the runner's `error_type`, never a verdict and never refused client-side.
+        error carrying the runner's problem as received, never a verdict and never refused client-side.
         """
         client = self._client()
         self._mock_send(mocker, client, _response(422, json_body=body))
@@ -229,8 +229,9 @@ class TestClientModelCheck:
             asyncio.run(client.check_model_reference("~"))
 
         assert exc_info.value.status == 422
-        assert exc_info.value.error_type == error_type
-        assert exc_info.value.error_domain == "input"
-        assert exc_info.value.retryable is False
-        assert exc_info.value.server_message == body["detail"]
+        assert exc_info.value.problem.code == "request.invalid"
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
+        assert exc_info.value.problem.detail == body["detail"]
+        assert exc_info.value.problem.location is not None
+        assert exc_info.value.problem.location.field == field
         assert exc_info.value.request_url == f"{_BASE_URL}/v1/models/check?reference=~"
