@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The `.mthds` check hook names the verdict's problem items**: when the server sends no Markdown, the hook built by `npm run build:hook` words its block from the invalid verdict's `errors[]`, naming each MTHDS problem item by its code, its sentence and where it happened, with its suggested fix on a line of its own, and it no longer reads `validation_errors[]`. The items are read as every verdict of the SDK reads them (`readProblemItems`), so an entry with no code or sentence is skipped and a location or a fix the standard's check refuses is left out of its item (`docs/hook-bundle.md`).
+
 ## [v0.52.0] - 2026-10-24
 
 ### Added
