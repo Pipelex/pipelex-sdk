@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { ProgressInvocation, RunProgress } from "@pipelex/sdk";
+import { buildProblem, type ProgressInvocation, type RunProgress } from "@pipelex/sdk";
 import { DEGRADATION_TEXT_OTHER, FAILURE_TEXT_SHOWN, toProgressSnapshot } from "./runProgress";
 
 // The provider's raw text and the worker's, which a person must never read.
 const PROVIDER_TEXT = "provider said: 412 model global.anthropic.claude-opus-4-8 is not allowed";
 const WORKER_TEXT = "The recorded failure is: KeyError at /srv/worker.py:88";
+
+// An invocation's failure as the SDK reads it: a problem whose detail is the provider's raw text.
+const PROVIDER_PROBLEM = { ...buildProblem("runtime.unexpected", {}), detail: PROVIDER_TEXT };
 
 // Members the SDK relays as sent, which the mapping must not pass on. Held in
 // variables first, so each extra member is a value the SDK's types admit.
@@ -123,19 +126,19 @@ describe("toProgressSnapshot", () => {
     expect(JSON.stringify(snapshot)).not.toContain("never sent on");
   });
 
-  it("replaces each invocation's failure text, keeping when it failed", () => {
+  it("replaces each invocation's failure, its problem included, keeping when it failed", () => {
     const snapshot = toProgressSnapshot(
       progress({
         invocations: [
           {
             ...ROOT,
             attempts: 2,
-            last_failure: { message: PROVIDER_TEXT, at: "2026-10-16T09:00:09Z" },
+            last_failure: { problem: PROVIDER_PROBLEM, at: "2026-10-16T09:00:09Z" },
           },
           {
             ...ROOT,
             path: "check_claims.check_claims/step_1",
-            last_failure: { message: PROVIDER_TEXT },
+            last_failure: { problem: PROVIDER_PROBLEM },
           },
         ],
       }),

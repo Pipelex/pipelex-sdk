@@ -89,7 +89,13 @@ const PROGRESS: RunProgress = {
       started_at: "2026-10-16T09:00:01.000Z",
       ended_at: null,
       attempts: 2,
-      last_failure: { message: "provider said: upstream refused", at: "2026-10-16T09:00:09Z" },
+      last_failure: {
+        problem: {
+          ...buildProblem("runtime.unexpected", {}),
+          detail: "provider said: upstream refused",
+        },
+        at: "2026-10-16T09:00:09Z",
+      },
     },
   ],
 };

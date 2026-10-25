@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunProgress } from "@pipelex/sdk";
+import { buildProblem, type RunProgress } from "@pipelex/sdk";
 import { fetchRunProgress, readProgressSnapshot } from "./fetchRunProgress";
 import { toProgressSnapshot } from "./runProgress";
 import { claimsFinished, claimsMidRun } from "@/test/fixtures/runProgress";
+
+/** An invocation's failure as the SDK reads it, a problem whose detail is the provider's text. */
+const FAILURE_PROBLEM = { ...buildProblem("runtime.unexpected", {}), detail: "provider text" };
 
 const fetchSpy = vi.fn<typeof fetch>();
 
@@ -110,7 +113,7 @@ describe("readProgressSnapshot", () => {
           ended_at: null,
           batch: { total: 3, done: 1, running: 1, failed: 1 },
           attempts: 2,
-          last_failure: { message: "provider text", at: "2026-10-16T09:00:03Z" },
+          last_failure: { problem: FAILURE_PROBLEM, at: "2026-10-16T09:00:03Z" },
         },
         {
           path: "check_claims.check_claims/step_3",
@@ -123,7 +126,7 @@ describe("readProgressSnapshot", () => {
           branch_count: 2,
           skip_reason: "not taken",
           condition: { selected_outcome: null },
-          last_failure: { message: "provider text" },
+          last_failure: { problem: FAILURE_PROBLEM },
         },
       ],
     };
