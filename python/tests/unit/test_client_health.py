@@ -9,7 +9,6 @@ import httpx
 import pytest
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
 
 if TYPE_CHECKING:
@@ -53,15 +52,15 @@ class TestClientHealth:
         assert str(err) == "API GET /health failed (503): unavailable"
         assert err.status == 503
         assert err.request_url == f"{_BASE_URL}/health"
-        # The probe answers no problem document, so the fallback reads the status: a 503 may pass.
-        assert error_verdict_of(err) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=True)
+        # The probe answers no problem document, so the SDK reads the status by the edge's rules: a 503 may pass.
+        assert (err.problem.code, err.problem.retry) == ("runtime.unavailable", "yes")
 
-    def test_health_bare_404_is_a_config_refusal(self, mocker: MockerFixture) -> None:
+    def test_health_bare_404_is_a_missing_route(self, mocker: MockerFixture) -> None:
         client = self._client()
         mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(404, json={"detail": "Not Found"})))
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(client.health())
-        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False)
+        assert (exc_info.value.problem.code, exc_info.value.problem.retry) == ("request.not_found", "no")
 
     def test_health_transport_failure_maps_to_unreachable(self, unreachable_client: UnreachableClientBuilder) -> None:
         client = unreachable_client(httpx.ConnectError)

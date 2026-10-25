@@ -10,6 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import * as fsPromises from "node:fs/promises";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -29,7 +30,6 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const { prepareInputs } = await import("../src/prepare-inputs.js");
 const { InputPreparationError, InvalidInputValueError, UploadNotAllowedError } =
   await import("../src/errors.js");
-const { errorVerdictOf } = await import("../src/errors.js");
 type PrepareCapableClient = import("../src/prepare-inputs.js").PrepareCapableClient;
 type PipeIORequest = import("../src/models.js").PipeIORequest;
 
@@ -243,7 +243,7 @@ describe("prepareInputs with allowUploads: false refuses every value that would 
     expect(error).toBeInstanceOf(InputPreparationError);
     expect((error as Error).message).not.toContain("secret-plans");
     expect((error as Error).name).toBe("UploadNotAllowedError");
-    expect(errorVerdictOf(error)).toEqual({ errorDomain: "input", retryable: false });
+    expect((error as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
   });
 });
 

@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import { MODEL_CATEGORIES, type ModelCategory } from "mthds/protocol";
+import { MODEL_CATEGORIES, ProblemError, type ModelCategory } from "mthds/protocol";
 import { PipelexApiClient, isGatewayCutOff } from "../src/client.js";
 import { PipelexExecuteResult } from "../src/execute-result.js";
+import { problemResponse } from "./helpers/problems.js";
 import type { ModelCheckCategory, ModelReferenceVerdict, PresetMatch } from "../src/models.js";
 import {
   ApiResponseError,
   ApiUnreachableError,
   MissingMainStuffError,
   PipelineExecuteTimeoutError,
-  PipelineRequestError,
   RequestArgumentError,
   RunStillRunningError,
 } from "../src/errors.js";
@@ -551,7 +551,7 @@ describe("PipelexApiClient method-bundle transport", () => {
 });
 
 describe("PipelexApiClient network errors", () => {
-  it("wraps ECONNREFUSED in ApiUnreachableError with code", async () => {
+  it("wraps ECONNREFUSED in ApiUnreachableError with its network code, nothing sent", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockRejectedValue(networkError("ECONNREFUSED"));
     try {
@@ -559,9 +559,13 @@ describe("PipelexApiClient network errors", () => {
       expect.fail("expected throw");
     } catch (err) {
       expect(err).toBeInstanceOf(ApiUnreachableError);
-      expect(err).toBeInstanceOf(PipelineRequestError);
+      expect(err).toBeInstanceOf(ProblemError);
       const e = err as ApiUnreachableError;
-      expect(e.code).toBe("ECONNREFUSED");
+      expect(e.networkCode).toBe("ECONNREFUSED");
+      // A refused connection proves the request never left, so no run can exist.
+      expect(e.code).toBe("client.unreachable");
+      expect(e.retry).toBe("yes");
+      expect(e.problem.params).toEqual({ base_url: BASE_URL });
       expect(e.apiUrl).toBe(BASE_URL);
       expect(e.message).toContain(BASE_URL);
       expect(e.message).toContain("ECONNREFUSED");
@@ -569,7 +573,7 @@ describe("PipelexApiClient network errors", () => {
     }
   });
 
-  it("wraps ENOTFOUND in ApiUnreachableError with code", async () => {
+  it("wraps ENOTFOUND in ApiUnreachableError with its network code", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockRejectedValue(networkError("ENOTFOUND"));
     try {
@@ -577,7 +581,8 @@ describe("PipelexApiClient network errors", () => {
       expect.fail("expected throw");
     } catch (err) {
       expect(err).toBeInstanceOf(ApiUnreachableError);
-      expect((err as ApiUnreachableError).code).toBe("ENOTFOUND");
+      expect((err as ApiUnreachableError).networkCode).toBe("ENOTFOUND");
+      expect((err as ApiUnreachableError).code).toBe("client.unreachable");
     }
   });
 
@@ -590,11 +595,14 @@ describe("PipelexApiClient network errors", () => {
       expect.fail("expected throw");
     } catch (err) {
       expect(err).toBeInstanceOf(ApiUnreachableError);
-      expect((err as ApiUnreachableError).code).toBe("ABORT_TIMEOUT");
+      expect((err as ApiUnreachableError).networkCode).toBe("ABORT_TIMEOUT");
+      // The request left before the time ran out, so the run it asked for may exist.
+      expect((err as ApiUnreachableError).code).toBe("client.outcome_unknown");
+      expect((err as ApiUnreachableError).retry).toBe("outcome_unknown");
     }
   });
 
-  it("falls back to undefined code when cause has no code", async () => {
+  it("falls back to an undefined network code when the cause has none", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed"));
     try {
@@ -602,14 +610,45 @@ describe("PipelexApiClient network errors", () => {
       expect.fail("expected throw");
     } catch (err) {
       expect(err).toBeInstanceOf(ApiUnreachableError);
-      expect((err as ApiUnreachableError).code).toBeUndefined();
+      expect((err as ApiUnreachableError).networkCode).toBeUndefined();
       expect((err as ApiUnreachableError).message).toContain("network error");
+      // Nothing proves the request never left, so the run it asked for may exist.
+      expect((err as ApiUnreachableError).code).toBe("client.outcome_unknown");
     }
   });
 });
 
 describe("PipelexApiClient HTTP error responses", () => {
-  it("parses 401 with detail string (auth error shape)", async () => {
+  it("reads a problem document as received, quoting its detail", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse("auth.invalid_credential", 401, {
+        domain: "account",
+        detail: "The API key was revoked.",
+        next_step: { kind: "contact_owner", detail: "Ask the account's owner for a new key." },
+        request_id: "req_1",
+      }),
+    );
+    try {
+      await client.validate({ files: { "main.mthds": "x" } });
+      expect.fail("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiResponseError);
+      const e = err as ApiResponseError;
+      expect(e.status).toBe(401);
+      expect(e.code).toBe("auth.invalid_credential");
+      expect(e.domain).toBe("account");
+      expect(e.retry).toBe("no");
+      expect(e.nextStep).toEqual({
+        kind: "contact_owner",
+        detail: "Ask the account's owner for a new key.",
+      });
+      expect(e.requestId).toBe("req_1");
+      expect(e.message).toBe("API POST /v1/validate failed (401): The API key was revoked.");
+    }
+  });
+
+  it("reads a bare 401 the edge answers as auth.missing_credential, quoting its body", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(401, { detail: "Invalid authentication token" }),
@@ -621,33 +660,29 @@ describe("PipelexApiClient HTTP error responses", () => {
       expect(err).toBeInstanceOf(ApiResponseError);
       const e = err as ApiResponseError;
       expect(e.status).toBe(401);
-      expect(e.errorType).toBeUndefined();
-      expect(e.serverMessage).toBe("Invalid authentication token");
+      expect(e.code).toBe("auth.missing_credential");
+      expect(e.problem.status).toBe(401);
       expect(e.responseBody).toContain("Invalid authentication token");
       expect(e.message).toContain("Invalid authentication token");
     }
   });
 
-  it("parses 500 with nested detail dict (pipeline error shape)", async () => {
+  it("reads a body in the retired envelope as no problem document, by its status", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(500, {
-        detail: { error_type: "CredentialsError", message: "Missing OPENAI_API_KEY" },
-      }),
+      jsonResponse(500, { error_type: "FooError", message: "bar", retryable: true }),
     );
     try {
-      await client.execute({ pipe_code: "p" });
+      await client.validate({ files: { "main.mthds": "x" } });
       expect.fail("expected throw");
     } catch (err) {
-      expect(err).toBeInstanceOf(ApiResponseError);
       const e = err as ApiResponseError;
-      expect(e.status).toBe(500);
-      expect(e.errorType).toBe("CredentialsError");
-      expect(e.serverMessage).toBe("Missing OPENAI_API_KEY");
+      expect(e.code).toBe("runtime.unexpected");
+      expect(e.retry).toBe("no");
     }
   });
 
-  it("parses top-level error_type/message shape", async () => {
+  it("reads a bare 500 on a request that creates a run as an outcome it cannot know", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(500, { error_type: "FooError", message: "bar" }),
@@ -657,8 +692,8 @@ describe("PipelexApiClient HTTP error responses", () => {
       expect.fail("expected throw");
     } catch (err) {
       const e = err as ApiResponseError;
-      expect(e.errorType).toBe("FooError");
-      expect(e.serverMessage).toBe("bar");
+      expect(e.code).toBe("client.outcome_unknown");
+      expect(e.retry).toBe("outcome_unknown");
     }
   });
 
@@ -674,8 +709,7 @@ describe("PipelexApiClient HTTP error responses", () => {
       expect(err).toBeInstanceOf(ApiResponseError);
       const e = err as ApiResponseError;
       expect(e.status).toBe(502);
-      expect(e.errorType).toBeUndefined();
-      expect(e.serverMessage).toBeUndefined();
+      expect(e.code).toBe("client.outcome_unknown");
       expect(e.responseBody).toBe("Bad Gateway");
     }
   });
@@ -806,7 +840,9 @@ describe("PipelexApiClient.execute 202 degrade", () => {
     const err = await client.execute({ pipe_code: "p" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(RunStillRunningError);
     expect((err as RunStillRunningError).runId).toBe("run-1");
-    expect((err as RunStillRunningError).runMayHaveStarted).toBe(false);
+    // The run exists and is named: the caller follows it rather than starting another.
+    expect((err as RunStillRunningError).code).toBe("client.follow_failed");
+    expect((err as RunStillRunningError).problem.pipeline_run_id).toBe("run-1");
   });
 
   // A 202 that names no run leaves the caller a run it cannot follow: an answer the SDK cannot
@@ -836,8 +872,8 @@ describe("PipelexApiClient.execute 202 degrade", () => {
     const e = err as ApiResponseError;
     expect(e.message).toBe(`API POST /v1/execute answered 202 with ${what}`);
     expect(e.status).toBe(202);
-    expect(e.runMayHaveStarted).toBe(true);
-    expect(e.retryable).toBe(false);
+    expect(e.code).toBe("client.outcome_unknown");
+    expect(e.retry).toBe("outcome_unknown");
   });
 });
 
@@ -1162,11 +1198,8 @@ describe("PipelexApiClient.validate", () => {
     });
   });
 
-  it("carries advisory warnings on the VALID arm, with the valid arm's explicit nulls", async () => {
+  it("carries advisory warnings on the VALID arm as problem items", async () => {
     const client = makeClient();
-    // The valid arm is dumped WITHOUT `exclude_none`, so an unset locator arrives as an
-    // explicit `null` here — where the invalid arm drops the key entirely. Same item type,
-    // two serializations: this pins that a truthiness check reads both.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(200, {
         is_valid: true,
@@ -1177,15 +1210,9 @@ describe("PipelexApiClient.validate", () => {
         validated_pipes: [],
         warnings: [
           {
-            category: "pipe_validation",
-            message: "the `!` on `profile` is redundant — the slot is always present",
-            error_type: "optional_force_redundant",
-            pipe_code: "x.greet",
-            concept_code: null,
-            source: null,
-            field_name: null,
-            variable_names: null,
-            suggested_fix: null,
+            code: "method.optional_force_redundant",
+            detail: "The `!` on `profile` is redundant: the slot is always present.",
+            location: { pipe: "x.greet", file: "main.mthds" },
           },
         ],
         pending_signatures: [],
@@ -1200,43 +1227,41 @@ describe("PipelexApiClient.validate", () => {
     expect(report.is_valid).toBe(true);
     expect(report.warnings).toHaveLength(1);
     const warning = report.warnings[0]!;
-    expect(warning.error_type).toBe("optional_force_redundant");
-    expect(warning.pipe_code).toBe("x.greet");
-    expect(warning.source).toBeNull();
-    expect(warning.suggested_fix).toBeNull();
+    expect(warning.code).toBe("method.optional_force_redundant");
+    expect(warning.location).toEqual({ pipe: "x.greet", file: "main.mthds" });
+    expect(warning.suggested_fix).toBeUndefined();
   });
 
   it("returns the InvalidReport arm (200, is_valid: false) for an invalid bundle — not a throw", async () => {
     const client = makeClient();
     // The 200-diagnostic contract: an invalid bundle is a produced verdict, not a
-    // transport failure. The body carries the discriminant + the structured list
-    // (the threaded `source`, each bundle's tree path), no structural artifacts.
+    // transport failure. The body carries the discriminant and its faults as the standard's
+    // problem items, each locating its bundle by tree path, and no structural artifacts.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(200, {
         is_valid: false,
-        validation_errors: [
+        errors: [
           {
-            category: "blueprint_validation",
-            message: "missing main pipe output",
-            source: "broken.mthds",
-            domain_code: "demo",
+            code: "method.schema_violation",
+            detail: "The main pipe declares no output.",
+            location: { file: "broken.mthds" },
+            params: { domain: "demo" },
           },
           {
-            category: "pipe_factory",
-            message: "unknown concept demo.Missing",
-            pipe_code: "demo.greet",
-            missing_concept_code: "demo.Missing",
+            code: "method.concept_unresolved",
+            detail: "The concept demo.Missing is not defined.",
+            location: { pipe: "demo.greet", file: "broken.mthds" },
+            params: { concept: "demo.Missing" },
           },
           {
-            category: "pipe_validation",
-            message: "sequence output does not match its last step",
-            pipe_code: "demo.flow",
-            missing_pipe_code: "demo.summarize",
+            code: "method.output_concept_mismatch",
+            detail: "The sequence's output does not match its last step's.",
+            location: { pipe: "demo.flow", file: "broken.mthds" },
             suggested_fix: {
               fix_code: "match-sequence-output",
               description: "Point the sequence output at its last step's output.",
               safety: "safe",
-              source: "broken.mthds",
+              file: "broken.mthds",
               ops: [
                 {
                   kind: "set_key",
@@ -1263,20 +1288,20 @@ describe("PipelexApiClient.validate", () => {
     expect(report.is_valid).toBe(false);
     if (report.is_valid !== false) throw new Error("expected an invalid report");
     expect(report.is_runnable).toBe(false);
-    expect(report.validation_errors).toHaveLength(3);
-    expect(report.validation_errors[0]).toMatchObject({
-      category: "blueprint_validation",
-      source: "broken.mthds",
+    expect(report.errors).toHaveLength(3);
+    expect(report.errors[0]).toMatchObject({
+      code: "method.schema_violation",
+      location: { file: "broken.mthds" },
     });
-    expect(report.validation_errors[1]!.category).toBe("pipe_factory");
-    expect(report.validation_errors[1]!.missing_concept_code).toBe("demo.Missing");
+    expect(report.errors[1]!.code).toBe("method.concept_unresolved");
+    expect(report.errors[1]!.params).toEqual({ concept: "demo.Missing" });
     // The invalid arm carries no `warnings` — advisories live on the valid arm only.
     expect("warnings" in report).toBe(false);
 
-    const fix = report.validation_errors[2]!.suggested_fix!;
-    expect(report.validation_errors[2]!.missing_pipe_code).toBe("demo.summarize");
+    const fix = report.errors[2]!.suggested_fix!;
     expect(fix.fix_code).toBe("match-sequence-output");
     expect(fix.safety).toBe("safe");
+    expect(fix.file).toBe("broken.mthds");
     expect(fix.ops).toHaveLength(2);
     // `kind` narrows the union: each arm's own members are reachable without a cast.
     const [setKey, rename] = fix.ops;
@@ -1287,26 +1312,46 @@ describe("PipelexApiClient.validate", () => {
     expect(rename.new_key).toBe("output");
   });
 
+  it("reads the invalid arm's items member by member, leaving out a malformed member", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        is_valid: false,
+        errors: [
+          { code: "method.syntax", detail: "Line 3 does not parse.", location: "line 3" },
+          { code: 7, detail: "No code." },
+          "not an item",
+          { code: "method.pipe_unresolved", detail: "No pipe demo.go.", suggestions: [1] },
+        ],
+        pending_signatures: [],
+        is_runnable: false,
+        message: "MTHDS validation found errors",
+      }),
+    );
+    const report = await client.validate({ files: { "broken.mthds": "broken" } });
+    if (report.is_valid !== false) throw new Error("expected an invalid report");
+    expect(report.errors).toEqual([
+      { code: "method.syntax", detail: "Line 3 does not parse." },
+      { code: "method.pipe_unresolved", detail: "No pipe demo.go." },
+    ]);
+  });
+
   it("throws ApiResponseError on a request-shape 422 (a tree the route refuses)", async () => {
     const client = makeClient();
-    // The no-verdict path: pipelex-api's RequestValidationError handler emits an
-    // RFC 7807 problem with a top-level error_type "ValidationError" and a string
-    // detail. A produced verdict never 422s — only request-shape errors do.
+    // The no-verdict path: the runner refuses a request it cannot read with a problem
+    // document. A produced verdict never 422s — only request-shape errors do.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(
-        422,
-        {
-          error_type: "ValidationError",
-          detail: "files: '../x.mthds' is not a tree path",
-        },
-        { "content-type": "application/problem+json" },
-      ),
+      problemResponse("request.invalid", 422, {
+        detail: "files: '../x.mthds' is not a tree path",
+        location: { field: "files" },
+      }),
     );
     const err = await client.validate({ files: { "../x.mthds": "x" } }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiResponseError);
     expect((err as ApiResponseError).status).toBe(422);
-    expect((err as ApiResponseError).errorType).toBe("ValidationError");
-    expect((err as ApiResponseError).validationErrors).toBeUndefined();
+    expect((err as ApiResponseError).code).toBe("request.invalid");
+    expect((err as ApiResponseError).problem.location).toEqual({ field: "files" });
+    expect((err as ApiResponseError).problem.errors).toBeUndefined();
   });
 });
 
@@ -1465,7 +1510,9 @@ describe("PipelexApiClient.validate transport", () => {
       await vi.advanceTimersByTimeAsync(1_500);
       const err = await failure;
       expect(err).toBeInstanceOf(ApiUnreachableError);
-      expect((err as ApiUnreachableError).code).toBe("ABORT_TIMEOUT");
+      expect((err as ApiUnreachableError).networkCode).toBe("ABORT_TIMEOUT");
+      expect((err as ApiUnreachableError).code).toBe("client.timeout");
+      expect((err as ApiUnreachableError).problem.params).toEqual({ seconds: 1 });
       // The fetch itself was handed an abort signal that has fired.
       const init = fetchSpy.mock.calls[0]![1] as RequestInit;
       expect(init.signal?.aborted).toBe(true);
@@ -1512,7 +1559,7 @@ describe("PipelexApiClient.validate transport", () => {
       await vi.advanceTimersByTimeAsync(1_500);
       const err = await failure;
       expect(err).toBeInstanceOf(ApiUnreachableError);
-      expect((err as ApiUnreachableError).code).toBe("ABORT_TIMEOUT");
+      expect((err as ApiUnreachableError).networkCode).toBe("ABORT_TIMEOUT");
     });
 
     it("propagates the caller's reason when an abort cuts the body short with a generic AbortError", async () => {
@@ -1654,20 +1701,8 @@ describe("PipelexApiClient.checkModelReference", () => {
   };
 
   /** An RFC 9457 problem as the runner renders a refusal of the check. */
-  function checkRefusal(errorType: string, title: string, detail: string): Response {
-    return new Response(
-      JSON.stringify({
-        type: `https://docs.pipelex.com/latest/errors/${title.toLowerCase().replaceAll(" ", "-")}/`,
-        title,
-        status: 422,
-        detail,
-        instance: "/v1/models/check",
-        error_type: errorType,
-        error_domain: "input",
-        retryable: false,
-      }),
-      { status: 422, headers: { "Content-Type": "application/problem+json" } },
-    );
+  function checkRefusal(field: string, detail: string): Response {
+    return problemResponse("request.invalid", 422, { detail, location: { field } });
   }
 
   it("GETs /v1/models/check with the reference and the type in an encoded query", async () => {
@@ -1732,37 +1767,23 @@ describe("PipelexApiClient.checkModelReference", () => {
   });
 
   it.each([
+    ["reference", "Waterfall reference '~' has no name after '~' prefix"],
     [
-      "InvalidModelReference",
-      "Invalid model reference",
-      "Waterfall reference '~' has no name after '~' prefix",
-    ],
-    [
-      "InvalidModelCategory",
-      "Invalid model category",
+      "type",
       "Invalid model category. Valid values: doc_gen, extract, img_gen, judgment, llm, search",
     ],
-    [
-      "ValidationError",
-      "Validation error",
-      "The `reference` query parameter accepts a single value",
-    ],
-  ])(
-    "throws ApiResponseError on a 422 %s, its error_type intact",
-    async (errorType, title, detail) => {
-      const client = makeClient();
-      vi.spyOn(globalThis, "fetch").mockResolvedValue(checkRefusal(errorType, title, detail));
-      const failure = client.checkModelReference("~");
-      await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
-      await expect(failure).rejects.toMatchObject({
-        status: 422,
-        errorType,
-        errorDomain: "input",
-        retryable: false,
-        serverMessage: detail,
-      });
-    },
-  );
+    ["reference", "The `reference` query parameter accepts a single value"],
+  ])("throws ApiResponseError on a 422 naming the parameter %s", async (field, detail) => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(checkRefusal(field, detail));
+    const failure = client.checkModelReference("~");
+    await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
+    const err = (await failure.catch((thrown: unknown) => thrown)) as ApiResponseError;
+    expect(err.status).toBe(422);
+    expect(err.code).toBe("request.invalid");
+    expect(err.problem).toMatchObject({ domain: "input", retry: "no", detail });
+    expect(err.problem.location).toEqual({ field });
+  });
 });
 
 describe("PipelexApiClient.version", () => {

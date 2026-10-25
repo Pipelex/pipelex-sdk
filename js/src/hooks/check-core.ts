@@ -20,7 +20,8 @@
  */
 
 import { isAbsolute as isAbsolutePath, resolve as resolvePath } from "node:path";
-import type { Diagnostic, ValidationErrorItem } from "../models.js";
+import { formatLocation, formatSuggestedFix, type ProblemItem } from "mthds/protocol";
+import type { Diagnostic } from "../models.js";
 import { patchTargets, readPatchSections, type PatchSection } from "./patch-envelope.js";
 import { linesAsRead, readShellScript } from "./shell-script.js";
 
@@ -42,17 +43,19 @@ export interface WithheldFile {
 /**
  * Verdict of the networked validate stage. `unavailable` = no verdict could be produced.
  * `withheld` lists the files of the tree that stayed home, empty when every file was sent: a
- * verdict is about the tree without them. `refused` = nothing was sent, because a file every
- * validation reads, a bundle or the manifest, looks like a secret, so no tree without it is the
- * method; `root` is the tree's root and `withheld` lists every file of the tree that looks like
- * one, those every validation reads first.
+ * verdict is about the tree without them. `invalid` carries the verdict's faults as its `errors`,
+ * the MTHDS problem items the server listed, each with its own `code`, `detail`, `location` and
+ * `suggested_fix`. `refused` = nothing was sent, because a file every validation reads, a bundle
+ * or the manifest, looks like a secret, so no tree without it is the method; `root` is the tree's
+ * root and `withheld` lists every file of the tree that looks like one, those every validation
+ * reads first.
  */
 export type ValidateStage =
   | { status: "valid"; pendingSignatures: string[]; withheld: WithheldFile[] }
   | {
       status: "invalid";
       message?: string;
-      validationErrors: ValidationErrorItem[];
+      errors: ProblemItem[];
       renderedMarkdown?: string;
       withheld: WithheldFile[];
     }
@@ -482,17 +485,20 @@ export function decideAfterLint(filePath: string, lint: LintStage): HookOutcome 
   return { kind: "block", reason: truncate(lines.join("\n")) };
 }
 
-/** One validation error with its locators — mirror of the plxt-era rendering. */
-function renderValidationErrorLine(item: ValidationErrorItem): string {
-  const locators = [
-    item.pipe_code && `pipe ${item.pipe_code}`,
-    item.concept_code && `concept ${item.concept_code}`,
-    item.field_name && `field ${item.field_name}`,
-    item.source && `source ${item.source}`,
-  ]
-    .filter(Boolean)
-    .join(", ");
-  return `- [${item.category ?? "error"}] ${item.message ?? ""}${locators ? ` (${locators})` : ""}`;
+/**
+ * One problem item of an invalid verdict as Markdown list lines, as `mthds-agent` lists a
+ * problem's items: its code, its sentence and where it happened, then its suggested fix on a line
+ * of its own when it carries one. The location and the fix are worded by the MTHDS standard's own
+ * readers (`formatLocation`, `formatSuggestedFix`), so the hook names them as every MTHDS client
+ * does.
+ */
+function renderProblemItemLines(item: ProblemItem): string[] {
+  const where = formatLocation(item.location);
+  const lines = [`- \`${item.code}\`: ${item.detail}${where ? ` (${where})` : ""}`];
+  if (item.suggested_fix !== undefined) {
+    lines.push(`  - ${formatSuggestedFix(item.suggested_fix)}`);
+  }
+  return lines;
 }
 
 /** How many withheld files a note names; the rest it counts. */
@@ -596,7 +602,9 @@ function refusedNote(root: string, withheld: readonly WithheldFile[]): string {
  *
  * Invalid blocks with the server-rendered Markdown verbatim when present (the
  * workspace's "surface output conventions": the wire is JSON, the agent reads
- * Markdown), falling back to a client-side rendering of `validation_errors[]`.
+ * Markdown), falling back to a reason the hook builds itself, which names each
+ * of the verdict's `errors[]` problem items by its code, its sentence, where it
+ * happened and its suggested fix.
  * Valid passes, with a non-blocking nudge listing still-unimplemented
  * `PipeSignature`s. Unavailable passes silently — the local lint/format
  * verdicts already applied.
@@ -644,9 +652,9 @@ export function decideAfterValidate(filePath: string, validate: ValidateStage): 
           "",
           validate.message || "Bundle is invalid.",
         ];
-        if (validate.validationErrors.length > 0) {
+        if (validate.errors.length > 0) {
           lines.push("");
-          lines.push(...validate.validationErrors.map(renderValidationErrorLine));
+          lines.push(...validate.errors.flatMap(renderProblemItemLines));
         }
         reason = lines.join("\n");
       }

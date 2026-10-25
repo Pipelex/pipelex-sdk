@@ -7,7 +7,8 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
 import type { MethodCopyRequestOptions } from "../src/client.js";
-import { ApiResponseError, errorVerdictOf, RequestArgumentError } from "../src/errors.js";
+import type { ProblemError } from "mthds/protocol";
+import { ApiResponseError, RequestArgumentError } from "../src/errors.js";
 import type { MethodErrorCode } from "../src/errors.js";
 import type {
   MethodCopiedFrom,
@@ -16,6 +17,8 @@ import type {
   MethodCopyResult,
   MethodData,
 } from "../src/product-models.js";
+import { problemDocument } from "./helpers/problems.js";
+import type { ProblemMembers } from "./helpers/problems.js";
 
 const BASE_URL = "http://localhost:8081";
 const KEY = "0c7e1a4f-5b2d-4e8a-9f61-3d2c7b8a1e05";
@@ -104,23 +107,13 @@ const MARKER: MethodCopyMarker = {
   copied_at: "2026-10-23T09:00:00+00:00",
 };
 
-/** A problem document as the platform renders one of its own refusals. */
+/** A problem document as the platform renders one of its refusals of the copy. */
 function problem(
   status: number,
   code: string,
-  verdict: { error_domain: string; retryable: boolean },
-  members: Record<string, unknown> = {},
+  members: ProblemMembers = {},
 ): Record<string, unknown> {
-  return {
-    type: `https://pipelex.com/errors/${code}`,
-    title: code,
-    status,
-    code,
-    detail: `Refused: ${code}.`,
-    instance: COPY_PATH,
-    ...verdict,
-    ...members,
-  };
+  return problemDocument(code, status, { instance: COPY_PATH, ...members });
 }
 
 beforeEach(() => {
@@ -191,7 +184,11 @@ describe("copyMethod — the request", () => {
       "copyMethod() takes a destination_org_id, the canonical id of the organization to copy " +
         `into, a non-empty string; ${got}.`,
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({
+      code: "client.argument_invalid",
+      domain: "input",
+      retry: "no",
+    });
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -266,10 +263,7 @@ describe("copyMethod — the idempotency key", () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
-        jsonResponse(
-          503,
-          problem(503, "service_unavailable", { error_domain: "runtime", retryable: true }),
-        ),
+        jsonResponse(503, problem(503, "runtime.unavailable", { domain: "runtime", retry: "yes" })),
       )
       .mockResolvedValueOnce(jsonResponse(200, COPIED));
     const client = makeClient();
@@ -278,7 +272,7 @@ describe("copyMethod — the idempotency key", () => {
     const err = await failureOf(() =>
       client.copyMethod("mt_receipts01", input, { idempotencyKey: KEY }),
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: true });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "yes" });
     const result = await client.copyMethod("mt_receipts01", input, { idempotencyKey: KEY });
 
     expect(result.outcome).toBe("copied");
@@ -312,11 +306,11 @@ describe("copyMethod — the idempotency key", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("reads a key an earlier copy still holds as a retryable refusal", async () => {
+  it("reads a key an earlier copy still holds as a refusal worth sending again", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(
         409,
-        problem(409, "idempotency_key_in_use", { error_domain: "runtime", retryable: true }),
+        problem(409, "request.idempotency_key_in_use", { domain: "runtime", retry: "yes" }),
       ),
     );
 
@@ -330,9 +324,8 @@ describe("copyMethod — the idempotency key", () => {
 
     expect(err).toBeInstanceOf(ApiResponseError);
     const refused = err as ApiResponseError;
-    expect(refused.code).toBe("idempotency_key_in_use");
-    expect(errorVerdictOf(refused)).toEqual({ errorDomain: "runtime", retryable: true });
-    expect(refused.runMayHaveStarted).toBe(false);
+    expect(refused.code).toBe("request.idempotency_key_in_use");
+    expect(refused.retry).toBe("yes");
   });
 
   it("types the option as an optional string or null", () => {
@@ -417,29 +410,32 @@ describe("copyMethod — the verdict", () => {
     expect((err as ApiResponseError).message).toBe(
       `API POST ${COPY_PATH} answered 200 with ${words}`,
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({
+      code: "client.response_unreadable",
+      domain: "runtime",
+      retry: "no",
+    });
   });
 });
 
 describe("copyMethod — the refusals", () => {
   it.each([
-    ["a request that is not from a web session", 403, "forbidden", "config", false],
-    ["a role that changes no method, here or there", 403, "role_not_permitted", "config", false],
-    ["a destination the caller does not belong to", 404, "organization_not_found", "input", false],
-    ["an unknown method", 404, "not_found", "input", false],
-    ["a method being erased", 409, "method_being_deleted", "input", false],
-    ["a draft that moved since the token", 409, "method_update_conflict", "input", false],
-    ["a draft whose tree is not held whole", 409, "conflict", "runtime", false],
-    ["an example too large for one item", 413, "payload_too_large", "input", false],
-    ["a body that does not validate", 422, "validation_failed", "input", false],
-    ["a WorkOS read that failed", 502, "bad_gateway", "runtime", true],
-    ["a storage backend failure", 500, "storage_backend_failed", "runtime", true],
-    ["a copy past its deadline", 503, "service_unavailable", "runtime", true],
+    ["a request that is not from a web session", 403, "auth.forbidden", "account", "no"],
+    ["a role that changes no method, here or there", 403, "auth.forbidden", "account", "no"],
+    ["a destination the caller does not belong to", 404, "pipelex.org.not_found", "input", "no"],
+    ["an unknown method", 404, "pipelex.catalog.not_found", "input", "no"],
+    ["a method being erased", 409, "pipelex.catalog.being_deleted", "input", "no"],
+    ["a draft that moved since the token", 409, "pipelex.catalog.update_conflict", "input", "no"],
+    ["an example too large for one item", 413, "request.too_large", "input", "no"],
+    ["a body that does not validate", 422, "request.invalid", "input", "no"],
+    ["a WorkOS read that failed", 502, "runtime.unavailable", "runtime", "yes"],
+    ["a storage backend failure", 503, "pipelex.storage.unavailable", "runtime", "yes"],
+    ["a copy past its deadline", 503, "runtime.unavailable", "runtime", "yes"],
   ] as const)(
-    "throws %s as an ApiResponseError with its code and verdict",
-    async (_, status, code, errorDomain, retryable) => {
+    "throws %s as an ApiResponseError with its problem",
+    async (_, status, code, domain, retry) => {
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
-        jsonResponse(status, problem(status, code, { error_domain: errorDomain, retryable })),
+        jsonResponse(status, problem(status, code, { domain, retry })),
       );
 
       const err = await failureOf(() =>
@@ -449,42 +445,33 @@ describe("copyMethod — the refusals", () => {
       expect(err).toBeInstanceOf(ApiResponseError);
       const refused = err as ApiResponseError;
       expect(refused.status).toBe(status);
-      expect(refused.code).toBe(code);
-      expect(errorVerdictOf(refused)).toEqual({ errorDomain, retryable });
+      expect(refused.problem).toMatchObject({ code, domain, retry });
     },
   );
 
   it.each([
-    ["organization_not_found", 404, "input", false],
-    ["role_not_permitted", 403, "config", false],
-    ["method_copy_too_large", 422, "input", false],
+    [404, "request.not_found"],
+    [403, "auth.invalid_credential"],
+    [422, "client.response_unreadable"],
   ] as const)(
-    "reads %s with the fallback's verdict when the platform sends none",
-    async (code, status, errorDomain, retryable) => {
+    "reads a %i whose body is no problem document by its status, as %s",
+    async (status, code) => {
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
-        jsonResponse(status, { status, code, detail: "Refused." }),
+        jsonResponse(status, { status, code: "organization_not_found", detail: "Refused." }),
       );
 
       const err = await failureOf(() =>
         makeClient().copyMethod("mt_receipts01", { destination_org_id: "org_team" }),
       );
 
-      expect(errorVerdictOf(err)).toEqual({ errorDomain, retryable });
+      expect((err as ApiResponseError).code).toBe(code);
     },
   );
 
   it("reads a copy past its bounds with the limit it names", async () => {
     const limit: MethodCopyLimit = { name: "max_stored_files", value: 200, reached: 201 };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(
-        422,
-        problem(
-          422,
-          "method_copy_too_large",
-          { error_domain: "input", retryable: false },
-          { limit },
-        ),
-      ),
+      jsonResponse(422, problem(422, "pipelex.catalog.copy_too_large", { limit })),
     );
 
     const err = await failureOf(() =>
@@ -493,22 +480,20 @@ describe("copyMethod — the refusals", () => {
 
     expect(err).toBeInstanceOf(ApiResponseError);
     const refused = err as ApiResponseError;
-    const tooLarge: MethodErrorCode = "method_copy_too_large";
+    const tooLarge: MethodErrorCode = "pipelex.catalog.copy_too_large";
     expect(refused.code).toBe(tooLarge);
-    expect(refused.problemDocument?.limit as MethodCopyLimit).toEqual(limit);
-    expect(errorVerdictOf(refused)).toEqual({ errorDomain: "input", retryable: false });
+    expect(refused.problem.limit as MethodCopyLimit).toEqual(limit);
+    expect(refused.problem).toMatchObject({ domain: "input", retry: "no" });
   });
 
-  it("reads a stale token as a 409 method_update_conflict naming the field", async () => {
+  it("reads a stale token as a 409 pipelex.catalog.update_conflict locating the field", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(
         409,
-        problem(
-          409,
-          "method_update_conflict",
-          { error_domain: "input", retryable: false },
-          { errors: [{ field: "expected_draft_updated_at", code: "stale", detail: "moved" }] },
-        ),
+        problem(409, "pipelex.catalog.update_conflict", {
+          next_step: { kind: "refresh", detail: "Read the method again." },
+          location: { field: "expected_draft_updated_at" },
+        }),
       ),
     );
 
@@ -519,8 +504,8 @@ describe("copyMethod — the refusals", () => {
       }),
     );
 
-    expect((err as ApiResponseError).code).toBe("method_update_conflict");
-    expect((err as ApiResponseError).errors?.[0]?.field).toBe("expected_draft_updated_at");
+    expect((err as ApiResponseError).code).toBe("pipelex.catalog.update_conflict");
+    expect((err as ApiResponseError).problem.location?.field).toBe("expected_draft_updated_at");
   });
 });
 
@@ -588,20 +573,19 @@ describe("listMethodCopies", () => {
   });
 
   it.each([
-    ["an unknown method", 404, "not_found"],
-    ["a method being erased", 409, "method_being_deleted"],
-    ["a cursor it did not issue", 400, "malformed_request"],
-    ["a limit outside 1 to 100", 422, "validation_failed"],
-  ] as const)("throws %s as an ApiResponseError with its code", async (_, status, code) => {
+    ["an unknown method", 404, "pipelex.catalog.not_found"],
+    ["a method being erased", 409, "pipelex.catalog.being_deleted"],
+    ["a cursor it did not issue", 422, "request.invalid"],
+    ["a limit outside 1 to 100", 422, "request.invalid"],
+  ] as const)("throws %s as an ApiResponseError with its problem", async (_, status, code) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(status, { status, code, detail: "Refused." }),
+      jsonResponse(status, problemDocument(code, status, { detail: "Refused." })),
     );
 
     const err = await failureOf(() => makeClient().listMethodCopies("mt_receipts01"));
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).code).toBe(code);
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ code, domain: "input", retry: "no" });
   });
 
   it("throws a typed ApiResponseError on a page it cannot walk", async () => {

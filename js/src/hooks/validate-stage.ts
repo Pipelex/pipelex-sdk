@@ -4,6 +4,7 @@
  * stage, so the hook never outlasts its harness's patience whatever the network does.
  */
 
+import type { ProblemItem, ProblemLocation, SuggestedFix } from "mthds/protocol";
 import type { PipelexApiClient } from "../client.js";
 import type { ValidateStage } from "./check-core.js";
 import { gatherMethodTree } from "./bundle-gather.js";
@@ -65,11 +66,14 @@ export async function runValidateStage(
       };
     }
     if (result.is_valid === false) {
+      // The invalid arm is read from the answer as the server sent it, member by member, so a
+      // member of an unexpected shape is left out rather than failing the block it belongs to.
+      const answer: Record<string, unknown> = { ...result };
       return {
         status: "invalid",
-        message: result.message,
-        validationErrors: Array.isArray(result.validation_errors) ? result.validation_errors : [],
-        renderedMarkdown: result.rendered_markdown,
+        message: stringMember(answer.message),
+        errors: readProblemItems(answer.errors),
+        renderedMarkdown: stringMember(answer.rendered_markdown),
         withheld,
       };
     }
@@ -77,4 +81,45 @@ export async function runValidateStage(
   } catch {
     return { status: "unavailable" };
   }
+}
+
+/** Whether a value is a JSON object: neither `null` nor an array. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A member the hook shows as text, when it is one. */
+function stringMember(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * An invalid verdict's faults, its `errors[]` MTHDS problem items, as the hook names them, read
+ * member by member. An entry that names no fault, being no object or lacking a string `code` or
+ * `detail`, is skipped. The two members the hook shows besides are kept only when they can be
+ * read: the `location`, an object whose members the standard's `formatLocation` reads one by one,
+ * and the `suggested_fix`, an object with a string `fix_code` and `description`, which
+ * `formatSuggestedFix` words with its safety. A malformed member is left out of its item, so it
+ * never costs the agent the fault it belongs to. Any other member of an item is not shown, and
+ * not kept.
+ */
+export function readProblemItems(errors: unknown): ProblemItem[] {
+  if (!Array.isArray(errors)) {
+    return [];
+  }
+  return errors.flatMap((entry: unknown): ProblemItem[] => {
+    if (!isRecord(entry) || typeof entry.code !== "string" || typeof entry.detail !== "string") {
+      return [];
+    }
+    const item: ProblemItem = { code: entry.code, detail: entry.detail };
+    if (isRecord(entry.location)) {
+      item.location = entry.location as ProblemLocation;
+    }
+    const fix = entry.suggested_fix;
+    if (isRecord(fix) && typeof fix.fix_code === "string" && typeof fix.description === "string") {
+      // Only `fix_code`, `description` and `safety` are worded; the operations are never read.
+      item.suggested_fix = fix as SuggestedFix;
+    }
+    return [item];
+  });
 }

@@ -65,8 +65,8 @@ describe("parseMethodSelector", () => {
       }
       return undefined;
     })() as RequestArgumentError;
-    expect(err.errorDomain).toBe("input");
-    expect(err.retryable).toBe(false);
+    expect(err.code).toBe("client.argument_invalid");
+    expect(err.problem).toMatchObject({ domain: "input", retry: "no" });
   });
 
   it("is on the public barrel", () => {

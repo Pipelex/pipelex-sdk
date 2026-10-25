@@ -1,6 +1,6 @@
 # A method's saved examples
 
-An **example** is a named set of inputs saved on a stored method, so the method can be run on them again in one gesture, together with the latest run of exactly those inputs. A method has any number of them. Like the method itself, an example belongs to the organization: every role of it reads and runs any example of any of its methods, every role that may change its methods (`admin` and `member`) saves, edits and deletes any of them and records their latest runs, and `created_by_user_id` only records who saved it. A runner is refused every example write with a `403` `role_not_permitted`. The client reaches them on the hosted API's `/v1/methods/{method_id}/examples` routes, and the types are in `src/product-models.ts`.
+An **example** is a named set of inputs saved on a stored method, so the method can be run on them again in one gesture, together with the latest run of exactly those inputs. A method has any number of them. Like the method itself, an example belongs to the organization: every role of it reads and runs any example of any of its methods, every role that may change its methods (`admin` and `member`) saves, edits and deletes any of them and records their latest runs, and `created_by_user_id` only records who saved it. A runner is refused every example write with a `403` `auth.forbidden`. The client reaches them on the hosted API's `/v1/methods/{method_id}/examples` routes, and the types are in `src/product-models.ts`.
 
 ## The example
 
@@ -32,13 +32,13 @@ An example holds no output and no baseline: its result is its latest run's, read
 
 Every method takes a bare catalog id and refuses a suffixed one (`mt_x@3`) with `RequestArgumentError` before sending, as the other method routes do, and refuses a method id or an example id that is empty, `.` or `..`, or that holds a lone surrogate, the same way, as every route that puts an id in its path does ([What is refused](#what-is-refused-and-where)). The bodies are closed on the platform, so the client sends the fields the route takes and nothing else an untyped caller adds.
 
-**Every example the client hands back has been checked.** Each route answering one, the page rows and the verdicts' `example` included, checks it once, against every field the Python SDK's model requires, with the strict type that model holds it to: string `example_id`, `method_id`, `name`, `created_by_user_id`, `created_at` and `updated_at`, object `inputs`, `input_revision` an integer within `Number.MAX_SAFE_INTEGER` either way, `latest_run_id` present as a string or `null`, and `kept_by_assistant` a boolean. An example breaking one is an answer the SDK cannot read, thrown as an `ApiResponseError` (`runtime`, not retryable) whose message names the field, so a missing `latest_run_id` never reads as an example with no latest run, and a revision of `"2"` or `true` is never read as one. Both SDKs refuse the same answers but one: a revision spelled `2.0`, which JavaScript reads as the number `2` and cannot tell from it, while the Python SDK refuses the float.
+**Every example the client hands back has been checked.** Each route answering one, the page rows and the verdicts' `example` included, checks it once, against every field the Python SDK's model requires, with the strict type that model holds it to: string `example_id`, `method_id`, `name`, `created_by_user_id`, `created_at` and `updated_at`, object `inputs`, `input_revision` an integer within `Number.MAX_SAFE_INTEGER` either way, `latest_run_id` present as a string or `null`, and `kept_by_assistant` a boolean. An example breaking one is an answer the SDK cannot read, thrown as an `ApiResponseError` (`client.response_unreadable`) whose message names the field, so a missing `latest_run_id` never reads as an example with no latest run, and a revision of `"2"` or `true` is never read as one. Both SDKs refuse the same answers but one: a revision spelled `2.0`, which JavaScript reads as the number `2` and cannot tell from it, while the Python SDK refuses the float.
 
 **The list is paged by an opaque cursor.** Pass `nextCursor` back as `cursor`; `null` is the last page. The platform reads examples whole and stops a read at 1 MB, so a page may be short while `nextCursor` is set: a caller that wants every example follows the cursor, which `iterateMethodExamples` does through the loop `iterateMethods` and `iterateRuns` share, stopping on a `null` cursor or one the server failed to advance and throwing `PagingNotTerminatingError` past the same page ceiling.
 
 ## Revisions and the latest run
 
-**New inputs raise the revision and clear the latest run.** An edit whose `inputs` differ from the stored ones sets `input_revision` to the next number and `latest_run_id` to `null`, since the run no longer shows what the inputs produce, and `kept_by_assistant` to `false`, since those inputs are a person's. The platform compares the inputs as canonical JSON with sorted keys, so the same inputs sent again, in another key order included, change nothing, while `3` becoming `3.0` is a change. A rename alone keeps both. The edit takes no revision or token of its own: concurrent edits are serialized on the platform, which answers a retryable `503` with nothing written when they kept landing under one.
+**New inputs raise the revision and clear the latest run.** An edit whose `inputs` differ from the stored ones sets `input_revision` to the next number and `latest_run_id` to `null`, since the run no longer shows what the inputs produce, and `kept_by_assistant` to `false`, since those inputs are a person's. The platform compares the inputs as canonical JSON with sorted keys, so the same inputs sent again, in another key order included, change nothing, while `3` becoming `3.0` is a change. A rename alone keeps both. The edit takes no revision or token of its own: concurrent edits are serialized on the platform, which answers a `503` `runtime.unavailable`, `retry` `yes`, with nothing written when they kept landing under one.
 
 **A run is recorded against the revision the client names.** To run an example and keep its result, read the example, start a run with its `inputs`, and record that run with the `input_revision` you read:
 
@@ -54,7 +54,7 @@ if (verdict.outcome === "stale") {
 }
 ```
 
-A run started this way sends the inputs the example holds, digit for digit, an integer past `Number.MAX_SAFE_INTEGER` included ([below](#numbers-in-an-examples-inputs)). The write is conditioned on the example still holding that revision. **A stale run is a verdict, not an error**: a run outlasting an edit is the expected course of events whenever someone edits an example while one of its runs is in flight, so the platform answers a `200` discriminated on `outcome`, as it does for a publish, and both arms carry the example as it stands. Branch on `outcome`; an answer whose `outcome` is neither, or whose `example` is not an example the client can read, is an answer the SDK cannot read, thrown as an `ApiResponseError` (`runtime`, not retryable). The platform trusts the revision and does not compare the run's own inputs with the example's, so record a run only against the revision whose inputs it was started with. A run recorded when the example is created goes in `createMethodExample`'s `run_id` instead.
+A run started this way sends the inputs the example holds, digit for digit, an integer past `Number.MAX_SAFE_INTEGER` included ([below](#numbers-in-an-examples-inputs)). The write is conditioned on the example still holding that revision. **A stale run is a verdict, not an error**: a run outlasting an edit is the expected course of events whenever someone edits an example while one of its runs is in flight, so the platform answers a `200` discriminated on `outcome`, as it does for a publish, and both arms carry the example as it stands. Branch on `outcome`; an answer whose `outcome` is neither, or whose `example` is not an example the client can read, is an answer the SDK cannot read, thrown as an `ApiResponseError` (`client.response_unreadable`). The platform trusts the revision and does not compare the run's own inputs with the example's, so record a run only against the revision whose inputs it was started with. A run recorded when the example is created goes in `createMethodExample`'s `run_id` instead.
 
 ## The build assistant's example
 
@@ -94,7 +94,7 @@ The platform stores an example's inputs as JSON text and answers them exactly as
 
 ## What is refused, and where
 
-The client refuses before sending, with `RequestArgumentError` (`input`, not retryable):
+The client refuses before sending, with `RequestArgumentError` (`client.argument_invalid`):
 
 - a suffixed method id, on every method;
 - a method id or an example id that is empty, `.` or `..`, or that is not a string: the URL resolves a dot segment before the request leaves, so an example id `..` would address the method itself, and deleting it would erase the method, while an empty example id would address the examples list;
@@ -106,17 +106,16 @@ The client refuses before sending, with `RequestArgumentError` (`input`, not ret
 - an `iterateMethodExamples` whose method id any method above refuses, at the call itself rather than when the iterator is first pulled;
 - a body JSON cannot carry, such as inputs holding a cycle, or a `bigint` on a runtime without `JSON.rawJSON` ([exact-integers.md](./exact-integers.md)).
 
-The platform refuses the rest, each as an `ApiResponseError` whose `code` names it (see [errors.md](./errors.md)):
+The platform refuses the rest, each as an `ApiResponseError` whose problem's `code` names it (see [errors.md](./errors.md)):
 
 | `code` | Status | When |
 |---|---|---|
-| `not_found` | `404` | An unknown method or example, an example already deleted included. |
-| `run_not_found` | `404` | A `run_id`, on the create or the latest-run write, that is not one of this method's runs in the caller's organization; nothing is written. |
-| `role_not_permitted` | `403` | Any example write by a role that may not change methods, such as a runner, which an admin of the organization must change. |
-| `method_being_deleted` | `409` | The method's erasure has started. Its examples are erased with it. |
-| `payload_too_large` | `413` | An example larger than one stored item holds. |
-| `input_files_missing` | `422` | A save, the create, an inputs edit or the assistant's, whose inputs hold a file a run made whose object is no longer stored, since that run was deleted; its `missing_files` member names every such address, and nothing is saved. The platform copies a run's file an example takes into the organization's store, so the example outlives the run that made it. |
-| `validation_failed` | `422` | A name empty, blank or over 200 characters, inputs that are not a JSON object, a `limit` outside 1 to 100, or an example id longer than one can be (64 characters). |
-| `malformed_request` | `400` | A cursor the listing did not issue for this method. |
+| `pipelex.catalog.not_found` | `404` | An unknown method or example, an example already deleted included. |
+| `run.not_found` | `404` | A `run_id`, on the create or the latest-run write, that is not one of this method's runs in the caller's organization; nothing is written. |
+| `auth.forbidden` | `403` | Any example write by a role that may not change methods, such as a runner, which an admin of the organization must change. |
+| `pipelex.catalog.being_deleted` | `409` | The method's erasure has started. Its examples are erased with it. |
+| `request.too_large` | `413` | An example larger than one stored item holds. |
+| `input.reference_not_found` | `422` | A save, the create, an inputs edit or the assistant's, whose inputs hold a file a run made whose object is no longer stored, since that run was deleted; its `missing_files` member names every such address, and nothing is saved. The platform copies a run's file an example takes into the organization's store, so the example outlives the run that made it. |
+| `request.invalid` | `422` | A name empty, blank or over 200 characters, inputs that are not a JSON object, a `limit` outside 1 to 100, an example id longer than one can be (64 characters), or a cursor the listing did not issue for this method. |
 
 Every write is `403` to a read-only (`purpose=sandbox`) key, which may still read the examples.

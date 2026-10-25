@@ -16,6 +16,7 @@ import {
   UploadTransportError,
 } from "../src/errors.js";
 import type { UploadInput, UploadKind } from "../src/index.js";
+import { problemResponse } from "./helpers/problems.js";
 
 const BASE_URL = "http://localhost:8081";
 
@@ -30,26 +31,9 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-/** A platform refusal as the platform serializes one: RFC 9457 with its code and verdict. */
-function problem(
-  status: number,
-  code: string,
-  errorDomain: "input" | "config" | "runtime",
-  detail: string,
-): Response {
-  return new Response(
-    JSON.stringify({
-      type: `https://pipelex.com/errors/${code}`,
-      title: code,
-      status,
-      detail,
-      code,
-      error_domain: errorDomain,
-      retryable: false,
-      instance: "/v1/upload",
-    }),
-    { status, headers: { "Content-Type": "application/problem+json" } },
-  );
+/** A platform refusal as the platform serializes one: a problem document with its code and domain. */
+function problem(status: number, code: string, domain: string, detail: string): Response {
+  return problemResponse(code, status, { domain, detail, instance: "/v1/upload" });
 }
 
 /** The JSON body of the spy's only call. */
@@ -214,12 +198,12 @@ describe("the upload route's refusals of a test file", () => {
       );
   }
 
-  it("reads a 403 role_not_permitted as the caller's role, not its credential", async () => {
+  it("reads a 403 auth.forbidden as the caller's role, not its credential", async () => {
     const error = await refusedTestFile(
       problem(
         403,
-        "role_not_permitted",
-        "config",
+        "auth.forbidden",
+        "account",
         "Your role in this organization is runner: it runs the organization's published versions and changes no method.",
       ),
     );
@@ -227,43 +211,44 @@ describe("the upload route's refusals of a test file", () => {
     expect(error).toBeInstanceOf(TestFileRefusedError);
     expect(error).not.toBeInstanceOf(UploadAuthenticationError);
     const refused = error as TestFileRefusedError;
-    expect(refused.code).toBe("role_not_permitted");
+    expect(refused.reason).toBe("role_not_permitted");
+    expect(refused.code).toBe("auth.forbidden");
     expect(refused.status).toBe(403);
     expect(refused.filename).toBe("case.pdf");
     expect(refused.methodId).toBe("mt_abc");
     expect(refused.message).toContain("runner");
     // The server's verdict: an admin changes the role; sending again changes nothing.
-    expect(refused.errorDomain).toBe("config");
-    expect(refused.retryable).toBe(false);
+    expect(refused.domain).toBe("account");
+    expect(refused.retry).toBe("no");
   });
 
-  it("reads a 404 not_found the platform answers as input as the unknown method", async () => {
+  it("reads a 404 pipelex.catalog.not_found as the unknown method", async () => {
     const error = await refusedTestFile(
-      problem(404, "not_found", "input", "Item not found."),
+      problem(404, "pipelex.catalog.not_found", "input", "Item not found."),
       "mt_gone",
     );
 
     expect(error).toBeInstanceOf(TestFileRefusedError);
     expect(error).not.toBeInstanceOf(UnsupportedUploadCapabilityError);
     const refused = error as TestFileRefusedError;
-    expect(refused.code).toBe("method_not_found");
+    expect(refused.reason).toBe("method_not_found");
     expect(refused.methodId).toBe("mt_gone");
     expect(refused.message).toContain('"mt_gone"');
-    expect(refused.errorDomain).toBe("input");
+    expect(refused.domain).toBe("input");
   });
 
-  it("reads a 409 method_being_deleted as the method being erased", async () => {
+  it("reads a 409 pipelex.catalog.being_deleted as the method being erased", async () => {
     const error = await refusedTestFile(
-      problem(409, "method_being_deleted", "input", "Method 'mt_abc' is being deleted."),
+      problem(409, "pipelex.catalog.being_deleted", "input", "Method 'mt_abc' is being deleted."),
     );
 
     expect(error).toBeInstanceOf(TestFileRefusedError);
-    expect((error as TestFileRefusedError).code).toBe("method_being_deleted");
-    expect((error as TestFileRefusedError).errorDomain).toBe("input");
+    expect((error as TestFileRefusedError).reason).toBe("method_being_deleted");
+    expect((error as TestFileRefusedError).code).toBe("pipelex.catalog.being_deleted");
   });
 
-  it("keeps a 404 the platform answers as config, a deployment without the route, unsupported", async () => {
-    const error = await refusedTestFile(problem(404, "not_found", "config", "Not Found"));
+  it("keeps a 404 request.not_found, a deployment without the route, unsupported", async () => {
+    const error = await refusedTestFile(problem(404, "request.not_found", "input", "Not Found"));
 
     expect(error).toBeInstanceOf(UnsupportedUploadCapabilityError);
   });
@@ -275,21 +260,26 @@ describe("the upload route's refusals of a test file", () => {
   });
 
   it("keeps any other 403 a refused credential", async () => {
-    const error = await refusedTestFile(problem(403, "forbidden", "config", "Forbidden."));
+    const error = await refusedTestFile(
+      problem(403, "auth.invalid_credential", "account", "Forbidden."),
+    );
 
     expect(error).toBeInstanceOf(UploadAuthenticationError);
   });
 
-  it("keeps any other 409 a transport failure carrying the server's verdict", async () => {
-    const error = await refusedTestFile(problem(409, "conflict", "input", "Key reused."));
+  it("keeps any other 409 a transport failure carrying the server's problem", async () => {
+    const error = await refusedTestFile(
+      problem(409, "request.idempotency_conflict", "input", "Key reused."),
+    );
 
     expect(error).toBeInstanceOf(UploadTransportError);
-    expect((error as UploadTransportError).errorDomain).toBe("input");
+    expect((error as UploadTransportError).code).toBe("request.idempotency_conflict");
+    expect((error as UploadTransportError).domain).toBe("input");
   });
 
   it("reads a 404 not_found as unsupported when the upload named no method", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      problem(404, "not_found", "input", "Item not found."),
+      problem(404, "pipelex.catalog.not_found", "input", "Item not found."),
     );
 
     const error = await makeClient()

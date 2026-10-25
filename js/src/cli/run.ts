@@ -11,9 +11,9 @@
 
 import {
   MissingMainStuffError,
+  ProblemError,
   RunFailedError,
   renderInputsTemplate,
-  runMayHaveStartedOf,
 } from "../index.js";
 import type { PipelexApiClient, RunResults } from "../index.js";
 import { parseFlags } from "./args.js";
@@ -152,14 +152,17 @@ function waitedOnRun(stage: Stage, error: unknown): string | undefined {
 
 /**
  * Whether a failure met once a request that may create a run was sent, and before the API named
- * the run, leaves it unknown whether one was created. The SDK decides it on the error it raises
- * (`runMayHaveStarted`): its answer was lost to a time limit, a connection that closed once the
- * request had left or a gateway that cut the request off, it came back unreadable, or the server
- * or a gateway failed while handling it. A failure that proves nothing was sent, and an answer
- * refusing the request before anything ran, say no run was created.
+ * the run, leaves it unknown whether one was created. The error's problem says it, its `retry`
+ * being `outcome_unknown`: the SDK reads it so when the answer was lost to a time limit, a
+ * connection that closed once the request had left or a gateway that cut the request off, when it
+ * came back unreadable, or when the edge answered a server error with no problem document, and a
+ * problem document the API answered says it as received. A failure that proves nothing was sent,
+ * and an answer refusing the request before anything ran, say no run was created.
  */
 function mayHaveStarted(stage: Stage, error: unknown): boolean {
-  return stage.kind === "starting" && runMayHaveStartedOf(error);
+  return (
+    stage.kind === "starting" && error instanceof ProblemError && error.retry === "outcome_unknown"
+  );
 }
 
 /** The line under a failure that leaves it unknown whether a run was created. */

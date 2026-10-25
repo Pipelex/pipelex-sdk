@@ -7,7 +7,7 @@ its own equivalent private helpers; migrating it is deliberately not part of thi
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 import pytest
@@ -22,11 +22,47 @@ if TYPE_CHECKING:
 BASE_URL = "http://localhost:8081"
 
 
+def problem_document(code: str, status: int, **members: Any) -> dict[str, Any]:
+    """A problem document coded `code` with the HTTP status `status`, as the hosted API answers it, `members`
+    written over it: every core member, a `pipelex.*` code as freely as a core one. The twin of
+    `@pipelex/sdk`'s `tests/helpers/problems.ts`.
+    """
+    return {
+        "type": f"https://docs.pipelex.com/errors/{code}",
+        "title": f"The title of {code}",
+        "status": status,
+        "detail": f"The detail of {code}.",
+        "code": code,
+        "domain": "input",
+        "retry": "no",
+        "next_step": {"kind": "change_input", "detail": f"The next step of {code}."},
+        **members,
+    }
+
+
+def run_failed_document(*, run_id: str = "run-1", run_status: str = "FAILED", run_error: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The `run.failed` problem the results route answers with a `409` for a run that ended without succeeding, its
+    status in its parameters and the run's own problem, when it has one, in `run_error`.
+    """
+    document = problem_document(
+        "run.failed",
+        409,
+        detail=f"The run '{run_id}' ended {run_status}.",
+        domain="runtime",
+        next_step={"kind": "read_run", "detail": "Read the run's own problem in run_error to see why it did not succeed."},
+        params={"pipeline_run_id": run_id, "run_status": run_status},
+        pipeline_run_id=run_id,
+    )
+    if run_error is not None:
+        document["run_error"] = run_error
+    return document
+
+
 def refused_argument(error: PipelexRequestError) -> dict[str, object]:
     """The argument and the reason an argument refusal names, as its `client.argument_invalid` problem carries them."""
     assert error.problem.code == "client.argument_invalid"
     assert error.problem.params is not None
-    return error.problem.params.model_dump(exclude_none=True)
+    return error.problem.params.as_wire()
 
 
 class ResponseBuilder(Protocol):

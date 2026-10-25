@@ -17,8 +17,7 @@ import httpx
 import pytest
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import run_may_have_started_of
-from pipelex_sdk.errors import MethodFileTransferCode, MethodFileTransferError, MethodFileTransferOperation, RequestArgumentError
+from pipelex_sdk.errors import MethodFileTransferError, MethodFileTransferOperation, MethodFileTransferReason, RequestArgumentError
 from pipelex_sdk.validation_models import PipelexValidationReport
 from tests.unit.conftest import BASE_URL, refused_argument
 
@@ -395,15 +394,15 @@ class TestClientRunTrees:
             asyncio.run(getattr(client, route)(contents={"data/big.txt": _LARGE}))
 
         error = caught.value
-        assert (error.operation, error.code, error.sha256, error.status) == (
+        assert (error.operation, error.reason, error.sha256, error.status) == (
             MethodFileTransferOperation.UPLOAD,
-            MethodFileTransferCode.REFUSED,
+            MethodFileTransferReason.REFUSED,
             _sha256(_LARGE),
             403,
         )
         assert str(error).endswith("so the run was not started.")
         assert "fixture-signature" not in str(error)
-        assert run_may_have_started_of(error) is False
+        assert not error.problem.outcome_is_unknown
         assert api.paths() == ["/v1/version", "/v1/blobs/missing"]
 
     def test_an_upload_storage_refuses_sends_no_validation(self, mocker: MockerFixture) -> None:

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "v
 import { PipelexApiClient } from "../src/client.js";
 import { ApiResponseError, RequestArgumentError } from "../src/errors.js";
 import type { FileRecord, RunFilesPage } from "../src/index.js";
+import { problemResponse } from "./helpers/problems.js";
 
 const BASE_URL = "http://localhost:8081";
 
@@ -154,13 +155,13 @@ describe("listRunFiles", () => {
 
   it("surfaces another organization's run as a 404", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, { status: 404, code: "run_not_found", detail: "Run not found." }),
+      problemResponse("run.not_found", 404, { detail: "Run not found." }),
     );
 
     const err = await makeClient()
       .listRunFiles("run_7")
       .catch((thrown: unknown) => thrown);
 
-    expect((err as ApiResponseError).code).toBe("run_not_found");
+    expect((err as ApiResponseError).code).toBe("run.not_found");
   });
 });

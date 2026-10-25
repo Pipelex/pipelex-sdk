@@ -50,9 +50,8 @@ class Progress:
     `waiting_on_run` is the id of a run that exists and whose outcome the command is waiting for: a
     failure then, other than the run's own, leaves the run going on the server, and the command says
     so rather than let it read as a failed run. `starting` says a request that may create a run was sent
-    while the API has not named the run yet: a failure then that the SDK reads as one that may have started
-    a run (`run_may_have_started`) leaves it unknown whether a run was created, and the command says that
-    too.
+    while the API has not named the run yet: a failure then whose problem's `retry` is `outcome_unknown`
+    leaves it unknown whether a run was created, and the command says that too.
     """
 
     def __init__(self) -> None:

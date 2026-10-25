@@ -13,9 +13,10 @@ import { dirname, join } from "node:path";
 
 import { listMethodTree } from "mthds";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 
 import { PipelexApiClient } from "../src/client.js";
-import { errorVerdictOf, MethodFileTransferError, RequestArgumentError } from "../src/errors.js";
+import { MethodFileTransferError, RequestArgumentError } from "../src/errors.js";
 import type { MethodTreeSource } from "mthds/protocol";
 import { prepareInputs } from "../src/prepare-inputs.js";
 
@@ -217,7 +218,7 @@ describe("the method's tree on the crate routes", () => {
 
     expect(err).toBeInstanceOf(MethodFileTransferError);
     const transfer = err as MethodFileTransferError;
-    expect([transfer.operation, transfer.code, transfer.sha256, transfer.status]).toEqual([
+    expect([transfer.operation, transfer.reason, transfer.sha256, transfer.status]).toEqual([
       "upload",
       "refused",
       sha256(LARGE),
@@ -247,7 +248,7 @@ describe("the method's tree on the crate routes", () => {
 
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toBe(message);
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
     expect(api.paths).toEqual([]);
   });
 

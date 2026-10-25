@@ -15,8 +15,8 @@ T = TypeVar("T")
 def none_when_it_does_not_fit(value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
     """Validate `value`, or read it as `None` when it does not fit its declared type.
 
-    The wrap validator of every leniently read wire field: a run's stored error report
-    (`pipelex_sdk.error_models`) and a status read's degradation (`pipelex_sdk.runs`).
+    The wrap validator of every leniently read wire field: a run's stored problem
+    (`pipelex_sdk.answer_reading.LenientProblem`) and a status read's degradation (`pipelex_sdk.runs`).
     """
     try:
         return handler(value)

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import pytest
+from mthds.protocol.problem.models import Problem
 
 from pipelex_sdk.artifact_models import (
     ArtifactItemError,
@@ -37,8 +38,6 @@ from pipelex_sdk.artifacts import (
     locate_artifacts,
     resolve_artifacts,
 )
-from pipelex_sdk.error_models import RunErrorReport
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
@@ -51,6 +50,7 @@ from pipelex_sdk.errors import (
     ScopeUnavailableError,
 )
 from pipelex_sdk.runs import RunArtifact, RunResultCompleted, RunResultFailed, RunResultRunning, RunResults, RunStatus
+from tests.unit.conftest import problem_document, run_failed_document
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Sequence
@@ -72,23 +72,20 @@ _STORE = "https://store.example.com"
 _PDF_BYTES = b"%PDF-1.4 tiny"
 _PNG_BYTES = b"\x89PNG tiny"
 #: The verdict of an argument the artifact operations refuse.
-_ARGUMENT_REFUSED = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
 
 # ── Fakes and builders ───────────────────────────────────────────────
 
 
 class _FakeClient:
-    """The two client methods the artifact operations call, scripted per test and recorded, and the API key it sends, empty for none."""
+    """The two client methods the artifact operations call, scripted per test and recorded."""
 
     def __init__(
         self,
         *,
         resolve: Callable[[list[str]], BulkResolvedStorageUrls] | None = None,
         run_result: RunResultState | None = None,
-        api_key: str = "test-token",
     ) -> None:
-        self.api_key = api_key
         self._resolve = resolve
         self._run_result = run_result
         self.resolve_calls: list[list[str]] = []
@@ -418,13 +415,13 @@ class TestArtifacts:
     def test_refuses_a_location_whose_first_path_is_not_in_the_walks_notation(self, location: ArtifactLocation) -> None:
         with pytest.raises(ArtifactOperationError) as caught:
             artifact_filename(location, None, ArtifactScope.MAIN_STUFF)
-        assert error_verdict_of(caught.value) == _ARGUMENT_REFUSED
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
 
     @pytest.mark.parametrize("scope", ["other", 0])
     def test_refuses_an_unknown_scope(self, scope: object) -> None:
         with pytest.raises(ArtifactOperationError, match='"scope" must be') as caught:
             artifact_filename(_at("$.url"), None, cast("ArtifactScope", scope))
-        assert error_verdict_of(caught.value) == _ARGUMENT_REFUSED
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
 
     def test_names_every_location_the_walk_writes_through_the_round_trip_of_its_notation(self) -> None:
         walked = {
@@ -472,7 +469,7 @@ class TestArtifacts:
         with pytest.raises(ArtifactOperationError, match="1 item") as caught:
             asyncio.run(resolve_artifacts(client, [_URI_PNG, _URI_PDF]))
         # The API broke its own contract: the family's verdict.
-        assert error_verdict_of(caught.value) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("runtime", "no")
 
     def test_lets_a_whole_request_refusal_propagate_unchanged(self) -> None:
         def _refuse(_: list[str]) -> BulkResolvedStorageUrls:
@@ -514,7 +511,7 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read())
-        assert caught.value.code == "invalid_storage_uri"
+        assert caught.value.reason == "invalid_storage_uri"
         assert caught.value.uri == _URI_PDF
 
     def test_refuses_a_plain_http_link_by_default_and_accepts_it_on_request(self, mocker: MockerFixture) -> None:
@@ -527,7 +524,7 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read(None))
-        assert caught.value.code == "plain_http_refused"
+        assert caught.value.reason == "plain_http_refused"
         assert seen == []
 
         assert asyncio.run(_read(FetchArtifactOptions(allow_http=True))) == _PDF_BYTES
@@ -544,14 +541,23 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read())
-        assert caught.value.code == "unsupported_url"
+        assert caught.value.reason == "unsupported_url"
         assert seen == []
 
     @pytest.mark.parametrize(
-        ("status", "code"),
-        [(302, "redirect_refused"), (401, "store_refused"), (403, "store_refused"), (404, "not_found"), (410, "not_found"), (500, "store_error")],
+        ("status", "code", "problem_code"),
+        [
+            (302, "redirect_refused", "client.link_refused"),
+            (401, "store_refused", "client.response_unreadable"),
+            (403, "store_refused", "client.response_unreadable"),
+            (404, "not_found", "input.reference_not_found"),
+            (410, "not_found", "input.reference_not_found"),
+            (400, "store_error", "client.response_unreadable"),
+            (501, "store_error", "runtime.unsupported"),
+            (500, "store_error", "runtime.unavailable"),
+        ],
     )
-    def test_maps_the_stores_statuses_onto_the_fetch_codes(self, mocker: MockerFixture, status: int, code: str) -> None:
+    def test_maps_the_stores_statuses_onto_the_fetch_codes(self, mocker: MockerFixture, status: int, code: str, problem_code: str) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
         _patch_storage(mocker, _serving(b"", status=status, headers={"location": f"{_STORE}/elsewhere"}))
 
@@ -561,8 +567,10 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read())
-        assert caught.value.code == code
+        assert caught.value.reason == code
         assert caught.value.status == status
+        # A refusal and a fault the store will answer again carry no retry; a transient fault does.
+        assert caught.value.problem.code == problem_code
 
     def test_refuses_a_declared_oversize_without_reading_the_body(self, mocker: MockerFixture) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
@@ -574,7 +582,7 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read())
-        assert caught.value.code == "too_large"
+        assert caught.value.reason == "too_large"
 
     def test_cuts_a_body_that_crosses_the_cap_mid_stream(self, mocker: MockerFixture) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
@@ -589,7 +597,7 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read())
-        assert caught.value.code == "too_large"
+        assert caught.value.reason == "too_large"
 
     def test_times_out_an_exchange_that_outlives_its_budget(self, mocker: MockerFixture) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
@@ -601,7 +609,7 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read())
-        assert caught.value.code == "timeout"
+        assert caught.value.reason == "timeout"
 
     def test_reports_a_transport_failure_as_a_network_fault(self, mocker: MockerFixture) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
@@ -618,7 +626,7 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read())
-        assert caught.value.code == "network"
+        assert caught.value.reason == "network"
         # The standard's transport problem, naming the store by its origin alone: the link's query string is its authorization.
         assert caught.value.problem.code == "client.unreachable"
         assert caught.value.problem.params is not None
@@ -634,7 +642,7 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactOperationError, match=name) as caught:
             asyncio.run(_read())
-        assert error_verdict_of(caught.value) == _ARGUMENT_REFUSED
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
         assert client.resolve_calls == []
 
     def test_drops_a_content_encoding_httpx_already_decoded_with_its_length(self, mocker: MockerFixture) -> None:
@@ -672,7 +680,7 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactOperationError, match="exactly one") as caught:
             asyncio.run(download_artifacts(client, dir_path=tmp_path))
-        assert error_verdict_of(caught.value) == _ARGUMENT_REFUSED
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
         with pytest.raises(ArtifactOperationError, match="exactly one"):
             asyncio.run(download_artifacts(client, dir_path=tmp_path, run_id=_RUN_ID, results=results))
         # An empty run id names nothing, so it is neither selector.
@@ -691,7 +699,7 @@ class TestArtifacts:
                     options=DownloadArtifactsOptions.model_validate({name: value}),
                 )
             )
-        assert error_verdict_of(caught.value) == _ARGUMENT_REFUSED
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
 
     def test_raises_run_still_running_with_the_retry_hint(self, tmp_path: Path) -> None:
         client = _FakeClient(run_result=RunResultRunning(pipeline_run_id=_RUN_ID, retry_after_seconds=7))
@@ -699,14 +707,19 @@ class TestArtifacts:
             asyncio.run(download_artifacts(client, dir_path=tmp_path, run_id=_RUN_ID))
 
     def test_raises_run_failed_for_a_run_that_ended_without_a_result(self, tmp_path: Path) -> None:
-        report = RunErrorReport(error_type="SandboxProvisioningError", message="Snapshot is building", error_domain="runtime", retryable=True)
-        failed = RunResultFailed(pipeline_run_id=_RUN_ID, status=RunStatus.FAILED, message="the run failed", error=report)
+        run_error = problem_document("runtime.unavailable", 503, domain="runtime", retry="yes", detail="Snapshot is building")
+        problem = Problem.model_validate(run_failed_document(run_id=_RUN_ID, run_error=run_error))
+        failed = RunResultFailed(
+            pipeline_run_id=_RUN_ID, status=RunStatus.FAILED, message="the run failed", problem=problem, error=Problem.model_validate(run_error)
+        )
         client = _FakeClient(run_result=failed)
         with pytest.raises(RunFailedError) as caught:
             asyncio.run(download_artifacts(client, dir_path=tmp_path, run_id=_RUN_ID))
         assert caught.value.status == RunStatus.FAILED
         assert caught.value.run_id == _RUN_ID
-        assert caught.value.error == report
+        assert caught.value.problem is problem
+        assert caught.value.run_error is not None
+        assert caught.value.run_error.as_wire() == run_error
 
     def test_raises_field_not_included_when_the_scope_key_was_never_relayed(self, tmp_path: Path) -> None:
         client = _FakeClient()
@@ -721,7 +734,7 @@ class TestArtifacts:
             )
         assert caught.value.field_name == "working_memory"
         # The results were handed over without the field: the caller reads them again asking for it.
-        assert error_verdict_of(caught.value) == ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
 
     def test_a_field_missing_from_results_read_by_run_id_is_the_api_s_fault(self, tmp_path: Path) -> None:
         """Read here asking for the scope's artifact, an answer without its key broke the API's own contract."""
@@ -730,7 +743,7 @@ class TestArtifacts:
         with pytest.raises(FieldNotIncludedError) as caught:
             asyncio.run(download_artifacts(client, dir_path=tmp_path, run_id=_RUN_ID, options=options))
         assert caught.value.field_name == "working_memory"
-        assert error_verdict_of(caught.value) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("runtime", "no")
 
     def test_raises_scope_unavailable_when_the_key_was_relayed_as_null(self, tmp_path: Path) -> None:
         client = _FakeClient()
@@ -840,6 +853,22 @@ class TestArtifacts:
         assert [artifact.found_at for artifact in verdict.artifacts] == [["$.root.doc.content.url"], ["$.root.picture.content.url"]]
         assert verdict.all_saved is True
         assert verdict.saved_paths == [str(target / "root-doc-content.pdf"), str(target / "root-picture-content.png")]
+
+    def test_labels_a_failure_it_cannot_place_unknown(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        """Every transport failure is the fetch's `network` and every write failure a `write_failed`, so a
+        failure that is neither is `unknown`, never read as one a retry can pass, as `@pipelex/sdk` labels it.
+        """
+        client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
+        _patch_storage(mocker, _serving(_PDF_BYTES))
+        mocker.patch("pipelex_sdk.artifacts._declared_length", side_effect=OSError("a fault of no transport"))
+        target = tmp_path / "out"
+
+        verdict = asyncio.run(download_artifacts(client, dir_path=target, results=_results(_content(_URI_PDF))))
+
+        item = verdict.artifacts[0]
+        assert item.error is not None
+        assert item.error.code == "unknown"
+        assert verdict.saved_paths == []
 
     def test_never_overwrites_a_name_already_on_disk(self, mocker: MockerFixture, tmp_path: Path) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF)))
@@ -952,7 +981,7 @@ class TestArtifacts:
         assert [str(request.url) for request in seen] == [f"{_STORE}/fresh.pdf"]
         assert verdict.all_saved is True
 
-    @pytest.mark.parametrize("failure", [_api_error(500), ApiUnreachableError("host unreachable", api_url=_STORE, code="ENOTFOUND")])
+    @pytest.mark.parametrize("failure", [_api_error(500), ApiUnreachableError("host unreachable", api_url=_STORE, network_code="ENOTFOUND")])
     def test_marks_an_item_whose_expired_link_cannot_be_re_resolved(self, mocker: MockerFixture, tmp_path: Path, failure: Exception) -> None:
         calls: list[int] = []
 
@@ -984,37 +1013,43 @@ class TestArtifacts:
         assert verdict.saved_paths == []
         assert [artifact.error.code for artifact in verdict.artifacts if artifact.error is not None] == ["aborted", "aborted"]
         assert [artifact.found_at for artifact in verdict.artifacts] == [["$.items[0].url"], ["$.items[1].url"]]
-        # The client sent its key, so the key is what was refused.
+        # A bare refusal does not say whether a credential was sent, so it reads by its status, as `@pipelex/sdk` reads it.
         assert caught.value.problem.code == "auth.invalid_credential"
 
-    @pytest.mark.parametrize("status", [401, 403])
-    def test_a_credential_failure_of_a_client_without_a_key_is_a_missing_credential(self, tmp_path: Path, status: int) -> None:
+    @pytest.mark.parametrize(
+        ("status", "problem_code"),
+        [
+            pytest.param(401, "auth.missing_credential", id="a bare 401"),
+            pytest.param(403, "auth.invalid_credential", id="a bare 403"),
+        ],
+    )
+    def test_a_credential_failure_reads_by_its_status(self, tmp_path: Path, status: int, problem_code: str) -> None:
         def _refuse(_: list[str]) -> BulkResolvedStorageUrls:
             raise _api_error(status)
 
-        client = _FakeClient(resolve=_refuse, api_key="")
+        client = _FakeClient(resolve=_refuse)
         with pytest.raises(ArtifactAuthenticationError) as caught:
             asyncio.run(download_artifacts(client, dir_path=tmp_path / "out", results=_results({"doc": _content(_URI_PDF)})))
 
-        assert caught.value.problem.code == "auth.missing_credential"
-        assert (caught.value.error_domain, caught.value.retryable) == ("config", False)
+        assert caught.value.problem.code == problem_code
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("account", "no")
 
     @pytest.mark.parametrize(
-        ("api_key", "problem_code"),
+        ("status", "problem_code"),
         [
-            pytest.param("test-token", "auth.invalid_credential", id="a client sending a key"),
-            pytest.param("", "auth.missing_credential", id="a client sending none"),
+            pytest.param(401, "auth.missing_credential", id="a bare 401"),
+            pytest.param(403, "auth.invalid_credential", id="a bare 403"),
         ],
     )
     def test_raises_a_credential_failure_part_way_through_carrying_the_verdict_so_far(
-        self, mocker: MockerFixture, tmp_path: Path, api_key: str, problem_code: str
+        self, mocker: MockerFixture, tmp_path: Path, status: int, problem_code: str
     ) -> None:
         def _resolve(uris: list[str]) -> BulkResolvedStorageUrls:
             if len(uris) > 1:
                 return _answer(_resolved(_URI_PDF), _resolved(_URI_PNG, expires_in_seconds=1.0))
-            raise _api_error(401)
+            raise _api_error(status)
 
-        client = _FakeClient(resolve=_resolve, api_key=api_key)
+        client = _FakeClient(resolve=_resolve)
         _patch_storage(mocker, _serving(_PDF_BYTES))
         with pytest.raises(ArtifactAuthenticationError) as caught:
             asyncio.run(
@@ -1027,7 +1062,7 @@ class TestArtifacts:
             )
 
         verdict = caught.value.verdict
-        assert caught.value.status == 401
+        assert caught.value.status == status
         assert len(verdict.saved_paths) == 1
         assert verdict.artifacts[0].error is None
         second = verdict.artifacts[1].error
@@ -1162,7 +1197,7 @@ class TestArtifacts:
         with pytest.raises(ArtifactOperationError, match="cannot be created or used") as caught:
             asyncio.run(download_artifacts(client, dir_path=blocked, results=_results({"doc": _content(_URI_PDF)})))
         # The environment refuses the download, not the arguments.
-        assert error_verdict_of(caught.value) == ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False)
+        assert caught.value.problem.code == "client.write_failed"
 
     def test_lets_a_deployment_without_the_bulk_route_surface_as_the_transport_error(self, tmp_path: Path) -> None:
         def _refuse(_: list[str]) -> BulkResolvedStorageUrls:

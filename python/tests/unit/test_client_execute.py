@@ -5,7 +5,7 @@ client-side request timeout — at/after the ~28s ceiling becomes a clear `Pipel
 pointing at start+poll, while a fast 503 stays the `ApiResponseError` every non-2xx raises (runner down,
 not a timeout) and the 202 async-degrade stays the inherited `RunStillRunningError`. The translation reads
 the typed errors the inherited route raises through the client's overrides — `_raise_api_response_error`
-for an answer, `_send` for a timeout, which arrives as the `ApiUnreachableError` whose code is
+for an answer, `_send` for a timeout, which arrives as the `ApiUnreachableError` whose network code is
 `ABORT_TIMEOUT` — so each case here proves it still fires on those errors rather than on httpx's.
 """
 
@@ -19,6 +19,7 @@ import pytest
 
 from pipelex_sdk.client import PipelexAPIClient, is_gateway_cut_off
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, MissingMainStuffError, PipelineExecuteTimeoutError, RunStillRunningError
+from tests.unit.conftest import problem_document
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -64,6 +65,8 @@ class TestClientExecute:
 
         error = exc_info.value
         assert error.elapsed_seconds == 31.0
+        # The run may have started behind the gateway.
+        assert (error.problem.code, error.problem.retry) == ("client.outcome_unknown", "outcome_unknown")
         assert "30s" in str(error)
         assert "wait_for_result" in str(error)
         # The gateway's answer is kept as the cause, typed.
@@ -92,7 +95,7 @@ class TestClientExecute:
         assert error.elapsed_seconds == 30.5
         # The timeout is kept as the cause, as the SDK's own unreachable error rather than httpx's.
         assert isinstance(error.__cause__, ApiUnreachableError)
-        assert error.__cause__.code == "ABORT_TIMEOUT"
+        assert error.__cause__.network_code == "ABORT_TIMEOUT"
         assert isinstance(error.__cause__.__cause__, httpx.ReadTimeout)
 
     def test_client_timeout_under_ceiling_stays_unreachable(self, mocker: MockerFixture, unreachable_client: UnreachableClientBuilder) -> None:
@@ -102,7 +105,8 @@ class TestClientExecute:
 
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client.execute(pipe_code="p"))
-        assert exc_info.value.code == "ABORT_TIMEOUT"
+        assert exc_info.value.network_code == "ABORT_TIMEOUT"
+        assert exc_info.value.problem.code == "client.outcome_unknown"
 
     def test_refused_connection_past_ceiling_stays_unreachable(self, mocker: MockerFixture, unreachable_client: UnreachableClientBuilder) -> None:
         client = unreachable_client(httpx.ConnectError)
@@ -111,7 +115,8 @@ class TestClientExecute:
 
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client.execute(pipe_code="p"))
-        assert exc_info.value.code == "ConnectError"
+        assert exc_info.value.network_code == "ConnectError"
+        assert exc_info.value.problem.code == "client.unreachable"
 
     @pytest.mark.parametrize("failure", [httpx.ConnectTimeout, httpx.PoolTimeout])
     def test_a_connection_that_timed_out_past_ceiling_stays_unreachable(
@@ -124,7 +129,7 @@ class TestClientExecute:
 
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client.execute(pipe_code="p"))
-        assert exc_info.value.code == failure.__name__
+        assert exc_info.value.network_code == failure.__name__
 
     @pytest.mark.parametrize(
         ("failure", "cut_off"),
@@ -159,6 +164,18 @@ class TestClientExecute:
         # Before the threshold, nothing is the gateway's cut-off: a fast 503 is the API refusing.
         assert is_gateway_cut_off(exc_info.value, 27.9) is False
 
+    def test_a_503_problem_document_is_the_platforms_own_answer_and_no_cut_off(self, mocker: MockerFixture) -> None:
+        """A gateway that cut the request off answers no problem document: one that does is the platform's own."""
+        client = self._client()
+        body = problem_document("runtime.unavailable", 503, domain="runtime", retry="yes")
+        mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(503, json=body)))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(client.start(pipe_code="p"))
+
+        assert is_gateway_cut_off(exc_info.value, 31.0) is False
+        assert exc_info.value.problem.code == "runtime.unavailable"
+
     def test_is_gateway_cut_off_reads_nothing_but_the_sdks_own_errors(self) -> None:
         assert is_gateway_cut_off(ValueError("503"), 31.0) is False
 
@@ -172,6 +189,8 @@ class TestClientExecute:
             asyncio.run(client.execute(pipe_code="p"))
         assert exc_info.value.status == 503
         assert str(exc_info.value) == "API POST /v1/execute failed (503): Service Unavailable"
+        # A bare 503 on an execute may hide a run the platform started behind the gateway.
+        assert exc_info.value.problem.code == "client.outcome_unknown"
 
     def test_success_resolves_main_stuff(self, mocker: MockerFixture) -> None:
         client = self._client()

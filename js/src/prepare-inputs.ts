@@ -39,8 +39,9 @@ import type {
   MethodFiles,
   MethodTreeSource,
   PipeInputFormDescriptor,
+  ProblemItem,
 } from "mthds/protocol";
-import { isValidationItem } from "./error-models.js";
+import { readProblemItems } from "./problem-items.js";
 import { throwIfAborted } from "./runs.js";
 import {
   ApiResponseError,
@@ -48,6 +49,8 @@ import {
   InvalidInputValueError,
   MethodLoadError,
   UploadNotAllowedError,
+  argumentInvalidProblem,
+  responseUnreadableProblem,
 } from "./errors.js";
 import type {
   CrateRouteOptions,
@@ -86,18 +89,17 @@ const WALKED_KINDS = {
 const KNOWN_KINDS: ReadonlySet<string> = new Set(Object.keys(WALKED_KINDS));
 
 /**
- * The `error_type`s of the route's pipe-selection refusals — the only `422`s
- * `prepareInputs` turns into an `InputPreparationError`. They are the runtime's
- * entry-lookup classes, the vocabulary the run routes speak too: a ref that names
- * no pipe, or no entry pipe at all, is `EntryPipeNotFoundError`; a code that
- * matches pipes in several domains, or several `main_pipe` declarations, is
- * `EntryPipeAmbiguousError`. Every other `422` (a malformed body, an over-limit
- * file, a fetched package with no `.mthds` file, a stored method with no source)
- * shares the generic `ValidationError` type and stays an `ApiResponseError`.
+ * The problem codes of the route's pipe-selection refusals, the only refusals `prepareInputs`
+ * turns into an `InputPreparationError`: a ref that names no pipe (`request.pipe_not_found`),
+ * several pipes it could mean (`request.pipe_ambiguous`), and no pipe named where the method has
+ * no entry pipe (`request.pipe_unspecified`). They are the run routes' vocabulary too. Every other
+ * refusal (a malformed body, an over-limit file, a fetched package with no `.mthds` file, a stored
+ * method with no source) stays an `ApiResponseError`.
  */
-const PIPE_SELECTION_ERROR_TYPES: ReadonlySet<string> = new Set([
-  "EntryPipeNotFoundError",
-  "EntryPipeAmbiguousError",
+const PIPE_SELECTION_CODES: ReadonlySet<string> = new Set([
+  "request.pipe_not_found",
+  "request.pipe_ambiguous",
+  "request.pipe_unspecified",
 ]);
 
 /** The shared half of the request: the target pipe and the caller's inputs. */
@@ -534,7 +536,7 @@ async function resolveNode(
       const unwalked: never = node;
       throw new InputPreparationError(
         `Cannot prepare inputs: the walk has no arm for the kind ${described((unwalked as { kind: unknown }).kind)}.`,
-        { verdict: { errorDomain: "runtime", retryable: false } },
+        { problem: responseUnreadableProblem(200) },
       );
     }
   }
@@ -578,6 +580,7 @@ function refuseNonMap(
   if (!isPlainObject(value)) {
     throw new InputPreparationError(
       `Cannot prepare inputs: \`${name}\` must be ${holds}, got ${describeNonMap(value)}.`,
+      { problem: argumentInvalidProblem(name, "not_a_map") },
     );
   }
   for (const [key, entry] of Object.entries(value)) {
@@ -585,6 +588,7 @@ function refuseNonMap(
       throw new InputPreparationError(
         `Cannot prepare inputs: \`${name}\` must be ${holds}, and "${key}" holds ` +
           `${entry === null ? "null" : describeNonMap(entry)}.`,
+        { problem: argumentInvalidProblem(name, "entry_mistyped") },
       );
     }
   }
@@ -604,12 +608,14 @@ function checkedTree(value: unknown): MethodTreeSource | undefined {
       "Cannot prepare inputs: `tree` must be a listed method tree — its `files`, its `digest` and " +
         "a `readFile` — such as the `MethodTree` the client's `listMethodTree` returns, got " +
         `${fault}.`,
+      { problem: argumentInvalidProblem("tree", "not_a_tree") },
     );
   }
   const tree = value as MethodTreeSource;
   if (tree.files.length === 0) {
     throw new InputPreparationError(
       "Cannot prepare inputs: `tree` holds no file, and a method tree holds at least one.",
+      { problem: argumentInvalidProblem("tree", "empty") },
     );
   }
   return tree;
@@ -634,6 +640,7 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
     throw new InputPreparationError(
       "Cannot prepare inputs: `files` must be the method's tree as a map from tree path to file " +
         `entry, got ${Array.isArray(rawFiles) ? "a list" : typeof rawFiles}.`,
+      { problem: argumentInvalidProblem("files", "not_a_map") },
     );
   }
   refuseNonMap(
@@ -653,6 +660,7 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
     throw new InputPreparationError(
       "Cannot prepare inputs: `directory` must be the method's directory as a path, got " +
         `${describeNonMap(rawDirectory)}.`,
+      { problem: argumentInvalidProblem("directory", "not_a_string") },
     );
   }
   const directory =
@@ -673,6 +681,7 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
     throw new InputPreparationError(
       `Cannot prepare inputs: the method's tree was given as ${treeForms.join(" and ")}. Give it ` +
         "in one form — `directory`, `contents`, `tree` or `files`.",
+      { problem: argumentInvalidProblem("files", "mutually_exclusive") },
     );
   }
   const given = [...treeForms];
@@ -684,6 +693,7 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
       "Cannot prepare inputs: no method selector. Supply exactly one of the method's tree " +
         "(`directory`, `contents`, `tree` or `files`), `method_ref` (a published method's address) or " +
         "`method_id` (a stored method's catalog id).",
+      { problem: argumentInvalidProblem("files", "nothing_to_prepare") },
     );
   }
   if (given.length > 1) {
@@ -691,6 +701,7 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
       `Cannot prepare inputs: ${given.join(" and ")} were ${given.length === 2 ? "both" : "all"} ` +
         "given. Supply exactly one method " +
         "selector — the method's tree, `method_ref` or `method_id`.",
+      { problem: argumentInvalidProblem("files", "mutually_exclusive") },
     );
   }
   if (treeForms.length === 1) {
@@ -708,6 +719,7 @@ function resolveSelector(request: PrepareInputsRequest): ResolvedSelector {
     throw new InputPreparationError(
       `Cannot prepare inputs: \`dependencies\` accompany the method's own tree; a ${owner} ` +
         "method's packages are its own.",
+      { problem: argumentInvalidProblem("dependencies", "without_a_tree") },
     );
   }
   if (methodRef !== undefined) return { method_ref: methodRef };
@@ -734,12 +746,14 @@ function normalizePipeRef(raw: unknown): string | undefined {
     throw new InputPreparationError(
       `Cannot prepare inputs: \`pipe_ref\` "${pipeRef}" names a dependency package's pipe. ` +
         "Preparation covers the method's own pipes: name one as `domain.pipe_code`.",
+      { problem: argumentInvalidProblem("pipe_ref", "dependency_pipe") },
     );
   }
   if (!pipeRef.includes(".")) {
     throw new InputPreparationError(
       `Cannot prepare inputs: \`pipe_ref\` must be qualified (\`domain.pipe_code\`), got the bare ` +
         `"${pipeRef}".`,
+      { problem: argumentInvalidProblem("pipe_ref", "not_qualified") },
     );
   }
   return pipeRef;
@@ -755,6 +769,7 @@ function resolveAllowUploads(raw: unknown): boolean {
   if (typeof raw === "boolean") return raw;
   throw new InputPreparationError(
     `Cannot prepare inputs: \`allowUploads\` must be a boolean, got ${raw === null ? "null" : typeof raw}.`,
+    { problem: argumentInvalidProblem("allowUploads", "not_a_bool") },
   );
 }
 
@@ -769,6 +784,7 @@ function resolveUploadAs(raw: unknown): UploadKindOptions {
     throw new InputPreparationError(
       "Cannot prepare inputs: `upload` must be an object of `kind` and `method_id`, got " +
         `${describeNonMap(raw)}.`,
+      { problem: argumentInvalidProblem("upload", "not_upload_kind_options") },
     );
   }
   return uploadKindFields(raw, "Cannot prepare inputs", "upload.");
@@ -783,9 +799,9 @@ function resolveUploadAs(raw: unknown): UploadKindOptions {
  * the method runs is the run's verdict, not preparation's. The `is_valid: false`
  * arm means the closure does not load, which is a preparation failure. So is a
  * selection the route refuses — an unknown `pipe_ref`, no entry pipe, several —
- * which it answers with a `422` typed by one of {@link PIPE_SELECTION_ERROR_TYPES};
- * every other failure is re-thrown unchanged. An answer with no boolean `is_valid`
- * is neither arm, so it fails the preparation with a `runtime` verdict, as an
+ * which it answers with a problem of one of {@link PIPE_SELECTION_CODES}; every
+ * other failure is re-thrown unchanged. An answer with no boolean `is_valid` is
+ * neither arm, so it fails the preparation with `client.response_unreadable`, as an
  * `input_form` that does not describe the selected pipe does, and one whose
  * descriptor is malformed where the walk reads it.
  */
@@ -801,14 +817,11 @@ async function fetchSignature(
   try {
     result = await client.pipeIo(request, signal === undefined ? {} : { signal });
   } catch (error) {
-    if (
-      error instanceof ApiResponseError &&
-      error.status === 422 &&
-      error.errorType !== undefined &&
-      PIPE_SELECTION_ERROR_TYPES.has(error.errorType)
-    ) {
-      const detail = error.serverMessage ?? error.message;
-      throw new InputPreparationError(`Cannot prepare inputs: ${detail}`, { cause: error });
+    if (error instanceof ApiResponseError && PIPE_SELECTION_CODES.has(error.code)) {
+      throw new InputPreparationError(`Cannot prepare inputs: ${error.problem.detail}`, {
+        cause: error,
+        problem: error.problem,
+      });
     }
     throw error;
   }
@@ -820,15 +833,15 @@ async function fetchSignature(
     throw new InputPreparationError(
       "Cannot prepare inputs: the pipe I/O answer carries no boolean `is_valid`, so it says " +
         "neither that the method loaded nor why it did not.",
-      { verdict: { errorDomain: "runtime", retryable: false } },
+      { problem: responseUnreadableProblem(200) },
     );
   }
   if (!answer.is_valid) {
-    const items = answer.validation_errors;
+    const errors = readProblemItems(answer.errors);
     throw new MethodLoadError(
-      `Cannot prepare inputs: the method signature did not resolve — ${invalidReason(answer)}`,
+      `Cannot prepare inputs: the method signature did not resolve — ${invalidReason(answer, errors)}`,
       {
-        validationErrors: Array.isArray(items) ? items.filter(isValidationItem) : [],
+        errors,
         serverMessage: typeof answer.message === "string" ? answer.message : undefined,
       },
     );
@@ -837,14 +850,13 @@ async function fetchSignature(
 }
 
 /**
- * Why an invalid pipe I/O answer says the closure did not load: its first validation item's
- * message, else its own `message`. Each is read only when it has its declared type, since the
- * answer is the server's, and an answer carrying neither still fails the preparation.
+ * Why an invalid pipe I/O answer says the closure did not load: its first problem item's `detail`,
+ * else its own `message`. Each is read only when it has its declared type, since the answer is the
+ * server's, and an answer carrying neither still fails the preparation.
  */
-function invalidReason(answer: Record<string, unknown>): string {
-  const items = answer.validation_errors;
-  const first: unknown = Array.isArray(items) ? items[0] : undefined;
-  if (isPlainObject(first) && typeof first.message === "string") return first.message;
+function invalidReason(answer: Record<string, unknown>, errors: readonly ProblemItem[]): string {
+  const first = errors[0];
+  if (first !== undefined) return first.detail;
   return typeof answer.message === "string" ? answer.message : "the answer gives no reason";
 }
 
@@ -866,7 +878,7 @@ function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor 
     throw new InputPreparationError(
       `Cannot prepare inputs: the pipe I/O answer selected ${pipeRef === undefined ? "no pipe" : `"${pipeRef}"`}, ` +
         `but its \`input_form\` does not describe it (it describes: ${describedPipes}).`,
-      { verdict: { errorDomain: "runtime", retryable: false } },
+      { problem: responseUnreadableProblem(200) },
     );
   }
   return checkedDescriptor(pipeRef, inputForm[pipeRef]);
@@ -878,7 +890,7 @@ function selectedDescriptor(report: PipeIOValidReport): PipeInputFormDescriptor 
  * its first fault.
  *
  * A malformation is the route breaking its contract, at whatever depth and under
- * whichever input, so it is refused with a `runtime` verdict, not retryable. It is
+ * whichever input, so it is refused with `client.response_unreadable`. It is
  * never passed through: a node the SDK cannot read may be a file position, and
  * under the default mode passing it through would send the caller's local path to
  * the runner verbatim. A `kind` outside {@link WALKED_KINDS} is refused for the
@@ -890,7 +902,7 @@ function checkedDescriptor(pipeRef: string, entry: unknown): PipeInputFormDescri
     throw new InputPreparationError(
       `Cannot prepare inputs: the pipe I/O answer's \`input_form\` for "${pipeRef}" ` +
         `is ${found.message}.`,
-      { verdict: { errorDomain: "runtime", retryable: false } },
+      { problem: responseUnreadableProblem(200) },
     );
   }
   return entry as PipeInputFormDescriptor;
@@ -1010,8 +1022,8 @@ function described(value: unknown): string {
  * `MethodFileTransferError` before the route is asked. A bare or alias-qualified `pipe_ref`, a
  * closure that does not load, and a selection the route refuses (an unknown
  * `pipe_ref`, no entry pipe, several) throw {@link InputPreparationError}. So
- * does an answer that breaks the route's contract, with a `runtime` verdict that
- * is not retryable: no boolean `is_valid`, an `input_form` that does not describe
+ * does an answer that breaks the route's contract, with the problem
+ * `client.response_unreadable`: no boolean `is_valid`, an `input_form` that does not describe
  * the selected pipe, or a descriptor that is malformed or names a kind this SDK
  * does not know, which is checked whole before anything is uploaded. Any other
  * failure from the route (a malformed selector, an unknown or foreign-org id, no
