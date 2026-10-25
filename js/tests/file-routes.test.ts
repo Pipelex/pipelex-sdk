@@ -157,6 +157,22 @@ describe("getFile", () => {
     expect(detail.uses.items.map((use) => use.created_by)).toEqual(["user_1", null]);
   });
 
+  it("reads a created_by that is not a string as null", async () => {
+    const [example] = DETAIL.uses.items;
+    const items = [42, true, { user_id: "user_1" }, ["user_1"]].map((created_by) => ({
+      ...example,
+      created_by,
+    }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...DETAIL, uses: { items, next_cursor: null } }),
+    );
+
+    const detail = await makeClient().getFile(FILE_ID);
+
+    expect(detail.uses.items.map((use) => use.created_by)).toEqual([null, null, null, null]);
+    expect(detail.uses.items[0]).toEqual({ ...example, created_by: null });
+  });
+
   it("pages the uses with uses_limit and uses_cursor", async () => {
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, DETAIL));
 

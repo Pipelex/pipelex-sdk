@@ -4375,8 +4375,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * uses by passing `uses.next_cursor` back as `usesCursor`; `null` is the last page. A record whose
    * upload looked unfinished past the upload grant's lifespan is settled by the read, so it answers
    * `stored` when its bytes are there. Each use's `created_by` names who started the run or saved
-   * the example; a use the platform answers without the member, as one that predates it does, reads
-   * as `null`.
+   * the example; a use the platform answers without the member, as one that predates it does, or
+   * with a member that is not a string, reads as `null`.
    *
    * Throws `RequestArgumentError` for a file id that is empty, `.` or `..`, or holds a lone
    * surrogate, before any request. Throws `ApiResponseError`: `404` `pipelex.storage.not_found` for
@@ -5768,14 +5768,14 @@ function withCheckedProblem<T>(record: T): T {
 }
 
 /**
- * A file use with its `created_by` read as `null` when the answer leaves the member out, as a
- * platform that predates it does, so the member is a string or `null` as `FileUse` declares it,
- * never `undefined`. A use carrying the key keeps it as sent, and one that is not an object is
- * returned as it came.
+ * A file use with its `created_by` kept only when it is a string, and read as `null` otherwise:
+ * when the answer leaves the member out, as a platform that predates it does, sends `null`, or
+ * sends any other type. So the member is a string or `null` as `FileUse` declares it, never
+ * `undefined` nor anything else. A use that is not an object is returned as it came.
  */
 function withUseCreator(use: unknown): unknown {
-  if (!isPlainObject(use) || Object.hasOwn(use, "created_by")) return use;
-  return { ...use, created_by: null };
+  if (!isPlainObject(use)) return use;
+  return { ...use, created_by: typeof use.created_by === "string" ? use.created_by : null };
 }
 
 /**
