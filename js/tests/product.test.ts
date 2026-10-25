@@ -5,7 +5,8 @@ import {
   PagingNotTerminatingError,
   RequestArgumentError,
 } from "../src/errors.js";
-import type { RunErrorReport } from "../src/error-models.js";
+import type { Problem } from "mthds/protocol";
+import { problemDocument, problemResponse } from "./helpers/problems.js";
 import type {
   Membership,
   MethodSummary,
@@ -326,8 +327,8 @@ describe("methods catalog", () => {
     expect(paging.message).toMatch(/did not terminate/i);
     expect(paging.pageLimit).toBe(10_000);
     // A server minting cursors forever is its own fault, and asking again meets it again.
-    expect(paging.errorDomain).toBe("runtime");
-    expect(paging.retryable).toBe(false);
+    expect(paging.code).toBe("client.response_unreadable");
+    expect(paging.retry).toBe("no");
   });
 
   it("iterateMethods stops when the server stops advancing the cursor", async () => {
@@ -418,7 +419,9 @@ describe("methods catalog", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(jsonResponse(202, accepted))
       .mockResolvedValueOnce(
-        jsonResponse(409, { code: "conflict", detail: "deletion already pending" }),
+        problemResponse("pipelex.catalog.being_deleted", 409, {
+          detail: "deletion already pending",
+        }),
       );
 
     await expect(client.deleteMethod("m1")).resolves.toEqual(accepted);
@@ -427,6 +430,7 @@ describe("methods catalog", () => {
     expect(spy).toHaveBeenCalledTimes(2);
     expect(err).toBeInstanceOf(ApiResponseError);
     expect((err as ApiResponseError).status).toBe(409);
+    expect((err as ApiResponseError).code).toBe("pipelex.catalog.being_deleted");
   });
 
   it("POSTs /v1/methods with no tree, creating an empty draft", async () => {
@@ -624,7 +628,9 @@ describe("billing", () => {
   it("surfaces a 409 conflict on change-plan via ApiResponseError.code", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, { code: "conflict", message: "No subscription to change." }),
+      problemResponse("pipelex.billing.subscription_conflict", 409, {
+        detail: "No subscription to change.",
+      }),
     );
 
     const err = await client.changePlan({ plan: "pro" }).catch((e: unknown) => e);
@@ -632,17 +638,19 @@ describe("billing", () => {
     expect(err).toBeInstanceOf(ApiResponseError);
     const e = err as ApiResponseError;
     expect(e.status).toBe(409);
-    expect(e.code).toBe("conflict");
-    expect(e.serverMessage).toBe("No subscription to change.");
+    expect(e.code).toBe("pipelex.billing.subscription_conflict");
+    expect(e.problem.detail).toBe("No subscription to change.");
   });
 
   it("surfaces a 409 conflict on the billing portal", async () => {
     const client = makeClient();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(409, { code: "conflict" }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse("pipelex.billing.subscription_conflict", 409),
+    );
 
     const err = await client.getBillingPortal().catch((e: unknown) => e);
 
-    expect((err as ApiResponseError).code).toBe("conflict");
+    expect((err as ApiResponseError).code).toBe("pipelex.billing.subscription_conflict");
   });
 });
 
@@ -676,15 +684,20 @@ describe("pipelex api keys", () => {
     expect(result.api_key).toBe("plx_sk_secret");
   });
 
-  it("surfaces a 409 pipelex_api_key_limit_reached via ApiResponseError.code", async () => {
+  it("surfaces the key limit as the platform's pipelex.billing.plan_limit", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, { code: "pipelex_api_key_limit_reached", message: "Limit reached." }),
+      problemResponse("pipelex.billing.plan_limit", 409, {
+        domain: "account",
+        detail: "Limit reached.",
+        next_step: { kind: "check_account", detail: "Revoke a key, then try again." },
+      }),
     );
 
     const err = await client.createPipelexApiKey({ label: "L" }).catch((e: unknown) => e);
 
-    expect((err as ApiResponseError).code).toBe("pipelex_api_key_limit_reached");
+    expect((err as ApiResponseError).code).toBe("pipelex.billing.plan_limit");
+    expect((err as ApiResponseError).domain).toBe("account");
   });
 
   it("DELETEs /v1/pipelex-api-keys/{id} with an encoded id", async () => {
@@ -922,12 +935,9 @@ describe("storage", () => {
   it("surfaces an oversized declaration as a 413 ApiResponseError with its code", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(413, {
-        type: "about:blank",
-        title: "Payload too large",
-        status: 413,
+      problemResponse("request.too_large", 413, {
         detail: "Declared file size exceeds the 50 MiB limit.",
-        code: "payload_too_large",
+        params: { limit: 52428800, size: 52428801 },
       }),
     );
 
@@ -937,7 +947,8 @@ describe("storage", () => {
 
     expect(error).toBeInstanceOf(ApiResponseError);
     expect((error as ApiResponseError).status).toBe(413);
-    expect((error as ApiResponseError).code).toBe("payload_too_large");
+    expect((error as ApiResponseError).code).toBe("request.too_large");
+    expect((error as ApiResponseError).problem.params).toEqual({ limit: 52428800, size: 52428801 });
   });
 });
 
@@ -959,7 +970,7 @@ describe("runs list / update", () => {
       created_at: string;
       finished_at?: string | null;
       pipe_code?: string | null;
-      error?: RunErrorReport | null;
+      error?: Problem | null;
       method_version?: number | "draft" | null;
       source_digest?: string | null;
     }>();
@@ -969,7 +980,7 @@ describe("runs list / update", () => {
     expectTypeOf<PipelineRun>().toHaveProperty("method_id");
   });
 
-  it("hands back a failed row's error report as it arrives", async () => {
+  it("hands back a failed row's problem as it arrives", async () => {
     const client = makeClient();
     const failed: RunHistoryItem = {
       pipeline_run_id: "r9",
@@ -977,7 +988,10 @@ describe("runs list / update", () => {
       created_at: "2026-10-01T09:00:00Z",
       finished_at: "2026-10-01T09:01:00Z",
       pipe_code: null,
-      error: { error_type: "PipeRunError", message: "the model refused" },
+      error: problemDocument("model.content_refused", 422, {
+        domain: "input",
+        detail: "the model refused",
+      }) as unknown as Problem,
     };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(200, { items: [failed], next_cursor: null }),
@@ -986,7 +1000,28 @@ describe("runs list / update", () => {
     const page = await client.listRuns("m1");
 
     expect(page.items).toEqual([failed]);
-    expect(page.items[0]!.error?.message).toBe("the model refused");
+    expect(page.items[0]!.error?.detail).toBe("the model refused");
+  });
+
+  it("reads a failed row's error that is no problem document as none", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        items: [
+          {
+            pipeline_run_id: "r9",
+            status: "FAILED",
+            created_at: "2026-10-01T09:00:00Z",
+            error: { error_type: "PipeRunError", message: "the model refused" },
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+
+    const page = await client.listRuns("m1");
+
+    expect(page.items[0]!.error).toBeNull();
   });
 
   it("GETs /v1/runs?method_id={id} with an encoded query value and unwraps the page", async () => {
@@ -1311,8 +1346,8 @@ describe("a page the SDK cannot read", () => {
       expect(unreadable.responseBody).toBe(JSON.stringify(page));
       expect(unreadable.requestId).toBe("req-p");
       // A page the platform never serializes: runtime, and nothing says a retry helps.
-      expect(unreadable.errorDomain).toBe("runtime");
-      expect(unreadable.retryable).toBe(false);
+      expect(unreadable.code).toBe("client.response_unreadable");
+      expect(unreadable.problem).toMatchObject({ domain: "runtime", retry: "no" });
       expect(spy).toHaveBeenCalledTimes(1);
     },
   );

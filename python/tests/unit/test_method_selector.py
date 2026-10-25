@@ -7,7 +7,6 @@ same malformed suffixes are refused before anything is sent, as the platform ref
 import pytest
 from pydantic import ValidationError
 
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import RequestArgumentError
 from pipelex_sdk.method_selector import ParsedMethodSelector, parse_method_selector
 
@@ -85,7 +84,7 @@ class TestMethodSelector:
             '"mt_abc@v3" names no version: the suffix of a catalog id is @<version>, a positive number without a leading zero, or @draft.'
         )
         # The selector may come from a model's tool arguments: the caller fixes it, and asking again unchanged cannot pass.
-        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
+        assert (exc_info.value.problem.code, exc_info.value.problem.retry) == ("client.argument_invalid", "no")
 
     def test_refuses_a_version_past_the_integer_conversion_limit(self) -> None:
         with pytest.raises(RequestArgumentError, match="too long to read"):

@@ -147,23 +147,23 @@ class TestPipeIORoute:
         report = asyncio.run(client.pipe_io(PipeIORequest(files=_FILES, include_files=True)))
 
         assert isinstance(report, CrateInvalidReport)
-        assert report.validation_errors[0].pipe_code == "echo"
+        assert [(item.code, item.location.pipe if item.location is not None else None) for item in report.errors] == [
+            ("method.input_unused", "smoke.echo")
+        ]
 
     @pytest.mark.parametrize(
-        ("status", "body", "error_type"),
+        ("status", "body", "code"),
         [
-            (422, PipeIOBodies.UNKNOWN_PIPE_REFUSAL, "EntryPipeNotFoundError"),
-            (422, PipeIOBodies.AMBIGUOUS_PIPE_REFUSAL, "EntryPipeAmbiguousError"),
-            (422, PipeIOBodies.REQUEST_SHAPE_REFUSAL, "ValidationError"),
-            (404, {"detail": "Unknown method", "code": "not_found"}, None),
+            (422, PipeIOBodies.UNKNOWN_PIPE_REFUSAL, "request.pipe_not_found"),
+            (422, PipeIOBodies.AMBIGUOUS_PIPE_REFUSAL, "request.pipe_unspecified"),
+            (422, PipeIOBodies.REQUEST_SHAPE_REFUSAL, "request.invalid"),
+            (404, {"detail": "Unknown method", "code": "not_found"}, "request.not_found"),
         ],
     )
-    def test_a_no_verdict_answer_raises_api_response_error(
-        self, mocker: MockerFixture, status: int, body: dict[str, object], error_type: str | None
-    ) -> None:
-        """A refused selection is a `422` typed by the runner's entry-lookup `error_type`, never an
-        `is_valid: false` verdict; the route itself does not translate it, so the `error_type` stays
-        readable on the error and tells it apart from a request-shape `422`.
+    def test_a_no_verdict_answer_raises_api_response_error(self, mocker: MockerFixture, status: int, body: dict[str, object], code: str) -> None:
+        """A refused selection is a `422` coded by the runner's pipe-selection problem, never an `is_valid: false`
+        verdict; the route itself does not translate it, so the code stays readable on the error and tells it apart
+        from a request-shape `422`. A body that is no problem document is read by its status.
         """
         client = self._client()
         self._mock_send(mocker, client, _response(status, json_body=body))
@@ -171,7 +171,7 @@ class TestPipeIORoute:
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(client.pipe_io(PipeIORequest(files=_FILES, pipe_ref="smoke.absent")))
         assert exc_info.value.status == status
-        assert exc_info.value.error_type == error_type
+        assert exc_info.value.problem.code == code
 
     # ── The fetch-sized budget ───────────────────────────────────────
 

@@ -56,21 +56,19 @@ The write sends no `Idempotency-Key`, as `renameOrganization` sends none. A late
 
 ## When a write is refused
 
-A refused write changes nothing, whichever part of it was refused, and throws an `ApiResponseError` whose `code` is the platform's; only a `503` leaves it unknown whether the write landed:
+A refused write changes nothing, whichever part of it was refused, and throws an `ApiResponseError` whose `problem` is the platform's problem document; only a `503` leaves it unknown whether the write landed:
 
 | Status | `code` | When |
 |---|---|---|
-| `403` | `forbidden` | `orgId` is not the caller's active organization. |
-| `403` | `role_not_permitted` | The caller is not the organization's admin. |
-| `404` | `not_found` | The organization does not exist. |
-| `409` | `conflict` | The organization is a personal workspace, which has no branding. |
-| `422` | `validation_failed` | A colour is not `#rrggbb`, the body holds a key the route does not take, or a logo was refused. |
-| `400` | `invalid_storage_uri` | A logo's URI is not a storage URI. |
-| `403` | `forbidden` | A logo's URI is a file of another organization. |
-| `500` | `storage_backend_failed` | The platform's storage failed while reading or copying a logo. Its verdict is `runtime` and retryable, and nothing was written. |
-| `503` | `service_unavailable` | The platform's database failed or could not be reached, so the write may have landed or not. Its verdict is `runtime` and retryable: the same `input` sent again is safe, and `getBranding` reads what the branding holds. |
+| `403` | `auth.forbidden` | The caller is not the organization's admin. |
+| `403` | `pipelex.org.mismatch` | `orgId` is not the caller's active organization, or a logo's URI is a file of another organization. |
+| `404` | `pipelex.org.not_found` | The organization does not exist. |
+| `409` | `pipelex.org.not_manageable` | The organization is a personal workspace, which has no branding. |
+| `422` | `request.invalid` | A colour is not `#rrggbb`, the body holds a key the route does not take, or a logo was refused. |
+| `422` | `pipelex.storage.uri_invalid` | A logo's URI is not a storage URI. |
+| `503` | `runtime.unavailable` | The platform's storage failed while reading or copying a logo, or its database failed or could not be reached, so the write may have landed or not. Its `retry` is `yes`: the same `input` sent again is safe, and `getBranding` reads what the branding holds. |
 
-**A refusal about a logo or a colour names it in `errors`**, the platform's field-level list, so the settings screen shows each sentence under the control it concerns rather than in a toast. Each entry's `field` is the slot, `square_logo` or `wide_logo`, or the colour's dotted key, such as `colors.action` or `dark_colors.header`; its `detail` is the sentence to show. A logo the platform read and refused carries a `LogoRefusalCode`, one entry per broken rule, both slots answered in one refusal:
+**A refusal about a logo or a colour names it in its problem's `errors`**, one problem item per refused logo or colour, so the settings screen shows each sentence under the control it concerns rather than in a toast. Each item's `location.field` is the slot, `square_logo` or `wide_logo`, or the colour's dotted key, such as `colors.action` or `dark_colors.header`; its `detail` is the sentence to show. A logo the platform read and refused carries one item per broken rule, both slots answered in one refusal, each item's `code` one `LogoRefusalCode` names:
 
 | `code` | Example `detail` |
 |---|---|
@@ -85,16 +83,16 @@ A refused write changes nothing, whichever part of it was refused, and throws an
 | `logo_not_wide` | The wide logo is 600 × 500 px, 1.2 times as wide as it is tall; a wide logo must be at least 1.5 times as wide as it is tall. |
 | `logo_too_short` | The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall. |
 
-The two refusals of a logo URI that come before any file is read, `invalid_storage_uri` and another organization's `forbidden`, name the slot the same way, with the platform's code in the entry. A colour's entry carries pydantic's code, such as `string_pattern_mismatch`. Reading one slot's sentences is the same filter in every case:
+The two refusals of a logo URI that come before any file is read, `pipelex.storage.uri_invalid` and another organization's `pipelex.org.mismatch`, name the slot the same way, with the refusal's code on the item. Reading one slot's sentences is the same filter in every case:
 
 ```ts
 try {
   await client.updateOrganizationBranding(orgId, { square_logo: uri });
 } catch (err) {
   if (!(err instanceof ApiResponseError)) throw err;
-  const underSquare = (err.errors ?? [])
-    .filter((entry) => entry.field === "square_logo")
-    .map((entry) => entry.detail);
+  const underSquare = (err.problem.errors ?? [])
+    .filter((item) => item.location?.field === "square_logo")
+    .map((item) => item.detail);
   // Show `underSquare` under the square logo's slot; an error naming no field goes in a toast.
 }
 ```

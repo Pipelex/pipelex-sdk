@@ -17,22 +17,24 @@ interface AppPageProps {
  * A branded app — one whose organization set at least one logo or colour —
  * renders three things more, and an unbranded one renders exactly as before:
  *
- * - **its colours**, as a `<style>` setting the tokens the controls read on
- *   the document's root, so a popover portalled to `<body>` wears them too:
- *   the light set under `:root` and the dark one under `.dark`
- *   (`src/lib/brandStyle.ts`);
+ * - **its colours**, when it set any, as a `<style>` setting the tokens the
+ *   controls read on the document's root, so a popover portalled to `<body>`
+ *   wears them too: the light set under `:root` and the dark one under
+ *   `.dark` (`src/lib/brandStyle.ts`), each holding only the tokens the
+ *   team's colours produce, so the template's own stay for the rest;
  * - **its band** across the top, with the logo (`BrandBand`);
  * - **the "Made with Pipelex" credit** at the end of the page (`MadeWithPipelex`).
  *
  * The page heading stays the app's own title, below the band.
  */
 export function AppPage({ branding }: AppPageProps) {
+  const sheet = branding !== null ? brandStyleSheet(branding) : "";
   return (
     <>
-      {branding !== null && (
+      {sheet !== "" && (
         // The sheet's values are hex colours derived on the server, which
         // `brandStyleSheet` checks one by one, never text from the API.
-        <style dangerouslySetInnerHTML={{ __html: brandStyleSheet(branding) }} />
+        <style dangerouslySetInnerHTML={{ __html: sheet }} />
       )}
       {branding !== null && (
         <BrandBand

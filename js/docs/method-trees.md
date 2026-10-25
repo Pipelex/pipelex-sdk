@@ -33,7 +33,7 @@ const verdict = await client.validate({
 
 **A directory is listed by the standard's lister.** The client loads the `mthds` package's `listMethodTree` when a call gives a `directory`, and lists it under the MTHDS standard's membership rule and Manifest Discovery: the tree is rooted at the nearest `METHODS.toml` at or above the directory, else at the directory itself, and holds every file the rule keeps. Hidden entries, `node_modules`, `__pycache__`, what a `.gitignore` or the manifest's `exclude` keeps out, and **a run's inputs file** (`inputs.json`, `inputs.toml`) never travel with the method. A tree holding a symbolic link or a special file is refused rather than followed. The directory is listed under the limits the deployment announces (below), so a tree the deployment would refuse for its size is refused while it is listed, before any file is hashed. Every refusal is a `RequestArgumentError` naming the call and the directory, whose `cause` is `mthds`'s `MethodTreeError`, with its `code` (`not_found`, `symbolic_link`, `limit_exceeded`, `empty_tree` and the rest). Listing needs Node: the lister comes from the Node host ([architecture.md](./architecture.md#the-node-host)), so a bundle built for the browser holds none of it, and a `directory` given outside Node is refused with `RequestArgumentError` before the version handshake, so before any request, and a browser gives `contents`, `tree` or `files`.
 
-**A map in memory.** A text in `contents` is encoded in UTF-8, and a text a file cannot hold, one carrying a lone surrogate, is refused, as is a value that is neither a string nor a `Uint8Array`. The keys are sent as they are, and the platform refuses one that is not a tree path with the `422` `invalid_method_files` naming it.
+**A map in memory.** A text in `contents` is encoded in UTF-8, and a text a file cannot hold, one carrying a lone surrogate, is refused, as is a value that is neither a string nor a `Uint8Array`. The keys are sent as they are, and the platform refuses one that is not a tree path with a `422` `method.package_invalid` whose `params` name its `path`.
 
 **One form, and never an empty tree.** Two forms at once are refused with a `RequestArgumentError` before anything is read or sent. A `files` map, `contents` or a `tree` holding no file is refused too on the run routes and on `validate`, as the standard refuses it: a tree holds at least one file. On the crate routes and in `prepareInputs`, an empty map is absent instead, so it never reaches the wire as a second selector, and in a save `files: null` empties the draft. An empty `directory` string is absent everywhere.
 
@@ -46,42 +46,41 @@ A tree given as a `directory`, `contents` or `tree` is sent by the rule the `mth
 
 A `files` map is sent as given, with no handshake. A run's `start` carrying a tree, a run that names a `method_ref`, and a start whose `extra` carries a method bundle (`mthds_contents` or `bundle_b64`, as the `pipelex-sdk` command sends one) get the client's request ceiling rather than the 30-second start budget, since the body can be large. On the crate routes, a request whose `files` carry more than `INLINE_TREE_MAX_BYTES` inline, as a tree sent to an API keeping no blob store or a `files` map given as is may, gets the request ceiling too rather than the 30-second budget of a static route ([crate-routes.md](./crate-routes.md)). A save carrying a tree (`createMethod`, `writeDraft`), inline or by hash, gets the request ceiling as well, rather than the 30-second budget of a save sending none, since a tree sent inline to an API keeping no blob store can be large and its whole upload is charged against the budget.
 
-**A refusal of the tree's size is sent once more.** When the API refuses a tree the client prepared, a `directory`, `contents` or `tree`, as past one of its limits (a `422` coded `method_tree_too_large`, or `method.package_invalid` naming a limit, or of type `MethodTreeTooLarge`), the handshake that announced the limits may be stale: the client forgets it, prepares the tree again on a fresh one and sends the request once more, as `mthds`'s client does. A `files` map given as is was not prepared from the handshake, so it is not sent again, and neither is a `start` under an idempotency key, since the platform binds the key to the refusal it stores.
+**A refusal of the tree's size is sent once more.** When the API refuses a tree the client prepared, a `directory`, `contents` or `tree`, as past one of its limits (a `422` `method.package_invalid` whose `params` carry `reason` `too_large` and an integer `limit`), the handshake that announced the limits may be stale: the client forgets it, prepares the tree again on a fresh one and sends the request once more, as `mthds`'s client does. A `files` map given as is was not prepared from the handshake, so it is not sent again, and neither is a `start` under an idempotency key, since the platform binds the key to the refusal it stores.
 
 **Stopping a call.** A call that takes a `signal` (`validate`, `startAndWaitForResult`, the crate routes, `prepareInputs`) reads it before each step a `directory`, `contents` or `tree` costs and hands it to the step's request, so an abort stops the version handshake, the directory's listing, the blob route, a file's read and an upload already under way, and nothing further starts.
 
 A `MethodTree` reads a file again whenever its bytes are sent, inline or as an upload, and checks it against the hash its listing recorded, so a file changed since the listing is refused by `mthds` rather than sent as another tree than the one listed. Apart from listing a directory, sending a tree reads no Node module: hashing is Web Crypto's, and Base64 is written by the SDK.
 
-**What is uploaded is what the listing names.** Before each upload the client hashes the bytes a tree's `readFile` gives and refuses them, with a `RequestArgumentError`, unless they have the size and the SHA-256 the tree lists for them: a blob is stored under its hash for the whole organization, so a hand-built `MethodTreeSource` whose `readFile` disagrees with its listing never stores other bytes under that hash. An answer of `POST /v1/blobs/missing` asking for a blob the tree does not hold is the platform's fault, not the caller's: it is an `ApiResponseError` of an answer the SDK cannot read, verdict `runtime` and not retryable, thrown before any upload. An upload that fails throws `MethodFileTransferError` with `operation` `upload`, and the request is not sent or the method not saved ([below](#when-a-transfer-fails)).
+**What is uploaded is what the listing names.** Before each upload the client hashes the bytes a tree's `readFile` gives and refuses them, with a `RequestArgumentError`, unless they have the size and the SHA-256 the tree lists for them: a blob is stored under its hash for the whole organization, so a hand-built `MethodTreeSource` whose `readFile` disagrees with its listing never stores other bytes under that hash. An answer of `POST /v1/blobs/missing` asking for a blob the tree does not hold is the platform's fault, not the caller's: it is an `ApiResponseError` of an answer the SDK cannot read, `client.response_unreadable`, thrown before any upload. An upload that fails throws `MethodFileTransferError` with `operation` `upload`, and the request is not sent or the method not saved ([below](#when-a-transfer-fails)).
 
-**A blob that went missing.** A request whose hash entries name a blob the API does not hold is refused with a `422` `missing_blobs` listing them all, which also releases a start's idempotency key. A request built from a `directory`, `contents` or `tree` uploads every blob it names first, so it meets this only if a blob was removed between the upload and the request. The client answers it as `mthds`'s client does: a `422` problem coded `request.blobs_missing`, whose `params.missing_blobs` names blobs the tree holds, has those blobs asked of the blob route again, uploaded and the request sent once more, while the platform's `missing_blobs` code is not read as one and is thrown, so sending the same call again asks the blob route afresh and uploads what is missing.
+**A blob that went missing.** A request whose hash entries name a blob the API does not hold is refused with a `422` `request.blobs_missing` whose `params.missing_blobs` lists them all, which also releases a start's idempotency key. A request built from a `directory`, `contents` or `tree` uploads every blob it names first, so it meets this only if a blob was removed between the upload and the request. The client answers it as `mthds`'s client does: when the listed blobs are ones the tree holds, it asks the blob route for them again, uploads them and sends the request once more; any other answer is thrown, so sending the same call again asks the blob route afresh and uploads what is missing.
 
 On the crate routes, `read_scope` is the scope the blob route is asked under, so the blobs are uploaded into the store the request's hash entries are read from; the hosted platform reads the caller's organization whatever the request says ([crate-routes.md](./crate-routes.md#the-shared-envelope)).
 
 ## The files a step reads
 
-A file a step reads, such as a `PipeDocGen` step's `template_file` (the Word, Excel or PowerPoint template it fills, or the HTML template it prints as a PDF), is a file of the tree like any other, at the tree path the step names from the root. A `directory` sends it with the bundles; a `contents` or `files` map carries it under its tree path. A step that names a file the tree does not hold cannot load: on `validate`, `pipeIo`, `resolve` and `codegen` that is an `is_valid: false` verdict whose validation error says the file is missing, `prepareInputs` throws it as a `MethodLoadError`, and on `execute` and `start` it is a `422` `ValidateBundleError`, whose `validationErrors` say the same.
+A file a step reads, such as a `PipeDocGen` step's `template_file` (the Word, Excel or PowerPoint template it fills, or the HTML template it prints as a PDF), is a file of the tree like any other, at the tree path the step names from the root. A `directory` sends it with the bundles; a `contents` or `files` map carries it under its tree path. A step that names a file the tree does not hold cannot load: on `validate`, `pipeIo`, `resolve` and `codegen` that is an `is_valid: false` verdict whose problem item says the file is missing (`method.resource_missing`), `prepareInputs` throws it as a `MethodLoadError`, and on `execute` and `start` it is a `422` problem whose `errors` say the same.
 
 ### The template check's warnings
 
-A dry run hands an office template file of the tree to the document engine's template check. An error finding fails the step's dry run, and so the verdict, as a `dry_run` validation error on the step. A warning finding, such as a field of the template that matches no input, rides the valid verdict's `warnings` as a `template_check_warning` item:
+A dry run hands an office template file of the tree to the document engine's template check. An error finding fails the step's dry run, and so the verdict, as a problem item on the step. A warning finding, such as a field of the template that matches no input, rides the valid verdict's `warnings` as a problem item coded `pipelex.docgen.template_warning`:
 
 | Member | Value |
 | --- | --- |
-| `category` | `dry_run` |
-| `error_type` | `template_check_warning` |
-| `pipe_code`, `domain_code` | The `PipeDocGen` step |
-| `template_file` | The template file as the step names it; `null` for a step of the server's own library, whose path is never shown |
-| `template_location` | The place in the file the finding names, in the engine's words (a defined name, a table, a cell, a shape, a tag); `null` when it names none |
-| `message` | The finding in words |
+| `code` | `pipelex.docgen.template_warning` |
+| `location.pipe` | The `PipeDocGen` step |
+| `params.template` | The template file as the step names it |
+| `params.finding` | The finding in the engine's words |
+| `detail` | The sentence a person reads, naming the template and the finding |
 
-The warnings come in families, always in this order: `optional_force_redundant`, `input_presence_vacuous`, the `hint_*` lints, then `template_check_warning`. None of them flips `is_valid`.
+The warnings come in families, always in this order: `method.optional_force_redundant`, `method.input_presence_vacuous`, the hint lints (`method.hint_invalid`), then `pipelex.docgen.template_warning`. None of them flips `is_valid`.
 
 ```ts
 if (verdict.is_valid) {
   for (const warning of verdict.warnings) {
-    if (warning.error_type === "template_check_warning") {
-      console.warn(`${warning.template_file ?? "?"} ${warning.template_location ?? ""}: ${warning.message}`);
+    if (warning.code === "pipelex.docgen.template_warning") {
+      console.warn(`${warning.location?.pipe ?? "?"}: ${warning.detail}`);
     }
   }
 }
@@ -127,11 +126,11 @@ The save is refused, with the `ApiResponseError` of its problem, when the platfo
 
 | Status and `code` | When |
 |---|---|
-| `422` `invalid_method_files` | The map breaks the standard's rules, a path that is not a tree path or two paths that collide among them; the problem's `tree_refusal` names the rule. |
-| `422` `method_tree_too_large` | The tree passes one of the deployment's limits, which the problem's `limit` names. |
-| `422` `blob_mismatch` | A hash entry states another size than the blob the organization holds under that hash. |
-| `422` `missing_blobs` | A hash entry names bytes the organization does not hold (above). |
-| `413` `payload_too_large` | The method would leave no room for the summary a publish adds. |
+| `422` `method.package_invalid` | The map breaks the standard's rules, a path that is not a tree path or two paths that collide among them; the problem names the path. |
+| `422` `method.package_invalid` | The tree passes one of the deployment's limits, which the problem's `params` name (`reason` `too_large` and the `limit`). |
+| `422` `request.invalid` | A hash entry states another size than the blob the organization holds under that hash. |
+| `422` `request.blobs_missing` | A hash entry names bytes the organization does not hold (above). |
+| `413` `request.too_large` | The method would leave no room for the summary a publish adds. |
 
 ## The deployment's limits
 
@@ -162,7 +161,7 @@ An empty draft lists no file and has a `draft_digest` of `null`. The listing pag
 
 **A link is a bearer credential.** Anyone holding it reads the file until it expires, so it belongs in no log, message or stored record; this SDK puts it in none of its errors, not even when the answer that carried it cannot be read. A read that fails because a link expired succeeds once the method is read again.
 
-A method whose draft names a tree the platform holds no record of answers `getMethod` with a `409` whose verdict is `runtime`, and a version stored before methods were trees and never rewritten as one names no tree to serve, so `getMethodVersion` answers it with `409` `conflict`, whose verdict is `runtime` too. An answer whose `files` is not a listing, each entry with its string `path`, `url` and `expires_at`, a `sha256` of 64 lower-case hex digits and a non-negative integer `size`, is an `ApiResponseError` naming the entry at fault. Such an answer, like any other the SDK cannot read from these two routes or from `POST /v1/blobs/missing`, reaches its error redacted: `responseBody` has every `url` member and every link's query replaced by `[redacted]`, and the error keeps no `cause`, since a parse failure can quote the body.
+A method whose draft names a tree the platform holds no record of answers `getMethod` with a `500` `runtime.unexpected`, and a version stored before methods were trees and never rewritten as one names no tree to serve, so `getMethodVersion` answers it with `500` `runtime.unexpected` too. An answer whose `files` is not a listing, each entry with its string `path`, `url` and `expires_at`, a `sha256` of 64 lower-case hex digits and a non-negative integer `size`, is an `ApiResponseError` naming the entry at fault. Such an answer, like any other the SDK cannot read from these two routes or from `POST /v1/blobs/missing`, reaches its error redacted: `responseBody` has every `url` member and every link's query replaced by `[redacted]`, and the error keeps no `cause`, since a parse failure can quote the body.
 
 ## Writing a tree to disk
 
@@ -179,16 +178,16 @@ Each file is downloaded through its link, at most eight at a time, with no crede
 
 ## When a transfer fails
 
-`MethodFileTransferError` is thrown when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a request or a save that sends a tree by hash, `download` for `writeMethodTree`), `code` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps no `cause`: the failure `fetch` throws for a request that got no answer can quote the URL, so only its network code (`ECONNREFUSED`, `ABORT_TIMEOUT`) reaches the message.
+`MethodFileTransferError` is thrown when a file could not be moved between this machine and storage. `operation` says which way (`upload` for a request or a save that sends a tree by hash, `download` for `writeMethodTree`), `reason` why, `sha256` which bytes, `path` the tree path when one is known, and `status` storage's HTTP status when it answered. Neither its message nor any member carries the link, nor storage's error body, which can echo the signed request, and it keeps no `cause`: the failure `fetch` throws for a request that got no answer can quote the URL, so only its network code (`ECONNREFUSED`, `ABORT_TIMEOUT`) reaches the message.
 
-| `code` | When | Retryable |
+| `reason` | When | Its problem |
 |---|---|---|
-| `unreachable` | Storage gave no answer: the connection failed or the time limit ran out. | yes |
-| `storage_error` | Storage timed out or throttled the request (`408`, `429`) or failed (a `5xx` other than `501`). | yes |
-| `refused` | Storage refused the request with any other status, an expired link among them. Read the method again for fresh links. | no |
-| `mismatch` | A download's bytes are not the file the listing names: another size, or another SHA-256. | yes |
+| `unreachable` | Storage gave no answer: the connection failed or the time limit ran out. | `runtime.unavailable` |
+| `storage_error` | Storage timed out or throttled the request (`408`, `429`) or failed (a `5xx` other than `501`). | `runtime.unavailable` |
+| `refused` | Storage refused the request with any other status, an expired link among them. Read the method again for fresh links. | `client.response_unreadable` naming the status, `runtime.unsupported` for a `501` |
+| `mismatch` | A download's bytes are not the file the listing names: another size, or another SHA-256. | `client.response_unreadable` |
 
-Its `errorDomain` is always `runtime`. An upload to a target that asks for a create-only write (`If-None-Match`) and answers `412` is not a failure: the bytes are already stored.
+An upload to a target that asks for a create-only write (`If-None-Match`) and answers `412` is not a failure: the bytes are already stored.
 
 ## What changed from the source fields
 

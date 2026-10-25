@@ -408,22 +408,11 @@ describe("runValidateStage, on an invalid verdict", () => {
 
     const stage = await runValidateStage(edited, { client: client(), timeoutMs: 5_000 });
 
+    // Well-formed items are read whole, as every verdict of the SDK reads them (`readProblemItems`).
     expect(stage).toEqual({
       status: "invalid",
       message: "The method does not validate.",
-      errors: [
-        {
-          code: "method.input_undeclared",
-          detail: "Pipe 'greet_visitor' reads names its inputs do not declare: visitor.",
-          location: { pipe: "greet_visitor", file: "main.mthds" },
-        },
-        {
-          code: "method.model_unknown",
-          detail: "The llm model 'gpt-5.1' is not one the runtime knows.",
-          location: { pipe: "greet_visitor" },
-          suggested_fix: PROBLEM_ITEMS[1]!.suggested_fix,
-        },
-      ],
+      errors: PROBLEM_ITEMS,
       renderedMarkdown: "# Validation failed",
       withheld: [],
     });

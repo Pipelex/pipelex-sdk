@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 
 import { PipelexApiClient } from "../src/client.js";
 import {
   ApiResponseError,
-  errorVerdictOf,
   RequestArgumentError,
   RunLifecycleUnavailableError,
 } from "../src/errors.js";
@@ -11,6 +11,7 @@ import { isFresherRunProgress } from "../src/runs.js";
 import type { ProgressInvocation, RunDegradation, RunProgress } from "../src/runs.js";
 import type { PipelineRun } from "../src/product-models.js";
 import * as sdk from "../src/index.js";
+import { problemResponse } from "./helpers/problems.js";
 
 const BASE_URL = "http://localhost:8081";
 const PROGRESS_URL = `${BASE_URL}/v1/runs/run-1/progress`;
@@ -255,19 +256,13 @@ describe("PipelexApiClient.getRunProgress", () => {
     expect((error as ApiResponseError).message).toBe(
       `API GET /v1/runs/run-1/progress answered 200 with a snapshot whose ${fault}`,
     );
-    expect(errorVerdictOf(error)).toEqual({ retryable: false, errorDomain: "runtime" });
+    expect((error as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
   });
 
   it("surfaces the platform's run-not-found 404 as ApiResponseError", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, {
-        type: "https://pipelex.com/errors/not-found",
-        code: "not_found",
-        title: "Not found",
-        status: 404,
-        detail: "Run not found",
-      }),
+      problemResponse("run.not_found", 404, { detail: "Run not found" }),
     );
 
     const error = await client.getRunProgress("run-1").catch((e: unknown) => e);

@@ -210,14 +210,14 @@ describe("e2e validate (/v1/validate)", () => {
     expect((result as PipelexValidationReport).input_form).toBeUndefined();
   });
 
-  it("returns is_valid: false with structured validation_errors for a broken bundle", async () => {
+  it("returns is_valid: false with its errors as problem items for a broken bundle", async () => {
     const result = await client.validate({ files: { "main.mthds": INVALID_WIRING_BUNDLE } });
     expect(result.is_valid).toBe(false);
     const report = result as PipelexInvalidReport;
-    expect(report.validation_errors.length).toBeGreaterThan(0);
-    for (const item of report.validation_errors) {
-      expect(item.category).toBeTruthy();
-      expect(item.message.length).toBeGreaterThan(0);
+    expect(report.errors.length).toBeGreaterThan(0);
+    for (const item of report.errors) {
+      expect(item.code).toBeTruthy();
+      expect(item.detail.length).toBeGreaterThan(0);
     }
   });
 
@@ -226,6 +226,6 @@ describe("e2e validate (/v1/validate)", () => {
     expect(result.is_valid).toBe(false);
     const report = result as PipelexInvalidReport;
     // The structured-info invariant: even a parse failure carries at least one item.
-    expect(report.validation_errors.length).toBeGreaterThan(0);
+    expect(report.errors.length).toBeGreaterThan(0);
   });
 });

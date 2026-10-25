@@ -11,10 +11,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.product_models import FileRole, RunFileMark, RunFilesState
-from tests.unit.conftest import BASE_URL
+from tests.unit.conftest import BASE_URL, problem_document
 from tests.unit.test_data import FileBodies
 
 if TYPE_CHECKING:
@@ -95,14 +94,14 @@ class TestClientRunFileListing:
             asyncio.run(api_client.list_run_files("run_7"))
 
         assert str(exc_info.value) == "API GET /v1/runs/run_7/files answered 200 with a body that is not the answer the route returns"
-        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert exc_info.value.problem.code == "client.response_unreadable"
 
     def test_list_raises_for_another_organizations_run(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(404, json_body={"status": 404, "code": "run_not_found", "detail": "Run not found."}))
+        patch_send(api_client, wire_response(404, json_body=problem_document("run.not_found", 404, detail="Run not found.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.list_run_files("run_7"))
 
-        assert exc_info.value.code == "run_not_found"
+        assert exc_info.value.problem.code == "run.not_found"

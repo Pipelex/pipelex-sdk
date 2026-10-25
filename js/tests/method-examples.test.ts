@@ -4,9 +4,11 @@
  * method builds and the answers it reads, all against a mocked fetch.
  */
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
-import { ApiResponseError, RequestArgumentError, errorVerdictOf } from "../src/errors.js";
+import { ApiResponseError, RequestArgumentError } from "../src/errors.js";
 import { stringifyExactJson } from "../src/exact-json.js";
+import { problemResponse } from "./helpers/problems.js";
 import type {
   MethodExample,
   MethodExampleAssistantSaveInput,
@@ -240,7 +242,7 @@ describe("createMethodExample", () => {
     expect((err as Error).message).toBe(
       `createMethodExample() needs the example's name and its inputs; got ${got}.`,
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -264,14 +266,14 @@ describe("createMethodExample", () => {
       "createMethodExample() takes a run_id naming a run of this method that used these " +
         `inputs, a non-empty string, or none; got ${got}.`,
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("surfaces a run that is not the method's as a 404 run_not_found", async () => {
+  it("surfaces a run that is not the method's as a 404 run.not_found", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, { status: 404, code: "run_not_found", detail: "No run run_9." }),
+      problemResponse("run.not_found", 404, { detail: "No run run_9." }),
     );
 
     const err = await client
@@ -279,14 +281,17 @@ describe("createMethodExample", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).code).toBe("run_not_found");
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ApiResponseError).code).toBe("run.not_found");
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
   });
 
-  it("surfaces an example too large to store as a 413 payload_too_large", async () => {
+  it("surfaces an example too large to store as a 413 request.too_large", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(413, { status: 413, code: "payload_too_large", detail: "Over 400 KB." }),
+      problemResponse("request.too_large", 413, {
+        detail: "Over 400 KB.",
+        params: { limit: 409600, size: 500000 },
+      }),
     );
 
     const err = await client
@@ -295,8 +300,8 @@ describe("createMethodExample", () => {
 
     expect(err).toBeInstanceOf(ApiResponseError);
     expect((err as ApiResponseError).status).toBe(413);
-    expect((err as ApiResponseError).code).toBe("payload_too_large");
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ApiResponseError).code).toBe("request.too_large");
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
   });
 
   it("throws a typed ApiResponseError for an answer that is not an object", async () => {
@@ -308,7 +313,7 @@ describe("createMethodExample", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
   });
 });
 
@@ -454,10 +459,10 @@ describe("getMethodExample", () => {
     expect(onlyRequest(spy).url).toBe(`${BASE_URL}/v1/methods/${METHOD_ID}/examples/ex%2F1%3Fx`);
   });
 
-  it("surfaces an unknown example as a 404 not_found", async () => {
+  it("surfaces an unknown example as a 404 pipelex.catalog.not_found", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, { status: 404, code: "not_found", detail: "No example." }),
+      problemResponse("pipelex.catalog.not_found", 404, { detail: "No example." }),
     );
 
     const err = await client
@@ -465,8 +470,8 @@ describe("getMethodExample", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).code).toBe("not_found");
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ApiResponseError).code).toBe("pipelex.catalog.not_found");
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
   });
 });
 
@@ -533,7 +538,7 @@ describe("updateMethodExample", () => {
     expect((err as Error).message).toBe(
       "updateMethodExample() needs a new name, new inputs, or both; got neither.",
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -548,7 +553,7 @@ describe("updateMethodExample", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: true });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "yes" });
   });
 });
 
@@ -626,7 +631,7 @@ describe("recordMethodExampleLatestRun", () => {
       `API PUT /v1/methods/${METHOD_ID}/examples/${EXAMPLE_ID}/latest-run answered 200 with a ` +
         `latest-run result${what}`,
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
   });
 
   it.each([
@@ -681,7 +686,7 @@ describe("recordMethodExampleLatestRun", () => {
   it("surfaces an example deleted since as a 404, not as a verdict", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, { status: 404, code: "not_found", detail: "No example." }),
+      problemResponse("pipelex.catalog.not_found", 404, { detail: "No example." }),
     );
 
     const err = await client
@@ -689,7 +694,7 @@ describe("recordMethodExampleLatestRun", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).code).toBe("not_found");
+    expect((err as ApiResponseError).code).toBe("pipelex.catalog.not_found");
   });
 });
 
@@ -774,7 +779,7 @@ describe("saveAssistantMethodExample", () => {
       `API POST /v1/methods/${METHOD_ID}/examples/assistant-save answered 200 with an assistant ` +
         "save result whose `outcome` is not `kept` or `created`",
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
   });
 
   it.each([
@@ -823,13 +828,10 @@ describe("saveAssistantMethodExample", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("surfaces a runner's refusal as a 403 role_not_permitted", async () => {
+  it("surfaces a runner's refusal as a 403 auth.forbidden", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(403, {
-        status: 403,
-        code: "role_not_permitted",
-        error_domain: "config",
-        retryable: false,
+      problemResponse("auth.forbidden", 403, {
+        domain: "account",
         detail: "Your role in this organization is runner.",
       }),
     );
@@ -839,7 +841,7 @@ describe("saveAssistantMethodExample", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).code).toBe("role_not_permitted");
+    expect((err as ApiResponseError).code).toBe("auth.forbidden");
   });
 });
 
@@ -972,7 +974,7 @@ describe.each(EXAMPLE_READS)("an example %s answers", (_name, route, answer, whe
         `API ${route} answered ${response.status} with ${where} whose \`${field}\` is not ` +
           `${expected}`,
       );
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+      expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
     },
   );
 
@@ -1057,10 +1059,10 @@ describe("deleteMethodExample", () => {
     expect(req.body).toBeUndefined();
   });
 
-  it("surfaces an example already deleted as a 404 not_found", async () => {
+  it("surfaces an example already deleted as a 404 pipelex.catalog.not_found", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, { status: 404, code: "not_found", detail: "No example." }),
+      problemResponse("pipelex.catalog.not_found", 404, { detail: "No example." }),
     );
 
     const err = await client
@@ -1098,7 +1100,7 @@ describe("the example routes' ids", () => {
       expect((err as Error).message).toBe(
         `${name}() takes an example id, the example's non-empty \`example_id\`; got an empty string.`,
       );
-      expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+      expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
       expect(spy).not.toHaveBeenCalled();
     },
   );
@@ -1130,15 +1132,15 @@ describe("the example routes' ids", () => {
     },
   );
 
-  it("surfaces a method being deleted as a 409 method_being_deleted", async () => {
+  it("surfaces a method being deleted as a 409 pipelex.catalog.being_deleted", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, { status: 409, code: "method_being_deleted", detail: "Being deleted." }),
+      problemResponse("pipelex.catalog.being_deleted", 409, { detail: "Being deleted." }),
     );
 
     const err = await client.listMethodExamples(METHOD_ID).catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).code).toBe("method_being_deleted");
+    expect((err as ApiResponseError).code).toBe("pipelex.catalog.being_deleted");
   });
 });

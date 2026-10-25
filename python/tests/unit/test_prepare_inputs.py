@@ -49,7 +49,7 @@ from pipelex_sdk.crate_models import CrateInvalidReport, PipeIORequest, PipeIORe
 from pipelex_sdk.errors import ApiResponseError, InputPreparationError, InvalidInputValueError, MethodLoadError, RejectedAssetError
 from pipelex_sdk.prepare_inputs import prepare_inputs
 from pipelex_sdk.product_models import UploadedFile, UploadInput
-from tests.unit.conftest import refused_argument
+from tests.unit.conftest import problem_document, refused_argument
 from tests.unit.test_data import PipeIOBodies
 
 _BASE_URL = "http://localhost:8081"
@@ -456,13 +456,15 @@ class TestPrepareInputs:
         ("status", "body"),
         [
             (422, PipeIOBodies.REQUEST_SHAPE_REFUSAL),
-            (422, {**PipeIOBodies.UNKNOWN_PIPE_REFUSAL, "error_type": "MethodRefFetchError"}),
-            (404, {"detail": "Unknown method", "code": "not_found"}),
-            (500, {"detail": "PipeIOContractError", "error_type": "PipeIOContractError"}),
+            (422, problem_document("method.fetch_failed", 422, domain="method", detail="The repository could not be fetched.")),
+            (404, problem_document("pipelex.catalog.not_found", 404, detail="Unknown method")),
+            (404, {"detail": "Unknown method", "code": "request.pipe_not_found"}),
+            (500, problem_document("runtime.unexpected", 500, domain="runtime", detail="PipeIOContractError")),
         ],
     )
     def test_every_other_error_is_left_as_it_is(self, status: int, body: dict[str, Any]) -> None:
-        # Only the entry-lookup errors are a selection; a `422` of any other type is not.
+        # Only the problems of the pipe selection codes are a selection: a problem of any other code is not, nor a body
+        # that is no problem document, whatever members it carries.
         error = _api_error(status, body)
         client = _FakePrepareClient(pipe_io_error=error)
 
@@ -762,17 +764,15 @@ class TestPrepareInputs:
             str(exc_info.value)
             == "Cannot prepare inputs: the method signature did not resolve — Input 'doc' is declared but never read by the template."
         )
-        # Every item of the answer, and its own message, so a caller lists them rather than reading
+        # Every item of the answer, as a problem item of `method.invalid`, so a caller lists them rather than reading
         # the first out of a sentence.
-        assert [item.message for item in exc_info.value.validation_errors] == ["Input 'doc' is declared but never read by the template."]
-        assert exc_info.value.validation_errors[0].source == "smoke.mthds"
+        assert exc_info.value.problem.code == "method.invalid"
+        assert [item.model_dump(exclude_none=True) for item in exc_info.value.problem.errors or []] == PipeIOBodies.INVALID["errors"]
         assert exc_info.value.server_message == "1 validation error"
         assert client.upload_calls == []
 
     def test_surfaces_rejected_asset_before_returning(self) -> None:
-        error = ApiResponseError(
-            "HTTP 413", api_url=f"{_BASE_URL}/v1/upload", status=413, status_text="Payload Too Large", response_body="", server_message="too big"
-        )
+        error = ApiResponseError("HTTP 413", api_url=f"{_BASE_URL}/v1/upload", status=413, status_text="Payload Too Large", response_body="too big")
         client = _image_client(upload_error=error)
 
         with pytest.raises(RejectedAssetError):
@@ -845,7 +845,7 @@ class TestPrepareInputs:
         assert call.kwargs["request_timeout"] == 180.0
 
     def test_wires_a_refused_selection_off_the_wire(self, mocker: MockerFixture) -> None:
-        # The mapping reads `error_type` off the problem document the real client parses.
+        # The mapping reads the code of the problem document the real client parses.
         client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
         request = httpx.Request("POST", f"{_BASE_URL}/v1/pipe-io")
         mocker.patch.object(
@@ -863,7 +863,7 @@ class TestPrepareInputs:
 
         cause = exc_info.value.__cause__
         assert isinstance(cause, ApiResponseError)
-        assert cause.error_type == "EntryPipeNotFoundError"
+        assert cause.problem.code == "request.pipe_not_found"
 
 
 # ── An invalid value names its input (L-261012-a1ce83) ──────────────

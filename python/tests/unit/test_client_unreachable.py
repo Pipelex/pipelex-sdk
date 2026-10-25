@@ -55,7 +55,9 @@ class TestClientUnreachable:
         err = exc_info.value
         assert str(err) == f"Could not reach Pipelex API at {_BASE_URL} (ConnectError)"
         assert err.api_url == _BASE_URL
-        assert err.code == "ConnectError"
+        assert err.network_code == "ConnectError"
+        # A refused connection proves nothing was sent, even on a start.
+        assert (err.problem.code, err.problem.retry) == ("client.unreachable", "yes")
         assert isinstance(err.__cause__, httpx.ConnectError)
         # A caller catching the protocol's base error catches it, as it catches `ApiResponseError`.
         assert isinstance(err, PipelineRequestError)
@@ -69,31 +71,37 @@ class TestClientUnreachable:
         err = exc_info.value
         assert str(err) == f"Could not reach Pipelex API at {_BASE_URL} (timeout)"
         assert err.api_url == _BASE_URL
-        assert err.code == "ABORT_TIMEOUT"
+        assert err.network_code == "ABORT_TIMEOUT"
+        # A start or an execute timed out once the request had left may have started a run; `start_and_wait` times
+        # out on its handshake, before any start is sent.
+        assert err.problem.code == ("client.outcome_unknown" if route in {"execute", "start"} else "client.timeout")
         assert isinstance(err.__cause__, httpx.ReadTimeout)
 
     @pytest.mark.parametrize(
-        ("failure", "code"),
+        ("failure", "network_code", "code"),
         [
-            (httpx.ConnectError, "ConnectError"),
-            (httpx.ReadError, "ReadError"),
-            (httpx.RemoteProtocolError, "RemoteProtocolError"),
+            # No request left, so no run started.
+            (httpx.ConnectError, "ConnectError", "client.unreachable"),
+            # The request may have left before the connection failed, so a run may exist.
+            (httpx.ReadError, "ReadError", "client.outcome_unknown"),
+            (httpx.RemoteProtocolError, "RemoteProtocolError", "client.outcome_unknown"),
             # A request that reached the server and ran out of time while it was sent or answered.
-            (httpx.ReadTimeout, "ABORT_TIMEOUT"),
-            (httpx.WriteTimeout, "ABORT_TIMEOUT"),
+            (httpx.ReadTimeout, "ABORT_TIMEOUT", "client.outcome_unknown"),
+            (httpx.WriteTimeout, "ABORT_TIMEOUT", "client.outcome_unknown"),
             # No request was sent: never the client's own limit on one, so never the gateway's cut-off.
-            (httpx.ConnectTimeout, "ConnectTimeout"),
-            (httpx.PoolTimeout, "PoolTimeout"),
+            (httpx.ConnectTimeout, "ConnectTimeout", "client.unreachable"),
+            (httpx.PoolTimeout, "PoolTimeout", "client.timeout"),
         ],
     )
-    def test_every_transport_failure_carries_its_code(
-        self, unreachable_client: UnreachableClientBuilder, failure: type[httpx.TransportError], code: str
+    def test_every_transport_failure_on_a_start_carries_its_network_code_and_its_problem(
+        self, unreachable_client: UnreachableClientBuilder, failure: type[httpx.TransportError], network_code: str, code: str
     ) -> None:
         client = unreachable_client(failure)
 
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client.start(pipe_code="p"))
-        assert exc_info.value.code == code
+        assert exc_info.value.network_code == network_code
+        assert exc_info.value.problem.code == code
         assert isinstance(exc_info.value.__cause__, failure)
 
     def test_start_and_wait_raises_an_unreachable_handshake_and_sends_no_start(self, unreachable_client: UnreachableClientBuilder) -> None:

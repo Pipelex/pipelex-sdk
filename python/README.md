@@ -148,7 +148,7 @@ async for saved in client.iterate_method_examples("mt_123"):  # every example, o
 
 ### Copy a method into a team
 
-A copy is a new, unpublished method in an organization you may change methods in, holding the original's draft, its form inputs and its examples, the stored files they name copied with it, and `copied_from` naming the original. Only a web session may copy. A bundle naming storage the destination cannot read answers `refused`, a verdict rather than an error, and the idempotency key makes a retry copy once ([`docs/method-copy.md`](docs/method-copy.md)):
+A copy is a new, unpublished method in an organization you may change methods in, holding the original's draft, its form inputs and its examples, the stored files they name copied with it, and `copied_from` naming the original. Only a web session may copy. A bundle naming storage the destination cannot read, or, in a duplicate, a file under the original's run files, which erasing the original would remove, answers `refused`, a verdict rather than an error, and the idempotency key makes a retry copy once ([`docs/method-copy.md`](docs/method-copy.md)):
 
 ```python
 import uuid
@@ -264,7 +264,7 @@ else:
     print(verdict.other_kinds, verdict.suggestions)  # what the caller may have meant
 ```
 
-A reference the runner cannot read at all (blank, a sigil alone, too long) or an unknown category raises `ApiResponseError`, a `422` whose `error_type` is `InvalidModelReference` or `InvalidModelCategory`.
+A reference the runner cannot read at all (blank, a sigil alone, too long) or an unknown category raises `ApiResponseError`, a `422` `request.invalid` whose problem's `location.field` is `reference` or `type`.
 
 ### Long runs: start + poll explicitly
 
@@ -294,53 +294,56 @@ result = await client.wait_for_result(
 import uuid
 
 from mthds.protocol.exceptions import PipelineRequestError
-
-from pipelex_sdk.error_verdicts import run_may_have_started_of
+from mthds.protocol.problem.models import RetryVerdict
 
 idempotency_key = str(uuid.uuid4())
 try:
     ack = await client.start(method_id="mt_abc123", inputs=inputs, idempotency_key=idempotency_key)
 except PipelineRequestError as exc:
-    if not run_may_have_started_of(exc):
-        raise
-    # The run may exist: under the same key, the same start is answered with it.
-    ack = await client.start(method_id="mt_abc123", inputs=inputs, idempotency_key=idempotency_key)
+    match exc.problem.effective_retry:
+        case RetryVerdict.OUTCOME_UNKNOWN:
+            # The run may exist: under the same key, the same start is answered with it.
+            ack = await client.start(method_id="mt_abc123", inputs=inputs, idempotency_key=idempotency_key)
+        case RetryVerdict.YES | RetryVerdict.NO:
+            raise
 ```
 
-A key is 1 to 255 visible ASCII characters; a key reused with other arguments is refused with a `409` `conflict`, and one whose earlier start is still being handled with a retryable `409` `idempotency_key_in_use` ([`docs/errors.md`](docs/errors.md#a-starts-idempotency-key--idempotency_key)). A bare runner ignores the header.
+A key is 1 to 255 visible ASCII characters; a key reused with other arguments is refused with a `409` `request.idempotency_conflict`, and one whose earlier start is still being handled with a `409` `request.idempotency_key_in_use` whose `retry` is `yes` ([`docs/errors.md`](docs/errors.md#a-starts-idempotency-key--idempotency_key)). A bare runner ignores the header.
 
-### When a run is refused: `ApiResponseError` says why and what to do next
+### Errors: every one carries its problem
 
-A method the plane will not run — a bundle naming a model the deck does not serve, a pipe whose output cannot be assembled — is refused before any result exists: `start`, `execute` and `start_and_wait` raise `ApiResponseError` on the `422`. Its message names the request, gives the reason and, on its own line, the next step the plane advises, so printing the error is already actionable:
-
-```text
-API POST /v1/start failed (422): Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found in the model deck
-
-Did you mean: gpt-5.5, gpt-5.4, gpt-5.6-sol, gpt-5.4-pro, gpt-5.6-luna
-Next step: Edit the bundle as each validation error says: apply its suggested fix where it has one, after confirming an unsafe one
-```
-
-A program reads the same thing as fields:
+Every error the SDK raises carries its failure as one problem document, the MTHDS standard's RFC 9457 document, under a registered code, as `exc.problem`, typed as the standard's `Problem`: the hosted API's own when it refused the request, the problem the platform stored when a run failed, and one the SDK builds under a `client.*` code for a failure it detects itself, such as a request that got no answer or an answer it cannot read. Every error raised over a request is a `PipelexRequestError`, itself the standard's `PipelineRequestError`, so one `except PipelineRequestError` covers them all. Read `problem.code` to branch on, `problem.effective_domain` for who must act (`input`, `method`, `account`, `operator` or `runtime`), `problem.effective_retry` for whether sending the same request again can succeed (`yes`, `no`, or `outcome_unknown` when a start may have created a run, which is looked up in the run history before anything is sent again, unless the start carried an `idempotency_key`, in which case sending it again unchanged recovers the run, [above](#a-start-you-can-retry-idempotency_key)), `problem.next_step` for what to do, `problem.retry_after`, and the `request_id` to hand to support. Branch on the problem, never on the HTTP status or the message.
 
 ```python
-from pipelex_sdk.errors import ApiResponseError
+from mthds.protocol.exceptions import PipelineRequestError
+from mthds.protocol.problem.models import ProblemDomain, RetryVerdict
 
 try:
-    result = await client.start_and_wait(pipe_code="pitch_product", contents={"main.mthds": bundle})
-except ApiResponseError as exc:
-    if exc.error_domain == "input":
-        for item in exc.validation_errors or []:
-            print(f"{item.pipe_code}: {item.message}")  # the failing pipe, typed as ValidationErrorItem
-        if exc.user_action is not None:
-            print(f"Next step: {exc.user_action.detail}")
+    results = await client.start_and_wait(method_id="mt_abc123", inputs=inputs)
+except PipelineRequestError as exc:
+    problem = exc.problem
+    match problem.effective_retry:
+        case RetryVerdict.OUTCOME_UNKNOWN:
+            return look_up_the_run_before_starting_again(problem)
+        case RetryVerdict.YES:
+            return schedule_retry(problem.retry_after)
+        case RetryVerdict.NO:
+            pass
+    match problem.effective_domain:
+        case ProblemDomain.INPUT | ProblemDomain.METHOD:
+            for item in problem.errors or []:
+                print(f"{item.location.pipe if item.location else '?'}: {item.detail}")
+            print(f"Next step: {problem.next_step.detail}")
+        case ProblemDomain.ACCOUNT | ProblemDomain.OPERATOR | ProblemDomain.RUNTIME:
+            print(problem.detail)
     raise
 ```
 
-`validation_errors` is set when the runner itemized its refusal at load; a run that failed during execution carries the pipe in `server_message` instead (`Pipe 'analyze_topics' failed (review_topics → analyze_topics): …`).
+A refused request raises an `ApiResponseError` whose `problem` is the hosted API's problem document as received, its `pipelex.*` code included, with every member the standard does not name, such as the `limit` a refusal past a bound names, on `problem.model_extra`; an answer whose body is no problem document, from the hosted edge, a gateway or a proxy, reads by its status. `status`, `status_text`, `response_body`, `headers` and `request_url` keep the answer itself. It is `mthds`'s own `ApiResponseError` narrowed, so `except mthds.runners.api.exceptions.ApiResponseError` catches it too. `MethodErrorCode` names the codes a method caller branches on, and `IdempotencyErrorCode` those of an `Idempotency-Key`.
 
-### When a run fails: `RunFailedError` carries the run's report
+A request that gets no answer — a refused connection, a host name that does not resolve, a TLS failure, a timeout — raises `ApiUnreachableError`, never httpx's own exception, with `api_url` the base URL and `network_code` the failure (`ABORT_TIMEOUT` when the client's own time limit ran out, otherwise httpx's class name). Its problem is `client.unreachable` or `client.timeout`, and `client.outcome_unknown` for a `start` or an `execute` that may have left this machine.
 
-A run that ends without a result — `FAILED`, `CANCELLED`, `TERMINATED` or `TIMED_OUT` — makes `wait_for_result`, `start_and_wait` and `download_artifacts` raise `RunFailedError`. Its message already names the status and the reason (`Run finished with status FAILED: <message>`), `status` is the typed `RunStatus`, and `error` is the run's stored error report, typed whole as `RunErrorReport` (`pipelex_sdk.error_models`): the runner's `error_type`, `message`, `title`, `type_uri`, `error_domain`, `error_category`, `retryable`, `user_action`, `provider_metadata`, `caller_facing_message`, `validation_errors`, and anything newer on `model_extra`. `error` is `None` for a run that ended with no report, such as one whose start failed or one cancelled with no completion callback carrying a report.
+On the hosted API, a run that ends without completing raises a `RunFailedError` from `wait_for_result`, `start_and_wait` and `download_artifacts`, and comes back as the `failed` arm of `get_run_result`. Its `problem` is `run.failed`, naming the run and its terminal status, and its `run_error` is the run's own problem, which `run.failed` nests as `run_error`: why the run did not succeed, under its own code (`run.cancelled`, `model.unavailable`, `method.invalid`, …), with its own `retry` and `next_step`. It is `None` when the run ended with no problem stored. The same problem is `RunRead.error` when you read the run's status, `RunResultFailed.error` from `get_run_result`, and `RunHistoryItem.error` in the run lists.
 
 ```python
 from pipelex_sdk.errors import RunFailedError
@@ -348,51 +351,11 @@ from pipelex_sdk.errors import RunFailedError
 try:
     result = await client.wait_for_result(run_id)
 except RunFailedError as exc:
-    report = exc.error
-    if report is None:
-        print(f"Run {exc.run_id} ended {exc.status} without a report.")
-    else:
-        print(f"{report.title}: {report.user_action.detail if report.user_action else report.message}")
-        if report.retryable:
-            ...  # the same run may succeed if started again
+    print(exc)  # names the run and its terminal status
+    print(exc.run_error.next_step.detail if exc.run_error else "No next step was given.")
 ```
 
-Branch on `error_domain` (`input`, `config`, `runtime`), `type_uri` and `retryable`, never on the wording of `message`. The platform serves the runner's STRICT projection of the report: `message` is the author's copy when `caller_facing_message` is `True` and `An internal error occurred.` otherwise, `user_action` comes only with caller-facing copy, `provider_metadata` keeps only `status_code` and `retry_after_seconds`, and `model`, `provider` and `migration` are `None`, so `message` can be shown as it comes and what a person should see is still your application's decision. The same report is on `RunRead.error` when you read the run's status, on `RunResultFailed.error` from `get_run_result`, and on `RunHistoryItem.error` in the run lists.
-
-### API errors: branch on `type_uri` and `error_domain`, not the HTTP status
-
-Every `/v1` route raises a typed `ApiResponseError` on a non-2xx answer, carrying the members of the RFC 9457 problem document: the protocol routes (`execute`, `start`, `validate`, `models`, `version`), the run status, progress and results reads, and the product routes — the account, methods, organization, billing, API-key, onboarding, storage and upload methods, `codegen`, `resolve`, `pipe_io` and `check_model_reference`, and the run records (`list_runs`, `iterate_runs`, `get_run_detail`, `update_run`). It is `mthds`'s own `ApiResponseError` narrowed, so `except mthds.runners.api.exceptions.ApiResponseError` catches it too; `health` raises one too, and `docs/architecture.md` lists the error regimes. A `2xx` the SDK cannot read — a body that is not JSON, such as a gateway's HTML page, or JSON that is not what the route answers — raises an `ApiResponseError` as well, carrying the `2xx` status and the parse failure as `__cause__`, `runtime` and not retryable ([`docs/errors.md`](docs/errors.md)). A failed `start` or blocking `execute` also says whether it may have created a run anyway, as `run_may_have_started`, read with `pipelex_sdk.error_verdicts.run_may_have_started_of`: when it is `True`, `retryable` is `False`, since asking again could start a second paid run, and the person should look the run up in the run history first ([`docs/errors.md`](docs/errors.md#a-failed-run-start--run_may_have_started)), unless the start carried an `idempotency_key`, in which case sending it again unchanged recovers the run ([above](#a-start-you-can-retry-idempotency_key)). The branch fields are `type_uri`, the problem's `type`, a stable URI naming the error class that every problem carries, and `error_domain`, the coarse class (`input` means the caller can fix it, `config` that a configuration change is needed, `runtime` that execution failed). `error_domain` and `retryable` are always decided: each is the member the server sent, which the runner sends on the problems it renders — a run route's refusal, and those of `codegen`, `resolve`, `pipe_io` and `check_model_reference`, which the hosted API relays from the runner — and the platform on the problems it renders itself once its deployment classifies them, and otherwise the SDK's fallback, read from the status, as on the platform's Lambda-backed routes today:
-
-```python
-from pipelex_sdk.errors import ApiResponseError
-
-try:
-    created = await client.create_pipelex_api_key(label="ci")
-    print(created.api_key)  # plaintext — returned only once
-except ApiResponseError as exc:
-    if exc.type_uri == "https://pipelex.com/errors/pipelex_api_key_limit_reached":
-        print("Per-account key limit reached — revoke an old key first.")
-    elif exc.type_uri == "https://pipelex.com/errors/validation_failed":
-        print(f"Fix the request: {exc.server_message}")
-    else:
-        print(f"Unexpected failure, request id {exc.request_id}")
-        raise
-```
-
-Branch on `error_domain` for the class — `if exc.error_domain == "input":` shows the caller what to fix, whatever the exact error, and `exc.retryable` says whether asking again can succeed ([`docs/errors.md`](docs/errors.md)). The rest of the document rides beside them: `server_message` (the `detail`), `title`, `instance`, `retryable`, `user_action` (a `ProblemUserAction`, kept only when it has a `kind` and a non-empty `detail`), `error_category`, the platform's field-level `errors`, `validation_errors` for a bundle fault, and `request_id` for a support request, read from the body or from the `X-Request-ID` header. The answer itself stays reachable as plain data: `status`, `headers` (lower-case names, so `exc.headers.get("retry-after")` reads a `429`'s delay) and `request_url`. `code` (the platform's closed code, such as `conflict`) and `error_type` (the runner's exception class name) are each surface's own finer code, and a client of that surface may branch on it too: on the platform's own problems `type_uri` is derived from `code` one to one, so `exc.code == MethodErrorCode.METHOD_NOT_PUBLISHED` and the matching `type_uri` read the same answer, while a problem the platform relays from the runner carries the runner's `type_uri` and `error_type` and no `code`. A code the caller does not know gets its generic handling, since the platform adds codes; `type_uri` and `error_domain` stay the fields to branch on across both surfaces. `problem_document` is the decoded document whole, for any member the SDK does not name, and `problem` is the same failure as the MTHDS standard reads it, the problem `mthds`'s own `ApiResponseError` carries, for a caller that handles both clients ([`docs/errors.md`](docs/errors.md#the-standards-problem-on-every-error)).
-
-### No answer at all: `ApiUnreachableError`
-
-When a request gets no answer — a refused connection, a host name that does not resolve, a TLS failure, a timeout — every method of the client raises `ApiUnreachableError`, never httpx's own exception: the protocol routes (`execute`, `start`, `validate`, `models`, `version`) as well as the run reads, `wait_for_result`, `start_and_wait`, the product routes and `health`. It carries `api_url`, the base URL that could not be reached, and `code`: `ABORT_TIMEOUT` when the client's own time limit ran out once the request had reached the API, while it was sent or answered, and otherwise the name of the httpx failure (`ConnectError`, `ReadError`, `ConnectTimeout`, `PoolTimeout`, …), which stays reachable as `__cause__`. Like `ApiResponseError`, it is a `PipelineRequestError`, so one `except PipelineRequestError` covers every failed request, and it is the standard's `ApiTransportError` too, carrying the standard's reading of the failure as `problem`. A blocking `execute` cut off by a timeout after about 28 seconds raises `PipelineExecuteTimeoutError` instead, pointing at `start_and_wait`.
-
-```python
-from pipelex_sdk.errors import ApiUnreachableError
-
-try:
-    result = await client.start_and_wait(pipe_code="pitch_product", contents={"main.mthds": bundle})
-except ApiUnreachableError as exc:
-    print(f"Could not reach the Pipelex API at {exc.api_url} ({exc.code}); check PIPELEX_BASE_URL and your network.")
-```
+[`docs/errors.md`](docs/errors.md) gives each class's problem, the reading of an answer that is no problem document, and the case file both SDKs run.
 
 ## Public import paths (no barrel)
 
@@ -400,10 +363,10 @@ There is no barrel import — package `__init__.py` files stay empty. Import eac
 
 - **Client & construction** — `from pipelex_sdk.client import PipelexAPIClient, DEFAULT_API_BASE_URL`
 - **Run lifecycle types** — `from pipelex_sdk.runs import RunStatus, RunPublic, RunRead, RunResults, RunResultState, WaitForResultOptions, PollInfo`, and the progress snapshot `RunProgress`, `RunProgressStatus`, `ProgressInvocation`, `ProgressInvocationStatus`, `ProgressBatch`, `ProgressCondition`, `ProgressFailure`, `ProgressAttempt` with `is_fresher_run_progress`
-- **Error reports** — `from pipelex_sdk.error_models import RunErrorReport, UserAction, ProviderErrorMetadata, MigrationErrorBlock, FieldError, ProblemUserAction, HostedProblemMembers`
+- **Problems** — the standard's `Problem` and `ProblemItem` from `mthds.protocol.problem.models`; `from pipelex_sdk.answer_reading import read_hosted_answer` for the SDK's reading of an answer, and `from pipelex_sdk.problem_items import read_problem_items` for problem items read member by member
 - **Product wire models** — `from pipelex_sdk.product_models import UserProfile, MethodData, MethodDetail, SavedMethodFile, MethodWriteInput, MethodDraftInput, MethodVersion, MethodVersionSummary, MethodPublished, MethodPublishUnchanged, MethodPublishRefused, Membership, MembershipsResponse, OrganizationBranding, OrganizationBrandingUpdate, BrandingColors, BrandingColorsUpdate, LogoDescriptor, SubscriptionResponse, PlanView, InvoiceView, OnboardingSubmission, UploadInput, UploadKind, UploadedFile, FileSummary, FileRecord, FileDetail, FileLinkTarget, FileLinked, FileLinkRefused, FileArchive, FileArchiveLimit, RunFilesPage, DraftFileFromFileResult, MethodExample, MethodExampleAssistantKept, MethodExampleAssistantCreated, RunHistoryItem, RunDetail, ...`; a method's tree is `mthds`'s own, `MethodTree` and `TreeLimits` from `mthds.method_tree.models` and `FileEntry` from `mthds.method_tree.file_entry`.
 - **Method selectors** — `from pipelex_sdk.method_selector import parse_method_selector, ParsedMethodSelector`
-- **Validation verdict types** — `from pipelex_sdk.validation_models import PipelexValidationResult, PipelexValidationReport, PipelexInvalidReport, ValidationErrorItem, SuggestedFix, TreeFileRead, TreeFileUse, VALIDATION_VIEW_INPUT_FORM, ...`
+- **Validation verdict types** — `from pipelex_sdk.validation_models import PipelexValidationResult, PipelexValidationReport, PipelexInvalidReport, TreeFileRead, TreeFileUse, VALIDATION_VIEW_INPUT_FORM, ...`
 - **Crate routes** — `from pipelex_sdk.crate_models import ResolveRequest, CodegenRequest, PipeIORequest, PipeIOValidReport, CrateInvalidReport, ...`, the requests and the two 200 arms of `resolve`, `codegen` and `pipe_io`, which take the method's tree as `files`, `tree` or `contents`
 - **Model reference check** — `from pipelex_sdk.model_reference_models import ModelReferenceVerdict, PresetReferenceVerdict, AliasReferenceVerdict, WaterfallReferenceVerdict, HandleReferenceVerdict, PresetMatch, AliasMatch, WaterfallMatch, HandleMatch, ModelCheckCategory, ModelReferenceKind, ModelReferenceResolution, ...`, the verdict of `check_model_reference`, one arm per reference kind
 - **Codegen tree** — `from pipelex_sdk.codegen_writer import write_codegen_tree, CodegenTreeWriteReport` to write one, `from pipelex_sdk.codegen_check import run_codegen_check, CodegenCheckReport, CodegenDrift, DriftCategory` to verify one, with the format primitives in `pipelex_sdk.codegen_lock` (`CodegenLock`, `parse_lock`, `load_lock`, `validate_artifact_path`, ...) and `pipelex_sdk.codegen_stamp` (`STAMPABLE_SUFFIXES`, `is_stampable_artifact_path`, `compute_content_hash`, `parse_stamped`, ...)

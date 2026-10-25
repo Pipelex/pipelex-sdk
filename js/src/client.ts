@@ -11,7 +11,13 @@ import type {
 // Method-source predicates come from the standard, not a local restatement: which
 // source combinations are legal is an invariant of `RunRequest` itself, so this
 // client and the MTHDS runners cannot disagree about what they reject.
-import { assertOneMethodSource, parseJsonBody } from "mthds/protocol";
+import {
+  assertOneMethodSource,
+  buildProblem,
+  isProblem,
+  parseJsonBody,
+  readProblemBody,
+} from "mthds/protocol";
 import type {
   CodegenRequest,
   CodegenResponse,
@@ -31,7 +37,6 @@ import type {
   ResolveRequest,
   ResolveResponse,
   ValidateMethodSelector,
-  ValidationErrorItem,
 } from "./models.js";
 import {
   assertArtifactSelection,
@@ -131,25 +136,21 @@ import type {
   UserProfile,
 } from "./product-models.js";
 import {
+  ABORT_TIMEOUT,
   ApiResponseError,
+  argumentInvalidProblem,
   ApiUnreachableError,
   MissingMainStuffError,
   PagingNotTerminatingError,
   PipelineExecuteTimeoutError,
-  PipelineRequestError,
+  ProblemError,
   RequestArgumentError,
   RunLifecycleUnavailableError,
   RunStillRunningError,
 } from "./errors.js";
-import {
-  isPlainObject,
-  isValidationItem,
-  readFieldError,
-  readMigration,
-  readProviderMetadata,
-  readRunErrorReport,
-} from "./error-models.js";
-import type { ProblemDetails, UserAction } from "./error-models.js";
+import { isPlainObject } from "./records.js";
+import { readProblemItems } from "./problem-items.js";
+import { outcomeUnknownProblem, readHostedAnswer, runIdNamedBy } from "./answer-reading.js";
 import {
   HANDSHAKE_TTL_MS,
   INLINE_TREE_MAX_BYTES,
@@ -344,8 +345,8 @@ export interface PipelexHostedRunExtensions {
    *
    * - **Alone** — the platform resolves the version the id names and runs its
    *   files, with the method's Python files beside them. A bare `mt_…` runs the
-   *   latest published version, a `409` `method_not_published` for a method never
-   *   published; `mt_…@<n>` runs version `n`, a `404` `method_version_not_found`
+   *   latest published version, a `409` `pipelex.catalog.not_published` for a method never
+   *   published; `mt_…@<n>` runs version `n`, a `404` `pipelex.catalog.not_found`
    *   for a version never published; `mt_…@draft` runs the draft. The suffix
    *   rides the string untouched, any other suffix is a `422`, and the answer's
    *   `method_version` says which version runs.
@@ -399,11 +400,11 @@ export interface PipelexStartRequestOptions {
    * The hosted API binds the key to the run the first request starts, before it dispatches it, so
    * the same start sent again under the same key is answered with that run's acknowledgement and
    * starts nothing, whatever became of the first attempt, for 24 hours. A failed start whose
-   * `runMayHaveStarted` is true can therefore be sent again unchanged, and recovers the run instead
-   * of paying for a second one. The same key with a different body is refused (`409` `conflict`),
-   * as is a key whose earlier request is still being handled (`409` `idempotency_key_in_use`,
-   * retryable: send it again under the same key in a few seconds); see `docs/errors.md`. A bare
-   * runner ignores the header.
+   * problem's `retry` is `outcome_unknown` can therefore be sent again unchanged, and recovers the
+   * run instead of paying for a second one. The same key with a different body is refused (`409`
+   * `request.idempotency_conflict`), as is a key whose earlier request is still being handled
+   * (`409` `request.idempotency_key_in_use`, whose `retry` is `yes`: send it again under the same
+   * key after its `retry_after`); see `docs/errors.md`. A bare runner ignores the header.
    *
    * A key is 1 to 255 visible ASCII characters (`!` to `~`, so no space); anything else, an empty
    * string included, is a `RequestArgumentError` before any request is sent, since a start sent
@@ -429,11 +430,12 @@ export interface MethodCopyRequestOptions {
    * can be sent again unchanged and makes one copy, not two. A verdict and a `4xx` refusal of the
    * copy are stored alike, so the same copy under the same key is answered the same again; a `5xx`
    * and a refusal for its timing (a `408`, `425` or `429`) are not stored, and a copy that failed
-   * with one left nothing visible, so the same key sends it afresh.
-   * The same key with a different body is refused (`409` `conflict`), as is a key whose earlier
-   * request is still being handled (`409` `idempotency_key_in_use`, retryable: send it again
-   * under the same key in a few seconds); a changed copy, such as one with a fresh draft token,
-   * goes under a new key. See `docs/method-copy.md`.
+   * with one left nothing visible, but for the `503` whose `detail` names the copy (see
+   * `copyMethod`), so the same key sends it afresh. The same key with a different body is refused
+   * (`409` `request.idempotency_conflict`, whose `retry` is `no`), as is a key whose earlier
+   * request is still being handled (`409` `request.idempotency_key_in_use`, whose `retry` is
+   * `yes`: send it again under the same key in a few seconds); a changed copy, such as one with a
+   * fresh draft token, goes under a new key. See `docs/method-copy.md`.
    *
    * A key is held to the rule a start's is (`PipelexStartRequestOptions.idempotencyKey`): 1 to
    * 255 visible ASCII characters, anything else a `RequestArgumentError` before any request.
@@ -567,8 +569,9 @@ type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 /**
  * Whether a request may create a run, which the transport hands to the errors it builds so that
- * they say whether the run may have started (`runMayHaveStarted`). Only `start` and `execute` set
- * it, with `STARTS_RUN`; every other request leaves it unset.
+ * their problem says whether the run may exist: `client.outcome_unknown`, whose `retry` is
+ * `outcome_unknown`, where it may. Only `start` and `execute` set it, with `STARTS_RUN`; every
+ * other request leaves it unset.
  */
 interface RunCreation {
   mayStartRun?: boolean;
@@ -619,9 +622,8 @@ const BARE_RUNNER_IMPLEMENTATION = "pipelex-api";
  *
  * Implements `MTHDSProtocol<DictPipeOutput>` so the protocol-execution methods
  * stay shaped like the standard's wire surface (`mthds/protocol`), all but
- * `validate`, whose verdict is the one the hosted plane answers: since protocol
- * `2.0.0` the protocol's verdict lists its faults as problem items, which the
- * hosted plane does not send yet (see `PipelexValidationResult`). The Pipelex
+ * `validate`, whose verdict is the one the hosted plane answers: the protocol's problem items
+ * beside members of the hosted plane's own (see `PipelexValidationResult`). The Pipelex
  * extensions (the crate and tools routes, the run lifecycle) ride on top.
  */
 
@@ -641,7 +643,7 @@ function requestBodyText(method: HttpMethod, url: string, body: unknown): string
     throw new RequestArgumentError(
       `The body of ${method} ${new URL(url).pathname} cannot be written as JSON, so nothing was ` +
         `sent: ${reason}`,
-      { cause: err },
+      { problem: argumentInvalidProblem("body", "not_json"), cause: err },
     );
   }
 }
@@ -687,6 +689,7 @@ function repeatedFilter(
   if (values.length === 0) {
     throw new RequestArgumentError(
       `${call}() takes "${name}" as one or more values; omit it to list every ${name}.`,
+      { problem: argumentInvalidProblem(name, "empty") },
     );
   }
   return values;
@@ -698,59 +701,132 @@ function inWords(items: readonly string[], conjunction: "and" | "or"): string {
   return `${items.slice(0, -1).join(", ")} ${conjunction} ${items[items.length - 1]}`;
 }
 
+/**
+ * An argument a call refuses: its parameter's name, which the refusal's problem names, and what it
+ * is, as its message says.
+ */
+interface CallArgument {
+  name: string;
+  what: string;
+}
+
 /** What each id a route puts in its path is, as a refusal of it names it. */
-const METHOD_ID_ARGUMENT = "a method id, the method's non-empty bare catalog id";
-const EXAMPLE_ID_ARGUMENT = "an example id, the example's non-empty `example_id`";
-const RUN_ID_ARGUMENT = "a run id, the run's non-empty `pipeline_run_id`";
-const ORG_ID_ARGUMENT = "an organization id, the organization's non-empty `org_id`";
-const API_KEY_ID_ARGUMENT = "an API key id, the key's non-empty `id`";
-const FILE_ID_ARGUMENT = "a file id, the file's non-empty `file_id`";
-const ARCHIVE_ID_ARGUMENT = "an archive id, the archive's non-empty `archive_id`";
+const METHOD_ID_ARGUMENT: CallArgument = {
+  name: "method_id",
+  what: "a method id, the method's non-empty bare catalog id",
+};
+const EXAMPLE_ID_ARGUMENT: CallArgument = {
+  name: "example_id",
+  what: "an example id, the example's non-empty `example_id`",
+};
+const RUN_ID_ARGUMENT: CallArgument = {
+  name: "run_id",
+  what: "a run id, the run's non-empty `pipeline_run_id`",
+};
+const ORG_ID_ARGUMENT: CallArgument = {
+  name: "org_id",
+  what: "an organization id, the organization's non-empty `org_id`",
+};
+const API_KEY_ID_ARGUMENT: CallArgument = {
+  name: "key_id",
+  what: "an API key id, the key's non-empty `id`",
+};
+const FILE_ID_ARGUMENT: CallArgument = {
+  name: "file_id",
+  what: "a file id, the file's non-empty `file_id`",
+};
+const ARCHIVE_ID_ARGUMENT: CallArgument = {
+  name: "archive_id",
+  what: "an archive id, the archive's non-empty `archive_id`",
+};
 
 /** What the run id of each example write is, as a refusal of it names it. */
-const CREATE_RUN_ID_ARGUMENT =
-  "a run_id naming a run of this method that used these inputs, a non-empty string, or none";
-const RECORD_RUN_ID_ARGUMENT =
-  "a run_id naming a run of this method that used the example's inputs, a non-empty string";
+const CREATE_RUN_ID_ARGUMENT: CallArgument = {
+  name: "run_id",
+  what: "a run_id naming a run of this method that used these inputs, a non-empty string, or none",
+};
+const RECORD_RUN_ID_ARGUMENT: CallArgument = {
+  name: "run_id",
+  what: "a run_id naming a run of this method that used the example's inputs, a non-empty string",
+};
 
 /** What the example an assistant save keeps current is, as a refusal of it names it. */
-const ASSISTANT_EXAMPLE_ID_ARGUMENT =
-  "an example_id naming the assistant's example the caller read, a non-empty string, or none";
-const ASSISTANT_REVISION_ARGUMENT =
-  "an input_revision, the revision the caller read the assistant's example at, a positive integer";
+const ASSISTANT_EXAMPLE_ID_ARGUMENT: CallArgument = {
+  name: "example_id",
+  what: "an example_id naming the assistant's example the caller read, a non-empty string, or none",
+};
+const ASSISTANT_REVISION_ARGUMENT: CallArgument = {
+  name: "input_revision",
+  what: "an input_revision, the revision the caller read the assistant's example at, a positive integer",
+};
 
 /** What each member of the files routes' bodies is, as a refusal of it names it. */
-const STORAGE_URI_ARGUMENT = "a `pipelex-storage://` address, a non-empty string";
-const RENAME_NAME_ARGUMENT = "the file's new name, a string";
-const LINK_TARGET_ARGUMENT =
-  "a file to link, an object naming exactly one of `file_id` and `uri`, each a non-empty string";
-const ARCHIVE_FILE_ID_ARGUMENT = "a file id to zip, a non-empty string";
-const ARCHIVE_RUN_ID_ARGUMENT = "a run_id naming the run whose files to zip, a non-empty string";
-const ARCHIVE_NAME_ARGUMENT = "a name for the zip, a string, or none";
-const DRAFT_PATH_ARGUMENT = "the tree path the file takes in the draft, a non-empty string";
-const DRAFT_TOKEN_ARGUMENT =
-  "the draft token the caller last read, the method's `updated_at`, a string, or none";
+const STORAGE_URI_ARGUMENT: CallArgument = {
+  name: "uri",
+  what: "a `pipelex-storage://` address, a non-empty string",
+};
+const RENAME_NAME_ARGUMENT: CallArgument = {
+  name: "name",
+  what: "the file's new name, a string",
+};
+const LINK_TARGET_ARGUMENT: CallArgument = {
+  name: "files",
+  what: "a file to link, an object naming exactly one of `file_id` and `uri`, each a non-empty string",
+};
+const ARCHIVE_FILE_ID_ARGUMENT: CallArgument = {
+  name: "file_ids",
+  what: "a file id to zip, a non-empty string",
+};
+const ARCHIVE_RUN_ID_ARGUMENT: CallArgument = {
+  name: "run_id",
+  what: "a run_id naming the run whose files to zip, a non-empty string",
+};
+const ARCHIVE_NAME_ARGUMENT: CallArgument = {
+  name: "name",
+  what: "a name for the zip, a string, or none",
+};
+const DRAFT_PATH_ARGUMENT: CallArgument = {
+  name: "path",
+  what: "the tree path the file takes in the draft, a non-empty string",
+};
+const DRAFT_TOKEN_ARGUMENT: CallArgument = {
+  name: "expected_updated_at",
+  what: "the draft token the caller last read, the method's `updated_at`, a string, or none",
+};
 
 /** What each argument of a method copy is, as a refusal of it names it. */
-const COPY_DESTINATION_ARGUMENT =
-  "a destination_org_id, the canonical id of the organization to copy into, a non-empty string";
-const COPY_NAME_ARGUMENT = "a name for the copy, a string, or none";
-const COPY_DRAFT_TOKEN_ARGUMENT =
-  "an expected_draft_updated_at, the draft token the caller last read, the method's " +
-  "`updated_at`, a string, or none";
+const COPY_DESTINATION_ARGUMENT: CallArgument = {
+  name: "destination_org_id",
+  what: "a destination_org_id, the canonical id of the organization to copy into, a non-empty string",
+};
+const COPY_NAME_ARGUMENT: CallArgument = {
+  name: "name",
+  what: "a name for the copy, a string, or none",
+};
+const COPY_DRAFT_TOKEN_ARGUMENT: CallArgument = {
+  name: "expected_draft_updated_at",
+  what:
+    "an expected_draft_updated_at, the draft token the caller last read, the method's " +
+    "`updated_at`, a string, or none",
+};
 
 /**
  * The refusal of an argument a call cannot take, worded as every such refusal is:
  * `<call>() takes <what>; got <got>.`, with what made it unusable as `cause` when there is one.
+ * Its problem is `client.argument_invalid`, naming the argument and `reason`.
  */
 function argumentRefusal(
   call: string,
-  what: string,
+  argument: CallArgument,
   got: string,
+  reason: string,
   cause?: unknown,
 ): RequestArgumentError {
-  const message = `${call}() takes ${what}; got ${got}.`;
-  return new RequestArgumentError(message, cause === undefined ? undefined : { cause });
+  const message = `${call}() takes ${argument.what}; got ${got}.`;
+  return new RequestArgumentError(message, {
+    cause,
+    problem: argumentInvalidProblem(argument.name, reason),
+  });
 }
 
 /**
@@ -759,12 +835,12 @@ function argumentRefusal(
  * records). Anything else is refused with `RequestArgumentError` before anything is sent, `call`
  * naming the method in the message and `what` the id it takes.
  */
-function requireNonEmptyId(value: unknown, call: string, what: string): string {
+function requireNonEmptyId(value: unknown, call: string, what: CallArgument): string {
   if (typeof value === "string" && value !== "") return value;
   let got: string;
   if (typeof value === "string") got = "an empty string";
   else got = value === null ? "null" : typeof value;
-  throw argumentRefusal(call, what, got);
+  throw argumentRefusal(call, what, got, typeof value === "string" ? "empty" : "not_a_string");
 }
 
 /**
@@ -778,7 +854,9 @@ function requireNameAndInputs(name: unknown, inputs: unknown, call: string, need
   let got: string;
   if (name == null && inputs == null) got = "neither";
   else got = name == null ? "no name" : "no inputs";
-  throw new RequestArgumentError(`${call}() needs ${needs}; got ${got}.`);
+  throw new RequestArgumentError(`${call}() needs ${needs}; got ${got}.`, {
+    problem: argumentInvalidProblem(name == null ? "name" : "inputs", "missing"),
+  });
 }
 
 /**
@@ -803,20 +881,21 @@ function describeNumberArgument(value: unknown): string {
  * `call` names the method in the message and `what` the id it takes. An id spelling a dot in
  * percent-encoding (`%2e`) is no dot segment once its `%` is escaped.
  */
-function idPathSegment(value: unknown, call: string, what: string): string {
+function idPathSegment(value: unknown, call: string, what: CallArgument): string {
   const id = requireNonEmptyId(value, call, what);
   if (id === "." || id === "..") {
     throw argumentRefusal(
       call,
       what,
       `"${id}", a dot segment, which the URL would resolve into another route's path`,
+      "dot_segment",
     );
   }
   try {
     return encodeURIComponent(id);
   } catch (err) {
     const got = "a string holding a lone surrogate, which a URL cannot carry";
-    throw argumentRefusal(call, what, got, err);
+    throw argumentRefusal(call, what, got, "lone_surrogate", err);
   }
 }
 
@@ -824,10 +903,10 @@ function idPathSegment(value: unknown, call: string, what: string): string {
  * The path of a method route, `methods/{id}`, for a bare catalog id, its segment refused as
  * `idPathSegment` refuses one; `call` names the method in the message. The method routes address
  * the method itself, never one of its versions, and the platform does not parse a suffix there:
- * `mt_x@3` would be looked up as an id of its own and answer `404 not_found`, which reads as a
- * method that does not exist. So a suffixed id is refused before anything is sent, saying how to
- * read what it names. Stripping it instead would answer the draft for a caller that named a
- * version.
+ * `mt_x@3` would be looked up as an id of its own and answer `404` `pipelex.catalog.not_found`,
+ * which reads as a method that does not exist. So a suffixed id is refused before anything is sent,
+ * saying how to read what it names. Stripping it instead would answer the draft for a caller that
+ * named a version.
  */
 function methodPath(methodId: string, call: string): string {
   const segment = idPathSegment(methodId, call, METHOD_ID_ARGUMENT);
@@ -836,6 +915,7 @@ function methodPath(methodId: string, call: string): string {
       `"${methodId}" carries a version suffix, and the method routes take a bare catalog id: ` +
         "they address the method itself, never one of its versions. Strip the suffix with " +
         "parseMethodSelector, and read a published version with getMethodVersion.",
+      { problem: argumentInvalidProblem("method_id", "version_suffix") },
     );
   }
   return `methods/${segment}`;
@@ -877,13 +957,18 @@ const RUN_FILES_LISTS = ["inputs", "outputs", "intermediates", "links"] as const
  */
 function fileLinkTarget(value: unknown): FileLinkTarget {
   if (!isPlainObject(value)) {
-    throw argumentRefusal("linkFiles", LINK_TARGET_ARGUMENT, describeNumberArgument(value));
+    throw argumentRefusal(
+      "linkFiles",
+      LINK_TARGET_ARGUMENT,
+      describeNumberArgument(value),
+      "entry_mistyped",
+    );
   }
   const fileId = value.file_id ?? undefined;
   const uri = value.uri ?? undefined;
   if ((fileId === undefined) === (uri === undefined)) {
     const got = fileId === undefined ? "an object naming neither" : "an object naming both";
-    throw argumentRefusal("linkFiles", LINK_TARGET_ARGUMENT, got);
+    throw argumentRefusal("linkFiles", LINK_TARGET_ARGUMENT, got, "not_exactly_one_selector");
   }
   if (fileId !== undefined) {
     return { file_id: requireNonEmptyId(fileId, "linkFiles", LINK_TARGET_ARGUMENT) };
@@ -923,8 +1008,8 @@ const METHOD_EXAMPLE_FIELDS = {
 
 /**
  * The protocol surface `PipelexApiClient` implements as the standard types it: every route but
- * `validate`, whose verdict is Pipelex's own (`PipelexValidationResult`) while the hosted plane
- * answers the verdict that predates the protocol's problem items.
+ * `validate`, whose verdict is Pipelex's own (`PipelexValidationResult`): the protocol's problem
+ * items beside members of the hosted plane's own.
  */
 type HostedProtocolSurface = Omit<MTHDSProtocol<DictPipeOutput>, "validate">;
 
@@ -965,15 +1050,15 @@ export class PipelexApiClient implements HostedProtocolSurface {
     // (e.g. `.../v1`) composes as `/v1/v1/...` and fails with a misleading
     // endpoint error instead of a clear base-URL one. Trailing slashes are
     // stripped first; a remaining path/query/fragment/credentials is rejected. The
-    // refusal is `config`: the value typically comes from PIPELEX_BASE_URL, the environment.
-    // It never quotes the value whole: what the rule refuses is where a secret travels
-    // (a password, a token in a query), so it names those parts without their text.
+    // refusal is `client.not_configured`: the value typically comes from PIPELEX_BASE_URL, the
+    // environment. It never quotes the value whole: what the rule refuses is where a secret
+    // travels (a password, a token in a query), so it names those parts without their text.
     if (!isValidBaseUrl(normalizedBaseUrl)) {
       throw new RequestArgumentError(
         `Invalid API base URL ${describeRefusedBaseUrl(normalizedBaseUrl)}: it must be host-only ` +
           `(http/https, no path, query, fragment, or credentials). Endpoints ` +
           `compose as {base}/v1/{endpoint}.`,
-        { verdict: { errorDomain: "config", retryable: false } },
+        { problem: buildProblem("client.not_configured", { setting: "base_url" }) },
       );
     }
     this.baseUrl = normalizedBaseUrl;
@@ -1024,9 +1109,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Issue one HTTP request and return the raw status/headers/body. Wraps
    * DNS/connect/TLS/timeout failures as `ApiUnreachableError`; a caller-driven
    * abort (Ctrl-C / agent walk-away) propagates as-is so the poll loop can stop
-   * cleanly. Non-2xx interpretation is left to the caller. `url` is a fully
-   * resolved absolute URL. `mayStartRun` marks a request that may create a run,
-   * whose `ApiUnreachableError` then says whether it may have (see `RunCreation`).
+   * cleanly. A body that arrived and could not be decoded, such as a `gzip` body that is not
+   * gzip, is an answer, so it throws the `ApiResponseError` of that answer, read as an answer
+   * with an empty body (see `isUndecodableBody`). Non-2xx interpretation is left to the caller.
+   * `url` is a fully resolved absolute URL. `mayStartRun` marks a request that may create a run,
+   * whose errors then say whether it may have (see `RunCreation`).
    * `idempotencyKey`, already checked by `idempotencyKeyOf`, is sent as the
    * `Idempotency-Key` header; only `start` and `copyMethod` pass one.
    */
@@ -1066,7 +1153,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       else userSignal.addEventListener("abort", onUserAbort, { once: true });
     }
 
-    let response: Response;
+    let response: Response | undefined;
     let bytes: Uint8Array;
     try {
       response = await fetch(url, {
@@ -1093,11 +1180,16 @@ export class PipelexApiClient implements HostedProtocolSurface {
       const code = extractNetworkErrorCode(
         controller.signal.aborted ? controller.signal.reason : err,
       );
+      // An answer came back, and its body could not be decoded: an answer the SDK cannot read,
+      // never an unreachable API.
+      if (response !== undefined && isUndecodableBody(code)) {
+        throw this.undecodableAnswer(method, url, response, code, err, options);
+      }
       throw new ApiUnreachableError(
         `Could not reach Pipelex API at ${this.baseUrl} (${code ?? "network error"})`,
         this.baseUrl,
         code,
-        { cause: err, mayStartRun: options.mayStartRun === true },
+        { cause: err, mayStartRun: options.mayStartRun === true, timeoutMs },
       );
     } finally {
       clearTimeout(timer);
@@ -1122,9 +1214,36 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
+   * The `ApiResponseError` of an answer whose body arrived and could not be decoded: the answer's
+   * status and headers, read as an answer with an empty body (`readHostedAnswer`), so a `2xx` is
+   * `client.response_unreadable` naming its status, or `client.outcome_unknown` on a request that
+   * may create a run, which the server accepted. `code` is the decompressor's, named in the
+   * message, and the decoding failure is its `cause`.
+   */
+  private undecodableAnswer(
+    method: HttpMethod,
+    url: string,
+    response: Response,
+    code: string | undefined,
+    cause: unknown,
+    run: RunCreation,
+  ): ApiResponseError {
+    const path = new URL(url).pathname;
+    return new ApiResponseError(
+      `API ${method} ${path} answered ${response.status} with a body that could not be decoded ` +
+        `(${code ?? "decoding error"})`,
+      this.baseUrl,
+      response.status,
+      response.statusText,
+      "",
+      { cause, headers: response.headers, mayStartRun: run.mayStartRun === true },
+    );
+  }
+
+  /**
    * Issue a Pipelex-product request (`/v1/me`, `/v1/methods`, `/v1/billing/*`,
    * …) and parse its JSON body, mapping a non-2xx response to the typed
-   * `ApiResponseError` so callers branch on its `errorDomain` and `type`, not the
+   * `ApiResponseError` so callers branch on its problem's `code`, not the
    * HTTP status. Empty-body tolerant — DELETE / onboarding / updateRun
    * answer 2xx with no body, returned as `undefined`. Uses the management-call
    * timeout, not the blocking-execute ceiling.
@@ -1259,8 +1378,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * One page of a cursor-paged product route (`listMethods`, `listMethodVersions`,
    * `listMethodExamples`, `listRuns`, `listFiles`), read as the platform always serializes it: `items` an
    * array, `next_cursor` a string or `null`. A page breaking either is an answer the SDK cannot
-   * read, so it throws the `ApiResponseError` `unreadableAnswer` builds, `runtime` and not
-   * retryable, rather than handing the iterators a page they cannot walk: `items` that is not
+   * read, so it throws the `ApiResponseError` `unreadableAnswer` builds,
+   * `client.response_unreadable`, rather than handing the iterators a page they cannot walk: `items` that is not
    * iterable, or a missing cursor that is neither the end nor a next page, which `iterateRuns`
    * would follow forever. A route reading its rows itself passes `rows`: `parse` reads the page's
    * text, and `item` reads each row, throwing as `unreadableAnswer` does for one it cannot read.
@@ -1472,10 +1591,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
   /**
    * The `ApiResponseError` of a 2xx answer the SDK cannot read, its message
    * `API <method> <path> answered <status> with <what>`: the answer's status, its raw text as
-   * `responseBody`, no hosted problem member but the `X-Request-ID` header, the failure that made it
-   * unreadable as `cause`, and the verdict the fallback gives a 2xx, `runtime` and not retryable.
-   * An answer that carries signed links (`RawResponse.carriesLinks`) is held with every link
-   * hidden, and with no `cause`, which could quote one. On a request that may create a run, the run may have started: the server accepted it.
+   * `responseBody`, the failure that made it unreadable as `cause`, and the problem
+   * `client.response_unreadable` naming the status. On a request that may create a run, the run
+   * may exist, since the server accepted the request, so the problem is `client.outcome_unknown`
+   * instead, naming the run when the body names one. An answer that carries signed links
+   * (`RawResponse.carriesLinks`) is held with every link hidden, and with no `cause`, which could
+   * quote one.
    */
   private unreadableAnswer(
     method: HttpMethod,
@@ -1492,22 +1613,23 @@ export class PipelexApiClient implements HostedProtocolSurface {
       res.status,
       res.statusText,
       carriesLinks ? redactSignedLinks(res.body) : res.body,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       {
         cause: carriesLinks ? undefined : cause,
-        details: { requestId: nonEmptyHeader(res.headers, REQUEST_ID_HEADER) },
+        problem:
+          run.mayStartRun === true
+            ? outcomeUnknownProblem(runIdNamedBy(res.body))
+            : buildProblem("client.response_unreadable", { status: res.status }),
         headers: res.headers,
-        mayStartRun: run.mayStartRun === true,
       },
     );
   }
 
   /**
    * Throw the `ApiResponseError` of a non-2xx answer, naming the route by its `path` from the
-   * origin (`/v1/...`, or `/health` for the liveness probe).
+   * origin (`/v1/...`, or `/health` for the liveness probe). The answer is read as its problem
+   * (`readHostedAnswer`): the body as received when it is a problem document, whose `detail` the
+   * message quotes, and otherwise the problem the edge's bare answer reads as, the message
+   * quoting the body as it came, or the status text for an empty one.
    */
   private throwApiResponseErrorAt(
     method: HttpMethod,
@@ -1515,37 +1637,28 @@ export class PipelexApiClient implements HostedProtocolSurface {
     res: RawResponse,
     run: RunCreation = {},
   ): never {
-    const { errorType, serverMessage, validationErrors, code, details, document } = parseErrorBody(
-      res.body,
+    const { problem, fromBody } = readHostedAnswer(
+      { status: res.status, headers: res.headers, body: res.body },
+      { createsRun: run.mayStartRun === true },
     );
-    // The body's `request_id` wins; the header is the fallback for a response whose body
-    // carries none (a gateway error page, a non-problem body).
-    const requestId = details.requestId ?? nonEmptyHeader(res.headers, REQUEST_ID_HEADER);
+    const said = fromBody ? problem.detail : res.body || res.statusText;
     throw new ApiResponseError(
-      `API ${method} ${path} failed (${res.status}): ${serverMessage ?? (res.body || res.statusText)}`,
+      `API ${method} ${path} failed (${res.status}): ${said}`,
       this.baseUrl,
       res.status,
       res.statusText,
       res.body,
-      errorType,
-      serverMessage,
-      validationErrors,
-      code,
-      {
-        details: { ...details, requestId },
-        problemDocument: document,
-        headers: res.headers,
-        mayStartRun: run.mayStartRun === true,
-      },
+      { problem, headers: res.headers },
     );
   }
 
   /**
    * Translate a "route absent" 404 (a bare pipelex-api with no platform block)
-   * into a clear `RunLifecycleUnavailableError`. The platform's own 404s (run
-   * not found / cross-org) carry a structured error envelope (a `code` field)
-   * and are left for normal handling. `explanation` replaces the sentence saying
-   * why the route is missing, for a route a hosted API may also lack.
+   * into a clear `RunLifecycleUnavailableError`. A 404 a route answered on purpose (a run
+   * not found, cross-org included, or a method that does not exist) names its own `code`
+   * and is left for normal handling as `ApiResponseError` (`isMissingRoute404`).
+   * `explanation` replaces the sentence saying why the route is missing, for a route a
+   * hosted API may also lack.
    */
   private throwIfLifecycleUnavailable(
     res: RawResponse,
@@ -1609,9 +1722,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * there this throws.
    *
    * It goes through the same transport as every route: an unreachable origin is an
-   * `ApiUnreachableError`, and a non-2xx answer an `ApiResponseError` whose verdict the SDK's
-   * fallback reads from the status, since the probe answers no problem document. So is a 2xx
-   * whose body is not a JSON object, such as a gateway's HTML page: `runtime`, not retryable.
+   * `ApiUnreachableError`, and a non-2xx answer an `ApiResponseError` whose problem is read from
+   * the status when the probe answers no problem document. So is a 2xx whose body is not a JSON
+   * object, such as a gateway's HTML page: `client.response_unreadable`.
    */
   async health(): Promise<Record<string, unknown>> {
     const res = await this.requestRaw("GET", `${this.originUrl}/health`, {
@@ -1738,15 +1851,15 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * `options.idempotencyKey` is sent as the `Idempotency-Key` header, and nothing
    * is sent without it: the hosted API answers the same start sent again under the
-   * same key with the run the first one started, so a failure whose
-   * `runMayHaveStarted` is true can be retried unchanged (see
+   * same key with the run the first one started, so a failure whose problem's
+   * `retry` is `outcome_unknown` can be retried unchanged (see
    * `PipelexStartRequestOptions`). A malformed key is a `RequestArgumentError`
    * before anything is sent.
    *
    * The method's tree is prepared before the request as `execute` prepares it. The prepared body
    * is the same for the same tree, so a start retried under its idempotency key sends the body the
    * key was bound to. A start whose hash entries name a blob the API does not hold yet is refused
-   * with a `422` `missing_blobs`, which releases its key: send it again unchanged, which asks the
+   * with a `422` `request.blobs_missing`, which releases its key: send it again unchanged, which asks the
    * blob route and uploads what is missing first.
    */
   async start(options: PipelexStartOptions): Promise<PipelexRunResultStart> {
@@ -1827,7 +1940,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `/validate` is a diagnostic endpoint: every produced verdict rides a **200**,
    * discriminated on `is_valid`. This returns the `PipelexValidationResult` union
    * verbatim — `is_valid: true` ⇒ the typed `PipelexValidationReport` (structural
-   * artifacts), `is_valid: false` ⇒ a `PipelexInvalidReport` (`validation_errors[]`).
+   * artifacts), `is_valid: false` ⇒ a `PipelexInvalidReport`, whose `errors[]` are problem
+   * items. Both arms' items, the invalid arm's `errors[]` and the valid arm's `warnings[]`, are
+   * read member by member (`readProblemItems`).
    * An invalid method is NOT thrown — the caller pattern-matches `is_valid`. Only a
    * *no-verdict* condition (a malformed request, a tree the route refuses, auth, a
    * server fault) is non-2xx and surfaces as `ApiResponseError`.
@@ -1857,8 +1972,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * A selector-resolution failure (fetch failure, no package at the address, an
    * unknown or foreign-org id, a bare id of a method never published, `409`
-   * `method_not_published`, a version never published, `404`
-   * `method_version_not_found`, or a malformed suffix, `422`) is a non-2xx
+   * `pipelex.catalog.not_published`, a version never published, `404`
+   * `pipelex.catalog.not_found`, or a malformed suffix, `422`) is a non-2xx
    * `ApiResponseError` — never an `is_valid: false` verdict, which is reserved
    * for actual MTHDS content.
    *
@@ -1900,6 +2015,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       throw new RequestArgumentError(
         "validate() takes the method as an object naming exactly one of directory, contents, " +
           "tree, files, method_ref or method_id.",
+        { problem: argumentInvalidProblem("source", "not_an_object") },
       );
     }
     const forms = protocolTreeForms("validate", source);
@@ -1912,6 +2028,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       throw new RequestArgumentError(
         "validate() takes exactly one of the method's tree (directory, contents, tree or files), " +
           `method_ref or method_id; got ${given.length === 0 ? "none" : given.join(" and ")}.`,
+        { problem: argumentInvalidProblem("files", "not_exactly_one_selector") },
       );
     }
     const signal = options.signal;
@@ -1941,7 +2058,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", "validate", res);
     }
-    return this.readObjectAnswer<PipelexValidationResult>("POST", "validate", res);
+    return withVerdictItems(
+      this.readObjectAnswer<PipelexValidationResult>("POST", "validate", res),
+    );
   }
 
   // ── Tools extensions (Pipelex API — `/v1/lint`, `/v1/format`) ─────────
@@ -2091,10 +2210,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Returns a **200 verdict** whatever the resolution: a reference that resolves nowhere is
    * `resolution: "not_found"` with the names it may have meant, never a thrown error. Narrow
    * on `kind` to read the shape of `matches`. A request that cannot produce a verdict throws
-   * the typed `ApiResponseError`, a `422` whose `errorType` says why: `InvalidModelReference`
-   * (a blank reference, a sigil or a namespace alone, or one past the runner's length limit),
-   * `InvalidModelCategory` (an unknown `type`) or `ValidationError`. None of that is checked
-   * here, so the runner's rule is the only one.
+   * the typed `ApiResponseError`, a `422` problem whose `code` says why: a blank reference, a
+   * sigil or a namespace alone, one past the runner's length limit, or an unknown `type`. None of
+   * that is checked here, so the runner's rule is the only one.
    */
   async checkModelReference(
     reference: string,
@@ -2147,9 +2265,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
   // serves both, verdict discipline intact (200 `is_valid:false`, 501, 422);
   // api-dev.pipelex.com has since 2026-08-13. `lint`/`format` are the two still
   // unexposed — see their section above for why that blocks nothing. `pipe-io` is
-  // newer: a runner serves it from `pipelex-api` v0.33.0, and types its selection
-  // refusals `EntryPipeNotFoundError` / `EntryPipeAmbiguousError` from v0.33.1
-  // (v0.33.0 typed them `ValidationError`), and a hosted origin
+  // newer: a runner serves it from `pipelex-api` v0.33.0, and codes its selection
+  // refusals `request.pipe_not_found`, `request.pipe_unspecified` and
+  // `request.pipe_ambiguous`, and a hosted origin
   // serves it once the platform's proxy and the gateway list it (see
   // `docs/crate-routes.md`).
   //
@@ -2171,7 +2289,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Returns a **200 verdict**: pattern-match `is_valid` before reading the arm — a
    * closure that does not parse/load/validate comes back as `is_valid: false` with
-   * `validation_errors[]`, not as a thrown error. Only a no-verdict condition throws
+   * problem items in `errors[]`, not as a thrown error. Only a no-verdict condition throws
    * `ApiResponseError`: a malformed selector (none, or more than one, of
    * `files` / `method_ref` / `method_id`) is a 422; a selector-resolution failure
    * (fetch failure, no package at the address, an unknown or foreign-org id) is
@@ -2247,11 +2365,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * {@link resolve} (the request's members are posted as given, its `directory`, `tree` or
    * `contents` as the `files` map, and the selector XOR is the server's to enforce).
    * Only a no-verdict condition throws `ApiResponseError`: a malformed selector and an
-   * over-limit file are `ValidationError` `422`s; a selection the route refuses is a
-   * `422` whose `errorType` is `EntryPipeNotFoundError` (an unknown `pipe_ref`, no entry
-   * pipe) or `EntryPipeAmbiguousError` (an ambiguous code, several entry pipes), the
-   * candidates in its `serverMessage`; a registry-form `method_ref` is a `501`; a pipe
-   * whose artifacts cannot be derived is a `500`.
+   * over-limit file are `422` problems; a selection the route refuses is a `422` whose
+   * `code` is `request.pipe_not_found` (an unknown `pipe_ref`), `request.pipe_unspecified`
+   * (no entry pipe) or `request.pipe_ambiguous` (an ambiguous code, several entry pipes), the
+   * candidates in its `params`; a registry-form `method_ref` is a `501`; a pipe whose
+   * artifacts cannot be derived is a `500`.
    *
    * A `method_ref` gets the fetch-sized budget, as on the other crate routes. On the
    * hosted API the gateway caps a request at about 30 seconds whatever the client allows,
@@ -2317,7 +2435,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", endpoint, res);
     }
-    return this.readObjectAnswer<T>("POST", endpoint, res);
+    return withVerdictItems(this.readObjectAnswer<T>("POST", endpoint, res));
   }
 
   /**
@@ -2350,9 +2468,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * is live and the run is stuck, its workflow task failing until the platform
    * ends it at `degradation.ends_at`. `retry_after_seconds` carries the server's
    * `Retry-After` hint when present, and `request_id` the id to quote to support.
-   * A failed run's stored report, `error`, and the `degradation` are each
-   * checked field by field (see `RunErrorReport` and `RunDegradation`), so
-   * neither ever fails the read. Throws `RunLifecycleUnavailableError` when the
+   * A failed run's problem, `error`, is kept when it is a problem document and
+   * read as `null` otherwise, and the `degradation` is checked field by field
+   * (see `RunDegradation`), so neither ever fails the read. Throws `RunLifecycleUnavailableError` when the
    * lifecycle routes are absent (a bare runner).
    */
   async getRunStatus(runId: string, options: { signal?: AbortSignal } = {}): Promise<RunRead> {
@@ -2367,7 +2485,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       this.throwApiResponseError("GET", endpoint, res);
     }
     const run = withCheckedDegradation(
-      withCheckedReport(this.readObjectAnswer<RunRead>("GET", endpoint, res)),
+      withCheckedProblem(this.readObjectAnswer<RunRead>("GET", endpoint, res)),
     );
     const retryAfter = parseRetryAfter(res.headers);
     return retryAfter !== null ? { ...run, retry_after_seconds: retryAfter } : run;
@@ -2429,10 +2547,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Maps the server's poll semantics to a discriminated union:
    * - HTTP 202 → `running` (with the `Retry-After` hint)
    * - HTTP 200 → `completed` (with the result artifacts)
-   * - HTTP 409 → `failed` (terminal non-`COMPLETED`), carrying the problem's `detail` as
-   *   `message`, its `run_status` member as `status` (recovered from `detail` on a platform
-   *   that predates the member) and its `error` member, the run's stored error report, typed
-   *   as `error`
+   * - HTTP 409 `run.failed` → `failed` (terminal non-`COMPLETED`), carrying the problem as
+   *   `problem`, its `detail` as `message`, the terminal status its `run_status` parameter names
+   *   as `status`, and the run's own problem, which it nests as `run_error`, as `error`; a `409`
+   *   `run.not_finished` → `running`, and any other `409` throws `ApiResponseError`
    * - HTTP 503 → `running` (Temporal degraded — retry, never fail a poller)
    *
    * `options.artifacts` narrows the read to the named artifacts, sent as one
@@ -2474,7 +2592,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
       };
     }
     if (res.status === 409) {
-      return runResultFailed(runId, res.body);
+      const conflict = runResultConflict(runId, res);
+      if (conflict !== undefined) return conflict;
+      this.throwApiResponseError("GET", endpoint, res);
     }
     this.throwIfLifecycleUnavailable(res, url);
     if (res.status < 200 || res.status >= 300) {
@@ -2516,8 +2636,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * real error; no answer at all propagates, uncached. An answer is anything the
    * server sent back: a non-2xx status, a body that is not JSON, not UTF-8 or no
    * version, and a body that arrived but could not be decoded, such as a broken
-   * gzip stream, which `requestRaw` reports as an `ApiUnreachableError` carrying
-   * the decompressor's code (see `isUndecodableBody`).
+   * gzip stream, which `requestRaw` reports as an `ApiResponseError` (see
+   * `isUndecodableBody`).
    *
    * `signal` stops the handshake: its abort is thrown as is and nothing is cached.
    *
@@ -2538,9 +2658,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
       } catch (error) {
         // The caller's abort is no answer: it propagates, and nothing is cached.
         if (signal?.aborted === true) throw signal.reason;
-        // No answer at all propagates. A body that arrived and could not be decoded is an answer,
-        // and so is every other failure here: a non-2xx status, or a body that is no version.
-        if (error instanceof ApiUnreachableError && !isUndecodableBody(error)) throw error;
+        // No answer at all propagates. Every other failure here is an answer: a non-2xx status, a
+        // body that is no version, or one that arrived and could not be decoded.
+        if (error instanceof ApiUnreachableError) throw error;
         this.lifecycleAvailable = true;
       }
     }
@@ -2573,11 +2693,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * rather than listing, reading and hashing the tree again.
    *
    * An error from the start, or from the blocking execute, says whether that request may still
-   * have started a run whose id never reached the caller (`runMayHaveStarted`); when it may have,
-   * it is not retryable, since calling this method again could pay for the run twice: look the run
-   * up in the run history first. An error from the wait, once `onStarted` has named the run,
-   * started nothing, so its `runMayHaveStarted` is false, and its `retryable` is about waiting
-   * again on that id with `waitForResult`, never about calling this method again.
+   * have started a run whose id never reached the caller: its problem's `retry` is then
+   * `outcome_unknown`, since calling this method again could pay for the run twice, unless it is
+   * made with the same `idempotencyKey`: look the run up in the run history first. An error from
+   * the wait, once `onStarted` has named the run, started nothing, and its problem is about that
+   * run: `client.follow_failed` for a wait that ran out of time, whose step is to read the run
+   * again with `waitForResult`, or `run.failed` for a run that ended without success, never a
+   * reason to call this method again.
    *
    * `options.idempotencyKey` rides the durable start, so a call that failed while its start may
    * have created a run can be made again with the same options and the same key: the hosted API
@@ -2651,7 +2773,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
   // The hosted catalog/account routes the webapp drives. Every one rides the
   // same `{base}/v1/*` surface, `Authorization: Bearer`, org-from-JWT contract
   // as the protocol routes, and maps a non-2xx `problem+json` to a typed
-  // `ApiResponseError` (branch on `.errorDomain` and `.type`, not the status).
+  // `ApiResponseError` (branch on its problem's `code`, not the status).
 
   /** The authenticated user's profile — `GET /v1/me`. */
   async getMe(): Promise<UserProfile> {
@@ -2734,10 +2856,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * and for an id that is empty, `.` or `..`, which the URL would resolve into another route's
    * path.
    *
-   * Throws `ApiResponseError`: `404` `not_found` for an unknown or foreign-org method, `409`
-   * `method_being_deleted` while its erasure runs, and a `409` whose verdict is `runtime` for a
-   * method whose draft names a tree the platform holds no record of. An answer whose `files` is
-   * not a listing is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown or foreign-org
+   * method, `409` `pipelex.catalog.being_deleted` while its erasure runs, and a `500`
+   * `runtime.unexpected` for a method whose draft names a tree the platform holds no record of. An
+   * answer whose `files` is not a listing is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too.
    */
   async getMethod(methodId: string): Promise<MethodDetail> {
     const endpoint = methodPath(methodId, "getMethod");
@@ -2747,8 +2870,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * Create a method — `POST /v1/methods`. The new method holds its tree as its draft and has no
-   * published version, so its bare id answers `409 method_not_published` on the run and tooling
-   * routes until its first `publishMethod`; its draft runs as `mt_…@draft` at once.
+   * published version, so its bare id answers `409` `pipelex.catalog.not_published` on the run and
+   * tooling routes until its first `publishMethod`; its draft runs as `mt_…@draft` at once.
    *
    * The tree is `files`, sent as given, or `tree` or `contents`, which the client sends inline
    * when its inline map weighs 256 KiB or less, or when the platform keeps no blob store, and
@@ -2758,12 +2881,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Throws `RequestArgumentError` for two forms of the tree, or `contents` holding no file, before
    * any request; `MethodFileTransferError` when a file the organization lacks could not be
-   * uploaded, and nothing is saved. Throws `ApiResponseError`: `422` `invalid_method_files` for a
-   * map the standard refuses, with its `tree_refusal`; `422` `method_tree_too_large` for a tree
-   * past one of the deployment's limits, named in its `limit`; `422` `blob_mismatch` for a hash
-   * stated at another size than the one held; `422` `missing_blobs` for a hash entry whose bytes
-   * the organization does not hold; `413` `payload_too_large` for a method that would leave no
-   * room for a publish.
+   * uploaded, and nothing is saved. Throws `ApiResponseError`: `422` `method.package_invalid` for
+   * a map the standard refuses, naming the path in its `params`, and for a tree past one of the
+   * deployment's limits, its `params` carrying `reason` `too_large` and the integer `limit`;
+   * `422` `request.invalid` for a hash stated at another size than the one held; `422`
+   * `request.blobs_missing` for a hash entry whose bytes the organization does not hold; `413`
+   * `request.too_large` for a method that would leave no room for a publish.
    */
   async createMethod(input: MethodWriteInput): Promise<MethodData> {
     const source = await this.treeToSend("createMethod", input, SAVE_SENDING);
@@ -2785,16 +2908,16 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `files: null` emptying the draft, or `tree` or `contents`, sent inline or by hash as
    * `createMethod` sends them. `input_data` is three-way (see `MethodDraftInput`). With
    * `expected_updated_at`, the write is a compare-and-swap on the draft token: a draft that
-   * moved since is refused with a `409` whose `code` is `method_update_conflict`, and nothing is
+   * moved since is refused with a `409` whose `code` is `pipelex.catalog.update_conflict`, and nothing is
    * written. Without it, last writer wins.
    *
    * Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` for a draft that
    * gives its tree in no form or in two, or `contents` holding no file, before any request;
    * `MethodFileTransferError` when a file the organization lacks could not be uploaded. Throws
-   * `ApiResponseError`: `404` `not_found` for an unknown or foreign-org method, `409`
-   * `method_being_deleted` while its erasure runs, the `422` refusals of a tree `createMethod`
-   * lists, `413` `payload_too_large` for a draft that would grow the method past the room a
-   * publish needs, `403` for a read-only key, and a `503` that wrote nothing, safe to retry,
+   * `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown or foreign-org method,
+   * `409` `pipelex.catalog.being_deleted` while its erasure runs, the `422` refusals of a tree
+   * `createMethod` lists, `413` `request.too_large` for a draft that would grow the method past the
+   * room a publish needs, `403` for a read-only key, and a `503` that wrote nothing, safe to retry,
    * when the method kept changing under the write.
    */
   async writeDraft(methodId: string, input: MethodDraftInput): Promise<MethodData> {
@@ -2803,6 +2926,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       throw new RequestArgumentError(
         "writeDraft() replaces the draft's whole tree: give it as directory, contents, tree or " +
           "files (files: null empties the draft).",
+        { problem: argumentInvalidProblem("files", "missing") },
       );
     }
     const source = await this.treeToSend("writeDraft", input, SAVE_SENDING);
@@ -2945,6 +3069,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       throw new RequestArgumentError(
         `${call}() takes the method's tree in one form, directory, contents, tree or files; got ` +
           `${given.join(" and ")}.`,
+        { problem: argumentInvalidProblem("files", "mutually_exclusive") },
       );
     }
     if (given[0] === "directory") {
@@ -3232,6 +3357,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
         `The tree read ${bytes.length} bytes hashing to ${bytesSha256} for '${file.path}', which ` +
           `its listing names as ${blob.size} bytes hashing to ${blob.sha256}, so they were not ` +
           `uploaded and ${sending.unsent}.`,
+        { problem: argumentInvalidProblem("tree", "changed_since_listed") },
       );
     }
     throwIfAborted(userSignal);
@@ -3248,11 +3374,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * draft, so the `updated_at` a caller holds stays valid for its next `writeDraft` or
    * `publishMethod`.
    *
-   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`,
-   * `409` `method_being_deleted`, `403` for a read-only key, `422` for an empty name or one
-   * holding a lone surrogate, `413` `payload_too_large` for a name so long it would leave the
-   * method too large to publish, and a `503` that wrote nothing, safe to retry, when draft
-   * writes kept landing under the rename.
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404`
+   * `pipelex.catalog.not_found`, `409` `pipelex.catalog.being_deleted`, `403` for a read-only key,
+   * `422` for an empty name or one holding a lone surrogate, `413` `request.too_large` for a name
+   * so long it would leave the method too large to publish, and a `503` that wrote nothing, safe
+   * to retry, when draft writes kept landing under the rename.
    */
   async renameMethod(methodId: string, input: MethodRenameInput): Promise<MethodData> {
     return this.requestMethodData("PATCH", methodPath(methodId, "renameMethod"), {
@@ -3271,16 +3397,17 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * The answer is a `MethodPublishResult` discriminated on `outcome` — branch on it:
    * `published` with the new `version`; `unchanged` with the existing latest `version`;
    * `refused` with a `reason` (`invalid`, or `not_runnable` for a draft that validates with
-   * pending signatures), a `message` and the runner's `validation` verdict. Every arm carries the
-   * `method`. A publish moves no token.
+   * pending signatures), a `message` and the runner's `validation` verdict, whose problem items
+   * are read member by member as `validate` reads them. Every arm carries the `method`. A publish
+   * moves no token.
    *
    * Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` when
    * `expected_draft_updated_at` is not a string, before any request. Throws `ApiResponseError`
-   * when no verdict was produced: `409` `method_update_conflict` for a draft that moved since
-   * the token, `409` `method_being_deleted`, `404` `not_found`, `422` for a draft with no
-   * `.mthds` file or whose file names a run could not assemble (one name used by a `.mthds` and
-   * a Python file), `413` `payload_too_large` for a draft too large to publish, and `403` for a
-   * read-only key.
+   * when no verdict was produced: `409` `pipelex.catalog.update_conflict` for a draft that moved since
+   * the token, `409` `pipelex.catalog.being_deleted`, `404` `pipelex.catalog.not_found`, `422` for
+   * a draft with no `.mthds` file or whose file names a run could not assemble (one name used by a
+   * `.mthds` and a Python file), `413` `request.too_large` for a draft too large to publish, and
+   * `403` for a read-only key.
    *
    * Only a draft that differs from the latest version reaches the runner, and a runner that
    * cannot be reached, answers unusably or does not finish within the platform's deadline is a
@@ -3288,8 +3415,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * itself is relayed under its own status. A retry of a publish that landed while its answer was
    * lost, as on a client timeout, answers `unchanged` with the version it wrote.
    *
-   * An answer whose `outcome` is not one of the outcomes above, or that carries no `method`
-   * object, is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * An answer whose `outcome` is not one of the outcomes above, that carries no `method` object,
+   * or a refusal whose `validation` is not a verdict object with a boolean `is_valid`, is an answer
+   * the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async publishMethod(methodId: string, input: MethodPublishInput): Promise<MethodPublishResult> {
     const token: unknown = (input as Partial<MethodPublishInput> | undefined)
@@ -3298,6 +3426,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       throw new RequestArgumentError(
         "publishMethod() needs expected_draft_updated_at: the draft token (the method's " +
           "updated_at) the caller last saw, so a publish never takes a draft it has not seen.",
+        { problem: argumentInvalidProblem("expected_draft_updated_at", "not_a_string") },
       );
     }
     const endpoint = `${methodPath(methodId, "publishMethod")}/publish`;
@@ -3309,7 +3438,27 @@ export class PipelexApiClient implements HostedProtocolSurface {
       outcomes: ["published", "unchanged", "refused"],
       member: "method",
     });
-    return { ...answer, outcome, method: subject as unknown as MethodData } as MethodPublishResult;
+    const method = subject as unknown as MethodData;
+    if (outcome !== "refused") {
+      return { ...answer, outcome, method } as MethodPublishResult;
+    }
+    // The refused arm carries the runner's verdict, whose problem items are read member by
+    // member as `validate` reads them, so one malformed item never costs the caller the others.
+    const validation = answer.validation;
+    if (!isPlainObject(validation) || typeof validation.is_valid !== "boolean") {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a publish result whose `validation` is not an object",
+      );
+    }
+    return {
+      ...answer,
+      outcome,
+      validation: withVerdictItems(validation),
+      method,
+    } as MethodPublishResult;
   }
 
   /**
@@ -3320,10 +3469,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * may be short while `nextCursor` is set, because the platform reads versions whole. A method
    * never published answers an empty page.
    *
-   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found`
-   * for an unknown method, `409` `method_being_deleted`, `400` `malformed_request` for a cursor
-   * the listing did not issue for this method, `422` for a `limit` outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a string nor `null`
-   * is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404`
+   * `pipelex.catalog.not_found` for an unknown method, `409` `pipelex.catalog.being_deleted`, and
+   * `422` `request.invalid` for a cursor the listing did not issue for this method or a `limit`
+   * outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a
+   * string nor `null` is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async listMethodVersions(
     methodId: string,
@@ -3341,17 +3491,18 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Takes a bare catalog id, as `getMethod` does, and the version number. Throws
    * `RequestArgumentError` for a `version` that is not a positive integer, before any request.
-   * Throws `ApiResponseError`: `404` `method_version_not_found` for a version the method never
-   * published, `404` `not_found` for an unknown method, `409` `method_being_deleted`, and `409`
-   * `conflict`, whose verdict is `runtime`, for a version stored before methods were trees and
-   * never rewritten as one, which names no tree to serve.
+   * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for a version the method never
+   * published and for an unknown method, `409` `pipelex.catalog.being_deleted`, and `500`
+   * `runtime.unexpected` for a version stored before methods were trees and never rewritten as
+   * one, which names no tree to serve.
    */
   async getMethodVersion(methodId: string, version: number): Promise<MethodVersion> {
     if (!Number.isSafeInteger(version) || version < 1) {
       throw argumentRefusal(
         "getMethodVersion",
-        "a version number, a positive integer",
+        { name: "version", what: "a version number, a positive integer" },
         describeNumberArgument(version),
+        "not_a_positive_integer",
       );
     }
     const endpoint = `${methodPath(methodId, "getMethodVersion")}/versions/${version}`;
@@ -3379,7 +3530,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * The answer is a `MethodCopyResult` discriminated on `outcome` — branch on it: `copied` with
    * the copy as `method`, `examples_copied` and `stored_files_copied`; `refused` with the
    * `reason` `bundle_names_other_storage`, a `message` and every `references` entry (`{ path, uri
-   * }`) a `.mthds` file of the draft holds that the destination cannot read, nothing written.
+   * }`) a `.mthds` file of the draft holds that the destination cannot read and, in a duplicate,
+   * that names a file under the original's run files, which erasing the original would remove,
+   * nothing written.
    *
    * The route serves web sessions only: a Pipelex API key belongs to one organization and cannot
    * speak for another. `options.idempotencyKey` is sent as the `Idempotency-Key` header, so a copy
@@ -3392,21 +3545,31 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `destination_org_id` that is not a non-empty string, a `name` or an
    * `expected_draft_updated_at` given that is not a string, and a malformed idempotency key.
    * Throws `ApiResponseError` when no verdict was produced, each refusal writing nothing a reader
-   * sees: `403` `forbidden` for a request that is not from a web session; `403`
-   * `role_not_permitted` for a role that may not change methods, in the method's organization or
-   * in the destination; `404` `organization_not_found` for a destination the caller does not
-   * belong to, still being set up or unknown, alike; `404` `not_found` for an unknown method;
-   * `409` `method_being_deleted`; `409` `method_update_conflict` for a draft that moved since
-   * `expected_draft_updated_at`; `409` `conflict`, `runtime`, for a draft whose tree the
-   * organization holds no full record of; `413` `payload_too_large` for an example or a copy too
-   * large for one stored item; `422` `validation_failed` for a body that does not validate, such
-   * as a name holding a lone surrogate; `422` `method_copy_too_large` past one of the copy's
-   * bounds on the stored files it copies, named by `problemDocument.limit` (`MethodCopyLimit`);
-   * and, each retryable, a `502` when the platform could not read the caller's memberships, a
-   * `500` `storage_backend_failed` and a `503` past the copy's deadline. An answer whose
-   * `outcome` is neither arm's, a `copied` one whose `method` is not an object or a `refused` one
-   * whose `references` is not an array, is an answer the SDK cannot read, thrown as an
-   * `ApiResponseError` too.
+   * sees but for the `503` whose `detail` names the copy: `403` `auth.forbidden` for a request
+   * that is not from a web session, or for a role that may not change methods, in the method's
+   * organization or in the destination; `404` `pipelex.org.not_found` for a destination the
+   * caller does not belong to, still being set up or unknown, alike; `404`
+   * `pipelex.catalog.not_found` for an unknown method; `409` `pipelex.catalog.being_deleted`;
+   * `409` `pipelex.catalog.update_conflict` for a draft that moved since
+   * `expected_draft_updated_at`; a `409` whose `domain` is `runtime` and `retry` `no`, for a
+   * draft whose tree the method's organization holds no record of or no longer holds every file
+   * of; `413`
+   * `request.too_large` for a copied example, or the copy's row, too large for one stored item,
+   * the row keeping room for the summary a publish adds, so a `name` that would leave none is
+   * refused; `422` `request.invalid` for a body that does not validate, such as a name holding a
+   * lone surrogate; `422` `pipelex.catalog.copy_too_large` past one of the copy's bounds on the
+   * stored files it copies, named by the problem's `limit` member (`MethodCopyLimit`); a `502`
+   * `runtime.unavailable`, with `retry` `yes`, when the platform could not read the caller's
+   * memberships; a `503` `pipelex.storage.unavailable`, with `retry` `yes`, when storage failed,
+   * and a `500` `pipelex.storage.not_configured`, with `retry` `no`, when the platform has no
+   * usable credentials for storage; and a `503` `runtime.unavailable`, with `retry` `yes`, past
+   * the copy's deadline, when a stored file it copies is written over meanwhile, or when DynamoDB
+   * fails. When DynamoDB failed both the copy's row write and the read that would confirm it,
+   * that `503`'s `detail` names the copy's method id: the copy may stand in the destination, so
+   * look for that id there before copying again, since a retry may make a second copy. An answer
+   * whose `outcome` is neither arm's, a `copied` one whose `method` is not an object or a
+   * `refused` one whose `references` is not an array, is an answer the SDK cannot read, thrown as
+   * an `ApiResponseError` too.
    */
   async copyMethod(
     methodId: string,
@@ -3425,13 +3588,23 @@ export class PipelexApiClient implements HostedProtocolSurface {
     };
     if (name != null) {
       if (typeof name !== "string") {
-        throw argumentRefusal(call, COPY_NAME_ARGUMENT, describeNumberArgument(name));
+        throw argumentRefusal(
+          call,
+          COPY_NAME_ARGUMENT,
+          describeNumberArgument(name),
+          "not_a_string",
+        );
       }
       body.name = name;
     }
     if (token != null) {
       if (typeof token !== "string") {
-        throw argumentRefusal(call, COPY_DRAFT_TOKEN_ARGUMENT, describeNumberArgument(token));
+        throw argumentRefusal(
+          call,
+          COPY_DRAFT_TOKEN_ARGUMENT,
+          describeNumberArgument(token),
+          "not_a_string",
+        );
       }
       body.expected_draft_updated_at = token;
     }
@@ -3475,11 +3648,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * and a copy itself, answer an empty page. The listing is open to every member of the method's
    * organization, a runner included, as every read of a method is.
    *
-   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404` `not_found` for
-   * an unknown method, `409` `method_being_deleted`, `400` `malformed_request` for a cursor the
-   * listing did not issue for this method, `422` for a `limit` outside 1 to 100. A page whose
-   * `items` is not an array or whose `next_cursor` is neither a string nor `null` is an answer the
-   * SDK cannot read, thrown as an `ApiResponseError` too.
+   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404`
+   * `pipelex.catalog.not_found` for an unknown method, `409` `pipelex.catalog.being_deleted`, and
+   * `422` `request.invalid` for a cursor the listing did not issue for this method or a `limit`
+   * outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a
+   * string nor `null` is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async listMethodCopies(
     methodId: string,
@@ -3503,7 +3676,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * it with a `409`.
    *
    * A double-clicked delete is safe: the claim is a conditional write, so the
-   * second call is an `ApiResponseError` (`409 method_being_deleted`) rather than a
+   * second call is an `ApiResponseError` (`409` `pipelex.catalog.being_deleted`) rather than a
    * second cascade over the same runs. An unknown or foreign-org id is a `404`. The
    * erasure deletes the method's published versions with the rest. Takes a bare catalog id,
    * as `getMethod` does: the whole method is erased, never one of its versions.
@@ -3515,8 +3688,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
   // ── Method examples (`/v1/methods/{id}/examples`) ──────────────────────
   //
   // Every example route takes a bare catalog id, as `getMethod` does, and answers `404`
-  // `not_found` for an unknown method or example and `409` `method_being_deleted` while the
-  // method's erasure runs. The writes are `403` to a read-only key, which may still read.
+  // `pipelex.catalog.not_found` for an unknown method or example and `409`
+  // `pipelex.catalog.being_deleted` while the method's erasure runs. The writes are `403` to a
+  // read-only key, which may still read.
   //
   // Every answer carrying an example is read with `parseExactJson`, so an integer past
   // `Number.MAX_SAFE_INTEGER` in its inputs, which another client may have saved, is a `bigint`
@@ -3534,8 +3708,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * closed, and a `null` `run_id` reads as not given. Throws `RequestArgumentError` before any
    * request when `name` or `inputs` is not given (`null` counting as not given), and for a
    * `run_id` that is given but is not a non-empty string. Throws `ApiResponseError`: `404`
-   * `run_not_found` for a `run_id` that is not one of this method's runs in the caller's
-   * organization, with nothing written; `413` `payload_too_large` for an example larger than one
+   * `run.not_found` for a `run_id` that is not one of this method's runs in the caller's
+   * organization, with nothing written; `413` `request.too_large` for an example larger than one
    * stored item holds; `422` for a name that is empty, blank or over 200 characters, or inputs
    * that are not a JSON object; and the codes every example route answers.
    */
@@ -3565,12 +3739,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * may be short while `nextCursor` is set, because the platform reads examples whole and stops
    * a read at 1 MB; `iterateMethodExamples` follows the cursor for a caller that wants them all.
    *
-   * Throws `ApiResponseError`: `400` `malformed_request` for a cursor the listing did not issue
-   * for this method, `422` for a `limit` outside 1 to 100, and the codes every example route
-   * answers. A page whose `items` is not an array, whose `next_cursor` is neither a string nor
-   * `null`, or one of whose items is not an example `readMethodExample` can read, is an answer
-   * the SDK cannot read, thrown as an `ApiResponseError` too. An example whose inputs hold an
-   * integer past the safe range is read like any other, that integer as a `bigint`.
+   * Throws `ApiResponseError`: `422` `request.invalid` for a cursor the listing did not issue for
+   * this method or a `limit` outside 1 to 100, and the codes every example route answers. A page
+   * whose `items` is not an array, whose `next_cursor` is neither a string nor `null`, or one of
+   * whose items is not an example `readMethodExample` can read, is an answer the SDK cannot read,
+   * thrown as an `ApiResponseError` too. An example whose inputs hold an integer past the safe
+   * range is read like any other, that integer as a `bigint`.
    */
   async listMethodExamples(
     methodId: string,
@@ -3648,7 +3822,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Throws `RequestArgumentError` before any request for an example id that is empty, `.` or
    * `..`, or when neither `name` nor `inputs` is given. Throws `ApiResponseError`: `413`
-   * `payload_too_large` for inputs larger than one stored item holds, `422` for a name that is
+   * `request.too_large` for inputs larger than one stored item holds, `422` for a name that is
    * empty, blank or over 200 characters, or inputs that are not a JSON object, a `503` that wrote
    * nothing, safe to retry, when concurrent edits kept landing under the write, and the codes
    * every example route answers.
@@ -3666,6 +3840,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (Object.keys(body).length === 0) {
       throw new RequestArgumentError(
         "updateMethodExample() needs a new name, new inputs, or both; got neither.",
+        { problem: argumentInvalidProblem("name", "nothing_to_update") },
       );
     }
     return this.requestMethodExample("PATCH", endpoint, body);
@@ -3683,13 +3858,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * since and nothing was written. A stale run is the expected end of a run that outlasted an
    * edit, so it is answered, never thrown. Both arms carry the `example` as it stands.
    *
-   * Throws `RequestArgumentError` before any request, checking in this order: an example id that
-   * is empty, `.` or `..`, or holds a lone surrogate, a `run_id` that is not a non-empty string,
-   * and an `input_revision` that is not a positive integer. Throws `ApiResponseError` when no
-   * verdict was produced: `404` `not_found` for an example deleted since, `404` `run_not_found`
-   * for a run that is not one of this method's, with nothing written, and the codes every example
-   * route answers. An answer whose `outcome` is neither arm's, or whose `example` is not an
-   * example `readMethodExample` can read, is an answer the SDK cannot read, thrown as an
+   * Throws `RequestArgumentError` before any request, checking in this order: an example id that is
+   * empty, `.` or `..`, or holds a lone surrogate, a `run_id` that is not a non-empty string, and
+   * an `input_revision` that is not a positive integer. Throws `ApiResponseError` when no verdict
+   * was produced: `404` `pipelex.catalog.not_found` for an example deleted since, `404`
+   * `run.not_found` for a run that is not one of this method's, with nothing written, and the codes
+   * every example route answers. An answer whose `outcome` is neither arm's, or whose `example` is
+   * not an example `readMethodExample` can read, is an answer the SDK cannot read, thrown as an
    * `ApiResponseError` too, read as `publishMethod` reads its verdict.
    */
   async recordMethodExampleLatestRun(
@@ -3705,8 +3880,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1) {
       throw argumentRefusal(
         call,
-        "an input_revision, the example's revision whose inputs the run used, a positive integer",
+        {
+          name: "input_revision",
+          what: "an input_revision, the example's revision whose inputs the run used, a positive integer",
+        },
         describeNumberArgument(revision),
+        "not_a_positive_integer",
       );
     }
     const res = await this.requestProductAnswer("PUT", endpoint, {
@@ -3747,8 +3926,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * the body is closed, and `null` reads as not given. Throws `RequestArgumentError` before any
    * request when `name` or `inputs` is not given, for an `example_id` that is not a non-empty
    * string or an `input_revision` that is not a positive integer, and when only one of the two is
-   * given. Throws `ApiResponseError`: `403` `role_not_permitted` for a role that may not change
-   * methods, such as a runner; `413` `payload_too_large` for an example larger than one stored item
+   * given. Throws `ApiResponseError`: `403` `auth.forbidden` for a role that may not change
+   * methods, such as a runner; `413` `request.too_large` for an example larger than one stored item
    * holds; `422` for a name that is empty, blank or over 200 characters, or inputs that are not a
    * JSON object; and the codes every example route answers. An answer whose `outcome` is neither
    * arm's, or whose `example` is not an example `readMethodExample` can read, is an answer the SDK
@@ -3773,7 +3952,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
     }
     if (revision != null) {
       if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1) {
-        throw argumentRefusal(call, ASSISTANT_REVISION_ARGUMENT, describeNumberArgument(revision));
+        throw argumentRefusal(
+          call,
+          ASSISTANT_REVISION_ARGUMENT,
+          describeNumberArgument(revision),
+          "not_a_positive_integer",
+        );
       }
       body.input_revision = revision;
     }
@@ -3781,6 +3965,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
       throw new RequestArgumentError(
         `${call}() names the assistant's example by both its example_id and the input_revision ` +
           `it was read at, or neither; got only ${body.example_id === undefined ? "input_revision" : "example_id"}.`,
+        {
+          problem: argumentInvalidProblem(
+            body.example_id === undefined ? "example_id" : "input_revision",
+            "missing",
+          ),
+        },
       );
     }
     const res = await this.requestProductAnswer("POST", endpoint, body);
@@ -3805,10 +3995,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Delete an example — `DELETE /v1/methods/{id}/examples/{example_id}`. The platform answers
    * `204`. Deleting the example leaves its latest run in the method's history.
    *
-   * Throws `RequestArgumentError` for an example id that is empty, `.` or `..`, before any
-   * request: `..` would address the method, and its erasure would answer the delete. Throws
-   * `ApiResponseError`: `404` `not_found` when there is no such example, one already deleted
-   * included, and the codes every example route answers.
+   * Throws `RequestArgumentError` for an example id that is empty, `.` or `..`, before any request:
+   * `..` would address the method, and its erasure would answer the delete. Throws
+   * `ApiResponseError`: `404` `pipelex.catalog.not_found` when there is no such example, one
+   * already deleted included, and the codes every example route answers.
    */
   async deleteMethodExample(methodId: string, exampleId: string): Promise<void> {
     await this.requestProduct(
@@ -3859,17 +4049,17 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Throws `RequestArgumentError` for an organization id that is empty, `.` or `..`, before any
    * request. Throws `ApiResponseError`, refusing every change of the request when it refuses one:
-   * `403` `forbidden` when `orgId` is not the active organization, `403` `role_not_permitted` for
-   * a caller who is not its admin, `404` for a missing organization, `409` `conflict` for a
-   * personal workspace, which has no branding, and `422` `validation_failed` for a colour that is
-   * not `#rrggbb` or a key the body does not know. A logo's refusal names its slot in the error's
-   * `errors[]`, each entry's `field` being `square_logo` or `wide_logo` and its `detail` the
-   * sentence to show under that slot: `400` `invalid_storage_uri` for a URI that is not a storage
-   * URI, `403` `forbidden` for another organization's file, and `422` `validation_failed` with a
-   * `LogoRefusalCode` per broken rule for a file the platform refused. A failure of the platform's
-   * storage while reading or copying a logo is a `500` `storage_backend_failed`, retryable, with
-   * nothing written. A `503` `service_unavailable` is a failure of its database, after which the
-   * write may have landed or not: the same input sent again is safe.
+   * `403` `pipelex.org.mismatch` when `orgId` is not the active organization, `403`
+   * `auth.forbidden` for a caller who is not its admin, `404` `pipelex.org.not_found` for a missing
+   * organization, `409` `pipelex.org.not_manageable` for a personal workspace, which has no
+   * branding, and `422` `request.invalid` for a colour that is not `#rrggbb` or a key the body does
+   * not know. A logo's refusal names its slot in its problem's `errors`, each item's
+   * `location.field` being `square_logo` or `wide_logo` and its `detail` the sentence to show under
+   * that slot: `422` `pipelex.storage.uri_invalid` for a URI that is not a storage URI, `403`
+   * `pipelex.org.mismatch` for another organization's file, and `422` `request.invalid` with an
+   * item per broken rule, its code one `LogoRefusalCode` names, for a file the platform refused. A
+   * `503` `runtime.unavailable` is a failure of the platform's storage or its database, after which
+   * the write may have landed or not: the same input sent again is safe.
    */
   async updateOrganizationBranding(
     orgId: string,
@@ -3901,7 +4091,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * Switch the existing subscription's plan — `POST /v1/billing/change-plan`.
-   * A 409 `conflict` (`ApiResponseError.code`) means there is no subscription
+   * A 409 `pipelex.billing.subscription_conflict` (`ApiResponseError.code`) means there is no subscription
    * to change — start one via `createCheckout` first.
    */
   async changePlan(input: { plan: string }): Promise<ChangePlanResponse> {
@@ -3910,7 +4100,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * A Stripe billing-portal session URL — `GET /v1/billing/portal`. A 409
-   * `conflict` (`ApiResponseError.code`) means there is no subscription yet.
+   * `pipelex.billing.subscription_conflict` (`ApiResponseError.code`) means there is no subscription yet.
    */
   async getBillingPortal(): Promise<BillingPortalResponse> {
     return this.requestProduct("GET", "billing/portal");
@@ -3923,7 +4113,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * Mint a Pipelex API key — `POST /v1/pipelex-api-keys`. The plaintext
-   * `api_key` is returned ONCE. A 409 `pipelex_api_key_limit_reached`
+   * `api_key` is returned ONCE. A 409 `pipelex.billing.plan_limit`
    * (`ApiResponseError.code`) means the per-account key limit is hit.
    */
   async createPipelexApiKey(input: { label: string }): Promise<PipelexApiKeyCreated> {
@@ -4011,8 +4201,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
   /**
    * Upload a base64 file — `POST /v1/upload`, answering the file's `uri`, the `filename` as sent
    * and the `file_id` of its record. An answer with no non-empty string `uri` names no
-   * stored file, so it is an answer the SDK cannot read: an `ApiResponseError`, `runtime` and
-   * not retryable, which `uploadFile` wraps as an `UploadTransportError` with code `unexpected`.
+   * stored file, so it is an answer the SDK cannot read: an `ApiResponseError` whose problem is
+   * `client.response_unreadable`, which `uploadFile` wraps as an `UploadTransportError` with the
+   * reason `unexpected`.
    */
   async upload(input: UploadInput): Promise<UploadedFile> {
     const res = await this.requestProductAnswer("POST", "upload", input);
@@ -4050,9 +4241,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * target is short-lived and a bearer capability, so keep it out of logs. The route
    * never replays a grant: ask again for a new one rather than retrying; with a
    * `sha256`, a new grant answers the same file record. A declared `size` over the cap
-   * is a `413` `ApiResponseError` (`code` `payload_too_large`), a malformed `sha256` and
-   * a `size` other than the one the organization holds those bytes at are a `422`, and a
-   * deployment without the route answers a `404`. See `docs/input-preparation.md`.
+   * is a `413` `ApiResponseError` (`code` `request.too_large`), a malformed `sha256` and
+   * a `size` other than the one the organization holds those bytes at are a `422`
+   * (`request.invalid`), and a deployment without the route answers a `404`. See `docs/input-preparation.md`.
    */
   async requestUploadGrant(
     input: UploadGrantInput,
@@ -4128,7 +4319,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Throws `ApiResponseError`: `400` for a date bound that is not an instant with an offset, a
    * range whose start is after its end, or a cursor of another list or other filters; `404`
-   * `run_not_found` for a run that is not the organization's; `422` for a `limit` outside 1 to
+   * `run.not_found` for a run that is not the organization's; `422` for a `limit` outside 1 to
    * 200, an unknown `kind`, more than 100 values of `format` or `mediaType`, or an id that cannot
    * be one. A page whose `items` is not an array or whose `next_cursor` is neither a string nor
    * `null` is an `ApiResponseError` of an answer the SDK cannot read. See `docs/files.md`.
@@ -4186,10 +4377,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `stored` when its bytes are there.
    *
    * Throws `RequestArgumentError` for a file id that is empty, `.` or `..`, or holds a lone
-   * surrogate, before any request. Throws `ApiResponseError`: `404` `not_found` for a file that is
-   * not the organization's; `422` for a `usesLimit` outside 1 to 200 or an id that cannot be one.
-   * An answer that is not an object, or whose `uses` is not a page of `items` and `next_cursor`, is
-   * an answer the SDK cannot read, thrown as an `ApiResponseError` too. See `docs/files.md`.
+   * surrogate, before any request. Throws `ApiResponseError`: `404` `pipelex.storage.not_found` for
+   * a file that is not the organization's; `422` for a `usesLimit` outside 1 to 200 or an id that
+   * cannot be one. An answer that is not an object, or whose `uses` is not a page of `items` and
+   * `next_cursor`, is an answer the SDK cannot read, thrown as an `ApiResponseError` too. See
+   * `docs/files.md`.
    */
   async getFile(fileId: string, query: GetFileQuery = {}): Promise<FileDetail> {
     const search = productQuery({ uses_limit: query.usesLimit, uses_cursor: query.usesCursor });
@@ -4224,10 +4416,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * kept records.
    *
    * Throws `RequestArgumentError` for a `uri` that is not a non-empty string, before any request.
-   * Throws `ApiResponseError`: `400` `invalid_storage_uri` for a malformed address, `403`
-   * `forbidden` for another organization's, `404` `run_not_found` for a run that is not the
-   * organization's, and `422` for an address over 512 characters. An answer whose `items` is not an
-   * array is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * Throws `ApiResponseError`: `pipelex.storage.uri_invalid` for a malformed address, `403`
+   * `pipelex.org.mismatch` for another organization's, `404` `run.not_found` for a run that is not
+   * the organization's, and `422` for an address over 512 characters. An answer whose `items` is
+   * not an array is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
   async getFilesByUri(uri: string, options: GetFilesByUriOptions = {}): Promise<FileRecordList> {
     const checkedUri = requireNonEmptyId(uri, "getFilesByUri", STORAGE_URI_ARGUMENT);
@@ -4262,16 +4454,21 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Sends `name` alone: the body is closed. Throws `RequestArgumentError` for a file id that is
    * empty, `.` or `..`, or holds a lone surrogate, and for a `name` that is not a string, before
-   * any request. Throws `ApiResponseError`: `403` `role_not_permitted` past the rule above; `404`
-   * `not_found` for a file that is not the organization's; `422` for a name over 512 characters or
-   * with nothing left once cleaned. An answer that is not an object is an answer the SDK cannot
+   * any request. Throws `ApiResponseError`: `403` `auth.forbidden` past the rule above; `404`
+   * `pipelex.storage.not_found` for a file that is not the organization's; `422` for a name over
+   * 512 characters or with nothing left once cleaned. An answer that is not an object is an answer the SDK cannot
    * read, thrown as an `ApiResponseError` too.
    */
   async renameFile(fileId: string, input: FileRenameInput): Promise<FileRecord> {
     const segment = idPathSegment(fileId, "renameFile", FILE_ID_ARGUMENT);
     const { name } = (input as Partial<FileRenameInput> | undefined) ?? {};
     if (typeof name !== "string") {
-      throw argumentRefusal("renameFile", RENAME_NAME_ARGUMENT, describeNumberArgument(name));
+      throw argumentRefusal(
+        "renameFile",
+        RENAME_NAME_ARGUMENT,
+        describeNumberArgument(name),
+        "not_a_string",
+      );
     }
     return this.requestProductObject("PATCH", `files/${segment}`, { name });
   }
@@ -4299,14 +4496,19 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Sends each file as `{ file_id }` or `{ uri }` and nothing else: the body is closed. Throws
    * `RequestArgumentError` before any request when `files` is not a list, or one of its items does
    * not name exactly one of `file_id` and `uri` as a non-empty string. Throws `ApiResponseError`:
-   * `422` for more than 100 files, or an id or address longer than one can be; `500` `config` when
-   * the platform cannot sign at all. An answer that is not one item per requested file, each an
+   * `422` `request.invalid` for more than 100 files, or an id or address longer than one can be;
+   * `500` `pipelex.storage.not_configured` when the platform cannot sign at all. An answer that is not one item per requested file, each an
    * object with its `url` or its `error`, is an answer the SDK cannot read, thrown as an
    * `ApiResponseError` whose body hides every link.
    */
   async linkFiles(files: readonly FileLinkTarget[]): Promise<FileLinksResult> {
     if (!Array.isArray(files)) {
-      throw argumentRefusal("linkFiles", "a list of files to link", describeNumberArgument(files));
+      throw argumentRefusal(
+        "linkFiles",
+        { name: "files", what: "a list of files to link" },
+        describeNumberArgument(files),
+        "not_a_list",
+      );
     }
     const targets = files.map((target: unknown) => fileLinkTarget(target));
     const res = withLinks(
@@ -4355,18 +4557,18 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * list of non-empty strings, when `run_id` is not a non-empty string, and when `name` is not a
    * string. Throws `ApiResponseError`:
    *
-   * - `422` `file_archive_too_large` past a cap, at most 500 files or 2,000,000,000 bytes, whose
-   *   `problemDocument.limit` names it (`FileArchiveLimit`), so the person can be told how far over
-   *   the selection is;
-   * - `422` `validation_failed` for more than 1,000 ids listed, or an id longer than one can be;
-   * - `404` `not_found` for a file that is not the organization's, the `detail` naming up to five
-   *   of them, or a run whose files hold nothing stored to zip; `404` `run_not_found` for a run
-   *   that is not the organization's;
-   * - `409` `conflict`: an `input` one, not retryable, for a selected file whose upload has not
-   *   finished; a `runtime` one, retryable, for a run whose files are not all recorded yet, which
-   *   the same request clears a few seconds after the run ends;
-   * - `503` `service_unavailable`, retryable, when the archive could not be queued: the same request
-   *   sent again asks for a new archive.
+   * - `422` `pipelex.files.archive_too_large` past a cap, at most 500 files or 2,000,000,000
+   *   bytes, whose problem's `limit` member names it (`FileArchiveLimit`), so the person can be told
+   *   how far over the selection is;
+   * - `422` `request.invalid` for more than 1,000 ids listed, or an id longer than one can be;
+   * - `404` `pipelex.storage.not_found` for a file that is not the organization's, the `detail`
+   *   naming up to five of them, or a run whose files hold nothing stored to zip; `404`
+   *   `run.not_found` for a run that is not the organization's;
+   * - `409` `run.not_finished`, `retry` `yes`, for a run whose files are not all recorded yet,
+   *   which the same request clears a few seconds after the run ends, and a `409` with `retry` `no`
+   *   for a selected file whose upload has not finished;
+   * - `503` `runtime.unavailable`, `retry` `yes`, when the archive could not be queued: the same
+   *   request sent again asks for a new archive.
    *
    * An answer that is not an archive, an object with a string `archive_id` and a known `state`, is
    * an answer the SDK cannot read, thrown as an `ApiResponseError` too.
@@ -4376,8 +4578,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (!isPlainObject(request)) {
       throw argumentRefusal(
         call,
-        "an archive request, an object naming `file_ids` or `run_id`",
+        { name: "request", what: "an archive request, an object naming `file_ids` or `run_id`" },
         describeNumberArgument(request),
+        "not_an_object",
       );
     }
     const raw = request as { file_ids?: unknown; run_id?: unknown; name?: unknown };
@@ -4388,6 +4591,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       throw new RequestArgumentError(
         `${call}() names the files to zip by exactly one of file_ids and run_id; got ` +
           `${fileIds === undefined ? "neither" : "both"}.`,
+        { problem: argumentInvalidProblem("file_ids", "not_exactly_one") },
       );
     }
     const body: Record<string, unknown> = {};
@@ -4395,8 +4599,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
       if (!Array.isArray(fileIds) || fileIds.length === 0) {
         throw argumentRefusal(
           call,
-          "file_ids, a non-empty list of the file ids to zip",
+          { name: "file_ids", what: "file_ids, a non-empty list of the file ids to zip" },
           Array.isArray(fileIds) ? "an empty list" : describeNumberArgument(fileIds),
+          Array.isArray(fileIds) ? "empty" : "not_a_list",
         );
       }
       body.file_ids = fileIds.map((id: unknown) =>
@@ -4407,7 +4612,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
     }
     if (name !== undefined) {
       if (typeof name !== "string") {
-        throw argumentRefusal(call, ARCHIVE_NAME_ARGUMENT, describeNumberArgument(name));
+        throw argumentRefusal(
+          call,
+          ARCHIVE_NAME_ARGUMENT,
+          describeNumberArgument(name),
+          "not_a_string",
+        );
       }
       body.name = name;
     }
@@ -4428,10 +4638,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * still `queued` or `building` an hour after it was asked for reads as `failed`.
    *
    * Throws `RequestArgumentError` for an archive id that is empty, `.` or `..`, or holds a lone
-   * surrogate, before any request. Throws `ApiResponseError`: `404` `not_found` for an archive that
-   * is not the organization's, never existed, or has expired, a day after `created_at`; `500` when
-   * the link cannot be signed. An answer that is not an archive is an answer the SDK cannot read,
-   * thrown as an `ApiResponseError` whose body hides the link.
+   * surrogate, before any request. Throws `ApiResponseError`: `404` `pipelex.storage.not_found` for
+   * an archive that is not the organization's, never existed, or has expired, a day after
+   * `created_at`; `500` when the link cannot be signed. An answer that is not an archive is an
+   * answer the SDK cannot read, thrown as an `ApiResponseError` whose body hides the link.
    */
   async getFileArchive(archiveId: string): Promise<FileArchive> {
     const segment = idPathSegment(archiveId, "getFileArchive", ARCHIVE_ID_ARGUMENT);
@@ -4492,14 +4702,15 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `expected_updated_at`, and nothing else: the body is closed, and a `null` token reads as not
    * given. Throws `RequestArgumentError` before any request for a `file_id` or a `path` that is not
    * a non-empty string, and an `expected_updated_at` that is not a string. Throws
-   * `ApiResponseError`: `403` `role_not_permitted` for a role that may not change methods; `404`
-   * for an unknown method or a file that is not the organization's; `409` `method_being_deleted`,
-   * `409` `method_update_conflict` for a stale `expected_updated_at`, and `409` `conflict` for a
-   * file whose upload has not finished or whose stored bytes do not match its record; `422`
-   * `invalid_method_files` for a path the draft cannot hold, such as `.env` or `../logo.png`, and
-   * `422` `method_tree_too_large` past the deployment's limits. An answer whose `blob` is neither
-   * arm's, or whose `file` or `method` is not an object, is an answer the SDK cannot read, thrown
-   * as an `ApiResponseError` too.
+   * `ApiResponseError`: `403` `auth.forbidden` for a role that may not change methods; `404`
+   * for an unknown method or a file that is not the organization's; `409` `pipelex.catalog.being_deleted`,
+   * `409` `pipelex.catalog.update_conflict` for a stale `expected_updated_at`, and `409` `conflict` for a
+   * file whose upload has not finished or whose stored bytes do not match its record; and `422`
+   * `method.package_invalid` for a path the draft cannot hold, such as `.env` or `../logo.png`,
+   * naming the path in its `params`, and past the deployment's limits, its `params` carrying
+   * `reason` `too_large` and the integer `limit`. An answer whose `blob` is neither arm's, or
+   * whose `file` or `method` is not an object, is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too.
    */
   async copyFileIntoDraft(
     methodId: string,
@@ -4518,7 +4729,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
     };
     if (token != null) {
       if (typeof token !== "string") {
-        throw argumentRefusal(call, DRAFT_TOKEN_ARGUMENT, describeNumberArgument(token));
+        throw argumentRefusal(
+          call,
+          DRAFT_TOKEN_ARGUMENT,
+          describeNumberArgument(token),
+          "not_a_string",
+        );
       }
       body.expected_updated_at = token;
     }
@@ -4558,7 +4774,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `iterateRuns` does the latter for you.
    *
    * Each item is a `RunHistoryItem` — the id, status, timestamps, pipe and,
-   * for a failed run, its error report. The run's organization, creator,
+   * for a failed run, its own problem. The run's organization, creator,
    * method and workflow id are not on the list; `getRunDetail` returns them.
    *
    * `createdFrom` / `createdTo` are applied server-side as index key
@@ -4591,7 +4807,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
       cursor: query.cursor,
     });
     const page = await this.requestPage<RunHistoryItem>(`runs${search}`);
-    return { items: page.items.map(withCheckedReport), nextCursor: page.nextCursor };
+    return { items: page.items.map(withCheckedProblem), nextCursor: page.nextCursor };
   }
 
   /**
@@ -4634,8 +4850,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * The whole record for one run — `GET /v1/runs/{id}`.
    *
    * The ONLY call that returns what the run actually executed and its
-   * `inputs`. Kept off the status read, which pollers hit every few seconds. A failed run's stored report, `error`, is checked field by
-   * field (see `RunErrorReport`).
+   * `inputs`. Kept off the status read, which pollers hit every few seconds. A failed run's problem, `error`, is kept when it is a
+   * problem document and read as `null` otherwise.
    *
    * Read with `parseExactJson`, so an integer past `Number.MAX_SAFE_INTEGER` in the inputs is a
    * `bigint` holding its exact digits, and the inputs passed back to `start` or saved as an
@@ -4644,7 +4860,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
   async getRunDetail(runId: string): Promise<RunDetail> {
     const endpoint = `runs/${idPathSegment(runId, "getRunDetail", RUN_ID_ARGUMENT)}`;
     const res = await this.requestProductAnswer("GET", endpoint, undefined);
-    return withCheckedReport(
+    return withCheckedProblem(
       this.readObjectAnswer<RunDetail>("GET", endpoint, res, {}, parseExactJson),
     );
   }
@@ -4726,6 +4942,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
     ) {
       throw new RequestArgumentError(
         `Either pipe_code, the method's tree (directory, contents, tree or files), a method_ref, a hosted method_id or a server-specific extension arg (extra) must be provided to ${call}().`,
+        { problem: argumentInvalidProblem("pipe_code", "nothing_to_run") },
       );
     }
     assertMethodRefPairsWithNothing(options, treeForms);
@@ -4898,6 +5115,7 @@ function buildExtensions(
   if (reserved.length > 0) {
     throw new RequestArgumentError(
       `extra carries reserved request args [${reserved.sort().join(", ")}] — pass them as named options instead.`,
+      { problem: argumentInvalidProblem("extra", "reserved_argument") },
     );
   }
   const result: Record<string, unknown> = {};
@@ -5026,6 +5244,7 @@ function carriesExtraBundle(extensions: Record<string, unknown>): boolean {
 function directoryRefusal(call: string): RequestArgumentError {
   return new RequestArgumentError(
     `${call}() got a directory that is not a path: give the method's directory as a string.`,
+    { problem: argumentInvalidProblem("directory", "not_a_string") },
   );
 }
 
@@ -5040,6 +5259,7 @@ function checkedTreeSource(call: string, value: unknown): MethodTreeSource {
     throw new RequestArgumentError(
       `${call}() got a tree that is not a listed method tree — its files, its digest and a ` +
         `readFile — such as the MethodTree listMethodTree returns; got ${fault}.`,
+      { problem: argumentInvalidProblem("tree", "not_a_tree") },
     );
   }
   return value as MethodTreeSource;
@@ -5091,6 +5311,7 @@ function inlineLimitRefusal(
     `${call}() cannot send the method's tree: the API keeps no blob store, so the tree travels ` +
       `inline, and ${measured} ${weight} bytes, past the ${limit} bytes it takes inline (its ` +
       `max_inline_bytes), so ${sending.unsent}.`,
+    { problem: argumentInvalidProblem("files", "past_inline_limit") },
   );
 }
 
@@ -5125,9 +5346,9 @@ function buildHostedRunExtensions(options: PipelexHostedRunExtensions): Record<s
  * The forms of the method's tree a protocol route (a run, `validate`) was given, checked as the
  * MTHDS standard checks them: its `assertOneMethodSource` on `files` and `tree` (both at once, or
  * either holding no file, refused whatever else the request carries), its refusal rethrown as a
- * `RequestArgumentError` with the same message and the standard's error as `cause`, so it carries
- * a verdict like every other argument the client refuses; and `contents` holding no file refused
- * the same way. A `null` member and an empty `directory` are absent.
+ * `RequestArgumentError` with the same message, the standard's error as `cause` and its problem
+ * (`client.argument_invalid`, naming the argument), like every other argument the client refuses;
+ * and `contents` holding no file refused the same way. A `null` member and an empty `directory` are absent.
  */
 function protocolTreeForms(call: string, options: MethodTreeForms): MethodTreeForms {
   // A `tree` the standard's check would read as a tree is checked as one first, so a value that
@@ -5136,8 +5357,8 @@ function protocolTreeForms(call: string, options: MethodTreeForms): MethodTreeFo
   try {
     assertOneMethodSource({ files: options.files ?? null, tree: options.tree ?? null });
   } catch (err) {
-    if (err instanceof PipelineRequestError) {
-      throw new RequestArgumentError(err.message, { cause: err });
+    if (err instanceof ProblemError) {
+      throw new RequestArgumentError(err.message, { cause: err, problem: err.problem });
     }
     throw err;
   }
@@ -5198,12 +5419,14 @@ function assertMethodRefPairsWithNothing(
     throw new RequestArgumentError(
       `method_ref and the method's tree (${treeForms.join(", ")}) are mutually exclusive: a ` +
         "published method's tree is its package's own. Send one or the other.",
+      { problem: argumentInvalidProblem("method_ref", "mutually_exclusive") },
     );
   }
   if (nonEmptyString(options.method_id) !== undefined) {
     throw new RequestArgumentError(
       "method_ref and method_id are mutually exclusive: an address run carries its own provenance " +
         "and takes no run-history linkage id. Send exactly one method selector.",
+      { problem: argumentInvalidProblem("method_ref", "mutually_exclusive") },
     );
   }
 }
@@ -5230,6 +5453,7 @@ function assertLinkageMethodIdIsBare(
       "catalog id: the tree is what runs, so a version suffix would claim a version that did " +
       "not. Send the bare id (parseMethodSelector(...).method_id), or drop the tree to run the " +
       "version the selector names.",
+    { problem: argumentInvalidProblem("method_id", "version_suffix_beside_inline_source") },
   );
 }
 
@@ -5273,22 +5497,28 @@ function idempotencyKeyOf(
   if (fault !== undefined) {
     throw new RequestArgumentError(
       `The idempotency key must be 1 to ${MAX_IDEMPOTENCY_KEY_LENGTH} visible ASCII characters ` +
-        `(\`!\` to \`~\`), and this one ${fault}. Leave it out to ${request} without one.`,
+        `(\`!\` to \`~\`), and this one ${fault.words}. Leave it out to ${request} without one.`,
+      { problem: argumentInvalidProblem("idempotency_key", fault.reason) },
     );
   }
   return key as string;
 }
 
 /**
- * What is wrong with an idempotency key, or `undefined` when it is a valid one. The characters are
- * checked before the length, which then counts ASCII characters alone, so the two SDKs, which
- * count a character outside ASCII differently, word every refusal alike.
+ * What is wrong with an idempotency key, or `undefined` when it is a valid one: in words for the
+ * message, and as the problem's reason. The characters are checked before the length, which then
+ * counts ASCII characters alone, so the two SDKs, which count a character outside ASCII
+ * differently, word every refusal alike.
  */
-function idempotencyKeyFault(key: unknown): string | undefined {
-  if (typeof key !== "string") return "is not a string";
-  if (key.length === 0) return "is empty";
-  if (!VISIBLE_ASCII.test(key)) return "holds a character outside visible ASCII";
-  if (key.length > MAX_IDEMPOTENCY_KEY_LENGTH) return `is ${key.length} characters long`;
+function idempotencyKeyFault(key: unknown): { words: string; reason: string } | undefined {
+  if (typeof key !== "string") return { words: "is not a string", reason: "not_a_string" };
+  if (key.length === 0) return { words: "is empty", reason: "empty" };
+  if (!VISIBLE_ASCII.test(key)) {
+    return { words: "holds a character outside visible ASCII", reason: "not_visible_ascii" };
+  }
+  if (key.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+    return { words: `is ${key.length} characters long`, reason: "too_long" };
+  }
   return undefined;
 }
 
@@ -5308,25 +5538,32 @@ const GATEWAY_TIMEOUT_THRESHOLD_MS = 28_000;
  * Whether a request that failed `elapsedMs` after it was sent was cut off by the hosted gateway's
  * ~30-second limit on a request it waits on, rather than refused.
  *
- * It is when, after at least ~28 seconds, the failure is a `503` or `504` answer, or the client's
- * own time limit (`ApiUnreachableError` with the code `ABORT_TIMEOUT`). A fast `503` is the API
- * saying the request was not handled, and any other unreachable host is never the gateway's
- * cut-off, however long it took. The fetch API cannot say whether `ABORT_TIMEOUT` ran out before
+ * It is when, after at least ~28 seconds, the failure is a `503` or `504` answer whose body is no
+ * problem document, or the client's own time limit (`ApiUnreachableError` with the code
+ * `ABORT_TIMEOUT`). A fast `503` is the API saying the request was not handled, a problem document
+ * is the API's own answer however long it took, and any other unreachable host is never the
+ * gateway's cut-off. The fetch API cannot say whether `ABORT_TIMEOUT` ran out before
  * the connection was made, so it is read as the gateway's; with Node's own dispatcher it never
  * does past the threshold, since undici gives up a connection that does not come after ten
  * seconds (`UND_ERR_CONNECT_TIMEOUT`), the TLS handshake included. The Python SDK's
  * `is_gateway_cut_off` reads the same failures, its `ABORT_TIMEOUT` being httpx's read or write
  * timeout.
  *
- * The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`. Whether a
- * failed `start` or `execute` may have started a run needs no timing: the error says it as
- * `runMayHaveStarted`, which reads every `503` but the platform's coded one as a run that may
- * have started, however quickly it came back.
+ * The blocking `execute` turns such a failure into a `PipelineExecuteTimeoutError`, for its
+ * message. Whether a failed `start` or `execute` may have started a run needs no timing: the
+ * error's problem says it, its `retry` being `outcome_unknown` for every answer from the edge
+ * that is no problem document past a `5xx` but a `501`, however quickly it came back, while a
+ * `503` problem document from the platform says as received whether it started one.
  */
 export function isGatewayCutOff(error: unknown, elapsedMs: number): boolean {
   if (elapsedMs < GATEWAY_TIMEOUT_THRESHOLD_MS) return false;
-  if (error instanceof ApiResponseError) return error.status === 503 || error.status === 504;
-  if (error instanceof ApiUnreachableError) return error.code === "ABORT_TIMEOUT";
+  if (error instanceof ApiResponseError) {
+    return (
+      (error.status === 503 || error.status === 504) &&
+      readProblemBody(error.responseBody) === undefined
+    );
+  }
+  if (error instanceof ApiUnreachableError) return error.networkCode === ABORT_TIMEOUT;
   return false;
 }
 
@@ -5339,12 +5576,12 @@ export function isGatewayCutOff(error: unknown, elapsedMs: number): boolean {
 const UNDECODABLE_BODY_CODE = /^(Z_|ERR__ERROR_|ZSTD_error_)/;
 
 /**
- * Whether an `ApiUnreachableError` is an answer whose body could not be decoded, rather than no
- * answer at all. The Python SDK's twin is the `ApiUnreachableError` whose cause is httpx's
+ * Whether the network code of a failure met while a body was read says the body arrived and could
+ * not be decoded, rather than that it never arrived. The Python SDK's twin is httpx's
  * `DecodingError`.
  */
-function isUndecodableBody(error: ApiUnreachableError): boolean {
-  return error.code !== undefined && UNDECODABLE_BODY_CODE.test(error.code);
+function isUndecodableBody(code: string | undefined): boolean {
+  return code !== undefined && UNDECODABLE_BODY_CODE.test(code);
 }
 
 /** A SHA-256 as the platform names a blob: 64 lowercase hexadecimal digits. */
@@ -5409,18 +5646,22 @@ function extractNetworkErrorCode(err: unknown): string | undefined {
 }
 
 /**
- * Whether a 404 is an unmatched-route 404 (no platform deployed) rather than
- * the platform's structured run-not-found 404. The platform wraps its 404s in
- * a structured envelope with a stable `code`; a bare runner returns
- * Starlette's default `{"detail": "Not Found"}` (no `code`).
+ * Whether a 404 says that no route serves the path (no run store deployed), rather than that a
+ * route answered it on purpose, such as a run or a method that does not exist. A route that
+ * answers a 404 of its own names its failure by a `code`, whether in a problem document
+ * (`run.not_found`, or a runner's `method.not_found` for a `method_ref` it cannot find) or in
+ * an older native body the platform still answers (`run_not_found`, `not_found`), and one defect
+ * elsewhere in the document does not make the route missing. So the 404 is a missing route when
+ * its body is not a JSON object naming a non-empty string `code`, as a bare runner's framework
+ * default `{"detail": "Not Found"}` and an empty or non-JSON body are not, or when that code is
+ * `request.not_found`, the problem a runner answers for a path no route serves (pipelex-api 0.90
+ * and later). The Python SDK's `_is_missing_route_404` reads the same rule.
  */
 function isMissingRoute404(body: string): boolean {
-  if (!body) return true;
   const reading = parseJsonBody(body);
-  if (!reading.ok) return true;
-  const parsed = reading.value;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
-  return !("code" in parsed);
+  if (!reading.ok || !isPlainObject(reading.value)) return true;
+  const code = reading.value["code"];
+  return typeof code !== "string" || code === "" || code === "request.not_found";
 }
 
 /**
@@ -5455,44 +5696,69 @@ function parseRetryAfter(headers: Headers): number | null {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
 }
 
-/** The response header the platform and the runner stamp the request's correlation id on. */
-const REQUEST_ID_HEADER = "x-request-id";
-
 /**
- * Build the failed arm from the results read's `409` problem document.
+ * Read the results read's `409` answer. The platform answers it with a problem document:
  *
- * The platform's document carries `detail` (`Run finished with status <STATUS>: <message>`,
- * or `...; no result available` when the run has no report) and two extension members:
- * `run_status`, the run's terminal status — named so because a problem's own `status` is the
- * HTTP status — and `error`, the run's stored error report or `null`. The status is read from
- * `run_status`. A platform that predates the member sends only `detail`, whose leading
- * `Run finished with status <STATUS>` the platform keeps for exactly this reader, so the status
- * word is recovered from it then; a `409` that yields no known status either way (the one this
- * route answers for a stored result it refuses to read) reads as `FAILED`, and its `detail`
- * still says what happened. The report is checked field by field by `readRunErrorReport`: an
- * object is taken as the report, each named field kept when it has its declared type, and
- * anything that is not an object reads as no report.
+ * - `run.failed`: the run ended without success, and the answer is the failed arm, its `problem`
+ *   that document as received, its `status` the terminal status its `run_status` parameter names
+ *   (`FAILED` when it names none the SDK knows), its `message` the document's `detail`, and its
+ *   `error` the run's own problem, which the document nests as `run_error`, or `null` when it nests
+ *   none that is a problem document;
+ * - `run.not_finished`: the run is still going, and the answer is the running arm, waiting the
+ *   document's `retry_after`, rounded up to whole seconds, else the `Retry-After` header's (or the
+ *   default) before the next read.
+ *
+ * Any other `409`, a problem document of another code or a body that is none, is no answer about
+ * the run's end, so it reads as `undefined` and the caller throws its `ApiResponseError`.
  */
-function runResultFailed(runId: string, body: string): RunResultState {
-  const { serverMessage, document } = parseErrorBody(body);
-  const message = serverMessage ?? "Run finished without a result.";
+function runResultConflict(runId: string, res: RawResponse): RunResultState | undefined {
+  const problem = readProblemBody(res.body);
+  if (problem === undefined) return undefined;
+  if (problem.code === "run.not_finished") {
+    // The run's own delay, in whole seconds as the running arm counts them, else the header's.
+    const retryAfter =
+      problem.retry_after !== undefined
+        ? Math.ceil(problem.retry_after)
+        : parseRetryAfter(res.headers);
+    return {
+      state: "running",
+      pipeline_run_id: runId,
+      retry_after_seconds: retryAfter ?? DEFAULT_DEGRADED_RETRY_SECONDS,
+    };
+  }
+  if (problem.code !== "run.failed") return undefined;
+  const nested = problem.run_error;
   return {
     state: "failed",
     pipeline_run_id: runId,
-    status: knownRunStatus(document?.run_status) ?? statusFromDetail(message) ?? "FAILED",
-    message,
-    error: readRunErrorReport(document?.error),
+    status: knownRunStatus(problem.params?.run_status) ?? "FAILED",
+    message: problem.detail,
+    problem: problem.status === undefined ? { ...problem, status: res.status } : problem,
+    error: isProblem(nested) ? nested : null,
   };
 }
 
 /**
- * A run record with its stored report checked by `readRunErrorReport`. Only when the record
- * carries the `error` key, so a server that does not serve it still leaves it absent; a record
- * that is not an object is returned as it came.
+ * A verdict with its problem items read member by member (`readProblemItems`): the `errors` of an
+ * invalid arm and the `warnings` of a valid one, each only when the answer carries the key. An
+ * answer that is not an object is returned as it came.
  */
-function withCheckedReport<T>(record: T): T {
+function withVerdictItems<T>(answer: T): T {
+  if (!isPlainObject(answer)) return answer;
+  const read: Record<string, unknown> = { ...answer };
+  if (answer.is_valid === false) read.errors = readProblemItems(answer.errors);
+  else if (Object.hasOwn(answer, "warnings")) read.warnings = readProblemItems(answer.warnings);
+  return read as T;
+}
+
+/**
+ * A run record with its `error` kept only when it is a problem document, and read as `null`
+ * otherwise. Only when the record carries the `error` key, so a server that does not serve it
+ * still leaves it absent; a record that is not an object is returned as it came.
+ */
+function withCheckedProblem<T>(record: T): T {
   if (!isPlainObject(record) || !Object.hasOwn(record, "error")) return record;
-  return { ...record, error: readRunErrorReport(record.error) } as T;
+  return { ...record, error: isProblem(record.error) ? record.error : null } as T;
 }
 
 /**
@@ -5508,115 +5774,4 @@ function knownRunStatus(value: unknown): RunStatus | undefined {
   return typeof value === "string" && (RUN_STATUSES as readonly string[]).includes(value)
     ? (value as RunStatus)
     : undefined;
-}
-
-/** The status word of a `detail` reading `Run finished with status <STATUS>…`, for a platform without `run_status`. */
-function statusFromDetail(detail: string): RunStatus | undefined {
-  return knownRunStatus(/status\s+([A-Z_]+)/.exec(detail)?.[1]);
-}
-
-/**
- * Extract the members of an error body.
- *
- * The API serializes errors as RFC 9457 problem documents — the platform's (`type`, `title`,
- * `status`, `code`, `detail`, `instance`, `request_id`, `errors[]`, plus an extension member
- * such as a failed run's `run_status` and `error`) and the runner's (the same standard slots
- * plus `error_type`, `error_domain`, `error_category`, `retryable`, `user_action`, `model`,
- * `provider`, `provider_metadata`, `validation_errors`, `migration`) — and, on older routes, as
- * `{"detail": {"error_type": ..., "message": ...}}` (HTTPException with dict detail). Both
- * shapes are handled, with top-level `error_type` / `message` fallbacks. Falls through to empty
- * on a non-JSON or non-object body.
- *
- * Each typed member is kept only when it has the type the problem document gives it, so a
- * malformed member reads as absent rather than as a wrong value, and the nested members
- * (`provider_metadata`, `migration`, `validation_errors`, `errors`) are checked field by field as a
- * stored report's are; `document` keeps the decoded object whole, members named or not.
- */
-function parseErrorBody(body: string): {
-  errorType: string | undefined;
-  serverMessage: string | undefined;
-  validationErrors: ValidationErrorItem[] | undefined;
-  code: string | undefined;
-  details: ProblemDetails;
-  document: Record<string, unknown> | undefined;
-} {
-  const empty = {
-    errorType: undefined,
-    serverMessage: undefined,
-    validationErrors: undefined,
-    code: undefined,
-    details: {},
-    document: undefined,
-  };
-  if (!body) return empty;
-  // Read by the protocol's rules, as every body is: JSON nested deeper than `MAX_BODY_NESTING`, or
-  // holding a number past the range of a double, carries no member, as `pipelex-sdk` reads it.
-  const reading = parseJsonBody(body);
-  if (!reading.ok || !isPlainObject(reading.value)) {
-    return empty;
-  }
-  const root = reading.value;
-  const detail = root.detail;
-  let errorType: string | undefined;
-  let serverMessage: string | undefined;
-  if (detail && typeof detail === "object") {
-    const d = detail as Record<string, unknown>;
-    if (typeof d.error_type === "string") errorType = d.error_type;
-    if (typeof d.message === "string") serverMessage = d.message;
-  } else if (typeof detail === "string") {
-    serverMessage = detail;
-  }
-  if (errorType === undefined && typeof root.error_type === "string") errorType = root.error_type;
-  if (serverMessage === undefined && typeof root.message === "string") serverMessage = root.message;
-  // `validation_errors` rides the problem envelope as a top-level array (the
-  // VERBOSE projection of `ErrorReport.validation_errors`, retained under STRICT
-  // too — it describes the caller's own bundle, not server internals). Each item is
-  // kept when it is an object with a string `category` and `message`, as on a stored report.
-  const validationErrors = Array.isArray(root.validation_errors)
-    ? root.validation_errors.filter(isValidationItem)
-    : undefined;
-  // The platform's closed native code (`conflict`, `not_found`, …), one-to-one with `type`.
-  const code = typeof root.code === "string" ? root.code : undefined;
-  const details: ProblemDetails = {
-    type: stringMember(root.type),
-    title: stringMember(root.title),
-    instance: stringMember(root.instance),
-    requestId: stringMember(root.request_id),
-    errorDomain: stringMember(root.error_domain),
-    errorCategory: stringMember(root.error_category),
-    retryable: typeof root.retryable === "boolean" ? root.retryable : undefined,
-    userAction: parseUserAction(root.user_action),
-    model: stringMember(root.model),
-    provider: stringMember(root.provider),
-    // The nested members are checked one level down by the readers a stored report goes
-    // through, so a misfit field reads as absent here exactly as it does there.
-    providerMetadata: isPlainObject(root.provider_metadata)
-      ? readProviderMetadata(root.provider_metadata)
-      : undefined,
-    migration: isPlainObject(root.migration) ? readMigration(root.migration) : undefined,
-    errors: Array.isArray(root.errors)
-      ? root.errors.filter(isPlainObject).map(readFieldError)
-      : undefined,
-  };
-  return { errorType, serverMessage, validationErrors, code, details, document: root };
-}
-
-/** A problem member kept only when it is a non-empty string. */
-function stringMember(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-/** A `user_action` member is kept only whole: an object with a string `kind` and a non-empty `detail`. */
-function parseUserAction(value: unknown): UserAction | undefined {
-  if (!isPlainObject(value)) return undefined;
-  const { kind, detail } = value;
-  if (typeof kind !== "string" || typeof detail !== "string" || detail.length === 0) {
-    return undefined;
-  }
-  return { kind, detail };
-}
-
-function nonEmptyHeader(headers: Headers, name: string): string | undefined {
-  const value = headers.get(name)?.trim();
-  return value ? value : undefined;
 }

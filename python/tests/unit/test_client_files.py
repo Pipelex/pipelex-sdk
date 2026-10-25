@@ -15,7 +15,6 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from pydantic import ValidationError
 
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.product_models import (
     DraftFileBlob,
@@ -28,7 +27,7 @@ from pipelex_sdk.product_models import (
     FileSummary,
     FileUseHolderType,
 )
-from tests.unit.conftest import BASE_URL, refused_argument
+from tests.unit.conftest import BASE_URL, problem_document, refused_argument
 from tests.unit.test_data import FileBodies
 
 if TYPE_CHECKING:
@@ -40,8 +39,6 @@ if TYPE_CHECKING:
 _FILES_URL = f"{BASE_URL}/v1/files"
 
 #: The verdict of an argument refused before anything is sent: the caller changes it, and asking again unchanged cannot pass.
-_INPUT_VERDICT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
-_UNREADABLE_VERDICT = ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
 
 
 def _sent_method(send: MockType) -> str:
@@ -140,7 +137,7 @@ class TestClientFiles:
         with pytest.raises(RequestArgumentError, match=rf'^list_files\(\) takes "{argument}" as one or more values') as exc_info:
             asyncio.run(api_client.list_files(formats=empty) if argument == "formats" else api_client.list_files(media_types=empty))
 
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         assert refused_argument(exc_info.value) == {"argument": argument, "reason": "empty"}
         send.assert_not_called()
 
@@ -200,7 +197,7 @@ class TestClientFiles:
             asyncio.run(api_client.list_files())
 
         assert str(exc_info.value) == "API GET /v1/files answered 200 with a body that is not the answer the route returns"
-        assert error_verdict_of(exc_info.value) == _UNREADABLE_VERDICT
+        assert exc_info.value.problem.code == "client.response_unreadable"
 
     def test_iterate_follows_the_cursor_through_an_empty_page_sending_the_same_filters(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -294,7 +291,7 @@ class TestClientFiles:
         with pytest.raises(RequestArgumentError, match=rf"^get_file\(\) takes a file id, the file's non-empty `file_id`; got {got}") as exc_info:
             asyncio.run(api_client.get_file(cast("str", file_id)))
 
-        assert error_verdict_of(exc_info.value) == _INPUT_VERDICT
+        assert (exc_info.value.problem.domain, exc_info.value.problem.retry) == ("input", "no")
         send.assert_not_called()
 
     def test_get_refuses_a_file_whose_uses_are_not_a_page(
@@ -306,17 +303,17 @@ class TestClientFiles:
             asyncio.run(api_client.get_file(FileBodies.FILE_ID))
 
         assert isinstance(exc_info.value.__cause__, ValidationError)
-        assert error_verdict_of(exc_info.value) == _UNREADABLE_VERDICT
+        assert exc_info.value.problem.code == "client.response_unreadable"
 
     def test_get_raises_not_found_for_another_organizations_file(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(404, json_body={"status": 404, "code": "not_found", "detail": "Item not found."}))
+        patch_send(api_client, wire_response(404, json_body=problem_document("pipelex.storage.not_found", 404, detail="Item not found.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.get_file(FileBodies.FILE_ID))
 
-        assert exc_info.value.code == "not_found"
+        assert exc_info.value.problem.code == "pipelex.storage.not_found"
 
     # ----- get_files_by_uri -----------------------------------------------------------------------
 
@@ -358,12 +355,12 @@ class TestClientFiles:
     def test_by_uri_raises_forbidden_for_another_organizations_address(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        patch_send(api_client, wire_response(403, json_body={"status": 403, "code": "forbidden", "detail": "Not this organization's."}))
+        patch_send(api_client, wire_response(403, json_body=problem_document("pipelex.org.mismatch", 403, detail="Not this organization's.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.get_files_by_uri("pipelex-storage://org_2/assets/x.pdf"))
 
-        assert exc_info.value.code == "forbidden"
+        assert exc_info.value.problem.code == "pipelex.org.mismatch"
 
     # ----- rename_file ----------------------------------------------------------------------------
 
@@ -389,18 +386,27 @@ class TestClientFiles:
 
         send.assert_not_called()
 
-    def test_rename_raises_role_not_permitted_for_a_runner_renaming_anothers_file(
+    def test_rename_raises_auth_forbidden_for_a_runner_renaming_anothers_file(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
         patch_send(
             api_client,
-            wire_response(403, json_body={"status": 403, "code": "role_not_permitted", "detail": "Your role in this organization is runner."}),
+            wire_response(
+                403,
+                json_body=problem_document(
+                    "auth.forbidden",
+                    403,
+                    domain="account",
+                    detail="Your role in this organization is runner.",
+                    params={"requirement": "a role that may change files"},
+                ),
+            ),
         )
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.rename_file(FileBodies.FILE_ID, "x"))
 
-        assert exc_info.value.code == "role_not_permitted"
+        assert (exc_info.value.problem.code, exc_info.value.problem.domain) == ("auth.forbidden", "account")
 
     # ----- link_files -----------------------------------------------------------------------------
 
@@ -474,7 +480,7 @@ class TestClientFiles:
         assert str(unreadable) == "API POST /v1/files/links answered 200 with a body that is not the answer the route returns"
         assert "X-Amz-Signature=deadbeef" not in (unreadable.response_body or "")
         assert "deadbeef" not in str(unreadable.__cause__)
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        assert unreadable.problem.code == "client.response_unreadable"
 
     # ----- copy_file_into_draft -------------------------------------------------------------------
 
@@ -554,25 +560,25 @@ class TestClientFiles:
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.copy_file_into_draft("mt_abc", file_id="fl_1", path="a.png"))
 
-        assert error_verdict_of(exc_info.value) == _UNREADABLE_VERDICT
+        assert exc_info.value.problem.code == "client.response_unreadable"
 
     @pytest.mark.parametrize(
         ("status", "code"),
         [
-            pytest.param(403, "role_not_permitted", id="runner"),
-            pytest.param(409, "method_update_conflict", id="stale-token"),
-            pytest.param(422, "invalid_method_files", id="bad-path"),
+            pytest.param(403, "auth.forbidden", id="runner"),
+            pytest.param(409, "pipelex.catalog.update_conflict", id="stale-token"),
+            pytest.param(422, "method.package_invalid", id="bad-path"),
         ],
     )
     def test_copy_surfaces_the_platforms_refusals_by_code(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, status: int, code: str
     ) -> None:
-        patch_send(api_client, wire_response(status, json_body={"status": status, "code": code, "detail": "Refused."}))
+        patch_send(api_client, wire_response(status, json_body=problem_document(code, status, detail="Refused.")))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.copy_file_into_draft("mt_abc", file_id="fl_1", path="a.png"))
 
-        assert exc_info.value.code == code
+        assert exc_info.value.problem.code == code
 
     # ----- the record -----------------------------------------------------------------------------
 

@@ -31,9 +31,11 @@ from mthds.method_tree.models import MethodTree
 from mthds.protocol.input_form import InputForm
 from mthds.protocol.output_form import OutputForm
 from mthds.protocol.pipe_io_contracts import PipeIOContracts
+from mthds.protocol.problem.models import ProblemItem
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from pipelex_sdk.validation_models import ValidationErrorItem
+from pipelex_sdk._pydantic_utils import empty_list_factory_of
+from pipelex_sdk.problem_items import ProblemItems
 
 
 class CrateRequestBase(BaseModel):
@@ -125,7 +127,10 @@ class CrateInvalidReport(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     is_valid: Literal[False]
-    validation_errors: list[ValidationErrorItem]
+    errors: ProblemItems = Field(default_factory=empty_list_factory_of(ProblemItem))
+    """One problem item per fault, the same items `/v1/validate` lists for the identical failure, read member by
+    member (`pipelex_sdk.problem_items.read_problem_items`): an item whose `code` or `detail` is not a string is
+    skipped, a malformed member is left out of its item, and a list that is absent or is no list reads as none."""
     message: str
 
 
@@ -289,9 +294,9 @@ class PipeIORequest(CrateToolingRequest):
     as given. Omitted, the server's selection chain decides: the `main_pipe` of the `METHODS.toml`
     at the tree's root, whether the tree was sent or fetched, else the closure's single `main_pipe`
     declaration. A refused selection is a `422`
-    carrying the runner's entry-lookup `error_type` (pipelex-api >= 0.33.1): `EntryPipeNotFoundError`
-    for an unknown ref or a chain that finds no entry pipe, `EntryPipeAmbiguousError` for an
-    ambiguous bare code or a chain that finds several; under `all_pipes` a chain that finds none or
+    problem whose code is `request.pipe_not_found` for an unknown ref, `request.pipe_unspecified` for a chain
+    that finds no entry pipe, and `request.pipe_ambiguous` for an ambiguous bare code or a chain that finds
+    several; under `all_pipes` a chain that finds none or
     several is not refused. The server resolves a bare ref across domains today; `prepare_inputs`
     refuses one before sending it.
 
