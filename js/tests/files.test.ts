@@ -144,7 +144,7 @@ describe("listFiles", () => {
 
       expect(error).toBeInstanceOf(RequestArgumentError);
       expect((error as RequestArgumentError).message).toContain(`"${name}"`);
-      expect((error as RequestArgumentError).errorDomain).toBe("input");
+      expect((error as RequestArgumentError).code).toBe("client.argument_invalid");
       expect(spy).not.toHaveBeenCalled();
     },
   );

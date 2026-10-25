@@ -294,6 +294,7 @@ export function checkFileInputs(
     if (typeof source !== "string" || !ALLOWED_FILE_SCHEMES.some((s) => source.startsWith(s))) {
       return {
         kind: "bad_request",
+        domain: "input",
         title: "Unsupported file reference",
         message:
           `The "${path}" input must be an uploaded file, an https:// URL, or a ` +

@@ -10,7 +10,7 @@
  * consumes — not a speculative mirror of every server field.
  */
 
-import type { RunErrorReport } from "./error-models.js";
+import type { Problem } from "mthds/protocol";
 import type { MethodTreeForms } from "./method-trees.js";
 import type { PipelexValidationResult } from "./models.js";
 import type { RunStatus } from "./runs.js";
@@ -147,10 +147,31 @@ export interface MethodData {
   /**
    * Where the method is in the erasure cascade; absent or `null` on a normal method. Every
    * method route refuses a method whose erasure has started with a `409`
-   * `method_being_deleted`, so a method read seldom carries it; `MethodSummary` carries the
+   * `pipelex.catalog.being_deleted`, so a method read seldom carries it; `MethodSummary` carries the
    * same field on the list, where a method mid-erasure stays listed.
    */
   deletion_state?: MethodDeletionState | null;
+  /**
+   * The method this one was copied from, on a method `copyMethod` made; `null` on a method
+   * created afresh, and absent from a platform that predates copies. Written once, when the copy
+   * is made, and never rewritten. The list rows (`MethodSummary`) do not carry it.
+   */
+  copied_from?: MethodCopiedFrom | null;
+}
+
+/**
+ * The method a copy was made from, as it stood at the copy — `MethodData.copied_from`. Opaque ids
+ * only, never a name: the original may have changed or been erased since, and its organization
+ * may be one the reader does not belong to, so nothing here is a link the reader can follow
+ * unless they belong to that organization.
+ */
+export interface MethodCopiedFrom {
+  /** The canonical id of the organization that holds the original. */
+  org_id: string;
+  /** The original's method id. */
+  method_id: string;
+  /** The digest of the original's draft the copy took; `null` for an empty draft. */
+  draft_digest: string | null;
 }
 
 /**
@@ -301,7 +322,7 @@ export interface MethodDraftInput extends MethodTreeInput {
   /**
    * The draft token the caller last saw — the `updated_at` of the method it last read or
    * wrote, echoed verbatim. With it the write is a compare-and-swap: a draft that moved since
-   * is refused with a `409` whose `code` is `method_update_conflict`, and nothing is written.
+   * is refused with a `409` whose `code` is `pipelex.catalog.update_conflict`, and nothing is written.
    * Omitted, the write is last-writer-wins.
    */
   expected_updated_at?: string;
@@ -318,7 +339,7 @@ export interface MethodPublishInput {
   /**
    * The draft token the caller last saw (`MethodData.updated_at`), echoed verbatim. Required: a
    * publish never takes a draft its caller has not seen, so a draft that moved since is
-   * refused with a `409` whose `code` is `method_update_conflict`, and nothing is published.
+   * refused with a `409` whose `code` is `pipelex.catalog.update_conflict`, and nothing is published.
    */
   expected_draft_updated_at: string;
 }
@@ -358,8 +379,10 @@ export interface MethodPublishRefused {
   /** Says why; for `not_runnable`, that the draft "is valid but does not run yet". */
   message: string;
   /**
-   * The runner's `POST /v1/validate` answer for the draft, verbatim: an invalid arm whose
-   * `validation_errors` say what to fix, or, for `not_runnable`, the valid arm.
+   * The runner's `POST /v1/validate` answer for the draft, read member by member as `validate`
+   * reads it: an invalid arm whose `errors`, problem items, say what to fix, or, for
+   * `not_runnable`, the valid arm. An entry that names no fault is left out, and a member the
+   * standard declares is kept only when it is well-formed.
    */
   validation: PipelexValidationResult;
   method: MethodData;
@@ -393,6 +416,147 @@ export interface ListMethodVersionsQuery {
  */
 export interface MethodVersionPage {
   items: MethodVersionSummary[];
+  nextCursor: string | null;
+}
+
+// ── Method copies (`/v1/methods/{id}/copy`, `/v1/methods/{id}/copies`) ──────
+//
+// A copy is a new, unpublished method in a destination organization holding the original's draft,
+// its form inputs and its saved examples, each stored file they name copied into the destination.
+// The original stays as it was, and keeps a marker of each copy made of it.
+
+/**
+ * The copy — `copyMethod`, `POST /v1/methods/{id}/copy`. Its wire body is closed: the client
+ * sends these members and nothing else, a `null` reading as not given.
+ */
+export interface MethodCopyInput {
+  /**
+   * The canonical id of the organization the copy is made in, where the caller is an admin or a
+   * member: the method's own organization for a duplicate, another team, or the caller's
+   * personal workspace.
+   */
+  destination_org_id: string;
+  /** The copy's name, under the creation's rules; the original's when omitted or `null`. */
+  name?: string | null;
+  /**
+   * The original's draft token (`MethodData.updated_at`) the caller last saw, echoed verbatim: a
+   * draft that moved since is refused with a `409` `pipelex.catalog.update_conflict`, and nothing
+   * is copied. Omitted or `null`, the copy takes the draft as it stands when the request is served.
+   */
+  expected_draft_updated_at?: string | null;
+}
+
+/** What a copy did — the discriminant of `MethodCopyResult`. */
+export type MethodCopyOutcome = "copied" | "refused";
+
+/**
+ * Why a copy was refused: `bundle_names_other_storage`, a `.mthds` file of the draft holds a
+ * `pipelex-storage://` reference the copy cannot rely on: one the destination cannot read, which
+ * every run there would refuse, or, in a duplicate, one under the original method's own run files
+ * (`pipelex-storage://<org_id>/<method_id>/…`), which erasing the original would remove, failing
+ * every run of the duplicate.
+ */
+export type MethodCopyRefusalReason = "bundle_names_other_storage";
+
+/**
+ * One stored file a bundle of the draft names that keeps it from being copied: a file the
+ * destination cannot read, or, in a duplicate, a file under the original's run files, which
+ * erasing the original would remove.
+ */
+export interface BundleStorageReference {
+  /** The tree path of the `.mthds` file that holds the reference. */
+  path: string;
+  /** The `pipelex-storage://` reference as the file writes it, a malformed one included. */
+  uri: string;
+}
+
+/** A copy that was made: `method` is the copy, in the destination, `copied_from` included. */
+export interface MethodCopied {
+  outcome: "copied";
+  method: MethodData;
+  /** How many saved examples the copy holds, each a new example at `input_revision` 1. */
+  examples_copied: number;
+  /** How many distinct stored files were copied into the destination for the copy's inputs. */
+  stored_files_copied: number;
+}
+
+/**
+ * A copy refused before anything was written: a bundle of the draft names stored files the copy
+ * cannot rely on, files the destination cannot read, which every run there would refuse, and, in a
+ * duplicate, files under the original method's own run files, which erasing the original would
+ * remove. The person removes or replaces each reference in the original and copies again, since
+ * rewriting the bundle would change the author's code without asking them.
+ */
+export interface MethodCopyRefused {
+  outcome: "refused";
+  reason: MethodCopyRefusalReason;
+  /** What was refused and what to do, for a person. */
+  message: string;
+  /**
+   * Every reference the destination cannot read and, in a duplicate, every reference under the
+   * original's run files, ordered by bundle path, then by reference.
+   */
+  references: BundleStorageReference[];
+}
+
+/**
+ * The answer of `copyMethod`, a `200` discriminated on `outcome`, because a bundle the copy cannot
+ * rely on is a verdict about the method, not a failure of the request. Branch on `outcome`,
+ * never on the status: a destination the caller may not write to, a stale token, a method being
+ * deleted or a copy past its bounds are thrown as `ApiResponseError` instead, since they produce
+ * no verdict.
+ */
+export type MethodCopyResult = MethodCopied | MethodCopyRefused;
+
+/**
+ * The bound a `422` `pipelex.catalog.copy_too_large` names, read from the refusal's problem
+ * (`ApiResponseError.problem`) as its `limit` member: `max_stored_files`, the most distinct stored files one
+ * copy copies, or `max_stored_bytes`, the most bytes they add up to, each set per deployment; its
+ * `value`, and what the copy `reached`. Removing examples, or the files they hold, brings the copy
+ * under it.
+ */
+export interface MethodCopyLimit {
+  name: "max_stored_files" | "max_stored_bytes";
+  value: number;
+  reached: number;
+}
+
+/** Query for one page of a method's copies. */
+export interface ListMethodCopiesQuery {
+  /**
+   * Page size, from 1 to 100; the API defaults to 50 and refuses a `limit` outside that range
+   * with a `422`.
+   */
+  limit?: number;
+  /** Opaque `nextCursor` from the previous page. */
+  cursor?: string;
+}
+
+/**
+ * The original's record of one copy made of it — a row of `listMethodCopies`. It names the
+ * destination by its id alone, never its name, so the listing tells no reader the name of an
+ * organization they do not belong to: show a destination's name only from the reader's own
+ * memberships. The marker stays when its copy is erased, and the copy then reads as not found.
+ */
+export interface MethodCopyMarker {
+  /** The copy's method id, in the destination organization. */
+  copy_method_id: string;
+  /** The canonical id of the organization the copy was made in. */
+  destination_org_id: string;
+  /** The canonical id of the member who made the copy. */
+  copied_by_user_id: string;
+  /** ISO 8601 UTC instant the copy's row was written. */
+  copied_at: string;
+}
+
+/**
+ * One page of a method's copies, in the order of the copies' ids, which says nothing of when each
+ * was made. `nextCursor` is opaque — pass it straight back to `listMethodCopies` to continue;
+ * `null` means this was the last page. A method never copied, and a copy, which names its
+ * original through `copied_from` and has no copies of its own, answer an empty page.
+ */
+export interface MethodCopyPage {
+  items: MethodCopyMarker[];
   nextCursor: string | null;
 }
 
@@ -890,7 +1054,7 @@ export interface UploadGrantInput {
    * object is named after its bytes, so a file the organization already holds is not
    * sent again: the grant answers `stored: true`. Without it, the grant always names a
    * new object and asks for the bytes. Any other string is a `422`, and so is a `size`
-   * other than the one the organization holds those bytes at (`blob_mismatch`).
+   * other than the one the organization holds those bytes at (`request.invalid`).
    */
   sha256?: string;
   /** What the upload is recorded as; `uploaded` when omitted. */
@@ -1328,8 +1492,8 @@ export type FileArchiveRequest =
   | { run_id: string; file_ids?: never; name?: string };
 
 /**
- * The cap a `422` `file_archive_too_large` names, read from the refusal's
- * `ApiResponseError.problemDocument.limit`: `max_files` (500) or `max_total_bytes`
+ * The cap a `422` `pipelex.files.archive_too_large` names, read from the refusal's problem
+ * (`ApiResponseError.problem`) as its `limit` member: `max_files` (500) or `max_total_bytes`
  * (2,000,000,000), its `value`, and what the selection `reached`. For a run, the count stops as
  * soon as it passes the cap, so `reached` is one more than `max_files` and means "at least".
  */
@@ -1350,7 +1514,7 @@ export interface DraftFileFromFileInput {
   path: string;
   /**
    * The draft token (`MethodData.updated_at`) the caller last read, echoed verbatim: a draft that
-   * moved since is refused with a `409` `method_update_conflict`. Omitted, the file is added to the
+   * moved since is refused with a `409` `pipelex.catalog.update_conflict`. Omitted, the file is added to the
    * draft as it stands when the request is served, never erasing another save.
    */
   expected_updated_at?: string;
@@ -1477,10 +1641,10 @@ export interface PipelineRun {
   result_url?: string | null;
   created_at: string;
   finished_at?: string | null;
-  /** The run's stored error report as the platform serves it, the runner's STRICT
-   *  projection, typed whole (see `RunErrorReport` for which runs hold one). This is how a
-   *  consumer tells the user WHY a run failed rather than showing a generic message. */
-  error?: RunErrorReport | null;
+  /** The problem the run ended with, as the platform serves it to its caller (see
+   *  `RunPublic.error`): kept only when it is a problem document, `null` otherwise. This is how
+   *  a consumer tells the user WHY a run failed rather than showing a generic message. */
+  error?: Problem | null;
   /**
    * Which version of its method the run ran: the version number for a run addressed by a
    * bare id (the latest published version) or by `mt_…@<n>`, `"draft"` for one addressed by
@@ -1516,10 +1680,10 @@ export interface RunHistoryItem {
   finished_at?: string | null;
   /** `null` when the runner resolved the pipe from the bundle's `main_pipe`. */
   pipe_code?: string | null;
-  /** The run's stored error report, served as on the run detail — present only on a run
+  /** The problem the run ended with, served as on the run detail — present only on a run
    *  that ended without completing and holds one, so opening it from history shows why
    *  without another read. */
-  error?: RunErrorReport | null;
+  error?: Problem | null;
   /**
    * Which version of the method the run ran — a number, `"draft"`, or `null` for an inline
    * source (see `PipelineRun.method_version`). The history lists the runs of every version

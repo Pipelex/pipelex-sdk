@@ -16,7 +16,7 @@
  * ```
  */
 
-import { RequestArgumentError } from "./errors.js";
+import { RequestArgumentError, argumentInvalidProblem } from "./errors.js";
 
 /** A catalog id, which never contains an `@`. */
 const METHOD_ID_PATTERN = /^mt_[A-Za-z0-9_-]+$/;
@@ -54,13 +54,16 @@ export interface ParsedMethodSelector {
  */
 export function parseMethodSelector(selector: string): ParsedMethodSelector {
   if (typeof selector !== "string") {
-    throw new RequestArgumentError("parseMethodSelector() takes a method selector string (mt_…).");
+    throw new RequestArgumentError("parseMethodSelector() takes a method selector string (mt_…).", {
+      problem: argumentInvalidProblem("selector", "not_a_string"),
+    });
   }
   const at = selector.indexOf("@");
   const methodId = at < 0 ? selector : selector.slice(0, at);
   if (!METHOD_ID_PATTERN.test(methodId)) {
     throw new RequestArgumentError(
       `"${selector}" is not a method selector: a catalog id is mt_ followed by letters, digits, _ or -.`,
+      { problem: argumentInvalidProblem("selector", "not_a_catalog_id") },
     );
   }
   if (at < 0) return { method_id: methodId, version: null };
@@ -71,12 +74,14 @@ export function parseMethodSelector(selector: string): ParsedMethodSelector {
     throw new RequestArgumentError(
       `"${selector}" names no version: the suffix of a catalog id is @<version>, a positive ` +
         "number without a leading zero, or @draft.",
+      { problem: argumentInvalidProblem("selector", "not_a_version") },
     );
   }
   const version = Number(suffix);
   if (!Number.isSafeInteger(version)) {
     throw new RequestArgumentError(
       `"${selector}" names a version number too large to address exactly.`,
+      { problem: argumentInvalidProblem("selector", "version_too_long") },
     );
   }
   return { method_id: methodId, version };

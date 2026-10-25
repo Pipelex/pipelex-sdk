@@ -79,13 +79,13 @@ Every member is optional, and each is sent only when given, so an empty `q`, cur
 
 `methodId`, `runId` and `createdBy` choose which list serves the page, and with none of them it is the organization's. The other members filter that list.
 
-**An empty `format` or `mediaType` is refused before any request** with a `RequestArgumentError`, since a list with no value would be sent as no parameter at all and list every format; a value that is not a list of strings is a `TypeError`, a bug in the calling code. Everything else the API checks itself: a `limit` out of range, an unknown `kind`, more than 100 values of `format` or `mediaType`, or an id that cannot be one is a `422`; a date bound that is not an instant with an offset, a range whose start is after its end, or a cursor of another list or other filters is a `400`; and a run that is not the organization's is a `404` `run_not_found`. Each is an `ApiResponseError` ([errors.md](./errors.md)).
+**An empty `format` or `mediaType` is refused before any request** with a `RequestArgumentError`, since a list with no value would be sent as no parameter at all and list every format; a value that is not a list of strings is a `TypeError`, a bug in the calling code. Everything else the API checks itself: a `limit` out of range, an unknown `kind`, more than 100 values of `format` or `mediaType`, or an id that cannot be one is a `422`; a date bound that is not an instant with an offset, a range whose start is after its end, or a cursor of another list or other filters is a `400`; and a run that is not the organization's is a `404` `run.not_found`. Each is an `ApiResponseError` ([errors.md](./errors.md)).
 
 ## Paging
 
 **Only a `null` `nextCursor` ends a list.** The platform applies the filters to the rows a page reads and never refills the page, so a filtered page can hold fewer rows than `limit`, or none, and still carry a cursor; a client keeps asking until the cursor is `null`. **A cursor is bound to the list and the filters that issued it**, so a client passes it back with the same query, and passing it to another is a `400`.
 
-`iterateFiles` does both: it sends the same query with every page, keeps going through an empty page that carries a cursor, stops on a `null` cursor or on a cursor the server failed to advance, and throws `PagingNotTerminatingError` past a page ceiling no real list reaches, through the loop `iterateMethods`, `iterateRuns` and `iterateMethodExamples` share. A page whose `items` is not an array, or whose `next_cursor` is neither a string nor `null`, is an `ApiResponseError` of an answer the SDK cannot read (`runtime`, not retryable), never a page the iterator walks.
+`iterateFiles` does both: it sends the same query with every page, keeps going through an empty page that carries a cursor, stops on a `null` cursor or on a cursor the server failed to advance, and throws `PagingNotTerminatingError` past a page ceiling no real list reaches, through the loop `iterateMethods`, `iterateRuns` and `iterateMethodExamples` share. A page whose `items` is not an array, or whose `next_cursor` is neither a string nor `null`, is an `ApiResponseError` of an answer the SDK cannot read (`client.response_unreadable`), never a page the iterator walks.
 
 ## One file and its uses
 
@@ -101,7 +101,7 @@ if (detail.uses.next_cursor !== null) {
 }
 ```
 
-The uses are paged inside the answer, so their cursor keeps the platform's spelling, `uses.next_cursor`, and goes back as `usesCursor`; `usesLimit` is 1 to 200, 50 by default. A record whose upload looked unfinished past the upload grant's lifespan is settled by the read, which answers it `stored` when its bytes are there. A file that is not the organization's is a `404` `not_found`. An answer whose `uses` is not a page of `items` and `next_cursor` is an `ApiResponseError` of an answer the SDK cannot read (`runtime`, not retryable).
+The uses are paged inside the answer, so their cursor keeps the platform's spelling, `uses.next_cursor`, and goes back as `usesCursor`; `usesLimit` is 1 to 200, 50 by default. A record whose upload looked unfinished past the upload grant's lifespan is settled by the read, which answers it `stored` when its bytes are there. A file that is not the organization's is a `404` `pipelex.storage.not_found`. An answer whose `uses` is not a page of `items` and `next_cursor` is an `ApiResponseError` of an answer the SDK cannot read (`client.response_unreadable`).
 
 ## The records of an address
 
@@ -112,7 +112,7 @@ const { items } = await client.getFilesByUri(input.uri, { runId: run.pipeline_ru
 const shown = items[0]?.name ?? input.uri.split("/").pop();
 ```
 
-A `uri` that is not a non-empty string is refused before any request. The platform answers `400` `invalid_storage_uri` for a malformed address, `403` `forbidden` for another organization's, `404` `run_not_found` for a run that is not the organization's and `422` for an address over 512 characters.
+A `uri` that is not a non-empty string is refused before any request. The platform answers `422` `pipelex.storage.uri_invalid` for a malformed address, `403` `pipelex.org.mismatch` for another organization's, `404` `run.not_found` for a run that is not the organization's and `422` `request.invalid` for an address over 512 characters.
 
 ## Renaming a file
 
@@ -123,7 +123,7 @@ const renamed = await client.renameFile("fl_0199", { name: "March invoice" });
 console.log(renamed.name); // "March invoice.pdf"
 ```
 
-**An `admin` or a `member` renames any file; any other role, a runner among them, renames only the files whose record names it as `created_by`**: its own uploads and the outputs of the runs it started. Past that the platform answers `403` `role_not_permitted`, its `detail` naming the caller's role. A `name` that is not a string is refused before any request; a name over 512 characters or with nothing left once cleaned is a `422`, and a file that is not the organization's a `404` `not_found`.
+**An `admin` or a `member` renames any file; any other role, a runner among them, renames only the files whose record names it as `created_by`**: its own uploads and the outputs of the runs it started. Past that the platform answers `403` `auth.forbidden`, its `detail` naming the caller's role. A `name` that is not a string is refused before any request; a name over 512 characters or with nothing left once cleaned is a `422` `request.invalid`, and a file that is not the organization's a `404` `pipelex.storage.not_found`.
 
 ## Links that name the file
 
@@ -142,11 +142,11 @@ for (const link of items) {
 
 **Each link is signed with a `Content-Disposition` naming the file**, so a download saves under the name a person sees rather than the bytes' hash. It opens in place for an image, a PDF or plain text and downloads for every other type, SVG, HTML and XML included, so a file that could run scripts never opens from a link. A file named by its id is linked under its record's name; an address under the name of its first stored record, the caller's before another member's, whose id the item's `file_id` then names.
 
-**A link is a bearer capability.** Keep it out of logs and ask again for a fresh one rather than storing it. The SDK keeps it out of its own errors: an answer it cannot read, one that is not one item per requested file or whose item carries neither a link nor an error, is an `ApiResponseError` whose `responseBody` replaces every `url` member and every link's query with `[redacted]` ([errors.md](./errors.md)). An item that does not name exactly one of `file_id` and `uri` as a non-empty string, or a `files` that is not a list, is refused before any request. The platform answers `422` for more than 100 files, and a `500` `config` when it cannot sign at all.
+**A link is a bearer capability.** Keep it out of logs and ask again for a fresh one rather than storing it. The SDK keeps it out of its own errors: an answer it cannot read, one that is not one item per requested file or whose item carries neither a link nor an error, is an `ApiResponseError` whose `responseBody` replaces every `url` member and every link's query with `[redacted]` ([errors.md](./errors.md)). An item that does not name exactly one of `file_id` and `uri` as a non-empty string, or a `files` that is not a list, is refused before any request. The platform answers `422` `request.invalid` for more than 100 files, and a `500` `pipelex.storage.not_configured` when it cannot sign at all.
 
 ## A zip of files
 
-The platform cannot build a zip inside a request, so a zip takes two calls. `requestFileArchive` queues the archive and answers at once, `queued`; `getFileArchive` reads it until its `state` is `ready`, whose `url` downloads the zip, or `failed`, whose `failure` says why. **An archive is never a file**: no list shows it, and it is gone a day after it was asked for, when a read of it answers `404` `not_found` as for an id never seen.
+The platform cannot build a zip inside a request, so a zip takes two calls. `requestFileArchive` queues the archive and answers at once, `queued`; `getFileArchive` reads it until its `state` is `ready`, whose `url` downloads the zip, or `failed`, whose `failure` says why. **An archive is never a file**: no list shows it, and it is gone a day after it was asked for, when a read of it answers `404` `pipelex.storage.not_found` as for an id never seen.
 
 The request names the files by exactly one of two members, and both are refused before any request when neither or both is given:
 
@@ -179,20 +179,20 @@ else console.warn(archive.failure?.code, archive.failure?.detail);
 | `failure` | A `FileArchiveFailure`, `{ code, detail }`, on a `failed` archive; `null` otherwise. |
 | `url`, `url_expires_at` | The link to the zip and when it lapses, on a `ready` archive; `null` otherwise. |
 
-**A selection past a cap is a `422` `file_archive_too_large`**, checked before anything is written or queued: at most 500 files, or 2,000,000,000 bytes in all. Its problem document's `limit` member, read from the error's `problemDocument` and typed `FileArchiveLimit`, names the cap, `max_files` or `max_total_bytes`, its `value` and what the selection `reached`, so a client can tell the person how far over the selection is and split it. A run's count stops as soon as it passes the cap, so for a run `reached` is one more than the cap.
+**A selection past a cap is a `422` `pipelex.files.archive_too_large`**, checked before anything is written or queued: at most 500 files, or 2,000,000,000 bytes in all. Its problem's `limit` member, read from the error's `problem` and typed `FileArchiveLimit`, names the cap, `max_files` or `max_total_bytes`, its `value` and what the selection `reached`, so a client can tell the person how far over the selection is and split it. A run's count stops as soon as it passes the cap, so for a run `reached` is one more than the cap.
 
 ```ts
 try {
   await client.requestFileArchive({ file_ids: selected });
 } catch (err) {
-  if (err instanceof ApiResponseError && err.code === "file_archive_too_large") {
-    const limit = err.problemDocument?.limit as FileArchiveLimit;
+  if (err instanceof ApiResponseError && err.code === "pipelex.files.archive_too_large") {
+    const limit = err.problem.limit as FileArchiveLimit;
     console.warn(`${limit.name}: ${limit.reached} over ${limit.value}`);
   }
 }
 ```
 
-The other refusals of a request: `422` `validation_failed` for more than 1,000 ids listed or an id longer than one can be; `404` `not_found` for a file that is not the organization's, the `detail` naming up to five of them, or a run whose files hold nothing stored to zip; `404` `run_not_found` for a run that is not the organization's; `409` `conflict`, an `input` one, not retryable, for a selected file whose upload has not finished, and a `runtime` one, retryable, for a run whose files are not all recorded yet, which the same request clears a few seconds after the run ends; and `503` `service_unavailable`, retryable, when the archive could not be queued. Each is an `ApiResponseError` whose `errorDomain` and `retryable` say what to do ([errors.md](./errors.md)).
+The other refusals of a request: `422` `request.invalid` for more than 1,000 ids listed or an id longer than one can be; `404` `pipelex.storage.not_found` for a file that is not the organization's, the `detail` naming up to five of them, or a run whose files hold nothing stored to zip; `404` `run.not_found` for a run that is not the organization's; `409` `run.not_finished`, `retry` `yes`, for a run whose files are not all recorded yet, which the same request clears a few seconds after the run ends, and a `409` with `retry` `no` for a selected file whose upload has not finished; and `503` `runtime.unavailable`, `retry` `yes`, when the archive could not be queued. Each is an `ApiResponseError` whose problem's `domain` and `retry` say what to do ([errors.md](./errors.md)).
 
 ## A run's files
 
@@ -235,7 +235,7 @@ const added = await client.copyFileIntoDraft("mt_abc123", {
 let draftToken = added.method.updated_at;
 ```
 
-**With `expected_updated_at`, the write is a compare-and-swap on the draft token**, refused with `409` `method_update_conflict` when the draft has moved on; without it, the file is added to the draft as it stands, never erasing someone else's save. It takes a bare catalog id, as `writeDraft` does, and refuses a `file_id` or a `path` that is not a non-empty string, or an `expected_updated_at` that is not a string, before any request. It is a write of the method, so the platform answers `403` `role_not_permitted` to a role that may not change methods, such as a runner; and `404` for an unknown method or a file that is not the organization's, `409` `method_being_deleted`, `409` `conflict` for a file whose upload has not finished or whose stored bytes do not match its record, `422` `invalid_method_files` for a path the draft cannot hold, such as `.env` or `../logo.png`, and `422` `method_tree_too_large` past the deployment's limits. An answer whose `blob` is neither arm's, or whose `file` or `method` is not an object, is an answer the SDK cannot read.
+**With `expected_updated_at`, the write is a compare-and-swap on the draft token**, refused with `409` `pipelex.catalog.update_conflict` when the draft has moved on; without it, the file is added to the draft as it stands, never erasing someone else's save. It takes a bare catalog id, as `writeDraft` does, and refuses a `file_id` or a `path` that is not a non-empty string, or an `expected_updated_at` that is not a string, before any request. It is a write of the method, so the platform answers `403` `auth.forbidden` to a role that may not change methods, such as a runner; and `404` for an unknown method or a file that is not the organization's, `409` `pipelex.catalog.being_deleted`, `409` for a file whose upload has not finished or whose stored bytes do not match its record, `422` `method.package_invalid` for a path the draft cannot hold, such as `.env` or `../logo.png`, and `422` `method.package_invalid` past the deployment's limits. An answer whose `blob` is neither arm's, or whose `file` or `method` is not an object, is an answer the SDK cannot read.
 
 ## Uploading a test file
 
@@ -257,4 +257,4 @@ const prepared = await client.prepareInputs({
 
 **The pair is checked before any file is read**, as the upload route checks it, so a request the route would refuse with a `422` is an `InputPreparationError` instead: a `kind` that is neither `uploaded` nor `test`, a `method_id` that is not a catalog id or carries a version suffix, `kind: "test"` without a `method_id`, and a `method_id` without `kind: "test"`. `null` reads as absent. `prepareInputs` names the members it refuses `upload.kind` and `upload.method_id`. `requestUploadGrant` sends its description as given, so the grant route's own `422` refuses a pair it would not take, and its refusals of a test file are the `ApiResponseError` the route answered.
 
-**A test file the route refuses for what it claims is a `TestFileRefusedError`**, whose `code` says why: `role_not_permitted`, the `403` of a caller whose role may not change methods, such as a runner, which an admin of the organization must change (`config`), or which the caller avoids by uploading the file as `uploaded`; `method_not_found`, the `404` of a method that is not one of the organization's (`input`); and `method_being_deleted`, the `409` of a method being erased (`input`). It carries the `status`, the `filename` it was sending and the `methodId` it named, and wraps the `ApiResponseError` as `cause`, whose verdict it takes. These refusals are read off the platform's code, never the status alone: a `403` without `role_not_permitted` is still a refused credential (`UploadAuthenticationError`), and a `404` is still a deployment without upload (`UnsupportedUploadCapabilityError`) unless the upload named a method and the platform answered its domain miss, `not_found` with the `input` domain, rather than the `config` `404` of a route it does not serve ([input-preparation.md](./input-preparation.md#error-and-capability-behavior)).
+**A test file the route refuses for what it claims is a `TestFileRefusedError`**, whose `reason` says why: `role_not_permitted`, the `403` `auth.forbidden` of a caller whose role may not change methods, such as a runner, which an admin of the organization must change, or which the caller avoids by uploading the file as `uploaded`; `method_not_found`, the `404` `pipelex.catalog.not_found` of a method that is not one of the organization's; and `method_being_deleted`, the `409` `pipelex.catalog.being_deleted` of a method being erased. It carries the `status`, the `filename` it was sending and the `methodId` it named, and wraps the `ApiResponseError` as `cause`, whose problem it carries. These refusals are read off the platform's code, never the status alone: a `403` of any other code is still a refused credential (`UploadAuthenticationError`), and a `404` is still a deployment without upload (`UnsupportedUploadCapabilityError`) unless the upload named a method and the platform answered `pipelex.catalog.not_found`, rather than the `404` of a route it does not serve ([input-preparation.md](./input-preparation.md#error-and-capability-behavior)).

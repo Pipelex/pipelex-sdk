@@ -26,6 +26,7 @@ import type {
   InputFormTopLevelField,
 } from "mthds/protocol";
 import { prepareInputs } from "../src/prepare-inputs.js";
+import { problemDocument } from "./helpers/problems.js";
 import type { PrepareCapableClient, PrepareInputsRequest } from "../src/prepare-inputs.js";
 import {
   InputPreparationError,
@@ -77,18 +78,18 @@ function form(pipeRef: string, fields: InputFormTopLevelField[]): InputForm {
 
 // ── The fake client ──────────────────────────────────────────────────
 
-/** A problem-shaped `ApiResponseError`, as the client raises for a route's non-2xx. */
-function apiError(status: number, errorType: string | undefined, detail: string): ApiResponseError {
+/**
+ * The `ApiResponseError` the client raises for a route's non-2xx: a problem document coded `code`,
+ * or a bare body when `code` is `undefined`.
+ */
+function apiError(status: number, code: string | undefined, detail: string): ApiResponseError {
+  const body = code === undefined ? { detail } : problemDocument(code, status, { detail });
   return new ApiResponseError(
     `API POST /v1/pipe-io failed (${status}): ${detail}`,
     "http://localhost:8081/v1/pipe-io",
     status,
     "Error",
-    JSON.stringify({ status, detail, error_type: errorType }),
-    errorType,
-    detail,
-    undefined,
-    undefined,
+    JSON.stringify(body),
   );
 }
 
@@ -151,7 +152,7 @@ function makeClient(
       if (selected === null) {
         throw apiError(
           422,
-          "EntryPipeNotFoundError",
+          "request.pipe_unspecified",
           "No `pipe_ref` was given and the closure declares no `main_pipe` — name the pipe explicitly.",
         );
       }
@@ -159,7 +160,7 @@ function makeClient(
       if (descriptor === undefined) {
         throw apiError(
           422,
-          "EntryPipeNotFoundError",
+          "request.pipe_not_found",
           `Pipe '${selected}' not found in the submitted closure.`,
         );
       }
@@ -466,8 +467,11 @@ describe("prepareInputs", () => {
 
       expect(err).toBeInstanceOf(InvalidInputValueError);
       expect(err).not.toBeInstanceOf(MethodLoadError);
-      expect((err as InvalidInputValueError).errorDomain).toBe("input");
-      expect((err as InvalidInputValueError).retryable).toBe(false);
+      expect((err as InvalidInputValueError).code).toBe("input.invalid");
+      expect((err as InvalidInputValueError).problem).toMatchObject({
+        domain: "input",
+        retry: "no",
+      });
       expect(client.uploadCalls).toHaveLength(0);
     },
   );
@@ -502,11 +506,7 @@ describe("prepareInputs", () => {
         "https://api.pipelex.com/v1/upload",
         413,
         "Payload Too Large",
-        "",
-        undefined,
         "too big",
-        undefined,
-        undefined,
       ),
     });
 
@@ -1052,7 +1052,7 @@ describe("prepareInputs pipe selection", () => {
       "No `pipe_ref` was given and the closure declares several `main_pipe`s " +
       "(demo.first, demo.second) — name the pipe explicitly.";
     const client = makeClient(TWO_PIPES, {
-      error: apiError(422, "EntryPipeAmbiguousError", detail),
+      error: apiError(422, "request.pipe_ambiguous", detail),
     });
 
     const failure = prepareInputs(client, { files: FILES, inputs: {} });
@@ -1187,9 +1187,13 @@ describe("prepareInputs verdicts and guards", () => {
       result: {
         is_valid: false,
         message: "MTHDS library could not be resolved",
-        validation_errors: [
-          { category: "blueprint_validation", message: "unknown pipe type", source: "a.mthds" },
-          { category: "blueprint_validation", message: "unknown concept" },
+        errors: [
+          {
+            code: "method.pipe_type_invalid",
+            detail: "unknown pipe type",
+            location: { file: "a.mthds" },
+          },
+          { code: "method.concept_unresolved", detail: "unknown concept" },
         ],
       },
     });
@@ -1203,35 +1207,45 @@ describe("prepareInputs verdicts and guards", () => {
     expect(err).toBeInstanceOf(InputPreparationError);
     expect(err).not.toBeInstanceOf(InvalidInputValueError);
     expect((err as Error).message).toMatch(/unknown pipe type/);
-    expect((err as MethodLoadError).validationErrors).toEqual([
-      { category: "blueprint_validation", message: "unknown pipe type", source: "a.mthds" },
-      { category: "blueprint_validation", message: "unknown concept" },
+    const load = err as MethodLoadError;
+    expect(load.code).toBe("method.invalid");
+    expect(load.problem.errors).toEqual([
+      {
+        code: "method.pipe_type_invalid",
+        detail: "unknown pipe type",
+        location: { file: "a.mthds" },
+      },
+      { code: "method.concept_unresolved", detail: "unknown concept" },
     ]);
-    expect((err as MethodLoadError).serverMessage).toBe("MTHDS library could not be resolved");
+    expect(load.serverMessage).toBe("MTHDS library could not be resolved");
   });
 
-  it("keeps only the items of a failed load that carry a string category and message", async () => {
+  it("keeps only the items of a failed load that carry a string code and detail", async () => {
     const client = makeClient([], {
       result: {
         is_valid: false,
-        validation_errors: ["oops", { message: "no category" }, { category: "c", message: "kept" }],
+        errors: [
+          "oops",
+          { detail: "no code" },
+          { code: "method.syntax", detail: "kept", location: "not a location" },
+        ],
       } as unknown as PipeIOResponse,
     });
 
     const err = await prepareInputs(client, { files: FILES, inputs: {} }).catch((e: unknown) => e);
 
-    expect((err as MethodLoadError).validationErrors).toEqual([{ category: "c", message: "kept" }]);
+    // A malformed member is left out of its item rather than costing the caller the fault.
+    expect((err as MethodLoadError).problem.errors).toEqual([
+      { code: "method.syntax", detail: "kept" },
+    ]);
     expect((err as MethodLoadError).serverMessage).toBeUndefined();
   });
 
   it.each([
-    ["no validation_errors", { is_valid: false, message: "bad" }],
-    ["a null validation_errors", { is_valid: false, message: "bad", validation_errors: null }],
-    ["an empty validation_errors", { is_valid: false, message: "bad", validation_errors: [] }],
-    [
-      "a first item that is not an object",
-      { is_valid: false, message: "bad", validation_errors: ["oops"] },
-    ],
+    ["no errors", { is_valid: false, message: "bad" }],
+    ["a null errors", { is_valid: false, message: "bad", errors: null }],
+    ["an empty errors", { is_valid: false, message: "bad", errors: [] }],
+    ["a first item that is not an object", { is_valid: false, message: "bad", errors: ["oops"] }],
   ])("reads an invalid answer with %s by its own message", async (_, result) => {
     const client = makeClient([], { result: result as unknown as PipeIOResponse });
 
@@ -1241,14 +1255,14 @@ describe("prepareInputs verdicts and guards", () => {
     expect((err as Error).message).toBe(
       "Cannot prepare inputs: the method signature did not resolve — bad",
     );
-    // The closure does not load: the caller's method must change.
-    expect((err as InputPreparationError).errorDomain).toBe("input");
-    expect((err as InputPreparationError).retryable).toBe(false);
+    // The closure does not load: the method must change.
+    expect((err as InputPreparationError).code).toBe("method.invalid");
+    expect((err as InputPreparationError).problem.errors).toBeUndefined();
   });
 
   it("still fails an invalid answer that gives no reason at all", async () => {
     const client = makeClient([], {
-      result: { is_valid: false, validation_errors: null } as unknown as PipeIOResponse,
+      result: { is_valid: false, errors: null } as unknown as PipeIOResponse,
     });
 
     await expect(prepareInputs(client, { files: FILES, inputs: {} })).rejects.toThrow(
@@ -1273,8 +1287,11 @@ describe("prepareInputs verdicts and guards", () => {
       expect(err).toBeInstanceOf(InputPreparationError);
       expect((err as Error).message).toMatch(/carries no boolean `is_valid`/);
       // The route broke its own contract, which no change to the request fixes.
-      expect((err as InputPreparationError).errorDomain).toBe("runtime");
-      expect((err as InputPreparationError).retryable).toBe(false);
+      expect((err as InputPreparationError).code).toBe("client.response_unreadable");
+      expect((err as InputPreparationError).problem).toMatchObject({
+        domain: "runtime",
+        retry: "no",
+      });
       expect(client.uploadCalls).toHaveLength(0);
     },
   );
@@ -1300,11 +1317,11 @@ describe("prepareInputs verdicts and guards", () => {
 
   it("propagates a request-shape 422 unchanged — only a selection refusal is reclassified", async () => {
     // A package with no `.mthds` file, an over-limit file, a stored method with no
-    // source: every such 422 carries the generic `ValidationError` type and stays an
-    // `ApiResponseError`, since nothing about the pipe selection failed.
+    // source: every such 422 carries a code of its own and stays an `ApiResponseError`,
+    // since nothing about the pipe selection failed.
     const shapeError = apiError(
       422,
-      "ValidationError",
+      "method.package_invalid",
       "Method package 'github.com/o/r' contains no .mthds file.",
     );
     const client = makeClient([topLevel("photo", image())], { error: shapeError });
@@ -1314,8 +1331,8 @@ describe("prepareInputs verdicts and guards", () => {
     );
   });
 
-  it("propagates a selection-typed error on another status unchanged", async () => {
-    const odd = apiError(500, "EntryPipeNotFoundError", "unexpected");
+  it("propagates a problem of another code unchanged", async () => {
+    const odd = apiError(500, "runtime.unexpected", "unexpected");
     const client = makeClient([topLevel("photo", image())], { error: odd });
 
     await expect(prepareInputs(client, { files: FILES, inputs: {} })).rejects.toBe(odd);
@@ -1645,8 +1662,7 @@ describe("prepareInputs refuses a malformed descriptor before anything is upload
           `the pipe I/O answer's \`input_form\` for "${MALFORMED_FORMS.pipe_ref}" is malformed${where}`,
         );
         // The route broke its own contract, which no change to the request fixes.
-        expect((err as InputPreparationError).errorDomain).toBe("runtime");
-        expect((err as InputPreparationError).retryable).toBe(false);
+        expect((err as InputPreparationError).code).toBe("client.response_unreadable");
         expect(client.uploadCalls).toHaveLength(0);
       },
     );

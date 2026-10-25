@@ -1,14 +1,15 @@
-import type { InputForm, OutputForm, PipeIOContracts } from "mthds/protocol";
+import { isProblem } from "mthds/protocol";
+import type { InputForm, OutputForm, PipeIOContracts, Problem } from "mthds/protocol";
 
 import {
   RequestArgumentError,
   RunFailedError,
+  argumentInvalidProblem,
   RunLifecycleUnavailableError,
   RunTimeoutError,
 } from "./errors.js";
 import { MAX_TIMER_DELAY_MS } from "./timers.js";
-import { dropUnfit, isPlainObject } from "./error-models.js";
-import type { RunErrorReport } from "./error-models.js";
+import { dropUnfit, isPlainObject } from "./records.js";
 import type { DictPipeOutput, DictWorkingMemory, PipelexRunResultStart } from "./models.js";
 
 /**
@@ -65,8 +66,8 @@ export const RUN_STATUSES: readonly RunStatus[] = [
  * The statuses a run-history filter sends, deduplicated into `RUN_STATUSES` order so the same
  * filter always builds the same query, as the Python twin builds it. `undefined` is no filter,
  * which lists every status. An empty list names no status, and a name that is no `RunStatus`
- * names one the platform refuses with a `422`; each is a `RequestArgumentError`, `input` and not
- * retryable, before any request, rather than a query that lists every status or fails late. A
+ * names one the platform refuses with a `422`; each is a `RequestArgumentError`, its problem
+ * `client.argument_invalid` naming `status`, before any request, rather than a query that lists every status or fails late. A
  * value that is not an array at all is a `TypeError`, a bug in the calling code.
  */
 export function runStatusFilter(
@@ -81,6 +82,7 @@ export function runStatusFilter(
   if (status.length === 0) {
     throw new RequestArgumentError(
       `"status" must name one or more of ${RUN_STATUSES.join(", ")}; omit it to list every status.`,
+      { problem: argumentInvalidProblem("status", "empty") },
     );
   }
   const known: readonly string[] = RUN_STATUSES;
@@ -88,6 +90,7 @@ export function runStatusFilter(
   if (unknown.length > 0) {
     throw new RequestArgumentError(
       `Unknown run status(es) ${unknown.join(", ")}; valid statuses are: ${RUN_STATUSES.join(", ")}.`,
+      { problem: argumentInvalidProblem("status", "unknown_value") },
     );
   }
   return RUN_STATUSES.filter((name) => status.includes(name));
@@ -116,7 +119,7 @@ export function isSuccessRunStatus(status: RunStatus): boolean {
 /**
  * A run record — the BASE shape of the run-lifecycle read surface.
  *
- * The base fields are declared, and so is `error`, the stored report of a failed run, which
+ * The base fields are declared, and so is `error`, the problem a failed run ended with, which
  * is how a caller learns why a run failed. An implementation may return more (identity,
  * workflow ids, storage URLs, anything else) — those are server-specific response fields,
  * not named in this SDK; the index signature keeps them accessible, mirroring the
@@ -129,20 +132,15 @@ export interface RunPublic {
   created_at: string;
   finished_at?: string | null;
   /**
-   * Why the run failed: the stored error report as the platform serves it, the runner's STRICT
-   * projection, typed whole (see `RunErrorReport`). The runner writes it for a run that fails
-   * while it runs; the platform writes one in the runner's shape for a run it ends or settles
-   * itself — a workflow task that kept failing (`WorkflowTaskKeptFailingError`), a timeout
-   * (`RunTimedOutError`), a workflow that vanished (`RunWorkflowNotFoundError`). A cancelled,
-   * terminated or timed-out run holds a report when a completion callback carried one, and a
-   * timed-out run otherwise the platform's timeout report. `null` on a completed run and on a
-   * run that ended without a report — one whose start failed, a blocking `execute` run, one
-   * cancelled, terminated or given its status by hand with no completion callback carrying a
-   * report, one that ended before the platform wrote reports of its own; absent on a server that
-   * does not serve it. The results read of the same run carries the same object in its `409`,
-   * which is where `getRunResult`'s failed arm and `RunFailedError` take it from.
+   * Why the run failed: the run's own problem document, as the platform serves it to its caller,
+   * under its own code (`run.cancelled`, `run.timed_out`, a model's or a method's code) with its
+   * own `domain`, `retry` and `next_step`. `null` on a completed run and on a run that ended
+   * without a problem stored; absent on a server that does not serve it. The client keeps it only
+   * when it is a problem document (`isProblem` in `mthds/protocol`), and reads anything else as
+   * `null`. The results read of the same run nests the same problem as the `run_error` of its
+   * `409`, which is where `getRunResult`'s failed arm and `RunFailedError.runError` take it from.
    */
-  error?: RunErrorReport | null;
+  error?: Problem | null;
   /**
    * Which version of its stored method the run ran: the version number for a run addressed by
    * a bare `method_id` (the latest published version) or by `mt_…@<n>`, `"draft"` for one
@@ -312,12 +310,16 @@ export interface ProgressCondition {
 
 /**
  * The latest failure of an invocation's work — `ProgressInvocation.last_failure`, a health
- * annotation. `message` keeps the disclosure of a run's error report: under the hosted plane's
- * strict disclosure it is the failure's own message only when that message was written for the
- * caller, and `An internal error occurred.` otherwise.
+ * annotation. Its `problem` is a problem document in the caller's view, as the run reads serve a
+ * failed run's problem: the problem that ended the invocation when it is `failed`, and otherwise
+ * the problem of the latest failure of an attempt its engine is trying again. A failure only the
+ * engine observed, which is no problem document, is served as `runtime.unexpected`. The client
+ * keeps a failure only when its `problem` is a problem document (`isProblem` in `mthds/protocol`),
+ * and keeps its `at` only when it is a string.
  */
 export interface ProgressFailure {
-  message: string;
+  /** The failure, the standard's `Problem`: branch on its `code`, never on the wording of its `detail`. */
+  problem: Problem;
   /** When it failed, an RFC 3339 timestamp in UTC; absent when not recorded. */
   at?: string;
 }
@@ -370,7 +372,7 @@ export interface ProgressInvocation {
   condition?: ProgressCondition;
   /** Health: how many times its work has been tried, present only when more than once. */
   attempts?: number;
-  /** Health: the latest failure of its work. */
+  /** Health: the latest failure of its work, its problem in the caller's view and when it happened. */
   last_failure?: ProgressFailure;
   /**
    * Health: the run is stuck at this invocation — the run status's own `degradation`, with the
@@ -537,16 +539,35 @@ export function runProgressFault(snapshot: Record<string, unknown>): string | un
 }
 
 /**
- * A readable snapshot with its degradations checked by `readRunDegradation`, the snapshot's own
- * and each invocation's, so that neither ever fails the read: one that cannot be read, its
- * `reason` not a string, is dropped, since an optional member is absent rather than `null`.
+ * An invocation's `last_failure`, checked so that it never fails the read carrying it: a value that
+ * is not an object, or whose `problem` is not a problem document (`isProblem` in `mthds/protocol`),
+ * reads as `undefined`, since a failure without its problem cannot be branched on; `at` is kept
+ * when it is a string and dropped otherwise; members this SDK does not name are relayed as sent.
+ *
+ * Internal: `withCheckedProgressHealth` applies it.
+ */
+export function readProgressFailure(value: unknown): ProgressFailure | undefined {
+  if (!isPlainObject(value) || !isProblem(value.problem)) return undefined;
+  const failure: Record<string, unknown> = { ...value };
+  if (Object.hasOwn(failure, "at") && typeof failure.at !== "string") delete failure.at;
+  return failure as unknown as ProgressFailure;
+}
+
+/**
+ * A readable snapshot with its health annotations checked, so that none ever fails the read: its
+ * own `degradation` and each invocation's by `readRunDegradation`, one whose `reason` is not a
+ * string dropped, and each invocation's `last_failure` by `readProgressFailure`, one whose
+ * `problem` is not a problem document dropped, since an optional member is absent rather than
+ * `null`.
  *
  * Internal: `getRunProgress` applies it to an answer `runProgressFault` passed.
  */
-export function withCheckedProgressDegradations(snapshot: RunProgress): RunProgress {
+export function withCheckedProgressHealth(snapshot: RunProgress): RunProgress {
   return {
     ...withCheckedDegradationMember(snapshot),
-    invocations: snapshot.invocations.map(withCheckedDegradationMember),
+    invocations: snapshot.invocations.map((invocation) =>
+      withCheckedFailureMember(withCheckedDegradationMember(invocation)),
+    ),
   };
 }
 
@@ -555,6 +576,13 @@ function withCheckedDegradationMember<T extends { degradation?: RunDegradation }
   const { degradation, ...rest } = record;
   const checked = readRunDegradation(degradation);
   return (checked === null ? rest : { ...rest, degradation: checked }) as T;
+}
+
+function withCheckedFailureMember(invocation: ProgressInvocation): ProgressInvocation {
+  if (!Object.hasOwn(invocation, "last_failure")) return invocation;
+  const { last_failure: failure, ...rest } = invocation;
+  const checked = readProgressFailure(failure);
+  return (checked === undefined ? rest : { ...rest, last_failure: checked }) as ProgressInvocation;
 }
 
 /**
@@ -637,9 +665,9 @@ export type RunResultArtifact = (typeof RUN_RESULT_ARTIFACTS)[number];
 
 /**
  * Refuse an artifact selection the platform would answer with a 400: an empty one, or one naming
- * an artifact it does not know, each a `RequestArgumentError`, `input` and not retryable, as the
- * Python twin refuses it. `undefined` is no selection, which reads every artifact; a value that is
- * not an array at all is a `TypeError`, a bug in the calling code that carries no verdict.
+ * an artifact it does not know, each a `RequestArgumentError`, its problem
+ * `client.argument_invalid` naming `artifacts`, as the Python twin refuses it. `undefined` is no selection, which reads every artifact; a value that is
+ * not an array at all is a `TypeError`, a bug in the calling code that carries no problem.
  */
 export function assertArtifactSelection(artifacts: readonly string[] | undefined): void {
   if (artifacts === undefined) return;
@@ -652,6 +680,7 @@ export function assertArtifactSelection(artifacts: readonly string[] | undefined
     throw new RequestArgumentError(
       `"artifacts" must name one or more of ${RUN_RESULT_ARTIFACTS.join(", ")}; omit it to read ` +
         "every artifact.",
+      { problem: argumentInvalidProblem("artifacts", "empty") },
     );
   }
   const known: readonly string[] = RUN_RESULT_ARTIFACTS;
@@ -660,6 +689,7 @@ export function assertArtifactSelection(artifacts: readonly string[] | undefined
     throw new RequestArgumentError(
       `Unknown result artifact(s) ${unknown.join(", ")}; valid artifacts are: ` +
         `${RUN_RESULT_ARTIFACTS.join(", ")}.`,
+      { problem: argumentInvalidProblem("artifacts", "unknown_value") },
     );
   }
 }
@@ -817,10 +847,11 @@ export interface RunResults {
  * Single-shot result lookup outcome, discriminated on `state`:
  * - `running`  — HTTP 202; poll again after `retry_after_seconds`.
  * - `completed` — HTTP 200; `result` carries the artifacts.
- * - `failed`   — HTTP 409; run reached a terminal non-`COMPLETED` status. `status` is the
- *   problem's `run_status` member (recovered from `detail` on a platform that predates it),
- *   `message` its `detail` (`Run finished with status FAILED: <the report's message>`), and
- *   `error` the run's stored error report, typed, or `null` when the run ended without one.
+ * - `failed`   — HTTP 409 answering `run.failed`: the run reached a terminal non-`COMPLETED`
+ *   status. `problem` is that `run.failed` problem as the platform answered it, `status` the
+ *   terminal status its `run_status` parameter names (`FAILED` when it names none the SDK knows),
+ *   `message` its `detail`, and `error` the run's own problem, which `run.failed` nests as
+ *   `run_error`, or `null` when the run ended without one.
  */
 export type RunResultState =
   | { state: "running"; pipeline_run_id: string; retry_after_seconds: number | null }
@@ -830,7 +861,8 @@ export type RunResultState =
       pipeline_run_id: string;
       status: RunStatus;
       message: string;
-      error: RunErrorReport | null;
+      problem: Problem;
+      error: Problem | null;
     };
 
 // ── Polling options ─────────────────────────────────────────────────
@@ -934,8 +966,8 @@ export function assertWaitOptions(options: WaitForResultOptions = {}): void {
 /**
  * Poll a single-shot result lookup (`fetchOnce`) until the run reaches a
  * terminal state. Returns the artifacts on `COMPLETED`, throws `RunFailedError`
- * on any other terminal status — carrying the run's status and its stored error
- * report — and throws `RunTimeoutError` if `timeoutMs` elapses first (the run
+ * on any other terminal status — carrying the run's status and the `run.failed`
+ * problem, which nests the run's own — and throws `RunTimeoutError` if `timeoutMs` elapses first (the run
  * keeps executing server-side — re-poll by id later).
  *
  * With `options.onProgress` and a `fetchProgress`, each poll that finds the run still running also
@@ -989,7 +1021,7 @@ export async function pollUntilResult(
       return state.result;
     }
     if (state.state === "failed") {
-      throw new RunFailedError(state.message, runId, state.status, { error: state.error });
+      throw new RunFailedError(state.message, runId, state.status, { problem: state.problem });
     }
 
     if (readsProgress && onProgress !== undefined && fetchProgress !== undefined) {

@@ -14,12 +14,13 @@ reason or its fix is the shape both of them exist to avoid.
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
-from pipelex_sdk.error_models import ProblemUserAction
+from mthds.protocol.problem.models import Problem
 from pipelex_sdk.errors import ApiResponseError
 
 from widget.manifest import ManifestError, MethodSelector, read_manifest, write_manifest
@@ -131,26 +132,79 @@ class TestMethodSources:
     def test_dashes_become_underscores(self):
         assert codegen.generated_package_dir("summarize-pdf").name == "summarize_pdf"
 
+    def test_a_bare_403_names_both_the_key_and_the_route(self):
+        """A gateway answers a path it does not route with a bare 403, as it answers a key it refuses."""
+        exc = ApiResponseError(
+            "nope",
+            api_url="https://api.example.com",
+            status=403,
+            status_text="Forbidden",
+            response_body="",
+            headers={"x-request-id": "req_gw_1"},
+        )
+        # The SDK reads the bare status as a refused key, which the answer alone cannot prove.
+        assert exc.problem.code == "auth.invalid_credential"
+        message = codegen.explain(exc, "https://api.example.com", route="POST /v1/validate")
+        assert message == (
+            "HTTP 403 from POST /v1/validate, with no problem document: either PIPELEX_API_KEY was refused,\n"
+            "    or this base URL does not serve POST /v1/validate, which a gateway answers alike.\n"
+            "    Base URL: https://api.example.com\n"
+            "    Check the key in .env — get one at https://app.pipelex.com — and that PIPELEX_BASE_URL\n"
+            "    points at a Pipelex API that serves this route, or drop it to use the default.\n"
+            "    Request id: req_gw_1"
+        )
+
     def test_a_protocol_route_refusal_names_the_route_and_the_key(self):
         """`validate` is a protocol route, and it raises the SDK's typed error like a product route does."""
-        exc = ApiResponseError("nope", api_url="https://api.example.com", status=403, status_text="Forbidden", response_body="")
+        body = {
+            "type": "https://mthds.ai/errors/auth.invalid_credential",
+            "title": "The credential is not valid",
+            "status": 403,
+            "detail": "The API key is not valid.",
+            "code": "auth.invalid_credential",
+            "domain": "account",
+            "retry": "no",
+            "next_step": {"kind": "check_credentials", "detail": "Check the API key the request sends."},
+        }
+        exc = ApiResponseError("nope", api_url="https://api.example.com", status=403, status_text="Forbidden", response_body=json.dumps(body))
         message = codegen.explain(exc, "https://api.example.com", route="POST /v1/validate")
-        assert "POST /v1/validate" in message
-        assert "403" in message
-        assert "may not use" in message
+        # A refused credential the API said in a problem document: the fix on this side is the key.
+        assert message == (
+            "PIPELEX_API_KEY was refused on POST /v1/validate (HTTP 403, auth.invalid_credential).\n"
+            "    Base URL: https://api.example.com\n"
+            "    Check the key in .env — get one at https://app.pipelex.com."
+        )
 
     def test_an_unknown_status_names_the_route_the_reason_and_the_next_step(self):
+        problem = Problem.model_validate(
+            {
+                "type": "https://mthds.ai/errors/request.invalid",
+                "title": "The request is invalid",
+                "status": 422,
+                "detail": "method_ref is not supported here",
+                "code": "request.invalid",
+                "domain": "input",
+                "retry": "no",
+                "next_step": {"kind": "change_input", "detail": "Send the bundle's files instead."},
+                "request_id": "req_1",
+                "errors": [{"code": "request.field_invalid", "detail": "Unexpected member.", "location": {"field": "method_ref"}}],
+            }
+        )
         exc = ApiResponseError(
             "nope",
             api_url="https://api.example.com",
             status=422,
             status_text="Unprocessable Entity",
-            response_body="",
-            server_message="method_ref is not supported here",
-            user_action=ProblemUserAction(kind="change_input", detail="Send the bundle's files instead."),
+            response_body=json.dumps(problem.as_wire()),
+            problem=problem,
         )
         message = codegen.explain(exc, "https://api.example.com", route="POST /v1/validate")
-        assert message == "HTTP 422 from POST /v1/validate — method_ref is not supported here\n    Next step: Send the bundle's files instead."
+        assert message == (
+            "HTTP 422 from POST /v1/validate — method_ref is not supported here\n"
+            "    method_ref: Unexpected member.\n"
+            "    Next step: Send the bundle's files instead.\n"
+            "    For support: request.invalid · request req_1"
+        )
 
     def test_a_plain_text_answer_is_still_the_reason(self):
         exc = ApiResponseError(
@@ -163,19 +217,34 @@ class TestMethodSources:
         assert "PIPELEX_BASE_URL" in codegen.explain(exc, "https://api.example.com")
 
     def test_a_404_the_route_itself_answered_is_not_a_missing_route(self):
-        """A `method_ref` whose package does not exist is a 404 carrying the runner's class, not a wrong base URL."""
+        """A `method_ref` whose package does not exist is a 404 carrying its own code, not a wrong base URL."""
+        problem = Problem.model_validate(
+            {
+                "type": "https://mthds.ai/errors/method.not_found",
+                "title": "No method is found at the address",
+                "status": 404,
+                "detail": "No package at github.com/acme/nothing.",
+                "code": "method.not_found",
+                "domain": "input",
+                "retry": "no",
+                "next_step": {"kind": "change_input", "detail": "Check the method's address."},
+            }
+        )
         exc = ApiResponseError(
             "gone",
             api_url="https://api.example.com",
             status=404,
             status_text="Not Found",
-            response_body="",
-            error_type="PackageNotFoundError",
-            server_message="No package at github.com/acme/nothing.",
+            response_body=json.dumps(problem.as_wire()),
+            problem=problem,
         )
         message = codegen.explain(exc, "https://api.example.com", route="POST /v1/validate")
         assert "PIPELEX_BASE_URL" not in message
-        assert message == "HTTP 404 from POST /v1/validate — No package at github.com/acme/nothing."
+        assert message == (
+            "HTTP 404 from POST /v1/validate — No package at github.com/acme/nothing.\n"
+            "    Next step: Check the method's address.\n"
+            "    For support: method.not_found"
+        )
 
     def test_a_failure_that_is_no_answer_reads_as_itself(self):
         assert codegen.explain(OSError("disk full"), "https://api.example.com") == "disk full"

@@ -363,3 +363,150 @@ describe("runValidateStage, on a tree holding secrets", () => {
     for (const secret of REPORTED_CASE_SECRETS) expect(output).not.toContain(secret);
   });
 });
+
+describe("runValidateStage, on an invalid verdict", () => {
+  /** The faults of an invalid verdict, as a runner speaking the MTHDS problem document lists them. */
+  const PROBLEM_ITEMS = [
+    {
+      code: "method.input_undeclared",
+      detail: "Pipe 'greet_visitor' reads names its inputs do not declare: visitor.",
+      params: { pipe: "greet_visitor", variables: ["visitor"] },
+      location: { pipe: "greet_visitor", file: "main.mthds" },
+    },
+    {
+      code: "method.model_unknown",
+      detail: "The llm model 'gpt-5.1' is not one the runtime knows.",
+      location: { pipe: "greet_visitor" },
+      suggestions: ["gpt-5"],
+      suggested_fix: {
+        fix_code: "rename-model",
+        description: "Use the model 'gpt-5' in place of 'gpt-5.1'.",
+        safety: "safe",
+        ops: [
+          {
+            kind: "remap_value",
+            table_path: ["pipe", "greet_visitor"],
+            key: "model",
+            mapping: { "gpt-5.1": "gpt-5" },
+          },
+        ],
+      },
+    },
+  ];
+  const INVALID = {
+    is_valid: false,
+    errors: PROBLEM_ITEMS,
+    pending_signatures: [],
+    is_runnable: false,
+    message: "The method does not validate.",
+  };
+
+  it("reads the verdict's problem items, its message and the server's Markdown", async () => {
+    recordApi({ ...INVALID, rendered_markdown: "# Validation failed" });
+    const edited = join(root, "main.mthds");
+    writeFileSync(edited, MAIN);
+
+    const stage = await runValidateStage(edited, { client: client(), timeoutMs: 5_000 });
+
+    // Well-formed items are read whole, as every verdict of the SDK reads them (`readProblemItems`).
+    expect(stage).toEqual({
+      status: "invalid",
+      message: "The method does not validate.",
+      errors: PROBLEM_ITEMS,
+      renderedMarkdown: "# Validation failed",
+      withheld: [],
+    });
+  });
+
+  it("blocks without the server's Markdown naming each item by its code, sentence and place", async () => {
+    recordApi(INVALID);
+    const edited = join(root, "main.mthds");
+    writeFileSync(edited, MAIN);
+
+    const outcome = decideAfterValidate(
+      edited,
+      await runValidateStage(edited, { client: client(), timeoutMs: 5_000 }),
+    );
+
+    expect(outcome.kind).toBe("block");
+    expect(hookOutput(outcome)).toBe(
+      [
+        `Validation failed for ${edited}:`,
+        "",
+        "The method does not validate.",
+        "",
+        "- `method.input_undeclared`: Pipe 'greet_visitor' reads names its inputs do not " +
+          "declare: visitor. (pipe 'greet_visitor', file 'main.mthds')",
+        "- `method.model_unknown`: The llm model 'gpt-5.1' is not one the runtime knows. " +
+          "(pipe 'greet_visitor')",
+        "  - Suggested fix (safe, rename-model): Use the model 'gpt-5' in place of 'gpt-5.1'.",
+      ].join("\n"),
+    );
+  });
+
+  it("reads each item member by member, leaving out what it cannot read", async () => {
+    recordApi({
+      is_valid: false,
+      errors: [
+        "not an item",
+        null,
+        { detail: "An item with no code names no fault." },
+        { code: "method.no_detail" },
+        { code: "method.located_badly", detail: "Its location is no object.", location: null },
+        {
+          code: "method.fixed_badly",
+          detail: "Its fix has no description.",
+          location: "pipe 'x'",
+          suggested_fix: { fix_code: "no-description", safety: "safe", ops: [] },
+        },
+      ],
+      message: 42,
+      rendered_markdown: ["not", "text"],
+    });
+    const edited = join(root, "main.mthds");
+    writeFileSync(edited, MAIN);
+
+    const stage = await runValidateStage(edited, { client: client(), timeoutMs: 5_000 });
+
+    expect(stage).toEqual({
+      status: "invalid",
+      message: undefined,
+      errors: [
+        { code: "method.located_badly", detail: "Its location is no object." },
+        { code: "method.fixed_badly", detail: "Its fix has no description." },
+      ],
+      renderedMarkdown: undefined,
+      withheld: [],
+    });
+    expect(hookOutput(decideAfterValidate(edited, stage))).toBe(
+      [
+        `Validation failed for ${edited}:`,
+        "",
+        "Bundle is invalid.",
+        "",
+        "- `method.located_badly`: Its location is no object.",
+        "- `method.fixed_badly`: Its fix has no description.",
+      ].join("\n"),
+    );
+  });
+
+  it("no longer reads the retired `validation_errors[]`", async () => {
+    recordApi({
+      is_valid: false,
+      validation_errors: [{ category: "pipe_validation", message: "unknown concept" }],
+      message: "The method does not validate.",
+    });
+    const edited = join(root, "main.mthds");
+    writeFileSync(edited, MAIN);
+
+    const stage = await runValidateStage(edited, { client: client(), timeoutMs: 5_000 });
+
+    expect(stage).toEqual({
+      status: "invalid",
+      message: "The method does not validate.",
+      errors: [],
+      renderedMarkdown: undefined,
+      withheld: [],
+    });
+  });
+});

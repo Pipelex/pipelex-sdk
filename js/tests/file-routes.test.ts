@@ -8,8 +8,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
-import { ApiResponseError, RequestArgumentError, errorVerdictOf } from "../src/errors.js";
+import { ApiResponseError, RequestArgumentError } from "../src/errors.js";
+import { problemResponse } from "./helpers/problems.js";
 import type {
   DraftFileFromFileInput,
   DraftFileFromFileResult,
@@ -202,12 +204,12 @@ describe("getFile", () => {
       `API GET /v1/files/${FILE_ID} answered 200 with a file whose \`uses\` is not a page of ` +
         "`items` and `next_cursor`",
     );
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
   });
 
-  it("surfaces a file that is not the organization's as a 404 not_found", async () => {
+  it("surfaces a file that is not the organization's as a 404 pipelex.storage.not_found", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, { status: 404, code: "not_found", detail: "Item not found." }),
+      problemResponse("pipelex.storage.not_found", 404, { detail: "Item not found." }),
     );
 
     const err = await makeClient()
@@ -215,7 +217,7 @@ describe("getFile", () => {
       .catch((thrown: unknown) => thrown);
 
     expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).code).toBe("not_found");
+    expect((err as ApiResponseError).code).toBe("pipelex.storage.not_found");
   });
 });
 
@@ -277,16 +279,16 @@ describe("getFilesByUri", () => {
     );
   });
 
-  it("surfaces another organization's address as a 403 forbidden", async () => {
+  it("surfaces another organization's address as a 403 pipelex.org.mismatch", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(403, { status: 403, code: "forbidden", detail: "Not your organization's." }),
+      problemResponse("pipelex.org.mismatch", 403, { detail: "Not your organization's." }),
     );
 
     const err = await makeClient()
       .getFilesByUri("pipelex-storage://org_2/assets/x.pdf")
       .catch((thrown: unknown) => thrown);
 
-    expect((err as ApiResponseError).code).toBe("forbidden");
+    expect((err as ApiResponseError).code).toBe("pipelex.org.mismatch");
   });
 });
 
@@ -309,18 +311,19 @@ describe("renameFile", () => {
   });
 
   it("sends an empty name for the platform to refuse with its own rule", async () => {
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        jsonResponse(422, { status: 422, code: "validation_failed", detail: "Empty name." }),
-      );
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse("request.invalid", 422, {
+        detail: "Empty name.",
+        location: { field: "name" },
+      }),
+    );
 
     const err = await makeClient()
       .renameFile(FILE_ID, { name: "" })
       .catch((thrown: unknown) => thrown);
 
     expect(onlyRequest(spy).body).toEqual({ name: "" });
-    expect((err as ApiResponseError).code).toBe("validation_failed");
+    expect((err as ApiResponseError).code).toBe("request.invalid");
   });
 
   it("refuses a name that is not a string before sending anything", async () => {
@@ -337,14 +340,12 @@ describe("renameFile", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("surfaces a runner renaming another member's file as a 403 role_not_permitted", async () => {
+  it("surfaces a runner renaming another member's file as a 403 auth.forbidden", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(403, {
-        status: 403,
-        code: "role_not_permitted",
-        error_domain: "config",
-        retryable: false,
+      problemResponse("auth.forbidden", 403, {
+        domain: "account",
         detail: "Your role in this organization is runner.",
+        params: { requirement: "a role that may change files" },
       }),
     );
 
@@ -352,8 +353,8 @@ describe("renameFile", () => {
       .renameFile(FILE_ID, { name: "x" })
       .catch((thrown: unknown) => thrown);
 
-    expect((err as ApiResponseError).code).toBe("role_not_permitted");
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "config", retryable: false });
+    expect((err as ApiResponseError).code).toBe("auth.forbidden");
+    expect((err as ApiResponseError).problem).toMatchObject({ domain: "account", retry: "no" });
   });
 });
 
@@ -560,19 +561,15 @@ describe("copyFileIntoDraft", () => {
     );
   });
 
-  it("surfaces a stale draft token as a 409 method_update_conflict", async () => {
+  it("surfaces a stale draft token as a 409 pipelex.catalog.update_conflict", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, {
-        status: 409,
-        code: "method_update_conflict",
-        detail: "The draft moved.",
-      }),
+      problemResponse("pipelex.catalog.update_conflict", 409, { detail: "The draft moved." }),
     );
 
     const err = await makeClient()
       .copyFileIntoDraft("mt_abc", { file_id: FILE_ID, path: "a.png", expected_updated_at: "t" })
       .catch((thrown: unknown) => thrown);
 
-    expect((err as ApiResponseError).code).toBe("method_update_conflict");
+    expect((err as ApiResponseError).code).toBe("pipelex.catalog.update_conflict");
   });
 });

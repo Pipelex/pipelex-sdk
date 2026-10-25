@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 import pytest
+from mthds.protocol.problem.models import ProblemItem
 from pydantic import ValidationError
 from pytest_mock import MockerFixture, MockType
 
@@ -48,7 +49,7 @@ _CODEGEN_VALID = {
 _INVALID = {
     "is_valid": False,
     "message": "closure did not validate",
-    "validation_errors": [{"category": "blueprint_validation", "message": "unknown pipe type"}],
+    "errors": [{"code": "method.pipe_type_invalid", "detail": "unknown pipe type"}],
 }
 
 
@@ -99,7 +100,13 @@ class TestCrateRoutes:
         report = asyncio.run(client.resolve(ResolveRequest(method_ref=_METHOD_REF)))
 
         assert isinstance(report, CrateInvalidReport)
-        assert report.validation_errors[0].message == "unknown pipe type"
+        assert [(item.code, item.detail) for item in report.errors] == [("method.pipe_type_invalid", "unknown pipe type")]
+
+    def test_invalid_verdict_constructed_in_code_keeps_its_problem_items(self) -> None:
+        """A crate verdict a caller builds in code keeps the `ProblemItem` instances it is given."""
+        item = ProblemItem(code="method.pipe_type_invalid", detail="unknown pipe type")
+        report = CrateInvalidReport(is_valid=False, message="invalid", errors=[item])
+        assert report.errors == [item]
 
     def test_resolve_no_verdict_raises_api_response_error(self, mocker: MockerFixture) -> None:
         """A selector-resolution failure (no package at the address, an unknown id) is a

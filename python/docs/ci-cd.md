@@ -4,11 +4,11 @@ This package has no workflows of its own any more: GitHub runs workflows only fr
 
 | Root job | What it runs, in `python/` |
 | --- | --- |
-| `python lint (<version>)` | `PYTHON_VERSION=<version> TEST_PROFILE=ci make install`, then `make merge-check-ruff-format`, `merge-check-ruff-lint`, `merge-check-pyright` and `merge-check-mypy`, across Python 3.11 to 3.14. |
-| `python tests (py<version>)` | `PYTHON_VERSION=<version> make install`, then `make gha-tests`, across the same versions. |
+| `python lint (<version>)` | `TEST_PROFILE=ci make install`, then `make merge-check-ruff-format`, `merge-check-ruff-lint`, `merge-check-pyright` and `merge-check-mypy`, across Python 3.11 to 3.14, then a check that `.venv` runs the version the leg names. |
+| `python tests (py<version>)` | `make install`, then `make gha-tests`, across the same versions, then the same check. |
 | `python package-check` | `uv lock --locked` must leave `uv.lock` unchanged. |
 
-Every matrix leg uses this directory's `Makefile` targets, which honor `PYTHON_VERSION`, so each leg provisions its own interpreter through `uv venv --python <version>`. The root's `Lint (all)` and `Tests (all)` aggregates are the required checks, and the branch guard, the contributor agreement and the version checks are the repository's, described in the root's `docs/ci.md`.
+Every matrix leg sets `UV_PYTHON` to its version for the whole job, which this directory's `Makefile` takes in place of the `.python-version` pin and hands to every uv command it runs, so `make install` builds `.venv` on that version and no later step rebuilds it on the pin. The leg's last step fails when `.venv/bin/python` runs any other version, so a matrix that silently tested one Python would go red. The root's `Lint (all)` and `Tests (all)` aggregates are the required checks, and the branch guard, the contributor agreement and the version checks are the repository's, described in the root's `docs/ci.md`.
 
 ## Publishing
 

@@ -65,9 +65,10 @@ function MethodTabs({ methods }: { methods: readonly RegisteredMethod[] }) {
     // every tab but the last.
     <div className="flex flex-col gap-6">
       {/* The tabs read the kernel's tokens, so an organization's brand reaches
-          them: the selected tab is underlined in the accent's ink (`--brand`),
+          them: the selected tab is underlined in the accent's ink (`--link`),
           which reads against the page whatever accent was picked, and in the
-          button colour when the app is unbranded. */}
+          button colour when the app is unbranded or its team set neither an
+          accent nor a button colour. */}
       <div
         role="tablist"
         aria-label="Methods"
@@ -86,7 +87,7 @@ function MethodTabs({ methods }: { methods: readonly RegisteredMethod[] }) {
               onClick={() => setActive(method.id)}
               className={
                 selected
-                  ? "border-b-2 border-brand px-3 py-2 text-sm font-medium text-foreground"
+                  ? "border-b-2 border-link px-3 py-2 text-sm font-medium text-foreground"
                   : "border-b-2 border-transparent px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
               }
             >

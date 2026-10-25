@@ -141,7 +141,7 @@ describe("useFileInputs", () => {
   it("shows what storage refused, and leaves the field empty", async () => {
     requestUpload.mockResolvedValueOnce({ ok: true, grant: GRANT });
     uploadWithGrant.mockRejectedValueOnce(
-      new RejectedAssetError("refused", "receipt.jpg", 403, { code: "grant_expired" }),
+      new RejectedAssetError("refused", "receipt.jpg", 403, { reason: "grant_expired" }),
     );
     const { hook, state } = setup();
 

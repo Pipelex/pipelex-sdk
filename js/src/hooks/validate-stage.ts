@@ -5,6 +5,7 @@
  */
 
 import type { PipelexApiClient } from "../client.js";
+import { readProblemItems } from "../problem-items.js";
 import type { ValidateStage } from "./check-core.js";
 import { gatherMethodTree } from "./bundle-gather.js";
 import { createHookClient } from "./validate-client.js";
@@ -65,11 +66,15 @@ export async function runValidateStage(
       };
     }
     if (result.is_valid === false) {
+      // The invalid arm is read from the answer member by member, its `errors` by the SDK's own
+      // reader of a verdict's problem items (`readProblemItems`), so a member of an unexpected
+      // shape is left out rather than failing the block it belongs to, whatever client was given.
+      const answer: Record<string, unknown> = { ...result };
       return {
         status: "invalid",
-        message: result.message,
-        validationErrors: Array.isArray(result.validation_errors) ? result.validation_errors : [],
-        renderedMarkdown: result.rendered_markdown,
+        message: stringMember(answer.message),
+        errors: readProblemItems(answer.errors),
+        renderedMarkdown: stringMember(answer.rendered_markdown),
         withheld,
       };
     }
@@ -77,4 +82,9 @@ export async function runValidateStage(
   } catch {
     return { status: "unavailable" };
   }
+}
+
+/** A member the hook shows as text, when it is one. */
+function stringMember(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }

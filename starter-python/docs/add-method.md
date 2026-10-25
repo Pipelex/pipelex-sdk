@@ -128,7 +128,7 @@ The demos exist in all three execution modes, and that symmetry is the teaching:
 
 ## The handshake, and the base URL
 
-A selector is resolved **server-side**, so the API has to support it. `GET /v1/version`'s `extensions` array is the protocol's documented handshake for exactly that, and the run asks it once before anything is fetched. A missing capability is a refusal naming the base URL, the kind that is missing and what the deployment does advertise, rather than the opaque `403` or `422` the real call would otherwise produce.
+A selector is resolved **server-side**, so the API has to support it. `GET /v1/version`'s `extensions` array is the protocol's documented handshake for exactly that, and the run asks it once before anything is fetched. A missing capability is a refusal naming the base URL, the kind that is missing and what the deployment does advertise, rather than the opaque `403` or `422` the real call would otherwise produce. A gateway that does not route a path answers a bare `403`, as it answers a key it refuses, so a `403` that carries no problem document names both causes, `PIPELEX_API_KEY` and `PIPELEX_BASE_URL`, rather than blaming the key alone.
 
 Two cases deliberately **proceed** rather than refuse, because in both the handshake has no verdict to give and the real call's own error is the better message: the handshake itself failing, and a response that advertises no capabilities at all.
 

@@ -21,8 +21,7 @@ from pydantic import ValidationError
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.crate_models import PipeIORequest
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
-from pipelex_sdk.errors import ApiResponseError, UploadTransportCode, UploadTransportError
+from pipelex_sdk.errors import ApiResponseError, UploadTransportError, UploadTransportReason
 from pipelex_sdk.product_models import UpdateRunInput, UploadedFile, UploadInput
 from tests.unit.conftest import BASE_URL
 
@@ -31,7 +30,6 @@ if TYPE_CHECKING:
 
 _Call: TypeAlias = "Callable[[PipelexAPIClient], Coroutine[Any, Any, object]]"
 
-_UNREADABLE_VERDICT = ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
 _REQUEST_ID = "req-7"
 
 # Every route shape the client reads a 2xx answer on: the protocol routes inherited from `mthds`, the
@@ -131,6 +129,17 @@ _BODIES_THE_PROTOCOL_REFUSES = [
 ]
 
 
+# The routes that create a run: an answer to one the SDK cannot read may come from a run that started.
+_RUN_CREATING_ROUTES = frozenset({"POST /v1/execute", "POST /v1/start"})
+
+
+def _unreadable_code(route: str) -> str:
+    """The code of a 2xx answer the SDK cannot read on `route`: `client.outcome_unknown` where the request may have
+    started a run, else `client.response_unreadable`.
+    """
+    return "client.outcome_unknown" if route in _RUN_CREATING_ROUTES else "client.response_unreadable"
+
+
 def _execute(client: PipelexAPIClient) -> Coroutine[Any, Any, object]:
     return client.execute(pipe_code="p", files={"main.mthds": "x"})
 
@@ -192,15 +201,13 @@ class TestClientUnreadableAnswer:
         assert unreadable.status == 200
         assert unreadable.response_body == "<html>Maintenance</html>"
         assert unreadable.request_id == _REQUEST_ID
-        assert unreadable.problem_document is None
-        assert unreadable.server_message is None
         if route in _LINK_BEARING_ROUTES:
             assert unreadable.__cause__ is None
             assert unreadable.__context__ is None
         else:
             assert isinstance(unreadable.__cause__, json.JSONDecodeError)
-        # A 2xx is no refusal the fallback names: runtime, and nothing says a retry helps.
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        # A 2xx the SDK cannot read: the runtime's fault, and nothing says a retry helps, unless it may have started a run.
+        assert unreadable.problem.code == _unreadable_code(route)
 
     @pytest.mark.parametrize("body", _BODIES_THE_PROTOCOL_REFUSES)
     @pytest.mark.parametrize(("call", "route", "status"), _REFUSED_JSON_ROUTE_PARAMS)
@@ -213,14 +220,13 @@ class TestClientUnreadableAnswer:
         assert str(unreadable) == f"API {route} answered {status} with a body that is not JSON"
         assert unreadable.status == status
         assert unreadable.request_id == _REQUEST_ID
-        assert unreadable.problem_document is None
         if route in _LINK_BEARING_ROUTES:
             # The decoder's failure holds the whole document, its links among them, so none is chained.
             assert unreadable.__cause__ is None
             assert unreadable.__context__ is None
         else:
             assert isinstance(unreadable.__cause__, json.JSONDecodeError)
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        assert unreadable.problem.code == _unreadable_code(route)
 
     @pytest.mark.parametrize(("call", "route"), _OBJECT_ROUTE_PARAMS)
     def test_a_2xx_whose_json_is_not_an_object(self, call: _Call, route: str) -> None:
@@ -233,9 +239,8 @@ class TestClientUnreadableAnswer:
         assert unreadable.status == 200
         assert unreadable.response_body == "null"
         assert unreadable.request_id == _REQUEST_ID
-        assert unreadable.problem_document is None
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        assert unreadable.problem.code == _unreadable_code(route)
 
     @pytest.mark.parametrize(
         "body",
@@ -252,7 +257,7 @@ class TestClientUnreadableAnswer:
 
         assert str(unreadable) == f"API {route} answered 200 with a body that is not an object"
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        assert unreadable.problem.code == _unreadable_code(route)
 
     @pytest.mark.parametrize(("call", "route"), [pytest.param(call, route, id=name) for name, call, route in _WRONG_SHAPE_ROUTES])
     def test_a_2xx_whose_object_is_not_the_answer_of_the_route(self, call: _Call, route: str) -> None:
@@ -264,7 +269,7 @@ class TestClientUnreadableAnswer:
         assert unreadable.status == 200
         assert unreadable.request_id == _REQUEST_ID
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        assert unreadable.problem.code == _unreadable_code(route)
 
     @pytest.mark.parametrize("body", [pytest.param(b"null", id="null"), pytest.param(b"{}", id="object")])
     @pytest.mark.parametrize(("call", "route"), _LIST_ROUTE_PARAMS)
@@ -274,7 +279,7 @@ class TestClientUnreadableAnswer:
 
         assert str(unreadable) == f"API {route} answered 200 with a body that is not the answer the route returns"
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        assert unreadable.problem.code == _unreadable_code(route)
 
     @pytest.mark.parametrize(("call", "route"), [pytest.param(call, route, id=name) for name, call, route in _EMPTY_BODY_ROUTES])
     def test_an_empty_2xx_where_the_route_answers_json(self, call: _Call, route: str) -> None:
@@ -285,7 +290,7 @@ class TestClientUnreadableAnswer:
         assert str(unreadable) == f"API {route} answered 200 with an empty body where JSON was expected"
         assert unreadable.response_body == ""
         assert isinstance(unreadable.__cause__, json.JSONDecodeError)
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        assert unreadable.problem.code == _unreadable_code(route)
 
     @pytest.mark.parametrize(
         ("call", "route", "status"), [pytest.param(call, route, status, id=name) for name, call, route, status in _NOT_UTF8_ROUTES]
@@ -299,7 +304,7 @@ class TestClientUnreadableAnswer:
         assert str(unreadable) == f"API {route} answered {status} with a body that is not UTF-8"
         assert unreadable.status == status
         assert isinstance(unreadable.__cause__, UnicodeDecodeError)
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        assert unreadable.problem.code == _unreadable_code(route)
 
     @pytest.mark.parametrize(("call", "route"), [pytest.param(call, route, id=name) for name, call, route in _NO_CONTENT_ROUTES])
     def test_a_route_that_answers_no_content(self, call: _Call, route: str) -> None:
@@ -310,7 +315,7 @@ class TestClientUnreadableAnswer:
         unreadable = _raised(call, _client_answering(lambda _: httpx.Response(200, content=b"<html>Gateway</html>")))
 
         assert str(unreadable) == f"API {route} answered 200 with a body that is not JSON"
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        assert unreadable.problem.code == _unreadable_code(route)
 
     def test_a_completed_run_whose_results_are_not_an_object(self) -> None:
         client = _client_answering(lambda _: httpx.Response(200, json=["not", "results"]))
@@ -334,7 +339,8 @@ class TestClientUnreadableAnswer:
 
         assert str(unreadable) == "API POST /v1/execute answered 200 with a body that is not the answer the route returns"
         assert isinstance(unreadable.__cause__, ValidationError)
-        assert error_verdict_of(unreadable) == _UNREADABLE_VERDICT
+        # The execute was accepted, so the run may exist.
+        assert unreadable.problem.code == "client.outcome_unknown"
 
     def test_a_refusal_met_before_any_answer_is_the_callers(self) -> None:
         """A parse failure inside an inherited route before `_send` received anything is not an answer."""
@@ -359,7 +365,7 @@ class TestClientUnreadableAnswer:
             asyncio.run(client.upload_file(b"\x01", filename="a.txt"))
 
         transport = exc_info.value
-        assert transport.code == UploadTransportCode.UNEXPECTED
+        assert transport.reason == UploadTransportReason.UNEXPECTED
         assert transport.status == 200
         assert (
             str(transport)
@@ -369,4 +375,4 @@ class TestClientUnreadableAnswer:
         assert isinstance(unreadable, ApiResponseError)
         assert unreadable.request_id == "req-9"
         # Storage may hold the file, but under no reference: nothing says a retry helps.
-        assert error_verdict_of(transport) == _UNREADABLE_VERDICT
+        assert transport.problem.code == "client.response_unreadable"

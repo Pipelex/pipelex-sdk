@@ -1,14 +1,14 @@
-"""Whether a failed request that may create a run, a start or a blocking execute, may still have started one
-whose id never reached the caller.
+"""Whether a request that got no answer may have left this machine, the one reading of a transport failure the
+SDK cannot take from a problem.
 
-`ApiUnreachableError` and `ApiResponseError` read it when the client tells them their request may create a
-run, and carry the answer as `run_may_have_started`; `@pipelex/sdk` reads the same failures the same way in
-its `run-may-have-started.ts`.
+`ApiUnreachableError` reads it when the client tells it the request may create a run, a start or a blocking
+execute: a failure that proves nothing was sent reads as the transport's own problem (`client.unreachable`), and
+any other as `client.outcome_unknown`, whose `retry` says the run may exist. `@pipelex/sdk` reads the same
+failures the same way in its `transport-reading.ts`.
 
-The reading errs on the safe side. A false "may have started" costs the person a look at the run history; a
-false "did not start" costs a second paid run. So every failure counts as one that may have started a run
-unless it proves otherwise: a transport failure that proves nothing was sent, and an answer that says the
-request was refused before anything ran.
+The reading errs on the safe side. A false "may have left" costs the person a look at the run history; a false
+"never left" costs a second paid run. So every failure counts as one that may have left unless it proves
+otherwise.
 """
 
 from __future__ import annotations
@@ -20,11 +20,6 @@ import httpx
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-#: The platform code of the `503` a start answers when the platform could not reach the runner at all: it
-#: finalized the run's row `FAILED` and started nothing. Every other `503`, the platform's
-#: `service_unavailable` included, can follow a run the runner already started.
-_START_UNAVAILABLE_CODE = "pipeline_start_unavailable"
 
 #: The transport failures that can only come before the request leaves: a connection whose set-up failed
 #: (`ConnectError`: an unknown host, a refused connection, no route to the host or the network, the system
@@ -53,45 +48,15 @@ _NOTHING_SENT: tuple[type[httpx.TransportError], ...] = (httpx.ConnectError, htt
 _HANDSHAKE_FAILURES: tuple[type[BaseException], ...] = (ssl.SSLError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
 
 
-def answer_may_have_started_run(*, status: int, code: str | None) -> bool:
-    """Whether an answer to a request that may create a run leaves one possibly started.
-
-    It does for any `2xx`, which the client met only because it could not read it: the server accepted the
-    request, and only its acknowledgement was lost; for a `408`, which a proxy in front of the platform may
-    answer for a request it forwarded; and for every `5xx` but a `501`, which says the deployment does not
-    serve the route, and a `503` carrying the platform's code `pipeline_start_unavailable`, which says the
-    runner was never reached: the server or a gateway failed while handling the request. Any other status is
-    the request refused before anything ran.
-
-    Args:
-        status: The HTTP status of the answer.
-        code: The platform's native code, when the body carried one.
-
-    Returns:
-        Whether a run may have started.
-    """
-    match status:
-        case _ if 200 <= status < 300:
-            return True
-        case 408:
-            return True
-        case 501:
-            return False
-        case 503 if code == _START_UNAVAILABLE_CODE:
-            return False
-        case _:
-            return 500 <= status < 600
-
-
-def transport_may_have_started_run(failure: BaseException | None) -> bool:
-    """Whether a transport failure of a request that may create a run leaves one possibly started: every
-    failure but one that proves nothing was sent.
+def request_may_have_left(failure: BaseException | None) -> bool:
+    """Whether a request that met a transport failure may have left this machine: every failure but one that
+    proves nothing was sent.
 
     Args:
         failure: The httpx exception the request met, `None` when it is not known, which proves nothing.
 
     Returns:
-        Whether a run may have started.
+        Whether the request may have left, so that a run it would create may exist.
     """
     return failure is None or not _proves_nothing_sent(failure)
 
@@ -101,11 +66,11 @@ def _proves_nothing_sent(failure: BaseException) -> bool:
     step of the connection's set-up, which no request follows, and one `@pipelex/sdk` can tell from a failure
     that came once the request had left, so that both SDKs decide the same for it.
 
-    Anything else may have come once the request had left: a read or write timeout, a connection that closed or
-    was reset once the request had left, and a body httpx could not decode. Only a `ConnectError` is searched
-    for a failed handshake. A `ConnectTimeout` that ran out during the handshake carries the
-    `ssl.SSLWantReadError` of the read it interrupted, and proves nothing was sent all the same, as undici's
-    connect time limit, which covers the handshake too, does in `@pipelex/sdk`.
+    Anything else may have come once the request had left: a read or write timeout, or a connection that closed or
+    was reset once the request had left. Only a `ConnectError` is searched for a failed handshake. A
+    `ConnectTimeout` that ran out during the handshake carries the `ssl.SSLWantReadError` of the read it
+    interrupted, and proves nothing was sent all the same, as undici's connect time limit, which covers the
+    handshake too, does in `@pipelex/sdk`.
     """
     if not isinstance(failure, _NOTHING_SENT):
         return False

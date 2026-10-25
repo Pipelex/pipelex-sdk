@@ -10,6 +10,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import { downloadArtifacts, fetchArtifact } from "../src/artifacts.js";
 import type { ArtifactCapableClient, ResolvedArtifact } from "../src/artifacts.js";
 import { PipelexApiClient } from "../src/client.js";
@@ -17,7 +18,6 @@ import {
   ArtifactOperationError,
   InvalidLocalSourceError,
   RequestArgumentError,
-  errorVerdictOf,
 } from "../src/errors.js";
 import { listDirectoryTree, writeMethodTreeTo } from "../src/method-trees.js";
 import { loadNodeHost } from "../src/node-host.js";
@@ -80,12 +80,15 @@ describe("the Node host's import failing", () => {
     expect(loaded.host === null && loaded.cause).toBeInstanceOf(Error);
   });
 
-  it("refuses a directory as an input error", async () => {
+  it("refuses a directory as a capability this runtime lacks", async () => {
     const refusal = await listDirectoryTree("/a/method", {}, "validate").catch((e: unknown) => e);
 
     expect(refusal).toBeInstanceOf(RequestArgumentError);
     expectImportFailure(refusal, "validate() cannot list the directory '/a/method'");
-    expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "input", retryable: false });
+    expect((refusal as ProblemError).problem).toMatchObject({
+      code: "runtime.unsupported",
+      retry: "no",
+    });
   });
 
   it("refuses a directory given to the client before any request", async () => {
@@ -120,7 +123,7 @@ describe("the Node host's import failing", () => {
 
     expect(refusal).toBeInstanceOf(RequestArgumentError);
     expectImportFailure(refusal, "writeMethodTree() cannot write to the file system");
-    expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "config", retryable: false });
+    expect((refusal as ProblemError).code).toBe("runtime.unsupported");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -140,7 +143,7 @@ describe("the Node host's import failing", () => {
 
     expect(refusal).toBeInstanceOf(ArtifactOperationError);
     expectImportFailure(refusal, "downloadArtifacts cannot write to the filesystem");
-    expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "config", retryable: false });
+    expect((refusal as ProblemError).code).toBe("runtime.unsupported");
   });
 
   it("fetches an artifact on the platform's default dispatcher", async () => {

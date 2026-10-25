@@ -2,14 +2,18 @@
 
 Carried from the Python starter's error presentation, with the hints renamed for the flags of a
 one-command CLI: a gateway cut-off names dropping `--blocking`, a server with no run store names
-adding it, and a run still going names `--resume`.
+adding it, and a run still going names `--resume`. Every error is built the way the SDK raises it:
+an answer the API refused carries the problem document it sent, a bare answer is left to the SDK's
+reading of its status, and a failed run carries `run.failed` with the run's own problem nested in it.
 """
 
 import io
+import json
+from typing import Any
 
 import pytest
+from mthds.protocol.problem.models import Problem
 from pipelex_sdk.artifact_models import ArtifactScope, DownloadArtifactsResult
-from pipelex_sdk.error_models import ProblemUserAction, RunErrorReport, UserAction
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
@@ -17,64 +21,79 @@ from pipelex_sdk.errors import (
     ArtifactOperationError,
     InvalidLocalSourceError,
     PipelineExecuteTimeoutError,
-    RejectedAssetError,
     RunFailedError,
     RunLifecycleUnavailableError,
+    RunTimeoutError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
+    run_failed_problem,
 )
 from pipelex_sdk.runs import RunStatus
-from pipelex_sdk.validation_models import ValidationErrorCategory, ValidationErrorItem
 from rich.console import Console
 
-from pipelex_method_cli_python.lib.app import AppError, RunMode
-from pipelex_method_cli_python.lib.errors import ErrorPresentation, present_error, print_error, problem_lines, report_lines
+from pipelex_method_cli_python.lib.app import COMMAND_NAME, AppError, RunMode
+from pipelex_method_cli_python.lib.errors import ErrorPresentation, present_error, print_error, problem_lines
 
-# A failed run's stored report as the runner writes it for an inference failure, and the platform's
-# sentence about the run with and without one (`Run finished with status <STATUS>: <message>`).
-MODEL_REPORT = RunErrorReport(
-    error_type="LLMCompletionError",
-    title="LLM completion",
-    message="The model refused the request.",
-    error_domain="runtime",
-    retryable=True,
-    user_action=UserAction(kind="change_input", detail="Rephrase the prompt, or pick another model."),
-)
-REPORTED_DETAIL = "Run finished with status FAILED: The model refused the request."
-UNREPORTED_DETAIL = "Run finished with status FAILED; no result available"
+RETRY_NO = "Retry: running it again unchanged will fail the same way."
+RETRY_YES = "Retry: running it again can succeed."
+RETRY_UNKNOWN = "Retry: the run may already have started, so look it up by its id before running it again, or it is paid for twice."
+WHO_ACTS_METHOD = "Who acts: whoever authors the method, by changing it."
+WHO_ACTS_RUNTIME = "Who acts: nobody on your side: the service failed, and nothing you sent caused it."
+
+#: A failed run's own problem, as the runtime stores it for content the provider refused.
+MODEL_REFUSAL: dict[str, Any] = {
+    "type": "https://mthds.ai/errors/model.content_refused",
+    "title": "The provider refused the content",
+    "detail": "The model 'gpt-5.5' or its provider refused the request's content on policy grounds.",
+    "code": "model.content_refused",
+    "domain": "input",
+    "retry": "no",
+    "next_step": {
+        "kind": "change_input",
+        "detail": "Change the inputs so that they meet the provider's content policy, then send the request again.",
+    },
+    "location": {"pipe": "draft_pitch"},
+}
 
 
-def _api_response_error(
-    status: int,
-    status_text: str,
-    *,
-    title: str | None = None,
-    detail: str | None = None,
-    error_type: str | None = None,
-    code: str | None = None,
-    user_action: ProblemUserAction | None = None,
-    retryable: bool | None = None,
-    validation_errors: list[ValidationErrorItem] | None = None,
-) -> ApiResponseError:
-    """A non-2xx answer as the SDK raises it, carrying only the problem members a test names."""
+def _problem(**members: Any) -> Problem:
+    """A problem document as the API sends one, with the members a test does not name filled in."""
+    document: dict[str, Any] = {
+        "type": "https://mthds.ai/errors/runtime.unexpected",
+        "title": "An unexpected error occurred",
+        "detail": "The runtime met an unexpected error.",
+        "code": "runtime.unexpected",
+        "domain": "runtime",
+        "retry": "no",
+        "next_step": {"kind": "report", "detail": "Report this to whoever runs the runtime."},
+    }
+    document.update(members)
+    return Problem.model_validate(document)
+
+
+def _refusal(status: int, status_text: str, problem: Problem | None = None, *, may_start_run: bool = False) -> ApiResponseError:
+    """An answer the API refused, as the SDK raises it: with the problem document it sent, or with none, read by its status."""
+    body = json.dumps(problem.as_wire()) if problem is not None else ""
     return ApiResponseError(
-        f"API POST /v1/start failed ({status}): {detail or title or status_text}",
+        f"API POST /v1/start failed ({status})",
         api_url="https://api.pipelex.com",
         status=status,
         status_text=status_text,
-        response_body="",
-        title=title,
-        server_message=detail,
-        error_type=error_type,
-        code=code,
-        user_action=user_action,
-        retryable=retryable,
-        validation_errors=validation_errors,
+        response_body=body,
+        problem=problem,
+        may_start_run=may_start_run,
     )
 
 
-def _item(message: str, *, pipe_code: str | None = None, concept_code: str | None = None) -> ValidationErrorItem:
-    return ValidationErrorItem(category=ValidationErrorCategory.PIPE_VALIDATION, message=message, pipe_code=pipe_code, concept_code=concept_code)
+def _failed_run(status: RunStatus, run_error: dict[str, Any] | None = None) -> RunFailedError:
+    """A run that ended without a result, as `wait_for_result` raises it: `run.failed`, with the run's own problem nested."""
+    nested = Problem.model_validate(run_error) if run_error is not None else None
+    return RunFailedError(
+        f"Run finished with status {status}",
+        run_id="run-9",
+        status=status,
+        problem=run_failed_problem(run_id="run-9", status=status, run_error=nested),
+    )
 
 
 class TestPresentError:
@@ -84,13 +103,55 @@ class TestPresentError:
 
     def test_execute_timeout_says_to_drop_blocking(self):
         presentation = present_error(PipelineExecuteTimeoutError("timed out", elapsed_seconds=31.2), mode=RunMode.BLOCKING)
-        assert "~30s" in presentation.message
+        assert "after 31s" in presentation.message
+        assert "about 30 seconds" in presentation.message
+        assert presentation.hint is not None
+        assert "without --blocking" in presentation.hint
+        # The run may have started, so the retry line says to look it up rather than pay for it twice.
+        assert RETRY_UNKNOWN in presentation.details
+
+    @pytest.mark.parametrize(("status", "status_text"), [(502, "Bad Gateway"), (504, "Gateway Timeout")])
+    def test_a_gateway_cut_off_of_a_blocking_run_says_to_drop_the_flag(self, status: int, status_text: str):
+        # A bare 502 or 504 on a request that creates a run is `client.outcome_unknown` in the SDK's reading.
+        presentation = present_error(_refusal(status, status_text, may_start_run=True), mode=RunMode.BLOCKING)
         assert presentation.hint is not None
         assert "without --blocking" in presentation.hint
 
+    def test_a_start_whose_outcome_is_unknown_says_where_to_look_for_the_run(self):
+        presentation = present_error(_refusal(502, "Bad Gateway", may_start_run=True), mode=RunMode.ATTENDED)
+        assert presentation.message == "The API answered 502 Bad Gateway."
+        assert presentation.hint is not None
+        assert "run history" in presentation.hint
+        assert RETRY_UNKNOWN in presentation.details
+
+    def test_a_server_fault_on_a_read_can_be_retried_and_has_no_hint(self):
+        presentation = present_error(_refusal(502, "Bad Gateway"))
+        assert presentation.message == "The API answered 502 Bad Gateway."
+        assert presentation.details == (
+            "Reason: The runtime or a service it depends on is unavailable — The runtime, or a service it depends on, is unavailable.",
+            WHO_ACTS_RUNTIME,
+            # A step to retry is the retry line's to say, so no next step repeats it.
+            RETRY_YES,
+            "For support: runtime.unavailable",
+        )
+        assert presentation.hint is None
+
+    def test_a_retry_after_is_named_on_the_retry_line(self):
+        presentation = present_error(
+            ApiResponseError(
+                "API GET /v1/runs/run-9 failed (429)",
+                api_url="https://api.pipelex.com",
+                status=429,
+                status_text="Too Many Requests",
+                response_body="",
+                headers={"retry-after": "7"},
+            )
+        )
+        assert "Retry: running it again can succeed in 7 seconds." in presentation.details
+
     def test_lifecycle_unavailable_names_blocking(self):
         presentation = present_error(RunLifecycleUnavailableError("no run store", api_url="http://localhost:8081"), mode=RunMode.ATTENDED)
-        assert "http://localhost:8081" in presentation.message
+        assert presentation.message == "The server at http://localhost:8081 does not run durable runs."
         assert presentation.hint is not None
         assert "--blocking" in presentation.hint
 
@@ -106,109 +167,135 @@ class TestPresentError:
         assert "resumed" in presentation.hint
         assert "--blocking" in presentation.hint
 
-    def test_a_refused_start_reads_out_the_reason_the_pipe_the_next_step_and_the_retry_advice(self, refused_start: ApiResponseError):
+    @pytest.mark.parametrize("mode", [RunMode.ATTENDED, RunMode.DETACH])
+    def test_a_runner_without_asynchronous_execution_names_blocking(self, mode: RunMode):
+        # The runner's refusal of a `/start` in its synchronous orchestration: `runtime.unsupported`, naming the capability.
+        problem = _problem(
+            type="https://mthds.ai/errors/runtime.unsupported",
+            title="This runtime cannot do what was asked",
+            detail="Asynchronous pipeline execution is not enabled on this deployment.",
+            code="runtime.unsupported",
+            domain="operator",
+            params={"capability": "asynchronous execution"},
+            next_step={"kind": "change_input", "detail": "Send a request that does not need asynchronous execution."},
+        )
+        presentation = present_error(_refusal(501, "Not Implemented", problem), mode=mode)
+        assert presentation.message == "The server at https://api.pipelex.com does not run durable runs."
+        assert presentation.hint is not None
+        assert "--blocking" in presentation.hint
+        assert ("drop --detach" in presentation.hint) is (mode is RunMode.DETACH)
+        assert (
+            "Reason: This runtime cannot do what was asked — Asynchronous pipeline execution is not enabled on this deployment."
+            in presentation.details
+        )
+
+    def test_a_refused_start_reads_out_the_reason_the_fault_who_acts_the_next_step_and_the_support_line(self, refused_start: ApiResponseError):
         # Every route raises the typed error, so a method the plane will not run says why, where and what to do.
         presentation = present_error(refused_start, mode=RunMode.ATTENDED)
         assert presentation.message == "The API answered 422 Unprocessable Entity."
         assert presentation.details == (
-            "Reason: Validate bundle — Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found in the model deck"
+            "Reason: The method does not validate.",
+            "In pipe draft_pitch, field model: Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found in the model deck"
             "\n\nDid you mean: gpt-5.5, gpt-5.4, gpt-5.6-sol, gpt-5.4-pro, gpt-5.6-luna",
-            # The item's message is the reason's detail verbatim, so only where it is is added.
-            "Pipe: draft_pitch",
-            "Next step: Edit the bundle as each validation error says: apply its suggested fix where it has one, after confirming an unsafe one",
-            "Retry: running it again will fail the same way until the cause is fixed.",
+            WHO_ACTS_METHOD,
+            "Next step: Fix each fault the problem's errors list, then validate the method again.",
+            RETRY_NO,
+            "For support: method.invalid · request req_a3dd6900-7909-48d3-b551-0140e73ac7fc",
         )
         # The next step is the advice, so no hint competes with it.
         assert presentation.hint is None
 
-    def test_an_auth_refusal_hints_api_key_and_keeps_the_reason(self):
-        for status, status_text in ((401, "Unauthorized"), (403, "Forbidden")):
-            presentation = present_error(_api_response_error(status, status_text, detail="This key may not use the route."))
-            assert presentation.message == f"The API rejected the request ({status} {status_text})."
-            assert presentation.details == (
-                "Reason: This key may not use the route.",
-                "Retry: running it again will fail the same way until the cause is fixed.",
-            )
-            assert presentation.hint is not None
-            assert "PIPELEX_API_KEY" in presentation.hint
-
-    def test_a_server_error_has_no_hint(self):
-        presentation = present_error(_api_response_error(500, "Internal Server Error", title="Internal error"))
-        assert presentation.details == ("Reason: Internal error", "Retry: running it again may succeed.")
-        assert presentation.hint is None
-
-    def test_start_without_async_orchestration_on_detach_says_to_drop_the_flag(self):
-        exc = _api_response_error(400, "Bad Request", detail="no async", error_type="StartRequiresAsyncOrchestration")
-        presentation = present_error(exc, mode=RunMode.DETACH)
+    @pytest.mark.parametrize(("status", "status_text"), [(401, "Unauthorized"), (403, "Forbidden")])
+    def test_a_bare_credential_refusal_hints_the_api_key(self, status: int, status_text: str):
+        presentation = present_error(_refusal(status, status_text))
+        assert presentation.message == f"The API answered {status} {status_text}."
+        assert "Who acts: whoever owns the account, by changing a credential, a plan or a role." in presentation.details
         assert presentation.hint is not None
-        assert "drop --detach" in presentation.hint
+        assert "PIPELEX_API_KEY" in presentation.hint
 
-    def test_start_without_async_orchestration_names_blocking(self):
-        detail = "Orchestration mode 'direct' cannot honor fire-and-forget delivery. Use /execute instead."
-        presentation = present_error(_api_response_error(400, "Bad Request", detail=detail, error_type="StartRequiresAsyncOrchestration"))
-        assert presentation.message == detail
+    def test_the_api_s_own_credential_refusal_hints_the_api_key(self):
+        problem = _problem(
+            title="The credential was refused",
+            detail="The API key is not valid.",
+            code="auth.invalid_credential",
+            domain="account",
+            next_step={"kind": "check_credentials", "detail": "Check the API key the request sends."},
+            request_id="req_1",
+        )
+        presentation = present_error(_refusal(401, "Unauthorized", problem))
         assert presentation.hint is not None
-        assert "--blocking" in presentation.hint
-
-    @pytest.mark.parametrize(("status", "status_text"), [(502, "Bad Gateway"), (504, "Gateway Timeout")])
-    def test_a_gateway_status_on_the_blocking_path_says_to_drop_the_flag(self, status: int, status_text: str):
-        presentation = present_error(_api_response_error(status, status_text), mode=RunMode.BLOCKING)
-        assert presentation.hint is not None
-        assert "without --blocking" in presentation.hint
-
-    def test_a_gateway_status_off_the_blocking_path_has_no_hint(self):
-        # On the durable path a 502 is the platform's own trouble, not the blocking cut-off.
-        presentation = present_error(_api_response_error(502, "Bad Gateway"), mode=RunMode.ATTENDED)
-        assert presentation.hint is None
-
-    def test_an_answer_without_a_problem_document_names_the_status(self):
-        # The retry advice is the SDK's reading of the status, which it always decides.
-        presentation = present_error(_api_response_error(502, "Bad Gateway"))
-        assert presentation.message == "The API answered 502 Bad Gateway."
-        assert presentation.details == ("Retry: running it again may succeed.",)
-        assert presentation.hint is None
+        assert "PIPELEX_API_KEY" in presentation.hint
+        assert "Next step: Check the API key the request sends." in presentation.details
+        assert "For support: auth.invalid_credential · request req_1" in presentation.details
 
     def test_unreachable_hints_base_url(self):
         presentation = present_error(ApiUnreachableError("connect failed", api_url="http://nowhere.invalid"))
-        assert "http://nowhere.invalid" in presentation.message
+        assert presentation.message == "Could not reach the Pipelex API at http://nowhere.invalid."
         assert presentation.hint is not None
         assert "PIPELEX_BASE_URL" in presentation.hint
+        assert RETRY_YES in presentation.details
+        # No answer came to read: the URL or the network is as likely the cause as the service.
+        assert not any(line.startswith("Who acts:") for line in presentation.details)
 
-    def test_run_failed_reads_out_the_stored_report(self):
-        presentation = present_error(RunFailedError(REPORTED_DETAIL, run_id="run-9", status=RunStatus.FAILED, error=MODEL_REPORT))
+    def test_timeout_reads_as_unreachable_in_time(self):
+        error = ApiUnreachableError("timed out", api_url="http://slow.invalid", network_code="ABORT_TIMEOUT", timeout_seconds=30.0)
+        assert error.problem.code == "client.timeout"
+        presentation = present_error(error)
+        assert presentation.message == "The Pipelex API at http://slow.invalid did not answer in time."
+        assert presentation.hint is not None
+        assert "PIPELEX_BASE_URL" in presentation.hint
+        assert not any(line.startswith("Who acts:") for line in presentation.details)
+
+    def test_a_wait_that_gave_up_says_how_to_wait_again(self):
+        presentation = present_error(RunTimeoutError("too slow", run_id="run-9", timeout_seconds=1200.0))
+        assert presentation.hint == f"Wait for the run with `{COMMAND_NAME} --resume run-9` rather than start it again."
+        assert "For support: run run-9 · client.follow_failed" in presentation.details
+
+    def test_run_failed_reads_out_the_run_s_own_problem(self):
+        presentation = present_error(_failed_run(RunStatus.FAILED, MODEL_REFUSAL))
         assert presentation.message == "Run run-9 failed."
         assert presentation.details == (
-            "Reason: LLM completion — The model refused the request.",
-            "Next step: Rephrase the prompt, or pick another model.",
-            "Retry: running it again may succeed.",
+            "Reason: The provider refused the content — The model 'gpt-5.5' or its provider refused the request's content on policy grounds.",
+            "Who acts: you, by changing the inputs or the request.",
+            "Next step: Change the inputs so that they meet the provider's content policy, then send the request again.",
+            RETRY_NO,
+            # The run's problem names no run, so the failed run's id is quoted for it.
+            "For support: run run-9 · model.content_refused",
         )
         assert presentation.hint is None
 
-    def test_run_failed_without_a_stored_report_still_says_what_happened(self):
-        presentation = present_error(RunFailedError(UNREPORTED_DETAIL, run_id="run-9", status=RunStatus.FAILED))
+    def test_a_cancelled_run_s_problem_says_it_can_be_run_again(self):
+        cancelled = {
+            "type": "https://mthds.ai/errors/run.cancelled",
+            "title": "The run was cancelled",
+            "detail": "The run was cancelled by its caller before it ended.",
+            "code": "run.cancelled",
+            "domain": "input",
+            "retry": "yes",
+            "next_step": {"kind": "retry", "detail": "Start the run again."},
+        }
+        presentation = present_error(_failed_run(RunStatus.CANCELLED, cancelled))
+        assert presentation.message == "Run run-9 was cancelled."
+        assert RETRY_YES in presentation.details
+
+    def test_run_failed_without_a_problem_still_says_what_happened(self):
+        presentation = present_error(_failed_run(RunStatus.FAILED))
         assert presentation.message == "Run run-9 failed, and no reason was recorded for it."
-        # The platform's own sentence is kept: on a refused stored result it is the only thing that says what happened.
-        assert presentation.details == (f"The platform said: {UNREPORTED_DETAIL}",)
+        # The platform's own sentence is kept: with no problem stored it is the only thing that says what happened.
+        assert presentation.details == ("The platform said: The run 'run-9' ended as 'FAILED', without success.",)
         assert presentation.hint is not None
         assert "support" in presentation.hint
         assert "run-9" in presentation.hint
 
-    def test_a_cancelled_run_without_a_report_is_told_to_start_again(self):
-        presentation = present_error(
-            RunFailedError("Run finished with status CANCELLED; no result available", run_id="run-9", status=RunStatus.CANCELLED)
-        )
+    def test_a_cancelled_run_without_a_problem_is_told_to_start_again(self):
+        presentation = present_error(_failed_run(RunStatus.CANCELLED))
         assert presentation.message == "Run run-9 was cancelled, and no reason was recorded for it."
         assert presentation.hint is not None
         assert "start it again" in presentation.hint.lower()
 
-    def test_a_report_carrying_nothing_to_read_out_is_treated_as_no_report(self):
-        presentation = present_error(RunFailedError(UNREPORTED_DETAIL, run_id="run-9", status=RunStatus.TIMED_OUT, error=RunErrorReport()))
-        assert presentation.message == "Run run-9 timed out, and no reason was recorded for it."
-        assert presentation.details == (f"The platform said: {UNREPORTED_DETAIL}",)
-
     def test_unsupported_upload_capability_hints_the_hosted_api(self):
         presentation = present_error(UnsupportedUploadCapabilityError("no /v1/upload route here"))
-        assert "no /v1/upload route here" in presentation.message
+        assert presentation.message == "no /v1/upload route here"
         assert presentation.hint is not None
         assert "PIPELEX_BASE_URL" in presentation.hint
 
@@ -217,15 +304,11 @@ class TestPresentError:
         assert presentation.hint is not None
         assert "PIPELEX_API_KEY" in presentation.hint
 
-    def test_rejected_asset_hints_a_smaller_file(self):
-        presentation = present_error(RejectedAssetError("too large", filename="huge.pdf", status=413))
-        assert presentation.hint is not None
-        assert "smaller" in presentation.hint
-
-    def test_invalid_local_source_hints_the_path(self):
+    def test_an_unreadable_local_file_says_what_to_change(self):
         presentation = present_error(InvalidLocalSourceError("cannot read", source="/nope.pdf"))
-        assert presentation.hint is not None
-        assert "path" in presentation.hint
+        assert presentation.message == "cannot read"
+        assert "Next step: Give a readable file as the input '/nope.pdf', then send the request again." in presentation.details
+        assert presentation.hint is None
 
     def test_artifact_authentication_hints_api_key(self):
         verdict = DownloadArtifactsResult(scope=ArtifactScope.MAIN_STUFF, all_saved=False)
@@ -233,115 +316,110 @@ class TestPresentError:
         assert presentation.hint is not None
         assert "PIPELEX_API_KEY" in presentation.hint
 
-    def test_artifact_operation_hints_the_download_directory_without_saying_rerun(self):
+    def test_an_artifact_failure_never_says_to_run_the_method_again(self):
         presentation = present_error(ArtifactOperationError("outputs/ is a file"))
-        assert "outputs/ is a file" in presentation.message
+        assert presentation.message == "outputs/ is a file"
         assert presentation.hint is not None
-        assert "download directory" in presentation.hint
-        # The run itself succeeded: a hint that sent the reader back to rerun it would cost them.
-        assert "rerun" not in presentation.hint.lower()
+        # The run itself succeeded: a hint that sent the reader back to run it again would cost them.
+        assert "no need to run the method again" in presentation.hint
 
     @pytest.mark.parametrize(
-        ("report", "expected_lines"),
-        [
-            pytest.param(None, (), id="no report"),
-            pytest.param(RunErrorReport(message="The input 'text' is empty."), ("Reason: The input 'text' is empty.",), id="message alone"),
-            pytest.param(RunErrorReport(title="LLM completion"), ("Reason: LLM completion",), id="title alone"),
-            pytest.param(RunErrorReport(error_type="SandboxProvisioningError"), ("Reason: SandboxProvisioningError",), id="class as last resort"),
-            pytest.param(
-                RunErrorReport(message="Rate limited.", user_action=UserAction(kind="wait_and_retry")),
-                ("Reason: Rate limited.", "Next step: Wait a moment, then run it again."),
-                id="kind speaks without detail",
-            ),
-            pytest.param(
-                RunErrorReport(message="Something broke.", user_action=UserAction(kind="unknown")),
-                ("Reason: Something broke.",),
-                id="unknown kind without detail",
-            ),
-            pytest.param(
-                RunErrorReport(message="The model does not exist.", retryable=False),
-                ("Reason: The model does not exist.", "Retry: running it again will fail the same way until the cause is fixed."),
-                id="not retryable",
-            ),
-            # `None` means the runner does not know, never "no", so nothing is claimed either way.
-            pytest.param(RunErrorReport(message="Something broke."), ("Reason: Something broke.",), id="retry advice unknown"),
-        ],
-    )
-    def test_report_lines_read_out_what_the_report_carries(self, report: RunErrorReport | None, expected_lines: tuple[str, ...]):
-        assert report_lines(report) == expected_lines
-
-    @pytest.mark.parametrize(
-        ("exc", "expected_lines"),
+        ("problem", "expected_lines"),
         [
             pytest.param(
-                _api_response_error(400, "Bad Request", title="Bad input", detail="Missing required input 'text'."),
-                ("Reason: Bad input — Missing required input 'text'.", "Retry: running it again will fail the same way until the cause is fixed."),
+                _problem(
+                    title="Bad input",
+                    detail="Missing required input 'text'.",
+                    code="input.missing",
+                    domain="input",
+                    next_step={"kind": "change_input", "detail": "Give it."},
+                ),
+                (
+                    "Reason: Bad input — Missing required input 'text'.",
+                    "Who acts: you, by changing the inputs or the request.",
+                    "Next step: Give it.",
+                    RETRY_NO,
+                    "For support: input.missing",
+                ),
                 id="title and detail",
             ),
             pytest.param(
-                _api_response_error(404, "Not Found", error_type="PackageNotFoundError"),
-                ("Reason: PackageNotFoundError", "Retry: running it again will fail the same way until the cause is fixed."),
-                id="runner class",
-            ),
-            pytest.param(
-                _api_response_error(409, "Conflict", code="conflict"),
-                ("Reason: conflict", "Retry: running it again will fail the same way until the cause is fixed."),
-                id="platform code",
-            ),
-            pytest.param(
-                _api_response_error(
-                    422,
-                    "Unprocessable Entity",
-                    title="Validate bundle",
-                    detail="The method is invalid.",
-                    validation_errors=[
-                        _item("Model handle 'gpt-5.1' was not found.", pipe_code="draft_pitch"),
-                        _item("Field 'ideas' is not a list.", concept_code="TopicReview"),
-                        _item("The bundle declares no domain."),
+                _problem(
+                    title="The method does not validate",
+                    detail="The method does not validate.",
+                    code="method.invalid",
+                    domain="method",
+                    next_step={"kind": "change_method", "detail": "Fix each fault."},
+                    errors=[
+                        {"code": "model.unknown", "detail": "Model handle 'gpt-5.1' was not found.", "location": {"pipe": "draft_pitch"}},
+                        {"code": "method.syntax", "detail": "Unexpected token.", "location": {"file": "main.mthds", "line": 3}},
+                        {"code": "method.concept_unresolved", "detail": "No concept 'Topic'.", "suggestions": ["Topics"]},
                     ],
                 ),
                 (
-                    "Reason: Validate bundle — The method is invalid.",
+                    "Reason: The method does not validate.",
                     "In pipe draft_pitch: Model handle 'gpt-5.1' was not found.",
-                    "In concept TopicReview: Field 'ideas' is not a list.",
-                    "Problem: The bundle declares no domain.",
-                    "Retry: running it again will fail the same way until the cause is fixed.",
+                    "In main.mthds:3: Unexpected token.",
+                    "Fault: No concept 'Topic'. (did you mean: Topics)",
+                    WHO_ACTS_METHOD,
+                    "Next step: Fix each fault.",
+                    RETRY_NO,
+                    "For support: method.invalid",
                 ),
-                id="items saying more than the reason",
+                id="faults with their location",
             ),
             pytest.param(
-                _api_response_error(
-                    422,
-                    "Unprocessable Entity",
-                    validation_errors=[_item("Model handle 'gpt-5.1' was not found.", pipe_code="draft_pitch")],
-                    user_action=ProblemUserAction(kind="change_input", detail="Fix the bundle."),
+                _problem(
+                    detail="Pipe 'a' fails. Pipe 'b' fails.",
+                    code="method.invalid",
+                    domain="method",
+                    errors=[{"code": "x.y", "detail": "Pipe 'a' fails.", "location": {"pipe": "a"}}, {"code": "x.y", "detail": "Pipe 'b' fails."}],
                 ),
                 (
-                    "In pipe draft_pitch: Model handle 'gpt-5.1' was not found.",
-                    "Next step: Fix the bundle.",
-                    "Retry: running it again will fail the same way until the cause is fixed.",
+                    "Reason: An unexpected error occurred — Pipe 'a' fails. Pipe 'b' fails.",
+                    "In pipe a",
+                    WHO_ACTS_METHOD,
+                    "Next step: Report this to whoever runs the runtime.",
+                    RETRY_NO,
+                    "For support: method.invalid",
                 ),
-                id="items without a reason",
+                id="faults the reason already says",
             ),
             pytest.param(
-                _api_response_error(
-                    422,
-                    "Unprocessable Entity",
-                    detail="First. Second.",
-                    validation_errors=[_item("First.", pipe_code="a"), _item("Second.", concept_code="B"), _item("Second.")],
+                _problem(
+                    code="client.outcome_unknown",
+                    retry="outcome_unknown",
+                    pipeline_run_id="run-9",
+                    next_step={"kind": "read_run", "detail": "Read the run."},
                 ),
-                ("Reason: First. Second.", "Pipe: a", "Concept: B", "Retry: running it again will fail the same way until the cause is fixed."),
-                id="items the reason already says",
+                (
+                    "Reason: An unexpected error occurred — The runtime met an unexpected error.",
+                    WHO_ACTS_RUNTIME,
+                    "Next step: Read the run.",
+                    RETRY_UNKNOWN,
+                    "For support: run run-9 · client.outcome_unknown",
+                ),
+                id="outcome unknown",
             ),
             pytest.param(
-                _api_response_error(429, "Too Many Requests", detail="Slow down.", retryable=True),
-                ("Reason: Slow down.", "Retry: running it again may succeed."),
-                id="retryable",
+                _problem(code="pipelex.something_new", domain="nobody-knows", retry="maybe", next_step={"kind": "dance", "detail": "Do it."}),
+                (
+                    "Reason: An unexpected error occurred — The runtime met an unexpected error.",
+                    # A domain or a verdict this version does not know reads as the family's, then as the safe one.
+                    WHO_ACTS_RUNTIME,
+                    "Next step: Do it.",
+                    RETRY_NO,
+                    "For support: pipelex.something_new",
+                ),
+                id="members this version does not know",
             ),
         ],
     )
-    def test_problem_lines_read_out_what_the_problem_carries(self, exc: ApiResponseError, expected_lines: tuple[str, ...]):
-        assert problem_lines(exc) == expected_lines
+    def test_problem_lines_read_out_what_the_problem_carries(self, problem: Problem, expected_lines: tuple[str, ...]):
+        assert problem_lines(problem) == expected_lines
+
+    def test_the_request_id_and_the_run_join_the_support_line(self):
+        assert problem_lines(_problem(), request_id="req_1", run_id="run-9")[-1] == "For support: run run-9 · runtime.unexpected · request req_1"
 
 
 class TestPrintError:
@@ -354,7 +432,7 @@ class TestPrintError:
         assert "Hint: Do this." in rendered
 
     def test_hangs_a_multi_line_detail_under_its_label(self):
-        # A refused method's reason ends with a blank line and the model names it suggests instead; at
+        # A refused method's fault ends with a blank line and the model names it suggests instead; at
         # the margin, that suggestion would read as a line of its own.
         buffer = io.StringIO()
         print_error(
@@ -364,7 +442,7 @@ class TestPrintError:
         assert buffer.getvalue() == "Error: Refused.\n  Reason: Unknown model.\n\n    Did you mean: gpt-5?\n"
 
     def test_prints_server_text_verbatim_rather_than_as_markup(self):
-        # A report's message is the runner's text: a bracketed span in it must neither vanish as a
+        # A problem's detail is the runtime's text: a bracketed span in it must neither vanish as a
         # style tag nor crash the print as an unmatched closing tag.
         buffer = io.StringIO()
         presentation = ErrorPresentation(message="Bad value [x] in [/y].", hint=None, details=("Reason: list [1, 2] [bold]",))

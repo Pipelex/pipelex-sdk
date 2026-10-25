@@ -8,13 +8,13 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import { downloadArtifacts } from "../src/artifacts.js";
 import type { ArtifactCapableClient } from "../src/artifacts.js";
 import {
   ArtifactOperationError,
   InvalidLocalSourceError,
   RequestArgumentError,
-  errorVerdictOf,
 } from "../src/errors.js";
 import { listDirectoryTree, writeMethodTreeTo } from "../src/method-trees.js";
 import { PipelexApiClient } from "../src/client.js";
@@ -69,7 +69,7 @@ describe("the Node host resolved without the node condition", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("refuses a directory as an input error, naming the call and the condition", async () => {
+  it("refuses a directory as a capability this runtime lacks, naming the call and the condition", async () => {
     const refusal = await listDirectoryTree("/a/method", {}, "validate").catch((e: unknown) => e);
 
     expect(refusal).toBeInstanceOf(RequestArgumentError);
@@ -77,7 +77,10 @@ describe("the Node host resolved without the node condition", () => {
       `validate() cannot list the directory '/a/method': ${await reason()}`,
     );
     expect((refusal as Error).message).not.toContain("only Node");
-    expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "input", retryable: false });
+    expect((refusal as ProblemError).problem).toMatchObject({
+      code: "runtime.unsupported",
+      retry: "no",
+    });
   });
 
   it("refuses to write a tree to disk as a config error, before any download", async () => {
@@ -100,7 +103,7 @@ describe("the Node host resolved without the node condition", () => {
     expect((refusal as Error).message).toBe(
       `writeMethodTree() cannot write to the file system: ${await reason()}`,
     );
-    expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "config", retryable: false });
+    expect((refusal as ProblemError).code).toBe("runtime.unsupported");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -123,6 +126,6 @@ describe("the Node host resolved without the node condition", () => {
     expect((refusal as Error).message).toBe(
       `downloadArtifacts cannot write to the filesystem: ${await reason()}`,
     );
-    expect(errorVerdictOf(refusal)).toEqual({ errorDomain: "config", retryable: false });
+    expect((refusal as ProblemError).code).toBe("runtime.unsupported");
   });
 });

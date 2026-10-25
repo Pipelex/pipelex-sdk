@@ -29,11 +29,12 @@ import type {
  */
 
 /**
- * What the timeline says in place of an invocation's own failure text. A
- * snapshot carries no flag saying whether that text was written for the
- * caller, and a platform run with verbose disclosure would pass a provider's
- * raw text, so it never leaves the server. The run's own failure is still shown
- * in full, from its report, by `<ErrorDisplay>`.
+ * What the timeline says in place of an invocation's own failure, the problem
+ * the SDK reads as `last_failure.problem`. A snapshot carries no flag saying
+ * whether that problem's text was written for the caller, and a platform run
+ * with verbose disclosure would pass a provider's raw text, so none of it
+ * leaves the server. The run's own failure is still shown in full, from its
+ * problem, by `<ErrorDisplay>`.
  */
 export const FAILURE_TEXT_SHOWN = "An attempt at this step failed.";
 

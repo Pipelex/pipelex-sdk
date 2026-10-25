@@ -8,9 +8,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
-import { ApiResponseError, RequestArgumentError, errorVerdictOf } from "../src/errors.js";
+import { ApiResponseError, RequestArgumentError } from "../src/errors.js";
 import type { FileArchive, FileArchiveLimit, FileArchiveRequest } from "../src/index.js";
+import { problemResponse } from "./helpers/problems.js";
 
 const BASE_URL = "http://localhost:8081";
 const ARCHIVE_ID = "arc_5f0c2d1e-8b3a-4c6e-9d2f-1a7b3c4d5e6f";
@@ -144,20 +146,15 @@ describe("requestFileArchive", () => {
     expect(err).toBeInstanceOf(RequestArgumentError);
     expect((err as Error).message).toMatch(/^requestFileArchive\(\) /);
     expect((err as Error).message).toMatch(message);
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
     expect(spy).not.toHaveBeenCalled();
   });
 
   it("surfaces a selection past a cap as a 422 whose limit names it", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(422, {
-        type: "about:blank",
-        title: "Archive too large",
-        status: 422,
+      // The code is the platform's; the SDK keeps the problem's `limit` member as received.
+      problemResponse("pipelex.files.archive_too_large", 422, {
         detail: "An archive holds at most 2000000000 bytes; this selection adds up to 2147483648.",
-        code: "file_archive_too_large",
-        error_domain: "input",
-        retryable: false,
         limit: { name: "max_total_bytes", value: 2000000000, reached: 2147483648 },
       }),
     );
@@ -168,19 +165,17 @@ describe("requestFileArchive", () => {
 
     expect(err).toBeInstanceOf(ApiResponseError);
     const refusal = err as ApiResponseError;
-    expect(refusal.code).toBe("file_archive_too_large");
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "input", retryable: false });
-    const limit = refusal.problemDocument?.limit as FileArchiveLimit;
+    expect(refusal.code).toBe("pipelex.files.archive_too_large");
+    expect((err as ProblemError).problem).toMatchObject({ domain: "input", retry: "no" });
+    const limit = refusal.problem.limit as FileArchiveLimit;
     expect(limit).toEqual({ name: "max_total_bytes", value: 2000000000, reached: 2147483648 });
   });
 
   it("surfaces a run whose files are not recorded yet as a retryable 409", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(409, {
-        status: 409,
-        code: "conflict",
-        error_domain: "runtime",
-        retryable: true,
+      problemResponse("run.not_finished", 409, {
+        domain: "runtime",
+        retry: "yes",
         detail: "The run's files are not all recorded yet.",
       }),
     );
@@ -189,8 +184,8 @@ describe("requestFileArchive", () => {
       .requestFileArchive({ run_id: "run_7" })
       .catch((thrown: unknown) => thrown);
 
-    expect((err as ApiResponseError).code).toBe("conflict");
-    expect(errorVerdictOf(err)).toEqual({ errorDomain: "runtime", retryable: true });
+    expect((err as ApiResponseError).code).toBe("run.not_finished");
+    expect((err as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "yes" });
   });
 
   it.each([
@@ -289,15 +284,15 @@ describe("getFileArchive", () => {
     expect((err as ApiResponseError).responseBody).not.toContain("X-Amz-Signature=deadbeef");
   });
 
-  it("surfaces an expired archive as a 404 not_found", async () => {
+  it("surfaces an expired archive as a 404 pipelex.storage.not_found", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, { status: 404, code: "not_found", detail: "Item not found." }),
+      problemResponse("pipelex.storage.not_found", 404, { detail: "Item not found." }),
     );
 
     const err = await makeClient()
       .getFileArchive(ARCHIVE_ID)
       .catch((thrown: unknown) => thrown);
 
-    expect((err as ApiResponseError).code).toBe("not_found");
+    expect((err as ApiResponseError).code).toBe("pipelex.storage.not_found");
   });
 });

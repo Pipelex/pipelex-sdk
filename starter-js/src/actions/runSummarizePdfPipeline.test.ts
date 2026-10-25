@@ -127,14 +127,15 @@ describe("runSummarizePdfBlocking", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("classifies a preparation failure (prepareInputs throws) into upload_failed, never running", async () => {
+  it("classifies a preparation failure (prepareInputs throws) from its problem, never running", async () => {
     prepareInputs.mockRejectedValueOnce(
       new UnsupportedUploadCapabilityError("no /v1/upload route"),
     );
     const result = await runSummarizePdfBlocking(DATA);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.kind).toBe("upload_failed");
+    expect(result.error.kind).toBe("upload_unavailable");
+    expect(result.error.code).toBe("runtime.unsupported");
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -233,10 +234,6 @@ describe("requestSummarizePdfUpload", () => {
         404,
         "Not Found",
         "",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
       ),
     );
     const result = await requestSummarizePdfUpload({

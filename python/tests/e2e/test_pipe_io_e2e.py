@@ -169,7 +169,8 @@ class TestPipeIOLive:
         report = _pipe_io(PipeIORequest(files=broken, include_files=True))
 
         assert isinstance(report, CrateInvalidReport)
-        assert report.validation_errors
+        assert report.errors
+        assert all(item.code and item.detail for item in report.errors)
 
     def test_a_method_ref_describes_every_pipe_and_selects_the_manifest_entry_pipe(self) -> None:
         report = _pipe_io(PipeIORequest(method_ref=_METHOD_REF, all_pipes=True, include_files=True))
@@ -216,17 +217,17 @@ class TestPipeIOLive:
         assert prepared.uploads == []
 
     @pytest.mark.parametrize(
-        ("files", "pipe_ref", "error_type", "named"),
+        ("files", "pipe_ref", "code", "named"),
         [
-            (_ENTRY_FILES, "smoke_pipe_io.absent", "EntryPipeNotFoundError", "smoke_pipe_io.absent"),
-            (_NO_ENTRY_FILES, None, "EntryPipeNotFoundError", "main_pipe"),
-            (_SEVERAL_ENTRY_FILES, None, "EntryPipeAmbiguousError", "smoke_pipe_io_alpha.run, smoke_pipe_io_beta.run"),
+            (_ENTRY_FILES, "smoke_pipe_io.absent", "request.pipe_not_found", "smoke_pipe_io.absent"),
+            (_NO_ENTRY_FILES, None, "request.pipe_unspecified", "main_pipe"),
+            (_SEVERAL_ENTRY_FILES, None, "request.pipe_ambiguous", "smoke_pipe_io_alpha.run, smoke_pipe_io_beta.run"),
         ],
     )
-    def test_prepare_inputs_maps_a_refused_selection(self, files: dict[str, FileEntry], pipe_ref: str | None, error_type: str, named: str) -> None:
-        # Needs the runner to type the refusal with its entry-lookup `error_type` (pipelex-api >= 0.33.1),
-        # and the hosted proxy to relay it unchanged. The server's `detail` names what was refused: the
-        # unknown ref, the missing `main_pipe`, or the candidates when several are declared.
+    def test_prepare_inputs_maps_a_refused_selection(self, files: dict[str, FileEntry], pipe_ref: str | None, code: str, named: str) -> None:
+        # Needs the runner to answer the refusal with its pipe-selection problem code, and the hosted proxy
+        # to relay it unchanged. The server's `detail` names what was refused: the unknown ref, the missing
+        # `main_pipe`, or the candidates when several are declared.
         async def _prepare() -> PreparedInputs:
             async with _client() as client:
                 return await client.prepare_inputs(files=files, pipe_ref=pipe_ref, inputs={})
@@ -236,11 +237,9 @@ class TestPipeIOLive:
         assert named in str(exc_info.value)
         refusal = exc_info.value.__cause__
         assert isinstance(refusal, ApiResponseError)
-        assert refusal.status == 422
-        assert refusal.error_type == error_type
-        assert refusal.error_domain == "input"
-        assert refusal.server_message is not None
-        assert named in refusal.server_message
+        assert refusal.problem.code == code
+        assert refusal.problem.domain == "input"
+        assert named in refusal.problem.detail
 
     # ── The hosted catalog selector ──────────────────────────────────
 

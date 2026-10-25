@@ -11,6 +11,7 @@ from mthds.runners.api.exceptions import ApiTransportError
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
+from tests.unit.conftest import problem_document
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -76,17 +77,17 @@ class TestClientTransport:
         assert send.call_args.args[0] == "PUT"
         assert send.call_args.kwargs["content"] == b'{"name":"x"}'
 
-    def test_request_product_non_2xx_raises_api_response_error_with_code(self, mocker: MockerFixture) -> None:
+    def test_request_product_non_2xx_raises_api_response_error_with_its_problem(self, mocker: MockerFixture) -> None:
         client = self._client()
-        body = {"code": "conflict", "detail": {"error_type": "Conflict", "message": "no subscription"}}
+        body = problem_document("pipelex.billing.no_subscription", 409, detail="no subscription")
         mocker.patch.object(client, "_send", mocker.AsyncMock(return_value=_response(409, json=body)))
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(client._request_product("POST", "billing/change-plan", body={"plan": "pro"}, read=_as_is))
         err = exc_info.value
-        assert err.code == "conflict"
+        assert err.problem.code == "pipelex.billing.no_subscription"
         assert err.status == 409
-        assert err.server_message == "no subscription"
-        assert err.error_type == "Conflict"
+        assert err.problem.detail == "no subscription"
+        assert str(err) == "API POST /v1/billing/change-plan failed (409): no subscription"
         assert err.api_url == _BASE_URL
 
     def test_request_product_connect_failure_maps_to_unreachable(self, unreachable_client: UnreachableClientBuilder) -> None:
@@ -95,20 +96,20 @@ class TestClientTransport:
             asyncio.run(client._request_product("GET", "me", read=_as_is))
         err = exc_info.value
         assert err.api_url == _BASE_URL
-        assert err.code == "ConnectError"
+        assert err.network_code == "ConnectError"
 
     def test_request_product_read_timeout_maps_to_unreachable_abort(self, unreachable_client: UnreachableClientBuilder) -> None:
         client = unreachable_client(httpx.ReadTimeout)
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client._request_product("GET", "me", read=_as_is))
-        assert exc_info.value.code == "ABORT_TIMEOUT"
+        assert exc_info.value.network_code == "ABORT_TIMEOUT"
 
     def test_request_product_connect_timeout_carries_its_class_name(self, unreachable_client: UnreachableClientBuilder) -> None:
         # A connection that never opened sent nothing: it is not the client's own time limit on a request.
         client = unreachable_client(httpx.ConnectTimeout)
         with pytest.raises(ApiUnreachableError) as exc_info:
             asyncio.run(client._request_product("GET", "me", read=_as_is))
-        assert exc_info.value.code == "ConnectTimeout"
+        assert exc_info.value.network_code == "ConnectTimeout"
 
     @pytest.mark.parametrize(
         ("failure", "code"),
@@ -132,13 +133,30 @@ class TestClientTransport:
         # The message is the one this SDK has always given, with no next step appended.
         assert "Next step" not in str(err)
 
-    def test_a_body_that_does_not_decode_maps_to_unreachable(self) -> None:
-        """A gzip answer whose bytes are not gzip is lost on the way, as `@pipelex/sdk` reports it (`Z_DATA_ERROR`)."""
+    def test_a_body_that_does_not_decode_is_an_answer_the_sdk_cannot_read(self) -> None:
+        """A gzip answer whose bytes are not gzip came back: it is an answer, never a request that got none, and
+        `@pipelex/sdk` reads it alike (`Z_DATA_ERROR`).
+        """
         client = PipelexAPIClient(api_key="t", base_url=_BASE_URL)
         client.client = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda _: httpx.Response(200, headers={"content-encoding": "gzip"}, stream=httpx.ByteStream(b"not gzip")))
         )
-        with pytest.raises(ApiUnreachableError) as exc_info:
+        with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(client._request_product("GET", "me", read=_as_is))
-        assert exc_info.value.code == "DecodingError"
-        assert isinstance(exc_info.value.__cause__, httpx.DecodingError)
+        err = exc_info.value
+        assert str(err) == "API GET /v1/me answered 200 with a body that could not be decoded (DecodingError)"
+        assert (err.status, err.response_body) == (200, "")
+        assert err.problem.code == "client.response_unreadable"
+        assert isinstance(err.__cause__, httpx.DecodingError)
+
+    def test_a_start_whose_answer_does_not_decode_may_have_started_a_run(self) -> None:
+        """The server accepted the start and only its acknowledgement was lost."""
+        client = PipelexAPIClient(api_key="t", base_url=_BASE_URL)
+        client.client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(202, headers={"content-encoding": "gzip"}, stream=httpx.ByteStream(b"not gzip")))
+        )
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(client.start(pipe_code="p"))
+        err = exc_info.value
+        assert (err.problem.code, err.problem.retry) == ("client.outcome_unknown", "outcome_unknown")
+        assert err.headers["content-encoding"] == "gzip"

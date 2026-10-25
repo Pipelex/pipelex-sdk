@@ -1,11 +1,11 @@
 /**
  * What the command prints: a finished run's result on stdout, and every failure on stderr.
  *
- * A failure is worded by the command from the error's typed fields, never from an SDK message
- * whose wording is the SDK's own, wherever the fields carry what a person needs: the API's reason,
- * the next step it advises and the request id support asks for. That keeps the two commands, this
- * one and its Python twin, saying the same thing for the same answer, which is what the recorded
- * case table holds them to.
+ * A failure is worded by the command from the error's problem, never from an SDK message whose
+ * wording is the SDK's own, wherever the problem carries what a person needs: its reason
+ * (`detail`), the faults it lists (`errors`), the next step it advises and the request id support
+ * asks for. That keeps the two commands, this one and its Python twin, saying the same thing for
+ * the same answer, which is what the recorded case table holds them to.
  *
  * Where no field carries the reason, the command prints the SDK's message as it: a file that
  * could not be uploaded, whose message says what the upload route's status means for an upload,
@@ -29,7 +29,7 @@ import {
   UploadTransportError,
   stringifyExactJson,
 } from "../index.js";
-import type { ValidationErrorItem } from "../index.js";
+import type { ProblemItem } from "../index.js";
 import { CommandError, EXIT_FAILED, EXIT_USAGE } from "./io.js";
 import type { CommandIO } from "./io.js";
 
@@ -46,10 +46,11 @@ export function presentError(error: unknown): PresentedError {
     return { lines: [first, ...error.details], exitCode: error.exitCode };
   }
   if (error instanceof RunFailedError) {
-    const report = error.error;
+    // The run's own problem when it reports one, else the problem the API answered the read with.
+    const runError = error.runError;
     const lines = [`Error: run ${error.runId} ended with status ${error.status}.`];
-    lines.push(`Reason: ${report?.message ?? error.message}`);
-    if (report?.user_action?.detail) lines.push(`Next step: ${report.user_action.detail}`);
+    lines.push(`Reason: ${reasonOf(runError ?? error.problem)}`);
+    if (runError !== undefined) lines.push(...nextStepLines(runError));
     return { lines, exitCode: EXIT_FAILED };
   }
   if (error instanceof InvalidLocalSourceError) {
@@ -81,7 +82,7 @@ export function presentError(error: unknown): PresentedError {
     return {
       lines: [
         METHOD_DOES_NOT_LOAD,
-        ...loadFailureLines(error.validationErrors, error.serverMessage),
+        ...loadFailureLines(error.problem.errors ?? [], error.serverMessage),
       ],
       exitCode: EXIT_FAILED,
     };
@@ -103,7 +104,7 @@ export function presentError(error: unknown): PresentedError {
   if (error instanceof ApiUnreachableError) {
     return {
       lines: [
-        `Error: could not reach the Pipelex API at ${error.apiUrl} (${error.code ?? "network error"}).`,
+        `Error: could not reach the Pipelex API at ${error.apiUrl} (${error.networkCode ?? "network error"}).`,
       ],
       exitCode: EXIT_FAILED,
     };
@@ -118,8 +119,8 @@ export function presentError(error: unknown): PresentedError {
 /**
  * A file the inputs name that could not be uploaded: which file, the status the upload route
  * answered when it answered, and the SDK's own sentence, which says what the status means for an
- * upload (a file past the size limit, a deployment without upload), followed by the advice and the
- * request id of the API's answer when it carries them.
+ * upload (a file past the size limit, a deployment without upload), followed by the next step and
+ * the request id of the API's answer when there is one.
  */
 function presentUploadFailure(
   error:
@@ -135,32 +136,41 @@ function presentUploadFailure(
     error.filename === undefined ? "an upload failed" : `the upload of "${error.filename}" failed`;
   const lines = [`Error: ${what}${status === undefined ? "" : ` (status ${status})`}.`];
   lines.push(`Reason: ${error.message}`);
-  if (cause?.userAction?.detail) lines.push(`Next step: ${cause.userAction.detail}`);
+  if (cause !== undefined) lines.push(...nextStepLines(cause.problem));
   if (cause?.requestId) lines.push(`Request id: ${cause.requestId}`);
   return { lines, exitCode: EXIT_FAILED };
 }
 
 /**
- * An answer the API gave instead of a result: its status, its reason and its advice.
+ * An answer the API gave instead of a result: its status, its reason, the faults it lists, its
+ * next step and its request id.
  *
  * A 2xx status is an answer the SDK could not read, the one `ApiResponseError` it throws with a
  * success status: its reason is the SDK's message, which names the route and what could not be
- * read, since the answer is no problem document. A refusal's reason is the problem's `detail`,
- * else its `title`, and a problem that gives neither is said to give no reason.
+ * read, since the answer is no problem document. A refusal's reason is its problem's `detail`, the
+ * API's own sentence when the answer was a problem document and the sentence of the code the SDK
+ * read from the status otherwise, and a problem whose `detail` is empty is said to give no reason.
  */
 function presentRefusal(error: ApiResponseError): PresentedError {
   const unreadable = error.status >= 200 && error.status < 300;
   const lines = unreadable
     ? [`Error: the API's answer could not be read (status ${error.status}).`]
     : [`Error: the API refused the request (status ${error.status}).`];
-  const reason = unreadable
-    ? error.message
-    : (error.serverMessage ?? error.title ?? "the answer gives no reason");
-  lines.push(`Reason: ${reason}`);
-  for (const item of error.validationErrors ?? []) lines.push(validationLine(item));
-  if (error.userAction?.detail) lines.push(`Next step: ${error.userAction.detail}`);
+  lines.push(`Reason: ${unreadable ? error.message : reasonOf(error.problem)}`);
+  for (const item of error.problem.errors ?? []) lines.push(problemItemLine(item));
+  lines.push(...nextStepLines(error.problem));
   if (error.requestId) lines.push(`Request id: ${error.requestId}`);
   return { lines, exitCode: EXIT_FAILED };
+}
+
+/** A problem's reason: its `detail`, or a sentence saying it gives none. */
+function reasonOf(problem: { detail: string }): string {
+  return problem.detail === "" ? "the answer gives no reason" : problem.detail;
+}
+
+/** The line of a problem's next step, or none when the step says nothing. */
+function nextStepLines(problem: { next_step: { detail: string } }): string[] {
+  return problem.next_step.detail === "" ? [] : [`Next step: ${problem.next_step.detail}`];
 }
 
 /** What a file input takes, the hint under a value it cannot take. */
@@ -172,30 +182,22 @@ export const METHOD_DOES_NOT_LOAD_SENTENCE = "the method does not load.";
 const METHOD_DOES_NOT_LOAD = `Error: ${METHOD_DOES_NOT_LOAD_SENTENCE}`;
 
 /**
- * The lines under "the method does not load": one per validation item that carries a string
- * `category` and `message`, the rule the SDK reads a failed load's items by, and when there is
- * none, the answer's own message.
+ * The lines under "the method does not load": one per problem item, as the SDK reads a failed
+ * load's `errors` (`readProblemItems`), and when there is none, the answer's own message.
  */
-export function loadFailureLines(items: unknown, message: unknown): string[] {
-  const lines = (Array.isArray(items) ? items : []).filter(isLoadItem).map(validationLine);
+export function loadFailureLines(items: readonly ProblemItem[], message: unknown): string[] {
+  const lines = items.map(problemItemLine);
   if (lines.length === 0) {
     lines.push(`  - ${typeof message === "string" ? message : "the answer gives no reason"}`);
   }
   return lines;
 }
 
-function isLoadItem(value: unknown): value is { message: string; source?: unknown } {
-  return (
-    isPlainObject(value) && typeof value.category === "string" && typeof value.message === "string"
-  );
-}
-
-/** One validation error, as an indented line naming its file when it has one. */
-export function validationLine(
-  item: Pick<ValidationErrorItem, "message"> & { source?: unknown },
-): string {
-  const source = typeof item.source === "string" && item.source !== "" ? `${item.source}: ` : "";
-  return `  - ${source}${item.message}`;
+/** One problem item, as an indented line naming the file it is in when its location names one. */
+export function problemItemLine(item: ProblemItem): string {
+  const file = item.location?.file;
+  const where = typeof file === "string" && file !== "" ? `${file}: ` : "";
+  return `  - ${where}${item.detail}`;
 }
 
 /** The keys of the runtime's absence document, and no other. */

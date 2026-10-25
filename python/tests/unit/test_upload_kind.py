@@ -17,12 +17,11 @@ import httpx
 import pytest
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import (
     ApiResponseError,
     InputPreparationError,
     InvalidLocalSourceError,
-    TestFileRefusalCode,
+    TestFileRefusalReason,
     TestFileRefusedError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
@@ -30,7 +29,7 @@ from pipelex_sdk.errors import (
 )
 from pipelex_sdk.product_models import FileKind, UploadedFile, UploadInput, UploadKind
 from pipelex_sdk.upload import UploadKindOptions, upload_file
-from tests.unit.conftest import refused_argument
+from tests.unit.conftest import problem_document, refused_argument
 from tests.unit.test_data import PipeIOBodies
 
 if TYPE_CHECKING:
@@ -38,8 +37,6 @@ if TYPE_CHECKING:
 
 _BASE_URL = "http://localhost:8081"
 _STORED = {"uri": "pipelex-storage://org_1/assets/a.pdf", "filename": "case.pdf"}
-_CONFIG = ErrorVerdict(error_domain=ErrorDomain.CONFIG, retryable=False)
-_INPUT = ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
 
 
 class _RecordingUploadClient:
@@ -54,18 +51,9 @@ class _RecordingUploadClient:
         return UploadedFile(uri="pipelex-storage://org_1/assets/a.pdf", filename=upload_input.filename)
 
 
-def _problem(status: int, code: str, error_domain: str, detail: str) -> dict[str, Any]:
-    """A platform refusal as the platform serializes one: RFC 9457 with its code and verdict."""
-    return {
-        "type": f"https://pipelex.com/errors/{code}",
-        "title": code,
-        "status": status,
-        "detail": detail,
-        "code": code,
-        "error_domain": error_domain,
-        "retryable": False,
-        "instance": "/v1/upload",
-    }
+def _problem(status: int, code: str, domain: str, detail: str) -> dict[str, Any]:
+    """A platform refusal as the platform serializes one: its problem document, with its code and domain."""
+    return problem_document(code, status, domain=domain, detail=detail)
 
 
 def _client_answering(status: int, body: dict[str, Any], sent: list[httpx.Request] | None = None) -> PipelexAPIClient:
@@ -211,7 +199,7 @@ class TestUploadKind:
         assert str(caught.value).startswith("Cannot upload: ")
         assert words in str(caught.value)
         assert refused_argument(caught.value) == named
-        assert error_verdict_of(caught.value) == _INPUT
+        assert (caught.value.problem.domain, caught.value.problem.retry) == ("input", "no")
         assert client.calls == []
 
     # ── The upload route's refusals of a test file ──
@@ -219,76 +207,77 @@ class TestUploadKind:
     def test_reads_a_403_role_not_permitted_as_the_caller_s_role_not_its_credential(self) -> None:
         detail = "Your role in this organization is runner: it runs the organization's published versions and changes no method."
 
-        error = _refused_test_file(403, _problem(403, "role_not_permitted", "config", detail))
+        error = _refused_test_file(403, _problem(403, "auth.forbidden", "account", detail))
 
         assert isinstance(error, TestFileRefusedError)
         assert not isinstance(error, UploadAuthenticationError)
-        assert (error.code, error.status, error.filename, error.method_id) == (TestFileRefusalCode.ROLE_NOT_PERMITTED, 403, "case.pdf", "mt_abc")
+        assert (error.reason, error.status, error.filename, error.method_id) == (TestFileRefusalReason.ROLE_NOT_PERMITTED, 403, "case.pdf", "mt_abc")
+        # The server's sentence is quoted without its final period.
         assert str(error) == (
-            f'Upload of "case.pdf" as a test file was refused (403): {detail}. '
+            f'Upload of "case.pdf" as a test file was refused (403): {detail.removesuffix(".")}. '
             'Upload it as "uploaded", or with the credential of a member who may change methods.'
         )
-        # The server's verdict: an admin changes the role; sending again changes nothing.
-        assert error_verdict_of(error) == _CONFIG
+        # The server's problem: an admin changes the role; sending again changes nothing.
+        assert (error.problem.code, error.problem.domain, error.problem.retry) == ("auth.forbidden", "account", "no")
         assert isinstance(error.__cause__, ApiResponseError)
         assert error.problem == error.__cause__.problem
 
-    def test_reads_a_404_not_found_the_platform_answers_as_input_as_the_unknown_method(self) -> None:
-        error = _refused_test_file(404, _problem(404, "not_found", "input", "Item not found."), method_id="mt_gone")
+    def test_reads_a_404_catalog_not_found_as_the_unknown_method(self) -> None:
+        error = _refused_test_file(404, _problem(404, "pipelex.catalog.not_found", "input", "Item not found."), method_id="mt_gone")
 
         assert isinstance(error, TestFileRefusedError)
         assert not isinstance(error, UnsupportedUploadCapabilityError)
-        assert (error.code, error.method_id) == (TestFileRefusalCode.METHOD_NOT_FOUND, "mt_gone")
+        assert (error.reason, error.method_id) == (TestFileRefusalReason.METHOD_NOT_FOUND, "mt_gone")
         assert str(error) == 'Upload of "case.pdf" as a test file was refused (404): the method "mt_gone" is not one of the organization\'s methods.'
-        assert error_verdict_of(error) == _INPUT
+        assert error.problem.code == "pipelex.catalog.not_found"
 
     def test_reads_a_409_method_being_deleted_as_the_method_being_erased(self) -> None:
-        error = _refused_test_file(409, _problem(409, "method_being_deleted", "input", "Method 'mt_abc' is being deleted."))
+        error = _refused_test_file(409, _problem(409, "pipelex.catalog.being_deleted", "input", "Method 'mt_abc' is being deleted."))
 
         assert isinstance(error, TestFileRefusedError)
-        assert error.code == TestFileRefusalCode.METHOD_BEING_DELETED
+        assert error.reason == TestFileRefusalReason.METHOD_BEING_DELETED
         assert str(error) == 'Upload of "case.pdf" as a test file was refused (409): the method "mt_abc" is being deleted.'
-        assert error_verdict_of(error) == _INPUT
+        assert error.problem.code == "pipelex.catalog.being_deleted"
 
-    def test_keeps_a_404_the_platform_answers_as_config_a_deployment_without_the_route_unsupported(self) -> None:
-        error = _refused_test_file(404, _problem(404, "not_found", "config", "Not Found"))
+    def test_keeps_a_404_request_not_found_a_deployment_without_the_route_unsupported(self) -> None:
+        error = _refused_test_file(404, _problem(404, "request.not_found", "input", "Not Found"))
 
         assert type(error) is UnsupportedUploadCapabilityError
 
-    def test_keeps_a_bare_runner_s_404_which_carries_no_code_unsupported(self) -> None:
+    def test_keeps_a_bare_runner_s_404_which_is_no_problem_document_unsupported(self) -> None:
         error = _refused_test_file(404, {"detail": "Not Found"})
 
         assert type(error) is UnsupportedUploadCapabilityError
 
     def test_keeps_any_other_403_a_refused_credential(self) -> None:
-        error = _refused_test_file(403, _problem(403, "forbidden", "config", "Forbidden."))
+        error = _refused_test_file(403, _problem(403, "auth.invalid_credential", "account", "Forbidden."))
 
         assert type(error) is UploadAuthenticationError
 
-    def test_keeps_any_other_409_a_transport_failure_carrying_the_server_s_verdict(self) -> None:
-        error = _refused_test_file(409, _problem(409, "conflict", "input", "Key reused."))
+    def test_keeps_any_other_409_a_transport_failure_carrying_the_server_s_problem(self) -> None:
+        error = _refused_test_file(409, _problem(409, "request.idempotency_conflict", "input", "Key reused."))
 
         assert type(error) is UploadTransportError
-        assert error_verdict_of(error) == _INPUT
+        assert error.problem.code == "request.idempotency_conflict"
 
     @pytest.mark.parametrize(
-        ("code", "problem_code"),
+        ("reason", "problem_code"),
         [
-            pytest.param(TestFileRefusalCode.ROLE_NOT_PERMITTED, "auth.forbidden", id="role"),
-            pytest.param(TestFileRefusalCode.METHOD_NOT_FOUND, "client.argument_invalid", id="unknown-method"),
-            pytest.param(TestFileRefusalCode.METHOD_BEING_DELETED, "client.argument_invalid", id="method-being-erased"),
-            pytest.param(None, "client.argument_invalid", id="no-code"),
+            pytest.param(TestFileRefusalReason.ROLE_NOT_PERMITTED, "auth.forbidden", id="role"),
+            pytest.param(TestFileRefusalReason.METHOD_NOT_FOUND, "client.argument_invalid", id="unknown-method"),
+            pytest.param(TestFileRefusalReason.METHOD_BEING_DELETED, "client.argument_invalid", id="method-being-erased"),
+            pytest.param(None, "client.argument_invalid", id="no-reason"),
         ],
     )
-    def test_a_refusal_built_without_a_cause_states_the_problem_of_its_code(self, code: TestFileRefusalCode | None, problem_code: str) -> None:
-        error = TestFileRefusedError("The test file was refused.", code=code)
+    def test_a_refusal_built_without_a_cause_states_the_problem_of_its_reason(self, reason: TestFileRefusalReason | None, problem_code: str) -> None:
+        error = TestFileRefusedError("The test file was refused.", reason=reason)
 
         assert error.problem.code == problem_code
-        if code is not None and problem_code == "client.argument_invalid":
-            assert refused_argument(error) == {"argument": "method_id", "reason": code}
+        if reason is not None and problem_code == "client.argument_invalid":
+            assert refused_argument(error) == {"argument": "method_id", "reason": reason}
 
     def test_reads_a_404_not_found_as_unsupported_when_the_upload_named_no_method(self) -> None:
-        client = _client_answering(404, _problem(404, "not_found", "input", "Item not found."))
+        client = _client_answering(404, _problem(404, "pipelex.catalog.not_found", "input", "Item not found."))
 
         with pytest.raises(UnsupportedUploadCapabilityError):
             asyncio.run(client.upload_file(b"\x01", filename="a.pdf"))
@@ -355,7 +344,7 @@ class TestUploadKind:
         def _answer(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/v1/pipe-io":
                 return httpx.Response(200, json=PipeIOBodies.VALID, request=request)
-            body = _problem(409, "method_being_deleted", "input", "Method 'mt_abc' is being deleted.")
+            body = _problem(409, "pipelex.catalog.being_deleted", "input", "Method 'mt_abc' is being deleted.")
             return httpx.Response(409, json=body, headers={"content-type": "application/problem+json"}, request=request)
 
         client = PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
@@ -366,4 +355,4 @@ class TestUploadKind:
                 client.prepare_inputs(method_id="mt_abc", inputs={"doc": b"\x01"}, upload=UploadKindOptions(kind=UploadKind.TEST, method_id="mt_abc"))
             )
 
-        assert (caught.value.code, caught.value.method_id) == (TestFileRefusalCode.METHOD_BEING_DELETED, "mt_abc")
+        assert (caught.value.reason, caught.value.method_id) == (TestFileRefusalReason.METHOD_BEING_DELETED, "mt_abc")

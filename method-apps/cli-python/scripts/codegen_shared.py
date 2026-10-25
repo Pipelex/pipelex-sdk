@@ -38,6 +38,7 @@ from urllib.parse import urlparse
 from mthds.protocol.input_form import InputForm
 from mthds.protocol.output_form import OutputForm
 from mthds.protocol.pipe_io_contracts import PipeIOContracts
+from mthds.protocol.problem.models import ProblemItem
 from pipelex_sdk.crate_models import CodegenRequest, CodegenTarget, CrateInvalidReport, PipeIORequest, PipeIOValidReport
 
 from pipelex_method_cli_python.lib.contracts import (
@@ -295,8 +296,23 @@ def discover_source(layout: Layout) -> CodegenSource | None:
 
 
 def invalid_lines(report: CrateInvalidReport, *, lead: str = "the method does not resolve") -> list[str]:
-    """A crate route's refusal of the method, as the lines a report prints: the message, then each item."""
-    return [f"{lead}: {report.message}", *(f"    {item.source or '?'}: {item.message}" for item in report.validation_errors)]
+    """A crate route's refusal of the method, as the lines a report prints: the message, then each fault it lists."""
+    return [f"{lead}: {report.message}", *fault_lines(report.errors)]
+
+
+def fault_lines(items: list[ProblemItem] | None) -> list[str]:
+    """The faults a verdict or a refusal lists, one line each: where the fault is, then what it is."""
+    return [f"    {fault_location(item)}: {item.detail}" for item in items or ()]
+
+
+def fault_location(item: ProblemItem) -> str:
+    """Where a fault is: the file of the method's tree its location names, with the line, else its pipe, its input or its field, else `?`."""
+    location = item.location
+    if location is None:
+        return "?"
+    if location.file:
+        return f"{location.file}:{location.line}" if location.line is not None else location.file
+    return location.pipe or location.input or location.field or "?"
 
 
 def not_runnable_reason(report: PipeIOValidReport) -> str | None:

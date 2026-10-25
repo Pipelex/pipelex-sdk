@@ -26,6 +26,7 @@ import {
   UploadTransportError,
 } from "../src/errors.js";
 import type { UploadFileOptions } from "../src/upload.js";
+import { problemDocument } from "./helpers/problems.js";
 
 interface Captured {
   filename: string;
@@ -57,17 +58,14 @@ function throwingClient(error: unknown): UploadCapableClient {
   };
 }
 
-function apiError(status: number, serverMessage = "boom"): ApiResponseError {
+/** The `ApiResponseError` of an answer with an empty body, as an edge may give one. */
+function apiError(status: number): ApiResponseError {
   return new ApiResponseError(
     `HTTP ${status}`,
     "https://api.pipelex.com/v1/upload",
     status,
     "Error",
     "",
-    undefined,
-    serverMessage,
-    undefined,
-    undefined,
   );
 }
 
@@ -154,15 +152,15 @@ describe("uploadFile", () => {
     );
   });
 
-  it("maps a 413 to RejectedAssetError carrying the filename, status and code", async () => {
-    const client = throwingClient(apiError(413, "too big"));
+  it("maps a 413 to RejectedAssetError carrying the filename, status and reason", async () => {
+    const client = throwingClient(apiError(413));
     const bytes = new Uint8Array([1]);
 
     await expect(uploadFile(client, bytes, { filename: "big.pdf" })).rejects.toMatchObject({
       name: "RejectedAssetError",
       filename: "big.pdf",
       status: 413,
-      code: "too_large",
+      reason: "too_large",
     });
     await expect(uploadFile(client, bytes, { filename: "big.pdf" })).rejects.toBeInstanceOf(
       RejectedAssetError,
@@ -176,6 +174,33 @@ describe("uploadFile", () => {
         UploadAuthenticationError,
       );
     }
+  });
+
+  it("reads a refused credential's problem from the server's problem document, else from the status", async () => {
+    const answered = new ApiResponseError(
+      "HTTP 403",
+      "https://api.pipelex.com/v1/upload",
+      403,
+      "Forbidden",
+      JSON.stringify(problemDocument("auth.forbidden", 403, { domain: "account" })),
+    );
+    const fromServer = await uploadFile(throwingClient(answered), new Uint8Array([1])).catch(
+      (e: unknown) => e,
+    );
+    expect((fromServer as UploadAuthenticationError).code).toBe("auth.forbidden");
+
+    // A bare refusal says nothing of the credential: the status's reading stands.
+    const bare = await uploadFile(throwingClient(apiError(401)), new Uint8Array([1])).catch(
+      (e: unknown) => e,
+    );
+    expect((bare as UploadAuthenticationError).code).toBe("auth.missing_credential");
+
+    // What the caller knows of its own request outranks the status of a bare refusal.
+    const sentKey = new UploadAuthenticationError("refused", 401, {
+      cause: apiError(401),
+      credentialSent: true,
+    });
+    expect(sentKey.code).toBe("auth.invalid_credential");
   });
 
   it("maps a 404 to UnsupportedUploadCapabilityError", async () => {
@@ -244,13 +269,13 @@ describe("uploadFile", () => {
       "unreachable",
     ],
     ["a failure that is not HTTP", new SyntaxError("Unexpected token"), "unexpected"],
-  ])("sets UploadTransportError's code for %s", async (_case, failure, code) => {
+  ])("sets UploadTransportError's reason for %s", async (_case, failure, reason) => {
     const error = await uploadFile(throwingClient(failure), new Uint8Array([1])).catch(
       (e: unknown) => e,
     );
 
     expect(error).toBeInstanceOf(UploadTransportError);
-    expect((error as UploadTransportError).code).toBe(code);
+    expect((error as UploadTransportError).reason).toBe(reason);
   });
 
   it("keeps the filename it sent when the client's answer names none", async () => {
@@ -284,11 +309,11 @@ describe("uploadFile", () => {
   });
 });
 
-/** A platform refusal as the client raises it: the problem's code and the server's verdict. */
+/** A platform refusal as the client raises it: its problem document, with its code and domain. */
 function platformRefusal(
   status: number,
   code: string,
-  errorDomain: "input" | "config",
+  domain: string,
   detail: string,
 ): ApiResponseError {
   return new ApiResponseError(
@@ -296,12 +321,7 @@ function platformRefusal(
     "https://api.pipelex.com/v1/upload",
     status,
     "Error",
-    JSON.stringify({ status, code, error_domain: errorDomain, retryable: false, detail }),
-    undefined,
-    detail,
-    undefined,
-    code,
-    { details: { errorDomain, retryable: false } },
+    JSON.stringify(problemDocument(code, status, { domain, detail })),
   );
 }
 
@@ -368,32 +388,32 @@ describe("uploadFile's kind and method", () => {
     expect(error).not.toBeInstanceOf(InvalidLocalSourceError);
     expect((error as Error).message).toContain("Cannot upload");
     expect((error as Error).message).toContain(words);
-    expect((error as InputPreparationError).errorDomain).toBe("input");
+    expect((error as InputPreparationError).code).toBe("client.argument_invalid");
     expect(calls).toHaveLength(0);
   });
 
   it.each([
     [
       "a role that may not change methods",
-      platformRefusal(403, "role_not_permitted", "config", "Your role is runner."),
+      platformRefusal(403, "auth.forbidden", "account", "Your role is runner."),
       "role_not_permitted",
-      "config",
+      "account",
     ],
     [
       "an unknown method",
-      platformRefusal(404, "not_found", "input", "Item not found."),
+      platformRefusal(404, "pipelex.catalog.not_found", "input", "Item not found."),
       "method_not_found",
       "input",
     ],
     [
       "a method being erased",
-      platformRefusal(409, "method_being_deleted", "input", "Method is being deleted."),
+      platformRefusal(409, "pipelex.catalog.being_deleted", "input", "Method is being deleted."),
       "method_being_deleted",
       "input",
     ],
   ])(
     "maps the refusal of a test file for %s to TestFileRefusedError",
-    async (_case, failure, code, domain) => {
+    async (_case, failure, reason, domain) => {
       const error = await uploadFile(throwingClient(failure), new Uint8Array([1]), {
         filename: "case.pdf",
         kind: "test",
@@ -404,19 +424,20 @@ describe("uploadFile's kind and method", () => {
       expect(error).toBeInstanceOf(InputPreparationError);
       expect(error).toMatchObject({
         name: "TestFileRefusedError",
-        code,
+        reason,
+        code: failure.code,
         status: failure.status,
         filename: "case.pdf",
         methodId: "mt_abc",
         cause: failure,
-        errorDomain: domain,
-        retryable: false,
+        domain,
+        retry: "no",
       });
     },
   );
 
   it("keeps the 404 of a deployment without the route unsupported, test file or not", async () => {
-    const routeMissing = platformRefusal(404, "not_found", "config", "Not Found");
+    const routeMissing = platformRefusal(404, "request.not_found", "input", "Not Found");
 
     const error = await uploadFile(throwingClient(routeMissing), new Uint8Array([1]), {
       kind: "test",
@@ -427,7 +448,7 @@ describe("uploadFile's kind and method", () => {
   });
 
   it("keeps a 403 that is not a role refusal a refused credential", async () => {
-    const forbidden = platformRefusal(403, "forbidden", "config", "Forbidden.");
+    const forbidden = platformRefusal(403, "auth.invalid_credential", "account", "Forbidden.");
 
     const error = await uploadFile(throwingClient(forbidden), new Uint8Array([1]), {
       kind: "test",

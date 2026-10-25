@@ -1,5 +1,5 @@
 import type { ProgressSnapshot } from "@pipelex/mthds-ui/timeline";
-import { ApiResponseError, errorVerdictOf, type RunProgress } from "@pipelex/sdk";
+import { isProblemError, type RunProgress } from "@pipelex/sdk";
 import { getPipelexClient } from "@/lib/pipelexClient";
 import { toProgressSnapshot } from "@/lib/runProgress";
 
@@ -28,8 +28,8 @@ export type RunProgressAnswer =
   /** No progress for this run yet: the platform's index has not caught up with a run just started. */
   | { state: "none" }
   /**
-   * Reading again cannot help, by the SDK's own verdict: the base URL serves no
-   * progress route, or refuses this key the read.
+   * Reading again cannot help, by the failure's own problem: the base URL serves
+   * no progress route, or refuses this key the read.
    */
   | { state: "unavailable" };
 
@@ -40,25 +40,25 @@ function answer(body: RunProgressAnswer): Response {
 }
 
 /**
- * Whether a failure is a refusal that reading again cannot change: one the SDK
- * judges not retryable and lays on the request or the configuration (`input`
- * or `config`). A bare runner without the route is the SDK's
- * `RunLifecycleUnavailableError`, and a hosted gateway answers a path it does
- * not route with `403 Forbidden`, as it answers a key it refuses, so the route
- * being absent cannot be told from a refusal there; both are `config`.
+ * Whether a failure is a refusal that reading again cannot change: one whose
+ * problem says a retry fails the same way (`retry: "no"`) and lays it on
+ * someone other than the service (any `domain` but `runtime`). A bare runner
+ * without the route is `runtime.unsupported`, in the `operator` domain, and a
+ * hosted gateway answers a path it does not route with `403 Forbidden`, as it
+ * answers a key it refuses, so the route being absent cannot be told from a
+ * refusal there; both are final.
  *
- * A `runtime` verdict is never final here, retryable or not: it is a fault in
- * one answer, such as a `200` the SDK could not read (a malformed snapshot,
+ * A `runtime` problem is never final here, whatever its `retry`: it is a fault
+ * in one answer, such as a `200` the SDK could not read (a malformed snapshot,
  * truncated JSON, an empty body), and the next read may well be whole.
  */
 function isFinalRefusal(caught: unknown): boolean {
-  const verdict = errorVerdictOf(caught);
-  return verdict !== undefined && !verdict.retryable && verdict.errorDomain !== "runtime";
+  return isProblemError(caught) && caught.retry === "no" && caught.domain !== "runtime";
 }
 
 /**
- * Every other failure is an error status with no body: one the SDK judges
- * retryable, a fault in one answer, or one carrying no verdict. The browser
+ * Every other failure is an error status with no body: one whose problem says a
+ * retry can pass, a fault in one answer, or a failure that carries no problem. The browser
  * keeps the snapshot it holds and reads again. It is not logged, following this
  * app's rule against diagnostic console writes; the status poll is where a
  * failing API shows itself. A read the browser aborted gets the same answer,
@@ -85,8 +85,8 @@ export async function GET(
     // abort untouched; the failure is not classified at all, so whatever the
     // abort threw is never taken for a final refusal.
     if (request.signal.aborted) return readFailed();
-    // The platform's `404` for a run it does not know: an id just started.
-    if (caught instanceof ApiResponseError && caught.status === 404) {
+    // The platform's `run.not_found` for a run it does not know: an id just started.
+    if (isProblemError(caught) && caught.code === "run.not_found") {
       return answer({ state: "none" });
     }
     // No progress route, or a refused key: not worth reading again for this run.

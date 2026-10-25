@@ -3,8 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiResponseError,
   ApiUnreachableError,
-  errorVerdictOf,
+  buildProblem,
   RunLifecycleUnavailableError,
+  type Problem,
   type RunProgress,
 } from "@pipelex/sdk";
 
@@ -40,21 +41,25 @@ function readUntilAborted(_runId: string, options: { signal: AbortSignal }): Pro
   });
 }
 
-function apiError(status: number): ApiResponseError {
+/**
+ * A refused progress read, as the SDK's client raises one: the status and the
+ * body as received, a problem document when the API sent one, else nothing,
+ * which the SDK reads by the status alone.
+ */
+function apiError(status: number, problem?: Problem): ApiResponseError {
   return new ApiResponseError(
     `API GET /v1/runs/run-1/progress answered ${status}`,
     "https://api-dev.pipelex.com",
     status,
     "",
-    "",
-    undefined,
-    undefined,
-    undefined,
-    status === 404 ? "run_not_found" : undefined,
+    problem === undefined ? "" : JSON.stringify({ ...problem, status }),
   );
 }
 
-/** A `200` the SDK could not read, as its client raises one: the answer's status and raw text, no problem member. */
+/** The platform's answer for a run it does not know. */
+const RUN_NOT_FOUND = buildProblem("run.not_found", { pipeline_run_id: "run-1" });
+
+/** A `200` the SDK could not read, as its client raises one: the answer's status and raw text. */
 function unreadableAnswer(body: string): ApiResponseError {
   return new ApiResponseError(
     "API GET /v1/runs/run-1/progress answered 200 with a snapshot it could not read",
@@ -62,10 +67,6 @@ function unreadableAnswer(body: string): ApiResponseError {
     200,
     "OK",
     body,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
     { cause: new SyntaxError("Unexpected end of JSON input") },
   );
 }
@@ -88,7 +89,13 @@ const PROGRESS: RunProgress = {
       started_at: "2026-10-16T09:00:01.000Z",
       ended_at: null,
       attempts: 2,
-      last_failure: { message: "provider said: upstream refused", at: "2026-10-16T09:00:09Z" },
+      last_failure: {
+        problem: {
+          ...buildProblem("runtime.unexpected", {}),
+          detail: "provider said: upstream refused",
+        },
+        at: "2026-10-16T09:00:09Z",
+      },
     },
   ],
 };
@@ -122,7 +129,7 @@ describe("GET /api/runs/{runId}/progress", () => {
 
   it("answers a read the browser aborted with no body, never classifying what the abort threw", async () => {
     // The SDK rethrows the caller's abort untouched, so the route sees the
-    // signal's reason. One carrying a final verdict shows the abort is checked
+    // signal's reason. One carrying a final problem shows the abort is checked
     // before any classification: unchecked, it would answer `unavailable`.
     for (const reason of [undefined, apiError(403)]) {
       const browser = new AbortController();
@@ -138,7 +145,7 @@ describe("GET /api/runs/{runId}/progress", () => {
   });
 
   it("answers none for a run the platform does not know yet", async () => {
-    getRunProgress.mockRejectedValueOnce(apiError(404));
+    getRunProgress.mockRejectedValueOnce(apiError(404, RUN_NOT_FOUND));
     const response = await call();
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -155,16 +162,19 @@ describe("GET /api/runs/{runId}/progress", () => {
     expect(await response.json()).toEqual({ state: "unavailable" });
   });
 
-  it("answers unavailable for any refusal the SDK judges final", async () => {
+  it("answers unavailable for any refusal whose problem says reading again fails alike", async () => {
     // A hosted gateway answers a path it does not route with 403 Forbidden, as
     // it answers a key it refuses: reading again helps in neither case.
     for (const failure of [
       apiError(403),
       apiError(401),
-      apiError(400),
+      apiError(404),
       apiError(405),
-      apiError(501),
+      apiError(400, buildProblem("request.malformed", { reason: "not_json" })),
+      apiError(501, buildProblem("runtime.unsupported", { capability: "run progress" })),
     ]) {
+      expect(failure.retry).toBe("no");
+      expect(failure.domain).not.toBe("runtime");
       getRunProgress.mockRejectedValueOnce(failure);
       const response = await call();
       expect(response.status).toBe(200);
@@ -176,8 +186,9 @@ describe("GET /api/runs/{runId}/progress", () => {
     for (const failure of [
       apiError(503),
       apiError(429),
+      apiError(500),
       new ApiUnreachableError("connect ECONNREFUSED", "https://api.pipelex.com", "ECONNREFUSED"),
-      new Error("a failure that carries no verdict"),
+      new Error("a failure that carries no problem"),
     ]) {
       getRunProgress.mockRejectedValueOnce(failure);
       const response = await call();
@@ -189,11 +200,14 @@ describe("GET /api/runs/{runId}/progress", () => {
   });
 
   it("answers an error status, never unavailable, for a 200 the SDK could not read", async () => {
-    // The SDK judges such an answer `runtime` and not retryable: a fault in one
-    // answer, which the next read may well not repeat, so the browser reads again.
+    // The SDK reads such an answer as `client.response_unreadable`, in the
+    // `runtime` domain with `retry: "no"`: a fault in one answer, which the next
+    // read may well not repeat, so the browser reads again.
     for (const body of ['{"pipeline_run_id": "run-1", "invocations": [', "", '{"status": 7}']) {
       const failure = unreadableAnswer(body);
-      expect(errorVerdictOf(failure)).toEqual({ errorDomain: "runtime", retryable: false });
+      expect(failure.code).toBe("client.response_unreadable");
+      expect(failure.domain).toBe("runtime");
+      expect(failure.retry).toBe("no");
       getRunProgress.mockRejectedValueOnce(failure);
       const response = await call();
       expect(response.status).toBe(502);

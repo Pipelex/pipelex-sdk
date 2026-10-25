@@ -23,6 +23,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
 import { ApiResponseError, ApiUnreachableError } from "../src/errors.js";
+import { problemResponse as problemAnswer } from "./helpers/problems.js";
 import type { CodegenValidReport, CrateInvalidReport, ResolveValidReport } from "../src/models.js";
 
 function makeClient(): PipelexApiClient {
@@ -37,11 +38,9 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 /** An RFC 7807 problem body, as the server renders every non-2xx. */
-function problemResponse(status: number, detail: string): Response {
-  return new Response(JSON.stringify({ status, title: "Error", detail }), {
-    status,
-    headers: { "Content-Type": "application/problem+json" },
-  });
+/** A problem document coded `code`, as the runner renders every non-2xx. */
+function problemResponse(status: number, detail: string, code = "request.invalid"): Response {
+  return problemAnswer(code, status, { detail });
 }
 
 function postedBody(spy: ReturnType<typeof vi.spyOn>): unknown {
@@ -51,7 +50,7 @@ function postedBody(spy: ReturnType<typeof vi.spyOn>): unknown {
 
 const INVALID_ARM: CrateInvalidReport = {
   is_valid: false,
-  validation_errors: [{ category: "blueprint_validation", message: "boom", source: "smoke.mthds" }],
+  errors: [{ code: "method.schema_violation", detail: "boom", location: { file: "smoke.mthds" } }],
   message: "MTHDS library could not be resolved",
 };
 
@@ -366,8 +365,8 @@ describe("crate routes — the 200 verdict", () => {
       // that only catches would render a success over an unusable result.
       expect(result.is_valid).toBe(false);
       const report = result as CrateInvalidReport;
-      expect(report.validation_errors[0]!.message).toBe("boom");
-      expect(report.validation_errors[0]!.source).toBe("smoke.mthds");
+      expect(report.errors[0]!.detail).toBe("boom");
+      expect(report.errors[0]!.location?.file).toBe("smoke.mthds");
     }
   });
 });
@@ -395,7 +394,8 @@ describe("crate routes — what throws", () => {
     await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
     await expect(failure).rejects.toMatchObject({
       status: 422,
-      serverMessage: "pipe_ref is not accepted for kind='types'",
+      code: "request.invalid",
+      problem: { detail: "pipe_ref is not accepted for kind='types'" },
     });
   });
 
@@ -403,7 +403,11 @@ describe("crate routes — what throws", () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockImplementation(() =>
       Promise.resolve(
-        problemResponse(501, "method_ref resolution is not available on this server yet."),
+        problemResponse(
+          501,
+          "method_ref resolution is not available on this server yet.",
+          "runtime.unsupported",
+        ),
       ),
     );
 

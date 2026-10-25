@@ -444,8 +444,8 @@ class TestPlanMethod:
 
         async def refuse(request: CodegenRequest) -> CodegenResponse:
             del request
-            item = {"category": "pipe_validation", "message": "unknown concept", "source": "main.mthds"}
-            return CrateInvalidReport.model_validate({"is_valid": False, "message": "The bundle does not validate", "validation_errors": [item]})
+            item = {"code": "method.concept_unresolved", "detail": "unknown concept", "location": {"file": "main.mthds"}}
+            return CrateInvalidReport.model_validate({"is_valid": False, "message": "The bundle does not validate", "errors": [item]})
 
         monkeypatch.setattr(client, "codegen", refuse)
         with pytest.raises(PlanError) as caught:

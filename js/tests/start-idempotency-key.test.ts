@@ -10,6 +10,7 @@ import { PipelexApiClient } from "../src/client.js";
 import type { PipelexStartOptions } from "../src/client.js";
 import { ApiResponseError, ApiUnreachableError, RequestArgumentError } from "../src/errors.js";
 import type { IdempotencyErrorCode } from "../src/errors.js";
+import { problemResponse } from "./helpers/problems.js";
 
 const BASE_URL = "http://localhost:8081";
 const KEY = "5f0c6a52-2d3e-4c8b-9a51-7e1f0b6c2d44";
@@ -134,11 +135,11 @@ describe("PipelexApiClient.start — the idempotency key", () => {
     };
 
     const err = await failureOf(() => client.start(options));
-    // The key changes what the caller can do, not the verdict: the run may have started, so the
-    // error stays not retryable, and the caller that sent a key sends the same start again.
+    // The key changes what the caller can do, not the verdict: the run may have started, so its
+    // outcome is unknown, and the caller that sent a key sends the same start again.
     expect(err).toBeInstanceOf(ApiUnreachableError);
-    expect((err as ApiUnreachableError).runMayHaveStarted).toBe(true);
-    expect((err as ApiUnreachableError).retryable).toBe(false);
+    expect((err as ApiUnreachableError).code).toBe("client.outcome_unknown");
+    expect((err as ApiUnreachableError).retry).toBe("outcome_unknown");
     const ack = await client.start(options);
 
     expect(ack.pipeline_run_id).toBe("run-1");
@@ -176,11 +177,9 @@ describe("PipelexApiClient.start — the idempotency key", () => {
     const refused = err as RequestArgumentError;
     expect(refused.message).toContain(fault);
     expect(refused.message).toContain("1 to 255 visible ASCII characters");
-    expect({ errorDomain: refused.errorDomain, retryable: refused.retryable }).toEqual({
-      errorDomain: "input",
-      retryable: false,
-    });
-    expect(refused.runMayHaveStarted).toBe(false);
+    expect(refused.code).toBe("client.argument_invalid");
+    expect(refused.problem).toMatchObject({ domain: "input", retry: "no" });
+    expect(refused.problem.params?.argument).toBe("idempotency_key");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -209,17 +208,15 @@ describe("PipelexApiClient.start — the idempotency key", () => {
 
   it("reads a key an earlier start still holds as a retryable refusal that started nothing", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      jsonResponse(
+      problemResponse(
+        "request.idempotency_key_in_use",
         409,
         {
-          type: "https://pipelex.com/errors/idempotency_key_in_use",
-          title: "Idempotency key in use",
-          status: 409,
-          code: "idempotency_key_in_use",
           detail:
             "An earlier request with idempotency key 'k' and the same body is still being processed.",
-          error_domain: "runtime",
-          retryable: true,
+          domain: "runtime",
+          retry: "yes",
+          next_step: { kind: "wait", detail: "Send the same request again under the same key." },
         },
         { "Retry-After": "2" },
       ),
@@ -231,26 +228,21 @@ describe("PipelexApiClient.start — the idempotency key", () => {
 
     expect(err).toBeInstanceOf(ApiResponseError);
     const refused = err as ApiResponseError;
-    const inUse: IdempotencyErrorCode = "idempotency_key_in_use";
+    const inUse: IdempotencyErrorCode = "request.idempotency_key_in_use";
     expect(refused.code).toBe(inUse);
     expect(refused.status).toBe(409);
+    // Nothing ran for this request: a retry after the wait the answer names is safe.
     expect({
-      errorDomain: refused.errorDomain,
-      retryable: refused.retryable,
-      runMayHaveStarted: refused.runMayHaveStarted,
-    }).toEqual({ errorDomain: "runtime", retryable: true, runMayHaveStarted: false });
+      domain: refused.domain,
+      retry: refused.retry,
+      retryAfter: refused.retryAfter,
+    }).toEqual({ domain: "runtime", retry: "yes", retryAfter: 2 });
   });
 
   it("reads a key used before with another body as a conflict that is not retryable", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      jsonResponse(409, {
-        type: "https://pipelex.com/errors/conflict",
-        title: "Conflict",
-        status: 409,
-        code: "conflict",
+      problemResponse("request.idempotency_conflict", 409, {
         detail: "The idempotency key 'k' was already used with a different request body.",
-        error_domain: "input",
-        retryable: false,
       }),
     );
 
@@ -260,19 +252,21 @@ describe("PipelexApiClient.start — the idempotency key", () => {
 
     expect(err).toBeInstanceOf(ApiResponseError);
     const refused = err as ApiResponseError;
-    expect(refused.code).toBe("conflict");
-    expect({
-      errorDomain: refused.errorDomain,
-      retryable: refused.retryable,
-      runMayHaveStarted: refused.runMayHaveStarted,
-    }).toEqual({ errorDomain: "input", retryable: false, runMayHaveStarted: false });
+    const conflict: IdempotencyErrorCode = "request.idempotency_conflict";
+    expect(refused.code).toBe(conflict);
+    expect({ domain: refused.domain, retry: refused.retry }).toEqual({
+      domain: "input",
+      retry: "no",
+    });
   });
 
   it("types the option as an optional string or null, and the code as its literal", () => {
     expectTypeOf<PipelexStartOptions["idempotencyKey"]>().toEqualTypeOf<
       string | null | undefined
     >();
-    expectTypeOf<IdempotencyErrorCode>().toEqualTypeOf<"idempotency_key_in_use">();
+    expectTypeOf<IdempotencyErrorCode>().toEqualTypeOf<
+      "request.idempotency_key_in_use" | "request.idempotency_conflict"
+    >();
   });
 });
 

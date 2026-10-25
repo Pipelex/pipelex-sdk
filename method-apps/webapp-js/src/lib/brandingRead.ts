@@ -119,9 +119,9 @@ function report(reason: string): void {
 
 function describeFailure(err: unknown): string {
   if (err instanceof ApiResponseError) {
-    return err.status === 404
-      ? "the API answered 404 to GET /v1/branding (a deployment that serves no branding, or a missing organization)"
-      : `the API answered HTTP ${err.status} to GET /v1/branding`;
+    return err.code === "request.not_found"
+      ? "the API answered 404 to GET /v1/branding (a deployment that serves no branding)"
+      : `the API answered HTTP ${err.status} to GET /v1/branding (${err.code})`;
   }
   return err instanceof Error ? err.message : String(err);
 }

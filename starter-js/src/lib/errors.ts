@@ -1,28 +1,32 @@
-// Import the SDK error classes from the `@pipelex/sdk` barrel. This module is
-// bundled into the client (client components import `classifyTransportError`
-// and the `PipelineError` type from here), so it must carry no Node built-ins.
-// The barrel is client-safe: `PipelexApiClient` is fetch-based and nothing in
-// the graph pulls `node:fs`/`node:path`, so a client bundler handles it without
-// breaking `make build`. Only `pipelexClient.ts` (server-only) constructs the
-// client itself.
+// Import from the `@pipelex/sdk` barrel. This module is bundled into the client
+// (client components import `classifyTransportError` and the `PipelineError`
+// type from here), so it must carry no Node built-ins. The barrel is
+// client-safe: `PipelexApiClient` is fetch-based and nothing in the graph pulls
+// `node:fs`/`node:path`, so a client bundler handles it without breaking
+// `make build`. Only `pipelexClient.ts` (server-only) constructs the client
+// itself.
 import {
   ApiResponseError,
   ApiUnreachableError,
   DEFAULT_API_BASE_URL,
-  InputPreparationError,
   PipelineExecuteTimeoutError,
   RejectedAssetError,
-  RequestArgumentError,
-  RunFailedError,
-  RunLifecycleUnavailableError,
-  RunStillRunningError,
   RunTimeoutError,
-  UnsupportedUploadCapabilityError,
-  UploadAuthenticationError,
   UploadTransportError,
-  type RunErrorReport,
-  type UserAction,
-  type ValidationErrorItem,
+  formatItem,
+  formatSuggestedFix,
+  isProblem,
+  isProblemError,
+  problemDomain,
+  problemRequestId,
+  problemRetry,
+  problemStepKind,
+  readProblemBody,
+  type Problem,
+  type ProblemDomain,
+  type ProblemError,
+  type ProblemItem,
+  type RetryVerdict,
 } from "@pipelex/sdk";
 import { BadImageOutputError, BadPipelineOutputError } from "@/types/pipelineError";
 
@@ -31,7 +35,12 @@ export type PipelineErrorKind =
   | "config_invalid"
   | "auth_missing"
   | "auth_invalid"
+  // A request the API refused, or the SDK refused before sending it, for a
+  // fault on the caller's side: its problem's `domain` is `input`, `method` or
+  // `account`. A local gate also builds it inline (`gateRunInputs`).
   | "bad_request"
+  // A request the API refused for a fault on its own side: its problem's
+  // `domain` is `runtime` or `operator`.
   | "server_error"
   | "bundle_load_failed"
   | "bad_response"
@@ -40,24 +49,25 @@ export type PipelineErrorKind =
   // Dual-mode run-lifecycle kinds. `execute_timeout` / `run_still_running`
   // come from the **blocking** path (the hosted gateway's ~30s cap); the rest
   // from the **durable** path (start + poll). All are produced by
-  // `classifyPipelineError` from the matching SDK error class, except
-  // `run_timeout`, which is also built inline by the client poll ceiling
+  // `classifyPipelineError` from the problem's code, except `run_timeout`,
+  // which is also built inline by the client poll ceiling
   // (`buildClientTimeoutError`).
   | "execute_timeout"
   | "run_still_running"
   | "run_failed"
   | "run_timeout"
   | "lifecycle_unavailable"
+  // A durable start failed after it left, so the run may have started without
+  // its id reaching this app (`client.outcome_unknown`).
+  | "outcome_unknown"
   // A file input's upload failed. The browser sends a dropped file straight to
   // Pipelex storage with an upload grant (`useFileInputs`), and that can fail in
-  // a few distinct, actionable ways — classified from `InputPreparationError` and
-  // its subclasses into one kind with subclass-tailored copy, on the server by
-  // `classifyPipelineError` and in the browser by `classifyUploadError` — or by
-  // `buildFilePreparationError`, when the host's own `prepareFile` throws or the
-  // file cannot be read to compute its SHA-256.
+  // a few distinct, actionable ways — read by `classifyUploadError` from the
+  // SDK's `reason` — or by `buildFilePreparationError`, when the host's own
+  // `prepareFile` throws or the file cannot be read to compute its SHA-256.
   | "upload_failed"
-  // The configured API does not serve `POST /v1/upload/grant`, so a file cannot
-  // be stored at all. Classified by `classifyPipelineError` with `uploadGrant`.
+  // The configured API does not serve `POST /v1/upload/grant`, or upload at
+  // all, so a file cannot be stored.
   | "upload_unavailable"
   // Pre-flight validation kinds: built inline before the SDK call (see
   // `checkUploadRequest` / `fileInputErrorToPipelineError`), never produced by
@@ -89,27 +99,40 @@ export interface PipelineError {
   /** 1–2 sentences explaining what happened in plain language. */
   message: string;
   /**
-   * The verbatim message the Pipelex API returned, when our `message` is a
-   * *re-framing* of it (e.g. a runtime-vocabulary error we restate in the
-   * starter's own terms). Rendered as its own block next to our interpretation
-   * so the template demonstrates raw-API-response vs. handled-error UX side by
-   * side. Omitted when our `message` already is the server's text (no value in
-   * showing it twice).
+   * The verbatim words of the Pipelex API's problem document, when our
+   * `message` is a *re-framing* of them (e.g. a runtime-vocabulary refusal we
+   * restate in the starter's own terms). Rendered as its own block next to our
+   * interpretation so the template demonstrates raw-API-response vs.
+   * handled-error UX side by side. Omitted when our `message` already is the
+   * API's text (no value in showing it twice).
    */
   apiMessage?: string;
+  /** The next step, chosen from the problem's `next_step.kind`. */
   hint?: ErrorHint;
   /**
-   * Whether running it again can succeed. Set only from a verdict: a failed
-   * run's report carries the runtime's `retryable`, and absent when the report
-   * says nothing, so the display never claims either way on a guess; a refusal
-   * classified as `bad_request` or `server_error` carries the SDK's, always
-   * decided, which is the API's own when its problem document said it and the
-   * SDK's reading of the HTTP status when not.
+   * Who must act, read from the problem's `domain`: the person's inputs
+   * (`input`), the method's author (`method`), the account's owner (`account`),
+   * whoever runs the deployment (`operator`), or nobody beforehand, a fault in
+   * the service (`runtime`). `<ErrorDisplay>` takes its tone from it. Absent
+   * for a failure that carries no problem, such as a Server Action call the
+   * browser could not deliver, and for a call this app built wrong, which no
+   * one using the app can fix.
+   */
+  domain?: ProblemDomain;
+  /**
+   * Whether running it again can succeed, from the problem's `retry`, so it is
+   * set whenever the failure carries a problem and absent otherwise: the
+   * display never claims either way on a guess.
    */
   retry?: RetryAdvice;
+  /** The problem's registered code, the value a program branches on. */
+  code?: string;
+  /** The id of the request that failed, when the API gave one: what support looks it up by. */
+  requestId?: string;
   /**
-   * One line a person quotes to support: the run's id, what failed and when.
-   * `<ErrorDisplay>` shows it selectable in place of the bare run id.
+   * One line a person quotes to support: the run's id or the request's, the
+   * code of what failed, and when. `<ErrorDisplay>` shows it selectable, where
+   * it can be copied, in place of the bare run id.
    */
   support?: string;
   /** Raw technical info for the collapsible "Technical details" section. */
@@ -117,10 +140,16 @@ export interface PipelineError {
 }
 
 export interface RetryAdvice {
-  /** True when running it again can succeed: the display offers a re-run. */
-  retryable: boolean;
+  /**
+   * The problem's verdict: `yes` when running it again can succeed, `no` when
+   * it fails the same way, and `outcome_unknown` when the run may already have
+   * started, so it is looked up before anything is started again.
+   */
+  verdict: RetryVerdict;
   /** The sentence that says so. */
   summary: string;
+  /** The seconds to wait first, when the problem gives them (`retry_after`). */
+  afterSeconds?: number;
 }
 
 export interface ClassifyEnv {
@@ -131,19 +160,20 @@ export interface ClassifyEnv {
 export interface ClassifyOptions {
   /**
    * Set by the blocking path (`executeBlockingRun`). Behind the hosted gateway a
-   * synchronous `execute` that overruns the ~30s cap comes back as a 502/504
-   * "the runner did not complete the request" — a *response*, so the SDK raises
-   * `ApiResponseError`, not its own `PipelineExecuteTimeoutError` (the SDK's
-   * client-side timeout is longer than the gateway's). Only on the blocking path
-   * is that gateway error the cap; on the durable poll path a 502/504 is a
-   * transient server hiccup, so this flag scopes the mapping correctly.
+   * synchronous `execute` that overruns the ~30s cap is cut off, and the SDK
+   * reads every such ending (its own `PipelineExecuteTimeoutError`, a gateway
+   * `502`/`504` with no problem document, a connection lost after the request
+   * left) as `client.outcome_unknown`: the run may still be going. Only on the
+   * blocking path is that the cap, whose remedy is durable runs; on the durable
+   * path it is a start whose outcome is unknown, and the flag scopes the
+   * reading.
    */
   blocking?: boolean;
   /**
    * Set by `grantFileUpload`, whose one request is `POST /v1/upload/grant`. A
-   * `404` there means the configured API does not serve upload grants — every
-   * other 404 on that route is impossible — and a `413` is the platform refusing
-   * a declared size over its limit, which is the authority on "too large".
+   * `request.not_found` there means the configured API does not serve upload
+   * grants, and a `request.too_large` is the platform refusing a declared size
+   * over its limit, which is the authority on "too large".
    */
   uploadGrant?: boolean;
   /**
@@ -154,38 +184,240 @@ export interface ClassifyOptions {
   finishedAt?: string | null;
 }
 
+/**
+ * Classify a failure into what the person reads. Every error the SDK throws
+ * carries its failure as a problem document, so the classification reads the
+ * problem: its `code` for the few failures this app words in its own terms,
+ * its `domain` for who must act, its `next_step.kind` for what to do, its
+ * `retry` for whether running it again can help, and its `request_id` for
+ * support. It never branches on an SDK error's class name, an HTTP status or
+ * a message: a class is read with `instanceof` only for data it alone carries,
+ * such as the network code of an API out of reach.
+ */
 export function classifyPipelineError(
   err: unknown,
   env: ClassifyEnv,
   opts?: ClassifyOptions,
 ): PipelineError {
-  if (err instanceof ApiUnreachableError) return classifyUnreachable(err, env);
-  if (err instanceof ApiResponseError) {
-    if (opts?.blocking && (err.status === 502 || err.status === 504)) {
-      return classifyBlockingGatewayTimeout(err);
-    }
-    if (opts?.uploadGrant && err.status === 404) return classifyUploadUnavailable(err, env);
-    if (opts?.uploadGrant && err.status === 413) return classifyGrantTooLarge(err);
-    return classifyResponse(err, env);
-  }
-  // A call the SDK refused before sending anything. Only a `config` refusal is
-  // the person's to fix; any other is this app building a call wrong, which the
-  // unknown fallback reports with the SDK's own message.
-  if (err instanceof RequestArgumentError && err.errorDomain === "config") {
-    return classifyConfigRefusal(err, env);
-  }
-  // Run-lifecycle errors (both extend the protocol's PipelineRequestError, but
-  // are distinct concrete classes, so order among them is irrelevant).
-  if (err instanceof PipelineExecuteTimeoutError) return classifyExecuteTimeout(err);
-  if (err instanceof RunStillRunningError) return classifyRunStillRunning(err);
-  if (err instanceof RunFailedError) return classifyRunFailed(err, opts?.finishedAt);
-  if (err instanceof RunTimeoutError) return classifyRunTimeout(err);
-  if (err instanceof RunLifecycleUnavailableError) return classifyLifecycleUnavailable(err, env);
-  if (err instanceof InputPreparationError) return classifyInputPreparationError(err, env);
-  if (err instanceof BadImageOutputError) return classifyBadImageOutput(err);
+  if (isProblemError(err)) return classifyProblem(err, env, opts ?? {});
   if (err instanceof BadPipelineOutputError) return classifyBadOutput(err);
+  if (err instanceof BadImageOutputError) return classifyBadImageOutput(err);
   if (isFsNotFound(err)) return classifyBundleMissing(err);
   return classifyUnknown(err);
+}
+
+function classifyProblem(
+  err: ProblemError,
+  env: ClassifyEnv,
+  opts: ClassifyOptions,
+): PipelineError {
+  // What a code means here can depend on which call this app was making.
+  if (opts.uploadGrant && err.code === "request.not_found") {
+    return classifyUploadUnavailable(err, env);
+  }
+  if (opts.uploadGrant && err.code === "request.too_large") return classifyGrantTooLarge(err);
+  if (opts.blocking && err.code === "client.outcome_unknown") return classifyBlockingCutOff(err);
+  if (opts.blocking && err.code === "client.follow_failed") return classifyRunStillRunning(err);
+
+  switch (err.code) {
+    case "client.unreachable":
+    case "client.timeout":
+      return classifyUnreachable(err, env);
+    case "client.not_configured":
+      return classifyConfigRefusal(err, env);
+    case "client.argument_invalid":
+      return classifyRefusedCall(err);
+    case "client.outcome_unknown":
+      return classifyOutcomeUnknown(err);
+    case "client.follow_failed":
+      return classifyRunTimeout(err);
+    case "client.response_unreadable":
+      return classifyUnreadableAnswer(err);
+    case "run.failed":
+      return classifyRunFailed(err, opts.finishedAt);
+    case "runtime.unsupported":
+      return classifyUnsupported(err, env);
+  }
+  if (
+    err.code === "auth.missing_credential" ||
+    err.code === "auth.invalid_credential" ||
+    err.code === "auth.credential_expired" ||
+    problemStepKind(err.problem) === "check_credentials"
+  ) {
+    return classifyCredentials(err, env);
+  }
+  return classifyRefusal(err);
+}
+
+// ── Reading a problem ────────────────────────────────────────────────
+
+/**
+ * The parts every classified problem carries, read from it whole: who must
+ * act, whether running it again can help, its code, the request's id and the
+ * line to quote to support. Each arm adds its title, message and hint.
+ */
+function problemParts(
+  problem: Problem,
+  requestId?: string,
+): Pick<PipelineError, "domain" | "retry" | "code" | "requestId" | "support"> {
+  const id = requestId ?? problemRequestId(problem);
+  return {
+    domain: problemDomain(problem),
+    retry: retryAdvice(problem),
+    code: problem.code,
+    ...(id !== undefined ? { requestId: id } : {}),
+    support: [runIdOf(problem) && `run ${runIdOf(problem)}`, problem.code]
+      .concat(id !== undefined ? [`request ${id}`] : [])
+      .filter(Boolean)
+      .join(" · "),
+  };
+}
+
+/** The parts of the problem a ProblemError carries, with the request id it knows. */
+function errorParts(err: ProblemError) {
+  return problemParts(err.problem, err.requestId);
+}
+
+/**
+ * The next step, from the problem's `next_step.kind`. A `retry` or `wait`
+ * step is the retry line's to say, which knows the delay, so it brings no
+ * hint of its own; every other step is its own sentence.
+ */
+function nextStepHint(problem: Problem): ErrorHint | undefined {
+  const kind = problemStepKind(problem);
+  if (kind === "retry" || kind === "wait") return undefined;
+  const summary = nonEmpty(problem.next_step?.detail);
+  return summary === undefined ? undefined : { summary };
+}
+
+/** Whether running it again can succeed, in the problem's own verdict. */
+function retryAdvice(problem: Problem): RetryAdvice {
+  const verdict = problemRetry(problem);
+  const afterSeconds =
+    typeof problem.retry_after === "number" && problem.retry_after > 0
+      ? problem.retry_after
+      : undefined;
+  switch (verdict) {
+    case "yes":
+      return {
+        verdict,
+        summary:
+          afterSeconds === undefined
+            ? "This failure can pass on a second try: run it again."
+            : `This failure can pass on a second try: run it again in ${Math.ceil(afterSeconds)} seconds.`,
+        ...(afterSeconds !== undefined ? { afterSeconds } : {}),
+      };
+    case "outcome_unknown":
+      return {
+        verdict,
+        summary:
+          "The run may already have started: look it up by its id before running it again, so it is not paid for twice.",
+      };
+    case "no":
+      return { verdict, summary: "Running it again unchanged will fail the same way." };
+  }
+}
+
+/** The answer a refusal came on, when the failure is one: its status, its URL and its raw body. */
+function answerOf(err: ProblemError): ApiResponseError | undefined {
+  return err instanceof ApiResponseError ? err : undefined;
+}
+
+/**
+ * Whether the API answered with a problem document of its own. When it did
+ * not, an edge or a proxy answered with a bare status, and the problem is the
+ * SDK's reading of that status, which the details say.
+ */
+function apiAnsweredProblem(err: ProblemError): boolean {
+  const answer = answerOf(err);
+  return answer !== undefined && readProblemBody(answer.responseBody) !== undefined;
+}
+
+/**
+ * The problem as a developer places it, for the "Technical details" section:
+ * the answer it came on, its code and verdict, the request and the run it
+ * names, its parameters, and each of its items with where it is, its close
+ * matches and its suggested fix. The raw body closes the list, after the
+ * items, since its truncation could cut one off.
+ */
+function problemDetails(err: ProblemError, problem: Problem = err.problem): string {
+  const answer = answerOf(err);
+  const lines: (string | null)[] = [
+    answer
+      ? `${err.name}: HTTP ${answer.status} ${answer.statusText}`.trim()
+      : `${err.name}: ${err.message}`,
+    // Always surface which endpoint was hit — URLs change often in dev, and an
+    // answer otherwise gives no hint about *which* backend sent it.
+    answer?.apiUrl ? `API URL: ${answer.apiUrl}` : null,
+    answer && !apiAnsweredProblem(err)
+      ? "problem: the SDK's reading of the HTTP status, not a document the API sent"
+      : null,
+    ...problemLines(problem, err.requestId),
+    answer?.responseBody ? `body: ${truncate(answer.responseBody, 2000)}` : null,
+  ];
+  return lines.filter((line): line is string => line !== null).join("\n");
+}
+
+/** A problem's members as lines of technical details, one per member it carries. */
+function problemLines(problem: Problem, requestId?: string): string[] {
+  const id = requestId ?? problemRequestId(problem);
+  return [
+    `code: ${problem.code}`,
+    `domain: ${problemDomain(problem)}`,
+    `retry: ${problemRetry(problem)}${typeof problem.retry_after === "number" ? ` (after ${problem.retry_after}s)` : ""}`,
+    `next_step: ${problemStepKind(problem)}`,
+    id !== undefined ? `request_id: ${id}` : null,
+    runIdOf(problem) ? `run: ${runIdOf(problem)}` : null,
+    problem.params && Object.keys(problem.params).length > 0
+      ? `params: ${JSON.stringify(problem.params)}`
+      : null,
+    ...itemLines(problem.errors),
+  ].filter((line): line is string => line !== null);
+}
+
+/**
+ * A problem's items as lines of technical details, one per fault: its code,
+ * what is wrong and where (`formatItem`), then its close matches and its
+ * suggested fix when it has them.
+ */
+function itemLines(items: readonly ProblemItem[] | undefined): string[] {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => {
+    const extras = [
+      Array.isArray(item.suggestions) && item.suggestions.length > 0
+        ? `suggestions: ${item.suggestions.join(", ")}`
+        : null,
+      item.suggested_fix ? `fix: ${formatSuggestedFix(item.suggested_fix)}` : null,
+    ].filter(Boolean);
+    return `item: ${formatItem(item)}${extras.length > 0 ? ` [${extras.join("; ")}]` : ""}`;
+  });
+}
+
+// ── The arms ─────────────────────────────────────────────────────────
+
+/**
+ * Any problem this app has no copy of its own for: a refusal of the API, or a
+ * failure the SDK detected. The problem says it all: its title is the
+ * headline, its detail what happened, its next step the hint, and its verdict
+ * the retry line. The kind follows who must act: a fault on the caller's side
+ * (`input`, `method`, `account`) is a rejected request, and one on the
+ * service's (`runtime`, `operator`) a server error.
+ */
+function classifyRefusal(err: ProblemError): PipelineError {
+  const parts = errorParts(err);
+  const callersSide =
+    parts.domain === "input" || parts.domain === "method" || parts.domain === "account";
+  const hint = nextStepHint(err.problem);
+  return {
+    kind: callersSide ? "bad_request" : "server_error",
+    title:
+      nonEmpty(err.problem.title) ??
+      (callersSide ? "The request was refused" : "The service failed"),
+    message: nonEmpty(err.problem.detail) ?? err.message,
+    ...(hint ? { hint } : {}),
+    ...parts,
+    details: problemDetails(err),
+  };
 }
 
 /**
@@ -205,10 +437,29 @@ function isCustomApiUrl(apiUrl: string | undefined): boolean {
   return normalize(apiUrl) !== normalize(DEFAULT_API_BASE_URL);
 }
 
-function classifyUnreachable(err: ApiUnreachableError, env: ClassifyEnv): PipelineError {
-  const url = err.apiUrl || env.apiUrl || "(unknown)";
-  const codeSuffix = err.code ? ` (${err.code})` : "";
-  const baseDetails = `${err.name}: ${err.message}${err.cause instanceof Error ? `\nCaused by: ${err.cause.message}` : ""}`;
+/** The base URL a problem names, else the one the app is configured with. */
+function baseUrlOf(err: ProblemError, env: ClassifyEnv): string {
+  const named = err.problem.params?.base_url;
+  return nonEmpty(named) ?? nonEmpty(answerOf(err)?.apiUrl) ?? env.apiUrl ?? DEFAULT_API_BASE_URL;
+}
+
+/**
+ * `client.unreachable` or `client.timeout`: the request got no answer from the
+ * API, or none in time.
+ */
+function classifyUnreachable(err: ProblemError, env: ClassifyEnv): PipelineError {
+  const url = baseUrlOf(err, env);
+  const networkCode = err instanceof ApiUnreachableError ? err.networkCode : undefined;
+  const codeSuffix = networkCode ? ` (${networkCode})` : "";
+  const noAnswer =
+    err.code === "client.timeout"
+      ? "the request did not get a response in time"
+      : "the request did not get a response";
+  const details = `${err.name}: ${err.message}${err.cause instanceof Error ? `\nCaused by: ${err.cause.message}` : ""}\n${problemLines(err.problem, err.requestId).join("\n")}`;
+  // The SDK detected this itself, with no answer to read: the problem's
+  // `runtime` domain would tell the person the service failed, beside a
+  // message that suspects the URL or the network, so no domain is claimed.
+  const { domain: _clientDetected, ...parts } = errorParts(err);
 
   // Split on whether PIPELEX_BASE_URL was *customized*, not merely set — see
   // `isCustomApiUrl`. With a custom URL in play it is the first suspect; on the
@@ -218,153 +469,93 @@ function classifyUnreachable(err: ApiUnreachableError, env: ClassifyEnv): Pipeli
     return {
       kind: "api_unreachable",
       title: "Pipelex API not reachable",
-      message: `Tried to reach ${url}${codeSuffix}, but the request did not get a response. PIPELEX_BASE_URL is set, so start there: make sure it targets a Pipelex API environment.`,
+      message: `Tried to reach ${url}${codeSuffix}, but ${noAnswer}. PIPELEX_BASE_URL is set, so start there: make sure it targets a Pipelex API environment.`,
       hint: {
         summary:
           "Verify PIPELEX_BASE_URL in .env.local targets a Pipelex API environment, or remove the override to fall back to the default:",
         code: "PIPELEX_BASE_URL=https://api.pipelex.com",
         codeLanguage: "env",
       },
-      details: baseDetails,
+      ...parts,
+      details,
     };
   }
 
   return {
     kind: "api_unreachable",
     title: "Pipelex API not reachable",
-    message: `Tried to reach the Pipelex API at its default URL, ${url}${codeSuffix}, but the request did not get a response. Check your network connection.`,
+    message: `Tried to reach the Pipelex API at its default URL, ${url}${codeSuffix}, but ${noAnswer}. Check your network connection.`,
     hint: {
       summary: "Check your network connection, then retry. The URL the app is using is:",
       code: `PIPELEX_BASE_URL=${url}`,
       codeLanguage: "env",
     },
-    details: baseDetails,
-  };
-}
-
-function classifyResponse(err: ApiResponseError, env: ClassifyEnv): PipelineError {
-  // `/start` reached a backend that *has* the route but whose orchestrator is
-  // blocking-only (the in-process `direct` mode), so it refused the durable
-  // start with a 400. Surface it in durable-execution terms — see
-  // `classifyStartRequiresAsync` — instead of letting the raw runtime-vocabulary
-  // server message fall through as a generic `bad_request`.
-  if (err.errorType === START_REQUIRES_ASYNC_ORCHESTRATION) {
-    return classifyStartRequiresAsync(err);
-  }
-  if (err.status >= 200 && err.status < 300) return classifyUnreadableAnswer(err);
-
-  const detailsLines = [
-    `${err.name}: HTTP ${err.status} ${err.statusText}`.trim(),
-    // Always surface which endpoint was hit — URLs change often in dev, and a
-    // 4xx/5xx otherwise gives no hint about *which* backend rejected the call.
-    err.apiUrl ? `API URL: ${err.apiUrl}` : null,
-    err.errorType ? `error_type: ${err.errorType}` : null,
-    err.serverMessage ? `server message: ${err.serverMessage}` : null,
-    // The refusal's own classification: ahead of the raw body, whose
-    // truncation could cut a validation item off.
-    verdictLine("error_domain", err.errorDomain, err.problemDocument?.error_domain),
-    verdictLine("retryable", err.retryable, err.problemDocument?.retryable),
-    detailLine("user_action", err.userAction?.kind),
-    ...validationLines(err.validationErrors),
-    err.responseBody ? `body: ${truncate(err.responseBody, 2000)}` : null,
-  ].filter(Boolean) as string[];
-  const details = detailsLines.join("\n");
-
-  if (err.status === 401 || err.status === 403) {
-    if (!env.hasApiKey) {
-      return {
-        kind: "auth_missing",
-        title: "Pipelex API key missing",
-        message: `${err.apiUrl} rejected the request because no PIPELEX_API_KEY was sent.`,
-        hint: {
-          summary: "Add your API key to .env.local and restart the dev server:",
-          code: "PIPELEX_API_KEY=your-key-here",
-          codeLanguage: "env",
-        },
-        details,
-      };
-    }
-    return {
-      kind: "auth_invalid",
-      title: "Pipelex API key rejected",
-      message: `${err.apiUrl} returned ${err.status} for the credentials you provided. The PIPELEX_API_KEY in .env.local is not valid for this API.`,
-      hint: {
-        summary: "Double-check the key and the API URL it's intended for.",
-        code: "PIPELEX_API_KEY=your-key-here",
-        codeLanguage: "env",
-      },
-      details,
-    };
-  }
-
-  if (err.status >= 500) {
-    return withRefusalAdvice(classifyServerError(err, details), err);
-  }
-
-  return withRefusalAdvice(
-    {
-      kind: "bad_request",
-      title: `Pipelex API rejected the request (HTTP ${err.status})`,
-      message:
-        err.serverMessage ?? "The API returned a client error. Inspect the request and try again.",
-      details,
-    },
-    err,
-  );
-}
-
-/**
- * A refusal that came as a problem document carries the runtime's own advice,
- * `user_action`, the next step — at `/v1/start` in durable mode and at
- * `/v1/execute` in blocking mode alike. The message is already the refusal's
- * reason (`serverMessage`, its `detail`), and its validation items are in the
- * details; this puts the user action's detail in place of the hint the HTTP
- * status chose. The retry line is the SDK's verdict, which every refusal
- * carries: the document's `retryable` when it said one, and otherwise the
- * SDK's reading of the status, so a 4xx says a re-run unchanged fails the same
- * way and a passing 5xx offers one. An arm that recognized the error type
- * brings its own verdict, which knows more than the status and gives way only
- * to the API's; where it overrides the SDK's reading, the details say so
- * beside that reading, so they never contradict the retry line.
- */
-function withRefusalAdvice(error: PipelineError, err: ApiResponseError): PipelineError {
-  const nextStep = nextStepOf(err.userAction);
-  const apiSaid = typeof err.problemDocument?.retryable === "boolean";
-  const armVerdict = apiSaid ? undefined : error.retry;
-  const retry = armVerdict ?? retryAdvice(err.retryable);
-  const sdkLine = verdictLine("retryable", err.retryable, err.problemDocument?.retryable);
-  const details =
-    armVerdict && armVerdict.retryable !== err.retryable && error.details
-      ? error.details.replace(
-          sdkLine,
-          `${sdkLine}, which this app overrides: it reads ${err.errorType} as ${armVerdict.retryable ? "passing" : "final"}`,
-        )
-      : error.details;
-  return {
-    ...error,
-    ...(nextStep ? { hint: { summary: nextStep } } : {}),
-    retry,
+    ...parts,
     details,
   };
 }
 
 /**
- * A `2xx` the SDK could not read: a body that is not JSON, or not the object
- * the route answers. The API took the request, so nothing about it was
- * refused; what came back is unusable, and the SDK's message says how. Its
- * verdict is `runtime` and not retryable: the same request meets the same
- * answer.
+ * A credential the API refused or did not receive: `auth.missing_credential`,
+ * `auth.invalid_credential`, `auth.credential_expired`, or any problem whose
+ * next step is `check_credentials`. The key is the deployment's, so the copy speaks to
+ * whoever runs the app, whatever step the API wrote for a caller who does not
+ * own the account. Whether a key was sent at all is what this app knows and
+ * the answer may not say, so it decides the copy.
  */
-function classifyUnreadableAnswer(err: ApiResponseError): PipelineError {
+function classifyCredentials(err: ProblemError, env: ClassifyEnv): PipelineError {
+  const url = baseUrlOf(err, env);
+  if (!env.hasApiKey) {
+    return {
+      kind: "auth_missing",
+      title: "Pipelex API key missing",
+      message: `${url} rejected the request because no PIPELEX_API_KEY was sent.`,
+      apiMessage: apiAnsweredProblem(err) ? nonEmpty(err.problem.detail) : undefined,
+      hint: {
+        summary: "Add your API key to .env.local and restart the dev server:",
+        code: "PIPELEX_API_KEY=your-key-here",
+        codeLanguage: "env",
+      },
+      ...errorParts(err),
+      details: problemDetails(err),
+    };
+  }
+  return {
+    kind: "auth_invalid",
+    title: "Pipelex API key rejected",
+    message: `${url} refused the credentials you provided. The PIPELEX_API_KEY in .env.local is not valid for this API.`,
+    apiMessage: apiAnsweredProblem(err) ? nonEmpty(err.problem.detail) : undefined,
+    hint: {
+      summary: "Double-check the key and the API URL it's intended for.",
+      code: "PIPELEX_API_KEY=your-key-here",
+      codeLanguage: "env",
+    },
+    ...errorParts(err),
+    details: problemDetails(err),
+  };
+}
+
+/**
+ * `client.response_unreadable`: an answer the SDK could not read, a `2xx`
+ * whose body is not JSON or not the object the route answers among them. The
+ * API took the request, so nothing about it was refused; what came back is
+ * unusable, and the SDK's message says how. Its verdict is `no`: the same
+ * request meets the same answer.
+ */
+function classifyUnreadableAnswer(err: ProblemError): PipelineError {
+  const answer = answerOf(err);
   return {
     kind: "bad_response",
     title: "Pipelex API sent an answer the app could not read",
-    message: `The API answered HTTP ${err.status}, but not with what the route returns, so its answer could not be read. The technical details below show what it sent.`,
-    retry: retryAdvice(err.retryable),
+    message: answer
+      ? `The API answered HTTP ${answer.status}, but not with what the route returns, so its answer could not be read. The technical details below show what it sent.`
+      : "The API answered, but not with what this app can use. The technical details below say what was wrong.",
+    ...errorParts(err),
     details: [
       `${err.name}: ${err.message}`,
-      err.apiUrl ? `API URL: ${err.apiUrl}` : null,
-      err.responseBody ? `body: ${truncate(err.responseBody, 2000)}` : null,
+      answer?.apiUrl ? `API URL: ${answer.apiUrl}` : null,
+      ...problemLines(err.problem, err.requestId),
+      answer?.responseBody ? `body: ${truncate(answer.responseBody, 2000)}` : null,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -372,79 +563,16 @@ function classifyUnreadableAnswer(err: ApiResponseError): PipelineError {
 }
 
 /**
- * A 5xx, by the runtime's `error_type` when it is one this app recognizes. Each
- * recognized type is a deployment's configuration or the method's definition,
- * which a re-run does not change, so its arm says so even when the API sent no
- * verdict and the status alone would offer a retry.
+ * `client.not_configured`: the SDK refused its own configuration before
+ * sending any request. The one such refusal is PIPELEX_BASE_URL naming more
+ * than a host: endpoints compose as `{base}/v1/{endpoint}`, so a value ending
+ * in `/v1` would double the prefix. An unset variable is no refusal, since the
+ * SDK falls back to the hosted API. A value is refused exactly when it carries
+ * more than a host, which may be credentials or a token, and the details reach
+ * every visitor, so they name the parts beyond the host without their text
+ * (`describeRefusedBaseUrl`) and never relay a message that might quote it.
  */
-function classifyServerError(err: ApiResponseError, details: string): PipelineError {
-  const baseTitle = `Pipelex API server error (HTTP ${err.status})`;
-  switch (err.errorType) {
-    case "CredentialsError":
-      return {
-        kind: "server_error",
-        title: "Pipelex server is missing LLM credentials",
-        message:
-          err.serverMessage ??
-          "The Pipelex backend tried to call an LLM provider but no API key was configured for it.",
-        hint: {
-          summary:
-            "The Pipelex hosted API always has its providers configured, so this indicates the API at PIPELEX_BASE_URL isn't it (or a non-production environment is mid-configuration) — verify the URL.",
-          docs: { label: "Pipelex inference setup docs", href: "https://docs.pipelex.com/" },
-        },
-        retry: NOT_RETRYABLE,
-        details,
-      };
-    case "PipeOperatorModelAvailabilityError":
-      return {
-        kind: "server_error",
-        title: "No inference backend configured on the server",
-        message:
-          err.serverMessage ??
-          "The Pipelex backend has no LLM inference backend wired up to handle this pipe.",
-        hint: {
-          summary:
-            "The Pipelex hosted API always has an inference backend, so this indicates the API at PIPELEX_BASE_URL isn't it (or a non-production environment is mid-configuration) — verify the URL.",
-          docs: { label: "Pipelex inference setup docs", href: "https://docs.pipelex.com/" },
-        },
-        retry: NOT_RETRYABLE,
-        details,
-      };
-    case "PipeValidationError":
-    case "PipeFactoryError":
-    case "MthdsParserError":
-    case "MthdsDecodeError":
-      return {
-        kind: "server_error",
-        title: "The pipeline definition has a problem",
-        message:
-          err.serverMessage ??
-          "The Pipelex server rejected the bundle or pipe definition. The bundle shipped with the starter may be out of sync with the server's version of the spec.",
-        retry: NOT_RETRYABLE,
-        details,
-      };
-    default:
-      return {
-        kind: "server_error",
-        title: baseTitle,
-        message:
-          err.serverMessage ??
-          `The API returned an unexpected error${err.errorType ? ` (${err.errorType})` : ""}.`,
-        details,
-      };
-  }
-}
-
-/**
- * The SDK refused its own configuration before sending any request. The one
- * such refusal is PIPELEX_BASE_URL naming more than a host: endpoints compose
- * as `{base}/v1/{endpoint}`, so a value ending in `/v1` would double the
- * prefix. An unset variable is no refusal, since the SDK falls back to the
- * hosted API. The details never relay the SDK's message: it quotes the value
- * whole, and a value is refused exactly when it carries more than a host, which
- * may be credentials or a token, while the details reach every visitor.
- */
-function classifyConfigRefusal(err: RequestArgumentError, env: ClassifyEnv): PipelineError {
+function classifyConfigRefusal(err: ProblemError, env: ClassifyEnv): PipelineError {
   return {
     kind: "config_invalid",
     title: "Pipelex API URL not usable",
@@ -456,9 +584,11 @@ function classifyConfigRefusal(err: RequestArgumentError, env: ClassifyEnv): Pip
       code: "PIPELEX_BASE_URL=https://api.pipelex.com",
       codeLanguage: "env",
     },
+    ...errorParts(err),
     details: [
-      `${err.name}: the SDK refused PIPELEX_BASE_URL (its message quotes the value, so it is left out)`,
+      `${err.name}: the SDK refused PIPELEX_BASE_URL`,
       describeRefusedBaseUrl(env.apiUrl),
+      ...problemLines(err.problem, err.requestId),
     ].join("\n"),
   };
 }
@@ -494,449 +624,232 @@ function describeRefusedBaseUrl(value: string | undefined): string {
   return `PIPELEX_BASE_URL: ${origin}, with ${parts} (not shown)`;
 }
 
-function classifyExecuteTimeout(err: PipelineExecuteTimeoutError): PipelineError {
-  const seconds = Math.round(err.elapsedMs / 1000);
+/**
+ * `client.argument_invalid`: the SDK refused an argument this app passed
+ * before sending anything. The problem's `domain` is `input` because the SDK's
+ * caller must change the call, and that caller is this app's code, not the
+ * person using it, so no tone is claimed for them: the details name the
+ * argument and the SDK's own sentence, for whoever maintains the app.
+ */
+function classifyRefusedCall(err: ProblemError): PipelineError {
+  const { domain: _callersDomain, ...parts } = errorParts(err);
   return {
-    kind: "execute_timeout",
-    title: "Pipeline exceeded the ~30s blocking limit",
-    message: `The blocking request ran for ~${seconds}s before timing out at the hosted gateway's ~30s synchronous limit. The pipeline isn't broken — it's just too long to await synchronously behind the hosted gateway.`,
-    hint: {
-      summary:
-        "Switch this example to Durable mode. It starts the run and polls for the result, so long pipelines survive the cap.",
-    },
-    details: `${err.name}: ${err.message}`,
+    kind: "unknown",
+    title: "This app made a call the SDK refused",
+    message:
+      "The SDK refused a call this app made before sending anything, which is a fault in this app's code rather than in what you entered. The technical details below name the argument.",
+    ...parts,
+    details: `${err.name}: ${err.message}\n${problemLines(err.problem, err.requestId).join("\n")}`,
   };
 }
 
 /**
- * The blocking cap as the hosted gateway actually surfaces it: a synchronous
- * `execute` that overruns ~30s returns a 502/504 ("the runner did not complete
- * the request") rather than dropping the connection — so the SDK raises
- * `ApiResponseError`, not `PipelineExecuteTimeoutError`. Same user meaning as
- * `classifyExecuteTimeout` (kind `execute_timeout`): blocking is too long here,
- * switch to Durable. Only reached on the blocking path (see `ClassifyOptions`).
+ * The remedy for a run too long to await in one request: each example offers
+ * both modes, so the hint points at the Durable one, which starts the run and
+ * polls for its result.
  */
-function classifyBlockingGatewayTimeout(err: ApiResponseError): PipelineError {
-  const detailsLines = [
-    `${err.name}: HTTP ${err.status} ${err.statusText}`.trim(),
-    err.serverMessage ? `server message: ${err.serverMessage}` : null,
-  ].filter(Boolean) as string[];
+const USE_DURABLE_RUNS_HINT: ErrorHint = {
+  summary:
+    "Switch this example to Durable mode. It starts the run and polls for the result, so long pipelines survive the cap.",
+};
+
+/**
+ * `client.outcome_unknown` on the blocking path: the synchronous `execute`
+ * ended without the run's result, cut off at the hosted gateway's ~30s cap
+ * (the SDK's `PipelineExecuteTimeoutError`, or the gateway's own `502`/`504`),
+ * or a connection lost once the request had left. The run may have started and
+ * still be going, which the retry line says; durable runs are the remedy.
+ */
+function classifyBlockingCutOff(err: ProblemError): PipelineError {
+  const seconds =
+    err instanceof PipelineExecuteTimeoutError ? Math.round(err.elapsedMs / 1000) : undefined;
   return {
     kind: "execute_timeout",
     title: "Pipeline exceeded the ~30s blocking limit",
-    message: `The hosted gateway returned HTTP ${err.status} because the blocking request didn't finish in time — synchronous runs are cut off at ~30s here. The pipeline isn't broken; it's just too long to await synchronously.`,
-    hint: {
-      summary:
-        "Switch this example to Durable mode. It starts the run and polls for the result, so long pipelines survive the cap.",
-    },
-    details: detailsLines.join("\n"),
+    message:
+      seconds !== undefined
+        ? `The blocking request ran for ~${seconds}s before timing out at the hosted gateway's ~30s synchronous limit. The pipeline isn't broken — it's just too long to await synchronously behind the hosted gateway, and the run may still be going.`
+        : "The blocking request ended without the run's result, as it does when it outlasts the hosted gateway's ~30s synchronous limit. The pipeline isn't broken — it's just too long to await synchronously, and the run may still be going.",
+    hint: USE_DURABLE_RUNS_HINT,
+    ...errorParts(err),
+    details: problemDetails(err),
   };
 }
 
-function classifyRunStillRunning(err: RunStillRunningError): PipelineError {
-  const retry = err.retryAfterSeconds != null ? `\nRetry-After: ${err.retryAfterSeconds}s` : "";
-  const location = err.location ? `\nLocation: ${err.location}` : "";
+/**
+ * `client.follow_failed` on the blocking path: the API accepted the
+ * synchronous `execute` but answered with the run's id instead of its result
+ * (the SDK's `RunStillRunningError`). The run exists and keeps going.
+ */
+function classifyRunStillRunning(err: ProblemError): PipelineError {
+  const runId = runIdOf(err.problem) ?? "(unknown)";
   return {
     kind: "run_still_running",
     title: "The run is still going",
-    message: `The blocking request was accepted, but the run hasn't finished — the server returned run id ${err.runId} instead of a result. Behind the hosted gateway, a long run can't be awaited synchronously.`,
+    message: `The blocking request was accepted, but the run hasn't finished — the server returned run id ${runId} instead of a result. Behind the hosted gateway, a long run can't be awaited synchronously.`,
     hint: {
       summary: "Switch this example to Durable mode to start the run and poll it to completion.",
     },
-    details: `${err.name}: ${err.message}${retry}${location}`,
+    ...errorParts(err),
+    details: problemDetails(err),
   };
 }
 
 /**
- * A run that ended without a result. Its stored error report, when it has one,
- * is the runtime's own account of the failure, and the classification is read
- * from it: the report's title in the headline, its message as what happened
- * (see `visibleReportMessage`), its user action's detail as the next step, its
- * `retryable` verdict as the retry advice, and a support line naming the run,
- * the error type and when it ended. The platform serves the runner's STRICT
- * projection of the report, so its message is the author's copy only when
- * `caller_facing_message` is true and `An internal error occurred.` otherwise,
- * and a user action comes only with caller-facing copy.
- *
- * A run with no report keeps the SDK's sentence, which is all there is: one
- * whose start failed, one cancelled, terminated or given its status by hand
- * with no completion callback carrying a report, and any failed run on a
- * platform that does not serve the report. A cancelled, terminated or timed-out
- * run holds a report when a completion callback carried one, a timed-out run
- * otherwise the platform's timeout report, and a run the platform ends or
- * settles itself the report the platform wrote.
+ * `client.outcome_unknown` on the durable path: the start failed after it
+ * left, so the run may have started without its id reaching this app. The
+ * next step is `read_run`: look the run up before starting another, which
+ * would be paid for twice.
  */
-function classifyRunFailed(err: RunFailedError, finishedAt?: string | null): PipelineError {
-  const report = err.error;
-  if (!report) {
+function classifyOutcomeUnknown(err: ProblemError): PipelineError {
+  const runId = runIdOf(err.problem);
+  return {
+    kind: "outcome_unknown",
+    title: "The run may have started",
+    message: runId
+      ? `The start request failed after it reached the API, and the run ${runId} may have started anyway.`
+      : "The start request failed after it reached the API, so the run may have started without its id reaching this app.",
+    hint: {
+      summary: runId
+        ? "Look the run up by its id below before running the method again."
+        : "Look for the run in the organization's run history before running the method again.",
+    },
+    ...errorParts(err),
+    details: problemDetails(err),
+  };
+}
+
+/**
+ * `client.follow_failed` on the durable path: the SDK stopped waiting for a
+ * run that keeps going server-side (`RunTimeoutError`). It was not cancelled,
+ * and it is read again by its id, never started again.
+ */
+function classifyRunTimeout(err: ProblemError): PipelineError {
+  const runId = runIdOf(err.problem) ?? "(unknown)";
+  const seconds = err instanceof RunTimeoutError ? Math.round(err.timeoutMs / 1000) : undefined;
+  return {
+    kind: "run_timeout",
+    title: "Stopped waiting for the run",
+    message: `The run for ${runId} didn't finish${seconds !== undefined ? ` within ~${seconds}s` : ""}, so the app stopped polling for its result. The run keeps executing on the server — it wasn't cancelled.`,
+    hint: {
+      summary:
+        "Allow more time for very long pipelines. The run continues server-side and can be read by its id.",
+    },
+    ...errorParts(err),
+    details: problemDetails(err),
+  };
+}
+
+/**
+ * `run.failed`: a run that ended without a result. Why is the run's own
+ * problem, which `run.failed` nests as `run_error` (`RunFailedError.runError`),
+ * and the classification reads it: its title in the headline, its detail as
+ * what happened, its next step as the hint, its domain as who must act, its
+ * verdict as the retry line, and a support line naming the run, the problem's
+ * code and when the run ended.
+ *
+ * A run with no problem of its own keeps the `run.failed` document's sentence,
+ * which names the run and its status: one whose start failed, one cancelled or
+ * terminated with nothing recorded, and any failed run on a platform that
+ * stores no problem. It shows no retry line: the `run.failed` document's
+ * verdict judges reading the run again, which only finds it over, and says
+ * nothing about whether the run would pass a second time, which nothing
+ * recorded decides.
+ */
+function classifyRunFailed(err: ProblemError, finishedAt?: string | null): PipelineError {
+  const nested = err.problem.run_error;
+  const runId = runIdOf(err.problem) ?? "(unknown)";
+  const endedAt = formatInstant(finishedAt);
+  if (!isProblem(nested)) {
+    const { retry: _readVerdict, ...parts } = errorParts(err);
     return {
       kind: "run_failed",
       title: "The pipeline run failed",
       message:
-        err.message ||
-        `The run finished in a non-successful state (${err.status}). Check the technical details below.`,
-      details: `${err.name}: run ${err.runId} ended ${err.status}\n${err.message}`,
+        nonEmpty(err.problem.detail) ??
+        nonEmpty(err.message) ??
+        "The run finished in a non-successful state. Check the technical details below.",
+      ...parts,
+      // The run's id alone is what to quote: nothing more is recorded.
+      support: undefined,
+      details: [`${err.name}: run ${runId}`, ...problemLines(err.problem, err.requestId)].join(
+        "\n",
+      ),
     };
   }
 
-  const title = nonEmpty(report.title);
-  const message =
-    visibleReportMessage(report) ??
-    `The run ended ${err.status}, and its error report does not say why.`;
-  const nextStep = nextStepOf(report.user_action);
-  const endedAt = formatInstant(finishedAt);
+  const title = nonEmpty(nested.title);
+  const hint = nextStepHint(nested);
+  // The run's own problem names a request when it has one; else the results
+  // read that answered `run.failed` is the request to quote.
+  const requestId = problemRequestId(nested) ?? err.requestId;
   return {
     kind: "run_failed",
     title: title ? `The pipeline run failed: ${title}` : "The pipeline run failed",
-    message,
-    ...(nextStep ? { hint: { summary: nextStep } } : {}),
-    ...(typeof report.retryable === "boolean" ? { retry: retryAdvice(report.retryable) } : {}),
-    support: [`run ${err.runId}`, nonEmpty(report.error_type), endedAt && `failed ${endedAt}`]
+    message: nonEmpty(nested.detail) ?? "The run failed, and its problem does not say why.",
+    ...(hint ? { hint } : {}),
+    ...problemParts(nested, requestId),
+    support: [`run ${runId}`, nested.code, endedAt && `failed ${endedAt}`]
+      .concat(requestId !== undefined ? [`request ${requestId}`] : [])
       .filter(Boolean)
       .join(" · "),
-    details: reportDetails(err, report, message),
-  };
-}
-
-const RETRYABLE: RetryAdvice = {
-  retryable: true,
-  summary: "This failure can pass on a second try: run it again.",
-};
-
-const NOT_RETRYABLE: RetryAdvice = {
-  retryable: false,
-  summary: "Running it again unchanged will fail the same way.",
-};
-
-function retryAdvice(retryable: boolean): RetryAdvice {
-  return retryable ? RETRYABLE : NOT_RETRYABLE;
-}
-
-/**
- * The runtime's next step, as a hint. Two kinds of advice are dropped. A
- * `wait_and_retry` advice is written while the runtime is still retrying ("the
- * system will retry automatically"); what this app shows has stopped, and
- * nothing retries it, so the retry line says what to do instead. An `unknown`
- * advice is the runtime's fallback when no cause advised anything, and it
- * points at developer fields the display never shows ("Check pipe_stack to
- * identify which pipe failed") or back at the message already shown.
- */
-function nextStepOf(action: UserAction | null | undefined): string | undefined {
-  if (action?.kind === "wait_and_retry" || action?.kind === "unknown") return undefined;
-  return nonEmpty(action?.detail);
-}
-
-/**
- * The report's message as a person may read it. The platform serves the
- * runner's STRICT projection, so a hosted report's message is copy written for
- * the caller or the placeholder, never the worker's internal text or a
- * provider's raw answer, and its `provider_metadata` carries no `message`: the
- * message passes through unchanged. The cut below stays as defence in depth,
- * for a report served whole, as a platform run locally with
- * `ERROR_DISCLOSURE=verbose` serves it. There a failure that came back from a
- * model provider carries the provider SDK's own text inside the runtime's
- * message (`<provider> inference failed for model '<model>' (HTTP 412): <the
- * provider's text>`), and that text is raw: a repr of the provider's error
- * body, or a whole HTML page from an edge in front of it, naming the
- * deployment's own provider account. The report says which text is the
- * provider's (`provider_metadata.message`), so it is cut out wherever it
- * appears, with the separator before it; what remains names the failing pipe,
- * the provider, the model and the HTTP status. Undefined when nothing is left.
- */
-function visibleReportMessage(report: RunErrorReport): string | undefined {
-  const message = nonEmpty(report.message);
-  if (!message) return undefined;
-  const providerText = nonEmpty(report.provider_metadata?.message);
-  if (!providerText) return message;
-  const cut = message.split(`: ${providerText}`).join("").split(providerText).join("");
-  return nonEmpty(cut.replace(/[\s:]+$/, ""));
-}
-
-/**
- * The report's classification for the "Technical details" section: every field
- * a developer reads to place the failure, and the validation items of a method
- * that failed validation. The provider's metadata is left out, for the reason
- * `visibleReportMessage` gives, as defence in depth: a hosted report keeps only
- * its `status_code` and `retry_after_seconds`. A line whose field the report
- * does not carry is left out, as `model` is on a hosted report, which drops it.
- * The message is the one shown above.
- */
-function reportDetails(err: RunFailedError, report: RunErrorReport, message: string): string {
-  return [
-    `${err.name}: run ${err.runId} ended ${err.status}`,
-    detailLine("error_type", report.error_type),
-    detailLine("error_domain", report.error_domain),
-    detailLine("error_category", report.error_category),
-    detailLine("retryable", report.retryable),
-    detailLine("user_action", report.user_action?.kind),
-    detailLine("model", report.model),
-    detailLine("type_uri", report.type_uri),
-    `message: ${message}`,
-    ...validationLines(report.validation_errors),
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-/** One `name: value` line of technical details, or null when there is no value. */
-function detailLine(name: string, value: unknown): string | null {
-  const text = typeof value === "boolean" ? String(value) : nonEmpty(value);
-  return text === undefined ? null : `${name}: ${text}`;
-}
-
-/**
- * One member of a refusal's verdict as a line of technical details. The SDK
- * always decides it, so the line is always there, and it says when the value
- * is the SDK's reading rather than what the API sent, which a developer
- * placing the refusal needs to tell apart.
- */
-function verdictLine(name: string, value: string | boolean, sent: unknown): string {
-  return sent === value
-    ? `${name}: ${value}`
-    : `${name}: ${value} (the SDK's reading, not the API's)`;
-}
-
-/**
- * A method's validation items as lines of technical details, one per item:
- * where it is (the pipe, else the concept), what is wrong, and for an unknown
- * model the reference the method wrote and the model deck's close matches.
- */
-function validationLines(items: readonly ValidationErrorItem[] | null | undefined): string[] {
-  if (!Array.isArray(items)) return [];
-  return items.map((item: ValidationErrorItem) => {
-    const where = nonEmpty(item?.pipe_code) ?? nonEmpty(item?.concept_code);
-    const model = nonEmpty(item?.model_reference);
-    const suggestions = Array.isArray(item?.suggestions)
-      ? item.suggestions.map(nonEmpty).filter((name) => name !== undefined)
-      : [];
-    const locators = [
-      model && `model reference: ${model}`,
-      suggestions.length > 0 && `suggestions: ${suggestions.join(", ")}`,
-    ].filter(Boolean);
-    const text = nonEmpty(item?.message) ?? "(no message)";
-    return `validation: ${where ? `${where}: ` : ""}${text}${locators.length > 0 ? ` (${locators.join("; ")})` : ""}`;
-  });
-}
-
-/** A string with something in it, trimmed; anything else is undefined. */
-function nonEmpty(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const text = value.trim();
-  return text === "" ? undefined : text;
-}
-
-/**
- * An instant as a support desk reads it: UTC to the second when the value
- * carries its zone, and the value as given otherwise, since a timestamp
- * without one cannot be converted without guessing.
- */
-function formatInstant(value: string | null | undefined): string | undefined {
-  const text = nonEmpty(value);
-  if (text === undefined) return undefined;
-  const time = new Date(text);
-  if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(text) || Number.isNaN(time.getTime())) return text;
-  return time.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-function classifyRunTimeout(err: RunTimeoutError): PipelineError {
-  const seconds = Math.round(err.timeoutMs / 1000);
-  return {
-    kind: "run_timeout",
-    title: "Stopped waiting for the run",
-    message: `The run for ${err.runId} didn't finish within ~${seconds}s, so the app stopped polling for its result. The run keeps executing on the server — it wasn't cancelled.`,
-    hint: {
-      summary:
-        "Re-run, or allow more time for very long pipelines. The run continues server-side and can be resumed by its id.",
-    },
-    details: `${err.name}: ${err.message}`,
-  };
-}
-
-/**
- * The Pipelex API `error_type` for a `/start` refused because the deployment's
- * orchestrator can't run asynchronously (blocking-only `direct` mode). A
- * contract value on the problem body, surfaced by the SDK as `err.errorType`.
- */
-const START_REQUIRES_ASYNC_ORCHESTRATION = "StartRequiresAsyncOrchestration";
-
-/**
- * `/start` hit a backend whose orchestrator is blocking-only (the in-process
- * `direct` mode), so the durable start is refused with a 400. Same consumer
- * meaning as the run-lifecycle routes missing outright
- * (`classifyLifecycleUnavailable`, a 404): the configured URL doesn't provide
- * durable execution, which the hosted Pipelex API always does — so the fix is
- * the URL. The server says it in runtime terms ("orchestration mode", "fire-and-forget");
- * we re-frame it as *durable execution* (the word the starter uses) and route
- * it to the `lifecycle_unavailable` kind so the UI doesn't show the raw
- * runtime message as a generic bad request. The root cause differs from the
- * 404 case (the route exists; the orchestrator just can't go async), so the
- * copy is tailored rather than shared.
- */
-function classifyStartRequiresAsync(err: ApiResponseError): PipelineError {
-  const url = err.apiUrl || "(unknown)";
-  return {
-    kind: "lifecycle_unavailable",
-    title: "Durable runs aren't available on this API",
-    message: `${url} refused the durable start because it can only run pipelines synchronously — something the Pipelex hosted API never does, so this URL isn't it. Check PIPELEX_BASE_URL.`,
-    // Show the runtime's own wording verbatim alongside our re-framing.
-    apiMessage: err.serverMessage,
-    hint: {
-      summary: "Point PIPELEX_BASE_URL at the hosted Pipelex API:",
-      code: "PIPELEX_BASE_URL=https://api.pipelex.com",
-      codeLanguage: "env",
-    },
     details: [
-      `${err.name}: HTTP ${err.status} ${err.statusText}`.trim(),
-      err.apiUrl ? `API URL: ${err.apiUrl}` : null,
-      `error_type: ${err.errorType}`,
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  };
-}
-
-function classifyLifecycleUnavailable(
-  err: RunLifecycleUnavailableError,
-  env: ClassifyEnv,
-): PipelineError {
-  const url = err.apiUrl || env.apiUrl || "(unknown)";
-  return {
-    kind: "lifecycle_unavailable",
-    title: "Durable runs aren't available on this API",
-    message: `${url} doesn't serve the durable run lifecycle (start + poll), so it isn't the Pipelex hosted API — check PIPELEX_BASE_URL.`,
-    hint: {
-      summary: "Point PIPELEX_BASE_URL at the hosted Pipelex API:",
-      code: "PIPELEX_BASE_URL=https://api.pipelex.com",
-      codeLanguage: "env",
-    },
-    details: `${err.name}: ${err.message}`,
+      `${err.name}: run ${runId} ended ${String(err.problem.params?.run_status ?? "without success")}`,
+      ...problemLines(nested, requestId),
+    ].join("\n"),
   };
 }
 
 /**
- * Classify an SDK input-preparation failure (`prepareInputs` / `uploadFile`) into
- * a single `upload_failed` kind with subclass-tailored copy. A run carries stored or
- * `https://` references only, which `prepareInputs` passes through untouched, so on
- * the run path what arrives here is the base `InputPreparationError`: a pipe the
- * API's `POST /v1/pipe-io` refused to select, a method signature that did not
- * resolve, or a route answer whose input form does not describe the selected pipe.
- * The upload subclasses are kept for a caller that prepares a local file. Mirrors
- * `classifyServerError`'s switch: branch on the concrete subclass, then fall back to
- * the base `InputPreparationError` so any future subclass is still classified
- * (never `unknown`).
+ * `runtime.unsupported`: the configured API lacks a capability this app
+ * needs. File upload is the upload's; any other, the durable run lifecycle
+ * (start + poll) a bare runner does not serve or the asynchronous execution a
+ * blocking-only deployment refuses a start for, is durable runs'. The hosted
+ * Pipelex API offers both, so the URL is the suspect. When the API said it in
+ * its own words, they are shown beside this app's (`apiMessage`).
  */
-function classifyInputPreparationError(
-  err: InputPreparationError,
-  env: ClassifyEnv,
-): PipelineError {
-  const details = `${err.name}: ${err.message}`;
-
-  // No upload route (404) — the configured URL doesn't provide the upload
-  // capability, which the hosted Pipelex API always does. Steer to the URL.
-  if (err instanceof UnsupportedUploadCapabilityError) {
-    const url = env.apiUrl || "(unknown)";
+function classifyUnsupported(err: ProblemError, env: ClassifyEnv): PipelineError {
+  const url = baseUrlOf(err, env);
+  const apiMessage = apiAnsweredProblem(err) ? nonEmpty(err.problem.detail) : undefined;
+  if (err.problem.params?.capability === "file upload") {
     return {
-      kind: "upload_failed",
+      kind: "upload_unavailable",
       title: "File upload isn't available on this API",
       message: `Preparing a file input means uploading it to Pipelex storage first, but ${url} has no upload route, so it isn't the Pipelex hosted API — check PIPELEX_BASE_URL.`,
+      apiMessage,
       hint: {
         summary: "Point PIPELEX_BASE_URL at the hosted Pipelex API, which supports upload:",
         code: "PIPELEX_BASE_URL=https://api.pipelex.com",
         codeLanguage: "env",
       },
-      details,
+      ...errorParts(err),
+      details: problemDetails(err),
     };
   }
-
-  // The server or storage refused the asset; its `code` says why.
-  if (err instanceof RejectedAssetError) return classifyRejectedAsset(err);
-
-  // Upload not authorized (401/403) — same fix as run auth, framed for upload.
-  if (err instanceof UploadAuthenticationError) {
-    return {
-      kind: "upload_failed",
-      title: "File upload was not authorized",
-      message: `Pipelex storage rejected the upload (HTTP ${err.status}) — the PIPELEX_API_KEY is missing or not valid for uploads on this API.`,
-      hint: {
-        summary: "Check the API key in .env.local and restart the dev server:",
-        code: "PIPELEX_API_KEY=your-key-here",
-        codeLanguage: "env",
-      },
-      details,
-    };
-  }
-
-  // The base InputPreparationError (the pipe selection or the method's signature),
-  // InvalidLocalSourceError, UploadTransportError, or any future subclass. Its own
-  // message is the only thing that names the cause, the server's reason included
-  // when the route refused the pipe, so it goes in details.
   return {
-    kind: "upload_failed",
-    title: "Preparing the inputs failed",
-    message:
-      "The starter couldn't prepare the method's inputs before running it. Files are already stored by then, so the cause is usually the method's signature or the pipe it names. The technical details below name it.",
-    details,
+    kind: "lifecycle_unavailable",
+    title: "Durable runs aren't available on this API",
+    message: `${url} doesn't serve durable runs (start, then poll for the result), which the Pipelex hosted API always does, so this URL isn't it — check PIPELEX_BASE_URL.`,
+    apiMessage,
+    hint: {
+      summary: "Point PIPELEX_BASE_URL at the hosted Pipelex API:",
+      code: "PIPELEX_BASE_URL=https://api.pipelex.com",
+      codeLanguage: "env",
+    },
+    ...errorParts(err),
+    details: problemDetails(err),
   };
 }
 
-/** The verbatim server message from a preparation error's wrapped API response, if any. */
-function causeServerMessage(err: { cause?: unknown }): string | undefined {
-  return err.cause instanceof ApiResponseError ? err.cause.serverMessage : undefined;
-}
-
 /**
- * What a refused asset means, by the `code` the SDK sets on every one it raises.
- * A grant writes one object, once, within minutes, and only the file it was
- * requested for — so every refusal of an upload with a grant is fixed the same
- * way from the user's side: drop the file again, which asks for a new grant.
+ * A grant request answered `request.not_found`: the configured API does not
+ * serve `POST /v1/upload/grant`, so no file input can be stored. The URL is
+ * the suspect, as for `lifecycle_unavailable`; no replacement URL is
+ * suggested, since which deployments serve the route is theirs to say, not
+ * this app's.
  */
-function classifyRejectedAsset(err: RejectedAssetError): PipelineError {
-  const details = `${err.name}: ${err.message}\nstatus: ${err.status}\ncode: ${err.code ?? "(none)"}\nfilename: ${err.filename}`;
-  const again = "Drop the file again to upload it with a new permission.";
-  switch (err.code) {
-    case "too_large":
-      return {
-        kind: "upload_failed",
-        title: "The file is too large to store",
-        message: `Pipelex storage refused "${err.filename}" because it is past the service's size limit. Try a smaller file.`,
-        apiMessage: causeServerMessage(err),
-        details,
-      };
-    case "grant_expired":
-    case "grant_used":
-      return {
-        kind: "upload_failed",
-        title: "The upload's permission ran out",
-        message: `Pipelex storage refused "${err.filename}" because the permission to store it had ${err.code === "grant_expired" ? "expired" : "already been used"}. ${again}`,
-        details,
-      };
-    case "signature_mismatch":
-    case "unsigned_header":
-      return {
-        kind: "upload_failed",
-        title: "The file changed before it was stored",
-        message: `Pipelex storage refused "${err.filename}" because it no longer matches the size and type the upload was granted for — it may have changed on disk after it was picked. ${again}`,
-        details,
-      };
-    default:
-      return {
-        kind: "upload_failed",
-        title: "The file was rejected by storage",
-        message: `Pipelex storage refused "${err.filename}" (HTTP ${err.status}). ${again}`,
-        apiMessage: causeServerMessage(err),
-        details,
-      };
-  }
-}
-
-/**
- * A grant request answered `404`: the configured API does not serve
- * `POST /v1/upload/grant`, so no file input can be stored. The URL is the
- * suspect, as for `lifecycle_unavailable`; no replacement URL is suggested,
- * since which deployments serve the route is theirs to say, not this app's.
- */
-function classifyUploadUnavailable(err: ApiResponseError, env: ClassifyEnv): PipelineError {
-  const url = err.apiUrl || env.apiUrl || DEFAULT_API_BASE_URL;
+function classifyUploadUnavailable(err: ProblemError, env: ClassifyEnv): PipelineError {
+  const url = baseUrlOf(err, env);
   return {
     kind: "upload_unavailable",
     title: "File upload isn't available on this API",
@@ -945,62 +858,121 @@ function classifyUploadUnavailable(err: ApiResponseError, env: ClassifyEnv): Pip
       summary:
         "Point PIPELEX_BASE_URL at a Pipelex API that serves upload grants, then restart the dev server.",
     },
-    details: `${err.name}: HTTP ${err.status} ${err.statusText}`.trim() + `\nAPI URL: ${url}`,
+    ...errorParts(err),
+    details: problemDetails(err),
   };
 }
 
-/** A grant request the platform refused as too large (`413`): its limit, in its words. */
-function classifyGrantTooLarge(err: ApiResponseError): PipelineError {
+/** A grant request the platform refused as too large (`request.too_large`): its limit, in its words. */
+function classifyGrantTooLarge(err: ProblemError): PipelineError {
   return {
     kind: "file_too_large",
     title: "File too large",
-    message: err.serverMessage ?? "The file is past the size limit of Pipelex storage.",
-    details: `${err.name}: HTTP ${err.status} ${err.statusText}`.trim(),
+    message: nonEmpty(err.problem.detail) ?? "The file is past the size limit of Pipelex storage.",
+    ...errorParts(err),
+    details: problemDetails(err),
   };
 }
 
-/**
- * Classify a failure of a file's upload **in the browser**, where the upload
- * runs: `uploadWithGrant` throws the SDK's own classes there, so `instanceof`
- * holds, unlike for an error that crossed the Server Action boundary.
- *
- * - A refusal from storage (`RejectedAssetError`), by its `code`.
- * - A transport failure (`UploadTransportError`), by its `code`.
- * - Anything else is the grant request itself failing to reach this app's
- *   server, which is the transport error every Server Action call can meet.
- */
-export function classifyUploadError(err: unknown): PipelineError {
-  if (err instanceof RejectedAssetError) return classifyRejectedAsset(err);
-  if (err instanceof UploadTransportError) return classifyUploadTransport(err);
-  if (err instanceof InputPreparationError) {
-    return {
-      kind: "upload_failed",
-      title: "Uploading the file failed",
-      message:
-        "The starter couldn't store the file in Pipelex storage. The technical details below should help track it down.",
-      details: `${err.name}: ${err.message}`,
-    };
-  }
-  return classifyTransportError(err);
+// ── Uploads, in the browser ──────────────────────────────────────────
+
+/** The API's own words about a refused file, when the refusal came as its problem document. */
+function causeApiMessage(err: ProblemError): string | undefined {
+  return err.cause instanceof ApiResponseError && apiAnsweredProblem(err.cause)
+    ? nonEmpty(err.cause.problem.detail)
+    : undefined;
 }
 
 /**
- * What a transport failure of an upload means, by the `code` the SDK sets on
+ * What a refused asset means, by the `reason` the SDK sets on every one it
+ * raises, the closed vocabulary of what storage refused. A grant writes one
+ * object, once, within minutes, and only the file it was requested for — so
+ * every refusal of an upload with a grant is fixed the same way from the
+ * user's side: drop the file again, which asks for a new grant.
+ */
+function classifyRejectedAsset(err: RejectedAssetError): PipelineError {
+  const details = `${err.name}: ${err.message}\nstatus: ${err.status}\nreason: ${err.reason ?? "(none)"}\nfilename: ${err.filename}\n${problemLines(err.problem, err.requestId).join("\n")}`;
+  const again = "Drop the file again to upload it with a new permission.";
+  const parts = errorParts(err);
+  switch (err.reason) {
+    case "too_large":
+      return {
+        kind: "upload_failed",
+        title: "The file is too large to store",
+        message: `Pipelex storage refused "${err.filename}" because it is past the service's size limit. Try a smaller file.`,
+        apiMessage: causeApiMessage(err),
+        ...parts,
+        details,
+      };
+    case "grant_expired":
+    case "grant_used":
+      return {
+        kind: "upload_failed",
+        title: "The upload's permission ran out",
+        message: `Pipelex storage refused "${err.filename}" because the permission to store it had ${err.reason === "grant_expired" ? "expired" : "already been used"}. ${again}`,
+        ...parts,
+        details,
+      };
+    case "signature_mismatch":
+    case "unsigned_header":
+      return {
+        kind: "upload_failed",
+        title: "The file changed before it was stored",
+        message: `Pipelex storage refused "${err.filename}" because it no longer matches the size and type the upload was granted for — it may have changed on disk after it was picked. ${again}`,
+        ...parts,
+        details,
+      };
+    default:
+      return {
+        kind: "upload_failed",
+        title: "The file was rejected by storage",
+        message: `Pipelex storage refused "${err.filename}" (HTTP ${err.status}). ${again}`,
+        apiMessage: causeApiMessage(err),
+        ...parts,
+        details,
+      };
+  }
+}
+
+/**
+ * The problems the SDK builds itself for an upload that never got storage's
+ * verdict: `client.timeout` and `client.unreachable` from `uploadWithGrant`,
+ * and `runtime.unavailable`, its reading of a timeout or an unreachable
+ * storage by the reason alone. None says who failed.
+ */
+const CONNECTION_READINGS: ReadonlySet<string> = new Set([
+  "client.timeout",
+  "client.unreachable",
+  "runtime.unavailable",
+]);
+
+/**
+ * What a transport failure of an upload means, by the `reason` the SDK sets on
  * every one it raises. The time limit is the SDK's own, which grows with the
  * file's size. Dropping the file again asks for a new grant, so that is the
- * retry, offered wherever the SDK's verdict says a retry can succeed.
+ * retry, offered wherever the problem's verdict says a retry can succeed.
  */
 function classifyUploadTransport(err: UploadTransportError): PipelineError {
   const status = err.status === undefined ? "" : `\nstatus: ${err.status}`;
-  const details = `${err.name}: ${err.message}\ncode: ${err.code ?? "(none)"}${status}`;
-  switch (err.code) {
+  const details = `${err.name}: ${err.message}\nreason: ${err.reason ?? "(none)"}${status}\n${problemLines(err.problem, err.requestId).join("\n")}`;
+  const parts = errorParts(err);
+  const canPass = parts.retry?.verdict === "yes";
+  // A timeout or storage out of reach is the connection's, not the service's
+  // failure, and the messages say so. When the problem is the SDK's own reading
+  // of it, which knows no more than that, no domain is claimed; a problem
+  // storage or the API answered with keeps its domain, so whoever must act is
+  // still named.
+  const { domain: _connection, ...withoutDomain } = parts;
+  const connectionParts = CONNECTION_READINGS.has(err.code) ? withoutDomain : parts;
+  switch (err.reason) {
     case "timeout":
       return {
         kind: "upload_failed",
         title: "The upload took too long",
         message:
           "The file did not finish uploading in the time allowed for its size, so it was abandoned. A slow connection is the usual cause.",
-        hint: { summary: "Drop the file again, or try a smaller one." },
+        ...(canPass ? { hint: { summary: "Drop the file again, or try a smaller one." } } : {}),
+        ...connectionParts,
         details,
       };
     case "storage_timeout":
@@ -1009,7 +981,8 @@ function classifyUploadTransport(err: UploadTransportError): PipelineError {
         title: "The upload stalled",
         message:
           "Pipelex storage stopped waiting for the rest of the file and stored nothing. A slow or interrupted connection is the usual cause.",
-        hint: { summary: "Drop the file again." },
+        ...(canPass ? { hint: { summary: "Drop the file again." } } : {}),
+        ...connectionParts,
         details,
       };
     case "unreachable":
@@ -1020,18 +993,26 @@ function classifyUploadTransport(err: UploadTransportError): PipelineError {
         title: "Could not reach Pipelex storage",
         message:
           "The browser couldn't send the file to Pipelex storage. The network may have dropped, or a browser extension or the page's security policy may have blocked the request.",
-        hint: { summary: "Drop the file again. If it keeps failing, check the browser console." },
+        ...(canPass
+          ? {
+              hint: {
+                summary: "Drop the file again. If it keeps failing, check the browser console.",
+              },
+            }
+          : {}),
+        ...connectionParts,
         details,
       };
     case "server_error":
       // Storage's `501`, a request it does not implement, is the one server
-      // error the SDK calls final: it stored nothing, and the same upload
+      // error whose problem is final: it stored nothing, and the same upload
       // meets the same answer.
-      if (!err.retryable) {
+      if (!canPass) {
         return {
           kind: "upload_failed",
           title: "Pipelex storage can't take this upload",
           message: `Pipelex storage answered that it does not support this upload${err.status === undefined ? "" : ` (HTTP ${err.status})`}, so nothing was stored, and dropping the file again meets the same answer.`,
+          ...parts,
           details,
         };
       }
@@ -1040,22 +1021,60 @@ function classifyUploadTransport(err: UploadTransportError): PipelineError {
         title: "Pipelex storage had a problem",
         message: `Pipelex storage answered with a server error${err.status === undefined ? "" : ` (HTTP ${err.status})`}, so the file may not have been stored. This is usually temporary.`,
         hint: { summary: "Drop the file again in a moment." },
+        ...parts,
         details,
       };
     default:
       // `conflict`, `redirected`, `invalid_grant_url` and `unexpected`: none has a
       // cause the user can act on beyond a retry, so the SDK's message says which,
-      // and the retry is offered only where the SDK's verdict says it can help
-      // (storage timing out or throttling the upload, or two writes colliding).
+      // and the retry is offered only where the problem's verdict says it can
+      // help (storage timing out or throttling the upload, or two writes colliding).
       return {
         kind: "upload_failed",
         title: "Uploading the file failed",
         message:
           "The browser couldn't finish sending the file to Pipelex storage. The technical details below name the cause.",
-        ...(err.retryable ? { hint: { summary: "Drop the file again." } } : {}),
+        ...(canPass ? { hint: { summary: "Drop the file again." } } : {}),
+        ...parts,
         details,
       };
   }
+}
+
+/**
+ * Classify a failure of a file's upload **in the browser**, where the upload
+ * runs: `uploadWithGrant` throws the SDK's own errors there, unlike an error
+ * that crossed the Server Action boundary.
+ *
+ * - A refusal from storage (`RejectedAssetError`), by its `reason`.
+ * - An upload that never got storage's verdict (`UploadTransportError`), by its
+ *   `reason`: the SDK's own time limit, which grows with the file's size,
+ *   storage out of reach (in a browser, a cross-origin request the bucket or a
+ *   content-security policy refused too), or storage failing.
+ * - Any other problem, read from the problem as any refusal is.
+ * - Anything else is the grant request itself failing to reach this app's
+ *   server, which is the transport error every Server Action call can meet.
+ *
+ * The two upload errors are told apart only to read their `reason`, which
+ * each words from its own closed vocabulary; what to do is the problem's.
+ */
+export function classifyUploadError(err: unknown): PipelineError {
+  if (err instanceof RejectedAssetError) return classifyRejectedAsset(err);
+  if (err instanceof UploadTransportError) return classifyUploadTransport(err);
+  if (isProblemError(err)) {
+    const hint = nextStepHint(err.problem);
+    return {
+      kind: "upload_failed",
+      title: "Uploading the file failed",
+      message:
+        nonEmpty(err.problem.detail) ??
+        "The starter couldn't store the file in Pipelex storage. The technical details below should help track it down.",
+      ...(hint ? { hint } : {}),
+      ...errorParts(err),
+      details: problemDetails(err),
+    };
+  }
+  return classifyTransportError(err);
 }
 
 /**
@@ -1077,6 +1096,8 @@ export function buildFilePreparationError(err: unknown): PipelineError {
     details: `${name}: ${message}`,
   };
 }
+
+// ── Failures that carry no problem ───────────────────────────────────
 
 function classifyBadOutput(err: BadPipelineOutputError): PipelineError {
   return {
@@ -1130,12 +1151,11 @@ function classifyBundleMissing(err: unknown): PipelineError {
  * `{ ok: false, error }` result, so a rejected await here is by construction
  * a *transport* failure — the browser couldn't deliver the request, the dev
  * server died mid-call, or the page is running against a stale build whose
- * Server Action IDs no longer resolve. The SDK error classes referenced by
- * `classifyPipelineError` only exist server-side and are stripped to opaque
- * digests when crossing the boundary in production, so they would never
- * `instanceof`-match here. Without this helper, rejections inside
- * `startTransition` bypass `<ErrorDisplay>` and bubble to React's nearest
- * error boundary instead.
+ * Server Action IDs no longer resolve. The SDK's errors only exist
+ * server-side and are stripped to opaque digests when crossing the boundary in
+ * production, so no problem survives to be read here. Without this helper,
+ * rejections inside `startTransition` bypass `<ErrorDisplay>` and bubble to
+ * React's nearest error boundary instead.
  */
 export function classifyTransportError(err: unknown): PipelineError {
   const message = err instanceof Error ? err.message : String(err);
@@ -1156,11 +1176,12 @@ export function classifyTransportError(err: unknown): PipelineError {
 /**
  * Build a `run_timeout` PipelineError for the client-side durable poll ceiling.
  *
- * Distinct from the `RunTimeoutError` branch in `classifyPipelineError`: that
- * one classifies an SDK error thrown server-side; this one is built inline on
- * the client when `useRun` stops its own poll loop after `maxDurationMs`. There
- * is no thrown error to classify — the client just stopped waiting. The run
- * keeps executing server-side and can be re-polled by its id.
+ * Distinct from the `client.follow_failed` arm of `classifyPipelineError`:
+ * that one classifies an SDK error thrown server-side; this one is built
+ * inline on the client when `useRun` stops its own poll loop after
+ * `maxDurationMs`. There is no thrown error to classify — the client just
+ * stopped waiting. The run keeps executing server-side and can be re-polled by
+ * its id.
  */
 export function buildClientTimeoutError(elapsedMs: number): PipelineError {
   const seconds = Math.round(elapsedMs / 1000);
@@ -1210,6 +1231,33 @@ function classifyUnknown(err: unknown): PipelineError {
       "The starter caught an unexpected error. The technical details below should help track it down.",
     details: `${name}: ${message}`,
   };
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/** The run a problem names: its `pipeline_run_id`, else the parameter of that name. */
+function runIdOf(problem: Problem): string | undefined {
+  return nonEmpty(problem.pipeline_run_id) ?? nonEmpty(problem.params?.pipeline_run_id);
+}
+
+/** A string with something in it, trimmed; anything else is undefined. */
+function nonEmpty(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text === "" ? undefined : text;
+}
+
+/**
+ * An instant as a support desk reads it: UTC to the second when the value
+ * carries its zone, and the value as given otherwise, since a timestamp
+ * without one cannot be converted without guessing.
+ */
+function formatInstant(value: string | null | undefined): string | undefined {
+  const text = nonEmpty(value);
+  if (text === undefined) return undefined;
+  const time = new Date(text);
+  if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(text) || Number.isNaN(time.getTime())) return text;
+  return time.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 function isFsNotFound(err: unknown): boolean {

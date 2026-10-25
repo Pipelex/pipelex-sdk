@@ -1,6 +1,29 @@
 # Changelog
 
-## [Unreleased]
+## [v0.54.0] - 2026-10-25
+
+### Changed
+
+- **The web app reads every failure from its problem document (Breaking)**: the web app template runs on `@pipelex/sdk` 0.53.0, moved from 0.50.0, whose every error carries its failure as an MTHDS problem document, and `classifyPipelineError` classifies an SDK error by the code of the MTHDS problem it carries, never by its class, HTTP status or message, and shows the problem's title, detail, next step and retry verdict, the domain as who must act (`<ErrorDisplay>` tinting a fault on the person's side amber and the service's red), and a support line with the run, the code and the request id. A failed run is read from its own problem, nested in `run.failed`, a refused run lists each of its `errors` items with where it is and its close matches, a durable start whose outcome is unknown is the new kind `outcome_unknown`, and `PipelineError` gains `domain`, `code` and `requestId` while `retry` becomes `{ verdict, summary, afterSeconds? }`. A failed poll is read again only when its problem's verdict says a retry can pass, waiting at least its `retry_after`, and `make add-method`, `make codegen` and `make codegen-verify` word a refusal from its problem's code and detail and list its faults from `errors`, a bare `403` with no problem document naming both the key and the base URL. The SDK's other changes in between, copying a method into another organization among them, reach nothing the template calls, and `npm ls mthds` lists one copy, 0.33.0, shared with the form kernel.
+- **The CLI template reads a failure from its problem document (Breaking)**: the CLI template runs on `pipelex-sdk` 0.53.0, moved from 0.48.1, with `mthds` 0.25.0 unchanged, and `lib/errors.py` presents every SDK error from the MTHDS problem it carries, `exc.problem`, never from its class, so a refusal, or a failed run read from its own problem nested in `run.failed`, prints its reason, each fault with where it is, who acts, its next step, whether running it again can succeed (an unknown outcome with a hint naming `--resume <id>` when the run's id is known) and a line to quote to support with the run, the code and the request id; `problem_lines` takes a problem where it took the error, `present_failed_run` takes the run's problem as `run_error` where it took a stored report, and `report_lines` is gone. A server without durable runs is recognised from its `runtime.unsupported` problem, and a failed wait is retried only when the problem's retry verdict is yes, the SDK's wait itself honouring `Retry-After`. `make codegen`, `make codegen-verify` and `make create` word a refusal from its problem's code and list its faults from `errors`, and a bare `403` with no problem document names both the key and the base URL, since a gateway answers it both to a key it refuses and to a path it does not route. The SDK's other changes in between, an organization's branding, its files and copying a method into another organization among them, reach nothing the template calls.
+
+## [v0.53.0] - 2026-10-25
+
+### Security
+
+- **Next.js 16.4.2**: the web app template requires `next` and `eslint-config-next` at `^16.4.2` and locks 16.4.2, past the Next.js advisories that covered 16.3.8: the critical unauthenticated remote code executions in the Image Optimization API with SVG files (GHSA-2464-fhr4-w9xw) and in `use cache` functions returning typed arrays (GHSA-673q-mjm6-r5xr), and the denial of service in App Router Server Actions (GHSA-p3m5-59mp-jv5r). The lock also takes `sharp` 0.35.5, which `next` 16.4.2 requires, past the `librsvg` advisory GHSA-wq5f-xc86-pv6w.
+
+## [v0.52.0] - 2026-10-24
+
+### Changed
+
+- **The web app's brand tokens are named after their roles, and an unset colour keeps the template's own (Breaking)**: the web app template runs on `@pipelex/mthds-form` 0.23.1, and a branded page writes the accent's ink onto `--link` and `--ring` and its pale fill onto `--selected`, the form kernel's role-named tokens, where it wrote `--brand`, `--brand-muted` and `--brand-muted-foreground`, so a focused control is outlined in the team's accent too, and the template's utilities are `text-link`, `border-link` and `bg-selected`, where they were `text-brand`, `border-brand`, `bg-brand-muted` and `text-brand-muted-foreground`, which a project's own components rename the same way. Only the colours a team set are written: a team that set no button colour keeps the template's neutral `--primary` where it got Pipelex green, one that set neither an accent nor a button colour keeps the template's link ink, selected fill and focus ring, one that set no header colour keeps the page as its band, and one that set logos and no colour renders no colour sheet at all.
+
+## [v0.51.0] - 2026-10-23
+
+### Added
+
+- **`PYTHON_VERSION=<version> make install` in the CLI template**: its `Makefile` takes the version from `PYTHON_VERSION`, then `UV_PYTHON`, then `.python-version`, and exports it as `UV_PYTHON`, so every uv command it runs builds `.venv` on that version, as `UV_PYTHON=<version> make install` alone did before. Each job of its lint and tests matrices ends by checking that `.venv` runs the version the job names.
 
 ### Changed
 

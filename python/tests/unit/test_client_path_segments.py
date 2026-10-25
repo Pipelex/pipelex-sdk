@@ -16,7 +16,6 @@ from urllib.parse import quote
 import httpx
 import pytest
 
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.product_models import MethodDraftInput, OrganizationBrandingUpdate, UpdateRunInput
 from tests.unit.conftest import BASE_URL
@@ -206,7 +205,7 @@ class TestClientPathSegments:
         message = str(exc_info.value)
         assert message.startswith(f"{name}() takes {what}, ")
         assert message.endswith(f"; got {got}.")
-        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.INPUT, retryable=False)
+        assert (exc_info.value.problem.code, exc_info.value.problem.retry) == ("client.argument_invalid", "no")
         assert sent == []
 
     @pytest.mark.parametrize("kept_id", _KEPT_IDS)

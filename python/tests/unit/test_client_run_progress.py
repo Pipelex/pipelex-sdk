@@ -12,11 +12,12 @@ from typing import Any
 
 import httpx
 import pytest
+from mthds.protocol.problem.models import Problem
+from mthds.protocol.problem.registry import ProblemDomain, RetryVerdict, StepKind
 from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.error_verdicts import ErrorDomain, ErrorVerdict, error_verdict_of
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
@@ -37,7 +38,7 @@ from pipelex_sdk.runs import (
     RunResults,
     WaitForResultOptions,
 )
-from tests.unit.conftest import BASE_URL, SendPatcher
+from tests.unit.conftest import BASE_URL, SendPatcher, problem_document, run_failed_document
 from tests.unit.test_data import RunProgressBodies
 
 _RESULTS_URL = f"{BASE_URL}/v1/runs/run-1/results"
@@ -61,18 +62,7 @@ def _completed() -> httpx.Response:
 
 
 def _failed() -> httpx.Response:
-    return _json(
-        409,
-        {
-            "type": "https://pipelex.com/errors/conflict",
-            "title": "Conflict",
-            "status": 409,
-            "code": "conflict",
-            "detail": "Run finished with status FAILED; no result available",
-            "run_status": "FAILED",
-            "error": None,
-        },
-    )
+    return _json(409, run_failed_document())
 
 
 def _snapshot(**overrides: Any) -> dict[str, Any]:
@@ -179,7 +169,12 @@ class TestClientRunProgress:
         assert retried.path == "filings.review_filings/step_3/item_2/step_2"
         assert retried.attempts == 2
         assert retried.last_failure is not None
-        assert retried.last_failure.message == "An internal error occurred."
+        assert isinstance(retried.last_failure.problem, Problem)
+        assert retried.last_failure.problem.code == "runtime.unexpected"
+        assert retried.last_failure.problem.effective_domain is ProblemDomain.RUNTIME
+        assert retried.last_failure.problem.effective_retry is RetryVerdict.NO
+        assert retried.last_failure.problem.effective_step_kind is StepKind.REPORT
+        assert retried.last_failure.problem.as_wire() == RunProgressBodies.RETRIED_PROBLEM
         assert retried.last_failure.at == "2026-10-12T09:30:52.317Z"
         assert retried.degradation is None
 
@@ -247,6 +242,16 @@ class TestClientRunProgress:
             pytest.param("condition", {}, id="a-condition-without-its-outcome"),
             pytest.param("attempts", True, id="attempts-that-are-a-boolean"),
             pytest.param("last_failure", "An internal error occurred.", id="a-last-failure-that-is-not-an-object"),
+            pytest.param(
+                "last_failure",
+                {"message": "An internal error occurred.", "at": "2026-10-12T09:30:52.317Z"},
+                id="a-last-failure-with-a-message-and-no-problem",
+            ),
+            pytest.param(
+                "last_failure",
+                {"problem": {**RunProgressBodies.RETRIED_PROBLEM, "next_step": None}, "at": "2026-10-12T09:30:52.317Z"},
+                id="a-last-failure-whose-problem-is-not-a-problem-document",
+            ),
         ],
     )
     def test_get_run_progress_reads_an_optional_invocation_member_that_does_not_fit_as_none(
@@ -261,6 +266,22 @@ class TestClientRunProgress:
         assert getattr(invocation, member) is None
         assert invocation.path == "filings.review_filings/step_3/item_3"
         assert invocation.degradation is not None
+
+    def test_get_run_progress_keeps_a_failures_problem_whole_and_reads_a_time_that_does_not_fit_as_none(self, patch_send: SendPatcher) -> None:
+        """The problem keeps every member it carries, a `pipelex.*` code and undeclared members included."""
+        problem = problem_document("pipelex.inference.provider_refused", 502, domain="model", retry="yes", provider_hint="upstream")
+        client = PipelexAPIClient(api_key="test-token", base_url=BASE_URL)
+        patch_send(client, _json(200, _snapshot(invocations=[_invocation(last_failure={"problem": problem, "at": 52, "later": True})])))
+
+        progress = asyncio.run(client.get_run_progress("run-1"))
+
+        last_failure = progress.invocations[0].last_failure
+        assert last_failure is not None
+        assert last_failure.at is None
+        assert last_failure.problem.code == "pipelex.inference.provider_refused"
+        assert last_failure.problem.effective_retry is RetryVerdict.YES
+        assert last_failure.problem.as_wire() == problem
+        assert last_failure.model_extra == {"later": True}
 
     @pytest.mark.parametrize(
         ("member", "value"),
@@ -311,24 +332,18 @@ class TestClientRunProgress:
 
         assert str(exc_info.value) == "API GET /v1/runs/run-1/progress answered 200 with a body that is not the answer the route returns"
         assert isinstance(exc_info.value.__cause__, ValidationError)
-        assert error_verdict_of(exc_info.value) == ErrorVerdict(error_domain=ErrorDomain.RUNTIME, retryable=False)
+        assert exc_info.value.problem.code == "client.response_unreadable"
 
     def test_get_run_progress_raises_the_platforms_run_not_found_as_api_response_error(self, patch_send: SendPatcher) -> None:
         client = PipelexAPIClient(api_key="test-token", base_url=BASE_URL)
-        not_found = {
-            "type": "https://pipelex.com/errors/not-found",
-            "code": "not_found",
-            "title": "Not found",
-            "status": 404,
-            "detail": "Run not found",
-        }
+        not_found = problem_document("run.not_found", 404, detail="Run not found")
         patch_send(client, _json(404, not_found))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(client.get_run_progress("run-1"))
 
         assert exc_info.value.status == 404
-        assert exc_info.value.code == "not_found"
+        assert exc_info.value.problem.code == "run.not_found"
 
     def test_get_run_progress_maps_a_route_absent_404_to_lifecycle_unavailable(self, patch_send: SendPatcher) -> None:
         client = PipelexAPIClient(api_key="test-token", base_url=BASE_URL)
@@ -504,7 +519,7 @@ class TestClientRunProgress:
         def _slow_failure(run_id: str) -> RunProgress:
             clock[0] += 0.9
             msg = f"no answer for {run_id}"
-            raise ApiUnreachableError(msg, api_url=BASE_URL, code="ReadError")
+            raise ApiUnreachableError(msg, api_url=BASE_URL, network_code="ReadError")
 
         mocker.patch.object(client, "get_run_progress", mocker.AsyncMock(side_effect=_slow_failure))
         sleeps: list[float] = []

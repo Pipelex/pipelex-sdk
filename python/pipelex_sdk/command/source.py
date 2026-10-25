@@ -142,7 +142,7 @@ async def describe_pipe(client: PipelexAPIClient, source: MethodSource, pipe: st
         raise CommandError(msg, exit_code=EXIT_FAILED) from exc
     match answer:
         case CrateInvalidReport():
-            details = load_failure_lines(answer.validation_errors, answer.message)
+            details = load_failure_lines(answer.errors, answer.message)
             raise CommandError(METHOD_DOES_NOT_LOAD_SENTENCE, exit_code=EXIT_FAILED, details=details)
         case PipeIOValidReport():
             pipe_ref = answer.pipe_ref

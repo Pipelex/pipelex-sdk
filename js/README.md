@@ -81,17 +81,17 @@ console.log(saved.method_version); // 3
 `start` and `startAndWaitForResult` take an optional `idempotencyKey`, sent as the `Idempotency-Key` header of `POST /v1/start`. The hosted API binds the key to the run the first request starts, so the same start sent again under the same key is answered with that run and starts nothing: a start whose answer was lost can be sent again without paying for a second run. Generate one key per run, and keep it with the options, unchanged, across that start's retries:
 
 ```ts
-import { runMayHaveStartedOf } from "@pipelex/sdk";
+import { isProblemError } from "mthds/protocol";
 
 const options = { method_id: "mt_abc123", inputs, idempotencyKey: crypto.randomUUID() };
 const ack = await client.start(options).catch((err: unknown) => {
   // The run may exist: under the same key, the same start is answered with it.
-  if (runMayHaveStartedOf(err)) return client.start(options);
+  if (isProblemError(err) && err.retry === "outcome_unknown") return client.start(options);
   throw err;
 });
 ```
 
-A key is 1 to 255 visible ASCII characters; a key reused with other options is refused with a `409` `conflict`, and one whose earlier start is still being handled with a retryable `409` `idempotency_key_in_use` ([`docs/errors.md`](./docs/errors.md#a-starts-idempotency-key--idempotencykey)). A bare runner ignores the header.
+A key is 1 to 255 visible ASCII characters; a key reused with other options is refused with a `409` `request.idempotency_conflict`, and one whose earlier start is still being handled with a `409` `request.idempotency_key_in_use` whose `retry` is `yes` ([`docs/errors.md`](./docs/errors.md#a-starts-idempotency-key--idempotencykey)). A bare runner ignores the header.
 
 ### Checking a model reference
 
@@ -110,7 +110,7 @@ if (verdict.resolution === "resolved") {
 }
 ```
 
-A reference the runner cannot read at all (blank, a sigil alone, too long) or an unknown category throws `ApiResponseError`, a `422` whose `errorType` is `InvalidModelReference` or `InvalidModelCategory`.
+A reference the runner cannot read at all (blank, a sigil alone, too long) or an unknown category throws `ApiResponseError`, a `422` `request.invalid` whose `location.field` names `reference` or `type`.
 
 ### Product routes
 
@@ -167,6 +167,18 @@ for await (const saved of client.iterateMethodExamples(created.method_id)) {
   // every example, oldest first
 }
 
+// Copy a method into a team, or into your personal workspace, with its draft, its form inputs and
+// its examples (web sessions only). A bundle naming storage the destination cannot read, or, in a
+// duplicate, a file under the original's run files, which erasing the original would remove,
+// answers `refused`, a verdict rather than an error; the key makes a retry copy once.
+const copy = await client.copyMethod(
+  created.method_id,
+  { destination_org_id: "org_team", expected_draft_updated_at: draft.updated_at },
+  { idempotencyKey: crypto.randomUUID() },
+);
+if (copy.outcome === "copied") console.log(copy.method.copied_from); // the original it names
+const copies = await client.listMethodCopies(created.method_id); // where the copies went
+
 // The organization's files, newest first: uploads, test files and the files runs made. Each row's
 // `uri` goes into a run's inputs as any address does. A filtered page can be empty and still carry
 // a nextCursor; iterateFiles follows it.
@@ -196,25 +208,25 @@ try {
 
 ### Errors
 
-Every error the SDK throws carries a verdict: `retryable`, whether asking again can succeed, and `errorDomain`, who can fix the failure (`input` for the caller, `config` for a change to the environment such as the credential, the plan or the base URL, `runtime` for nobody beforehand). Both are always decided, and `errorVerdictOf` reads them from anything a `catch` holds, an error of the standard's own `mthds` client included, which it reads by its problem's `domain` and `retry`, returning `undefined` for what carries no verdict, such as a bug in the calling code or your own abort. A failed `start` or blocking `execute` also says whether it may have created a run anyway, as `runMayHaveStarted`, read with `runMayHaveStartedOf`: when it is `true`, `retryable` is `false`, since asking again could start a second paid run, and the person should look the run up in the run history first ([`docs/errors.md`](./docs/errors.md#a-failed-run-start--runmayhavestarted)), unless the start carried an `idempotencyKey`, in which case sending it again unchanged recovers the run ([above](#a-start-you-can-retry-idempotencykey)).
+Every error the SDK throws carries its failure as one problem document, the MTHDS standard's RFC 9457 document, under a registered code: the hosted API's own when it refused the request, the problem the platform stored when a run failed, and one the SDK builds under a `client.*` code for a failure it detects itself, such as a request that got no answer or an answer it cannot read. Every error is the standard's `ProblemError`, so `isProblemError` from `mthds/protocol` matches it, and its getters read the problem: `code` to branch on, `domain` for who must act (`input`, `method`, `account`, `operator` or `runtime`), `retry` for whether sending the same request again can succeed (`yes`, `no`, or `outcome_unknown` when a start may have created a run, which is looked up in the run history before anything is sent again, unless the start carried an `idempotencyKey`, in which case sending it again unchanged recovers the run, [above](#a-start-you-can-retry-idempotencykey)), `nextStep` for what to do, `retryAfter` and `requestId`, the id to hand to support. Branch on the problem, never on the HTTP status or the message.
 
 ```ts
-import { errorVerdictOf } from "@pipelex/sdk";
+import { isProblemError } from "mthds/protocol";
 
 try {
   await client.startAndWaitForResult({ method_id: "mt_abc123", inputs });
 } catch (err) {
-  const verdict = errorVerdictOf(err);
-  if (verdict === undefined) throw err; // not an SDK error: a bug, or the caller's own abort
-  if (verdict.retryable) return scheduleRetry();
-  if (verdict.errorDomain === "input") return askTheUserToFix(err);
-  return reportToOperator(err);
+  if (!isProblemError(err)) throw err; // not an SDK failure: a bug, or the caller's own abort
+  if (err.retry === "outcome_unknown") return lookUpTheRunBeforeStartingAgain(err);
+  if (err.retry === "yes") return scheduleRetry(err.retryAfter);
+  if (err.domain === "input" || err.domain === "method") return askTheUserToFix(err.problem);
+  return reportToOperator(err.problem);
 }
 ```
 
-A refused request throws an `ApiResponseError` carrying every member of the server's RFC 9457 problem document. **Branch on `errorDomain` and `type`**, as the hosted-envelope spec says, never on the HTTP status or the message: `errorDomain` is the verdict's domain and `type` is the stable URI of the error class, the same on every occurrence. The verdict is the server's when it sent a valid one, and otherwise the SDK's fallback, read from the status, except that an `input` or `config` domain the server sent without `retryable` is not retryable; `problemDocument` keeps what the server sent. `userAction` gives the next step, and `requestId` — from the body, or the `X-Request-ID` header — is the id to hand to support. `code` (the platform's native code, one-to-one with `type`) and `errorType` (the runner's exception class name) are each surface's finer code, and a client of that surface may branch on it too: on the platform's own refusals `code` and `type` read the same answer, `MethodErrorCode` naming the codes a method caller branches on, while a refusal the platform relays from the runner carries the runner's `type` and `errorType` and no `code`. `errors` carries the platform's field-level failures.
+A refused request throws an `ApiResponseError` whose `problem` is the hosted API's problem document as received, a `pipelex.*` code and every member the standard does not name included, such as the `limit` a refusal past a bound names; an answer whose body is no problem document, from the hosted edge, a gateway or a proxy, reads by its status. `status`, `statusText` and `responseBody` keep the answer itself. `MethodErrorCode` names the codes a method caller branches on, and `IdempotencyErrorCode` those of an `Idempotency-Key`.
 
-On the hosted API, a run that ends without completing throws a `RunFailedError` from `waitForResult`, `startAndWaitForResult` and `downloadArtifacts`, and comes back as the `failed` arm of `getRunResult`. (Against a bare `pipelex-api` runner, `startAndWaitForResult` runs the method with the blocking `execute`, so a failed run there throws the runner's `ApiResponseError`, whose problem members carry the same classification.) Its `status` is the run's terminal status and its `error` is the run's stored error report, checked field by field and typed as `RunErrorReport`: the reason in `message`, `error_domain`, `type_uri` and `retryable` to branch on, `user_action` as the next step, and the provider's answer in `provider_metadata`'s `status_code` and `retry_after_seconds`. It is `null` when the run ended without a report, and the error's own verdict comes from it: the report's domain, and retryable only when the report says so. The platform serves the runner's STRICT projection of the report: `message` is the author's copy when `caller_facing_message` is `true` and `An internal error occurred.` otherwise, `user_action` comes only with caller-facing copy, and the model, the provider and the provider's own text are left out, so `message` can be shown as it comes and what a person sees is still your presentation:
+On the hosted API, a run that ends without completing throws a `RunFailedError` from `waitForResult`, `startAndWaitForResult` and `downloadArtifacts`, and comes back as the `failed` arm of `getRunResult`. Its `problem` is `run.failed`, naming the run and its terminal status, and its `runError` is the run's own problem, which `run.failed` nests as `run_error`: why the run did not succeed, under its own code (`run.cancelled`, `model.unavailable`, `method.invalid`, …), with its own `retry` and `next_step`. It is `undefined` when the run ended with no problem stored.
 
 ```ts
 import { RunFailedError } from "@pipelex/sdk";
@@ -223,13 +235,13 @@ try {
   await client.waitForResult(runId);
 } catch (err) {
   if (err instanceof RunFailedError) {
-    console.error(err.message); // "Run finished with status FAILED: <the reason>"
-    console.error(err.error?.user_action?.detail ?? "No next step was given.");
+    console.error(err.message); // names the run and its terminal status
+    console.error(err.runError?.next_step.detail ?? "No next step was given.");
   }
 }
 ```
 
-[`docs/errors.md`](./docs/errors.md) gives each class's verdict, the fallback table, and every field of both.
+[`docs/errors.md`](./docs/errors.md) gives each class's problem, the reading of an answer that is no problem document, and the case file both SDKs run.
 
 ### Client identification
 
@@ -273,11 +285,12 @@ These pages ship inside the published package, so a reader who has only installe
 | [`docs/method-trees.md`](./docs/method-trees.md) | A method's tree: the four forms a run, a validation, a save and the crate routes take it in (a directory on disk among them), how it travels inline or by hash and what is uploaded, the files a step reads, the template check's warnings and which step reads which file of the tree, the deployment's limits, the read's listing with its links, `writeMethodTree`, and `MethodFileTransferError` |
 | [`docs/files.md`](./docs/files.md) | An organization's files: `listFiles` and `iterateFiles`, the row, the whole record and its provenance, the query and its repeated filters, paging through filtered pages, one file and its uses, the records of an address, the rename rule, links that name the file, a zip of files and its caps, a run's files, the copy into a method's draft, and an upload recorded as a method's test file with the refusals that come with it |
 | [`docs/method-examples.md`](./docs/method-examples.md) | A method's saved examples: the create, the paged list and its iterator, the edit that raises the input revision, the latest-run write and its `recorded` or `stale` verdict, the build assistant's save and its `kept` or `created` verdict, how an integer past `Number.MAX_SAFE_INTEGER` in the inputs stays exact, and what is refused before sending |
+| [`docs/method-copy.md`](./docs/method-copy.md) | Copying a method into another organization or duplicating it: what a copy holds and the stored files it copies, the `copied` or `refused` verdict, every refusal, the copy's idempotency key, the copies a method lists, and `copied_from` |
 | [`docs/organization-branding.md`](./docs/organization-branding.md) | An organization's logos and colours: `getBranding`, which every member and API key reads, `updateOrganizationBranding`, an admin's write that sets, clears or keeps each key, and how a refused logo or colour names its slot in `errors` so a settings screen shows the sentence under it |
 | [`docs/exact-integers.md`](./docs/exact-integers.md) | Which reads keep an integer past `Number.MAX_SAFE_INTEGER` exact, as a `bigint` (a run's inputs and outputs, an example's inputs), how a request body writes it back with its digits, and `parseExactJson` and `stringifyExactJson` for code showing such data as JSON text |
 | [`docs/crate-routes.md`](./docs/crate-routes.md) | `resolve`, `codegen` and `pipeIo` — the method's tree as the protocol's `files` map, with its dependencies, the normalized crate, the stamped types, and a method's I/O artifacts without a validation — and the offline `runCodegenCheck` that guards a committed tree |
 | [`docs/client-identification.md`](./docs/client-identification.md) | The `User-Agent` every API request carries, and `appInfo`, the option that puts your program's name in front of it |
-| [`docs/errors.md`](./docs/errors.md) | The verdict every error carries (`retryable`, `errorDomain`, `errorVerdictOf`), a failed run's stored error report on `RunFailedError` and `RunRead`, and every member of a refused request's `ApiResponseError`, with the fields to branch on |
+| [`docs/errors.md`](./docs/errors.md) | The problem every error carries (`code`, `domain`, `retry`, `nextStep`), a start whose outcome is unknown, each class's problem, a refused request's `ApiResponseError`, a failed run's `run.failed` and its nested `run_error`, and a verdict's problem items |
 
 ## Develop
 

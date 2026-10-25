@@ -1,16 +1,23 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { ProblemError } from "mthds/protocol";
+import type { Problem } from "mthds/protocol";
 
 import { PipelexApiClient } from "../src/client.js";
 import {
   ApiResponseError,
-  errorVerdictOf,
   RequestArgumentError,
   RunLifecycleUnavailableError,
 } from "../src/errors.js";
 import { isFresherRunProgress } from "../src/runs.js";
-import type { ProgressInvocation, RunDegradation, RunProgress } from "../src/runs.js";
+import type {
+  ProgressFailure,
+  ProgressInvocation,
+  RunDegradation,
+  RunProgress,
+} from "../src/runs.js";
 import type { PipelineRun } from "../src/product-models.js";
 import * as sdk from "../src/index.js";
+import { problemDocument, problemResponse } from "./helpers/problems.js";
 
 const BASE_URL = "http://localhost:8081";
 const PROGRESS_URL = `${BASE_URL}/v1/runs/run-1/progress`;
@@ -81,6 +88,20 @@ const STUCK: RunDegradation = {
   ends_at: "2026-10-12T09:45:33.480Z",
 };
 
+/**
+ * The problem the platform serves for a failure only the engine observed, the retried attempt of
+ * item 2's second step in the contract's worked example: `runtime.unexpected`, in the caller's view.
+ */
+const RETRIED_PROBLEM: Problem = {
+  type: "https://mthds.ai/errors/runtime.unexpected",
+  title: "An unexpected error occurred",
+  detail: "The runtime met an unexpected error.",
+  code: "runtime.unexpected",
+  domain: "runtime",
+  retry: "no",
+  next_step: { kind: "report", detail: "Report this to whoever runs the runtime." },
+};
+
 /** Part of the contract's worked example: a snapshot taken mid-run. */
 const MID_RUN: RunProgress = {
   pipeline_run_id: "run-1",
@@ -132,7 +153,7 @@ const MID_RUN: RunProgress = {
       started_at: "2026-10-12T09:30:31.930Z",
       ended_at: null,
       attempts: 2,
-      last_failure: { message: "An internal error occurred.", at: "2026-10-12T09:30:52.317Z" },
+      last_failure: { problem: RETRIED_PROBLEM, at: "2026-10-12T09:30:52.317Z" },
     },
     {
       path: "filings.review_filings/step_3/item_3",
@@ -222,6 +243,70 @@ describe("PipelexApiClient.getRunProgress", () => {
     expect(Object.hasOwn(progress.degradation!, "failed_attempts")).toBe(false);
   });
 
+  it("reads an invocation's last failure as its problem, the standard's problem document", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, MID_RUN));
+
+    const progress = await client.getRunProgress("run-1");
+
+    const failure = progress.invocations[3]!.last_failure;
+    expect(failure?.problem).toEqual(RETRIED_PROBLEM);
+    expect(failure?.problem.code).toBe("runtime.unexpected");
+    expect(failure?.at).toBe("2026-10-12T09:30:52.317Z");
+    expectTypeOf<ProgressFailure["problem"]>().toEqualTypeOf<Problem>();
+    expectTypeOf<ProgressFailure>().not.toHaveProperty("message");
+  });
+
+  it("keeps a failure's problem whole and drops an `at` that is not a string", async () => {
+    const client = makeClient();
+    const problem = problemDocument("pipelex.inference.provider_refused", 502, {
+      domain: "model",
+      retry: "yes",
+      provider_hint: "upstream",
+    });
+    const invocation = {
+      ...MID_RUN.invocations[4]!,
+      last_failure: { problem, at: 52, later: true },
+    } as unknown as ProgressInvocation;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, snapshot({ invocations: [invocation] })),
+    );
+
+    const progress = await client.getRunProgress("run-1");
+
+    const failure = progress.invocations[0]!.last_failure;
+    expect(failure?.problem).toEqual(problem);
+    expect(Object.hasOwn(failure!, "at")).toBe(false);
+    expect((failure as unknown as Record<string, unknown>).later).toBe(true);
+  });
+
+  it.each([
+    ["that is not an object", "An internal error occurred."],
+    [
+      "with a message and no problem",
+      { message: "An internal error occurred.", at: "2026-10-12T09:30:52.317Z" },
+    ],
+    [
+      "whose problem is not a problem document",
+      { problem: { ...RETRIED_PROBLEM, next_step: null }, at: "2026-10-12T09:30:52.317Z" },
+    ],
+  ])("drops a last failure %s, never failing the read", async (_name, lastFailure) => {
+    const client = makeClient();
+    const invocation = {
+      ...MID_RUN.invocations[4]!,
+      last_failure: lastFailure,
+    } as unknown as ProgressInvocation;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, snapshot({ invocations: [invocation] })),
+    );
+
+    const progress = await client.getRunProgress("run-1");
+
+    expect(Object.hasOwn(progress.invocations[0]!, "last_failure")).toBe(false);
+    expect(progress.invocations[0]!.step_count).toBe(2);
+    expect(progress.invocations[0]!.degradation?.reason).toBe("workflow_task_failing");
+  });
+
   it.each([
     ["a missing version", { version: undefined }, "`version` is not a non-negative integer"],
     ["a negative version", { version: -1 }, "`version` is not a non-negative integer"],
@@ -255,19 +340,13 @@ describe("PipelexApiClient.getRunProgress", () => {
     expect((error as ApiResponseError).message).toBe(
       `API GET /v1/runs/run-1/progress answered 200 with a snapshot whose ${fault}`,
     );
-    expect(errorVerdictOf(error)).toEqual({ retryable: false, errorDomain: "runtime" });
+    expect((error as ProblemError).problem).toMatchObject({ domain: "runtime", retry: "no" });
   });
 
   it("surfaces the platform's run-not-found 404 as ApiResponseError", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(404, {
-        type: "https://pipelex.com/errors/not-found",
-        code: "not_found",
-        title: "Not found",
-        status: 404,
-        detail: "Run not found",
-      }),
+      problemResponse("run.not_found", 404, { detail: "Run not found" }),
     );
 
     const error = await client.getRunProgress("run-1").catch((e: unknown) => e);

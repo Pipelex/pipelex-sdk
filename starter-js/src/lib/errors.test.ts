@@ -2,8 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   ApiResponseError,
   ApiUnreachableError,
-  InputPreparationError,
-  InvalidLocalSourceError,
   PipelineExecuteTimeoutError,
   RejectedAssetError,
   RequestArgumentError,
@@ -14,16 +12,18 @@ import {
   UnsupportedUploadCapabilityError,
   UploadAuthenticationError,
   UploadTransportError,
-  type RunErrorReport,
+  buildProblem,
+  type Problem,
+  type UploadTransportReason,
 } from "@pipelex/sdk";
 import {
-  MODEL_NOT_ENABLED,
-  MODEL_NOT_ENABLED_PROVIDER_TEXT,
+  MODEL_NOT_SERVED,
+  MODEL_NOT_SERVED_PROVIDER_TEXT,
   RATE_LIMITED,
-  RATE_LIMITED_PROVIDER_TEXT,
   WRONG_ITEM_COUNT,
-} from "@/test/fixtures/runReports";
-import { refusedStart } from "@/test/fixtures/refusals";
+  runFailedAnswer,
+} from "@/test/fixtures/runProblems";
+import { REFUSAL_BODY, refusedStart } from "@/test/fixtures/refusals";
 import { BadImageOutputError, BadPipelineOutputError } from "@/types/pipelineError";
 import {
   buildClientTimeoutError,
@@ -42,313 +42,251 @@ const OVERRIDE_ENV: ClassifyEnv = { apiUrl: "https://api.unreachable.example", h
 const DEFAULT_ENV: ClassifyEnv = { apiUrl: undefined, hasApiKey: true };
 const CLOUD_ENV: ClassifyEnv = { apiUrl: "https://api.pipelex.com", hasApiKey: true };
 
-describe("classifyPipelineError — ApiUnreachableError", () => {
+const API_URL = "https://api.pipelex.com";
+
+/**
+ * An answer the API refused, as the SDK's client throws it: the route, the
+ * status and the body as received, the SDK reading the body as its problem
+ * (the document itself, or the reading of a bare status).
+ */
+function refusal(
+  status: number,
+  body: string | Problem,
+  options: { route?: string; mayStartRun?: boolean; headers?: Record<string, string> } = {},
+): ApiResponseError {
+  const text = typeof body === "string" ? body : JSON.stringify(body);
+  return new ApiResponseError(
+    `API POST ${options.route ?? "/v1/start"} failed (${status}): ${text}`,
+    API_URL,
+    status,
+    "",
+    text,
+    { mayStartRun: options.mayStartRun, headers: options.headers },
+  );
+}
+
+describe("classifyPipelineError — no answer from the API", () => {
   it("steers to PIPELEX_BASE_URL when an override is set", () => {
     const err = new ApiUnreachableError(
-      "Could not reach Pipelex API at https://api.unreachable.example (ECONNREFUSED)",
+      "fetch failed",
       "https://api.unreachable.example",
       "ECONNREFUSED",
     );
     const result = classifyPipelineError(err, OVERRIDE_ENV);
     expect(result.kind).toBe("api_unreachable");
-    expect(result.title).toBe("Pipelex API not reachable");
-    expect(result.message).toContain("ECONNREFUSED");
     expect(result.message).toContain("https://api.unreachable.example");
-    expect(result.message).toMatch(/PIPELEX_BASE_URL/);
-    expect(result.hint?.summary).toMatch(/PIPELEX_BASE_URL/);
+    expect(result.message).toContain("ECONNREFUSED");
+    expect(result.message).toMatch(/PIPELEX_BASE_URL is set/);
     expect(result.hint?.code).toBe("PIPELEX_BASE_URL=https://api.pipelex.com");
-    expect(result.hint?.codeLanguage).toBe("env");
+    expect(result.code).toBe("client.unreachable");
+    // The SDK found no answer to read: blaming the service would contradict
+    // a message that suspects the URL, so no domain is claimed.
+    expect(result.domain).toBeUndefined();
+    expect(result.retry?.verdict).toBe("yes");
+    expect(result.details).toContain("code: client.unreachable");
   });
 
   it("steers to the network when no override is set (default hosted URL)", () => {
-    const err = new ApiUnreachableError(
-      "Could not reach Pipelex API at https://api.pipelex.com (ENOTFOUND)",
-      "https://api.pipelex.com",
-      "ENOTFOUND",
-    );
+    const err = new ApiUnreachableError("fetch failed", API_URL, "ENOTFOUND");
     const result = classifyPipelineError(err, DEFAULT_ENV);
     expect(result.kind).toBe("api_unreachable");
-    expect(result.message).toContain("https://api.pipelex.com");
-    expect(result.message).toContain("ENOTFOUND");
     expect(result.message).toMatch(/default URL/);
-    expect(result.message).toMatch(/network/i);
-    // No override to check — the copy must not tell the user to verify a
-    // variable they never set.
-    expect(result.message).not.toMatch(/PIPELEX_BASE_URL is set/);
-    expect(result.hint?.summary).toMatch(/network/i);
-    expect(result.hint?.code).toContain("https://api.pipelex.com");
+    expect(result.message).toMatch(/network connection/);
+    expect(result.hint?.code).toBe(`PIPELEX_BASE_URL=${API_URL}`);
   });
 
-  // The quick start is `cp .env.example .env.local`, and that file pins the
-  // default hosted URL explicitly — so PIPELEX_BASE_URL being *set* is the
-  // ordinary case, not a signal that the user chose this URL. Both of these
-  // must land on the network branch.
   it("steers to the network when PIPELEX_BASE_URL is set to the SDK default", () => {
-    const err = new ApiUnreachableError(
-      "Could not reach Pipelex API at https://api.pipelex.com (ENOTFOUND)",
-      "https://api.pipelex.com",
-      "ENOTFOUND",
-    );
+    const err = new ApiUnreachableError("fetch failed", API_URL, "ENOTFOUND");
     const result = classifyPipelineError(err, CLOUD_ENV);
-    expect(result.kind).toBe("api_unreachable");
-    expect(result.message).toMatch(/network/i);
+    expect(result.message).toMatch(/default URL/);
     expect(result.message).not.toMatch(/PIPELEX_BASE_URL is set/);
-    expect(result.hint?.summary).toMatch(/network/i);
-    expect(result.hint?.summary).not.toMatch(/Verify PIPELEX_BASE_URL/);
   });
 
   it("ignores a trailing slash when comparing against the SDK default", () => {
-    const err = new ApiUnreachableError(
-      "Could not reach Pipelex API at https://api.pipelex.com (ENOTFOUND)",
-      "https://api.pipelex.com",
-      "ENOTFOUND",
-    );
-    const result = classifyPipelineError(err, {
-      apiUrl: "https://api.pipelex.com/",
-      hasApiKey: true,
-    });
-    expect(result.hint?.summary).toMatch(/network/i);
+    const err = new ApiUnreachableError("fetch failed", API_URL, "ENOTFOUND");
+    const result = classifyPipelineError(err, { apiUrl: `${API_URL}/`, hasApiKey: true });
+    expect(result.message).toMatch(/default URL/);
   });
 
-  it("handles missing error code", () => {
-    const err = new ApiUnreachableError(
-      "Could not reach Pipelex API at https://api.unreachable.example (network error)",
-      "https://api.unreachable.example",
-      undefined,
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
+  it("handles a failure with no network code", () => {
+    const err = new ApiUnreachableError("fetch failed", API_URL, undefined);
+    const result = classifyPipelineError(err, DEFAULT_ENV);
     expect(result.kind).toBe("api_unreachable");
-    expect(result.message).not.toContain("undefined");
+    expect(result.message).not.toContain("(undefined)");
+  });
+
+  it("says the answer did not come in time when the SDK's own time limit ran out", () => {
+    // `ABORT_TIMEOUT` is the network code the SDK gives its own time limit.
+    const err = new ApiUnreachableError("timed out", API_URL, "ABORT_TIMEOUT", {
+      timeoutMs: 30_000,
+    });
+    const result = classifyPipelineError(err, DEFAULT_ENV);
+    expect(result.kind).toBe("api_unreachable");
+    expect(result.code).toBe("client.timeout");
+    expect(result.message).toMatch(/did not get a response in time/);
+    expect(result.domain).toBeUndefined();
+    expect(result.retry?.verdict).toBe("yes");
   });
 });
 
-describe("classifyPipelineError — ApiResponseError 401/403", () => {
+describe("classifyPipelineError — a credential the API refused", () => {
   it("returns auth_missing when no key is set", () => {
-    const err = new ApiResponseError(
-      "API POST /endpoint failed (401): Invalid authentication token",
-      "https://api.pipelex.com",
-      401,
-      "Unauthorized",
-      JSON.stringify({ detail: "Invalid authentication token" }),
-      undefined,
-      "Invalid authentication token",
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, {
-      apiUrl: "https://api.pipelex.com",
-      hasApiKey: false,
-    });
+    const err = refusal(401, '{"detail":"Not authenticated"}');
+    const result = classifyPipelineError(err, { apiUrl: undefined, hasApiKey: false });
     expect(result.kind).toBe("auth_missing");
-    expect(result.title).toContain("missing");
-    expect(result.hint?.code).toContain("PIPELEX_API_KEY");
+    expect(result.hint?.code).toBe("PIPELEX_API_KEY=your-key-here");
+    expect(result.domain).toBe("account");
+    expect(result.retry?.verdict).toBe("no");
+    // The body was no problem document: the problem is the SDK's reading of the status.
+    expect(result.apiMessage).toBeUndefined();
+    expect(result.details).toContain("the SDK's reading of the HTTP status");
   });
 
   it("returns auth_invalid when a key is present", () => {
-    const err = new ApiResponseError(
-      "API POST /endpoint failed (401): Invalid authentication token",
-      "https://api.pipelex.com",
-      401,
-      "Unauthorized",
-      JSON.stringify({ detail: "Invalid authentication token" }),
-      undefined,
-      "Invalid authentication token",
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, {
-      apiUrl: "https://api.pipelex.com",
-      hasApiKey: true,
-    });
+    const err = refusal(403, "");
+    const result = classifyPipelineError(err, CLOUD_ENV);
     expect(result.kind).toBe("auth_invalid");
-    expect(result.title).toContain("rejected");
+    expect(result.message).toContain(API_URL);
+    expect(result.code).toBe("auth.invalid_credential");
   });
 
-  it("treats 403 like 401", () => {
-    const err = new ApiResponseError(
-      "forbidden",
-      "x",
-      403,
-      "Forbidden",
-      "",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, { apiUrl: "x", hasApiKey: true });
+  it("reads an expired key as a refused one, keeping the API's words", () => {
+    const body = { ...buildProblem("auth.credential_expired", {}), status: 401 };
+    const result = classifyPipelineError(refusal(401, body), CLOUD_ENV);
     expect(result.kind).toBe("auth_invalid");
+    expect(result.hint?.code).toBe("PIPELEX_API_KEY=your-key-here");
+    expect(result.apiMessage).toBe(body.detail);
+  });
+
+  it("shows the API's own words beside the app's when it sent a problem document", () => {
+    const body = { ...buildProblem("auth.invalid_credential", {}), status: 401 };
+    const result = classifyPipelineError(refusal(401, body), CLOUD_ENV);
+    expect(result.kind).toBe("auth_invalid");
+    expect(result.apiMessage).toBe(body.detail);
+    expect(result.details).not.toContain("the SDK's reading of the HTTP status");
   });
 });
 
-describe("classifyPipelineError — ApiResponseError 5xx with errorType", () => {
-  it("special-cases CredentialsError", () => {
-    const err = new ApiResponseError(
-      "...",
-      "https://api.unreachable.example",
-      500,
-      "Internal Server Error",
-      "",
-      "CredentialsError",
-      "Missing OPENAI_API_KEY",
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.kind).toBe("server_error");
-    expect(result.title).toContain("LLM credentials");
-    expect(result.message).toContain("Missing OPENAI_API_KEY");
-    // The hosted API never lacks provider credentials — the hint steers to the URL.
-    expect(result.hint?.summary).toMatch(/PIPELEX_BASE_URL/);
-    expect(result.hint?.docs?.href).toContain("docs.pipelex.com");
-  });
-
-  it("special-cases PipeOperatorModelAvailabilityError", () => {
-    const err = new ApiResponseError(
-      "...",
-      "x",
-      500,
-      "",
-      "",
-      "PipeOperatorModelAvailabilityError",
-      "no backend",
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.kind).toBe("server_error");
-    expect(result.title).toContain("inference backend");
-    expect(result.hint?.summary).toMatch(/PIPELEX_BASE_URL/);
-  });
-
-  it("special-cases bundle/pipe definition errors", () => {
-    for (const errorType of [
-      "PipeValidationError",
-      "PipeFactoryError",
-      "MthdsParserError",
-      "MthdsDecodeError",
-    ]) {
-      const err = new ApiResponseError(
-        "...",
-        "x",
-        500,
-        "",
-        "",
-        errorType,
-        `${errorType} message`,
-        undefined,
-        undefined,
-      );
-      const result = classifyPipelineError(err, OVERRIDE_ENV);
-      expect(result.kind).toBe("server_error");
-      expect(result.title).toContain("pipeline definition");
-    }
-  });
-
-  it("falls through to generic server error for unknown errorType", () => {
-    const err = new ApiResponseError(
-      "...",
-      "x",
-      500,
-      "",
-      "",
-      "MysteryError",
-      "boom",
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.kind).toBe("server_error");
-    expect(result.title).toContain("HTTP 500");
-    expect(result.message).toContain("boom");
-  });
-
-  it("includes the endpoint URL, errorType, and serverMessage in details", () => {
-    const err = new ApiResponseError(
-      "...",
-      "https://api.unreachable.example",
-      500,
-      "Internal Server Error",
-      '{"detail":{"error_type":"X","message":"y"}}',
-      "X",
-      "y",
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.details).toContain("API URL: https://api.unreachable.example");
-    expect(result.details).toContain("error_type: X");
-    expect(result.details).toContain("server message: y");
-  });
-});
-
-describe("classifyPipelineError — ApiResponseError 4xx (non-auth)", () => {
-  it("returns bad_request for 422", () => {
-    const err = new ApiResponseError(
-      "...",
-      "x",
-      422,
-      "Unprocessable Entity",
-      "",
-      undefined,
-      "missing field 'foo'",
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
+describe("classifyPipelineError — a refusal's problem document", () => {
+  it("presents a refused start from its problem: title, detail, next step, domain, verdict, request id", () => {
+    const result = classifyPipelineError(refusedStart(), CLOUD_ENV);
     expect(result.kind).toBe("bad_request");
-    expect(result.title).toContain("HTTP 422");
-    expect(result.message).toBe("missing field 'foo'");
+    expect(result.title).toBe(REFUSAL_BODY.title);
+    expect(result.message).toBe(REFUSAL_BODY.detail);
+    expect(result.hint?.summary).toBe(REFUSAL_BODY.next_step.detail);
+    expect(result.domain).toBe("method");
+    expect(result.retry).toEqual({
+      verdict: "no",
+      summary: "Running it again unchanged will fail the same way.",
+    });
+    expect(result.code).toBe("method.invalid");
+    expect(result.requestId).toBe("req-run-422");
+    expect(result.support).toBe("method.invalid · request req-run-422");
   });
 
-  it("reframes a 400 StartRequiresAsyncOrchestration as a durable-execution error, keeping the API's own message", () => {
-    const apiMsg =
-      "Orchestration mode 'direct' cannot honor fire-and-forget delivery: /start requires an async-capable orchestration, and this deployment has none. Use /execute (synchronous) instead.";
-    const err = new ApiResponseError(
-      "...",
-      "https://api.unreachable.example",
-      400,
-      "Bad Request",
-      "",
-      "StartRequiresAsyncOrchestration",
-      apiMsg,
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    // Re-framed into the starter's vocabulary (durable execution), not a generic bad_request.
-    expect(result.kind).toBe("lifecycle_unavailable");
-    expect(result.title).toContain("Durable");
-    expect(result.message).toContain("https://api.unreachable.example");
-    expect(result.message).toMatch(/durable start/i);
-    // The remedy is the URL, not a mode switch.
-    expect(result.message).toMatch(/PIPELEX_BASE_URL/);
-    // The API's verbatim message is preserved separately for the template to show.
-    expect(result.apiMessage).toBe(apiMsg);
-    expect(result.hint?.code).toContain("PIPELEX_BASE_URL");
-    expect(result.details).toContain("error_type: StartRequiresAsyncOrchestration");
+  it("lists each item with where it is, its close matches, ahead of the raw body", () => {
+    const { details } = classifyPipelineError(refusedStart(), CLOUD_ENV);
+    expect(details).toContain("API URL: https://api.pipelex.com");
+    expect(details).toContain("domain: method");
+    expect(details).toContain("next_step: change_method");
+    expect(details).toContain("request_id: req-run-422");
+    const item = details.split("\n").find((line) => line.startsWith("item: "));
+    expect(item).toContain("model.unknown");
+    expect(item).toContain("'gpt-5.1'");
+    expect(item).toContain("pipe 'summarize'");
+    expect(item).toContain("suggestions: gpt-5");
+    expect(details.indexOf("item: ")).toBeLessThan(details.indexOf("body: "));
+  });
+
+  it("reads a problem whose code this app has no copy for from its members alone", () => {
+    const body: Problem = {
+      type: "https://docs.pipelex.com/errors/pipelex.catalog.not_found",
+      title: "No such method in the catalog",
+      status: 404,
+      detail: "No method mt_abc123 is in the catalog of this organization.",
+      code: "pipelex.catalog.not_found",
+      domain: "input",
+      retry: "no",
+      next_step: { kind: "change_input", detail: "Name a method the organization has saved." },
+      request_id: "req_cat_1",
+    };
+    const result = classifyPipelineError(refusal(404, body), CLOUD_ENV);
+    expect(result.kind).toBe("bad_request");
+    expect(result.title).toBe(body.title);
+    expect(result.message).toBe(body.detail);
+    expect(result.hint?.summary).toBe("Name a method the organization has saved.");
+    expect(result.domain).toBe("input");
+    expect(result.requestId).toBe("req_cat_1");
+  });
+
+  it("shows a fault on the service's side as a server error, with the next step for the caller", () => {
+    const body = {
+      ...buildProblem(
+        "model.unavailable",
+        { model: "claude-4.8-opus", model_type: "llm", reason: "not_served" },
+        { reader: "other" },
+      ),
+      status: 501,
+    };
+    const result = classifyPipelineError(refusal(501, body), CLOUD_ENV);
+    expect(result.kind).toBe("server_error");
+    expect(result.domain).toBe("operator");
+    expect(result.hint?.summary).toBe(body.next_step.detail);
+    expect(result.retry?.verdict).toBe("no");
+  });
+
+  it("offers a re-run after the delay a retryable refusal asks for, and leaves the retry line to say it", () => {
+    const body = { ...buildProblem("runtime.unavailable", {}, { retryAfter: 30 }), status: 503 };
+    const result = classifyPipelineError(refusal(503, body), CLOUD_ENV);
+    expect(result.kind).toBe("server_error");
+    expect(result.retry).toEqual({
+      verdict: "yes",
+      summary: "This failure can pass on a second try: run it again in 30 seconds.",
+      afterSeconds: 30,
+    });
+    // The step is `retry`, which the retry line already says.
+    expect(result.hint).toBeUndefined();
+  });
+
+  it("reads a bare 5xx by its status, with the delay its Retry-After header gives", () => {
+    const err = refusal(503, "<html>Service Unavailable</html>", {
+      headers: { "retry-after": "12" },
+    });
+    const result = classifyPipelineError(err, CLOUD_ENV);
+    expect(result.kind).toBe("server_error");
+    expect(result.code).toBe("runtime.unavailable");
+    expect(result.retry?.afterSeconds).toBe(12);
+    expect(result.details).toContain("the SDK's reading of the HTTP status");
+    expect(result.details).toContain("body: <html>Service Unavailable</html>");
+  });
+
+  it("truncates a very long body", () => {
+    const huge = "x".repeat(5000);
+    const result = classifyPipelineError(refusal(500, huge), OVERRIDE_ENV);
+    expect(result.details).toContain("truncated");
+    expect(result.details.length).toBeLessThan(huge.length + 1000);
   });
 });
 
-describe("classifyPipelineError — RequestArgumentError", () => {
-  // The SDK's own refusal, quoting the value whole as the SDK does.
-  const refuseBaseUrl = (value: string) =>
-    new RequestArgumentError(
-      `Invalid API base URL "${value}": must be host-only (http/https, no path, query, fragment, or credentials). Endpoints compose as {base}/v1/{endpoint}.`,
-      { verdict: { errorDomain: "config", retryable: false } },
-    );
+describe("classifyPipelineError — a refusal the SDK made itself", () => {
+  // The SDK's own refusal of PIPELEX_BASE_URL, as its client raises it.
+  const refuseBaseUrl = () =>
+    new RequestArgumentError("Invalid API base URL with a path: it must be host-only.", {
+      problem: buildProblem("client.not_configured", { setting: "base_url" }),
+    });
 
   it("returns config_invalid for a base URL the SDK refused, steering to PIPELEX_BASE_URL", () => {
     const apiUrl = "https://api.pipelex.com/v1";
-    const result = classifyPipelineError(refuseBaseUrl(apiUrl), { apiUrl, hasApiKey: true });
+    const result = classifyPipelineError(refuseBaseUrl(), { apiUrl, hasApiKey: true });
     expect(result.kind).toBe("config_invalid");
     expect(result.message).toMatch(/PIPELEX_BASE_URL/);
     expect(result.hint?.code).toBe("PIPELEX_BASE_URL=https://api.pipelex.com");
-    expect(result.details).toBe(
-      "RequestArgumentError: the SDK refused PIPELEX_BASE_URL (its message quotes the value, so it is left out)\n" +
-        "PIPELEX_BASE_URL: https://api.pipelex.com, with a path (not shown)",
-    );
-    expect(result.retry).toBeUndefined();
+    expect(result.details.split("\n").slice(0, 2)).toEqual([
+      "RequestArgumentError: the SDK refused PIPELEX_BASE_URL",
+      "PIPELEX_BASE_URL: https://api.pipelex.com, with a path (not shown)",
+    ]);
+    expect(result.code).toBe("client.not_configured");
+    expect(result.retry?.verdict).toBe("no");
   });
 
   // The details reach every visitor, and a value is refused exactly when it
@@ -369,41 +307,36 @@ describe("classifyPipelineError — RequestArgumentError", () => {
     ],
     ["not a url secret", "PIPELEX_BASE_URL: not a URL (the value is not shown)"],
   ])("never shows a visitor what %s carries beyond its host", (apiUrl, line) => {
-    const result = classifyPipelineError(refuseBaseUrl(apiUrl), { apiUrl, hasApiKey: true });
+    const result = classifyPipelineError(refuseBaseUrl(), { apiUrl, hasApiKey: true });
     expect(result.kind).toBe("config_invalid");
-    expect(result.details?.split("\n")[1]).toBe(line);
+    expect(result.details.split("\n")[1]).toBe(line);
     for (const secret of ["user", "secret", "abc123", "key-in-path", "section-9"]) {
       expect(result.details).not.toContain(secret);
     }
   });
 
-  it("reports an argument refusal of the app's own call as unknown, with the SDK's message", () => {
+  it("reports an argument the SDK refused as this app's fault, claiming no domain for the person", () => {
     const err = new RequestArgumentError("execute() needs a run source");
     const result = classifyPipelineError(err, OVERRIDE_ENV);
     expect(result.kind).toBe("unknown");
-    expect(result.details).toBe("RequestArgumentError: execute() needs a run source");
+    expect(result.domain).toBeUndefined();
+    expect(result.code).toBe("client.argument_invalid");
+    expect(result.details).toContain("RequestArgumentError: execute() needs a run source");
   });
-});
 
-describe("classifyPipelineError — an answer the SDK could not read", () => {
-  it("returns bad_response for a 2xx, never a refusal, with the SDK's account and the raw body", () => {
+  it("returns bad_response for a 2xx the SDK could not read, never a refusal", () => {
     const err = new ApiResponseError(
       "API POST /v1/execute answered 200 with a body that is not JSON",
-      "https://api.pipelex.com",
+      API_URL,
       200,
       "OK",
       "<html>gateway page</html>",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
     );
     const result = classifyPipelineError(err, OVERRIDE_ENV, { blocking: true });
     expect(result.kind).toBe("bad_response");
     expect(result.title).not.toMatch(/rejected/i);
     expect(result.message).toContain("HTTP 200");
-    // The SDK calls it final: the same request meets the same answer.
-    expect(result.retry?.retryable).toBe(false);
+    expect(result.retry?.verdict).toBe("no");
     expect(result.details).toContain(
       "ApiResponseError: API POST /v1/execute answered 200 with a body that is not JSON",
     );
@@ -411,14 +344,30 @@ describe("classifyPipelineError — an answer the SDK could not read", () => {
   });
 });
 
-describe("classifyPipelineError — BadPipelineOutputError", () => {
-  it("returns bad_response", () => {
-    const err = new BadPipelineOutputError("missing field");
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
+describe("classifyPipelineError — failures that carry no problem", () => {
+  it("returns bad_response for a narrower's BadPipelineOutputError", () => {
+    const err = new BadPipelineOutputError("expected a summary");
+    const result = classifyPipelineError(err, DEFAULT_ENV);
     expect(result.kind).toBe("bad_response");
-    expect(result.title).toContain("output");
-    expect(result.details).toContain("BadPipelineOutputError");
-    expect(result.details).toContain("missing field");
+    expect(result.retry).toBeUndefined();
+    expect(result.domain).toBeUndefined();
+  });
+
+  it("returns bundle_load_failed for a missing bundle", () => {
+    const err = Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+    expect(classifyPipelineError(err, DEFAULT_ENV).kind).toBe("bundle_load_failed");
+  });
+
+  it("returns unknown for a plain Error", () => {
+    const result = classifyPipelineError(new Error("boom"), DEFAULT_ENV);
+    expect(result.kind).toBe("unknown");
+    expect(result.details).toBe("Error: boom");
+  });
+
+  it("returns unknown for a non-Error throw", () => {
+    const result = classifyPipelineError("oops", DEFAULT_ENV);
+    expect(result.kind).toBe("unknown");
+    expect(result.details).toContain("oops");
   });
 });
 
@@ -446,478 +395,205 @@ describe("classifyPipelineError — BadImageOutputError", () => {
   });
 });
 
-describe("classifyPipelineError — fs ENOENT", () => {
-  it("returns bundle_load_failed", () => {
-    const err = Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.kind).toBe("bundle_load_failed");
-    expect(result.title).toContain("bundle");
-    expect(result.message).toContain("ENOENT");
-  });
-});
-
-describe("classifyPipelineError — unknown fallback", () => {
-  it("returns unknown for plain Error", () => {
-    const err = new Error("???");
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.kind).toBe("unknown");
-    expect(result.details).toContain("???");
-  });
-
-  it("returns unknown for non-Error throws", () => {
-    const result = classifyPipelineError("a string was thrown", OVERRIDE_ENV);
-    expect(result.kind).toBe("unknown");
-    expect(result.details).toContain("a string was thrown");
-  });
-});
-
-describe("classifyPipelineError — run-lifecycle errors", () => {
-  it("classifies PipelineExecuteTimeoutError into execute_timeout pointing at Durable mode", () => {
-    const result = classifyPipelineError(new PipelineExecuteTimeoutError(31_000), OVERRIDE_ENV);
+describe("classifyPipelineError — the blocking path", () => {
+  it("reads the SDK's own execute timeout as the ~30s cap, pointing at Durable mode", () => {
+    const result = classifyPipelineError(new PipelineExecuteTimeoutError(31_000), DEFAULT_ENV, {
+      blocking: true,
+    });
     expect(result.kind).toBe("execute_timeout");
-    expect(result.title).toMatch(/30s/);
-    expect(result.hint?.summary).toMatch(/Durable/i);
+    expect(result.message).toContain("~31s");
+    expect(result.hint?.summary).toMatch(/Durable mode/);
+    expect(result.retry?.verdict).toBe("outcome_unknown");
   });
 
-  it("maps a blocking-path 502/504 gateway response to execute_timeout", () => {
-    for (const status of [502, 504]) {
-      const err = new ApiResponseError(
-        `API POST /v1/execute failed (${status})`,
-        "https://api.pipelex.com",
-        status,
-        status === 502 ? "Bad Gateway" : "Gateway Timeout",
-        "",
-        undefined,
-        "The runner did not complete the request (/execute).",
-        undefined,
-        undefined,
-      );
-      const result = classifyPipelineError(err, CLOUD_ENV, { blocking: true });
+  it.each([502, 504])(
+    "reads a gateway %s with no problem document on execute as the cap",
+    (status) => {
+      const err = refusal(status, "<html>Gateway Timeout</html>", {
+        route: "/v1/execute",
+        mayStartRun: true,
+      });
+      const result = classifyPipelineError(err, DEFAULT_ENV, { blocking: true });
       expect(result.kind).toBe("execute_timeout");
-      expect(result.message).toMatch(/30s/);
-      expect(result.hint?.summary).toMatch(/Durable/i);
-      expect(result.details).toContain("The runner did not complete the request");
-    }
-  });
+      expect(result.code).toBe("client.outcome_unknown");
+    },
+  );
 
-  it("leaves a durable-path (non-blocking) 502 as a generic server_error", () => {
-    const err = new ApiResponseError(
-      "API GET /v1/runs/run-1/status failed (502)",
-      "https://api.pipelex.com",
-      502,
-      "Bad Gateway",
-      "",
-      undefined,
-      "Bad Gateway",
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, CLOUD_ENV);
-    expect(result.kind).toBe("server_error");
-  });
-
-  it("classifies RunStillRunningError into run_still_running", () => {
-    const result = classifyPipelineError(
-      new RunStillRunningError("still running", "run-1", 5, "/v1/runs/run-1"),
-      OVERRIDE_ENV,
-    );
+  it("reads a run the API answered with its id instead of its result as still running", () => {
+    const err = new RunStillRunningError("still running", "run-42", 5);
+    const result = classifyPipelineError(err, DEFAULT_ENV, { blocking: true });
     expect(result.kind).toBe("run_still_running");
-    expect(result.message).toContain("run-1");
-    expect(result.details).toContain("Retry-After: 5s");
-    expect(result.details).toContain("/v1/runs/run-1");
+    expect(result.message).toContain("run-42");
+    expect(result.hint?.summary).toMatch(/Durable mode/);
+  });
+});
+
+describe("classifyPipelineError — the durable path", () => {
+  it("leaves a 502 on a status read as a server error a second read can pass", () => {
+    const err = refusal(502, "<html>Bad Gateway</html>", { route: "/v1/runs/run-1/status" });
+    const result = classifyPipelineError(err, DEFAULT_ENV);
+    expect(result.kind).toBe("server_error");
+    expect(result.retry?.verdict).toBe("yes");
   });
 
-  it("classifies RunFailedError into run_failed with the failure message", () => {
-    const result = classifyPipelineError(
-      new RunFailedError("boom", "run-1", "FAILED"),
-      OVERRIDE_ENV,
-    );
-    expect(result.kind).toBe("run_failed");
-    expect(result.message).toContain("boom");
-    expect(result.details).toContain("run run-1 ended FAILED");
+  it("says a start that failed after it left may have started the run", () => {
+    const err = new ApiUnreachableError("socket hang up", API_URL, "ECONNRESET", {
+      mayStartRun: true,
+    });
+    const result = classifyPipelineError(err, DEFAULT_ENV);
+    expect(result.kind).toBe("outcome_unknown");
+    expect(result.title).toBe("The run may have started");
+    expect(result.retry?.verdict).toBe("outcome_unknown");
+    expect(result.retry?.summary).toMatch(/look it up by its id before running it again/);
+    expect(result.hint?.summary).toMatch(/run history/);
   });
 
-  it("classifies RunTimeoutError into run_timeout", () => {
-    const result = classifyPipelineError(
-      new RunTimeoutError("timed out", "run-1", 1_200_000),
-      OVERRIDE_ENV,
-    );
+  it("reads a run the SDK stopped following as a timeout, naming the run", () => {
+    const err = new RunTimeoutError("gave up", "run-7", 600_000);
+    const result = classifyPipelineError(err, DEFAULT_ENV);
     expect(result.kind).toBe("run_timeout");
-    expect(result.message).toContain("run-1");
+    expect(result.message).toContain("run-7");
+    expect(result.message).toContain("~600s");
+    expect(result.retry?.verdict).toBe("outcome_unknown");
   });
 
-  it("classifies RunLifecycleUnavailableError into lifecycle_unavailable pointing at the hosted API", () => {
-    const result = classifyPipelineError(
-      new RunLifecycleUnavailableError("no run store", "https://api.unreachable.example"),
-      OVERRIDE_ENV,
-    );
+  it("reads an API without the durable run lifecycle as lifecycle_unavailable, pointing at the hosted API", () => {
+    const err = new RunLifecycleUnavailableError("no lifecycle", OVERRIDE_ENV.apiUrl as string);
+    const result = classifyPipelineError(err, OVERRIDE_ENV);
     expect(result.kind).toBe("lifecycle_unavailable");
     expect(result.message).toContain("https://api.unreachable.example");
-    expect(result.message).toMatch(/PIPELEX_BASE_URL/);
-    expect(result.hint?.summary).toMatch(/hosted Pipelex API/);
-    expect(result.hint?.code).toContain("PIPELEX_BASE_URL");
+    expect(result.hint?.code).toBe("PIPELEX_BASE_URL=https://api.pipelex.com");
+    expect(result.apiMessage).toBeUndefined();
+    expect(result.domain).toBe("operator");
+  });
+
+  it("reads a runtime that refuses asynchronous execution as lifecycle_unavailable, keeping its words", () => {
+    const body = {
+      ...buildProblem("runtime.unsupported", { capability: "asynchronous execution" }),
+      status: 501,
+    };
+    const result = classifyPipelineError(refusal(501, body, { mayStartRun: true }), OVERRIDE_ENV);
+    expect(result.kind).toBe("lifecycle_unavailable");
+    expect(result.apiMessage).toBe(body.detail);
   });
 });
 
-describe("classifyPipelineError — a failed run's stored error report", () => {
-  // The results read's `detail`, as a platform serving the report writes it:
-  // the status, then the report's message — provider text included — and the
-  // sentence it writes for a run with no report.
-  const detailFor = (report: RunErrorReport) =>
-    `Run finished with status FAILED: ${report.message}`;
-  const NO_REPORT_SENTENCE = "Run finished with status FAILED; no result available";
-  const failed = (report: RunErrorReport | null) =>
-    new RunFailedError(report ? detailFor(report) : NO_REPORT_SENTENCE, "run-1", "FAILED", {
-      error: report,
-    });
-
-  it("reads a change_input failure from its report: reason, next step, no re-run, support line", () => {
-    const result = classifyPipelineError(failed(WRONG_ITEM_COUNT), OVERRIDE_ENV, {
-      finishedAt: "2026-09-26T10:01:00.482913+00:00",
-    });
-    expect(result.kind).toBe("run_failed");
-    expect(result.title).toBe("The pipeline run failed: Multiplicity count mismatch");
-    expect(result.message).toBe(WRONG_ITEM_COUNT.message);
-    expect(result.hint).toEqual({ summary: "Provide exactly 2 items for input 'pages'." });
-    expect(result.retry).toEqual({
-      retryable: false,
-      summary: "Running it again unchanged will fail the same way.",
-    });
-    expect(result.support).toBe(
-      "run run-1 · MultiplicityCountMismatchError · failed 2026-09-26T10:01:00Z",
+describe("classifyPipelineError — a failed run", () => {
+  const FINISHED_AT = "2026-09-26T10:01:00+00:00";
+  const failed = (runError: Problem | null, finishedAt: string | null = FINISHED_AT) => {
+    const problem = runFailedAnswer(runError);
+    return classifyPipelineError(
+      new RunFailedError(problem.detail, "run-1", "FAILED", { problem }),
+      DEFAULT_ENV,
+      { finishedAt },
     );
-    expect(result.details).toContain("run run-1 ended FAILED");
-    expect(result.details).toContain("error_domain: input");
-    expect(result.details).toContain("user_action: change_input");
-    expect(result.message).not.toContain("no result available");
+  };
+
+  it("presents the run's own problem: title, detail, next step, domain, verdict and support line", () => {
+    const result = failed(WRONG_ITEM_COUNT);
+    expect(result.kind).toBe("run_failed");
+    expect(result.title).toBe(`The pipeline run failed: ${WRONG_ITEM_COUNT.title}`);
+    expect(result.message).toBe(WRONG_ITEM_COUNT.detail);
+    expect(result.hint?.summary).toBe(WRONG_ITEM_COUNT.next_step.detail);
+    expect(result.domain).toBe("input");
+    expect(result.retry?.verdict).toBe("no");
+    expect(result.code).toBe("input.wrong_multiplicity");
+    expect(result.support).toBe(
+      "run run-1 · input.wrong_multiplicity · failed 2026-09-26T10:01:00Z · request req_results_409",
+    );
+    expect(result.details).toContain("params: ");
+    expect(result.details).toContain('"provided_count":3');
   });
 
-  it("offers a re-run when the report says the failure is retryable", () => {
-    const result = classifyPipelineError(failed(RATE_LIMITED), OVERRIDE_ENV);
+  it("offers a re-run after the delay a retryable run problem asks for", () => {
+    const result = failed(RATE_LIMITED);
+    expect(result.domain).toBe("runtime");
     expect(result.retry).toEqual({
-      retryable: true,
-      summary: "This failure can pass on a second try: run it again.",
+      verdict: "yes",
+      summary: "This failure can pass on a second try: run it again in 20 seconds.",
+      afterSeconds: 20,
     });
-    // "The system will retry automatically" is untrue of a run that ended, so
-    // the retry line is the only advice.
+    // The step is `wait`, which the retry line already says.
     expect(result.hint).toBeUndefined();
   });
 
-  it("keeps the provider's raw text out of everything the person can read", () => {
-    const result = classifyPipelineError(failed(MODEL_NOT_ENABLED), OVERRIDE_ENV);
-    expect(result.title).toBe("The pipeline run failed: LLM completion");
-    // What remains of the runtime's message still names the pipe, the model and the status.
-    expect(result.message).toBe(
-      "Pipe 'summarize' (path: two_steps > summarize) failed: openai inference failed for model 'claude-4.8-opus' (HTTP 412)",
-    );
-    expect(result.hint?.summary).toBe(
-      "This model is not enabled on the inference gateway; choose another model for the pipe.",
-    );
-    expect(result.retry?.retryable).toBe(false);
-    const shown = JSON.stringify(result);
-    expect(shown).not.toContain(MODEL_NOT_ENABLED_PROVIDER_TEXT);
-    expect(shown).not.toContain("not allowed for this integration");
-    expect(shown).not.toContain("req_gw_5f1c");
-    expect(result.details).toContain("model: claude-4.8-opus");
+  it("quotes the results read's request when the run's problem names none", () => {
+    const result = failed(WRONG_ITEM_COUNT);
+    expect(WRONG_ITEM_COUNT.request_id).toBeUndefined();
+    expect(result.requestId).toBe("req_results_409");
+    expect(result.support).toContain("request req_results_409");
+    expect(result.details).toContain("request_id: req_results_409");
   });
 
-  it("claims nothing about retrying when the report has no verdict", () => {
-    // `null` and an absent field both mean unknown, never "no".
-    const result = classifyPipelineError(
-      failed({ ...WRONG_ITEM_COUNT, retryable: null }),
-      OVERRIDE_ENV,
+  it("names the request the run's problem carries in the support line", () => {
+    const result = failed(MODEL_NOT_SERVED);
+    expect(result.domain).toBe("operator");
+    expect(result.support).toBe(
+      "run run-1 · model.unavailable · failed 2026-09-26T10:01:00Z · request req_gw_5f1c",
     );
-    expect(result.retry).toBeUndefined();
-    expect(result.details).not.toContain("retryable");
+  });
+
+  it("never shows the operator's diagnostics, which quote the provider's raw text", () => {
+    const result = failed(MODEL_NOT_SERVED);
+    expect(JSON.stringify(result)).not.toContain(MODEL_NOT_SERVED_PROVIDER_TEXT);
+    expect(JSON.stringify(result)).not.toContain("not allowed for this integration");
   });
 
   it("leaves the time out of the support line when the run's end is unknown", () => {
-    const result = classifyPipelineError(failed(WRONG_ITEM_COUNT), OVERRIDE_ENV);
-    expect(result.support).toBe("run run-1 · MultiplicityCountMismatchError");
+    expect(failed(WRONG_ITEM_COUNT, null).support).toBe(
+      "run run-1 · input.wrong_multiplicity · request req_results_409",
+    );
   });
 
-  it("says the report is silent rather than showing the provider's text when nothing else is left", () => {
-    const bare: RunErrorReport = {
-      error_type: "LLMCompletionError",
-      message: RATE_LIMITED_PROVIDER_TEXT,
-      provider_metadata: { message: RATE_LIMITED_PROVIDER_TEXT },
-    };
-    const result = classifyPipelineError(failed(bare), OVERRIDE_ENV);
+  it("keeps the lookup's sentence and the bare run id for a run with no problem of its own", () => {
+    const result = failed(null);
+    expect(result.kind).toBe("run_failed");
     expect(result.title).toBe("The pipeline run failed");
-    expect(result.message).toBe("The run ended FAILED, and its error report does not say why.");
-    expect(result.hint).toBeUndefined();
-    expect(JSON.stringify(result)).not.toContain("rate_limit_exceeded");
+    expect(result.message).toBe("The run 'run-1' ended as 'FAILED', without success.");
+    expect(result.support).toBeUndefined();
+    // Reading the run again only finds it over: nothing says whether it would pass again.
+    expect(result.retry).toBeUndefined();
+    expect(result.details).toContain("code: run.failed");
+  });
+});
+
+describe("classifyPipelineError — file inputs on the server", () => {
+  it("reads a grant route the API does not serve as upload_unavailable", () => {
+    const err = refusal(404, '{"detail":"Not Found"}', { route: "/v1/upload/grant" });
+    const result = classifyPipelineError(err, OVERRIDE_ENV, { uploadGrant: true });
+    expect(result.kind).toBe("upload_unavailable");
+    expect(result.message).toContain("POST /v1/upload/grant");
+    expect(result.message).toContain("https://api.pipelex.com");
   });
 
-  it("lists a method's validation items under the technical details", () => {
-    const report: RunErrorReport = {
-      error_type: "PipeValidationError",
-      message: "The method failed validation.",
-      title: "Pipe validation",
-      validation_errors: [
-        {
-          category: "pipe_validation",
-          message: "Output multiplicity does not match the parallel branches.",
-          pipe_code: "fan_out",
-        },
-      ],
+  it("reads a grant the platform refused as too large in its own words", () => {
+    const body = {
+      ...buildProblem("request.too_large", { size: 60_000_000, limit: 52_428_800 }),
+      status: 413,
     };
-    const result = classifyPipelineError(failed(report), OVERRIDE_ENV);
-    expect(result.details).toContain(
-      "validation: fan_out: Output multiplicity does not match the parallel branches.",
-    );
-  });
-
-  it("keeps today's wording for a failed run with no stored report", () => {
-    const result = classifyPipelineError(failed(null), OVERRIDE_ENV, {
-      finishedAt: "2026-09-26T10:01:00+00:00",
-    });
-    expect(result).toEqual({
-      kind: "run_failed",
-      title: "The pipeline run failed",
-      message: NO_REPORT_SENTENCE,
-      details: `RunFailedError: run run-1 ended FAILED\n${NO_REPORT_SENTENCE}`,
-    });
-  });
-});
-
-describe("classifyPipelineError — a refusal's problem document", () => {
-  it("classifies a refused start from its problem document: reason, next step, validation items, no re-run", () => {
-    const result = classifyPipelineError(refusedStart(), OVERRIDE_ENV);
-    expect(result.kind).toBe("bad_request");
-    expect(result.message).toBe("The method is invalid.");
-    expect(result.hint).toEqual({ summary: "Fix the bundle, then run it again." });
-    expect(result.retry).toEqual({
-      retryable: false,
-      summary: "Running it again unchanged will fail the same way.",
-    });
-    expect(result.details).toContain("error_domain: input");
-    expect(result.details).toContain("retryable: false");
-    // Both members came from the document, so neither is marked as the SDK's reading.
-    expect(result.details).not.toContain("the SDK's reading");
-    expect(result.details).toContain("user_action: change_input");
-    expect(result.details).toContain(
-      "validation: summarize: Model handle 'gpt-5.1' was not found in the model deck. Did you mean: gpt-5? (model reference: gpt-5.1; suggestions: gpt-5)",
-    );
-  });
-
-  it("puts the validation items ahead of the raw body, which is truncated", () => {
-    const { details } = classifyPipelineError(refusedStart(), OVERRIDE_ENV);
-    expect(details.indexOf("validation: summarize")).toBeLessThan(details.indexOf("body: "));
-  });
-
-  it("offers a re-run when the refusal says it is retryable", () => {
-    const err = new ApiResponseError(
-      "API POST /v1/execute failed (503): The inference provider is overloaded.",
-      "https://api.pipelex.com",
-      503,
-      "Service Unavailable",
-      "{}",
-      "LLMCompletionError",
-      "The inference provider is overloaded.",
-      undefined,
-      undefined,
+    const result = classifyPipelineError(
+      refusal(413, body, { route: "/v1/upload/grant" }),
+      CLOUD_ENV,
       {
-        details: {
-          retryable: true,
-          userAction: {
-            kind: "wait_and_retry",
-            detail: "Transient provider error — the system will retry automatically.",
-          },
-        },
-        problemDocument: {
-          retryable: true,
-          user_action: {
-            kind: "wait_and_retry",
-            detail: "Transient provider error — the system will retry automatically.",
-          },
-        },
+        uploadGrant: true,
       },
     );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.kind).toBe("server_error");
-    expect(result.retry?.retryable).toBe(true);
-    // Nothing retries a refused request, so the stale promise is not the hint.
-    expect(result.hint).toBeUndefined();
+    expect(result.kind).toBe("file_too_large");
+    expect(result.message).toBe(body.detail);
   });
 
-  it("keeps the status's hint when the runtime's advice is its unknown fallback", () => {
-    const err = new ApiResponseError(
-      "API POST /v1/execute failed (500)",
-      "http://localhost:8081",
-      500,
-      "Internal Server Error",
-      "{}",
-      "PipelineExecutionError",
-      "Pipe 'summarize' failed.",
-      undefined,
-      undefined,
-      {
-        details: {
-          userAction: { kind: "unknown", detail: "Check pipe_stack to identify which pipe failed" },
-        },
-      },
+  it("reads an API that offers no file upload as upload_unavailable, pointing at the hosted API", () => {
+    const result = classifyPipelineError(
+      new UnsupportedUploadCapabilityError("no upload route"),
+      OVERRIDE_ENV,
     );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.kind).toBe("server_error");
-    expect(result.hint).toBeUndefined();
-    expect(JSON.stringify(result)).not.toContain("Check pipe_stack");
+    expect(result.kind).toBe("upload_unavailable");
+    expect(result.hint?.code).toBe("PIPELEX_BASE_URL=https://api.pipelex.com");
   });
 
-  it("keeps its curated hint for a server error whose document advises nothing", () => {
-    const err = new ApiResponseError(
-      "API POST /v1/execute failed (500)",
-      "https://api.pipelex.com",
-      500,
-      "Internal Server Error",
-      "{}",
-      "CredentialsError",
-      "No API key for the provider.",
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.hint?.summary).toMatch(/verify the URL/);
-    // The status alone would offer a retry; the recognized type knows better.
-    expect(result.retry).toEqual({
-      retryable: false,
-      summary: "Running it again unchanged will fail the same way.",
-    });
-    // The details show the SDK's reading and say the app overrode it, so they
-    // never contradict the retry line above them.
-    expect(result.details).toContain(
-      "retryable: true (the SDK's reading, not the API's), which this app overrides: it reads CredentialsError as final",
-    );
-  });
-
-  it("lets the API's own verdict override a recognized error type's", () => {
-    const err = new ApiResponseError(
-      "API POST /v1/execute failed (500)",
-      "https://api.pipelex.com",
-      500,
-      "Internal Server Error",
-      '{"retryable":true}',
-      "CredentialsError",
-      "No API key for the provider.",
-      undefined,
-      undefined,
-      { details: { retryable: true }, problemDocument: { retryable: true } },
-    );
-    expect(classifyPipelineError(err, OVERRIDE_ENV).retry?.retryable).toBe(true);
-  });
-
-  it("offers a re-run for a 5xx the API gave no verdict, on the SDK's reading of its status", () => {
-    const err = new ApiResponseError(
-      "API POST /v1/execute failed (500)",
-      "https://api.pipelex.com",
-      500,
-      "Internal Server Error",
-      "",
-      "MysteryError",
-      "boom",
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.retry).toEqual({
-      retryable: true,
-      summary: "This failure can pass on a second try: run it again.",
-    });
-    expect(result.details).toContain("error_domain: runtime (the SDK's reading, not the API's)");
-    expect(result.details).toContain("retryable: true (the SDK's reading, not the API's)");
-  });
-
-  it("reads an answer with no problem document by its status, marking the verdict as the SDK's", () => {
-    const err = new ApiResponseError(
-      "API POST /v1/start failed (400): Bad Request",
-      "https://api.pipelex.com",
-      400,
-      "Bad Request",
-      "<html>Bad Request</html>",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    );
-    expect(classifyPipelineError(err, OVERRIDE_ENV)).toEqual({
-      kind: "bad_request",
-      title: "Pipelex API rejected the request (HTTP 400)",
-      message: "The API returned a client error. Inspect the request and try again.",
-      retry: {
-        retryable: false,
-        summary: "Running it again unchanged will fail the same way.",
-      },
-      details: [
-        "ApiResponseError: HTTP 400 Bad Request",
-        "API URL: https://api.pipelex.com",
-        "error_domain: input (the SDK's reading, not the API's)",
-        "retryable: false (the SDK's reading, not the API's)",
-        "body: <html>Bad Request</html>",
-      ].join("\n"),
-    });
-  });
-});
-
-describe("classifyPipelineError — input-preparation (upload) errors", () => {
-  it("classifies UnsupportedUploadCapabilityError into upload_failed pointing at the hosted API", () => {
-    const err = new UnsupportedUploadCapabilityError("no /v1/upload route");
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.kind).toBe("upload_failed");
-    expect(result.title).toMatch(/isn't available/i);
-    expect(result.message).toContain("https://api.unreachable.example");
-    expect(result.message).toMatch(/PIPELEX_BASE_URL/);
-    expect(result.hint?.code).toContain("PIPELEX_BASE_URL");
-  });
-
-  it("classifies RejectedAssetError into upload_failed, surfacing the server's verbatim message", () => {
-    const cause = new ApiResponseError(
-      "...",
-      "https://api.pipelex.com",
-      413,
-      "Payload Too Large",
-      "",
-      undefined,
-      "asset exceeds the 50 MiB service limit",
-      undefined,
-      undefined,
-    );
-    const err = new RejectedAssetError("rejected big.pdf", "big.pdf", 413, { cause });
-    const result = classifyPipelineError(err, CLOUD_ENV);
-    expect(result.kind).toBe("upload_failed");
-    expect(result.title).toMatch(/rejected/i);
-    expect(result.message).toContain("413");
-    expect(result.apiMessage).toBe("asset exceeds the 50 MiB service limit");
-    expect(result.details).toContain("big.pdf");
-  });
-
-  it("classifies UploadAuthenticationError into upload_failed with the API-key hint", () => {
-    const err = new UploadAuthenticationError("upload not authorized", 401);
-    const result = classifyPipelineError(err, CLOUD_ENV);
-    expect(result.kind).toBe("upload_failed");
-    expect(result.title).toMatch(/not authorized/i);
-    expect(result.hint?.code).toContain("PIPELEX_API_KEY");
-  });
-
-  it("classifies InvalidLocalSourceError and UploadTransportError as generic upload_failed", () => {
-    for (const err of [
-      new InvalidLocalSourceError("cannot read path", "/tmp/x.pdf"),
-      new UploadTransportError("network fault"),
-    ]) {
-      const result = classifyPipelineError(err, CLOUD_ENV);
-      expect(result.kind).toBe("upload_failed");
-      expect(result.title).toMatch(/Preparing the inputs/i);
-    }
-  });
-
-  it("frames the base InputPreparationError as a preparation failure, not a failed upload", () => {
-    const err = new InputPreparationError(
-      "Cannot prepare inputs: the method signature did not resolve",
-    );
-    const result = classifyPipelineError(err, CLOUD_ENV);
-    expect(result.kind).toBe("upload_failed");
-    expect(result.title).toBe("Preparing the inputs failed");
-    expect(result.message).not.toMatch(/upload/i);
-    expect(result.details).toContain("the method signature did not resolve");
+  it("reads an upload credential the API refused as a credential problem", () => {
+    const result = classifyPipelineError(new UploadAuthenticationError("refused", 401), CLOUD_ENV);
+    expect(result.kind).toBe("auth_invalid");
   });
 });
 
@@ -927,59 +603,120 @@ describe("classifyUploadError — a file's upload, in the browser", () => {
     ["grant_used", /permission ran out/i, /already been used/],
     ["signature_mismatch", /changed before it was stored/i, /no longer matches/],
     ["too_large", /too large/i, /size limit/],
-  ] as const)("says what a storage refusal coded %s means", (code, title, message) => {
-    const err = new RejectedAssetError("refused", "receipt.jpg", 403, { code });
+  ] as const)("says what a storage refusal for the reason %s means", (reason, title, message) => {
+    const err = new RejectedAssetError("refused", "receipt.jpg", 403, { reason });
     const result = classifyUploadError(err);
     expect(result.kind).toBe("upload_failed");
     expect(result.title).toMatch(title);
     expect(result.message).toMatch(message);
     expect(result.message).toContain("receipt.jpg");
-    expect(result.details).toContain(`code: ${code}`);
+    expect(result.details).toContain(`reason: ${reason}`);
+    expect(result.retry?.verdict).toBe("no");
   });
+
+  // Every reason the SDK can set, so one it adds fails the type check here
+  // until someone decides what it tells the user. The hint is the retry
+  // advice, which only the reasons whose problem says a second drop can pass
+  // carry: a `conflict` is two writes colliding.
+  const TRANSPORT_REASONS = {
+    timeout: ["The upload took too long", true],
+    storage_timeout: ["The upload stalled", true],
+    unreachable: ["Could not reach Pipelex storage", true],
+    server_error: ["Pipelex storage had a problem", true],
+    conflict: ["Uploading the file failed", true],
+    redirected: ["Uploading the file failed", false],
+    invalid_grant_url: ["Uploading the file failed", false],
+    unexpected: ["Uploading the file failed", false],
+  } satisfies Record<UploadTransportReason, readonly [string, boolean]>;
 
   it.each([
-    ["timeout", undefined, "The upload took too long"],
-    ["storage_timeout", 400, "The upload stalled"],
-    ["unreachable", undefined, "Could not reach Pipelex storage"],
-    ["server_error", 503, "Pipelex storage had a problem"],
-    ["conflict", 409, "Uploading the file failed"],
-    ["unexpected", 418, "Uploading the file failed"],
-  ] as const)("says what a transport failure coded %s means", (code, status, title) => {
-    const err = new UploadTransportError("upload failed", { code, status });
-    const result = classifyUploadError(err);
-    expect(result.kind).toBe("upload_failed");
-    expect(result.title).toBe(title);
-    expect(result.details).toContain(`code: ${code}`);
+    ...Object.entries(TRANSPORT_REASONS).map(
+      ([reason, [title, retry]]) => [reason as UploadTransportReason, title, retry] as const,
+    ),
+    [undefined, "Uploading the file failed", false] as const,
+  ])(
+    "says what an upload that failed in transit for the reason %s means",
+    (reason, title, retry) => {
+      const result = classifyUploadError(new UploadTransportError("upload failed", { reason }));
+      expect(result.kind).toBe("upload_failed");
+      expect(result.title).toBe(title);
+      expect(result.hint !== undefined).toBe(retry);
+      expect(result.details).toContain(`reason: ${reason ?? "(none)"}`);
+    },
+  );
+
+  it.each(["timeout", "storage_timeout", "unreachable"] as const)(
+    "blames no one for an upload that failed on the connection (%s)",
+    (reason) => {
+      const result = classifyUploadError(new UploadTransportError("upload failed", { reason }));
+      expect(result.domain).toBeUndefined();
+      expect(result.retry?.verdict).toBe("yes");
+    },
+  );
+
+  it.each(["timeout", "storage_timeout", "unreachable"] as const)(
+    "keeps the domain and verdict of a problem the server answered a %s failure with, offering no drop-again hint",
+    (reason) => {
+      // An operator-domain refusal: whoever runs the deployment must act, and
+      // dropping the file again fails alike.
+      const problem = buildProblem("runtime.unsupported", { capability: "this upload" });
+      const result = classifyUploadError(
+        new UploadTransportError("upload failed", { reason, problem }),
+      );
+      expect(result.domain).toBe("operator");
+      expect(result.retry?.verdict).toBe("no");
+      expect(result.hint).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ["timeout", buildProblem("client.timeout", { seconds: 30 })],
+    ["unreachable", buildProblem("client.unreachable", { base_url: "https://storage.example" })],
+  ] as const)("claims no domain for the SDK's own reading of a %s failure", (reason, problem) => {
+    const result = classifyUploadError(
+      new UploadTransportError("upload failed", { reason, problem }),
+    );
+    expect(result.domain).toBeUndefined();
+    expect(result.retry?.verdict).toBe("yes");
+    expect(result.hint).toBeDefined();
   });
 
-  it("puts a server error's status in its message", () => {
-    const err = new UploadTransportError("storage 503", { code: "server_error", status: 503 });
-    expect(classifyUploadError(err).message).toContain("HTTP 503");
+  it("keeps the status storage answered with, and claims no outcome the SDK calls unknown", () => {
+    const err = new UploadTransportError("storage answered 503", {
+      status: 503,
+      reason: "server_error",
+    });
+    const result = classifyUploadError(err);
+    expect(result.details).toContain("status: 503");
+    expect(result.message).toContain("HTTP 503");
+    // Storage may have written the object before it failed, so the SDK cannot
+    // say whether the file was stored, and neither can the message.
+    expect(result.message).not.toMatch(/not stored|could not be stored/);
+    expect(result.retry?.verdict).toBe("yes");
   });
 
   it("says a request storage does not implement is final, and offers no retry", () => {
-    const err = new UploadTransportError("storage 501", { code: "server_error", status: 501 });
+    const err = new UploadTransportError("storage answered 501", {
+      status: 501,
+      reason: "server_error",
+    });
     const result = classifyUploadError(err);
     expect(result.title).toBe("Pipelex storage can't take this upload");
     expect(result.message).toContain("HTTP 501");
     expect(result.message).toMatch(/nothing was stored/);
     expect(result.hint).toBeUndefined();
+    expect(result.retry?.verdict).toBe("no");
   });
 
   it.each([
-    ["unexpected", 429, true],
-    ["unexpected", 408, true],
-    ["conflict", 409, true],
-    ["unexpected", 418, false],
-    ["redirected", 302, false],
-    ["invalid_grant_url", undefined, false],
+    [429, true],
+    [408, true],
+    [418, false],
   ] as const)(
-    "offers to drop the file again for a %s failure (HTTP %s) only when a retry can help",
-    (code, status, offered) => {
-      const err = new UploadTransportError("upload failed", { code, status });
-      const result = classifyUploadError(err);
-      expect(result.title).toBe("Uploading the file failed");
-      expect(result.hint !== undefined).toBe(offered);
+    "offers to drop the file again for an unexpected answer (HTTP %s) only when its problem says a retry can pass",
+    (status, offered) => {
+      const err = new UploadTransportError("upload failed", { reason: "unexpected", status });
+      expect(classifyUploadError(err).hint !== undefined).toBe(offered);
     },
   );
 
@@ -1028,6 +765,7 @@ describe("classifyTransportError", () => {
     expect(result.details).toContain("TypeError");
     expect(result.details).toContain("Failed to fetch");
     expect(result.hint?.summary).toMatch(/[Rr]eload/);
+    expect(result.retry).toBeUndefined();
   });
 
   it("includes the original Error name and message in details", () => {
@@ -1041,25 +779,5 @@ describe("classifyTransportError", () => {
     expect(result.kind).toBe("transport_error");
     expect(result.details).toContain("disconnected");
     expect(result.details).toContain("Unknown");
-  });
-});
-
-describe("classifyPipelineError — details truncation", () => {
-  it("truncates very long response bodies", () => {
-    const huge = "x".repeat(5000);
-    const err = new ApiResponseError(
-      "...",
-      "x",
-      500,
-      "",
-      huge,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    );
-    const result = classifyPipelineError(err, OVERRIDE_ENV);
-    expect(result.details).toContain("truncated");
-    expect(result.details.length).toBeLessThan(huge.length + 200);
   });
 });
