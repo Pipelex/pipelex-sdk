@@ -39,6 +39,7 @@ import {
   SymlinkRefusedError,
   type MethodSource,
 } from "./shared.mts";
+import { methodNotFoundBody } from "./fixtures/problems.mts";
 
 vi.mock("@pipelex/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@pipelex/sdk")>();
@@ -419,11 +420,7 @@ describe("generateMethod", () => {
             "https://api.example/v1/codegen",
             404,
             "Not Found",
-            "{}",
-            "MethodPackageNotFoundError",
-            "No package at address 'github.com/Pipelex/methods/text_stats'.",
-            undefined,
-            undefined,
+            methodNotFoundBody("github.com/Pipelex/methods/text_stats"),
           ),
         ),
     });
@@ -434,7 +431,9 @@ describe("generateMethod", () => {
     // The server's own message is the useful half, and the line names the
     // selector rather than blaming PIPELEX_BASE_URL for a route that answered.
     expect(errors.join("\n")).toContain("could not resolve method_ref");
-    expect(errors.join("\n")).toContain("No package at address");
+    expect(errors.join("\n")).toContain(
+      "No method is found at 'github.com/Pipelex/methods/text_stats'. (method.not_found)",
+    );
     expect(errors.join("\n")).not.toContain("does not serve");
     await expect(readdir(outDir)).rejects.toThrow();
   });
@@ -465,10 +464,15 @@ describe("generateMethod", () => {
     noDrifts();
     const errors = captureErrors();
     const client = fakeClient({
+      // The verdict as the SDK hands it back: each fault a problem item.
       pipeIo: vi.fn().mockResolvedValue({
         is_valid: false,
-        validation_errors: [
-          { category: "blueprint", message: "unknown concept", source: "main.mthds" },
+        errors: [
+          {
+            code: "method.concept_unresolved",
+            detail: "The concept 'demo.Missing' is not declared.",
+            location: { file: "main.mthds", line: 4 },
+          },
         ],
         message: "The method does not load.",
       }),
@@ -478,7 +482,9 @@ describe("generateMethod", () => {
       "failed",
     );
     expect(errors.join("\n")).toContain("does not resolve");
-    expect(errors.join("\n")).toContain("main.mthds: unknown concept");
+    expect(errors.join("\n")).toContain("method.concept_unresolved");
+    expect(errors.join("\n")).toContain("The concept 'demo.Missing' is not declared.");
+    expect(errors.join("\n")).toContain("file 'main.mthds', line 4");
     await expect(readdir(outDir)).rejects.toThrow();
   });
 
@@ -498,10 +504,6 @@ describe("generateMethod", () => {
             404,
             "Not Found",
             '{"detail":"Not Found"}',
-            undefined,
-            "Not Found",
-            undefined,
-            undefined,
           ),
         ),
     });
@@ -526,11 +528,7 @@ describe("generateMethod", () => {
             "https://api.example/v1/pipe-io",
             404,
             "Not Found",
-            "{}",
-            "MethodPackageNotFoundError",
-            "No package at address 'github.com/Pipelex/methods/text_stats'.",
-            undefined,
-            undefined,
+            methodNotFoundBody("github.com/Pipelex/methods/text_stats"),
           ),
         ),
     });
@@ -539,7 +537,9 @@ describe("generateMethod", () => {
       "failed",
     );
     expect(errors.join("\n")).toContain("could not resolve method_ref");
-    expect(errors.join("\n")).toContain("No package at address");
+    expect(errors.join("\n")).toContain(
+      "No method is found at 'github.com/Pipelex/methods/text_stats'. (method.not_found)",
+    );
   });
 
   it("names the route a base URL does not serve, writing nothing", async () => {
@@ -555,10 +555,6 @@ describe("generateMethod", () => {
             404,
             "Not Found",
             "{}",
-            undefined,
-            undefined,
-            undefined,
-            undefined,
           ),
         ),
     });

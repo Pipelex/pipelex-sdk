@@ -156,7 +156,8 @@ def _run(coro: Coroutine[Any, Any, ResultT]) -> ResultT:
     try:
         return asyncio.run(coro)
     except PipelineRequestError as exc:
-        print_error(progress_console, present_error(exc))
+        # `blocking=True` words a run the gateway cut off as this group's, with the durable group as the fix.
+        print_error(progress_console, present_error(exc, blocking=True))
         raise typer.Exit(1) from exc
     except KeyboardInterrupt as exc:
         raise typer.Exit(130) from exc

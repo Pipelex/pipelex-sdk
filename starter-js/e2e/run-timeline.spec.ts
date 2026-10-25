@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { ApiResponseError, PipelexApiClient } from "@pipelex/sdk";
+import { isProblemError, PipelexApiClient } from "@pipelex/sdk";
 import { requireLiveApi } from "./liveApi";
 
 // This test hits the live Pipelex API configured by PIPELEX_BASE_URL +
@@ -13,16 +13,17 @@ const NO_SUCH_RUN = "run_00000000-0000-0000-0000-000000000000";
 /**
  * Whether the configured base URL serves the progress route, found out before
  * anything is spent: where the route is served, a run id no run has is the
- * platform's `404`. Anything else means it is not: production's gateway
- * answers a path it does not route with `403`, and a bare runner answers with
- * the SDK's `RunLifecycleUnavailableError`.
+ * platform's `run.not_found` problem, read by its code as the route reads it.
+ * Anything else means it is not: production's gateway answers a path it does
+ * not route with a bare `403`, and a bare runner answers with the SDK's
+ * `runtime.unsupported`.
  */
 async function servesProgress(): Promise<boolean> {
   try {
     await new PipelexApiClient().getRunProgress(NO_SUCH_RUN);
     return false;
   } catch (caught) {
-    return caught instanceof ApiResponseError && caught.status === 404;
+    return isProblemError(caught) && caught.code === "run.not_found";
   }
 }
 

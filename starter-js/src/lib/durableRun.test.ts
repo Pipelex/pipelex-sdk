@@ -4,6 +4,8 @@ import {
   ApiUnreachableError,
   RequestArgumentError,
   RunLifecycleUnavailableError,
+  buildProblem,
+  type Problem,
   type RunResults,
 } from "@pipelex/sdk";
 
@@ -18,8 +20,14 @@ vi.mock("@/lib/pipelexClient", () => ({
 }));
 
 import { pollDurableRun, startDurableRun } from "./durableRun";
-import { MODEL_NOT_ENABLED, RATE_LIMITED, WRONG_ITEM_COUNT } from "@/test/fixtures/runReports";
-import { refusedStart } from "@/test/fixtures/refusals";
+import {
+  MODEL_NOT_SERVED,
+  MODEL_NOT_SERVED_PROVIDER_TEXT,
+  RATE_LIMITED,
+  WRONG_ITEM_COUNT,
+  runFailedAnswer,
+} from "@/test/fixtures/runProblems";
+import { REFUSAL_BODY, refusedStart } from "@/test/fixtures/refusals";
 import { BadPipelineOutputError } from "@/types/pipelineError";
 
 beforeEach(() => {
@@ -71,10 +79,23 @@ describe("startDurableRun", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.kind).toBe("bad_request");
-    expect(result.error.message).toBe("The method is invalid.");
-    expect(result.error.hint?.summary).toBe("Fix the bundle, then run it again.");
-    expect(result.error.retry?.retryable).toBe(false);
-    expect(result.error.details).toContain("(model reference: gpt-5.1; suggestions: gpt-5)");
+    expect(result.error.message).toBe(REFUSAL_BODY.detail);
+    expect(result.error.hint?.summary).toBe(REFUSAL_BODY.next_step.detail);
+    expect(result.error.retry?.verdict).toBe("no");
+    expect(result.error.details).toContain("suggestions: gpt-5");
+  });
+
+  it("says a start that failed after it left may have started the run", async () => {
+    start.mockRejectedValueOnce(
+      new ApiUnreachableError("socket hang up", "https://api.pipelex.com", "ECONNRESET", {
+        mayStartRun: true,
+      }),
+    );
+    const result = await startDurableRun(async () => OPTIONS);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("outcome_unknown");
+    expect(result.error.retry?.verdict).toBe("outcome_unknown");
   });
 
   it("classifies a transport error thrown by start", async () => {
@@ -167,86 +188,80 @@ describe("pollDurableRun", () => {
     expect(result.usage.calls[0].modelName).toBe("gpt-4o");
   });
 
-  it("classifies a failed terminal status as run_failed (constructed from the result lookup)", async () => {
-    getRunStatus.mockResolvedValueOnce({ status: "FAILED", degraded: false });
-    getRunResult.mockResolvedValueOnce({
+  /** The results read's `failed` arm, as the SDK reads a `run.failed` answer. */
+  function failedResult(runError: Problem | null, status = "FAILED") {
+    const problem = runFailedAnswer(runError, "run-1", status);
+    return {
       state: "failed",
       pipeline_run_id: "run-1",
-      status: "FAILED",
-      message: "pipe blew up",
-    });
+      status,
+      message: problem.detail,
+      problem,
+      error: runError,
+    };
+  }
+
+  it("classifies a failed terminal status as run_failed (constructed from the result lookup)", async () => {
+    getRunStatus.mockResolvedValueOnce({ status: "FAILED", degraded: false, error: null });
+    getRunResult.mockResolvedValueOnce(failedResult(null));
     const result = await pollDurableRun("run-1", parseFixture);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.kind).toBe("run_failed");
-    expect(result.error.message).toContain("pipe blew up");
+    expect(result.error.message).toBe("The run 'run-1' ended as 'FAILED', without success.");
     expect(result.transient).toBe(false); // a real run failure is terminal
   });
 
-  it("classifies a failed run from the report the results read carries, dated by the status read", async () => {
+  it("classifies a failed run from the problem the results read nests, dated by the status read", async () => {
     getRunStatus.mockResolvedValueOnce({
       status: "FAILED",
       degraded: false,
       finished_at: "2026-09-26T10:01:00+00:00",
       error: WRONG_ITEM_COUNT,
     });
-    getRunResult.mockResolvedValueOnce({
-      state: "failed",
-      pipeline_run_id: "run-1",
-      status: "FAILED",
-      message: `Run finished with status FAILED: ${MODEL_NOT_ENABLED.message}`,
-      error: MODEL_NOT_ENABLED,
-    });
+    getRunResult.mockResolvedValueOnce(failedResult(MODEL_NOT_SERVED));
     const result = await pollDurableRun("run-1", parseFixture);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.transient).toBe(false);
-    expect(result.error.title).toBe("The pipeline run failed: LLM completion");
-    expect(result.error.hint?.summary).toBe(MODEL_NOT_ENABLED.user_action?.detail);
-    expect(result.error.retry?.retryable).toBe(false);
+    expect(result.error.title).toBe(`The pipeline run failed: ${MODEL_NOT_SERVED.title}`);
+    expect(result.error.hint?.summary).toBe(MODEL_NOT_SERVED.next_step.detail);
+    expect(result.error.domain).toBe("operator");
+    expect(result.error.retry?.verdict).toBe("no");
     expect(result.error.support).toBe(
-      "run run-1 · LLMCompletionError · failed 2026-09-26T10:01:00Z",
+      "run run-1 · model.unavailable · failed 2026-09-26T10:01:00Z · request req_gw_5f1c",
     );
-    expect(JSON.stringify(result.error)).not.toContain("not allowed for this integration");
+    expect(JSON.stringify(result.error)).not.toContain(MODEL_NOT_SERVED_PROVIDER_TEXT);
   });
 
-  it("takes the report from the status read on a platform whose results read has none", async () => {
+  it("takes the run's problem from the status read on a platform whose results read nests none", async () => {
     getRunStatus.mockResolvedValueOnce({
       status: "FAILED",
       degraded: false,
       finished_at: null,
       error: RATE_LIMITED,
     });
-    getRunResult.mockResolvedValueOnce({
-      state: "failed",
-      pipeline_run_id: "run-1",
-      status: "FAILED",
-      message: "Run finished with status FAILED; no result available",
-      error: null,
-    });
+    getRunResult.mockResolvedValueOnce(failedResult(null));
     const result = await pollDurableRun("run-1", parseFixture);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.message).not.toContain("no result available");
-    expect(result.error.hint).toBeUndefined(); // wait_and_retry advice is stale on a failed run
-    expect(result.error.retry?.retryable).toBe(true);
-    expect(result.error.support).toBe("run run-1 · LLMCompletionError");
+    expect(result.error.message).toBe(RATE_LIMITED.detail);
+    expect(result.error.hint).toBeUndefined(); // a `wait` step is the retry line's to say
+    expect(result.error.retry?.verdict).toBe("yes");
+    // The run's problem names no request, so the results read's is the one to quote.
+    expect(result.error.support).toBe(
+      "run run-1 · provider.rate_limited · request req_results_409",
+    );
   });
 
-  it("keeps the lookup's sentence for a run that ended with no report", async () => {
+  it("keeps the lookup's sentence for a run that ended with no problem", async () => {
     getRunStatus.mockResolvedValueOnce({ status: "CANCELLED", degraded: false, error: null });
-    getRunResult.mockResolvedValueOnce({
-      state: "failed",
-      pipeline_run_id: "run-1",
-      status: "CANCELLED",
-      message: "Run finished with status CANCELLED; no result available",
-      error: null,
-    });
+    getRunResult.mockResolvedValueOnce(failedResult(null, "CANCELLED"));
     const result = await pollDurableRun("run-1", parseFixture);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.title).toBe("The pipeline run failed");
-    expect(result.error.message).toBe("Run finished with status CANCELLED; no result available");
+    expect(result.error.message).toBe("The run 'run-1' ended as 'CANCELLED', without success.");
     expect(result.error.hint).toBeUndefined();
     expect(result.error.retry).toBeUndefined();
     expect(result.error.support).toBeUndefined();
@@ -293,20 +308,24 @@ describe("pollDurableRun", () => {
     expect(result.transient).toBe(true); // a network blip — keep polling
   });
 
-  it("flags a 5xx gateway error during polling as a transient server_error", async () => {
-    getRunStatus.mockRejectedValueOnce(
-      new ApiResponseError(
-        "bad gateway",
-        "https://api.pipelex.com",
-        502,
-        "Bad Gateway",
-        "",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-      ),
+  /** A status read the API refused, as the SDK's client throws it. */
+  function refusedRead(
+    status: number,
+    body: string,
+    headers: Record<string, string> = {},
+  ): ApiResponseError {
+    return new ApiResponseError(
+      `API GET /v1/runs/run-1/status failed (${status}): ${body}`,
+      "https://api.pipelex.com",
+      status,
+      "",
+      body,
+      { headers },
     );
+  }
+
+  it("flags a 5xx gateway error during polling as a transient server_error", async () => {
+    getRunStatus.mockRejectedValueOnce(refusedRead(502, ""));
     const result = await pollDurableRun("run-1", parseFixture);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -314,38 +333,38 @@ describe("pollDurableRun", () => {
     expect(result.transient).toBe(true); // the run is still executing server-side
   });
 
-  // The SDK's verdict on the read decides, and the error offers no re-run: the
-  // run may still be executing, so running it again would start a second one.
+  // The problem's verdict on the read decides, and the error offers no re-run:
+  // the run may still be executing, so running it again would start a second one.
   it.each([
-    [429, "Too Many Requests", true],
-    [408, "Request Timeout", true],
-    [503, "Service Unavailable", true],
-    [501, "Not Implemented", false],
-    [404, "Not Found", false],
-  ])(
-    "reads a poll tick answered %i by the SDK's verdict",
-    async (status, statusText, transient) => {
-      getRunStatus.mockRejectedValueOnce(
-        new ApiResponseError(
-          statusText,
-          "https://api.pipelex.com",
-          status,
-          statusText,
-          "",
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-        ),
-      );
-      const result = await pollDurableRun("run-1", parseFixture);
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.transient).toBe(transient);
-      expect(result.error.retry).toBeUndefined();
-    },
-  );
+    [429, true],
+    [408, true],
+    [503, true],
+    [501, false],
+    [404, false],
+  ])("reads a poll tick answered %i by its problem's verdict", async (status, transient) => {
+    getRunStatus.mockRejectedValueOnce(refusedRead(status, ""));
+    const result = await pollDurableRun("run-1", parseFixture);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.transient).toBe(transient);
+    expect(result.error.retry).toBeUndefined();
+  });
+
+  it("hands the poll loop the delay a transient read's problem asks for", async () => {
+    const body = JSON.stringify({
+      ...buildProblem("runtime.unavailable", {}, { retryAfter: 9 }),
+      status: 503,
+    });
+    getRunStatus.mockRejectedValueOnce(refusedRead(503, body));
+    const result = await pollDurableRun("run-1", parseFixture);
+    expect(result).toMatchObject({ ok: false, transient: true, retryAfterSeconds: 9 });
+  });
+
+  it("reads the delay from a bare answer's Retry-After header", async () => {
+    getRunStatus.mockRejectedValueOnce(refusedRead(429, "", { "retry-after": "4" }));
+    const result = await pollDurableRun("run-1", parseFixture);
+    expect(result).toMatchObject({ ok: false, transient: true, retryAfterSeconds: 4 });
+  });
 
   it("classifies a RunLifecycleUnavailableError thrown during polling as terminal", async () => {
     getRunStatus.mockRejectedValueOnce(
@@ -360,8 +379,8 @@ describe("pollDurableRun", () => {
 
   it("classifies a base URL the SDK refuses while building the client", async () => {
     buildClient.mockImplementationOnce(() => {
-      throw new RequestArgumentError('Invalid API base URL "https://api.pipelex.com/v1"', {
-        verdict: { errorDomain: "config", retryable: false },
+      throw new RequestArgumentError("Invalid API base URL with a path: it must be host-only.", {
+        problem: buildProblem("client.not_configured", { setting: "base_url" }),
       });
     });
     const result = await pollDurableRun("run-1", parseFixture);

@@ -60,7 +60,7 @@ from pipelex_sdk.errors import CodegenError
 from pipelex_sdk.method_selector import parse_method_selector
 from pipelex_sdk.validation_models import VALIDATION_VIEW_INPUT_FORM, PipelexValidationReport
 
-from scripts.codegen import METHODS_DIR, REPO_ROOT, MethodSource, explain, generated_package_dir, insecure_base_url_reason
+from scripts.codegen import METHODS_DIR, REPO_ROOT, MethodSource, explain, fault_lines, generated_package_dir, insecure_base_url_reason
 from widget.manifest import MANIFEST_FILENAME, SELECTOR_METHOD_ID, SELECTOR_METHOD_REF, MethodSelector, write_manifest
 
 EXIT_OK = 0
@@ -826,8 +826,8 @@ async def run_add_method(argv: list[str]) -> int:
             return EXIT_REFUSED
         if not isinstance(verdict, PipelexValidationReport):
             print(f"add-method: the method does not validate: {verdict.message}", file=sys.stderr)
-            for item in verdict.validation_errors:
-                print(f"    {item.source or '?'}: {item.message}", file=sys.stderr)
+            for line in fault_lines(verdict.errors):
+                print(line, file=sys.stderr)
             return EXIT_REFUSED
         if not verdict.is_runnable or verdict.pending_signatures:
             print("add-method: the method validates but cannot run — it still has unimplemented pipe signatures.", file=sys.stderr)

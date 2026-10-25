@@ -28,14 +28,19 @@ import process from "node:process";
 // `@next/env` is CommonJS — see the same note in `generate.mts`.
 import nextEnv from "@next/env";
 import {
-  ApiResponseError,
   CodegenLockError,
   DEFAULT_API_BASE_URL,
   PipelexApiClient,
   runCodegenCheck,
 } from "@pipelex/sdk";
 
-import { assertSelectorSupport, explainSelectorFailure, selectorKindsOf } from "./api.mts";
+import {
+  assertSelectorSupport,
+  describeItems,
+  describeRequestFailure,
+  explainSelectorFailure,
+  selectorKindsOf,
+} from "./api.mts";
 import {
   assertSecureBaseUrl,
   CONTRACTS_FILENAME,
@@ -61,24 +66,27 @@ export const EXIT_FAILED = 1;
 
 /**
  * How a failed call to `route` reads in the console. Both routes this script
- * calls report the same way, and the status plus the server's own message is
- * the part that tells a stale commit apart from an expired key.
+ * calls report the same way, from the failure's problem: the status, its
+ * detail and code, and its next step, which is the part that tells a stale
+ * commit apart from an expired key.
  *
- * A selector method takes the selector-resolution reading of a 404 first: on a
- * committed tree that used to resolve, "no package at this address any more" is
- * the whole story, and the server spells it out. By the `/v1/pipe-io` call,
- * `/v1/codegen` has resolved the same selector, so that call passes `source` only
- * for a 404 the API typed: an untyped one is the route missing, not the method.
+ * A selector method takes the selector-resolution reading of a not-found
+ * first: on a committed tree that used to resolve, "no package at this address
+ * any more" is the whole story, and the server spells it out. A route the base
+ * URL does not serve (`request.not_found`, which is also how the SDK reads a
+ * bare `404`) is never that reading: it is the route missing, not the method.
  */
-function requestDetail(error: unknown, route: string, source?: MethodSource): string {
+function requestDetail(
+  error: unknown,
+  route: string,
+  baseUrl: string,
+  source?: MethodSource,
+): string {
   if (source?.kind === "selector") {
     const selectorFailure = explainSelectorFailure(error, source.selector);
     if (selectorFailure !== null) return selectorFailure;
   }
-  if (error instanceof ApiResponseError) {
-    return `HTTP ${error.status} from ${route} — ${error.serverMessage ?? error.message}`;
-  }
-  return error instanceof Error ? error.message : String(error);
+  return describeRequestFailure(error, route, baseUrl);
 }
 
 async function runVerifyInner(): Promise<number> {
@@ -180,16 +188,16 @@ async function runVerifyInner(): Promise<number> {
       );
       if (!response.is_valid) {
         console.error(`\n✗ ${method.name} — the closure does not resolve:`);
-        for (const item of response.validation_errors) {
-          console.error(`    ${item.source ?? "?"}: ${item.message}`);
-        }
+        for (const line of describeItems(response.errors)) console.error(line);
         failed = true;
         continue;
       }
       liveFingerprint = response.crate_fingerprint;
       liveEngine = response.engine_version;
     } catch (error) {
-      console.error(`\n✗ ${method.name} — ${requestDetail(error, "POST /v1/codegen", method)}`);
+      console.error(
+        `\n✗ ${method.name} — ${requestDetail(error, "POST /v1/codegen", baseUrl, method)}`,
+      );
       failed = true;
       continue;
     }
@@ -211,9 +219,7 @@ async function runVerifyInner(): Promise<number> {
       const response = await client.pipeIo(pipeIoRequest(method));
       if (!response.is_valid) {
         console.error(`\n✗ ${method.name} — the method no longer resolves:`);
-        for (const item of response.validation_errors) {
-          console.error(`    ${item.source ?? "?"}: ${item.message}`);
-        }
+        for (const line of describeItems(response.errors)) console.error(line);
         failed = true;
         continue;
       }
@@ -238,10 +244,8 @@ async function runVerifyInner(): Promise<number> {
         continue;
       }
     } catch (error) {
-      const aboutTheMethod = error instanceof ApiResponseError && error.errorType !== undefined;
       console.error(
-        `\n✗ ${method.name} — ` +
-          requestDetail(error, "POST /v1/pipe-io", aboutTheMethod ? method : undefined),
+        `\n✗ ${method.name} — ` + requestDetail(error, "POST /v1/pipe-io", baseUrl, method),
       );
       failed = true;
       continue;

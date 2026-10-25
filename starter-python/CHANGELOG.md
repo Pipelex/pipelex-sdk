@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`widget/errors.py` reads a failure from its problem document (Breaking)**: the starter runs on `pipelex-sdk` 0.53.0, moved from 0.48.1, with `mthds` 0.25.0 unchanged, and every SDK error is presented from the MTHDS problem it carries, `exc.problem`, never from its class or from the `error_type`, `user_action`, `retryable` and `validation_errors` the SDK no longer has, so a refusal, or a failed run read from its own problem nested in `run.failed`, prints its reason, each fault with the pipe, field or file it names, who acts, its next step, whether running it again can succeed (an unknown outcome pointing at `widget detached status <id>`) and a line to quote to support with the run, the code and the request id. `problem_lines` takes a problem where it took the error, `present_failed_run` takes the run's problem as `run_error` where it took a stored report, `report_lines` is gone, and the blocking group passes `blocking=True` to `present_error`, which is how a run cut off at the gateway is told to rerun with `widget attended`. `make codegen` and `make add-method` word a refusal from its problem's code and list its faults from `errors`, and a bare `403` with no problem document names both the key and the base URL, since a gateway answers it both to a key it refuses and to a path it does not route. The SDK's other changes in between, an organization's branding, its files and copying a method into another organization among them, reach nothing the starter calls.
+
 ## [v0.51.0] - 2026-10-23
 
 ### Added

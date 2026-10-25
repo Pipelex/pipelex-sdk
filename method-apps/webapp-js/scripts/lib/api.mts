@@ -5,9 +5,19 @@
  * offline check has to run in CI with no key — so anything that makes a request
  * lives here instead. What is here is exactly the part the three keyed entry
  * points must agree on: the handshake that decides whether a base URL can
- * resolve a method selector at all, and the one line that explains a failure.
+ * resolve a method selector at all, and the lines that explain a failure, each
+ * read from the problem the SDK raises it with: its code, its detail and its
+ * next step, never its message.
  */
-import { ApiResponseError, type PipelexApiClient, type ValidateMethodSelector } from "@pipelex/sdk";
+import {
+  ApiResponseError,
+  formatItem,
+  isProblemError,
+  readProblemBody,
+  type PipelexApiClient,
+  type ProblemItem,
+  type ValidateMethodSelector,
+} from "@pipelex/sdk";
 
 import { describeSelector, selectorKind } from "./shared.mts";
 
@@ -67,22 +77,97 @@ export function selectorKindsOf(
 }
 
 /**
+ * Whether a failure is the base URL not serving the route at all: the API's
+ * own `request.not_found`, or the reading the SDK gives a bare `404` from an
+ * edge or an older runner that has no such route.
+ */
+export function isRouteMissing(error: unknown): boolean {
+  return error instanceof ApiResponseError && error.code === "request.not_found";
+}
+
+/**
+ * Whether a refusal is a bare `403`, one that carried no problem document. A
+ * gateway answers a path it does not route with exactly that, as it answers a
+ * key it refuses, so the answer cannot say which it was: the SDK reads the
+ * status as `auth.invalid_credential`, but a base URL that does not serve the
+ * route is just as likely.
+ */
+export function isBareForbidden(error: unknown): error is ApiResponseError {
+  return (
+    error instanceof ApiResponseError &&
+    error.status === 403 &&
+    readProblemBody(error.responseBody) === undefined
+  );
+}
+
+/**
  * The one line a selector-resolution failure reads as.
  *
- * A 404 from a selector call means something quite different from a 404 on a
- * route: the route is there and the method is not. The server's own message is
- * the useful half — for a bad address it lists the packages the repository does
- * contain — so it is printed verbatim under a line naming the selector, rather
- * than replaced by a guess about `PIPELEX_BASE_URL`.
+ * A method the API cannot find, answered with a problem of its own, means
+ * something quite different from a route the base URL does not serve: the
+ * route is there and the method is not. The problem's detail is the useful
+ * half — for a bad address it names what the repository does contain — so it
+ * is printed verbatim under a line naming the selector, with its next step,
+ * rather than replaced by a guess about `PIPELEX_BASE_URL`.
  *
- * Returns `null` when the error is not a selector-resolution failure, leaving
- * the caller's general explanation in charge.
+ * Returns `null` when the error is not a selector-resolution failure — the
+ * route missing, or a failure other than a not-found — leaving the caller's
+ * general explanation in charge.
  */
 export function explainSelectorFailure(
   error: unknown,
   selector: ValidateMethodSelector,
 ): string | null {
-  if (!(error instanceof ApiResponseError) || error.status !== 404) return null;
-  const detail = error.serverMessage ?? error.message;
-  return [`the API could not resolve ${describeSelector(selector)}.`, `  ${detail}`].join("\n");
+  if (!(error instanceof ApiResponseError) || isRouteMissing(error)) return null;
+  if (error.problem.status !== 404) return null;
+  return [
+    `the API could not resolve ${describeSelector(selector)}.`,
+    `  ${error.problem.detail} (${error.code})`,
+    ...nextStepLines(error.problem.next_step?.detail),
+  ].join("\n");
+}
+
+/**
+ * A failed request as the scripts print it, read from its problem: the status
+ * and the route, the problem's detail and code, then its next step and the
+ * request's id on lines of their own. A failure that got no answer (the API
+ * unreachable, a refused argument) is its problem's detail and code alone.
+ *
+ * A bare `403` ({@link isBareForbidden}) names both of its possible causes,
+ * the key and the base URL, rather than the SDK's reading of the status alone,
+ * which would send the developer to a key that may well be fine.
+ */
+export function describeRequestFailure(error: unknown, route: string, baseUrl?: string): string {
+  if (isBareForbidden(error)) {
+    return [
+      `HTTP 403 from ${route}, with no problem document: either the API key was refused, or the base URL does not serve this route, which a gateway answers alike.`,
+      "  Check PIPELEX_API_KEY in .env.local, and that PIPELEX_BASE_URL" +
+        (baseUrl !== undefined ? ` (${baseUrl})` : "") +
+        ` points at a Pipelex API that serves ${route}.`,
+      ...(error.requestId !== undefined ? [`  Request id: ${error.requestId}`] : []),
+    ].join("\n");
+  }
+  if (error instanceof ApiResponseError) {
+    return [
+      `HTTP ${error.status} from ${route} — ${error.problem.detail} (${error.code})`,
+      ...nextStepLines(error.problem.next_step?.detail),
+      ...(error.requestId !== undefined ? [`  Request id: ${error.requestId}`] : []),
+    ].join("\n");
+  }
+  if (isProblemError(error)) {
+    return [
+      `${route} failed — ${error.problem.detail} (${error.code})`,
+      ...nextStepLines(error.problem.next_step?.detail),
+    ].join("\n");
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** A verdict's problem items as printed lines: each one's code, what is wrong and where. */
+export function describeItems(items: readonly ProblemItem[]): string[] {
+  return items.map((item) => `    ${formatItem(item)}`);
+}
+
+function nextStepLines(detail: string | undefined): string[] {
+  return detail ? [`  Next step: ${detail}`] : [];
 }

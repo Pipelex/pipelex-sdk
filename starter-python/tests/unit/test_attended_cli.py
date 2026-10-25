@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from pipelex_sdk.error_models import RunErrorReport, UserAction
-from pipelex_sdk.errors import ApiResponseError, RunFailedError
+from mthds.protocol.problem.models import Problem
+from pipelex_sdk.errors import ApiResponseError, RunFailedError, run_failed_problem
 from pipelex_sdk.runs import RunResults, RunStatus
 from pytest_mock import MockerFixture
 from typer.testing import CliRunner
@@ -116,23 +116,39 @@ class TestAttendedCli:
         assert attended_mock.await_args.kwargs["inputs"] == {"image_prompt": "a cat wearing a hat"}
 
     def test_a_failed_run_prints_the_reason_the_next_step_and_the_retry_advice(self, mocker: MockerFixture):
-        report = RunErrorReport(
-            title="LLM completion",
-            message="The model refused the request.",
-            retryable=False,
-            user_action=UserAction(kind="change_input", detail="Rephrase the prompt, or pick another model."),
+        # The run's own problem, nested in the `run.failed` the results read answers, as `wait_for_result` raises it.
+        run_error = Problem.model_validate(
+            {
+                "type": "https://mthds.ai/errors/model.content_refused",
+                "title": "The provider refused the content",
+                "detail": "The model 'gpt-5.5' or its provider refused the request's content on policy grounds.",
+                "code": "model.content_refused",
+                "domain": "input",
+                "retry": "no",
+                "next_step": {
+                    "kind": "change_input",
+                    "detail": "Change the inputs so that they meet the provider's content policy, then send the request again.",
+                },
+            }
         )
         error = RunFailedError(
-            "Run finished with status FAILED: The model refused the request.", run_id="run-1", status=RunStatus.FAILED, error=report
+            "Run finished with status FAILED",
+            run_id="run-1",
+            status=RunStatus.FAILED,
+            problem=run_failed_problem(run_id="run-1", status=RunStatus.FAILED, run_error=run_error),
         )
         mocker.patch("widget.attended.cli.start_and_wait", side_effect=error)
         result = runner.invoke(app, ["attended", "extract-entities", "some text"])
         assert result.exit_code == 1
         output = " ".join(result.output.split())
         assert "Run run-1 failed." in output
-        assert "Reason: LLM completion — The model refused the request." in output
-        assert "Next step: Rephrase the prompt, or pick another model." in output
-        assert "Retry: running it again will fail the same way until the cause is fixed." in output
+        assert (
+            "Reason: The provider refused the content — The model 'gpt-5.5' or its provider refused the request's content on policy grounds."
+            in output
+        )
+        assert "Next step: Change the inputs so that they meet the provider's content policy, then send the request again." in output
+        assert "Retry: running it again unchanged will fail the same way." in output
+        assert "For support: run run-1 · model.content_refused" in output
 
     def test_a_refused_start_prints_the_reason_the_pipe_and_the_next_step(self, mocker: MockerFixture, refused_start: ApiResponseError):
         mocker.patch("widget.attended.cli.start_and_wait", side_effect=refused_start)
@@ -140,6 +156,8 @@ class TestAttendedCli:
         assert result.exit_code == 1
         output = " ".join(result.output.split())
         assert "The API answered 422 Unprocessable Entity." in output
-        assert "Reason: Validate bundle — Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found" in output
-        assert "Pipe: draft_pitch" in output
-        assert "Next step: Edit the bundle as each validation error says" in output
+        assert "Reason: The method does not validate." in output
+        assert "In pipe draft_pitch, field model: Pipe 'draft_pitch' (PipeLLM), field 'model': Model handle 'gpt-5.1' was not found" in output
+        assert "Who acts: whoever authors the method, by changing it." in output
+        assert "Next step: Fix each fault the problem's errors list, then validate the method again." in output
+        assert "For support: method.invalid · request req_a3dd6900-7909-48d3-b551-0140e73ac7fc" in output
