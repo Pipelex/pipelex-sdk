@@ -48,7 +48,7 @@ import {
   runStatusFilter,
   selectionIncludesMainStuff,
   throwIfAborted,
-  withCheckedProgressDegradations,
+  withCheckedProgressHealth,
   type GetRunResultOptions,
   type RunProgress,
   type RunRead,
@@ -2539,7 +2539,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
         `a snapshot whose ${fault}`,
       );
     }
-    return withCheckedProgressDegradations(answer as RunProgress);
+    return withCheckedProgressHealth(answer as RunProgress);
   }
 
   /**
