@@ -687,6 +687,17 @@ class RunProgressBodies:
         "failing_since": "2026-10-12T09:30:33.480Z",
         "ends_at": "2026-10-12T09:45:33.480Z",
     }
+    #: The problem the platform serves for a failure only the engine observed, the retried attempt of item 2's
+    #: second step: `runtime.unexpected`, in the caller's view.
+    RETRIED_PROBLEM: ClassVar[dict[str, Any]] = {
+        "type": "https://mthds.ai/errors/runtime.unexpected",
+        "title": "An unexpected error occurred",
+        "detail": "The runtime met an unexpected error.",
+        "code": "runtime.unexpected",
+        "domain": "runtime",
+        "retry": "no",
+        "next_step": {"kind": "report", "detail": "Report this to whoever runs the runtime."},
+    }
     WORKED_EXAMPLE: ClassVar[dict[str, Any]] = {
         "pipeline_run_id": "run_7Qd2kV",
         "mode": "live",
@@ -822,7 +833,7 @@ class RunProgressBodies:
                 "started_at": "2026-10-12T09:30:31.930Z",
                 "ended_at": None,
                 "attempts": 2,
-                "last_failure": {"message": "An internal error occurred.", "at": "2026-10-12T09:30:52.317Z"},
+                "last_failure": {"problem": RETRIED_PROBLEM, "at": "2026-10-12T09:30:52.317Z"},
             },
             {
                 "path": "filings.review_filings/step_3/item_3",

@@ -91,29 +91,29 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
 
-  /* The organization's brand, beyond the button colour (`--primary`). A
-   * branded app sets these in the `<style>` its page renders
-   * (`src/lib/brandStyle.ts`), and none of them is defined anywhere else, so
-   * each falls back to what an unbranded app shows: the button colour for the
-   * brand's ink, the neutral muted fill for its pale fill, and the page for
-   * the header band.
+  /* The organization's colours, beyond the button colour (`--primary`), each
+   * named after the role it paints. A branded app sets these in the `<style>`
+   * its page renders (`src/lib/brandStyle.ts`), only for the colours its team
+   * set, and none of them is defined anywhere else, so each falls back to what
+   * an unbranded app shows: the button colour for the link ink, the neutral
+   * muted fill for the selected fill, and the page for the header band.
    *
-   * `--brand` is the accent's INK, the accent darkened or lightened until it
-   * reads as text on the page, never the raw accent: `text-brand` always
-   * reads. `--brand-muted` is the pale accent fill and
-   * `--brand-muted-foreground` the ink on it. The kernel's own controls read
-   * the same three tokens through arbitrary values that need no mapping here.
-   * `--app-header` is the band behind the logo, with `--app-header-foreground`
-   * on it.
+   * `--link` is the accent's INK, the accent darkened or lightened until it
+   * reads as text on the page and on the selected fill, never the raw accent:
+   * `text-link` always reads, on the page and on `bg-selected`. `--selected`
+   * is the pale accent fill of something selected or in progress. The
+   * kernel's own controls read the same two tokens through arbitrary values
+   * that need no mapping here, and draw their focus in `--ring`, which the
+   * branded sheet sets to the same ink. `--app-header` is the band behind the
+   * logo, with `--app-header-foreground` on it.
    *
-   * The pale fill falls back to `--muted`, never to a `color-mix()` of the
+   * The selected fill falls back to `--muted`, never to a `color-mix()` of the
    * button colour as the kernel's own classes do: Tailwind compiles a theme
    * value holding `color-mix()` with a fallback for a browser without it, and
    * that fallback is the mixed colour alone, here the button colour, solid,
    * under text in that same colour. */
-  --color-brand: var(--brand, var(--primary));
-  --color-brand-muted: var(--brand-muted, var(--muted));
-  --color-brand-muted-foreground: var(--brand-muted-foreground, var(--brand, var(--primary)));
+  --color-link: var(--link, var(--primary));
+  --color-selected: var(--selected, var(--muted));
   --color-app-header: var(--app-header, var(--page));
   --color-app-header-foreground: var(--app-header-foreground, var(--page-foreground));
 }

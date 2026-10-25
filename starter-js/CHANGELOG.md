@@ -6,6 +6,12 @@
 
 - **The starter reads every failure from its problem document (Breaking)**: `classifyPipelineError` classifies an SDK error by the code of the MTHDS problem it carries, never by its class, HTTP status or message, and shows the problem's title, detail, next step and retry verdict, the domain as who must act (`<ErrorDisplay>` tinting a fault on the person's side amber and the service's red), and a support line with the run, the code and the request id. A failed run is read from its own problem, nested in `run.failed`, a refused run lists each of its `errors` items with where it is and its close matches, a durable start whose outcome is unknown is the new kind `outcome_unknown`, and `PipelineError` gains `domain`, `code` and `requestId` while `retry` becomes `{ verdict, summary, afterSeconds? }`. A failed poll is read again only when its problem's verdict says a retry can pass, waiting at least its `retry_after`, the progress route reads a run it does not know yet from `run.not_found` and a final refusal from the problem's verdict and domain, and `make add-method`, `make codegen` and `make codegen-verify` word a refusal from its problem's code and detail and list its faults from `errors`, a bare `403` with no problem document naming both the key and the base URL.
 
+## [v0.53.0] - 2026-10-25
+
+### Security
+
+- **Next.js 16.4.2**: the starter requires `next` and `eslint-config-next` at `^16.4.2` and locks 16.4.2, past the Next.js advisories that covered 16.3.8: the critical unauthenticated remote code executions in the Image Optimization API with SVG files (GHSA-2464-fhr4-w9xw) and in `use cache` functions returning typed arrays (GHSA-673q-mjm6-r5xr), and the denial of service in App Router Server Actions (GHSA-p3m5-59mp-jv5r). The lock also takes `sharp` 0.35.5, which `next` 16.4.2 requires, past the `librsvg` advisory GHSA-wq5f-xc86-pv6w.
+
 ## [v0.51.0] - 2026-10-23
 
 ### Changed

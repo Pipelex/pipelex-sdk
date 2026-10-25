@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.53.0] - 2026-10-25
 
 ### Added
 
@@ -14,6 +14,7 @@
 - **`ApiResponseError` reads the answer as its problem (Breaking)**: its `problem` is the body as received when it is a problem document, and otherwise the reading of the edge's bare answer by its status, `client.outcome_unknown` for a `start` or an `execute` the gateway cut off; `status`, `status_text`, `response_body`, `headers`, `request_url`, `api_url` and `request_id` keep the answer itself, and it takes `problem` and `may_start_run` when built by hand.
 - **A start whose outcome is unknown reads as `retry` `outcome_unknown` (Breaking)**: an error from a `start` or a blocking `execute` that may have created a run although the call failed carries `client.outcome_unknown`, whose `retry` is `outcome_unknown`, where it carried `run_may_have_started=True`; `PipelineExecuteTimeoutError` always carries it.
 - **A failed run's error is the run's problem (Breaking)**: `RunRead.error`, `RunResultFailed.error`, `RunHistoryItem.error` and `PipelineRun.error` are the run's own `Problem`, or `None`, read leniently so that anything but a problem document reads as `None`, where they were the stored `RunErrorReport`; `RunFailedError` loses `error` for `run_error`.
+- **A progress invocation's `last_failure` carries its problem (Breaking)**: `ProgressFailure` loses `message` for `problem`, the standard's `Problem` in the caller's view: the problem that ended the invocation, or that of the latest failure of an attempt being tried again; a `last_failure` whose `problem` is not a problem document reads as `None`, and an `at` that is not a string reads as `None` with its problem kept, so read `last_failure.problem` and branch on its `code`.
 - **Verdicts list their faults as problem items (Breaking)**: `PipelexInvalidReport.errors` and `CrateInvalidReport.errors`, a valid verdict's `warnings`, and `MethodLoadError`'s `problem.errors` are the standard's `ProblemItem`s, read from the answer's `errors` member by member and kept as they are when a verdict built in code is given `ProblemItem`s, where they were `validation_errors` of `ValidationErrorItem`s; `MethodLoadError` loses `validation_errors`, and the `pipelex-sdk` command lists a method's faults from them.
 - **The results read's `409` is read by its code (Breaking)**: `get_run_result` reads a `409` `run.failed` as the `failed` arm and a `409` `run.not_finished` as the `running` arm, whose `retry_after_seconds` is the problem's `retry_after` rounded up to whole seconds, else the `Retry-After` header's, and raises any other `409` as an `ApiResponseError`, where every `409` was the `failed` arm.
 - **A refused credential reads by its status**: `UploadAuthenticationError` and `ArtifactAuthenticationError`, raised by `upload_file` and `download_artifacts`, carry the server's problem when the route answered one, and otherwise read a bare `401` as `auth.missing_credential` and a bare `403` as `auth.invalid_credential`, whether or not the client holds an API key, as `@pipelex/sdk` reads them; `ArtifactCapableClient` no longer asks for `api_key`.
@@ -21,18 +22,26 @@
 - **The method and idempotency codes are registry codes (Breaking)**: `MethodErrorCode` is `UPDATE_CONFLICT`, `BEING_DELETED`, `NOT_PUBLISHED`, `NOT_FOUND`, `ORGANIZATION_NOT_FOUND` and `COPY_TOO_LARGE`, valued `pipelex.catalog.*` and `pipelex.org.not_found`, and `IdempotencyErrorCode` is `KEY_IN_USE` and `CONFLICT`, valued `request.idempotency_key_in_use` and `request.idempotency_conflict`.
 - **A failure's own vocabulary is its `reason` (Breaking)**: `RejectedAssetError`, `TestFileRefusedError`, `UploadTransportError`, `ArtifactFetchError` and `MethodFileTransferError` name why they failed as `reason`, typed `RejectedAssetReason`, `TestFileRefusalReason`, `UploadTransportReason` and `MethodFileTransferReason`, and `ApiUnreachableError` names its network failure `network_code`.
 - **The codegen errors carry problems**: `CodegenError` and `CodegenLockError` carry `problem` as every other error does, each raise site stating its cause: `client.file_unreadable` for a malformed lock, `client.tool_outdated` for a format this build does not read, `client.write_failed` and `client.target_exists` for a tree the writer cannot write.
-- **A duplicate refused for a bundle naming the original's run files**: `MethodCopyRefused`, `MethodCopyRefusalReason.BUNDLE_NAMES_OTHER_STORAGE`, `BundleStorageReference`, `copy_method` and `docs/method-copy.md` describe the refusal the platform now answers a duplicate too, when a `.mthds` file names a stored file under the original method's own run files (`pipelex-storage://<org_id>/<method_id>/…`), which erasing the original would remove, beside the references the destination cannot read; the verdict, its reason `bundle_names_other_storage` and its shape are unchanged, so a caller branching on `outcome` needs nothing new.
 
 ### Fixed
 
 - **A download failure the SDK cannot place reads as `unknown`**: an item of `download_artifacts` that failed for a reason neither the fetch nor the write of its file names carries the `error.code` `unknown`, where it carried `network`, which read as a failure a retry can pass, as `@pipelex/sdk` labels it.
-- **The copy's documented refusals**: `copy_method`'s docstring and `docs/method-copy.md` match the platform's answers: the `409` of a tree the organization no longer holds whole has the `domain` `runtime` and the `retry` `no`, the `413` `request.too_large` also refuses a `name` that leaves the copy's row no room for a publish, a platform with no usable storage credentials answers a `500` `pipelex.storage.not_configured`, whose `retry` is `no`, and the `503` `runtime.unavailable` also covers a DynamoDB failure, its `detail` naming the copy's method id when the row could not be confirmed, a copy that may stand and that a retry may make twice; a copy of an empty draft, and its `copied_from`, carry a `None` `draft_digest`.
 
 ### Removed
 
 - **The verdict vocabulary (Breaking)**: `pipelex_sdk.error_verdicts` (`error_verdict_of`, `fallback_verdict`, `ErrorVerdict`, `ErrorDomain`, `run_may_have_started_of`) and `pipelex_sdk.run_may_have_started` are gone, as is every error's `retryable`, `error_domain` and `run_may_have_started`; read `effective_domain` and `effective_retry` off the problem.
 - **The hosted members of `ApiResponseError` (Breaking)**: `error_type`, `server_message`, `code`, `type_uri`, `title`, `instance`, `error_category`, `user_action`, `errors`, `validation_errors` and `problem_document` are gone; every one of them is a member of `problem`, read there.
 - **The hand-written error and verdict types (Breaking)**: `pipelex_sdk.error_models` (`RunErrorReport`, `UserAction`, `ProviderErrorMetadata`, `MigrationErrorBlock`, `FieldError`, `ProblemUserAction`, `HostedProblemMembers`) and the validation models' `ValidationErrorItem`, `ValidationErrorCategory`, `SuggestedFix`, `FixSafety`, `FixOpKind` and `FixOp` variants are gone, replaced by the standard's `Problem`, `ProblemItem`, `SuggestedFix` and `FixOp` from `mthds.protocol.problem.models`.
+
+## [v0.52.0] - 2026-10-24
+
+### Changed
+
+- **A duplicate refused for a bundle naming the original's run files**: `MethodCopyRefused`, `MethodCopyRefusalReason.BUNDLE_NAMES_OTHER_STORAGE`, `BundleStorageReference`, `copy_method` and `docs/method-copy.md` describe the refusal the platform now answers a duplicate too, when a `.mthds` file names a stored file under the original method's own run files (`pipelex-storage://<org_id>/<method_id>/…`), which erasing the original would remove, beside the references the destination cannot read; the verdict, its reason `bundle_names_other_storage` and its shape are unchanged, so a caller branching on `outcome` needs nothing new.
+
+### Fixed
+
+- **The copy's documented refusals**: `copy_method`'s docstring and `docs/method-copy.md` match the platform's answers: the `409` `conflict` of a tree the organization no longer holds whole is `runtime` and told from a reused key's `input` one by `error_domain`, the `413` also refuses a `name` that leaves the copy's row no room for a publish, the `500` is not retryable when the platform has no storage credentials, and the `503` also covers a DynamoDB failure, its `detail` naming the copy's method id when the row could not be confirmed, a copy that may stand and that a retry may make twice; a copy of an empty draft, and its `copied_from`, carry a `None` `draft_digest`.
 
 ## [v0.51.0] - 2026-10-23
 
