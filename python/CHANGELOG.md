@@ -6,10 +6,13 @@
 
 - **The method version of each file use's run**: `FileUse`, each use in the page `get_file` answers, gains `method_version`, the published version number its run ran or `"draft"` for a run of the draft, so a client tells a run of a published version from a run of the draft without reading any run; it is `None` on an example's use, on a run of an inline source and on a use recorded before the platform carried it, and a use answered without it, by a platform that predates it, or with anything but an integer or `"draft"`, which is never coerced, reads as `None` and still validates (`docs/files.md`).
 
+### Changed
+
+- **A method version is never coerced (Breaking)**: every field naming a method version takes only an integer, with `"draft"` and `None` where the field allows them, where a boolean, a numeric string or a float was coerced into a version (`True` read as `1`, `"3"` as `3`): the `method_version` of `FileOrigin`, `PipelexRunResultStart`, `PipelexExecuteResult`, `RunPublic`, `RunRead`, `RunHistoryItem` and `PipelineRun`, which `RunDetail` inherits, `MethodVersionSummary.version`, the `latest_version` of `MethodData` and `MethodSummary`, and `ParsedMethodSelector.version`. An answer carrying such a value is now one the SDK cannot read (`client.response_unreadable`).
+
 ### Fixed
 
 - **A file use's `created_by` that is not a string reads as `None`**: `FileUse.created_by` reads a member of another type as `None`, as `@pipelex/sdk` reads it, where it failed the whole `get_file` answer as one the SDK cannot read.
-- **A method version is never coerced**: every field naming a method version takes only an integer, with `"draft"` and `None` where the field allows them, where a boolean, a numeric string or a float was coerced into a version (`True` read as `1`, `"3"` as `3`): the `method_version` of `FileOrigin`, `PipelexRunResultStart`, `PipelexExecuteResult`, `RunPublic`, `RunRead`, `RunHistoryItem` and `PipelineRun`, which `RunDetail` inherits, `MethodVersionSummary.version`, the `latest_version` of `MethodData` and `MethodSummary`, and `ParsedMethodSelector.version`. An answer carrying such a value is now one the SDK cannot read (`client.response_unreadable`).
 
 ## [v0.54.1] - 2026-10-25
 
