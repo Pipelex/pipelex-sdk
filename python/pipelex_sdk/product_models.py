@@ -1209,8 +1209,10 @@ class FileOrigin(BaseModel):
     method_id: str | None = None
     """The method whose run made the file, or the method a test file was made for; `None` otherwise."""
 
-    method_version: int | Literal["draft"] | None = None
-    """The published version number or `"draft"` that ran, for a file made by a saved method's run."""
+    method_version: StrictInt | Literal["draft"] | None = None
+    """The published version number or `"draft"` that ran, for a file made by a saved method's run. Read strictly:
+    a value that is neither an integer nor `"draft"`, such as a boolean, a numeric string or a float, is never coerced
+    into a version, and the record carrying it is an answer the SDK cannot read."""
 
 
 class FileSummary(BaseModel):
@@ -1339,11 +1341,12 @@ class FileUse(BaseModel):
     created_at: str
     """ISO-8601 instant the use was recorded."""
 
-    created_by: str | None = None
+    created_by: Annotated[StrictStr | None, WrapValidator(none_when_it_does_not_fit)] = None
     """The member who started the run, or who saved the example: the holder's own creator, copied onto the use when it
     was recorded, so a client tells its own runs among a file's uses without reading any run. `None` on a use recorded
     before uses carried it, until the platform's stored-files migration fills it, and on every use from a platform
-    that predates the field, which leaves it out."""
+    that predates the field, which leaves it out. Read as `@pipelex/sdk` reads it: a member that is not a string reads
+    as `None` and the use still validates."""
 
     method_version: Annotated[StrictInt | Literal["draft"] | None, WrapValidator(none_when_it_does_not_fit)] = None
     """The method version the use's run ran: the published version's number, or `"draft"` for a run of the method's

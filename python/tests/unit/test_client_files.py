@@ -287,6 +287,27 @@ class TestClientFiles:
         assert all("created_by" not in use.model_fields_set for use in detail.uses.items)
 
     @pytest.mark.parametrize(
+        "created_by",
+        [
+            pytest.param(42, id="number"),
+            pytest.param(True, id="boolean"),
+            pytest.param({"user_id": "user_1"}, id="object"),
+            pytest.param(["user_1"], id="list"),
+        ],
+    )
+    def test_get_reads_a_creator_that_is_not_a_string_as_none(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, created_by: object
+    ) -> None:
+        """A `created_by` that is not a string reads as `None`, as `@pipelex/sdk` reads it, and the use still validates."""
+        example_use = {**FileBodies.DETAIL["uses"]["items"][0], "created_by": created_by}
+        patch_send(api_client, wire_response(200, json_body={**FileBodies.DETAIL, "uses": {"items": [example_use], "next_cursor": None}}))
+
+        detail = asyncio.run(api_client.get_file(FileBodies.FILE_ID))
+
+        assert detail.uses.items[0].created_by is None
+        assert detail.uses.items[0].holder_id == "ex_1"
+
+    @pytest.mark.parametrize(
         "method_version",
         [
             pytest.param(3, id="version-number"),
@@ -675,3 +696,43 @@ class TestClientFiles:
         assert record.kind == FileKind.GENERATED
         assert record.role == FileRole.FINAL
         assert record.origin.method_version == 3
+
+    @pytest.mark.parametrize(
+        "method_version",
+        [
+            pytest.param(3, id="version-number"),
+            pytest.param("draft", id="draft"),
+            pytest.param(None, id="none"),
+        ],
+    )
+    def test_a_records_origin_reads_the_method_version_that_ran(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, method_version: int | str | None
+    ) -> None:
+        origin = {**FileBodies.OUTPUT_RECORD["origin"], "method_version": method_version}
+        patch_send(api_client, wire_response(200, json_body={"items": [{**FileBodies.OUTPUT_RECORD, "origin": origin}]}))
+
+        records = asyncio.run(api_client.get_files_by_uri(cast("str", FileBodies.OUTPUT_RECORD["uri"])))
+
+        assert records.items[0].origin.method_version == method_version
+        assert type(records.items[0].origin.method_version) is type(method_version)
+
+    @pytest.mark.parametrize(
+        "method_version",
+        [
+            pytest.param(True, id="boolean"),
+            pytest.param("3", id="numeric-string"),
+            pytest.param(2.0, id="float"),
+        ],
+    )
+    def test_a_records_origin_refuses_a_method_version_that_is_neither_an_integer_nor_draft(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, method_version: object
+    ) -> None:
+        """An origin's `method_version` is never coerced into a version: the record carrying it is an answer the SDK cannot read."""
+        origin = {**FileBodies.OUTPUT_RECORD["origin"], "method_version": method_version}
+        patch_send(api_client, wire_response(200, json_body={"items": [{**FileBodies.OUTPUT_RECORD, "origin": origin}]}))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.get_files_by_uri(cast("str", FileBodies.OUTPUT_RECORD["uri"])))
+
+        assert isinstance(exc_info.value.__cause__, ValidationError)
+        assert exc_info.value.problem.code == "client.response_unreadable"

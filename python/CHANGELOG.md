@@ -6,6 +6,11 @@
 
 - **The method version of each file use's run**: `FileUse`, each use in the page `get_file` answers, gains `method_version`, the published version number its run ran or `"draft"` for a run of the draft, so a client tells a run of a published version from a run of the draft without reading any run; it is `None` on an example's use, on a run of an inline source and on a use recorded before the platform carried it, and a use answered without it, by a platform that predates it, or with anything but an integer or `"draft"`, which is never coerced, reads as `None` and still validates (`docs/files.md`).
 
+### Fixed
+
+- **A file use's `created_by` that is not a string reads as `None`**: `FileUse.created_by` reads a member of another type as `None`, as `@pipelex/sdk` reads it, where it failed the whole `get_file` answer as one the SDK cannot read.
+- **A file's `origin.method_version` is never coerced**: `FileOrigin.method_version` takes only an integer, `"draft"` or `None`, where a boolean, a numeric string or a float was coerced into a version (`True` read as `1`, `"3"` as `3`); a record carrying such a value is now an answer the SDK cannot read (`client.response_unreadable`).
+
 ## [v0.54.1] - 2026-10-25
 
 ### Added
