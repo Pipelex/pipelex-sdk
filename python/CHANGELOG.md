@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The method version of each file use's run**: `FileUse`, each use in the page `get_file` answers, gains `method_version`, the published version number its run ran or `"draft"` for a run of the draft, so a client tells a run of a published version from a run of the draft without reading any run; it is `None` on an example's use, on a run of an inline source and on a use recorded before the platform carried it, and a use answered without it, by a platform that predates it, or with anything but an integer or `"draft"`, which is never coerced, reads as `None` and still validates (`docs/files.md`).
+
 ## [v0.54.1] - 2026-10-25
 
 ### Added

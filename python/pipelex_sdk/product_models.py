@@ -34,8 +34,9 @@ from typing import Annotated, Any, Literal, Self, TypeAlias, cast
 
 from mthds.method_tree.file_entry import FileEntry
 from mthds.method_tree.models import MethodTree
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, TypeAdapter, ValidationInfo, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, TypeAdapter, ValidationInfo, WrapValidator, model_validator
 
+from pipelex_sdk._pydantic_utils import none_when_it_does_not_fit
 from pipelex_sdk.answer_reading import LenientProblem
 from pipelex_sdk.runs import RunStatus
 from pipelex_sdk.validation_models import PipelexValidationResult
@@ -1343,6 +1344,15 @@ class FileUse(BaseModel):
     was recorded, so a client tells its own runs among a file's uses without reading any run. `None` on a use recorded
     before uses carried it, until the platform's stored-files migration fills it, and on every use from a platform
     that predates the field, which leaves it out."""
+
+    method_version: Annotated[StrictInt | Literal["draft"] | None, WrapValidator(none_when_it_does_not_fit)] = None
+    """The method version the use's run ran: the published version's number, or `"draft"` for a run of the method's
+    draft, copied from the run onto the use when it was recorded, so a client tells a run of a published version from a
+    run of the draft without reading any run. `None` on an example's use, on a run of an inline source, and on a run's
+    use recorded before uses carried it, until the platform's stored-files migration fills it. Read as `@pipelex/sdk`
+    reads it, never coerced: a use from a platform that predates the field, which leaves it out, or one carrying
+    anything but an integer or `"draft"`, a boolean, a numeric string or a float included, reads as `None` and still
+    validates."""
 
 
 class FileUsePage(BaseModel):
