@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The method version of each file use's run**: `FileUse`, each use in the page `getFile` answers, gains `method_version`, the published version number its run ran or `"draft"` for a run of the draft, so a client tells a run of a published version from a run of the draft without reading any run; it is `null` on an example's use, on a run of an inline source and on a use recorded before the platform carried it, and `getFile` reads a use answered without it, by a platform that predates it, or with anything but an integer or `"draft"`, as `null` too (`docs/files.md`).
+
 ### Changed
 
 - **The `.mthds` check hook's lint engine moves to `@pipelex/tools-wasm` 0.6.1**: the bundle built by `npm run build:hook` now embeds `@pipelex/tools-wasm` 0.6.1, a dependency refresh whose engine is built past its dependencies' security advisories and loads its WebAssembly through `@wasm-tool/rollup-plugin-rust` 3; its MTHDS schema and its API are those of 0.6.0, so the hook blocks and passes the same forms as before. The published package is unchanged, since the engine is a development dependency.

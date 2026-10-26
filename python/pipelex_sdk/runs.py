@@ -178,10 +178,11 @@ class PipelexRunResultStart(RunResultStart):
 
     method_provenance: MethodProvenance | None = None
 
-    method_version: int | Literal["draft"] | None = None
+    method_version: StrictInt | Literal["draft"] | None = None
     """Which version of the stored method a `method_id` run runs: the latest published version's
     number for a bare id, the pinned number for `mt_…@<n>`, `"draft"` for `mt_…@draft`. `None`
-    for any other run, and on a server that does not resolve version selectors."""
+    for any other run, and on a server that does not resolve version selectors. Read strictly: a
+    boolean, a numeric string or a float is never coerced into a version."""
 
 
 class RunPublic(BaseModel):
@@ -211,8 +212,9 @@ class RunPublic(BaseModel):
     #: Which version of its stored method the run ran: the version number for a run addressed by a
     #: bare `method_id` (the latest published version) or by `mt_…@<n>`, `"draft"` for one
     #: addressed by `mt_…@draft`, and `None` for a run of an inline source. A hosted extension,
-    #: `None` on a server that does not record it.
-    method_version: int | Literal["draft"] | None = None
+    #: `None` on a server that does not record it. Read strictly: a boolean, a numeric string or a
+    #: float is never coerced into a version.
+    method_version: StrictInt | Literal["draft"] | None = None
     #: The digest of the sources a run sent as text (`mthds_contents`, or a `files` map of text entries),
     #: 64 lowercase hexadecimal characters, which is not a tree digest (`RunDetail.tree_digest` names a
     #: run's tree); `None` when the platform never held the sources as text, as on a run of a saved method

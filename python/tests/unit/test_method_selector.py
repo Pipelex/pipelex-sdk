@@ -95,3 +95,16 @@ class TestMethodSelector:
 
         with pytest.raises(ValidationError):
             parsed.version = 4  # type: ignore[misc]  # pyright: ignore[reportAttributeAccessIssue]
+
+    @pytest.mark.parametrize(
+        "version",
+        [
+            pytest.param(True, id="boolean"),
+            pytest.param("3", id="numeric-string"),
+            pytest.param(2.0, id="float"),
+        ],
+    )
+    def test_the_parsed_selector_never_coerces_a_version(self, version: object) -> None:
+        """A boolean, a numeric string or a float is never read as a version number."""
+        with pytest.raises(ValidationError):
+            ParsedMethodSelector.model_validate({"method_id": "mt_abc", "version": version})

@@ -1301,6 +1301,16 @@ export interface FileUse {
    * which leaves it out and `getFile` reads as `null`, as it reads a member that is not a string.
    */
   created_by: string | null;
+  /**
+   * The method version the use's run ran: the published version's number, or `"draft"` for a run
+   * of the method's draft, copied from the run onto the use when it was recorded, so a client tells
+   * a run of a published version from a run of the draft without reading any run. `null` on an
+   * example's use, on a run of an inline source, and on a run's use recorded before uses carried
+   * it, until the platform's stored-files migration fills it; `getFile` reads it as `null` too when
+   * the platform leaves it out, as one that predates it does, or sends anything but an integer or
+   * `"draft"`.
+   */
+  method_version: number | "draft" | null;
 }
 
 /**
