@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictInt
 
 from pipelex_sdk.errors import RequestArgumentError, argument_invalid_problem
 
@@ -42,9 +42,10 @@ class ParsedMethodSelector(BaseModel):
     method_id: str
     """The bare catalog id — what the method routes and the run history take."""
 
-    version: int | Literal["draft"] | None
+    version: StrictInt | Literal["draft"] | None
     """The version the suffix names: its number for `mt_…@<n>`, `"draft"` for `mt_…@draft`, and
-    `None` for a bare id, which names the latest published version."""
+    `None` for a bare id, which names the latest published version. Strictly an `int`: a boolean,
+    a numeric string or a float is never coerced into a version."""
 
 
 def parse_method_selector(selector: str) -> ParsedMethodSelector:

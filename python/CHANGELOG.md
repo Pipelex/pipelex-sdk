@@ -9,7 +9,7 @@
 ### Fixed
 
 - **A file use's `created_by` that is not a string reads as `None`**: `FileUse.created_by` reads a member of another type as `None`, as `@pipelex/sdk` reads it, where it failed the whole `get_file` answer as one the SDK cannot read.
-- **A method version is never coerced on a file's origin or a run record**: `FileOrigin.method_version`, `RunHistoryItem.method_version` and `PipelineRun.method_version`, which `RunDetail` inherits, take only an integer, `"draft"` or `None`, where a boolean, a numeric string or a float was coerced into a version (`True` read as `1`, `"3"` as `3`); a record carrying such a value is now an answer the SDK cannot read (`client.response_unreadable`).
+- **A method version is never coerced**: every field naming a method version takes only an integer, with `"draft"` and `None` where the field allows them, where a boolean, a numeric string or a float was coerced into a version (`True` read as `1`, `"3"` as `3`): the `method_version` of `FileOrigin`, `PipelexRunResultStart`, `PipelexExecuteResult`, `RunPublic`, `RunRead`, `RunHistoryItem` and `PipelineRun`, which `RunDetail` inherits, `MethodVersionSummary.version`, the `latest_version` of `MethodData` and `MethodSummary`, and `ParsedMethodSelector.version`. An answer carrying such a value is now one the SDK cannot read (`client.response_unreadable`).
 
 ## [v0.54.1] - 2026-10-25
 

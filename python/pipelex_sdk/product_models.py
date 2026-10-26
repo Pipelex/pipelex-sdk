@@ -106,8 +106,9 @@ class MethodVersionSummary(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    version: int
-    """The version number, from 1, never reused and never renumbered."""
+    version: StrictInt
+    """The version number, from 1, never reused and never renumbered. Read strictly: a boolean, a
+    numeric string or a float is never coerced into a version number."""
 
     tree_digest: str | None = None
     """The digest of the version's method tree, `sha256:` and 64 lowercase hexadecimal characters: the
@@ -221,8 +222,9 @@ class MethodData(BaseModel):
     SHA-256 of the tree's listing. `None` for an empty draft. `input_data` is outside it, so saving
     only the form inputs moves the token and leaves the digest as it was."""
 
-    latest_version: int | None = None
-    """The number of the latest published version; `None` when the method was never published."""
+    latest_version: StrictInt | None = None
+    """The number of the latest published version; `None` when the method was never published. Read
+    strictly, as `MethodVersionSummary.version` is."""
 
     latest_published: MethodVersionSummary | None = None
     """The latest published version's summary; `None` when the method was never published."""
@@ -397,8 +399,9 @@ class MethodSummary(BaseModel):
     created_at: str
     deletion_state: MethodDeletionState | None = None
 
-    latest_version: int | None = None
-    """The number of the latest published version; `None` when the method was never published."""
+    latest_version: StrictInt | None = None
+    """The number of the latest published version; `None` when the method was never published. Read
+    strictly, as `MethodVersionSummary.version` is."""
 
     latest_published: MethodVersionSummary | None = None
     """The latest published version's summary; `None` when the method was never published."""
