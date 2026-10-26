@@ -1768,10 +1768,11 @@ class RunHistoryItem(BaseModel):
     shows why without another read. `None` on a completed run, on one that ended without a problem stored,
     and when what the platform served is no problem document (see `RunRead.error`)."""
 
-    method_version: int | Literal["draft"] | None = None
+    method_version: StrictInt | Literal["draft"] | None = None
     """Which version of the method the run ran — a number, `"draft"`, or `None` for an inline
     source (see `PipelineRun.method_version`). The history lists the runs of every version and of
-    the draft together, so this is how a row says which one it was."""
+    the draft together, so this is how a row says which one it was. Read strictly, as
+    `PipelineRun.method_version` is."""
 
     source_digest: str | None = None
     """The digest of the files the run ran (see `PipelineRun.source_digest`)."""
@@ -1801,11 +1802,13 @@ class PipelineRun(BaseModel):
     served is no problem document."""
     created_at: str
     finished_at: str | None = None
-    method_version: int | Literal["draft"] | None = None
+    method_version: StrictInt | Literal["draft"] | None = None
     """Which version of its method the run ran: the version number for a run addressed by a bare
     id (the latest published version) or by `mt_…@<n>`, `"draft"` for one addressed by
     `mt_…@draft`, and `None` for a run of an inline source — or a run a platform recorded before
-    it recorded versions."""
+    it recorded versions. Read strictly: a value that is neither an integer nor `"draft"`, such as
+    a boolean, a numeric string or a float, is never coerced into a version, and the record
+    carrying it is an answer the SDK cannot read."""
 
     source_digest: str | None = None
     """The digest of the sources a run sent as text, `mthds_contents` or a `files` map of text

@@ -653,3 +653,17 @@ class TestClientMethodVersions:
             RunHistoryItem.model_validate(
                 {"pipeline_run_id": "run_1", "pipe_code": "review", "status": "COMPLETED", "created_at": "t", "method_version": method_version}
             )
+
+    @pytest.mark.parametrize(
+        "method_version",
+        [
+            pytest.param(True, id="boolean"),
+            pytest.param("3", id="numeric-string"),
+            pytest.param(2.0, id="float"),
+        ],
+    )
+    @pytest.mark.parametrize("record_model", [RunHistoryItem, PipelineRun, RunDetail])
+    def test_a_run_record_never_coerces_a_version(self, record_model: type[RunHistoryItem | PipelineRun], method_version: object) -> None:
+        """A boolean, a numeric string or a float is never read as a version number: the record refuses it."""
+        with pytest.raises(ValidationError):
+            record_model.model_validate({"pipeline_run_id": "run_1", "status": "COMPLETED", "created_at": "t", "method_version": method_version})
