@@ -86,6 +86,7 @@ const DETAIL: FileDetail = {
         method_id: "mt_abc",
         created_at: "2026-10-22T10:00:00+00:00",
         created_by: "user_1",
+        method_version: null,
       },
       {
         uri: URI,
@@ -94,6 +95,7 @@ const DETAIL: FileDetail = {
         method_id: "mt_abc",
         created_at: "2026-10-22T11:00:00+00:00",
         created_by: null,
+        method_version: 3,
       },
     ],
     next_cursor: "u2",
@@ -134,6 +136,7 @@ describe("getFile", () => {
     expectTypeOf(detail).toEqualTypeOf<FileDetail>();
     expectTypeOf(detail.uses.next_cursor).toEqualTypeOf<string | null>();
     expectTypeOf(detail.uses.items[0].created_by).toEqualTypeOf<string | null>();
+    expectTypeOf(detail.uses.items[0].method_version).toEqualTypeOf<number | "draft" | null>();
   });
 
   it("reads a use answered without created_by, as a platform that predates it answers, as null", async () => {
@@ -171,6 +174,54 @@ describe("getFile", () => {
 
     expect(detail.uses.items.map((use) => use.created_by)).toEqual([null, null, null, null]);
     expect(detail.uses.items[0]).toEqual({ ...example, created_by: null });
+  });
+
+  it("keeps the method_version each use carries: a version number, draft or null", async () => {
+    const [, run] = DETAIL.uses.items;
+    const items = [3, "draft", null].map((method_version) => ({ ...run, method_version }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...DETAIL, uses: { items, next_cursor: null } }),
+    );
+
+    const detail = await makeClient().getFile(FILE_ID);
+
+    expect(detail.uses.items.map((use) => use.method_version)).toEqual([3, "draft", null]);
+    expect(detail.uses.items[1]).toEqual({ ...run, method_version: "draft" });
+  });
+
+  it("reads a use answered without method_version, as a platform that predates it answers, as null", async () => {
+    const [example, run] = DETAIL.uses.items.map(({ method_version: _version, ...use }) => use);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...DETAIL, uses: { items: [example, run], next_cursor: null } }),
+    );
+
+    const detail = await makeClient().getFile(FILE_ID);
+
+    expect(detail.uses.items.map((use) => use.method_version)).toEqual([null, null]);
+    expect(detail.uses.items[1]).toEqual({ ...DETAIL.uses.items[1], method_version: null });
+  });
+
+  it("reads a method_version that is neither an integer nor draft as null", async () => {
+    const [, run] = DETAIL.uses.items;
+    const items = [2.5, "3", "Draft", true, { version: 3 }, [3]].map((method_version) => ({
+      ...run,
+      method_version,
+    }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...DETAIL, uses: { items, next_cursor: null } }),
+    );
+
+    const detail = await makeClient().getFile(FILE_ID);
+
+    expect(detail.uses.items.map((use) => use.method_version)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(detail.uses.items[0]).toEqual({ ...run, method_version: null });
   });
 
   it("pages the uses with uses_limit and uses_cursor", async () => {

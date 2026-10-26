@@ -34,8 +34,9 @@ from typing import Annotated, Any, Literal, Self, TypeAlias, cast
 
 from mthds.method_tree.file_entry import FileEntry
 from mthds.method_tree.models import MethodTree
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, TypeAdapter, ValidationInfo, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, TypeAdapter, ValidationInfo, WrapValidator, model_validator
 
+from pipelex_sdk._pydantic_utils import none_when_it_does_not_fit
 from pipelex_sdk.answer_reading import LenientProblem
 from pipelex_sdk.runs import RunStatus
 from pipelex_sdk.validation_models import PipelexValidationResult
@@ -105,8 +106,9 @@ class MethodVersionSummary(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    version: int
-    """The version number, from 1, never reused and never renumbered."""
+    version: StrictInt
+    """The version number, from 1, never reused and never renumbered. Read strictly: a boolean, a
+    numeric string or a float is never coerced into a version number."""
 
     tree_digest: str | None = None
     """The digest of the version's method tree, `sha256:` and 64 lowercase hexadecimal characters: the
@@ -220,8 +222,9 @@ class MethodData(BaseModel):
     SHA-256 of the tree's listing. `None` for an empty draft. `input_data` is outside it, so saving
     only the form inputs moves the token and leaves the digest as it was."""
 
-    latest_version: int | None = None
-    """The number of the latest published version; `None` when the method was never published."""
+    latest_version: StrictInt | None = None
+    """The number of the latest published version; `None` when the method was never published. Read
+    strictly, as `MethodVersionSummary.version` is."""
 
     latest_published: MethodVersionSummary | None = None
     """The latest published version's summary; `None` when the method was never published."""
@@ -396,8 +399,9 @@ class MethodSummary(BaseModel):
     created_at: str
     deletion_state: MethodDeletionState | None = None
 
-    latest_version: int | None = None
-    """The number of the latest published version; `None` when the method was never published."""
+    latest_version: StrictInt | None = None
+    """The number of the latest published version; `None` when the method was never published. Read
+    strictly, as `MethodVersionSummary.version` is."""
 
     latest_published: MethodVersionSummary | None = None
     """The latest published version's summary; `None` when the method was never published."""
@@ -1208,8 +1212,10 @@ class FileOrigin(BaseModel):
     method_id: str | None = None
     """The method whose run made the file, or the method a test file was made for; `None` otherwise."""
 
-    method_version: int | Literal["draft"] | None = None
-    """The published version number or `"draft"` that ran, for a file made by a saved method's run."""
+    method_version: StrictInt | Literal["draft"] | None = None
+    """The published version number or `"draft"` that ran, for a file made by a saved method's run. Read strictly:
+    a value that is neither an integer nor `"draft"`, such as a boolean, a numeric string or a float, is never coerced
+    into a version, and the record carrying it is an answer the SDK cannot read."""
 
 
 class FileSummary(BaseModel):
@@ -1338,11 +1344,21 @@ class FileUse(BaseModel):
     created_at: str
     """ISO-8601 instant the use was recorded."""
 
-    created_by: str | None = None
+    created_by: Annotated[StrictStr | None, WrapValidator(none_when_it_does_not_fit)] = None
     """The member who started the run, or who saved the example: the holder's own creator, copied onto the use when it
     was recorded, so a client tells its own runs among a file's uses without reading any run. `None` on a use recorded
     before uses carried it, until the platform's stored-files migration fills it, and on every use from a platform
-    that predates the field, which leaves it out."""
+    that predates the field, which leaves it out. Read as `@pipelex/sdk` reads it: a member that is not a string reads
+    as `None` and the use still validates."""
+
+    method_version: Annotated[StrictInt | Literal["draft"] | None, WrapValidator(none_when_it_does_not_fit)] = None
+    """The method version the use's run ran: the published version's number, or `"draft"` for a run of the method's
+    draft, copied from the run onto the use when it was recorded, so a client tells a run of a published version from a
+    run of the draft without reading any run. `None` on an example's use, on a run of an inline source, and on a run's
+    use recorded before uses carried it, until the platform's stored-files migration fills it. Read as `@pipelex/sdk`
+    reads it, never coerced: a use from a platform that predates the field, which leaves it out, or one carrying
+    anything but an integer or `"draft"`, a boolean, a numeric string or a float included, reads as `None` and still
+    validates."""
 
 
 class FileUsePage(BaseModel):
@@ -1755,10 +1771,11 @@ class RunHistoryItem(BaseModel):
     shows why without another read. `None` on a completed run, on one that ended without a problem stored,
     and when what the platform served is no problem document (see `RunRead.error`)."""
 
-    method_version: int | Literal["draft"] | None = None
+    method_version: StrictInt | Literal["draft"] | None = None
     """Which version of the method the run ran — a number, `"draft"`, or `None` for an inline
     source (see `PipelineRun.method_version`). The history lists the runs of every version and of
-    the draft together, so this is how a row says which one it was."""
+    the draft together, so this is how a row says which one it was. Read strictly, as
+    `PipelineRun.method_version` is."""
 
     source_digest: str | None = None
     """The digest of the files the run ran (see `PipelineRun.source_digest`)."""
@@ -1788,11 +1805,13 @@ class PipelineRun(BaseModel):
     served is no problem document."""
     created_at: str
     finished_at: str | None = None
-    method_version: int | Literal["draft"] | None = None
+    method_version: StrictInt | Literal["draft"] | None = None
     """Which version of its method the run ran: the version number for a run addressed by a bare
     id (the latest published version) or by `mt_…@<n>`, `"draft"` for one addressed by
     `mt_…@draft`, and `None` for a run of an inline source — or a run a platform recorded before
-    it recorded versions."""
+    it recorded versions. Read strictly: a value that is neither an integer nor `"draft"`, such as
+    a boolean, a numeric string or a float, is never coerced into a version, and the record
+    carrying it is an answer the SDK cannot read."""
 
     source_digest: str | None = None
     """The digest of the sources a run sent as text, `mthds_contents` or a `files` map of text

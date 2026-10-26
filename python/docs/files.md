@@ -15,7 +15,7 @@ The point of the list for a program is the `uri` on every row: a run's inputs ta
 | `format` | The format key the list's `formats` filter matches: `pdf`, `docx`, `image`, `html` and the rest of the runtime's table. |
 | `size` | The byte size. |
 | `kind` | A `FileKind`: `uploaded`, a person's upload or a run's inline input; `generated`, a file a run made whose result reaches it; `test`, a test input made for one method. |
-| `origin` | A `FileOrigin`, who or what made the file, each member `None` where the kind fills no value: `surface`, the surface an upload came through as its `User-Agent` declared it (`app`, `mcp`, `cli`, `n8n`, `hook`, `sdk`, `raw_http`), which is provenance to show and never authority; `run_id`, the run that made it; `method_id`, the method whose run made it or the method a test file was made for; `method_version`, the version number or `"draft"` that ran. |
+| `origin` | A `FileOrigin`, who or what made the file, each member `None` where the kind fills no value: `surface`, the surface an upload came through as its `User-Agent` declared it (`app`, `mcp`, `cli`, `n8n`, `hook`, `sdk`, `raw_http`), which is provenance to show and never authority; `run_id`, the run that made it; `method_id`, the method whose run made it or the method a test file was made for; `method_version`, the version number or `"draft"` that ran, read strictly, so a value that is neither an integer nor `"draft"`, such as a boolean, a numeric string or a float, is never coerced into a version and makes the record an answer the SDK cannot read (`client.response_unreadable`). |
 | `created_at` | The ISO-8601 instant the record was made. |
 | `created_by` | The member the file is attributed to: the uploader, or the member who started the run that made it. |
 
@@ -93,14 +93,16 @@ async for file in client.iterate_files(method_id="mt_abc123"):
 
 ## One file and its uses
 
-`get_file` answers a `FileDetail`: the file's `FileRecord`, its `method_ids`, the methods whose lists hold it, and `uses`, a `FileUsePage` of the examples that hold its address, then the runs that took it. Each `FileUse` names the `uri` it holds, its `holder_type` (`example` or `run`), its `holder_id`, the `method_id` it belongs to, its `created_at` and its `created_by`. A use names an address, so every record holding that address shows the same uses.
+`get_file` answers a `FileDetail`: the file's `FileRecord`, its `method_ids`, the methods whose lists hold it, and `uses`, a `FileUsePage` of the examples that hold its address, then the runs that took it. Each `FileUse` names the `uri` it holds, its `holder_type` (`example` or `run`), its `holder_id`, the `method_id` it belongs to, its `created_at`, its `created_by` and its `method_version`. A use names an address, so every record holding that address shows the same uses.
 
-**`created_by` names who made the use's holder**: the member who started the run, or who saved the example, copied onto the use when it was recorded, so a client tells its own runs among a file's uses by comparing it with the `user_id` that `get_me()` answers, without reading any run. It is `None` on a use recorded before uses carried it, until the platform's stored-files migration fills it, and on every use from a platform that predates the field, which leaves it out and still validates. A `None` therefore says that the creator is unknown, never that nobody made the holder.
+**`created_by` names who made the use's holder**: the member who started the run, or who saved the example, copied onto the use when it was recorded, so a client tells its own runs among a file's uses by comparing it with the `user_id` that `get_me()` answers, without reading any run. It is `None` on a use recorded before uses carried it, until the platform's stored-files migration fills it, and on every use from a platform that predates the field, which leaves it out and still validates. A member that is not a string reads as `None` too, as `@pipelex/sdk` reads it, so the field is always a `str` or `None`. A `None` therefore says that the creator is unknown, never that nobody made the holder.
+
+**`method_version` names the version its run ran**: the published version's number, an `int`, or the string `"draft"` for a run of the method's draft, copied from the run onto the use when it was recorded, so a client tells a run of a published version from a run of the draft without reading any run. It is `None` on an example's use, which runs nothing, on a run of an inline source, which has no saved method, and on a run's use recorded before uses carried it, until the platform's stored-files migration fills it. A use from a platform that predates the field leaves it out and still validates, as `None`. The field is read strictly, as `@pipelex/sdk` reads it: a value that is neither an integer nor `"draft"`, such as a boolean, a numeric string or a float, is never coerced and reads as `None` too, so it is always an `int`, `"draft"` or `None`. The one value the two SDKs read apart is a version spelled `3.0`, which JavaScript cannot tell from `3`.
 
 ```python
 detail = await client.get_file("fl_0199")
 for use in detail.uses.items:
-    print(use.holder_type, use.holder_id, use.created_by)
+    print(use.holder_type, use.holder_id, use.created_by, use.method_version)
 if detail.uses.next_cursor is not None:
     more = await client.get_file("fl_0199", uses_cursor=detail.uses.next_cursor)
 ```

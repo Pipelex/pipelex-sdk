@@ -89,13 +89,17 @@ Every member is optional, and each is sent only when given, so an empty `q`, cur
 
 ## One file and its uses
 
-`getFile` answers a `FileDetail`: the file's `FileRecord`, its `method_ids`, the methods whose lists hold it, and `uses`, a `FileUsePage` of the examples that hold its address, then the runs that took it. Each `FileUse` names the `uri` it holds, its `holder_type` (`example` or `run`), its `holder_id`, the `method_id` it belongs to, its `created_at` and its `created_by`. A use names an address, so every record holding that address shows the same uses.
+`getFile` answers a `FileDetail`: the file's `FileRecord`, its `method_ids`, the methods whose lists hold it, and `uses`, a `FileUsePage` of the examples that hold its address, then the runs that took it. Each `FileUse` names the `uri` it holds, its `holder_type` (`example` or `run`), its `holder_id`, the `method_id` it belongs to, its `created_at`, its `created_by` and its `method_version`. A use names an address, so every record holding that address shows the same uses.
 
 **`created_by` names who made the use's holder**: the member who started the run, or who saved the example, copied onto the use when it was recorded, so a client tells its own runs among a file's uses by comparing it with the `user_id` that `getMe()` answers, without reading any run. It is `null` on a use recorded before uses carried it, until the platform's stored-files migration fills it, and on every use from a platform that predates the member, which leaves it out and `getFile` reads as `null`, never `undefined`; `getFile` reads a member that is not a string as `null` too, so the field is always a string or `null`. A `null` therefore says that the creator is unknown, never that nobody made the holder.
 
+**`method_version` names the version its run ran**: the published version's number, or the string `"draft"` for a run of the method's draft, copied from the run onto the use when it was recorded, so a client tells a run of a published version from a run of the draft without reading any run. It is `null` on an example's use, which runs nothing, on a run of an inline source, which has no saved method, and on a run's use recorded before uses carried it, until the platform's stored-files migration fills it. A platform that predates the member leaves it out, and `getFile` reads that as `null`, never `undefined`; it reads a value that is neither an integer nor `"draft"`, a number with a fraction included, as `null` too, so the field is always an integer, `"draft"` or `null`.
+
 ```ts
 const detail = await client.getFile("fl_0199");
-for (const use of detail.uses.items) console.log(use.holder_type, use.holder_id, use.created_by);
+for (const use of detail.uses.items) {
+  console.log(use.holder_type, use.holder_id, use.created_by, use.method_version);
+}
 if (detail.uses.next_cursor !== null) {
   const more = await client.getFile("fl_0199", { usesCursor: detail.uses.next_cursor });
 }

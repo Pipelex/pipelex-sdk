@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Literal, cast
 
 from mthds.runners.api.models import DictRunResultExecute
+from pydantic import StrictInt
 
 from pipelex_sdk.errors import MissingMainStuffError
 from pipelex_sdk.runs import MethodProvenance, RunResults
@@ -42,7 +43,8 @@ class PipelexExecuteResult(DictRunResultExecute):
 
     #: Which version of the stored method a `method_id` run ran — a number, or `"draft"` for
     #: `mt_…@draft`; `None` for any other run, mirroring `PipelexRunResultStart` on the durable path.
-    method_version: int | Literal["draft"] | None = None
+    #: Read strictly: a boolean, a numeric string or a float is never coerced into a version.
+    method_version: StrictInt | Literal["draft"] | None = None
 
     @property
     def main_stuff(self) -> Any:

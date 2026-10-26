@@ -409,6 +409,7 @@ class FileBodies:
                     "method_id": "mt_abc",
                     "created_at": "2026-10-22T10:00:00+00:00",
                     "created_by": "user_1",
+                    "method_version": None,
                 },
                 {
                     "uri": URI,
@@ -417,6 +418,7 @@ class FileBodies:
                     "method_id": "mt_abc",
                     "created_at": "2026-10-22T11:00:00+00:00",
                     "created_by": None,
+                    "method_version": 3,
                 },
             ],
             "next_cursor": "u2",

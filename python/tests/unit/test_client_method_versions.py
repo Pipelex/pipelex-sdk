@@ -14,10 +14,11 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import pytest
 from mthds.method_tree.file_entry import HashFileEntry
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, MethodErrorCode, RequestArgumentError
+from pipelex_sdk.execute_result import PipelexExecuteResult
 from pipelex_sdk.product_models import (
     MethodData,
     MethodDetail,
@@ -27,14 +28,16 @@ from pipelex_sdk.product_models import (
     MethodPublishRefusalReason,
     MethodPublishRefused,
     MethodPublishUnchanged,
+    MethodSummary,
     MethodVersion,
+    MethodVersionSummary,
     PipelineRun,
     RunDetail,
     RunHistoryItem,
     RunPage,
     SavedMethodFile,
 )
-from pipelex_sdk.runs import PipelexRunResultStart, RunRead
+from pipelex_sdk.runs import PipelexRunResultStart, RunPublic, RunRead
 from pipelex_sdk.validation_models import PipelexInvalidReport, PipelexValidationReport
 from tests.unit.conftest import BASE_URL, problem_document, refused_argument
 from tests.unit.test_data import MethodVersionBodies
@@ -653,3 +656,65 @@ class TestClientMethodVersions:
             RunHistoryItem.model_validate(
                 {"pipeline_run_id": "run_1", "pipe_code": "review", "status": "COMPLETED", "created_at": "t", "method_version": method_version}
             )
+
+    @pytest.mark.parametrize(
+        "method_version",
+        [
+            pytest.param(True, id="boolean"),
+            pytest.param("3", id="numeric-string"),
+            pytest.param(2.0, id="float"),
+        ],
+    )
+    @pytest.mark.parametrize("record_model", [RunHistoryItem, PipelineRun, RunDetail])
+    def test_a_run_record_never_coerces_a_version(self, record_model: type[RunHistoryItem | PipelineRun], method_version: object) -> None:
+        """A boolean, a numeric string or a float is never read as a version number: the record refuses it."""
+        with pytest.raises(ValidationError):
+            record_model.model_validate({"pipeline_run_id": "run_1", "status": "COMPLETED", "created_at": "t", "method_version": method_version})
+
+    @pytest.mark.parametrize(
+        "version",
+        [
+            pytest.param(True, id="boolean"),
+            pytest.param("3", id="numeric-string"),
+            pytest.param(2.0, id="float"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("answer_model", "answer", "field"),
+        [
+            pytest.param(
+                PipelexRunResultStart,
+                {"pipeline_run_id": "run_1", "state": "RUNNING", "created_at": "t"},
+                "method_version",
+                id="start-ack",
+            ),
+            pytest.param(RunPublic, {"pipeline_run_id": "run_1", "status": "COMPLETED", "created_at": "t"}, "method_version", id="run-public"),
+            pytest.param(RunRead, {"pipeline_run_id": "run_1", "status": "COMPLETED", "created_at": "t"}, "method_version", id="run-read"),
+            pytest.param(
+                PipelexExecuteResult,
+                {
+                    "pipeline_run_id": "run_1",
+                    "main_stuff_name": "result",
+                    "pipe_output": {"pipeline_run_id": "run_1", "working_memory": {"root": {}, "aliases": {}}},
+                },
+                "method_version",
+                id="execute-result",
+            ),
+            pytest.param(MethodVersionSummary, MethodVersionBodies.SUMMARY, "version", id="version-summary"),
+            pytest.param(MethodData, MethodVersionBodies.METHOD, "latest_version", id="method"),
+            pytest.param(
+                MethodSummary,
+                {"method_id": "mt_receipts01", "name": "Receipt review", "created_at": "t"},
+                "latest_version",
+                id="method-row",
+            ),
+        ],
+    )
+    def test_an_answer_never_coerces_a_version_number(
+        self, answer_model: type[BaseModel], answer: dict[str, Any], field: str, version: object
+    ) -> None:
+        """Every answer naming a method version refuses a boolean, a numeric string or a float rather than reading it as a number."""
+        answer_model.model_validate({**answer, field: 3})
+
+        with pytest.raises(ValidationError):
+            answer_model.model_validate({**answer, field: version})
