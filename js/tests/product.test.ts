@@ -1391,7 +1391,7 @@ describe("runs list / update", () => {
   });
 
   it("iterateRuns follows a cursor past an EMPTY page, sending the filters on every page", async () => {
-    // `createdBy` and `status` filter after the index read, so a page can hold no run and still
+    // `createdBy` and `status` may filter after the index read, so a page can hold no run and still
     // carry a cursor: "nothing matched in the slice just read, keep going". Stopping there
     // would drop every later match, the caller's unfinished run among them.
     const client = makeClient();

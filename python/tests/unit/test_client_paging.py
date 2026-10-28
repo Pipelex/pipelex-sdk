@@ -1,6 +1,6 @@
 """Tests for the paged-list iterators — `iterate_methods` and `iterate_runs`.
 
-Both follow `next_cursor` until the server says stop, through one shared loop. Both lists filter
+Both follow `next_cursor` until the server says stop, through one shared loop. Both lists can filter
 after the index read (`q` and `published` on methods, `created_by` and `status` on runs), so a
 page can be empty with a live cursor, which is not the end. These pin that rule, the filters sent
 on every page, the stuck-cursor guard, and the runaway backstop.
@@ -155,7 +155,7 @@ class TestClientPaging:
         wire_response: ResponseBuilder,
         patch_send: SendPatcher,
     ) -> None:
-        """`created_by` and `status` filter after the index read, so an empty page means "keep going"."""
+        """`created_by` and `status` may filter after the index read, so an empty page means "keep going"."""
         send = patch_send(
             api_client,
             wire_response(200, json_body={"items": [_run("r1")], "next_cursor": "c1"}),

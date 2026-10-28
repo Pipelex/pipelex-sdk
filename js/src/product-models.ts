@@ -1798,7 +1798,7 @@ export interface ListRunsQuery {
  * avoid.
  *
  * Under `createdBy` or `status` a page can hold fewer rows than `limit`, or none, and still
- * carry a `nextCursor`: the platform applies them after the index read, so an empty page is
+ * carry a `nextCursor`: the platform may apply them after its index read, so an empty page is
  * not the end of the history, and only a `null` cursor is. `iterateRuns` keeps following the
  * cursor through such a page.
  */

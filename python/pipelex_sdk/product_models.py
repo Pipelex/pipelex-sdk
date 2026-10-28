@@ -1862,9 +1862,9 @@ class RunPage(BaseModel):
     page.
 
     Under `created_by` or `status` a page can hold fewer rows than `limit`, or none, and still
-    carry a `next_cursor`: the platform applies them after the index read, so an empty page is not
-    the end of the history, and only a `None` cursor is. `iterate_runs` keeps following the cursor
-    through such a page.
+    carry a `next_cursor`: the platform may apply them after its index read, so an empty page is
+    not the end of the history, and only a `None` cursor is. `iterate_runs` keeps following the
+    cursor through such a page.
     """
 
     model_config = ConfigDict(extra="allow")
