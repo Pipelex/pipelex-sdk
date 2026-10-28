@@ -3935,7 +3935,7 @@ class PipelexAPIClient(MthdsAPIClient):
         created_from: str | None = None,
         created_to: str | None = None,
         created_by: Literal["me"] | None = None,
-        status: Sequence[RunStatus] | None = None,
+        status: Iterable[RunStatus] | None = None,
         limit: int | None = None,
         cursor: str | None = None,
     ) -> RunPage:
@@ -3963,8 +3963,9 @@ class PipelexAPIClient(MthdsAPIClient):
             created_by: `"me"` lists only the runs the caller started, resolved by the platform from
                 the authenticated identity, sent as `created_by=me`; `None` lists every member's
                 runs. It takes no other value: the list never narrows to another member.
-            status: Only runs in one of these statuses, sent as one repeated `status=` parameter per
-                status, deduplicated into `RunStatus` order; `None` lists every status. The caller's
+            status: Only runs in one of these statuses, any iterable of `RunStatus` read once, a
+                generator included, sent as one repeated `status=` parameter per status, deduplicated
+                into `RunStatus` order; `None` lists every status. The caller's
                 own latest unfinished run of a method is `method_id=…`, `created_by="me"`,
                 `status=[RunStatus.PENDING, RunStatus.STARTED, RunStatus.RUNNING]`, `limit=1`.
             limit: Page size. The API supplies the default and caps the maximum.
@@ -3980,7 +3981,7 @@ class PipelexAPIClient(MthdsAPIClient):
             is. For the whole history, prefer `iterate_runs`.
 
         Raises:
-            TypeError: `status` is a bare `str`, which read as a sequence would name its characters.
+            TypeError: `status` is a bare `str`, which read as an iterable would name its characters.
             RequestArgumentError: `status` is empty or names a status that is no `RunStatus`, raised
                 before any request rather than sent as a query that lists every status.
             ApiResponseError: On any non-2xx, and on a page the SDK cannot read, a row without its
@@ -4009,7 +4010,7 @@ class PipelexAPIClient(MthdsAPIClient):
         created_from: str | None = None,
         created_to: str | None = None,
         created_by: Literal["me"] | None = None,
-        status: Sequence[RunStatus] | None = None,
+        status: Iterable[RunStatus] | None = None,
         limit: int | None = None,
     ) -> AsyncIterator[RunHistoryItem]:
         """Yield every run the filters select, following the cursors — `GET /v1/runs`.
@@ -4507,10 +4508,11 @@ async def _follow_cursor(noun: str, read_page: Callable[[str | None], Awaitable[
         cursor = page.next_cursor
 
 
-def _status_filter(status: Sequence[RunStatus] | None) -> tuple[RunStatus, ...] | None:
+def _status_filter(status: Iterable[RunStatus] | None) -> tuple[RunStatus, ...] | None:
     """Normalise a run-history status filter: `None` lists every status, anything else is
     deduplicated into the enum's declaration order, so the same filter always builds the same
-    query, as `@pipelex/sdk` builds it.
+    query, as `@pipelex/sdk` builds it. The filter is read once, so any iterable works, a one-shot
+    one such as a generator included; the caller sends on the tuple it returns.
 
     An empty filter names no status, and sending it as no `status=` parameter at all would list
     every status, a different question from the one asked. A name that is no `RunStatus`, which a
@@ -4518,7 +4520,7 @@ def _status_filter(status: Sequence[RunStatus] | None) -> tuple[RunStatus, ...] 
     refused here first, before any request, with `RequestArgumentError`.
 
     A bare `str`, a single `RunStatus` member included since a `StrEnum` member is one, is no
-    filter: read as a sequence it would name its characters. It raises `TypeError`, a bug in the
+    filter: read as an iterable it would name its characters. It raises `TypeError`, a bug in the
     calling code that carries no problem.
 
     Raises:

@@ -747,6 +747,15 @@ class TestClientProduct:
 
         assert self._sent(send).url == f"{_BASE_URL}/v1/runs?method_id=m1&status=PENDING&status=FAILED"
 
+    def test_list_runs_takes_any_iterable_of_statuses_a_generator_included(self, mocker: MockerFixture) -> None:
+        """`status` is read once, so a one-shot iterable filters as a list does."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        asyncio.run(client.list_runs(status=(run_status for run_status in [RunStatus.FAILED, RunStatus.PENDING])))
+
+        assert self._sent(send).url == f"{_BASE_URL}/v1/runs?status=PENDING&status=FAILED"
+
     def test_list_runs_omits_the_filters_when_absent(self, mocker: MockerFixture) -> None:
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))

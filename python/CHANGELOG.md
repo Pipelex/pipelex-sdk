@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- **`iterate_runs` checks its `status` at the call**: a `status` given as a one-shot iterable, such as a generator, is checked and copied once and filters every page, where the second page found it exhausted and raised `RequestArgumentError`; an empty or unknown `status` raises `RequestArgumentError`, and a bare `str` `TypeError`, at the call rather than once iterated, as `iterate_files` checks its filters.
+- **`iterate_runs` checks its `status` at the call**: a `status` given as a one-shot iterable, such as a generator, is checked and copied once and filters every page, where the second page found it exhausted and raised `RequestArgumentError`; an empty or unknown `status` raises `RequestArgumentError`, and a bare `str` `TypeError`, at the call rather than once iterated, as `iterate_files` checks its filters. `list_runs` and `iterate_runs` type `status` as `Iterable[RunStatus]`, which they read once, where it was typed `Sequence[RunStatus]`.
 
 ## [v0.55.0] - 2026-10-26
 
