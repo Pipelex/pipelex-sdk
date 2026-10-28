@@ -1747,18 +1747,25 @@ class RunFilesPage(BaseModel):
 
 
 class RunHistoryItem(BaseModel):
-    """One row of a method's run list — `GET /v1/runs?method_id=…`.
+    """One row of the run list — `GET /v1/runs`, of one method or of every method.
 
-    What a run-history row shows, and nothing else: which run, its status, when it started and
-    finished, which pipe it ran and, for a failed run, why. The rest of a run record — its
-    organization, its creator, its method (the caller just named it), its workflow id, its result
-    prefix — is either already known to the caller or only meaningful once a run is opened, which
-    `get_run_detail` serves.
+    What a run-history row shows, and nothing else: which run, which method it ran and which
+    version of it, who started it, its status, when it started and finished, which pipe it ran and,
+    for a failed run, why. A list across methods names each row's method and author by id, so a
+    client names them from the catalog and the organization's members. The rest of a run record —
+    its organization, its workflow id, its result prefix — is only meaningful once a run is opened,
+    which `get_run_detail` serves.
     """
 
     model_config = ConfigDict(extra="allow")
 
     pipeline_run_id: str
+    method_id: str
+    """The bare catalog id of the method the run ran, whichever version or draft it was."""
+
+    created_by_user_id: str
+    """The canonical user id of the member who started the run."""
+
     status: RunStatus
     created_at: str
     finished_at: str | None = None
@@ -1848,15 +1855,16 @@ class RunDetail(PipelineRun):
 
 
 class RunPage(BaseModel):
-    """One page of a method's run list — `{items, next_cursor}`.
+    """One page of the run list — `{items, next_cursor}`.
 
-    Same opaque-cursor contract as `MethodPage`: pass `next_cursor` straight back, and a
-    `None` means the last page.
+    Same opaque-cursor contract as `MethodPage`: pass `next_cursor` straight back, with the same
+    `method_id`, since the cursor of one list is refused on another, and a `None` means the last
+    page.
 
     Under `created_by` or `status` a page can hold fewer rows than `limit`, or none, and still
-    carry a `next_cursor`: the platform applies them after the index read, so an empty page is not
-    the end of the history, and only a `None` cursor is. `iterate_runs` keeps following the cursor
-    through such a page.
+    carry a `next_cursor`: the platform may apply them after its index read, so an empty page is
+    not the end of the history, and only a `None` cursor is. `iterate_runs` keeps following the
+    cursor through such a page.
     """
 
     model_config = ConfigDict(extra="allow")

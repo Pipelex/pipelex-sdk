@@ -1673,16 +1673,21 @@ export interface PipelineRun {
 }
 
 /**
- * One row of a method's run history — an item of `listRuns`' page and of `iterateRuns`.
+ * One row of the run history — an item of `listRuns`' page and of `iterateRuns`.
  *
- * Exactly what a history row shows, and nothing more: the run's id, when it started and
- * finished, whether it succeeded, which pipe it ran and, for a failed run, why. The rest of the
- * run's record — its organization, its creator, its method (the caller just named it), its
- * workflow id — is not sent on the list; read it with `getRunDetail` (or `getRunStatus`) once a
- * run is opened.
+ * Exactly what a history row shows, and nothing more: the run's id, which method it ran and
+ * which version of it, who started it, when it started and finished, whether it succeeded,
+ * which pipe it ran and, for a failed run, why. A list across methods names each row's method
+ * and author by id, so a client names them from the catalog and the organization's members. The
+ * rest of the run's record — its organization, its workflow id — is not sent on the list; read
+ * it with `getRunDetail` (or `getRunStatus`) once a run is opened.
  */
 export interface RunHistoryItem {
   pipeline_run_id: string;
+  /** The bare catalog id of the method the run ran, whichever version or draft it was. */
+  method_id: string;
+  /** The canonical user id of the member who started the run. */
+  created_by_user_id: string;
   status: RunStatus;
   /** ISO-8601 instant the run was created. */
   created_at: string;
@@ -1745,6 +1750,14 @@ export interface RunDetail extends PipelineRun {
 /** Query for one page of run history. */
 export interface ListRunsQuery {
   /**
+   * Only the runs of this method, by its bare catalog id, sent as `method_id`; omitted, the
+   * organization's runs of every method. The history files the runs of every version and of the
+   * draft together under the bare id, so `mt_…@3` names no history of its own and the platform
+   * refuses it as `request.invalid`. An empty string is sent, and refused, rather than dropped
+   * into the list of every method.
+   */
+  methodId?: string;
+  /**
    * Only runs created at or after this INSTANT — ISO-8601 with a UTC offset
    * (`2026-06-02T00:00:00+09:00`). Inclusive. A bare `YYYY-MM-DD` or a naive
    * timestamp is rejected by the API: only the caller knows which timezone's
@@ -1769,20 +1782,23 @@ export interface ListRunsQuery {
   status?: readonly RunStatus[];
   /** Page size. The API defaults to 50 and caps at 200. */
   limit?: number;
-  /** Opaque `nextCursor` from the previous page. */
+  /**
+   * Opaque `nextCursor` from the previous page, bound to the list that issued it: a cursor of
+   * one method's runs is refused on the organization's, and the other way round.
+   */
   cursor?: string;
 }
 
 /**
  * One page of run history, newest first.
  *
- * `nextCursor` is opaque — pass it straight back to `listRuns` to continue;
- * `null` means this was the last page. There is deliberately no total: counting
+ * `nextCursor` is opaque — pass it straight back to `listRuns`, with the same `methodId`, to
+ * continue; `null` means this was the last page. There is deliberately no total: counting
  * would mean reading the whole history, which is the cost paging exists to
  * avoid.
  *
  * Under `createdBy` or `status` a page can hold fewer rows than `limit`, or none, and still
- * carry a `nextCursor`: the platform applies them after the index read, so an empty page is
+ * carry a `nextCursor`: the platform may apply them after its index read, so an empty page is
  * not the end of the history, and only a `null` cursor is. `iterateRuns` keeps following the
  * cursor through such a page.
  */

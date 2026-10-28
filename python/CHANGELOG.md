@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.56.0] - 2026-10-28
+
+### Changed
+
+- **`list_runs` and `iterate_runs` take the method as an optional filter (Breaking)**: `method_id` is a keyword-only argument among the filters, `None` by default, where it was a required first positional argument, and without it they list the organization's runs of every method, newest first, with `created_by`, `status`, `created_from` and `created_to` applying as they do with a method. Call `list_runs(method_id=method_id, …)` where you called `list_runs(method_id, …)`, and pass a cursor back with the same `method_id`, since the cursor of one list is refused on another.
+- **A run-history row names its method and its author (Breaking)**: `RunHistoryItem` gains `method_id`, the bare catalog id of the method the run ran, and `created_by_user_id`, the canonical user id of the member who started it, both required, so a list across methods can name each row's method from the catalog and its author from the organization's members; a row served without either is an answer the SDK cannot read, raised as `ApiResponseError`.
+
+### Fixed
+
+- **`iterate_runs` checks its `status` at the call**: a `status` given as a one-shot iterable, such as a generator, is checked and copied once and filters every page, where the second page found it exhausted and raised `RequestArgumentError`; an empty or unknown `status` raises `RequestArgumentError`, and a bare `str` `TypeError`, at the call rather than once iterated, as `iterate_files` checks its filters. `list_runs` and `iterate_runs` type `status` as `Iterable[RunStatus]`, which they read once, where it was typed `Sequence[RunStatus]`.
+
 ## [v0.55.0] - 2026-10-26
 
 ### Added

@@ -625,8 +625,15 @@ class TestClientMethodVersions:
         assert run.source_digest == MethodVersionBodies.SOURCE_DIGEST
 
     def test_run_records_read_the_version_fields_when_present_and_absent(self) -> None:
-        base: dict[str, Any] = {"pipeline_run_id": "run_1", "pipe_code": "review", "status": "COMPLETED", "created_at": "t"}
-        record: dict[str, Any] = {**base, "org_id": "org_1", "created_by_user_id": "u1", "method_id": "mt_receipts01", "workflow_id": "w"}
+        base: dict[str, Any] = {
+            "pipeline_run_id": "run_1",
+            "method_id": "mt_receipts01",
+            "created_by_user_id": "u1",
+            "pipe_code": "review",
+            "status": "COMPLETED",
+            "created_at": "t",
+        }
+        record: dict[str, Any] = {**base, "org_id": "org_1", "workflow_id": "w"}
 
         history = RunHistoryItem.model_validate({**base, "method_version": "draft", "source_digest": MethodVersionBodies.SOURCE_DIGEST})
         assert history.method_version == "draft"
@@ -654,7 +661,15 @@ class TestClientMethodVersions:
     def test_a_run_record_refuses_a_version_that_is_neither_a_number_nor_draft(self, method_version: object) -> None:
         with pytest.raises(ValidationError):
             RunHistoryItem.model_validate(
-                {"pipeline_run_id": "run_1", "pipe_code": "review", "status": "COMPLETED", "created_at": "t", "method_version": method_version}
+                {
+                    "pipeline_run_id": "run_1",
+                    "method_id": "mt_receipts01",
+                    "created_by_user_id": "u1",
+                    "pipe_code": "review",
+                    "status": "COMPLETED",
+                    "created_at": "t",
+                    "method_version": method_version,
+                }
             )
 
     @pytest.mark.parametrize(
@@ -669,7 +684,16 @@ class TestClientMethodVersions:
     def test_a_run_record_never_coerces_a_version(self, record_model: type[RunHistoryItem | PipelineRun], method_version: object) -> None:
         """A boolean, a numeric string or a float is never read as a version number: the record refuses it."""
         with pytest.raises(ValidationError):
-            record_model.model_validate({"pipeline_run_id": "run_1", "status": "COMPLETED", "created_at": "t", "method_version": method_version})
+            record_model.model_validate(
+                {
+                    "pipeline_run_id": "run_1",
+                    "method_id": "mt_receipts01",
+                    "created_by_user_id": "u1",
+                    "status": "COMPLETED",
+                    "created_at": "t",
+                    "method_version": method_version,
+                }
+            )
 
     @pytest.mark.parametrize(
         "version",
