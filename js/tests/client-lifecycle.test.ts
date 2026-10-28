@@ -1119,7 +1119,11 @@ describe("PipelexApiClient answers it cannot read", () => {
     ],
     ["listMethods", (client: PipelexApiClient) => client.listMethods(), "GET /v1/methods"],
     ["getMethod", (client: PipelexApiClient) => client.getMethod("m1"), "GET /v1/methods/m1"],
-    ["listRuns", (client: PipelexApiClient) => client.listRuns("m1"), "GET /v1/runs?method_id=m1"],
+    [
+      "listRuns",
+      (client: PipelexApiClient) => client.listRuns({ methodId: "m1" }),
+      "GET /v1/runs?method_id=m1",
+    ],
     [
       "upload",
       (client: PipelexApiClient) =>

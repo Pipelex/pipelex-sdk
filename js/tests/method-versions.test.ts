@@ -910,19 +910,27 @@ describe("which version a run ran", () => {
           items: [
             {
               pipeline_run_id: "run-2",
+              method_id: "mt_receipts01",
+              created_by_user_id: "u1",
               status: "COMPLETED",
               created_at: "t1",
               method_version: 3,
               source_digest: SOURCE_DIGEST,
             },
-            { pipeline_run_id: "run-3", status: "FAILED", created_at: "t2" },
+            {
+              pipeline_run_id: "run-3",
+              method_id: "mt_receipts01",
+              created_by_user_id: "u1",
+              status: "FAILED",
+              created_at: "t2",
+            },
           ],
           next_cursor: null,
         }),
       );
 
     const detail = await client.getRunDetail("run-1");
-    const page = await client.listRuns("mt_receipts01");
+    const page = await client.listRuns({ methodId: "mt_receipts01" });
 
     expect(detail.method_version).toBe("draft");
     expect(detail.source_digest).toBe(SOURCE_DIGEST);

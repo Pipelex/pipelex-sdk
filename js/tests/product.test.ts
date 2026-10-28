@@ -8,6 +8,7 @@ import {
 import type { Problem } from "mthds/protocol";
 import { problemDocument, problemResponse } from "./helpers/problems.js";
 import type {
+  ListRunsQuery,
   Membership,
   MethodSummary,
   MethodVersionSummary,
@@ -953,9 +954,11 @@ describe("storage", () => {
 });
 
 describe("runs list / update", () => {
-  // The slim history row the platform sends: no org, creator, method, workflow or result url.
+  // The slim history row the platform sends: its method and author, no org, workflow or result url.
   const RUN_ROW: RunHistoryItem = {
     pipeline_run_id: "r1",
+    method_id: "m1",
+    created_by_user_id: "u1",
     status: "RUNNING",
     created_at: "2026-10-01T09:00:00Z",
     finished_at: null,
@@ -966,6 +969,8 @@ describe("runs list / update", () => {
   it("types a page item as the slim history row, not the whole run record", () => {
     expectTypeOf<RunHistoryItem>().toEqualTypeOf<{
       pipeline_run_id: string;
+      method_id: string;
+      created_by_user_id: string;
       status: RunStatus;
       created_at: string;
       finished_at?: string | null;
@@ -977,13 +982,23 @@ describe("runs list / update", () => {
     expectTypeOf<RunPage["items"]>().toEqualTypeOf<RunHistoryItem[]>();
     // The record the detail read returns keeps the fields the list no longer sends.
     expectTypeOf<PipelineRun>().toHaveProperty("org_id");
-    expectTypeOf<PipelineRun>().toHaveProperty("method_id");
+    expectTypeOf<PipelineRun>().toHaveProperty("workflow_id");
+  });
+
+  it("takes the method as one optional member of its query, not a first argument", () => {
+    expectTypeOf<Parameters<PipelexApiClient["listRuns"]>>().toEqualTypeOf<[ListRunsQuery?]>();
+    expectTypeOf<Parameters<PipelexApiClient["iterateRuns"]>>().toEqualTypeOf<
+      [Omit<ListRunsQuery, "cursor">?]
+    >();
+    expectTypeOf<ListRunsQuery["methodId"]>().toEqualTypeOf<string | undefined>();
   });
 
   it("hands back a failed row's problem as it arrives", async () => {
     const client = makeClient();
     const failed: RunHistoryItem = {
       pipeline_run_id: "r9",
+      method_id: "m1",
+      created_by_user_id: "u1",
       status: "FAILED",
       created_at: "2026-10-01T09:00:00Z",
       finished_at: "2026-10-01T09:01:00Z",
@@ -997,7 +1012,7 @@ describe("runs list / update", () => {
       jsonResponse(200, { items: [failed], next_cursor: null }),
     );
 
-    const page = await client.listRuns("m1");
+    const page = await client.listRuns({ methodId: "m1" });
 
     expect(page.items).toEqual([failed]);
     expect(page.items[0]!.error?.detail).toBe("the model refused");
@@ -1010,6 +1025,8 @@ describe("runs list / update", () => {
         items: [
           {
             pipeline_run_id: "r9",
+            method_id: "m1",
+            created_by_user_id: "u1",
             status: "FAILED",
             created_at: "2026-10-01T09:00:00Z",
             error: { error_type: "PipeRunError", message: "the model refused" },
@@ -1019,7 +1036,7 @@ describe("runs list / update", () => {
       }),
     );
 
-    const page = await client.listRuns("m1");
+    const page = await client.listRuns({ methodId: "m1" });
 
     expect(page.items[0]!.error).toBeNull();
   });
@@ -1030,12 +1047,86 @@ describe("runs list / update", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { items: [RUN_ROW], next_cursor: "nxt" }));
 
-    const result = await client.listRuns("m/1");
+    const result = await client.listRuns({ methodId: "m/1" });
 
     expect(lastRequest(spy).url).toBe("http://localhost:8081/v1/runs?method_id=m%2F1");
     expect(result.items).toEqual([RUN_ROW]);
     // snake_case on the wire, camelCase in the SDK surface.
     expect(result.nextCursor).toBe("nxt");
+  });
+
+  it("GETs /v1/runs with no method_id for the organization's runs of every method", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [RUN_ROW], next_cursor: null }));
+
+    const result = await client.listRuns();
+
+    expect(lastRequest(spy).url).toBe("http://localhost:8081/v1/runs");
+    expect(result.items).toEqual([RUN_ROW]);
+  });
+
+  it("sends the filters without a method exactly as with one", async () => {
+    // The Runs page's read: the caller's own runs across methods over a period.
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
+
+    await client.listRuns({
+      createdBy: "me",
+      status: ["FAILED"],
+      createdFrom: "2026-10-01T00:00:00Z",
+      createdTo: "2026-10-31T23:59:59Z",
+      limit: 25,
+      cursor: "c1",
+    });
+
+    expect(lastRequest(spy).url).toBe(
+      "http://localhost:8081/v1/runs?created_from=2026-10-01T00%3A00%3A00Z" +
+        "&created_to=2026-10-31T23%3A59%3A59Z&created_by=me&status=FAILED&limit=25&cursor=c1",
+    );
+  });
+
+  it("forwards an EXPLICIT empty method id instead of silently listing every method", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
+
+    await client.listRuns({ methodId: "" });
+
+    // Dropped, an empty id would turn a broken selection into the organization's whole history.
+    expect(lastRequest(spy).url).toBe("http://localhost:8081/v1/runs?method_id=");
+  });
+
+  it("hands back each row's method, version and author, which a list across methods names", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        items: [
+          { ...RUN_ROW, method_id: "mt_receipts01", created_by_user_id: "u7", method_version: 3 },
+          {
+            ...RUN_ROW,
+            pipeline_run_id: "r2",
+            method_id: "mt_invoices02",
+            created_by_user_id: "u8",
+            method_version: "draft",
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+
+    const page = await client.listRuns();
+
+    expect(
+      page.items.map((row) => [row.method_id, row.method_version, row.created_by_user_id]),
+    ).toEqual([
+      ["mt_receipts01", 3, "u7"],
+      ["mt_invoices02", "draft", "u8"],
+    ]);
   });
 
   it("forwards the instant bounds and paging params", async () => {
@@ -1044,7 +1135,8 @@ describe("runs list / update", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
 
-    await client.listRuns("m1", {
+    await client.listRuns({
+      methodId: "m1",
       createdFrom: "2026-06-02T00:00:00+09:00",
       createdTo: "2026-06-02T23:59:59+09:00",
       limit: 10,
@@ -1066,7 +1158,7 @@ describe("runs list / update", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
 
-    await client.listRuns("m1", { createdFrom: "" });
+    await client.listRuns({ methodId: "m1", createdFrom: "" });
 
     // Dropping it would turn a broken date into an UNFILTERED query that
     // returns every run and looks like it worked. Forwarded, it reaches the
@@ -1082,7 +1174,7 @@ describe("runs list / update", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
 
-    await client.listRuns("m1");
+    await client.listRuns({ methodId: "m1" });
 
     const url = new URL(lastRequest(spy).url);
     // An empty `created_from=` is a 400 from the API's instant parse.
@@ -1099,7 +1191,8 @@ describe("runs list / update", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { items: [RUN_ROW], next_cursor: null }));
 
-    await client.listRuns("m1", {
+    await client.listRuns({
+      methodId: "m1",
       createdBy: "me",
       status: ["PENDING", "STARTED", "RUNNING"],
       limit: 1,
@@ -1117,7 +1210,7 @@ describe("runs list / update", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
 
-    await client.listRuns("m1", { status: ["FAILED", "PENDING", "FAILED"] });
+    await client.listRuns({ methodId: "m1", status: ["FAILED", "PENDING", "FAILED"] });
 
     const url = new URL(lastRequest(spy).url);
     expect(url.searchParams.getAll("status")).toEqual(["PENDING", "FAILED"]);
@@ -1129,7 +1222,7 @@ describe("runs list / update", () => {
     const client = makeClient();
     const spy = vi.spyOn(globalThis, "fetch");
 
-    await expect(client.listRuns("m1", { status: [] })).rejects.toBeInstanceOf(
+    await expect(client.listRuns({ methodId: "m1", status: [] })).rejects.toBeInstanceOf(
       RequestArgumentError,
     );
     expect(spy).not.toHaveBeenCalled();
@@ -1139,13 +1232,72 @@ describe("runs list / update", () => {
     const client = makeClient();
     const spy = vi.spyOn(globalThis, "fetch");
 
-    const error = await client.listRuns("m1", { status: ["RUNNING", "running" as RunStatus] }).then(
-      () => expect.fail("expected listRuns to throw"),
-      (thrown: unknown) => thrown,
-    );
+    const error = await client
+      .listRuns({ methodId: "m1", status: ["RUNNING", "running" as RunStatus] })
+      .then(
+        () => expect.fail("expected listRuns to throw"),
+        (thrown: unknown) => thrown,
+      );
 
     expect(error).toBeInstanceOf(RequestArgumentError);
     expect((error as RequestArgumentError).message).toContain("running");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  /** The two calls as untyped JavaScript, or a cast, reaches them: any arguments at all. */
+  type UntypedRunLists = {
+    listRuns: (...args: unknown[]) => Promise<RunPage>;
+    iterateRuns: (...args: unknown[]) => AsyncGenerator<RunHistoryItem, void, undefined>;
+  };
+
+  it.each([
+    ["a method id, as the former listRuns(methodId) took it", ["mt_x"], "string"],
+    [
+      "a method id and a query, as the former listRuns(methodId, query) took them",
+      ["mt_x", { status: ["RUNNING"] }],
+      "string",
+    ],
+    ["null", [null], "null"],
+    ["an array", [["mt_x"]], "object"],
+  ] as const)(
+    "listRuns refuses %s before any request, rather than list every method's runs",
+    async (_, args, got) => {
+      const client = makeClient() as unknown as UntypedRunLists;
+      const spy = vi.spyOn(globalThis, "fetch");
+
+      const error = await client.listRuns(...args).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(RequestArgumentError);
+      const refusal = error as RequestArgumentError;
+      expect(refusal.message).toBe(
+        "listRuns() takes its query as an object, naming the method as `{ methodId }` or " +
+          `leaving it out for every method; got ${got}.`,
+      );
+      expect(refusal.code).toBe("client.argument_invalid");
+      expect(refusal.problem.params).toEqual({ argument: "query", reason: "not_an_object" });
+      expect(spy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("iterateRuns refuses a method id passed as its query at the call, before any page", () => {
+    // Spread into a page's query, "mt_x" would become { 0: "m", 1: "t", ... }, a query naming
+    // no filter, so the iterator must refuse it itself rather than leave it to listRuns.
+    const client = makeClient() as unknown as UntypedRunLists;
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    let error: unknown;
+    try {
+      client.iterateRuns("mt_x");
+    } catch (thrown) {
+      error = thrown;
+    }
+
+    expect(error).toBeInstanceOf(RequestArgumentError);
+    expect((error as RequestArgumentError).message).toContain("iterateRuns() takes its query");
+    expect((error as RequestArgumentError).problem.params).toEqual({
+      argument: "query",
+      reason: "not_an_object",
+    });
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -1159,13 +1311,39 @@ describe("runs list / update", () => {
       );
 
     const seen: string[] = [];
-    for await (const run of client.iterateRuns("m1")) seen.push(run.pipeline_run_id);
+    for await (const run of client.iterateRuns({ methodId: "m1" })) seen.push(run.pipeline_run_id);
 
     expect(seen).toEqual(["r1", "r2"]);
     expect(spy).toHaveBeenCalledTimes(2);
     // Index the SECOND call explicitly — `lastRequest` reads `calls[0]`.
     const secondUrl = new URL((spy.mock.calls[1] as [string, RequestInit])[0]);
     expect(secondUrl.searchParams.get("cursor")).toBe("c1");
+    // The method rides every page, since a cursor is bound to the list that issued it.
+    expect(secondUrl.searchParams.get("method_id")).toBe("m1");
+  });
+
+  it("iterateRuns without a method follows the organization's list, never naming one", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, { items: [RUN_ROW], next_cursor: "c1" }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          items: [{ ...RUN_ROW, pipeline_run_id: "r2", method_id: "m2" }],
+          next_cursor: null,
+        }),
+      );
+
+    const seen: string[] = [];
+    for await (const run of client.iterateRuns())
+      seen.push(`${run.method_id}/${run.pipeline_run_id}`);
+
+    expect(seen).toEqual(["m1/r1", "m2/r2"]);
+    const urls = spy.mock.calls.map((call) => (call as [string, RequestInit])[0]);
+    expect(urls).toEqual([
+      "http://localhost:8081/v1/runs",
+      "http://localhost:8081/v1/runs?cursor=c1",
+    ]);
   });
 
   it("iterateRuns fetches lazily — breaking early stops the requests", async () => {
@@ -1179,7 +1357,7 @@ describe("runs list / update", () => {
         Promise.resolve(jsonResponse(200, { items: [RUN_ROW], next_cursor: "more" })),
       );
 
-    for await (const run of client.iterateRuns("m1")) {
+    for await (const run of client.iterateRuns({ methodId: "m1" })) {
       expect(run.pipeline_run_id).toBe("r1");
       break;
     }
@@ -1201,7 +1379,7 @@ describe("runs list / update", () => {
       );
 
     const seen: string[] = [];
-    for await (const run of client.iterateRuns("m1")) seen.push(run.pipeline_run_id);
+    for await (const run of client.iterateRuns({ methodId: "m1" })) seen.push(run.pipeline_run_id);
 
     // Each run is yielded EXACTLY ONCE. The repeat is caught before the second
     // page is emitted, not after — otherwise a caller aggregating the stream
@@ -1213,7 +1391,7 @@ describe("runs list / update", () => {
   });
 
   it("iterateRuns follows a cursor past an EMPTY page, sending the filters on every page", async () => {
-    // `createdBy` and `status` filter after the index read, so a page can hold no run and still
+    // `createdBy` and `status` may filter after the index read, so a page can hold no run and still
     // carry a cursor: "nothing matched in the slice just read, keep going". Stopping there
     // would drop every later match, the caller's unfinished run among them.
     const client = makeClient();
@@ -1224,7 +1402,7 @@ describe("runs list / update", () => {
       .mockResolvedValueOnce(jsonResponse(200, { items: [RUN_ROW], next_cursor: null }));
 
     const seen: string[] = [];
-    for await (const run of client.iterateRuns("m1", { createdBy: "me", status: ["RUNNING"] })) {
+    for await (const run of client.iterateRuns({ createdBy: "me", status: ["RUNNING"] })) {
       seen.push(run.pipeline_run_id);
     }
 
@@ -1248,7 +1426,7 @@ describe("runs list / update", () => {
     });
 
     const err = await (async () => {
-      for await (const _ of client.iterateRuns("m1")) {
+      for await (const _ of client.iterateRuns({ methodId: "m1" })) {
         // no-op
       }
     })().then(
@@ -1313,8 +1491,8 @@ describe("a page the SDK cannot read", () => {
   const ROUTES: [string, (client: PipelexApiClient) => Promise<unknown>, string][] = [
     ["listMethods", (client) => client.listMethods(), "/v1/methods"],
     ["iterateMethods", (client) => drain(client.iterateMethods()), "/v1/methods"],
-    ["listRuns", (client) => client.listRuns("m1"), "/v1/runs?method_id=m1"],
-    ["iterateRuns", (client) => drain(client.iterateRuns("m1")), "/v1/runs?method_id=m1"],
+    ["listRuns", (client) => client.listRuns({ methodId: "m1" }), "/v1/runs?method_id=m1"],
+    ["iterateRuns", (client) => drain(client.iterateRuns()), "/v1/runs"],
     ["listFiles", (client) => client.listFiles(), "/v1/files"],
     ["iterateFiles", (client) => drain(client.iterateFiles()), "/v1/files"],
   ];
