@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from pipelex_sdk.errors import PagingNotTerminatingError
+from pipelex_sdk.errors import PagingNotTerminatingError, RequestArgumentError
 from pipelex_sdk.runs import RunStatus
 
 if TYPE_CHECKING:
@@ -170,6 +170,49 @@ class TestClientPaging:
         for query in _queries_sent(send):
             assert query.get("created_by") == ["me"]
             assert query.get("status") == ["RUNNING"]
+
+    def test_iterate_runs_sends_a_one_shot_status_filter_whole_with_every_page(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+    ) -> None:
+        """A generator is checked and copied once at the call, so the second page filters as the first does."""
+        send = patch_send(
+            api_client,
+            wire_response(200, json_body={"items": [_run("r1")], "next_cursor": "c1"}),
+            wire_response(200, json_body={"items": [_run("r2")], "next_cursor": None}),
+        )
+        wanted = (status for status in [RunStatus.FAILED, RunStatus.RUNNING])
+
+        runs = asyncio.run(_drain_runs(api_client, status=wanted))
+
+        assert [pipeline_run.pipeline_run_id for pipeline_run in runs] == ["r1", "r2"]
+        assert [query.get("status") for query in _queries_sent(send)] == [["RUNNING", "FAILED"], ["RUNNING", "FAILED"]]
+
+    @pytest.mark.parametrize(
+        ("status", "error_type"),
+        [
+            pytest.param([], RequestArgumentError, id="empty"),
+            pytest.param([cast("RunStatus", "running")], RequestArgumentError, id="unknown"),
+            pytest.param(cast("list[RunStatus]", RunStatus.RUNNING), TypeError, id="bare-string"),
+        ],
+    )
+    def test_iterate_runs_refuses_a_bad_status_at_the_call(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+        status: list[RunStatus],
+        error_type: type[Exception],
+    ) -> None:
+        """The refusal comes from the call itself, before the iterator exists or anything is sent."""
+        send = patch_send(api_client, wire_response(200, json_body={"items": [], "next_cursor": None}))
+
+        with pytest.raises(error_type):
+            api_client.iterate_runs(status=status)
+
+        send.assert_not_called()
 
     def test_iterate_runs_raises_past_the_page_ceiling_on_empty_pages(
         self,

@@ -4002,7 +4002,7 @@ class PipelexAPIClient(MthdsAPIClient):
         )
         return await self._request_product("GET", f"{_RUNS}{query}", read=RunPage.model_validate)
 
-    async def iterate_runs(
+    def iterate_runs(
         self,
         *,
         method_id: str | None = None,
@@ -4027,23 +4027,31 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Takes the filters `list_runs` takes, the cursor aside, and sends them with every page: with
         a `method_id`, that method's runs; without one, the organization's runs of every method.
+        `status` is checked at the call, as `list_runs` checks it, and its checked copy is what every
+        page sends, so a one-shot iterable such as a generator filters every page rather than only
+        the first.
 
         Raises:
+            TypeError: At the call, for a `status` that is a bare `str`.
+            RequestArgumentError: At the call, before anything is sent, for a `status` that is empty
+                or names a status that is no `RunStatus`.
             PagingNotTerminatingError: If the server never stops handing out cursors.
         """
-        async for pipeline_run in _follow_cursor(
+        # Checked here rather than in an async generator's body, which runs only once it is iterated, and copied once,
+        # so a one-shot iterable is sent whole with every page rather than exhausted by the first.
+        checked_status = _status_filter(status)
+        return _follow_cursor(
             "Run",
             lambda cursor: self.list_runs(
                 method_id=method_id,
                 created_from=created_from,
                 created_to=created_to,
                 created_by=created_by,
-                status=status,
+                status=checked_status,
                 limit=limit,
                 cursor=cursor,
             ),
-        ):
-            yield pipeline_run
+        )
 
     async def get_run_detail(self, run_id: str) -> RunDetail:
         """Fetch one run record with what it executed — `GET /v1/runs/{id}`.
