@@ -5,6 +5,7 @@ shapes (Pydantic validates on the way back, unlike the TS interfaces).
 """
 
 import asyncio
+import inspect
 import json
 from typing import cast
 
@@ -606,23 +607,115 @@ class TestClientProduct:
     def test_list_runs_encodes_query_value(self, mocker: MockerFixture) -> None:
         client = self._client()
         page = {
-            "items": [{"pipeline_run_id": "r1", "method_id": "m/1", "pipe_code": "p", "status": "RUNNING", "created_at": "t"}],
+            "items": [
+                {"pipeline_run_id": "r1", "method_id": "m/1", "created_by_user_id": "u1", "pipe_code": "p", "status": "RUNNING", "created_at": "t"}
+            ],
             "next_cursor": "c1",
         }
         send = self._mock_send(mocker, client, _response(200, json_body=page))
 
-        result = asyncio.run(client.list_runs("m/1"))
+        result = asyncio.run(client.list_runs(method_id="m/1"))
 
         assert self._sent(send).url == f"{_BASE_URL}/v1/runs?method_id=m%2F1"
         assert result.next_cursor == "c1"
         assert result.items[0].pipeline_run_id == "r1"
         assert result.items[0].status is RunStatus.RUNNING
 
+    @pytest.mark.parametrize("call_name", ["list_runs", "iterate_runs"])
+    def test_the_run_list_takes_the_method_as_an_optional_keyword(self, call_name: str) -> None:
+        """The method is one filter among the others: keyword-only and `None` by default, never a first argument."""
+        parameter = inspect.signature(getattr(PipelexAPIClient, call_name)).parameters["method_id"]
+
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is None
+
+    def test_list_runs_without_a_method_lists_the_organizations_runs(self, mocker: MockerFixture) -> None:
+        """No method is no `method_id` parameter at all: the organization's runs of every method."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        asyncio.run(client.list_runs())
+
+        assert self._sent(send).url == f"{_BASE_URL}/v1/runs"
+
+    def test_list_runs_sends_the_filters_without_a_method_as_with_one(self, mocker: MockerFixture) -> None:
+        """The Runs page's read: the caller's own runs across methods over a period."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        asyncio.run(
+            client.list_runs(
+                created_by="me",
+                status=[RunStatus.FAILED],
+                created_from="2026-10-01T00:00:00Z",
+                created_to="2026-10-31T23:59:59Z",
+                limit=25,
+                cursor="c1",
+            )
+        )
+
+        assert self._sent(send).url == (
+            f"{_BASE_URL}/v1/runs?created_from=2026-10-01T00%3A00%3A00Z&created_to=2026-10-31T23%3A59%3A59Z"
+            "&created_by=me&status=FAILED&limit=25&cursor=c1"
+        )
+
+    def test_list_runs_sends_an_empty_method_id_rather_than_list_every_method(self, mocker: MockerFixture) -> None:
+        """Dropped, an empty id would turn a broken selection into the organization's whole history."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        asyncio.run(client.list_runs(method_id=""))
+
+        assert self._sent(send).url == f"{_BASE_URL}/v1/runs?method_id="
+
+    def test_list_runs_reads_each_rows_method_version_and_author(self, mocker: MockerFixture) -> None:
+        """A list across methods names each row's method and author, which the rows now carry."""
+        client = self._client()
+        rows = [
+            {
+                "pipeline_run_id": "r1",
+                "method_id": "mt_receipts01",
+                "created_by_user_id": "u7",
+                "status": "COMPLETED",
+                "created_at": "t1",
+                "method_version": 3,
+            },
+            {
+                "pipeline_run_id": "r2",
+                "method_id": "mt_invoices02",
+                "created_by_user_id": "u8",
+                "status": "RUNNING",
+                "created_at": "t0",
+                "method_version": "draft",
+            },
+        ]
+        self._mock_send(mocker, client, _response(200, json_body={"items": rows, "next_cursor": None}))
+
+        result = asyncio.run(client.list_runs())
+
+        assert [(row.method_id, row.method_version, row.created_by_user_id) for row in result.items] == [
+            ("mt_receipts01", 3, "u7"),
+            ("mt_invoices02", "draft", "u8"),
+        ]
+
+    @pytest.mark.parametrize("missing", ["method_id", "created_by_user_id"])
+    def test_a_run_row_without_its_method_or_author_is_an_answer_it_cannot_read(self, mocker: MockerFixture, missing: str) -> None:
+        """The platform serves both on every row, so a row without one is no run-list answer."""
+        client = self._client()
+        row = {"pipeline_run_id": "r1", "method_id": "m1", "created_by_user_id": "u1", "status": "RUNNING", "created_at": "t"}
+        del row[missing]
+        self._mock_send(mocker, client, _response(200, json_body={"items": [row], "next_cursor": None}))
+
+        with pytest.raises(ApiResponseError, match="a body that is not the answer the route returns") as exc_info:
+            asyncio.run(client.list_runs())
+
+        assert exc_info.value.problem.code == "client.response_unreadable"
+
     def test_list_runs_keeps_date_bounds_and_paging_params_on_presence(self, mocker: MockerFixture) -> None:
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
 
-        asyncio.run(client.list_runs("m1", created_from="2026-08-01T00:00:00+00:00", created_to="", limit=10, cursor="c1"))
+        asyncio.run(client.list_runs(method_id="m1", created_from="2026-08-01T00:00:00+00:00", created_to="", limit=10, cursor="c1"))
 
         # Instants are percent-encoded; an explicit empty bound is forwarded, not dropped.
         assert self._sent(send).url == (
@@ -636,7 +729,7 @@ class TestClientProduct:
 
         asyncio.run(
             client.list_runs(
-                "m1",
+                method_id="m1",
                 created_by="me",
                 status=[RunStatus.PENDING, RunStatus.STARTED, RunStatus.RUNNING],
                 limit=1,
@@ -650,7 +743,7 @@ class TestClientProduct:
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
 
-        asyncio.run(client.list_runs("m1", status=[RunStatus.FAILED, cast("RunStatus", "PENDING"), RunStatus.FAILED]))
+        asyncio.run(client.list_runs(method_id="m1", status=[RunStatus.FAILED, cast("RunStatus", "PENDING"), RunStatus.FAILED]))
 
         assert self._sent(send).url == f"{_BASE_URL}/v1/runs?method_id=m1&status=PENDING&status=FAILED"
 
@@ -658,7 +751,7 @@ class TestClientProduct:
         client = self._client()
         send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
 
-        asyncio.run(client.list_runs("m1"))
+        asyncio.run(client.list_runs(method_id="m1"))
 
         assert self._sent(send).url == f"{_BASE_URL}/v1/runs?method_id=m1"
 
@@ -678,7 +771,7 @@ class TestClientProduct:
         send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
 
         with pytest.raises(RequestArgumentError, match=message):
-            asyncio.run(client.list_runs("m1", status=status))
+            asyncio.run(client.list_runs(method_id="m1", status=status))
 
         send.assert_not_called()
 
@@ -688,7 +781,7 @@ class TestClientProduct:
         send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
 
         with pytest.raises(TypeError, match="list or tuple"):
-            asyncio.run(client.list_runs("m1", status=cast("list[RunStatus]", RunStatus.RUNNING)))
+            asyncio.run(client.list_runs(method_id="m1", status=cast("list[RunStatus]", RunStatus.RUNNING)))
 
         send.assert_not_called()
 
@@ -697,6 +790,8 @@ class TestClientProduct:
         client = self._client()
         row = {
             "pipeline_run_id": "r1",
+            "method_id": "m1",
+            "created_by_user_id": "u1",
             "pipe_code": None,
             "status": "FAILED",
             "created_at": "2026-10-01T10:00:00Z",
@@ -705,12 +800,14 @@ class TestClientProduct:
         }
         self._mock_send(mocker, client, _response(200, json_body={"items": [row], "next_cursor": None}))
 
-        result = asyncio.run(client.list_runs("m1"))
+        result = asyncio.run(client.list_runs(method_id="m1"))
 
         pipeline_run = result.items[0]
         assert isinstance(pipeline_run, RunHistoryItem)
         assert set(RunHistoryItem.model_fields) == {
             "pipeline_run_id",
+            "method_id",
+            "created_by_user_id",
             "status",
             "created_at",
             "finished_at",
@@ -720,6 +817,8 @@ class TestClientProduct:
             "source_digest",
         }
         assert pipeline_run.pipeline_run_id == "r1"
+        assert pipeline_run.method_id == "m1"
+        assert pipeline_run.created_by_user_id == "u1"
         assert pipeline_run.status == RunStatus.FAILED
         assert pipeline_run.created_at == "2026-10-01T10:00:00Z"
         assert pipeline_run.finished_at == "2026-10-01T10:00:05Z"
@@ -733,13 +832,15 @@ class TestClientProduct:
         client = self._client()
         row = {
             "pipeline_run_id": "r9",
+            "method_id": "m1",
+            "created_by_user_id": "u1",
             "status": "FAILED",
             "created_at": "2026-10-01T09:00:00Z",
             "error": {"error_type": "PipeRunError", "message": "the model refused"},
         }
         self._mock_send(mocker, client, _response(200, json_body={"items": [row], "next_cursor": None}))
 
-        result = asyncio.run(client.list_runs("m1"))
+        result = asyncio.run(client.list_runs(method_id="m1"))
 
         assert result.items[0].error is None
 

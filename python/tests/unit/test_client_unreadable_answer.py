@@ -70,7 +70,7 @@ _ROUTES: list[tuple[str, _Call, str]] = [
         lambda client: client.resolve_storage_urls_bulk(["pipelex-storage://a"]),
         "POST /v1/resolve-storage-url/bulk",
     ),
-    ("list_runs", lambda client: client.list_runs("m1"), "GET /v1/runs?method_id=m1"),
+    ("list_runs", lambda client: client.list_runs(method_id="m1"), "GET /v1/runs?method_id=m1"),
     ("get_run_detail", lambda client: client.get_run_detail("run-1"), "GET /v1/runs/run-1"),
 ]
 _ROUTE_PARAMS = [pytest.param(call, route, id=name) for name, call, route in _ROUTES]

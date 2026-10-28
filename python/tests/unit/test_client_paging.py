@@ -29,8 +29,8 @@ def _method(method_id: str) -> dict[str, Any]:
     return {"method_id": method_id, "name": f"Method {method_id}", "created_at": "t"}
 
 
-def _run(run_id: str) -> dict[str, Any]:
-    return {"pipeline_run_id": run_id, "pipe_code": "p", "status": "RUNNING", "created_at": "t"}
+def _run(run_id: str, method_id: str = "m1") -> dict[str, Any]:
+    return {"pipeline_run_id": run_id, "method_id": method_id, "created_by_user_id": "u1", "pipe_code": "p", "status": "RUNNING", "created_at": "t"}
 
 
 def _cursors_sent(send: MockType) -> list[str | None]:
@@ -48,8 +48,8 @@ async def _drain_methods(client: PipelexAPIClient, **kwargs: Any) -> list[Method
     return [summary async for summary in client.iterate_methods(**kwargs)]
 
 
-async def _drain_runs(client: PipelexAPIClient, method_id: str, **kwargs: Any) -> list[RunHistoryItem]:
-    return [pipeline_run async for pipeline_run in client.iterate_runs(method_id, **kwargs)]
+async def _drain_runs(client: PipelexAPIClient, **kwargs: Any) -> list[RunHistoryItem]:
+    return [pipeline_run async for pipeline_run in client.iterate_runs(**kwargs)]
 
 
 def _queries_sent(send: MockType) -> list[dict[str, list[str]]]:
@@ -163,7 +163,7 @@ class TestClientPaging:
             wire_response(200, json_body={"items": [_run("r99")], "next_cursor": None}),
         )
 
-        runs = asyncio.run(_drain_runs(api_client, "m1", created_by="me", status=[RunStatus.RUNNING]))
+        runs = asyncio.run(_drain_runs(api_client, created_by="me", status=[RunStatus.RUNNING]))
 
         assert [pipeline_run.pipeline_run_id for pipeline_run in runs] == ["r1", "r99"]
         assert _cursors_sent(send) == [None, "c1", "c2"]
@@ -184,7 +184,7 @@ class TestClientPaging:
         send = patch_send(api_client, *pages)
 
         with pytest.raises(PagingNotTerminatingError, match="Run paging did not terminate") as exc_info:
-            asyncio.run(_drain_runs(api_client, "m1"))
+            asyncio.run(_drain_runs(api_client, method_id="m1"))
 
         assert exc_info.value.page_limit == 3
         assert send.call_count == 3
@@ -201,10 +201,30 @@ class TestClientPaging:
             wire_response(200, json_body={"items": [_run("r2")], "next_cursor": None}),
         )
 
-        runs = asyncio.run(_drain_runs(api_client, "m1"))
+        runs = asyncio.run(_drain_runs(api_client, method_id="m1"))
 
         assert [pipeline_run.pipeline_run_id for pipeline_run in runs] == ["r1", "r2"]
         assert _cursors_sent(send) == [None, "c1"]
+        # The method rides every page, since a cursor is bound to the list that issued it.
+        assert [query.get("method_id") for query in _queries_sent(send)] == [["m1"], ["m1"]]
+
+    def test_iterate_runs_without_a_method_follows_the_organizations_list(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+    ) -> None:
+        """Without a method, no page names one: the organization's runs of every method."""
+        send = patch_send(
+            api_client,
+            wire_response(200, json_body={"items": [_run("r1", "m1")], "next_cursor": "c1"}),
+            wire_response(200, json_body={"items": [_run("r2", "m2")], "next_cursor": None}),
+        )
+
+        runs = asyncio.run(_drain_runs(api_client))
+
+        assert [(pipeline_run.method_id, pipeline_run.pipeline_run_id) for pipeline_run in runs] == [("m1", "r1"), ("m2", "r2")]
+        assert _queries_sent(send) == [{}, {"cursor": ["c1"]}]
 
     def test_iterate_runs_raises_on_a_cursor_cycle_over_non_empty_pages(
         self,
@@ -229,7 +249,7 @@ class TestClientPaging:
         send = patch_send(api_client, *cycle)
 
         with pytest.raises(PagingNotTerminatingError) as exc_info:
-            asyncio.run(_drain_runs(api_client, "m1"))
+            asyncio.run(_drain_runs(api_client, method_id="m1"))
 
         assert exc_info.value.page_limit == 4
         assert send.call_count == 4
@@ -246,6 +266,6 @@ class TestClientPaging:
             wire_response(200, json_body={"items": [_run("r1")], "next_cursor": "stuck"}),
         )
 
-        runs = asyncio.run(_drain_runs(api_client, "m1"))
+        runs = asyncio.run(_drain_runs(api_client, method_id="m1"))
 
         assert [pipeline_run.pipeline_run_id for pipeline_run in runs] == ["r1"]

@@ -3930,8 +3930,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
     async def list_runs(
         self,
-        method_id: str,
         *,
+        method_id: str | None = None,
         created_from: str | None = None,
         created_to: str | None = None,
         created_by: Literal["me"] | None = None,
@@ -3939,41 +3939,54 @@ class PipelexAPIClient(MthdsAPIClient):
         limit: int | None = None,
         cursor: str | None = None,
     ) -> RunPage:
-        """List one page of a method's runs — `GET /v1/runs?method_id={methodId}`.
+        """List one page of the run history, newest first — `GET /v1/runs`.
+
+        The method is one filter among the others: with `method_id`, the page holds that method's
+        runs, and without it the organization's runs of every method, the other filters applying
+        exactly as they do with a method. Each row names its method, the version it ran and who
+        started it, so a list across methods can name each from the catalog and the organization's
+        members.
 
         Args:
-            method_id: The bare catalog id of the method whose runs to list. The history files the runs
-                of every version and of the draft together under it, so `mt_…@3` names no history of
-                its own and the platform refuses it with a `400`; strip a suffix with
-                `parse_method_selector`, and read which version a run ran from its `method_version`.
+            method_id: Only the runs of this method, by its bare catalog id, sent as `method_id`;
+                `None` lists the organization's runs of every method. The history files the runs of
+                every version and of the draft together under the bare id, so `mt_…@3` names no
+                history of its own and the platform refuses it as `request.invalid`; strip a suffix
+                with `parse_method_selector`, and read which version a run ran from its
+                `method_version`. An empty string is sent, and refused, rather than dropped into the
+                list of every method.
             created_from: Inclusive lower bound on creation, an **instant**: ISO-8601 with a
                 UTC offset. These are index key conditions rather than filters, so a bare date
-                or a naive timestamp is a platform `400` surfaced as `ApiResponseError`.
+                or a naive timestamp is refused by the platform as `request.invalid`, surfaced as
+                `ApiResponseError`.
             created_to: Inclusive upper bound, same instant-only rule.
             created_by: `"me"` lists only the runs the caller started, resolved by the platform from
                 the authenticated identity, sent as `created_by=me`; `None` lists every member's
                 runs. It takes no other value: the list never narrows to another member.
             status: Only runs in one of these statuses, sent as one repeated `status=` parameter per
                 status, deduplicated into `RunStatus` order; `None` lists every status. The caller's
-                own latest unfinished run is `created_by="me"`, `status=[RunStatus.PENDING,
-                RunStatus.STARTED, RunStatus.RUNNING]`, `limit=1`.
+                own latest unfinished run of a method is `method_id=…`, `created_by="me"`,
+                `status=[RunStatus.PENDING, RunStatus.STARTED, RunStatus.RUNNING]`, `limit=1`.
             limit: Page size. The API supplies the default and caps the maximum.
-            cursor: The `next_cursor` of the previous page, passed back opaquely.
+            cursor: The `next_cursor` of the previous page, passed back opaquely with the same
+                `method_id`: a cursor is bound to the list that issued it, so the cursor of one
+                method's runs is refused on the organization's, and the other way round.
 
         Returns:
             A `RunPage` of `RunHistoryItem` rows — what a history row shows, nothing more. Open
-            one run with `get_run_detail` for the whole record. `created_by` and `status` filter
-            after the index read, so a filtered page can hold fewer runs than `limit`, or none, and
-            still carry a `next_cursor`: an empty page is not the end, a `None` cursor is. For the
-            whole history, prefer `iterate_runs`.
+            one run with `get_run_detail` for the whole record. The platform may apply `created_by`
+            and `status` after its index read, so a filtered page can hold fewer runs than `limit`,
+            or none, and still carry a `next_cursor`: an empty page is not the end, a `None` cursor
+            is. For the whole history, prefer `iterate_runs`.
 
         Raises:
             TypeError: `status` is a bare `str`, which read as a sequence would name its characters.
             RequestArgumentError: `status` is empty or names a status that is no `RunStatus`, raised
                 before any request rather than sent as a query that lists every status.
-            ApiResponseError: On any non-2xx. Note that every `/v1/runs*` product route sits
-                behind the platform's surface-access gate, which for API-key auth demands the
-                `ff_api_keys` feature flag and fails closed — so a `403` here means "flag", not
+            ApiResponseError: On any non-2xx, and on a page the SDK cannot read, a row without its
+                `method_id` or `created_by_user_id` included. Note that every `/v1/runs*` product
+                route sits behind the platform's surface-access gate, which for API-key auth demands
+                the `ff_api_keys` feature flag and fails closed — so a `403` here means "flag", not
                 "wrong key".
         """
         query = _product_query(
@@ -3991,28 +4004,29 @@ class PipelexAPIClient(MthdsAPIClient):
 
     async def iterate_runs(
         self,
-        method_id: str,
         *,
+        method_id: str | None = None,
         created_from: str | None = None,
         created_to: str | None = None,
         created_by: Literal["me"] | None = None,
         status: Sequence[RunStatus] | None = None,
         limit: int | None = None,
     ) -> AsyncIterator[RunHistoryItem]:
-        """Yield every run of a method, following the cursors — `GET /v1/runs`.
+        """Yield every run the filters select, following the cursors — `GET /v1/runs`.
 
         The same loop as `iterate_methods`: it keeps going **through an empty page that carries a
-        live cursor**, because `created_by` and `status` are post-read filters, so a filtered page
-        can hold no run and still not be the end. It stops when `next_cursor` is `None`, and when
-        the server hands back the cursor it was just sent — checked *before* yielding, so a stuck
-        cursor never double-counts a page.
+        live cursor**, because `created_by` and `status` may be applied after the index read, so a
+        filtered page can hold no run and still not be the end. It stops when `next_cursor` is
+        `None`, and when the server hands back the cursor it was just sent — checked *before*
+        yielding, so a stuck cursor never double-counts a page.
 
         The page ceiling bounds the rest: a server minting fresh cursors forever, and a cursor
         that cycles across two or more values (`c1 → c2 → c1`), which the adjacent-cursor check
         does not see. Tracking every cursor seen would cost unbounded memory for the same
         protection.
 
-        Takes a bare catalog id, as `list_runs` does.
+        Takes the filters `list_runs` takes, the cursor aside, and sends them with every page: with
+        a `method_id`, that method's runs; without one, the organization's runs of every method.
 
         Raises:
             PagingNotTerminatingError: If the server never stops handing out cursors.
@@ -4020,7 +4034,7 @@ class PipelexAPIClient(MthdsAPIClient):
         async for pipeline_run in _follow_cursor(
             "Run",
             lambda cursor: self.list_runs(
-                method_id,
+                method_id=method_id,
                 created_from=created_from,
                 created_to=created_to,
                 created_by=created_by,
