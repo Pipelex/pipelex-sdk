@@ -1244,6 +1244,63 @@ describe("runs list / update", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  /** The two calls as untyped JavaScript, or a cast, reaches them: any arguments at all. */
+  type UntypedRunLists = {
+    listRuns: (...args: unknown[]) => Promise<RunPage>;
+    iterateRuns: (...args: unknown[]) => AsyncGenerator<RunHistoryItem, void, undefined>;
+  };
+
+  it.each([
+    ["a method id, as the former listRuns(methodId) took it", ["mt_x"], "string"],
+    [
+      "a method id and a query, as the former listRuns(methodId, query) took them",
+      ["mt_x", { status: ["RUNNING"] }],
+      "string",
+    ],
+    ["null", [null], "null"],
+    ["an array", [["mt_x"]], "object"],
+  ] as const)(
+    "listRuns refuses %s before any request, rather than list every method's runs",
+    async (_, args, got) => {
+      const client = makeClient() as unknown as UntypedRunLists;
+      const spy = vi.spyOn(globalThis, "fetch");
+
+      const error = await client.listRuns(...args).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(RequestArgumentError);
+      const refusal = error as RequestArgumentError;
+      expect(refusal.message).toBe(
+        "listRuns() takes its query as an object, naming the method as `{ methodId }` or " +
+          `leaving it out for every method; got ${got}.`,
+      );
+      expect(refusal.code).toBe("client.argument_invalid");
+      expect(refusal.problem.params).toEqual({ argument: "query", reason: "not_an_object" });
+      expect(spy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("iterateRuns refuses a method id passed as its query at the call, before any page", () => {
+    // Spread into a page's query, "mt_x" would become { 0: "m", 1: "t", ... }, a query naming
+    // no filter, so the iterator must refuse it itself rather than leave it to listRuns.
+    const client = makeClient() as unknown as UntypedRunLists;
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    let error: unknown;
+    try {
+      client.iterateRuns("mt_x");
+    } catch (thrown) {
+      error = thrown;
+    }
+
+    expect(error).toBeInstanceOf(RequestArgumentError);
+    expect((error as RequestArgumentError).message).toContain("iterateRuns() takes its query");
+    expect((error as RequestArgumentError).problem.params).toEqual({
+      argument: "query",
+      reason: "not_an_object",
+    });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it("iterateRuns follows the cursor to exhaustion", async () => {
     const client = makeClient();
     const spy = vi

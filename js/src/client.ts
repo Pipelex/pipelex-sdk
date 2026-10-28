@@ -794,6 +794,29 @@ const DRAFT_TOKEN_ARGUMENT: CallArgument = {
   what: "the draft token the caller last read, the method's `updated_at`, a string, or none",
 };
 
+/** What the run history's query is, as a refusal of it names it. */
+const RUN_LIST_QUERY_ARGUMENT: CallArgument = {
+  name: "query",
+  what: "its query as an object, naming the method as `{ methodId }` or leaving it out for every method",
+};
+
+/**
+ * Refuse a run-history query that is not an object, with `RequestArgumentError`, before any
+ * request. The method was once the first argument of `listRuns` and `iterateRuns`, so a call still
+ * written that way, `listRuns("mt_x")`, hands its method id over as the query: read as one, a
+ * string names no filter and would list the organization's runs of every method as though it
+ * worked, and spread into a page's query it becomes an object of its characters.
+ */
+function checkRunListQuery(call: string, query: unknown): void {
+  if (isPlainObject(query)) return;
+  throw argumentRefusal(
+    call,
+    RUN_LIST_QUERY_ARGUMENT,
+    describeNumberArgument(query),
+    "not_an_object",
+  );
+}
+
 /** What each argument of a method copy is, as a refusal of it names it. */
 const COPY_DESTINATION_ARGUMENT: CallArgument = {
   name: "destination_org_id",
@@ -4798,7 +4821,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * platform may apply either after its index read, so a filtered page can hold fewer runs than
    * `limit`, or none, and still carry a `nextCursor`: an empty page is not the end, a `null`
    * cursor is. An empty `status` list, or a name that is no `RunStatus`, is a
-   * `RequestArgumentError` before any request.
+   * `RequestArgumentError` before any request, and so is a `query` that is not an object, such as
+   * the method id a call written for the former `listRuns(methodId, query)` passes first.
    *
    * `methodId` is a bare catalog id: the history files the runs of every
    * version and of the draft together under it, so `mt_…@3` names no history of
@@ -4811,6 +4835,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * wants every run.
    */
   async listRuns(query: ListRunsQuery = {}): Promise<RunPage> {
+    checkRunListQuery("listRuns", query);
     // An empty date or method id is sent, not dropped: it reaches the API's parse and comes back
     // refused, where dropping it would return every run (`productQuery`).
     const search = productQuery({
@@ -4854,12 +4879,18 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `PagingNotTerminatingError` past a page ceiling no real history reaches.
    *
    * Takes the query `listRuns` takes, the cursor aside, and sends it with every page: with a
-   * `methodId`, that method's runs; without one, the organization's runs of every method.
+   * `methodId`, that method's runs; without one, the organization's runs of every method. A
+   * `query` that is not an object, such as the method id a call written for the former
+   * `iterateRuns(methodId)` passes, is a `RequestArgumentError` thrown at the call, before the
+   * iterator exists.
    */
-  async *iterateRuns(
+  iterateRuns(
     query: Omit<ListRunsQuery, "cursor"> = {},
   ): AsyncGenerator<RunHistoryItem, void, undefined> {
-    yield* followCursor("listRuns", (cursor) => this.listRuns({ ...query, cursor }));
+    // Checked here rather than left to `listRuns`: spread into a page's query, a string becomes
+    // an object of its characters, which `listRuns` would take for a query naming no filter.
+    checkRunListQuery("iterateRuns", query);
+    return followCursor("listRuns", (cursor) => this.listRuns({ ...query, cursor }));
   }
 
   /**
