@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The `mthds` floor moves from `^0.33.0` to `^0.34.0` (Breaking)**: `mthds` 0.34.0 follows the MTHDS standard's `8.0.1` cut, and what this package re-exports from `mthds/protocol` follows it: `MTHDS_PROTOCOL_VERSION` is `2.0.1`, which only states the order of a files map's refusals, `MTHDS_ERROR_REGISTRY_VERSION` is `8.0.1`, and `CORE_REGISTRY` and every problem `buildProblem` builds for a code a run can raise carry the registry's new titles and next steps, written for someone following a run of a method they did not write, `pipe.output_invalid` now reading "A step's result does not have the structure the method declares" where it read "A pipe's output does not fit its concept". No code, domain, retry verdict or step kind changes, so code that branches on a problem's `code` is unaffected while code matching a title's text follows the new wording. A project that also imports `mthds` itself moves to 0.34 with it, so that one copy is installed.
+
 ## [v0.56.0] - 2026-10-28
 
 ### Changed

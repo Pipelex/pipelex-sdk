@@ -80,7 +80,7 @@
     "vitest": "^4.0.18"
   },
   "dependencies": {
-    "mthds": "^0.33.0",
+    "mthds": "^0.34.0",
     "smol-toml": "^1.6.0",
     "undici": "^7.29.1"
   }
