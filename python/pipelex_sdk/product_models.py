@@ -1787,14 +1787,16 @@ class RunHistoryItem(BaseModel):
     source_digest: str | None = None
     """The digest of the files the run ran (see `PipelineRun.source_digest`)."""
 
-    results_stored: bool | None = None
+    results_stored: StrictBool | None = None
     """Whether the platform stored the run's results, so `get_run_result` can read them: `True` exactly
     when the run is `COMPLETED` with its results stored, `False` on every other row. On a run that has not
     completed yet, `False` means "not yet". On a `COMPLETED` run it is `False` for good when the result went
     inline to the caller that started it, as a blocking `execute` run's does, and the results read of such a
     run answers `404 run.results_not_stored`, so a history asks for no results on that row. Where the results
     are stored stays off the list. `None` on a row from a platform that predates the field, which says
-    nothing either way."""
+    nothing either way. Read strictly, since a caller branches on it: a value that is not a boolean, such as
+    the string `"true"` or the number `1`, is never coerced, and the row carrying it is an answer the SDK
+    cannot read."""
 
 
 class PipelineRun(BaseModel):

@@ -872,6 +872,35 @@ class TestClientProduct:
         assert ("results_stored" in history_row.model_fields_set) is (results_stored is not None)
         assert history_row.model_extra == {}
 
+    @pytest.mark.parametrize(
+        "results_stored",
+        [
+            pytest.param("true", id="string-true"),
+            pytest.param("false", id="string-false"),
+            pytest.param(1, id="integer"),
+            pytest.param(0, id="zero"),
+        ],
+    )
+    def test_a_run_rows_results_stored_is_never_coerced(self, mocker: MockerFixture, results_stored: object) -> None:
+        """A caller branches on `results_stored`, so a value that is not a boolean is refused, never read as one."""
+        client = self._client()
+        row = {
+            "pipeline_run_id": "r1",
+            "method_id": "m1",
+            "created_by_user_id": "u1",
+            "status": "COMPLETED",
+            "created_at": "t",
+            "results_stored": results_stored,
+        }
+        self._mock_send(mocker, client, _response(200, json_body={"items": [row], "next_cursor": None}))
+
+        with pytest.raises(ValidationError):
+            RunHistoryItem.model_validate(row)
+        with pytest.raises(ApiResponseError, match="a body that is not the answer the route returns") as exc_info:
+            asyncio.run(client.list_runs())
+
+        assert exc_info.value.problem.code == "client.response_unreadable"
+
     def test_a_run_rows_error_that_is_no_problem_document_reads_none(self, mocker: MockerFixture) -> None:
         client = self._client()
         row = {

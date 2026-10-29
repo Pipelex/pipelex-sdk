@@ -3945,7 +3945,9 @@ class PipelexAPIClient(MthdsAPIClient):
         runs, and without it the organization's runs of every method, the other filters applying
         exactly as they do with a method. Each row names its method, the version it ran and who
         started it, so a list across methods can name each from the catalog and the organization's
-        members.
+        members. Each row also says whether its results are stored (`results_stored`), so a history
+        reads no results for a row whose results were not kept, such as a blocking `execute` run's,
+        whose `get_run_result` would answer `404 run.results_not_stored`.
 
         Args:
             method_id: Only the runs of this method, by its bare catalog id, sent as `method_id`;

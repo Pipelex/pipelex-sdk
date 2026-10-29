@@ -4808,9 +4808,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * each from the catalog and the organization's members.
    *
    * Each item is a `RunHistoryItem` — the id, method, author, status,
-   * timestamps, pipe and, for a failed run, its own problem. The run's
-   * organization and workflow id are not on the list; `getRunDetail` returns
-   * them.
+   * timestamps, pipe and, for a failed run, its own problem. Each row also
+   * says whether its results are stored (`results_stored`), so a history reads
+   * no results for a row whose results were not kept, such as a blocking
+   * `execute` run's, whose `getRunResult` would answer
+   * `404 run.results_not_stored`. The run's organization, workflow id and
+   * result location are not on the list; `getRunDetail` returns them.
    *
    * `createdFrom` / `createdTo` are applied server-side as index key
    * conditions, so a bounded page genuinely reads less. They are INSTANTS,
