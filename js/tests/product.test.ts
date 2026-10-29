@@ -978,6 +978,7 @@ describe("runs list / update", () => {
       error?: Problem | null;
       method_version?: number | "draft" | null;
       source_digest?: string | null;
+      results_stored?: boolean;
     }>();
     expectTypeOf<RunPage["items"]>().toEqualTypeOf<RunHistoryItem[]>();
     // The record the detail read returns keeps the fields the list no longer sends.
@@ -1127,6 +1128,43 @@ describe("runs list / update", () => {
       ["mt_receipts01", 3, "u7"],
       ["mt_invoices02", "draft", "u8"],
     ]);
+  });
+
+  it("hands back whether each row's results are stored, and a row without the field as it came", async () => {
+    // A blocking execute run completes with its result sent inline, so its results read answers
+    // `404 run.results_not_stored`; the row says so before any read. A platform that predates the
+    // field leaves it out, and that row still reads.
+    const client = makeClient();
+    const stored: RunHistoryItem = {
+      ...RUN_ROW,
+      status: "COMPLETED",
+      finished_at: "2026-10-01T09:01:00Z",
+      results_stored: true,
+    };
+    const inline: RunHistoryItem = {
+      ...RUN_ROW,
+      pipeline_run_id: "r2",
+      status: "COMPLETED",
+      finished_at: "2026-10-01T09:02:00Z",
+      results_stored: false,
+    };
+    const running: RunHistoryItem = { ...RUN_ROW, pipeline_run_id: "r3", results_stored: false };
+    const unsaid: RunHistoryItem = { ...RUN_ROW, pipeline_run_id: "r4", status: "COMPLETED" };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { items: [stored, inline, running, unsaid], next_cursor: null }),
+    );
+
+    const page = await client.listRuns();
+
+    expect(page.items).toEqual([stored, inline, running, unsaid]);
+    expect(page.items.map((row) => [row.pipeline_run_id, row.results_stored])).toEqual([
+      ["r1", true],
+      ["r2", false],
+      ["r3", false],
+      ["r4", undefined],
+    ]);
+    expect(Object.hasOwn(page.items[3]!, "results_stored")).toBe(false);
+    expectTypeOf(page.items[0]!.results_stored).toEqualTypeOf<boolean | undefined>();
   });
 
   it("forwards the instant bounds and paging params", async () => {
