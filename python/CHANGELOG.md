@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Requires `mthds` 0.26.0, the release that follows MTHDS standard 8.0.1 (Breaking)**: the exact pin moves from `mthds==0.25.0` to `mthds==0.26.0`, so every environment holding this `pipelex-sdk` installs exactly that `mthds`, and a project that also pins `mthds` itself has to move with it. `mthds` 0.26.0 reports `MTHDS_STANDARD_VERSION` `8.0.1`, so a manifest's `mthds_version` of exactly `8.0.0` no longer passes, and `PROTOCOL_VERSION` `2.0.1`, which only states the order of a files map's refusals, and reads problems against the core error registry `8.0.1`, whose titles and next steps for the codes a run can raise are written for someone following a run of a method they did not write, `pipe.output_invalid` now reading "A step's result does not have the structure the method declares" where it read "A pipe's output does not fit its concept". No code, domain, retry verdict or step kind changes, and the problems this client builds itself keep their wording, so nothing in `pipelex-sdk`'s own surface moves.
+
 ## [v0.56.0] - 2026-10-28
 
 ### Changed
