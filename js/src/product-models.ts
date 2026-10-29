@@ -1677,10 +1677,11 @@ export interface PipelineRun {
  *
  * Exactly what a history row shows, and nothing more: the run's id, which method it ran and
  * which version of it, who started it, when it started and finished, whether it succeeded,
- * which pipe it ran and, for a failed run, why. A list across methods names each row's method
- * and author by id, so a client names them from the catalog and the organization's members. The
- * rest of the run's record — its organization, its workflow id — is not sent on the list; read
- * it with `getRunDetail` (or `getRunStatus`) once a run is opened.
+ * which pipe it ran, for a failed run why, and whether its results can be read. A list across
+ * methods names each row's method and author by id, so a client names them from the catalog and
+ * the organization's members. The rest of the run's record — its organization, its workflow id,
+ * where its results are stored — is not sent on the list; read it with `getRunDetail` (or
+ * `getRunStatus`) once a run is opened.
  */
 export interface RunHistoryItem {
   pipeline_run_id: string;
@@ -1707,6 +1708,16 @@ export interface RunHistoryItem {
   method_version?: number | "draft" | null;
   /** The SHA-256 of the sources the run sent as text (see `PipelineRun.source_digest`). */
   source_digest?: string | null;
+  /**
+   * Whether the platform stored the run's results, so `getRunResult` can read them: `true`
+   * exactly when the run is `COMPLETED` with its results stored, `false` on every other row. On a
+   * run that has not completed yet, `false` means "not yet". On a `COMPLETED` run it is `false`
+   * for good when the result went inline to the caller that started it, as a blocking `execute`
+   * run's does, and the results read of such a run answers `404 run.results_not_stored`, so a
+   * history asks for no results on that row. Where the results are stored stays off the list.
+   * Absent from a platform that predates the field, which says nothing either way.
+   */
+  results_stored?: boolean;
 }
 
 /**

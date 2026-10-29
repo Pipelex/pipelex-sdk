@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A run-history row says whether its results are stored**: `RunHistoryItem`, each row of `listRuns` and `iterateRuns`, gains the optional `results_stored`, `true` exactly when the run is `COMPLETED` with its results stored, so `getRunResult` can read them, and `false` otherwise. On a run that has not completed, `false` means "not yet"; on a `COMPLETED` run it is `false` for good when the result went inline to the caller that started it, as a blocking `execute` run's does, whose results read answers `404 run.results_not_stored`, so a history asks for no results on that row. Where the results are stored stays off the list, and a platform that predates the field leaves it out (`docs/architecture.md`).
+
 ## [v0.57.0] - 2026-10-29
 
 ### Changed

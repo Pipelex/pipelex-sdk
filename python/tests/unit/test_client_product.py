@@ -7,7 +7,7 @@ shapes (Pydantic validates on the way back, unlike the TS interfaces).
 import asyncio
 import inspect
 import json
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -824,6 +824,7 @@ class TestClientProduct:
             "error",
             "method_version",
             "source_digest",
+            "results_stored",
         }
         assert pipeline_run.pipeline_run_id == "r1"
         assert pipeline_run.method_id == "m1"
@@ -836,6 +837,40 @@ class TestClientProduct:
         assert pipeline_run.error is not None
         assert pipeline_run.error.code == "model.content_refused"
         assert pipeline_run.error.detail == "boom"
+
+    @pytest.mark.parametrize(
+        ("status", "results_stored"),
+        [
+            ("COMPLETED", True),
+            ("COMPLETED", False),
+            ("RUNNING", False),
+            ("COMPLETED", None),
+        ],
+    )
+    def test_a_run_row_says_whether_its_results_are_stored(self, mocker: MockerFixture, status: str, results_stored: bool | None) -> None:
+        """`results_stored` reads as served, and a row from a platform that predates it reads `None`.
+
+        A blocking execute run completes with its result sent inline, so its row says `False` for good and its
+        results read answers `404 run.results_not_stored`; a run still going says `False` until it completes.
+        """
+        client = self._client()
+        row: dict[str, Any] = {
+            "pipeline_run_id": "r1",
+            "method_id": "m1",
+            "created_by_user_id": "u1",
+            "status": status,
+            "created_at": "2026-10-01T10:00:00Z",
+        }
+        if results_stored is not None:
+            row["results_stored"] = results_stored
+        self._mock_send(mocker, client, _response(200, json_body={"items": [row], "next_cursor": None}))
+
+        result = asyncio.run(client.list_runs())
+
+        history_row = result.items[0]
+        assert history_row.results_stored is results_stored
+        assert ("results_stored" in history_row.model_fields_set) is (results_stored is not None)
+        assert history_row.model_extra == {}
 
     def test_a_run_rows_error_that_is_no_problem_document_reads_none(self, mocker: MockerFixture) -> None:
         client = self._client()
