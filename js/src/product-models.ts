@@ -1710,12 +1710,14 @@ export interface RunHistoryItem {
   source_digest?: string | null;
   /**
    * Whether the platform stored the run's results, so `getRunResult` can read them: `true`
-   * exactly when the run is `COMPLETED` with its results stored, `false` on every other row. On a
-   * run that has not completed yet, `false` means "not yet". On a `COMPLETED` run it is `false`
-   * for good when the result went inline to the caller that started it, as a blocking `execute`
-   * run's does, and the results read of such a run answers `404 run.results_not_stored`, so a
-   * history asks for no results on that row. Where the results are stored stays off the list.
-   * Absent from a platform that predates the field, which says nothing either way.
+   * exactly when the run is `COMPLETED` with its results stored, `false` on every other row. Only
+   * while the run is still queued or running (`PENDING`, `STARTED`, `RUNNING`) does `false` mean
+   * "not yet". On a run that ended any other way than `COMPLETED` it is `false` for good, there
+   * being no results to read, and on a `COMPLETED` run it is `false` for good when the result went
+   * inline to the caller that started it, as a blocking `execute` run's does, and the results read
+   * of such a run answers `404 run.results_not_stored`, so a history asks for no results on that
+   * row. Where the results are stored stays off the list. Absent from a platform that predates the
+   * field, which says nothing either way: an absent field does not mean `false`.
    */
   results_stored?: boolean;
 }
