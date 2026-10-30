@@ -528,8 +528,8 @@ class WebhookDeliveryDetail(WebhookDeliverySummary):
     event: dict[str, Any]
     """The body of the delivery's latest attempt, as sent: `type`, `timestamp`, `attempt` and `data`, every attempt's
     body differing only in its `attempt`. Before any attempt, the body its first attempt carries. Kept as sent rather
-    than read as a `WebhookEvent`, so a receiver's log can be compared with it as parsed JSON: it equals the body the
-    attempt brought its receiver as a JSON value, not as the same bytes."""
+    than read as a `WebhookEvent`, so a receiver's log can be compared with it as parsed JSON: once an attempt was
+    made, it equals the body that attempt brought the receiver as a JSON value, not as the same bytes."""
 
 
 class WebhookDeliveryList(BaseModel):

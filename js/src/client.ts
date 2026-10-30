@@ -5067,10 +5067,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
-   * One delivery of a run's webhooks, with its event as sent —
-   * `GET /v1/runs/{id}/webhook-deliveries/{delivery_id}`: the body of its latest attempt, which
-   * equals, as JSON, the body that attempt brought its receiver. Compare the two as parsed JSON
-   * values, never as text: the read promises the same value, not the same bytes.
+   * One delivery of a run's webhooks, with its event —
+   * `GET /v1/runs/{id}/webhook-deliveries/{delivery_id}`: the body its latest attempt sent, or,
+   * before any attempt, the body its first attempt will send. Every attempt and replay of the
+   * delivery sends that body, only its `attempt` changing, so the event matches what a receiver
+   * logged only once an attempt was made: it then equals, as JSON, the body that attempt brought
+   * the receiver. Compare the two as parsed JSON values, never as text: the read promises the same
+   * value, not the same bytes.
    * `deliveryId` is the delivery's `delivery_id`, the receiver's `webhook-id`.
    *
    * Throws `RequestArgumentError` for an id that is empty, `.` or `..`, or holds a lone surrogate,
