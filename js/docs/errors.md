@@ -96,6 +96,8 @@ What the hosted API answers a start sent under a key:
 
 **A copy takes a key too.** `copyMethod` sends an `idempotencyKey` the same way, held to the same rule, and the hosted API keeps it for the same 24 hours, scoped to the caller and the method's organization. A copy binds no run, so its answers under a key differ from a start's: [method-copy.md](./method-copy.md#retrying-a-copy--idempotencykey) gives them.
 
+**So do a secret rotation and a delivery replay.** `rotateWebhookSecret` and `replayRunWebhookDelivery` send an `idempotencyKey` the same way, held to the same rule. A rotation's answer carries a secret, so the platform never replays it, while a replay's stored answer is given again: [webhooks.md](./webhooks.md) gives both.
+
 ## Each class's problem
 
 The classes remain, so a `catch` can still tell an argument refusal from a refused request or a failed run, but every one carries its failure as its problem, and the code is what a program branches on.

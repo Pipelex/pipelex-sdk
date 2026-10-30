@@ -289,11 +289,40 @@ describe("the delivery log", () => {
     expectTypeOf(detail).toEqualTypeOf<WebhookDeliveryDetail>();
   });
 
-  it("replays a delivery, with no body and no idempotency key", async () => {
+  it.each([
+    ["absent", {}],
+    ["null", { idempotencyKey: null }],
+  ])(
+    "replays a delivery with no body, and with no idempotency key when it is %s",
+    async (_, options) => {
+      const answer = { pipeline_run_id: RUN_ID, delivery_id: DELIVERY_ID, attempt: 3 };
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(jsonResponse(202, answer));
+
+      const accepted = await makeClient().replayRunWebhookDelivery(RUN_ID, DELIVERY_ID, options);
+
+      const request = sentRequest(fetchSpy, 0);
+      expect(request).toMatchObject({
+        url: `${BASE_URL}/v1/runs/${RUN_ID}/webhook-deliveries/${DELIVERY_ID}/replay`,
+        method: "POST",
+        body: undefined,
+      });
+      expect(Object.keys(request.headers).map((name) => name.toLowerCase())).not.toContain(
+        "idempotency-key",
+      );
+      expect(accepted).toEqual(answer);
+      expectTypeOf(accepted).toEqualTypeOf<WebhookReplayAccepted>();
+    },
+  );
+
+  it("replays a delivery under the idempotency key given", async () => {
     const answer = { pipeline_run_id: RUN_ID, delivery_id: DELIVERY_ID, attempt: 3 };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse(202, answer));
 
-    const accepted = await makeClient().replayRunWebhookDelivery(RUN_ID, DELIVERY_ID);
+    const accepted = await makeClient().replayRunWebhookDelivery(RUN_ID, DELIVERY_ID, {
+      idempotencyKey: KEY,
+    });
 
     const request = sentRequest(fetchSpy, 0);
     expect(request).toMatchObject({
@@ -301,11 +330,51 @@ describe("the delivery log", () => {
       method: "POST",
       body: undefined,
     });
-    expect(Object.keys(request.headers).map((name) => name.toLowerCase())).not.toContain(
-      "idempotency-key",
-    );
+    expect(request.headers["Idempotency-Key"]).toBe(KEY);
     expect(accepted).toEqual(answer);
-    expectTypeOf(accepted).toEqualTypeOf<WebhookReplayAccepted>();
+  });
+
+  it.each([
+    ["empty", "", "empty"],
+    ["holding a space", "two words", "not_visible_ascii"],
+    ["too long", "k".repeat(256), "too_long"],
+    ["not a string", 42, "not_a_string"],
+  ])(
+    "refuses an idempotency key %s on a replay before anything is sent",
+    async (_, key, reason) => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+      const err = await failureOf(() =>
+        makeClient().replayRunWebhookDelivery(RUN_ID, DELIVERY_ID, {
+          idempotencyKey: key as string,
+        }),
+      );
+
+      expect(err).toBeInstanceOf(RequestArgumentError);
+      expect((err as RequestArgumentError).message).toMatch(
+        /Leave it out to replay the delivery without one\.$/,
+      );
+      expect((err as RequestArgumentError).problem.params).toEqual({
+        argument: "idempotency_key",
+        reason,
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["request.idempotency_conflict", "no"],
+    ["request.idempotency_key_in_use", "yes"],
+  ])("surfaces a replay's key refused by %s", async (code, retry) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(problemResponse(code, 409, { retry }));
+
+    const err = await failureOf(() =>
+      makeClient().replayRunWebhookDelivery(RUN_ID, DELIVERY_ID, { idempotencyKey: KEY }),
+    );
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).code).toBe(code);
+    expect((err as ApiResponseError).retry).toBe(retry);
   });
 
   it.each([

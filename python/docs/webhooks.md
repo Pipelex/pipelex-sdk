@@ -93,8 +93,19 @@ The event never carries the run's results: fetch them with `get_run_result(event
 The hosted plane records each delivery, one per URL a run registered, with every attempt. Any member of the organization reads them, by web session or API key:
 
 - `list_run_webhook_deliveries(run_id)` — `GET /v1/runs/{id}/webhook-deliveries`, a `WebhookDeliveryList` whose `deliveries` are `WebhookDeliverySummary` rows in the order of the run's URLs, none for a run that registered none or has not ended. Each has its `delivery_id` (the receiver's `webhook-id`), its `url_index` and redacted `url`, its `state` (`WebhookDeliveryState`: `pending` on its retry schedule, `delivered` once a receiver answered `2xx`, `failed` past its last attempt) and its `attempts`, each with when it was sent, the HTTP `status_code` the receiver answered, or the `failure` that kept an answer from coming (`WebhookAttemptFailure`: `timeout`, `connection`, `tls`, `refused_address`), and its `duration_ms`. No response body is kept.
-- `get_run_webhook_delivery(run_id, delivery_id)` — one `WebhookDeliveryDetail`, the summary and the `event` its latest attempt sent, kept as the `dict` it was sent as.
-- `replay_run_webhook_delivery(run_id, delivery_id)` — sends a settled delivery again: one new attempt under the same `webhook-id`, with the same `data`, the next `attempt`, a fresh timestamp and the signatures of the secrets live then. It answers `202` with a `WebhookReplayAccepted` naming the attempt; a replay asked again before it is sent is that same attempt. A delivery still `pending` is refused `409` `pipelex.org.not_manageable` with the reason `webhook_delivery_pending`, and one holding the most attempts a delivery holds with `webhook_delivery_attempts_exhausted`; past the organization's replay rate the platform answers `429` `account.rate_limited` with its `retry_after`.
+- `get_run_webhook_delivery(run_id, delivery_id)` — one `WebhookDeliveryDetail`, the summary and the `event` its latest attempt sent, kept as the `dict` it was sent as. That `event` equals, as JSON, the body the attempt brought its receiver, so compare it with a receiver's log as parsed JSON values, never as text: the read promises the same value, not the same bytes.
+- `replay_run_webhook_delivery(run_id, delivery_id, *, idempotency_key=None)` — sends a settled delivery again: one new attempt under the same `webhook-id`, with the same `data`, the next `attempt`, a fresh timestamp and the signatures of the secrets live then. It answers `202` with a `WebhookReplayAccepted` naming the attempt; a replay asked again before it is sent is that same attempt. A delivery still `pending` is refused `409` `pipelex.org.not_manageable` with the reason `webhook_delivery_pending`, and one holding the most attempts a delivery holds with `webhook_delivery_attempts_exhausted`; past the organization's replay rate the platform answers `429` `account.rate_limited` with its `retry_after`.
+
+### Retrying a replay — `idempotency_key`
+
+`replay_run_webhook_delivery` takes an `idempotency_key`, sent as the `Idempotency-Key` header of the replay and not sent at all when `None`. The platform stores the replay's answer under the key, so the same replay sent again under the same key gets the stored answer, naming the same attempt, and the delivery is not sent twice: a replay whose answer was lost, as on a client timeout, can be sent again safely. Generate one key per replay you mean to ask for (a `str(uuid.uuid4())` is a good one), and keep it across that replay's retries:
+
+```python
+idempotency_key = str(uuid.uuid4())
+accepted = await client.replay_run_webhook_delivery(run_id, delivery_id, idempotency_key=idempotency_key)
+```
+
+A key reused for another request is refused `409` `request.idempotency_conflict`, whose `retry` is `no`, and a key whose earlier request is still being handled `409` `request.idempotency_key_in_use`, whose `retry` is `yes`: send it again under the same key after its `retry_after`. A key is 1 to 255 visible ASCII characters, `!` to `~`; anything else, an empty string included, is a `RequestArgumentError` naming `idempotency_key` before anything is sent, the rule a start's key is held to ([errors.md](./errors.md#a-starts-idempotency-key--idempotency_key)).
 
 The states and failures are read open: one this SDK does not name arrives as its raw string.
 

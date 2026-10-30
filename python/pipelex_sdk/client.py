@@ -248,10 +248,10 @@ _REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEO
 # travels as a context variable, kept to the task that made it as the time limit above is.
 _MAY_START_RUN: ContextVar[bool] = ContextVar("_MAY_START_RUN", default=False)
 
-# The idempotency key of the `start` or the `copy_method` in flight, which `_send` sends as the
-# `Idempotency-Key` header. The base builds the start's request deep inside its own `start`, so the key
-# travels as a context variable, kept to the task that set it as the time limit above is, and set only around
-# the one request `start` or `copy_method` sends.
+# The idempotency key of the `start`, the `copy_method`, the `rotate_webhook_secret` or the
+# `replay_run_webhook_delivery` in flight, which `_send` sends as the `Idempotency-Key` header. The base builds the
+# start's request deep inside its own `start`, so the key travels as a context variable, kept to the task that set it
+# as the time limit above is, and set only around the one request each of those methods sends.
 _IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar("_IDEMPOTENCY_KEY", default=None)
 
 # The `callback_urls` of the `execute` or `start` in flight, which the `_request` override adds to the run's body.
@@ -268,9 +268,9 @@ _RUN_ROUTES: frozenset[str] = frozenset({"execute", "start"})
 # The request header the hosted API reads a request's idempotency key from.
 _IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
-# The longest idempotency key a start or a copy sends. It is room for any generated key, and keeps the hosted API's
-# stored record of the key far inside its store's limit, which a longer key could exceed, so that the start
-# would run without the protection the key was sent for. `@pipelex/sdk` holds keys to the same limit.
+# The longest idempotency key a request sends. It is room for any generated key, and keeps the hosted API's stored
+# record of the key far inside its store's limit, which a longer key could exceed, so that the request would run
+# without the protection the key was sent for. `@pipelex/sdk` holds keys to the same limit.
 _MAX_IDEMPOTENCY_KEY_LENGTH = 255
 
 # Visible ASCII, `!` to `~`: what a header value carries unchanged through every proxy and both SDKs'
@@ -661,9 +661,9 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Inside `_reading_inherited_answer` it also records the answer, which the inherited route then
         parses, so that an answer that route cannot read is reported as every other route reports it. Inside
-        `_creating_run`, the error says whether the run the request may create may have started. While `start` or
-        `copy_method` holds an idempotency key (`_IDEMPOTENCY_KEY`), the request carries it as the
-        `Idempotency-Key` header.
+        `_creating_run`, the error says whether the run the request may create may have started. While `start`,
+        `copy_method`, `rotate_webhook_secret` or `replay_run_webhook_delivery` holds an idempotency key
+        (`_IDEMPOTENCY_KEY`), the request carries it as the `Idempotency-Key` header.
         """
         timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
         effective_timeout = request_timeout if timeout is None else timeout
@@ -702,15 +702,16 @@ class PipelexAPIClient(MthdsAPIClient):
     async def _send_and_read(
         self, method: str, url: str, *, content: bytes | None, request_timeout: float, idempotency_key: str | None
     ) -> httpx.Response:
-        """Send one request with the headers the base's `_send` sets, plus the `Idempotency-Key` header when a start
+        """Send one request with the headers the base's `_send` sets, plus the `Idempotency-Key` header when a request
         holds a key, and read its body whole.
 
         The base's `_send` reads the body inside httpx, so a body that cannot be decoded loses the answer it came
         with; this method streams the answer and reads its body itself, so that such a body is reported as the
         answer it is (`_undecodable_answer`), with its status and its headers. The headers are the base's
-        (`Accept`, `User-Agent`, and `Content-Type` beside a body), plus the key the requests that carry one,
-        `start`'s and `copy_method`'s, send: a unit test holds them to the ones the base's `_send` sends, so a
-        header the base adds later fails that test rather than going missing here.
+        (`Accept`, `User-Agent`, and `Content-Type` beside a body), plus the key the requests that carry one send,
+        `start`'s, `copy_method`'s, `rotate_webhook_secret`'s and `replay_run_webhook_delivery`'s: a unit test holds
+        them to the ones the base's `_send` sends, so a header the base adds later fails that test rather than going
+        missing here.
 
         Raises:
             ApiResponseError: The body arrived and could not be decoded.
@@ -4245,8 +4246,9 @@ class PipelexAPIClient(MthdsAPIClient):
     async def get_run_webhook_delivery(self, run_id: str, delivery_id: str) -> WebhookDeliveryDetail:
         """One delivery of a run's webhooks, with its event as sent — `GET /v1/runs/{id}/webhook-deliveries/{delivery_id}`.
 
-        The event is the body of the delivery's latest attempt, which a receiver's log can be matched against byte
-        for byte once written as compact JSON.
+        The event is the body of the delivery's latest attempt, which equals, as JSON, the body that attempt brought its
+        receiver. Compare the two as parsed JSON values, never as text: the read promises the same value, not the same
+        bytes.
 
         Args:
             run_id: The run's `pipeline_run_id`.
@@ -4264,7 +4266,7 @@ class PipelexAPIClient(MthdsAPIClient):
         endpoint = f"{_RUNS}/{run_segment}/webhook-deliveries/{delivery_segment}"
         return await self._request_product("GET", endpoint, read=WebhookDeliveryDetail.model_validate)
 
-    async def replay_run_webhook_delivery(self, run_id: str, delivery_id: str) -> WebhookReplayAccepted:
+    async def replay_run_webhook_delivery(self, run_id: str, delivery_id: str, *, idempotency_key: str | None = None) -> WebhookReplayAccepted:
         """Send a settled delivery again — `POST /v1/runs/{id}/webhook-deliveries/{delivery_id}/replay`.
 
         One new attempt under the same `webhook-id`, with the same `data`, the next `attempt`, a fresh timestamp, and
@@ -4276,17 +4278,27 @@ class PipelexAPIClient(MthdsAPIClient):
         Args:
             run_id: The run's `pipeline_run_id`.
             delivery_id: The delivery's `delivery_id`.
+            idempotency_key: The replay's idempotency key, sent as the `Idempotency-Key` header, and not sent at all
+                when `None`. Generate one per replay the caller means to ask for (a `str(uuid.uuid4())` is a good
+                key), and keep it across that replay's retries. The platform stores the replay's answer under the
+                key, so the same replay sent again under the same key, as after an answer lost to a time limit, gets
+                the stored answer, naming the same attempt, and the delivery is not sent twice. A key reused for
+                another request is refused `409` `request.idempotency_conflict`, and one whose earlier request is
+                still being handled `409` `request.idempotency_key_in_use`, whose `retry` is `yes`: send it again
+                under the same key after its `retry_after`. A key is 1 to 255 visible ASCII characters, anything else
+                refused before any request.
 
         Returns:
             The attempt number the replay is sent under; a replay asked again before it is sent is that same attempt.
 
         Raises:
-            RequestArgumentError: An id is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate; nothing
-                is sent.
+            RequestArgumentError: An id is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate, or
+                `idempotency_key` is malformed; nothing is sent.
             ApiResponseError: `404` `run.not_found` for a run the caller cannot read; `422` `request.invalid` naming
                 `delivery_id` for a delivery the run does not have; `409` `pipelex.org.not_manageable` with the reason
                 `webhook_delivery_pending` for a delivery still on its retry schedule, or
-                `webhook_delivery_attempts_exhausted` for one holding the most attempts a delivery holds; `429`
+                `webhook_delivery_attempts_exhausted` for one holding the most attempts a delivery holds; `409`
+                `request.idempotency_conflict` or `request.idempotency_key_in_use` for a key refused; `429`
                 `account.rate_limited`, with its `retry_after`, past the organization's replay rate; and a `500` or
                 `503` when the replay could not be queued, which then counts nothing against the rate.
         """
@@ -4294,7 +4306,12 @@ class PipelexAPIClient(MthdsAPIClient):
         run_segment = _id_path_segment(run_id, call=call, what=_RUN_ID_ARGUMENT)
         delivery_segment = _id_path_segment(delivery_id, call=call, what=_DELIVERY_ID_ARGUMENT)
         endpoint = f"{_RUNS}/{run_segment}/webhook-deliveries/{delivery_segment}/replay"
-        return await self._request_product("POST", endpoint, read=WebhookReplayAccepted.model_validate)
+        checked_idempotency_key = _idempotency_key_of(idempotency_key, request="replay the delivery")
+        key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
+        try:
+            return await self._request_product("POST", endpoint, read=WebhookReplayAccepted.model_validate)
+        finally:
+            _IDEMPOTENCY_KEY.reset(key_token)
 
     async def update_run(self, run_id: str, update_input: UpdateRunInput) -> None:
         """Patch a run's status (admin/manual) — `PUT /v1/runs/{id}` (empty body)."""
@@ -4538,16 +4555,17 @@ def _json_body(body: object) -> bytes:
 
 
 def _idempotency_key_of(value: object, *, request: str = "start the run") -> str | None:
-    """The idempotency key a start or a method copy sends, or `None` when the caller gave none.
+    """The idempotency key a start, a method copy, a secret rotation or a delivery replay sends, or `None` when the
+    caller gave none.
 
     A key that is not a string of 1 to 255 visible ASCII characters is refused rather than dropped, an empty
     one included, since a request sent without the key its caller gave would lose the protection the caller
     asked for without a word. `request` says what the request does, as the refusal's last sentence names it
-    ("start the run", "copy the method"). Typed `object`, as `_normalized_selector` is, because this is the
-    runtime boundary an untyped caller reaches. The characters are checked before the length, which then
-    counts ASCII characters alone, so this message and `@pipelex/sdk`'s, which counts a character outside
-    ASCII differently, read alike for every key; neither quotes the key, which a caller may derive from
-    something private.
+    ("start the run", "copy the method", "rotate the secret", "replay the delivery"). Typed `object`, as
+    `_normalized_selector` is, because this is the runtime boundary an untyped caller reaches. The characters are
+    checked before the length, which then counts ASCII characters alone, so this message and `@pipelex/sdk`'s, which
+    counts a character outside ASCII differently, read alike for every key; neither quotes the key, which a caller
+    may derive from something private.
 
     Raises:
         RequestArgumentError: The key is present and is not 1 to 255 visible ASCII characters.

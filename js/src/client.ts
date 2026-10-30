@@ -202,6 +202,7 @@ import type {
   WebhookDeliveryDetail,
   WebhookDeliveryList,
   WebhookReplayAccepted,
+  WebhookReplayOptions,
   WebhookSecret,
   WebhookSecretRotateOptions,
 } from "./webhooks.js";
@@ -1170,7 +1171,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `url` is a fully resolved absolute URL. `mayStartRun` marks a request that may create a run,
    * whose errors then say whether it may have (see `RunCreation`).
    * `idempotencyKey`, already checked by `idempotencyKeyOf`, is sent as the
-   * `Idempotency-Key` header; only `start` and `copyMethod` pass one.
+   * `Idempotency-Key` header; only `start`, `copyMethod`, `rotateWebhookSecret` and
+   * `replayRunWebhookDelivery` pass one.
    */
   private async requestRaw(
     method: HttpMethod,
@@ -5066,8 +5068,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * One delivery of a run's webhooks, with its event as sent —
-   * `GET /v1/runs/{id}/webhook-deliveries/{delivery_id}`: the body of its latest attempt, which a
-   * receiver's log can be matched against byte for byte once written as compact JSON.
+   * `GET /v1/runs/{id}/webhook-deliveries/{delivery_id}`: the body of its latest attempt, which
+   * equals, as JSON, the body that attempt brought its receiver. Compare the two as parsed JSON
+   * values, never as text: the read promises the same value, not the same bytes.
    * `deliveryId` is the delivery's `delivery_id`, the receiver's `webhook-id`.
    *
    * Throws `RequestArgumentError` for an id that is empty, `.` or `..`, or holds a lone surrogate,
@@ -5091,23 +5094,38 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * can read the run asks for one, an API key included, under the organization's replay rate.
    *
    * Answers the attempt number the replay is sent under; a replay asked again before it is sent is
-   * that same attempt. Throws `RequestArgumentError` for an id that is empty, `.` or `..`, or holds
-   * a lone surrogate, before any request. Throws `ApiResponseError`: `404` `run.not_found` for a
-   * run the caller cannot read; `422` `request.invalid` naming `delivery_id` for a delivery the run
-   * does not have; `409` `pipelex.org.not_manageable` with the reason `webhook_delivery_pending`
-   * for a delivery still on its retry schedule, or `webhook_delivery_attempts_exhausted` for one
-   * holding the most attempts a delivery holds; `429` `account.rate_limited`, with its
-   * `retry_after`, past the organization's replay rate; and a `500` or `503` when the replay could
-   * not be queued, which then counts nothing against the rate.
+   * that same attempt.
+   *
+   * `options.idempotencyKey` is sent as the `Idempotency-Key` header, and nothing is sent when it
+   * is absent or `null`. The platform stores the replay's answer under the key, so the same replay
+   * sent again under the same key, as after an answer lost to a time limit, gets the stored answer,
+   * naming the same attempt, and the delivery is not sent twice. A key reused for another request
+   * is refused `409` `request.idempotency_conflict`, and one whose earlier request is still being
+   * handled `409` `request.idempotency_key_in_use`, whose `retry` is `yes`: send it again under the
+   * same key after its `retry_after`. See `WebhookReplayOptions`.
+   *
+   * Throws `RequestArgumentError` for an id that is empty, `.` or `..`, or holds a lone surrogate,
+   * or for an idempotency key that is not 1 to 255 visible ASCII characters, before any request.
+   * Throws `ApiResponseError`: `404` `run.not_found` for a run the caller cannot read; `422`
+   * `request.invalid` naming `delivery_id` for a delivery the run does not have; `409`
+   * `pipelex.org.not_manageable` with the reason `webhook_delivery_pending` for a delivery still on
+   * its retry schedule, or `webhook_delivery_attempts_exhausted` for one holding the most attempts
+   * a delivery holds; `429` `account.rate_limited`, with its `retry_after`, past the
+   * organization's replay rate; and a `500` or `503` when the replay could not be queued, which
+   * then counts nothing against the rate.
    */
   async replayRunWebhookDelivery(
     runId: string,
     deliveryId: string,
+    options: WebhookReplayOptions = {},
   ): Promise<WebhookReplayAccepted> {
     const call = "replayRunWebhookDelivery";
     const run = idPathSegment(runId, call, RUN_ID_ARGUMENT);
     const delivery = idPathSegment(deliveryId, call, DELIVERY_ID_ARGUMENT);
-    return this.requestProductObject("POST", `runs/${run}/webhook-deliveries/${delivery}/replay`);
+    const endpoint = `runs/${run}/webhook-deliveries/${delivery}/replay`;
+    const idempotencyKey = idempotencyKeyOf(options, "replay the delivery");
+    const res = await this.requestProductAnswer("POST", endpoint, undefined, { idempotencyKey });
+    return this.readObjectAnswer<WebhookReplayAccepted>("POST", endpoint, res);
   }
 
   /** Patch a run's status (admin/manual) — `PUT /v1/runs/{id}`. */
@@ -5697,9 +5715,9 @@ function nonEmptyString(value: string | null | undefined): string | undefined {
 const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
 /**
- * The longest idempotency key a start sends. It is room for any generated key, and keeps the
+ * The longest idempotency key a request sends. It is room for any generated key, and keeps the
  * hosted API's stored record of the key far inside its store's limit, which a longer key could
- * exceed, so that the start would run without the protection the key was sent for.
+ * exceed, so that the request would run without the protection the key was sent for.
  */
 const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 
@@ -5711,13 +5729,14 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 const VISIBLE_ASCII = /^[\x21-\x7E]+$/;
 
 /**
- * The idempotency key a start or a method copy sends, or `undefined` when the options carry none
- * (absent or `null`). A key that is not a string of 1 to 255 visible ASCII characters is refused
- * with a `RequestArgumentError` rather than dropped, an empty one included, since a request sent
- * without the key its caller gave would lose the protection the caller asked for without a word.
- * `request` says what the request does, as the refusal's last sentence names it ("start the run",
- * "copy the method"). The message never quotes the key, which a caller may derive from something
- * private. The Python SDK holds a key to the same rule, in the same words.
+ * The idempotency key a start, a method copy, a secret rotation or a delivery replay sends, or
+ * `undefined` when the options carry none (absent or `null`). A key that is not a string of 1 to
+ * 255 visible ASCII characters is refused with a `RequestArgumentError` rather than dropped, an
+ * empty one included, since a request sent without the key its caller gave would lose the
+ * protection the caller asked for without a word. `request` says what the request does, as the
+ * refusal's last sentence names it ("start the run", "copy the method", "rotate the secret",
+ * "replay the delivery"). The message never quotes the key, which a caller may derive from
+ * something private. The Python SDK holds a key to the same rule, in the same words.
  */
 function idempotencyKeyOf(
   options: { idempotencyKey?: string | null },
