@@ -340,6 +340,37 @@ export type {
   WaitForResultOptions,
 } from "./runs.js";
 
+// ── Caller webhooks (the `run.finished` event, its verification, the delivery log, the secret) ──
+// `verifyWebhook` runs where the receiver runs, with Web Crypto, so it needs no client; the
+// delivery-log and secret routes are client methods, and only their shapes travel here.
+export {
+  verifyWebhook,
+  isRunFinishedEvent,
+  RUN_FINISHED_EVENT_TYPE,
+  WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS,
+  WebhookVerificationError,
+  WebhookEventUnreadableError,
+} from "./webhooks.js";
+export type {
+  RunFinishedEvent,
+  RunFinishedEventData,
+  RunFinishedStatus,
+  UnknownWebhookEvent,
+  VerifyWebhookOptions,
+  WebhookAttemptFailure,
+  WebhookDeliveryAttempt,
+  WebhookDeliveryDetail,
+  WebhookDeliveryList,
+  WebhookDeliveryState,
+  WebhookDeliverySummary,
+  WebhookEvent,
+  WebhookHeaders,
+  WebhookRefusal,
+  WebhookReplayAccepted,
+  WebhookSecret,
+  WebhookSecretRotateOptions,
+} from "./webhooks.js";
+
 // ── Usage summary (pure — folds a run's usage pair into one null-aware reading) ──
 export { summarizeUsage } from "./usage.js";
 export type {

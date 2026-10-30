@@ -9,8 +9,9 @@
  * runtime added) is read off `problem`. The Python twin, `pipelex-sdk`, builds the same code for
  * every failure, which the shared case file `tests/fixtures/sdk-problems.json` pins in both suites.
  *
- * The exported errors outside the family, `CodegenLockError` and `ExactJsonUnsupportedError`, are
- * `ProblemError`s too.
+ * The exported errors outside the family, `CodegenLockError`, `ExactJsonUnsupportedError` and the
+ * caller-webhook receiver's `WebhookVerificationError` and `WebhookEventUnreadableError`
+ * (`webhooks.ts`), are `ProblemError`s too.
  */
 
 import { ProblemError, buildProblem, isProblem, readAnswer, readProblemBody } from "mthds/protocol";

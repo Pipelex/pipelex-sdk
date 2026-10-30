@@ -1052,3 +1052,66 @@ class BrandingBodies:
             {"code": "request.invalid", "detail": "String should match pattern '^#[0-9a-fA-F]{6}$'", "location": {"field": "dark_colors.header"}},
         ],
     }
+
+
+class WebhookData:
+    """A run's caller webhooks, as the caller registers them and the hosted delivery log and secret routes answer.
+
+    `@pipelex/sdk`'s `tests/webhook-routes.test.ts` answers its client with the same bodies.
+    """
+
+    RUN_ID: ClassVar[str] = "84bbc909-cde4-4b99-a9ad-d09d3b1241a5"
+    DELIVERY_ID: ClassVar[str] = "whd_5d0c2a7e91f34b6c8a1e0d7f3b9c4e21"
+    KEY: ClassVar[str] = "5f0c6a52-2d3e-4c8b-9a51-7e1f0b6c2d44"
+    URLS: ClassVar[list[str]] = ["https://hooks.example.com/pipelex?token=abc", "https://backup.example.com/runs"]
+    REDACTED: ClassVar[list[str]] = ["https://hooks.example.com/***", "https://backup.example.com/***"]
+    ACK: ClassVar[dict[str, Any]] = {"pipeline_run_id": RUN_ID, "state": "STARTED", "created_at": "t0"}
+    EXECUTE_BODY: ClassVar[dict[str, Any]] = {
+        "pipeline_run_id": RUN_ID,
+        "main_stuff_name": "result",
+        "pipe_output": {
+            "working_memory": {
+                "root": {"result": {"concept": "native.Text", "content": {"text": "hello"}}},
+                "aliases": {"main_stuff": "result"},
+            },
+            "pipeline_run_id": RUN_ID,
+        },
+    }
+    DELIVERY: ClassVar[dict[str, Any]] = {
+        "delivery_id": DELIVERY_ID,
+        "pipeline_run_id": RUN_ID,
+        "url_index": 0,
+        "url": "https://hooks.example.com/***",
+        "state": "failed",
+        "event_type": "run.finished",
+        "created_at": "2026-10-30T09:15:05.002Z",
+        "attempts": [
+            {"attempt": 1, "attempted_at": "2026-10-30T09:15:05.120Z", "status_code": 503, "failure": None, "duration_ms": 214},
+            {"attempt": 2, "attempted_at": "2026-10-30T09:15:35.401Z", "status_code": None, "failure": "timeout", "duration_ms": 15000},
+        ],
+    }
+    EVENT: ClassVar[dict[str, Any]] = {
+        "type": "run.finished",
+        "timestamp": "2026-10-30T09:15:04.512Z",
+        "attempt": 2,
+        "data": {"pipeline_run_id": RUN_ID, "status": "COMPLETED", "error": None},
+    }
+    SECRET: ClassVar[dict[str, Any]] = {
+        "secret": "whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "created_at": "2026-10-01T08:00:00Z",
+        "rotated_at": None,
+        "previous_secret_expires_at": None,
+    }
+    ROTATED: ClassVar[dict[str, Any]] = {
+        "secret": "whsec_ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+        "created_at": "2026-10-01T08:00:00Z",
+        "rotated_at": "2026-10-30T10:00:00Z",
+        "previous_secret_expires_at": "2026-10-31T10:00:00Z",
+    }
+    # Values of `callback_urls` refused before anything is sent, each with the reason its problem names.
+    REFUSED_URLS: ClassVar[list[tuple[str, object, str]]] = [
+        ("a string", "https://hooks.example.com/pipelex", "not_a_list"),
+        ("a dict", {"url": "https://hooks.example.com/pipelex"}, "not_a_list"),
+        ("a list holding a number", ["https://hooks.example.com/pipelex", 42], "not_a_string"),
+        ("a list holding None", [None], "not_a_string"),
+    ]

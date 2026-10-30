@@ -1,0 +1,110 @@
+# Caller webhooks
+
+A run can call webhooks of its caller once it has ended, so the caller learns of the end without polling. The run registers the URLs when it starts, in `callback_urls`; when it ends, the runtime sends each URL one signed `POST` carrying a `run.finished` event; the caller's receiver verifies the call, then fetches the results by the run's id. The contract is the spec `conformance/specs/pipelex-caller-webhooks.md`, in the `conformance` repository, which both the hosted plane and a self-hosted runner honour. This page covers the four parts the SDK takes: registering the URLs, verifying a call (`pipelex_sdk.webhooks.verify_webhook`), reading the hosted delivery log, and reading or rotating the organization's signing secret. `@pipelex/sdk`'s twin is [`js/docs/webhooks.md`](../../js/docs/webhooks.md).
+
+## Registering the webhooks — `callback_urls`
+
+`execute`, `start` and `start_and_wait` take `callback_urls`, a list or tuple of URLs:
+
+```python
+started = await client.start(
+    method_id="mt_abc123",
+    inputs=inputs,
+    callback_urls=["https://hooks.example.com/pipelex"],
+)
+started.callback_urls  # ["https://hooks.example.com/***"]
+```
+
+It is a Pipelex API extension, beside `method_ref`: the hosted API and a self-hosted runner both take it, and `start_and_wait` keeps it on its blocking fallback, so a bare runner calls the same webhooks once its blocking run has ended. Each server holds the URLs to its own rules, which the client does not restate. The hosted API takes at most 5 HTTPS URLs of at most 2,048 characters, none repeated, and refuses a URL whose host resolves to a private, loopback, link-local or metadata address with a `422` `request.invalid` whose `field` names it as `callback_urls.<index>`; a deployment that does not deliver caller webhooks refuses the list with a `422` `request.unsupported`, and a self-hosted runner whose operator configured no signing secret with a `422` `pipelex.webhook.secret_not_configured`.
+
+The client refuses, before anything is sent, a value that is not a list or tuple (`client.argument_invalid`, reason `not_a_list`) or one holding anything but strings (`not_a_string`), and does not send an empty one, which the platform treats as absent. `callback_urls` is no run source: the base client counts every key of `extra` towards its "something to run" precondition, and `callback_urls` reaches the body through `extra`, so this client refuses a run naming its webhooks and nothing to run itself, with the base's reason (`nothing_to_run`). It is reserved on `extra`, as `method_ref` is, so it reaches the body by its named parameter alone.
+
+A URL may carry a credential of the receiver's in its path or query string. Every read of the run lists the URLs redacted to their scheme, host and a port other than the scheme's default, with `/***` in place of the rest: the start's acknowledgement (`PipelexRunResultStart.callback_urls`), the status read (`RunRead.callback_urls`) and the run record (`RunDetail.callback_urls`), `None` for a run that registered none.
+
+## Receiving a call — `verify_webhook`
+
+A call is a Standard Webhooks v1 `POST`. Its `webhook-id` header names the delivery, the same on every attempt and replay; `webhook-timestamp` is when the attempt was sent, in Unix seconds; and `webhook-signature` lists `v1,` and the base64 HMAC-SHA256 of `{webhook-id}.{webhook-timestamp}.{body}` under each secret live when it was sent. `verify_webhook(body, headers, secret, *, now=None)` checks all three and returns the event. It is synchronous, since it sends nothing:
+
+```python
+from fastapi import Request, Response
+
+from pipelex_sdk.errors import WebhookVerificationError
+from pipelex_sdk.webhooks import RunFinishedEvent, verify_webhook
+
+
+@app.post("/pipelex")
+async def pipelex_webhook(request: Request) -> Response:
+    body = await request.body()  # the raw body, never a parsed and re-serialized one
+    try:
+        event = verify_webhook(body, request.headers, os.environ["PIPELEX_WEBHOOK_SECRET"])
+    except WebhookVerificationError:
+        return Response(status_code=401)
+    if not isinstance(event, RunFinishedEvent):
+        return Response(status_code=204)  # a type this receiver does not read
+    if await already_handled(request.headers["webhook-id"]):
+        return Response(status_code=204)
+    results = await client.get_run_result(event.data.pipeline_run_id)
+    ...
+    return Response(status_code=204)
+```
+
+It follows the contract's verification procedure, in its order:
+
+1. **The headers.** A call missing `webhook-id`, `webhook-timestamp` or `webhook-signature`, or carrying one empty, is refused with the refusal `WebhookRefusal.MISSING_HEADER`. Header names are matched whatever their case; `headers` is any mapping, a `dict`, Starlette's or httpx's `Headers`, a header given as a list of values being read as those values joined by spaces.
+2. **The timestamp.** A `webhook-timestamp` that is not a whole number of Unix seconds, or is more than five minutes (`WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS`, 300) from the receiver's clock either way, is refused with `TIMESTAMP`; exactly five minutes is accepted. `now`, an aware `datetime`, sets the clock, for a test or a call received earlier.
+3. **The signature.** The signature is computed from the raw body under each secret given and compared in constant time (`hmac.compare_digest`) with every `v1` entry of `webhook-signature`, an entry of another version being ignored. No match is the refusal `SIGNATURE`.
+
+Only then is the body read. The body must be the bytes received, as `bytes`, `bytearray`, `memoryview` or their `str`: the same JSON written with other bytes, re-serialized or with its non-ASCII characters escaped, signs differently and is refused. In Flask, read `request.get_data()`.
+
+The secret is the `whsec_` value the runtime signs with, given whole: the organization's on the hosted plane ([below](#the-organizations-signing-secret)), or the one a self-hosted runner's operator configured. During a rotation, give both the new and the previous secret as a list: the call verifies under either. A secret that is not `whsec_` and a key in standard base64 with its padding is refused with a `RequestArgumentError` (`client.argument_invalid` naming `secret`) before the call is looked at, and no refusal quotes it.
+
+### What a refusal carries
+
+| Error | When | `problem.code` |
+| --- | --- | --- |
+| `WebhookVerificationError`, `refusal` `MISSING_HEADER` | a header is absent or empty | `auth.missing_credential` |
+| `WebhookVerificationError`, `refusal` `TIMESTAMP` | the timestamp is malformed or out of tolerance | `auth.invalid_credential` |
+| `WebhookVerificationError`, `refusal` `SIGNATURE` | no signature matches under any secret given | `auth.invalid_credential` |
+| `WebhookEventUnreadableError` | a verified body that is not UTF-8 or not JSON | `request.malformed`, `reason` `not_utf8` or `not_json` |
+| `WebhookEventUnreadableError` | a verified body that is no event this SDK reads | `request.invalid`, `field` the member at fault (`type`, `timestamp`, `attempt`, `data`, `data.pipeline_run_id`, `data.status`) |
+| `RequestArgumentError` | a secret, a body or a clock of the wrong kind | `client.argument_invalid` naming `secret`, `body` or `now` |
+
+Answer a `WebhookVerificationError` with a status outside `2xx`, such as `401`: the sender counts it as a failed attempt and retries, and a replay later sends the delivery again. Both webhook errors live in `pipelex_sdk.errors` and derive from `Exception` with a `problem`, as the codegen errors do, never from `PipelexRequestError`, since nothing was requested.
+
+### The event
+
+`verify_webhook` returns a `RunFinishedEvent`, or an `UnknownWebhookEvent` for a `type` this SDK does not read, which a receiver acknowledges with a `2xx` and ignores; both are extension-open models, a member a later contract adds riding `model_extra`. A `run.finished` event holds:
+
+- `type`, `run.finished` for every ending, the outcome being in `data.status`;
+- `timestamp`, when the run ended (its `finished_at`), not when the call was sent;
+- `attempt`, which attempt of the delivery this call is, from 1. It is informational: it increases with each retry and a replay continues it, but a runtime that runs its delivery step again may skip numbers or start again at 1 under the same `webhook-id`. Deduplicate on the `webhook-id` header, never on `attempt` or the body;
+- `data`, the run as its caller's status read served it when the delivery was created, the same on every attempt and replay.
+
+The event never carries the run's results: fetch them with `get_run_result(event.data.pipeline_run_id)`.
+
+**Two shapes of `data` reach a receiver today, and `RunFinishedEventData` reads both.** A self-hosted runner sends the MTHDS protocol's status read: `pipeline_run_id`, a lowercase `status` (`completed` or `failed`, a cancelled or timed-out run reading `failed` with a code that says why), and for a failed run its problem as `error`, a member with no value left out. The hosted plane sends the body of its own `GET /v1/runs/{id}/status`, this SDK's `RunRead`, without `callback_urls`: an uppercase `status` (`COMPLETED`, `FAILED`, `CANCELLED`, `TERMINATED` or `TIMED_OUT`), a member with no value written as `null`, and the platform's own members, such as `finished_at`, `method_id` and `request_id`, which ride `model_extra`. That hosted shape does not validate against the contract's JSON Schema, which describes the protocol's read; the hosted event follows its status read onto the protocol's shape when that read moves, with no change of its own. Until then, `status` is a plain `str`, and a success under both spellings reads `event.data.status.lower() == "completed"`. A failed run's `error` is a `LenientProblem`: kept when it is a problem document, `None` otherwise, as the status read keeps it.
+
+## The hosted delivery log
+
+The hosted plane records each delivery, one per URL a run registered, with every attempt. Any member of the organization reads them, by web session or API key:
+
+- `list_run_webhook_deliveries(run_id)` — `GET /v1/runs/{id}/webhook-deliveries`, a `WebhookDeliveryList` whose `deliveries` are `WebhookDeliverySummary` rows in the order of the run's URLs, none for a run that registered none or has not ended. Each has its `delivery_id` (the receiver's `webhook-id`), its `url_index` and redacted `url`, its `state` (`WebhookDeliveryState`: `pending` on its retry schedule, `delivered` once a receiver answered `2xx`, `failed` past its last attempt) and its `attempts`, each with when it was sent, the HTTP `status_code` the receiver answered, or the `failure` that kept an answer from coming (`WebhookAttemptFailure`: `timeout`, `connection`, `tls`, `refused_address`), and its `duration_ms`. No response body is kept.
+- `get_run_webhook_delivery(run_id, delivery_id)` — one `WebhookDeliveryDetail`, the summary and the `event` its latest attempt sent, kept as the `dict` it was sent as.
+- `replay_run_webhook_delivery(run_id, delivery_id)` — sends a settled delivery again: one new attempt under the same `webhook-id`, with the same `data`, the next `attempt`, a fresh timestamp and the signatures of the secrets live then. It answers `202` with a `WebhookReplayAccepted` naming the attempt; a replay asked again before it is sent is that same attempt. A delivery still `pending` is refused `409` `pipelex.org.not_manageable` with the reason `webhook_delivery_pending`, and one holding the most attempts a delivery holds with `webhook_delivery_attempts_exhausted`; past the organization's replay rate the platform answers `429` `account.rate_limited` with its `retry_after`.
+
+The states and failures are read open: one this SDK does not name arrives as its raw string.
+
+## The organization's signing secret
+
+On the hosted plane every caller webhook of an organization is signed with the organization's secret. Its admins read it, from a web session only, since the hosted gateway refuses an API key on these routes:
+
+- `get_webhook_secret(org_id)` — `GET /v1/organizations/{org_id}/webhook-secret`, a `WebhookSecret`: the `secret`, when it was created, when it was last rotated, and until when the secret the last rotation replaced still signs (`previous_secret_expires_at`). The platform generates the first secret on this first read. Treat the answer as a credential: the model keeps the secret out of its `repr`, and it must never be logged or cached.
+- `rotate_webhook_secret(org_id, *, idempotency_key=None)` — `POST /v1/organizations/{org_id}/webhook-secret/rotate`. The new secret is current at once and the previous one keeps signing beside it for 24 hours, so a receiver configured with both, as `verify_webhook` takes them, misses nothing. The answer carries a secret, so the platform never replays it: the same `Idempotency-Key` sent again is refused `409` `request.already_executed` and rotates nothing more, and the secret is then read with `get_webhook_secret`.
+
+Both refuse another role with `403` `auth.forbidden` whose `params.requirement` is `admin`, an organization other than the caller's active one with `403` `pipelex.org.mismatch`, and one with no record with `404` `pipelex.org.not_found`.
+
+## How the verification is held to the contract
+
+The contract's known-answer vectors, `tests/caller_webhooks/fixtures/signature-vectors.json` in the `conformance` repository, are vendored byte for byte at `tests/fixtures/caller-webhooks/signature-vectors.json`, with `tests/fixtures/caller-webhooks/vendored.json` recording the commit it was copied at and its SHA-256. `tests/unit/test_webhooks.py` fails when the copy no longer has that digest, verifies every verification case at its `receiver_clock` and compares its verdict and refusal, and verifies every signing case under each secret that signed it. The shared case file `tests/fixtures/webhook-events.json` adds what the vectors leave to each SDK: the problem of each refusal, what each verified body reads as (the hosted and self-hosted shapes, an unknown type, the unreadable bodies) and the secrets refused.
+
+These three files are copies, written by `make shared-files` at the repository's root from their source in `js/tests/fixtures/` and never edited here; `make check-shared-files` fails on a stale copy ([`docs/layout.md`](../../docs/layout.md)).

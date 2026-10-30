@@ -1,0 +1,397 @@
+{
+  "about": [
+    "How both SDKs verify and read a call to a caller webhook beyond the conformance vectors, which tests/fixtures/caller-webhooks/ vendors: the problem each refusal carries, the event each verified body reads as, and the secrets the verification refuses.",
+    "`refusals` gives the code of the problem `WebhookVerificationError` carries for each refusal, the vectors' `refusal` vocabulary.",
+    "`calls` are calls a test signs itself under `secret`: each signs the case's `body` (or its `body_base64` bytes) with HMAC-SHA256 under `webhook_id` and `webhook_timestamp` (the case's own when it gives one), writes `webhook-signature` from `signature_header`, `{v1}` standing for `v1,` and the signature and `{signature}` for the signature alone (`{v1}` when the case gives none), and verifies the call at `receiver_clock`. `expect` is the `event` it reads as (its `type`, whether the SDK reads that type, its `attempt`, the code of `data.error` and members of `data`), the `refusal` that refuses it, or the problem of the `unreadable` body.",
+    "`secrets` are values of the secret argument the verification refuses before looking at the call, each with the reason its `client.argument_invalid` problem names.",
+    "The source is js/tests/fixtures/webhook-events.json. Its copy, python/tests/fixtures/webhook-events.json, is written by `make shared-files` at the repository root, and is never edited."
+  ],
+  "secret": "whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "webhook_id": "whd_5d0c2a7e91f34b6c8a1e0d7f3b9c4e21",
+  "webhook_timestamp": "1793696104",
+  "receiver_clock": 1793696106,
+  "refusals": {
+    "missing_header": "auth.missing_credential",
+    "timestamp": "auth.invalid_credential",
+    "signature": "auth.invalid_credential"
+  },
+  "calls": [
+    {
+      "name": "hosted/completed",
+      "summary": "A hosted event: its data is the platform's own status read, an uppercase status, members with no value written as null, and the platform's own members riding along.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"org_id\":\"org_01JB6Q9T2V3W4X5Y6Z7A8B9C0D\",\"created_by_user_id\":\"user_01JB6Q9T2V3W4X5Y6Z7A8B9C0E\",\"method_id\":\"mt_9f3a1c\",\"method_version\":3,\"source_digest\":null,\"pipe_code\":\"summarize_invoice\",\"workflow_id\":\"run-84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"COMPLETED\",\"created_at\":\"2026-10-30T09:14:41.118Z\",\"finished_at\":\"2026-10-30T09:15:04.512Z\",\"request_id\":\"req_6f1d2c9a8b7e4f30\",\"error\":null,\"degraded\":false,\"degradation\":null}}",
+      "expect": {
+        "event": {
+          "type": "run.finished",
+          "known": true,
+          "attempt": 1,
+          "error_code": null,
+          "data": {
+            "pipeline_run_id": "84bbc909-cde4-4b99-a9ad-d09d3b1241a5",
+            "status": "COMPLETED",
+            "method_id": "mt_9f3a1c",
+            "finished_at": "2026-10-30T09:15:04.512Z"
+          }
+        }
+      }
+    },
+    {
+      "name": "hosted/failed",
+      "summary": "A hosted event of a failed run carries its problem in the caller's view.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":2,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"org_id\":\"org_01JB6Q9T2V3W4X5Y6Z7A8B9C0D\",\"created_by_user_id\":\"user_01JB6Q9T2V3W4X5Y6Z7A8B9C0E\",\"method_id\":\"mt_9f3a1c\",\"method_version\":3,\"source_digest\":null,\"pipe_code\":\"summarize_invoice\",\"workflow_id\":\"run-84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"FAILED\",\"created_at\":\"2026-10-30T09:14:41.118Z\",\"finished_at\":\"2026-10-30T09:15:04.512Z\",\"request_id\":\"req_6f1d2c9a8b7e4f30\",\"error\":{\"type\":\"https://mthds.ai/errors/run.timed_out\",\"title\":\"The run passed its time limit\",\"detail\":\"The run did not end within the deployment's run limit of 3600 seconds.\",\"code\":\"run.timed_out\",\"domain\":\"method\",\"retry\":\"no\",\"next_step\":{\"kind\":\"change_method\",\"detail\":\"Make the method do less work per run, so that it ends within 3600 seconds.\"},\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\"},\"degraded\":false,\"degradation\":null}}",
+      "expect": {
+        "event": {
+          "type": "run.finished",
+          "known": true,
+          "attempt": 2,
+          "error_code": "run.timed_out",
+          "data": {
+            "pipeline_run_id": "84bbc909-cde4-4b99-a9ad-d09d3b1241a5",
+            "status": "FAILED"
+          }
+        }
+      }
+    },
+    {
+      "name": "hosted/cancelled",
+      "summary": "A hosted event of a cancelled run reads its own uppercase status until the status read moves onto the protocol's.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"org_id\":\"org_01JB6Q9T2V3W4X5Y6Z7A8B9C0D\",\"created_by_user_id\":\"user_01JB6Q9T2V3W4X5Y6Z7A8B9C0E\",\"method_id\":\"mt_9f3a1c\",\"method_version\":3,\"source_digest\":null,\"pipe_code\":\"summarize_invoice\",\"workflow_id\":\"run-84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"CANCELLED\",\"created_at\":\"2026-10-30T09:14:41.118Z\",\"finished_at\":\"2026-10-30T09:15:04.512Z\",\"request_id\":\"req_6f1d2c9a8b7e4f30\",\"error\":{\"type\":\"https://mthds.ai/errors/run.cancelled\",\"title\":\"The run was cancelled\",\"detail\":\"The run was cancelled before it ended.\",\"code\":\"run.cancelled\",\"domain\":\"input\",\"retry\":\"no\",\"next_step\":{\"kind\":\"change_input\",\"detail\":\"Start the run again if it is still needed.\"},\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\"},\"degraded\":false,\"degradation\":null}}",
+      "expect": {
+        "event": {
+          "type": "run.finished",
+          "known": true,
+          "attempt": 1,
+          "error_code": "run.cancelled",
+          "data": {
+            "pipeline_run_id": "84bbc909-cde4-4b99-a9ad-d09d3b1241a5",
+            "status": "CANCELLED"
+          }
+        }
+      }
+    },
+    {
+      "name": "self-hosted/completed",
+      "summary": "A self-hosted runner's event: its data is the protocol's status read, a lowercase status and no error member.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "expect": {
+        "event": {
+          "type": "run.finished",
+          "known": true,
+          "attempt": 1,
+          "error_code": null,
+          "data": {
+            "pipeline_run_id": "84bbc909-cde4-4b99-a9ad-d09d3b1241a5",
+            "status": "completed"
+          }
+        }
+      }
+    },
+    {
+      "name": "error-not-a-problem",
+      "summary": "A failed run's error that is no problem document is read as null rather than refusing the event.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"org_id\":\"org_01JB6Q9T2V3W4X5Y6Z7A8B9C0D\",\"created_by_user_id\":\"user_01JB6Q9T2V3W4X5Y6Z7A8B9C0E\",\"method_id\":\"mt_9f3a1c\",\"method_version\":3,\"source_digest\":null,\"pipe_code\":\"summarize_invoice\",\"workflow_id\":\"run-84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"FAILED\",\"created_at\":\"2026-10-30T09:14:41.118Z\",\"finished_at\":\"2026-10-30T09:15:04.512Z\",\"request_id\":\"req_6f1d2c9a8b7e4f30\",\"error\":\"the run failed\",\"degraded\":false,\"degradation\":null}}",
+      "expect": {
+        "event": {
+          "type": "run.finished",
+          "known": true,
+          "attempt": 1,
+          "error_code": null,
+          "data": {
+            "pipeline_run_id": "84bbc909-cde4-4b99-a9ad-d09d3b1241a5",
+            "status": "FAILED",
+            "error": null
+          }
+        }
+      }
+    },
+    {
+      "name": "member-unknown",
+      "summary": "The event is open: a member the contract does not name rides along.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"},\"region\":\"eu-west-3\"}",
+      "expect": {
+        "event": {
+          "type": "run.finished",
+          "known": true,
+          "attempt": 1,
+          "error_code": null,
+          "data": {
+            "pipeline_run_id": "84bbc909-cde4-4b99-a9ad-d09d3b1241a5",
+            "status": "completed"
+          }
+        }
+      }
+    },
+    {
+      "name": "type-unknown",
+      "summary": "An event of a type the SDK does not read is returned to be acknowledged, never refused.",
+      "body": "{\"type\":\"run.progressed\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"progress\":0.5}}",
+      "expect": {
+        "event": {
+          "type": "run.progressed",
+          "known": false
+        }
+      }
+    },
+    {
+      "name": "signature/among-other-versions",
+      "summary": "A signature of another version beside the v1 one is ignored.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "signature_header": "v1a,ZmFrZSBzaWduYXR1cmU= {v1}",
+      "expect": {
+        "event": {
+          "type": "run.finished",
+          "known": true,
+          "attempt": 1,
+          "error_code": null,
+          "data": {
+            "pipeline_run_id": "84bbc909-cde4-4b99-a9ad-d09d3b1241a5",
+            "status": "completed"
+          }
+        }
+      }
+    },
+    {
+      "name": "signature/of-another-version-only",
+      "summary": "The right signature under another version than v1 is no v1 signature.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "signature_header": "v2,{signature}",
+      "expect": {
+        "refusal": "signature"
+      }
+    },
+    {
+      "name": "signature/without-a-version",
+      "summary": "The right signature with no version before it is no v1 signature.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "signature_header": "{signature}",
+      "expect": {
+        "refusal": "signature"
+      }
+    },
+    {
+      "name": "timestamp/signed-with-a-sign",
+      "summary": "A webhook-timestamp written with a sign is not whole Unix seconds, even signed as written.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "webhook_timestamp": "+1793696104",
+      "expect": {
+        "refusal": "timestamp"
+      }
+    },
+    {
+      "name": "timestamp/with-a-fraction",
+      "summary": "A webhook-timestamp with a fraction is not whole Unix seconds.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "webhook_timestamp": "1793696104.5",
+      "expect": {
+        "refusal": "timestamp"
+      }
+    },
+    {
+      "name": "timestamp/empty",
+      "summary": "An empty header is a missing one.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "webhook_timestamp": "",
+      "expect": {
+        "refusal": "missing_header"
+      }
+    },
+    {
+      "name": "body/not-json",
+      "summary": "A verified body that is not JSON.",
+      "body": "run finished",
+      "expect": {
+        "unreadable": {
+          "code": "request.malformed",
+          "params": {
+            "reason": "not_json"
+          }
+        }
+      }
+    },
+    {
+      "name": "body/not-utf8",
+      "summary": "A verified body whose bytes are not UTF-8, given as base64.",
+      "body_base64": "/3J1bg==",
+      "expect": {
+        "unreadable": {
+          "code": "request.malformed",
+          "params": {
+            "reason": "not_utf8"
+          }
+        }
+      }
+    },
+    {
+      "name": "body/not-an-object",
+      "summary": "A verified body that is JSON but no object.",
+      "body": "[{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}]",
+      "expect": {
+        "unreadable": {
+          "code": "request.invalid",
+          "params": {
+            "field": "type"
+          }
+        }
+      }
+    },
+    {
+      "name": "type/not-a-string",
+      "summary": "An event whose type is not a string.",
+      "body": "{\"type\":1,\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "expect": {
+        "unreadable": {
+          "code": "request.invalid",
+          "params": {
+            "field": "type"
+          }
+        }
+      }
+    },
+    {
+      "name": "timestamp/missing",
+      "summary": "A run.finished event without its timestamp.",
+      "body": "{\"type\":\"run.finished\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "expect": {
+        "unreadable": {
+          "code": "request.invalid",
+          "params": {
+            "field": "timestamp"
+          }
+        }
+      }
+    },
+    {
+      "name": "attempt/zero",
+      "summary": "A run.finished event whose attempt is 0, attempts counting from 1.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":0,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "expect": {
+        "unreadable": {
+          "code": "request.invalid",
+          "params": {
+            "field": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "name": "attempt/a-string",
+      "summary": "A run.finished event whose attempt is a numeric string.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":\"1\",\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "expect": {
+        "unreadable": {
+          "code": "request.invalid",
+          "params": {
+            "field": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "name": "attempt/a-boolean",
+      "summary": "A run.finished event whose attempt is a boolean.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":true,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}}",
+      "expect": {
+        "unreadable": {
+          "code": "request.invalid",
+          "params": {
+            "field": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "name": "data/not-an-object",
+      "summary": "A run.finished event whose data is no object.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":[{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":\"completed\"}]}",
+      "expect": {
+        "unreadable": {
+          "code": "request.invalid",
+          "params": {
+            "field": "data"
+          }
+        }
+      }
+    },
+    {
+      "name": "data/run-id-missing",
+      "summary": "A run.finished event whose data names no run.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"status\":\"completed\"}}",
+      "expect": {
+        "unreadable": {
+          "code": "request.invalid",
+          "params": {
+            "field": "data.pipeline_run_id"
+          }
+        }
+      }
+    },
+    {
+      "name": "data/status-null",
+      "summary": "A run.finished event whose data's status is null.",
+      "body": "{\"type\":\"run.finished\",\"timestamp\":\"2026-10-30T09:15:04.512Z\",\"attempt\":1,\"data\":{\"pipeline_run_id\":\"84bbc909-cde4-4b99-a9ad-d09d3b1241a5\",\"status\":null}}",
+      "expect": {
+        "unreadable": {
+          "code": "request.invalid",
+          "params": {
+            "field": "data.status"
+          }
+        }
+      }
+    }
+  ],
+  "secrets": [
+    {
+      "name": "no-prefix",
+      "summary": "A key without its whsec_ prefix.",
+      "secret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "reason": "malformed"
+    },
+    {
+      "name": "unpadded",
+      "summary": "A key whose base64 lacks its padding.",
+      "secret": "whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "reason": "malformed"
+    },
+    {
+      "name": "url-safe-alphabet",
+      "summary": "A key in base64's URL-safe alphabet.",
+      "secret": "whsec_--__",
+      "reason": "malformed"
+    },
+    {
+      "name": "non-canonical",
+      "summary": "A key whose last quantum's unused bits are not zero.",
+      "secret": "whsec_AB==",
+      "reason": "malformed"
+    },
+    {
+      "name": "empty-key",
+      "summary": "A prefix with no key after it.",
+      "secret": "whsec_",
+      "reason": "malformed"
+    },
+    {
+      "name": "one-of-two-malformed",
+      "summary": "Every secret given is checked, the second as the first.",
+      "secret": [
+        "whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "whsec_AB=="
+      ],
+      "reason": "malformed"
+    },
+    {
+      "name": "none",
+      "summary": "An empty list of secrets.",
+      "secret": [],
+      "reason": "empty"
+    },
+    {
+      "name": "not-a-string",
+      "summary": "A secret that is not a string.",
+      "secret": [
+        42
+      ],
+      "reason": "not_a_string"
+    }
+  ]
+}

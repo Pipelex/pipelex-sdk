@@ -1866,6 +1866,12 @@ class RunDetail(PipelineRun):
     crate_fingerprint: str | None = None
     """The fingerprint of the crate the runner loaded the run's method into, when the runner reported it."""
 
+    callback_urls: list[str] | None = None
+    """The webhook URLs the run registered in `callback_urls`, each redacted to its scheme, its host and a port
+    other than the scheme's default, with `/***` in place of a path or query string. `None` for a run that
+    registered none, and on a server that does not serve it. Its deliveries are read with
+    `list_run_webhook_deliveries`."""
+
 
 class RunPage(BaseModel):
     """One page of the run list — `{items, next_cursor}`.

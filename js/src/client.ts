@@ -198,6 +198,13 @@ import type {
 } from "mthds/protocol";
 import { buildUserAgent } from "./user-agent.js";
 import type { AppInfo } from "./user-agent.js";
+import type {
+  WebhookDeliveryDetail,
+  WebhookDeliveryList,
+  WebhookReplayAccepted,
+  WebhookSecret,
+  WebhookSecretRotateOptions,
+} from "./webhooks.js";
 import { uploadFile as uploadFileImpl } from "./upload.js";
 import type { UploadableAsset, UploadFileOptions, UploadRecord } from "./upload.js";
 import { prepareInputs as prepareInputsImpl } from "./prepare-inputs.js";
@@ -321,6 +328,27 @@ export interface PipelexApiRunExtensions {
    * An empty string is treated as absent and is not sent.
    */
   method_ref?: string | null;
+  /**
+   * Webhook URLs to call once the run has ended, each with a signed `run.finished` event whose
+   * `data` is the run's status read, so a caller learns of the end without polling. Read the call
+   * with `verifyWebhook`, then fetch the results with the event's `pipeline_run_id`; see
+   * `docs/webhooks.md`.
+   *
+   * A layer-2 extension: the hosted API and a self-hosted runner both take it on `start` and
+   * `execute`, and each holds the URLs to its own rules, which this client does not restate. The
+   * hosted API takes at most 5 HTTPS URLs of at most 2,048 characters, none repeated, and refuses a
+   * URL whose host resolves to a private, loopback, link-local or metadata address with a `422`
+   * `request.invalid` naming it as `callback_urls.<index>`; a deployment that does not deliver
+   * caller webhooks refuses the list with a `422` `request.unsupported`. A self-hosted runner
+   * whose operator configured no signing secret refuses it with a `422`
+   * `pipelex.webhook.secret_not_configured`. The start's acknowledgement and every read of the run
+   * list the URLs redacted, as `callback_urls`.
+   *
+   * Not a run source: a run still needs something to run. A value that is not an array of strings
+   * is a `RequestArgumentError` before anything is sent, and an empty array is treated as absent
+   * and is not sent.
+   */
+  callback_urls?: readonly string[] | null;
 }
 
 /**
@@ -738,6 +766,10 @@ const FILE_ID_ARGUMENT: CallArgument = {
 const ARCHIVE_ID_ARGUMENT: CallArgument = {
   name: "archive_id",
   what: "an archive id, the archive's non-empty `archive_id`",
+};
+const DELIVERY_ID_ARGUMENT: CallArgument = {
+  name: "delivery_id",
+  what: "a delivery id, the delivery's non-empty `delivery_id`",
 };
 
 /** What the run id of each example write is, as a refusal of it names it. */
@@ -4092,6 +4124,44 @@ export class PipelexApiClient implements HostedProtocolSurface {
     return this.requestProductObject("PATCH", `organizations/${segment}/branding`, input);
   }
 
+  /**
+   * The organization's webhook signing secret — `GET /v1/organizations/{org_id}/webhook-secret`:
+   * the `whsec_` secret every caller webhook of the organization is signed with, which a receiver
+   * hands to `verifyWebhook`. The platform generates it on this first read when the organization
+   * has none. Treat the answer as a credential: never log or cache it.
+   *
+   * An admin's route, from a web session only: the hosted gateway refuses an API key on it. Throws
+   * `ApiResponseError`: `403` `auth.forbidden` whose `params.requirement` names `admin` for any
+   * other role, `403` `pipelex.org.mismatch` for an organization other than the caller's active
+   * one, and `404` `pipelex.org.not_found` for one with no record.
+   */
+  async getWebhookSecret(orgId: string): Promise<WebhookSecret> {
+    const segment = idPathSegment(orgId, "getWebhookSecret", ORG_ID_ARGUMENT);
+    return this.requestProductObject("GET", `organizations/${segment}/webhook-secret`);
+  }
+
+  /**
+   * Rotate the organization's webhook signing secret — `POST
+   * /v1/organizations/{org_id}/webhook-secret/rotate`: a new secret is current at once, and the
+   * one it replaces keeps signing beside it for 24 hours, then is dropped, so a receiver has a day
+   * to take the new one. An organization with no secret yet gets its first. Answers the new secret,
+   * as `getWebhookSecret` does, with its guards and refusals.
+   *
+   * `options.idempotencyKey` is sent as the `Idempotency-Key` header. The answer carries a secret,
+   * so the platform never replays it: the same key sent again is refused `409`
+   * `request.already_executed` and rotates nothing more, and the secret is then read with
+   * `getWebhookSecret`. A malformed key is a `RequestArgumentError` before anything is sent.
+   */
+  async rotateWebhookSecret(
+    orgId: string,
+    options: WebhookSecretRotateOptions = {},
+  ): Promise<WebhookSecret> {
+    const endpoint = `organizations/${idPathSegment(orgId, "rotateWebhookSecret", ORG_ID_ARGUMENT)}/webhook-secret/rotate`;
+    const idempotencyKey = idempotencyKeyOf(options, "rotate the secret");
+    const res = await this.requestProductAnswer("POST", endpoint, undefined, { idempotencyKey });
+    return this.readObjectAnswer<WebhookSecret>("POST", endpoint, res);
+  }
+
   /** The active org's subscription state — `GET /v1/billing/subscription`. */
   async getSubscription(): Promise<SubscriptionResponse> {
     return this.requestProduct("GET", "billing/subscription");
@@ -4966,6 +5036,80 @@ export class PipelexApiClient implements HostedProtocolSurface {
     return { ...rest, nextCursor } as unknown as RunFilesPage;
   }
 
+  /**
+   * A run's caller-webhook deliveries — `GET /v1/runs/{id}/webhook-deliveries`: one per URL the
+   * run registered in `callback_urls`, in their order, once the run has ended, each with its
+   * state and every attempt, its URL redacted. A run that registered none, or has not ended, lists
+   * none. Any member of the organization reads them, by web session or API key.
+   *
+   * Throws `RequestArgumentError` for a run id that is empty, `.` or `..`, or holds a lone
+   * surrogate, before any request. Throws `ApiResponseError`: `404` `run.not_found` for a run that
+   * is not the organization's, exactly as for one that does not exist. An answer whose
+   * `deliveries` is not an array is an answer the SDK cannot read, thrown as an `ApiResponseError`
+   * too.
+   */
+  async listRunWebhookDeliveries(runId: string): Promise<WebhookDeliveryList> {
+    const segment = idPathSegment(runId, "listRunWebhookDeliveries", RUN_ID_ARGUMENT);
+    const endpoint = `runs/${segment}/webhook-deliveries`;
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
+    const list = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    if (!Array.isArray(list.deliveries)) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a run's deliveries whose `deliveries` is not an array",
+      );
+    }
+    return list as unknown as WebhookDeliveryList;
+  }
+
+  /**
+   * One delivery of a run's webhooks, with its event as sent —
+   * `GET /v1/runs/{id}/webhook-deliveries/{delivery_id}`: the body of its latest attempt, which a
+   * receiver's log can be matched against byte for byte once written as compact JSON.
+   * `deliveryId` is the delivery's `delivery_id`, the receiver's `webhook-id`.
+   *
+   * Throws `RequestArgumentError` for an id that is empty, `.` or `..`, or holds a lone surrogate,
+   * before any request. Throws `ApiResponseError`: `404` `run.not_found` for a run the caller
+   * cannot read, and `422` `request.invalid` naming `delivery_id` for a delivery the run does not
+   * have.
+   */
+  async getRunWebhookDelivery(runId: string, deliveryId: string): Promise<WebhookDeliveryDetail> {
+    const call = "getRunWebhookDelivery";
+    const run = idPathSegment(runId, call, RUN_ID_ARGUMENT);
+    const delivery = idPathSegment(deliveryId, call, DELIVERY_ID_ARGUMENT);
+    return this.requestProductObject("GET", `runs/${run}/webhook-deliveries/${delivery}`);
+  }
+
+  /**
+   * Send a settled delivery again — `POST /v1/runs/{id}/webhook-deliveries/{delivery_id}/replay`:
+   * one new attempt under the same `webhook-id`, with the same `data`, the next `attempt`, a fresh
+   * timestamp, and the signatures of the secrets live when it is sent. A replay the receiver
+   * accepts marks the delivery `delivered`; one it does not leaves its state as it was, and the
+   * attempt is recorded either way. A replay never returns a delivery to `pending`. Anyone who
+   * can read the run asks for one, an API key included, under the organization's replay rate.
+   *
+   * Answers the attempt number the replay is sent under; a replay asked again before it is sent is
+   * that same attempt. Throws `RequestArgumentError` for an id that is empty, `.` or `..`, or holds
+   * a lone surrogate, before any request. Throws `ApiResponseError`: `404` `run.not_found` for a
+   * run the caller cannot read; `422` `request.invalid` naming `delivery_id` for a delivery the run
+   * does not have; `409` `pipelex.org.not_manageable` with the reason `webhook_delivery_pending`
+   * for a delivery still on its retry schedule, or `webhook_delivery_attempts_exhausted` for one
+   * holding the most attempts a delivery holds; `429` `account.rate_limited`, with its
+   * `retry_after`, past the organization's replay rate; and a `500` or `503` when the replay could
+   * not be queued, which then counts nothing against the rate.
+   */
+  async replayRunWebhookDelivery(
+    runId: string,
+    deliveryId: string,
+  ): Promise<WebhookReplayAccepted> {
+    const call = "replayRunWebhookDelivery";
+    const run = idPathSegment(runId, call, RUN_ID_ARGUMENT);
+    const delivery = idPathSegment(deliveryId, call, DELIVERY_ID_ARGUMENT);
+    return this.requestProductObject("POST", `runs/${run}/webhook-deliveries/${delivery}/replay`);
+  }
+
   /** Patch a run's status (admin/manual) — `PUT /v1/runs/{id}`. */
   async updateRun(runId: string, input: UpdateRunInput): Promise<void> {
     const segment = idPathSegment(runId, "updateRun", RUN_ID_ARGUMENT);
@@ -4983,6 +5127,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
     const extensions = buildExtensions(options.extra);
     const api = buildApiRunExtensions(options);
     const hosted = buildHostedRunExtensions(options);
+    // Not a run source, so outside `api`, whose size the precondition below reads.
+    const webhooks = buildCallbackUrls(call, options);
     const forms = protocolTreeForms(call, options);
     const treeForms = treeFormsGiven(forms);
     if (
@@ -4999,14 +5145,14 @@ export class PipelexApiClient implements HostedProtocolSurface {
     }
     assertMethodRefPairsWithNothing(options, treeForms);
     assertLinkageMethodIdIsBare(options, treeForms);
-    return { forms, extensions, api, hosted };
+    return { forms, extensions, api, hosted, webhooks };
   }
 
   /**
    * Blocking `POST /v1/execute` adapted onto `RunResults` — the bare-runner
    * path. Forwards every protocol field PLUS every extension surface: the
-   * runner-resolved `method_ref`, the hosted `method_id`, and the generic
-   * `extra` passthrough. An extension-only call (`{ extra }` with no
+   * runner-resolved `method_ref`, the run's `callback_urls`, the hosted
+   * `method_id`, and the generic `extra` passthrough. An extension-only call (`{ extra }` with no
    * pipe_code/bundle) or a vendor selector riding `extra` must survive this
    * path, not just the durable one — a `method_ref` run must run the same
    * fetched package here, and a hosted `method_id` must reach the server too,
@@ -5033,6 +5179,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
         tree: options.tree ?? undefined,
         files: options.files ?? undefined,
         method_ref: options.method_ref ?? undefined,
+        // A runner calls the run's webhooks once the blocking run has ended, as the platform does.
+        callback_urls: options.callback_urls ?? undefined,
         method_id: options.method_id ?? undefined,
         extra: options.extra ?? undefined,
       },
@@ -5105,12 +5253,12 @@ const PROTOCOL_REQUEST_KEYS: readonly string[] = [
   "files",
 ];
 
-// The PIPELEX API's own request field — the layer-2 extension the runner reads
-// itself (`method_ref`, a run source in its own right). Reserved on `extra` for
-// the same reason the protocol fields are: `extra` merges last, so a smuggled
-// copy would overwrite the validated named option and bypass the
-// selector-exclusivity check.
-const PIPELEX_API_REQUEST_KEYS: readonly string[] = ["method_ref"];
+// The PIPELEX API's own request fields — the layer-2 extensions the runner reads
+// itself: `method_ref`, a run source in its own right, and `callback_urls`, the
+// webhooks to call once the run has ended. Reserved on `extra` for the same
+// reason the protocol fields are: `extra` merges last, so a smuggled copy would
+// overwrite the validated named option and bypass its checks.
+const PIPELEX_API_REQUEST_KEYS: readonly string[] = ["method_ref", "callback_urls"];
 
 // The HOSTED API's own request fields — the layer-3 extensions this client
 // names itself. Reserved on `extra` for the same reason the protocol fields
@@ -5237,6 +5385,8 @@ interface RunParts {
   readonly extensions: Record<string, unknown>;
   readonly api: Record<string, unknown>;
   readonly hosted: Record<string, unknown>;
+  /** The run's `callback_urls`, when it registers any (`buildCallbackUrls`). */
+  readonly webhooks: Record<string, unknown>;
 }
 
 /**
@@ -5264,6 +5414,7 @@ function runRequestBody(
       : options.dynamic_output_concept_ref,
     files: files ?? undefined,
     ...parts.api,
+    ...parts.webhooks,
     ...parts.hosted,
     ...parts.extensions,
   };
@@ -5377,6 +5528,35 @@ function inlineLimitRefusal(
 function buildApiRunExtensions(options: PipelexApiRunExtensions): Record<string, unknown> {
   const methodRef = nonEmptyString(options.method_ref);
   return methodRef === undefined ? {} : { method_ref: methodRef };
+}
+
+/**
+ * Copy a run's `callback_urls` onto the wire body, `call` naming the caller's method in a refusal.
+ * An absent, `null` or empty list yields an empty object, so the key is not sent, as the platform
+ * treats an empty list as absent. A value that is not an array, or an array holding anything but
+ * strings, is refused before anything is sent; the URLs themselves are the server's to judge,
+ * since the hosted API and a self-hosted runner each hold them to their own rules. The Python SDK
+ * reads the argument the same way.
+ */
+function buildCallbackUrls(
+  call: string,
+  options: PipelexApiRunExtensions,
+): Record<string, unknown> {
+  const urls: unknown = options.callback_urls;
+  if (urls == null) return {};
+  if (!Array.isArray(urls)) {
+    throw new RequestArgumentError(
+      `${call}() takes callback_urls as an array of URLs; got ${typeof urls}.`,
+      { problem: argumentInvalidProblem("callback_urls", "not_a_list") },
+    );
+  }
+  const copy: unknown[] = [...urls];
+  if (copy.some((url) => typeof url !== "string")) {
+    throw new RequestArgumentError(`${call}() takes each of callback_urls as a string URL.`, {
+      problem: argumentInvalidProblem("callback_urls", "not_a_string"),
+    });
+  }
+  return copy.length === 0 ? {} : { callback_urls: copy };
 }
 
 /**
