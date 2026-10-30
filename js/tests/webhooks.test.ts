@@ -277,6 +277,46 @@ describe("verifyWebhook — the shared calls", () => {
     expect(event.type).toBe(RUN_FINISHED_EVENT_TYPE);
   });
 
+  it("reads a webhook-signature fetch's Headers joins after it was sent twice", async () => {
+    const call = CASES.calls.find((one) => one.name === "self-hosted/completed")!;
+    const { body, headers } = signedCall(call);
+    const fetchHeaders = new Headers({
+      "Webhook-Id": headers["webhook-id"]!,
+      "Webhook-Timestamp": headers["webhook-timestamp"]!,
+    });
+    fetchHeaders.append("Webhook-Signature", headers["webhook-signature"]!);
+    fetchHeaders.append("Webhook-Signature", "v1,ZmFrZQ==");
+    // The matching signature comes first, so the comma `Headers` writes after it is what the reading drops.
+    expect(fetchHeaders.get("webhook-signature")).toBe(
+      `${headers["webhook-signature"]}, v1,ZmFrZQ==`,
+    );
+
+    const event = await verifyWebhook(body, fetchHeaders, CASES.secret, {
+      now: clockAt(CASES.receiver_clock),
+    });
+
+    expect(event.type).toBe(RUN_FINISHED_EVENT_TYPE);
+  });
+
+  it("reads a header a record names under two cases as both values joined", async () => {
+    const call = CASES.calls.find((one) => one.name === "self-hosted/completed")!;
+    const { body, headers } = signedCall(call);
+
+    const event = await verifyWebhook(
+      body,
+      {
+        "webhook-id": headers["webhook-id"],
+        "webhook-timestamp": headers["webhook-timestamp"],
+        "Webhook-Signature": "v1,ZmFrZQ==",
+        "webhook-signature": headers["webhook-signature"],
+      },
+      CASES.secret,
+      { now: clockAt(CASES.receiver_clock) },
+    );
+
+    expect(event.type).toBe(RUN_FINISHED_EVENT_TYPE);
+  });
+
   it("verifies against the current time when no clock is given", async () => {
     const call = CASES.calls.find((one) => one.name === "self-hosted/completed")!;
     const timestamp = String(Math.floor(Date.now() / 1000));

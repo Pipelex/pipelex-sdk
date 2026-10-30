@@ -203,6 +203,8 @@ const ID_HEADER = "webhook-id";
 const TIMESTAMP_HEADER = "webhook-timestamp";
 const SIGNATURE_HEADER = "webhook-signature";
 const UNIX_SECONDS = /^[0-9]+$/;
+// What separates the entries of a `webhook-signature`: the spaces HTTP allows in a field, a space and a tab.
+const SIGNATURE_ENTRY_SEPARATOR = /[ \t]+/;
 // Standard base64 (RFC 4648 §4) with its padding: whole quanta, then at most one padded one.
 const STANDARD_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const TEXT_ENCODER = new TextEncoder();
@@ -359,24 +361,37 @@ function bytesOf(body: unknown): Uint8Array {
   );
 }
 
-/** A header's value whatever the case of its name, or `undefined` when it is absent or empty. */
+/**
+ * A header's value whatever the case of its name, or `undefined` when it is absent or empty. A
+ * record naming it under several cases, or giving it as a list, is read as its values joined by a
+ * space, as `pipelex-sdk` reads a header listed more than once.
+ */
 function headerValue(headers: WebhookHeaders, name: string): string | undefined {
-  let value: string | readonly string[] | null | undefined;
+  let text: string | null | undefined;
   if (typeof (headers as { get?: unknown }).get === "function") {
-    value = (headers as Headers).get(name);
+    text = (headers as Headers).get(name);
   } else {
     const record = headers as Readonly<Record<string, string | readonly string[] | undefined>>;
-    const key = Object.keys(record).find((candidate) => candidate.toLowerCase() === name);
-    value = key === undefined ? undefined : record[key];
+    text = Object.keys(record)
+      .filter((candidate) => candidate.toLowerCase() === name)
+      .flatMap((key) => record[key] ?? [])
+      .filter((part) => part.length > 0)
+      .join(" ");
   }
-  const text = Array.isArray(value) ? value.join(" ") : value;
   return typeof text === "string" && text.length > 0 ? text : undefined;
 }
 
-/** The `v1` signatures a `webhook-signature` lists, an entry of any other version ignored. */
+/**
+ * The `v1` signatures a `webhook-signature` lists, an entry of any other version ignored.
+ *
+ * Entries are separated by spaces. A comma ending an entry is dropped: a header sent more than
+ * once reaches a receiver joined by a comma and a space, as fetch's `Headers`, Node and httpx
+ * join a repeated field, and a signature, written in base64, never ends with one.
+ */
 function givenSignatures(header: string): string[] {
   const signatures: string[] = [];
-  for (const entry of header.split(" ")) {
+  for (const given of header.split(SIGNATURE_ENTRY_SEPARATOR)) {
+    const entry = given.endsWith(",") ? given.slice(0, -1) : given;
     const comma = entry.indexOf(",");
     if (comma > 0 && entry.slice(0, comma) === SIGNATURE_VERSION) {
       signatures.push(entry.slice(comma + 1));

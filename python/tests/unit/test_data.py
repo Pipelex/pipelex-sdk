@@ -1112,6 +1112,8 @@ class WebhookData:
     REFUSED_URLS: ClassVar[list[tuple[str, object, str]]] = [
         ("a string", "https://hooks.example.com/pipelex", "not_a_list"),
         ("a dict", {"url": "https://hooks.example.com/pipelex"}, "not_a_list"),
+        ("bytes", b"https://hooks.example.com/pipelex", "not_a_list"),
+        ("a set", {"https://hooks.example.com/pipelex"}, "not_a_list"),
         ("a list holding a number", ["https://hooks.example.com/pipelex", 42], "not_a_string"),
         ("a list holding None", [None], "not_a_string"),
     ]

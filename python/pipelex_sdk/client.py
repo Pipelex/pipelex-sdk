@@ -254,6 +254,17 @@ _MAY_START_RUN: ContextVar[bool] = ContextVar("_MAY_START_RUN", default=False)
 # the one request `start` or `copy_method` sends.
 _IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar("_IDEMPOTENCY_KEY", default=None)
 
+# The `callback_urls` of the `execute` or `start` in flight, which the `_request` override adds to the run's body.
+# They do not ride `extra`, which the base counts towards its "something to run" precondition, webhooks naming no
+# run: a run naming them and nothing to run is refused by that precondition as one naming nothing, as
+# `@pipelex/sdk` refuses it. The base builds the run's body deep inside its own route, so the URLs travel as a
+# context variable, kept to the task that set it and set only around the one request the route sends, as the key
+# above is.
+_RUN_WEBHOOKS: ContextVar[list[str] | None] = ContextVar("_RUN_WEBHOOKS", default=None)
+
+# The inherited routes whose body carries a run's `callback_urls`.
+_RUN_ROUTES: frozenset[str] = frozenset({"execute", "start"})
+
 # The request header the hosted API reads a request's idempotency key from.
 _IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
@@ -276,6 +287,16 @@ def _creating_run() -> Generator[None, None, None]:
         yield
     finally:
         _MAY_START_RUN.reset(token)
+
+
+@contextmanager
+def _sending_webhooks(callback_urls: list[str] | None) -> Generator[None, None, None]:
+    """Have the run route sent in this block carry `callback_urls` in its body (`_RUN_WEBHOOKS`)."""
+    token = _RUN_WEBHOOKS.set(callback_urls)
+    try:
+        yield
+    finally:
+        _RUN_WEBHOOKS.reset(token)
 
 
 class _ExecuteAcceptance(RunResultStart):
@@ -444,10 +465,12 @@ _VALIDATE_MARKDOWN_RENDER_FORMAT = "markdown"
 
 # The PIPELEX API's own run args — the layer-2 extensions the RUNNER reads itself: `method_ref`,
 # a run source in its own right, and `callback_urls`, the webhooks to call once the run has ended,
-# which is no run source. Named parameters here, travelling to the base client through its
-# generic `extra` passthrough exactly like the hosted args below. Reserved on `extra` for the same
-# reason: a smuggled copy would arrive by a second path with different validation and bypass the
-# selector-exclusivity and webhook checks. `mthds_contents`, the inline bundles the protocol carried before it
+# which is no run source. Named parameters here. `method_ref` travels to the base client through its
+# generic `extra` passthrough exactly like the hosted args below; `callback_urls` does not, since the
+# base counts every key of `extra` as something to run, and is added to the run's body by the
+# `_request` override instead (`_RUN_WEBHOOKS`). Both are reserved on `extra` for the same reason:
+# a smuggled copy would arrive by a second path with different validation, bypassing the
+# selector-exclusivity checks, or counting webhooks as a run source. `mthds_contents`, the inline bundles the protocol carried before it
 # sent a method as its `files` tree, is no longer named: a caller that still needs it while the
 # Pipelex API reads it sends it through `extra`, as any extension this client does not know.
 _PIPELEX_API_RUN_ARGS: frozenset[str] = frozenset({"method_ref", "callback_urls"})
@@ -1208,9 +1231,8 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiUnreachableError: No answer came back (DNS / connect / TLS), or a client-side
                 timeout came before the ~28s the gateway translation waits for.
         """
-        merged_extra = _checked_run_extensions(
+        run_arguments = _checked_run_extensions(
             call="execute",
-            pipe_code=pipe_code,
             files_given=files is not None,
             tree=tree,
             contents=contents,
@@ -1223,7 +1245,7 @@ class PipelexAPIClient(MthdsAPIClient):
             call="execute", files=files, files_given=files is not None, tree=tree, contents=contents, unsent=_RUN_NOT_STARTED
         )
         started_at = monotonic()
-        with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="execute"):
+        with _creating_run(), _sending_webhooks(run_arguments.callback_urls), self._reading_inherited_answer(method="POST", endpoint="execute"):
             try:
                 result = await super().execute(
                     pipe_code=pipe_code,
@@ -1232,7 +1254,7 @@ class PipelexAPIClient(MthdsAPIClient):
                     output_name=output_name,
                     output_multiplicity=output_multiplicity,
                     dynamic_output_concept_ref=dynamic_output_concept_ref,
-                    extra=merged_extra,
+                    extra=run_arguments.extra,
                 )
             except (ApiResponseError, ApiUnreachableError) as exc:
                 # A client-side read or write timeout arrives as the `ApiUnreachableError` the `_send` override maps it to,
@@ -1338,9 +1360,8 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
         """
         checked_idempotency_key = _idempotency_key_of(idempotency_key)
-        merged_extra = _checked_run_extensions(
+        run_arguments = _checked_run_extensions(
             call="start",
-            pipe_code=pipe_code,
             files_given=files is not None,
             tree=tree,
             contents=contents,
@@ -1355,11 +1376,11 @@ class PipelexAPIClient(MthdsAPIClient):
             call="start", files=files, files_given=files is not None, tree=tree, contents=contents, unsent=_RUN_NOT_STARTED
         )
         token = _REQUEST_TIMEOUT_OVERRIDE.set(
-            _start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, carries_tree=method_files is not None)
+            _start_request_timeout_seconds(self.request_timeout_seconds, run_arguments.extra, carries_tree=method_files is not None)
         )
         key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
         try:
-            with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="start"):
+            with _creating_run(), _sending_webhooks(run_arguments.callback_urls), self._reading_inherited_answer(method="POST", endpoint="start"):
                 try:
                     result = await super().start(
                         pipe_code=pipe_code,
@@ -1368,7 +1389,7 @@ class PipelexAPIClient(MthdsAPIClient):
                         output_name=output_name,
                         output_multiplicity=output_multiplicity,
                         dynamic_output_concept_ref=dynamic_output_concept_ref,
-                        extra=merged_extra,
+                        extra=run_arguments.extra,
                     )
                 except ApiResponseError as exc:
                     # The inherited route raised through `_raise_api_response_error`; the error keeps the
@@ -1947,7 +1968,6 @@ class PipelexAPIClient(MthdsAPIClient):
         # and `execute` check them again, unchanged, against the `files` map the tree made.
         _checked_run_extensions(
             call="start_and_wait",
-            pipe_code=pipe_code,
             files_given=files is not None,
             tree=tree,
             contents=contents,
@@ -2390,9 +2410,15 @@ class PipelexAPIClient(MthdsAPIClient):
         answers being signed for that scope. The hosted platform's own route reads the caller's
         organization and ignores the query, as it ignores the request's `read_scope`. The base reads the
         answer under the endpoint it named, so an error about it names `/v1/blobs/missing`.
+
+        A run route sent while `execute` or `start` holds the run's `callback_urls` (`_RUN_WEBHOOKS`) carries them
+        in its body, added here because they cannot ride `extra` without counting as something to run.
         """
         if endpoint == _MISSING_BLOBS:
             endpoint = _missing_blobs_endpoint()
+        callback_urls = _RUN_WEBHOOKS.get()
+        if callback_urls is not None and endpoint in _RUN_ROUTES and content is not None:
+            content = _with_webhooks(content, callback_urls)
         return await super()._request(method, endpoint, content=content, creates_run=creates_run)
 
     async def method_tree_limits(self) -> TreeLimits:
@@ -4359,37 +4385,33 @@ def _normalized_selector(*, name: str, value: object) -> str | None:
     return value or None
 
 
-def _merge_run_extensions(
-    extra: dict[str, Any] | None, *, call: str, method_ref: object, method_id: object, callback_urls: object
-) -> dict[str, Any] | None:
-    """Fold this client's own named run args into the generic `extra` passthrough handed to
+def _merge_run_extensions(extra: dict[str, Any] | None, *, method_ref: object, method_id: object) -> dict[str, Any] | None:
+    """Fold this client's own named run selectors into the generic `extra` passthrough handed to
     the base client.
 
-    This is the layering seam: `method_ref` and `callback_urls` (layer 2 — the Pipelex API's run source
-    and the run's webhooks, read by the runner) and `method_id` (layer 3 — the hosted platform's run
-    arg) are named parameters on this
+    This is the layering seam: `method_ref` (layer 2 — the Pipelex API's run source, read by the
+    runner) and `method_id` (layer 3 — the hosted platform's run arg) are named parameters on this
     client because it is the client that types its own stack's arguments, and each reaches the wire
     as a top-level body property through the protocol client's extension mechanism — which merges it
-    without knowing what it means. See `_PIPELEX_API_RUN_ARGS` / `_HOSTED_RUN_ARGS`.
+    without knowing what it means. See `_PIPELEX_API_RUN_ARGS` / `_HOSTED_RUN_ARGS`. The run's
+    `callback_urls`, reserved on `extra` too, are no run source and reach the body by another path
+    (`_RUN_WEBHOOKS`).
 
     Both selectors go through `_normalized_selector`: a non-string is refused, an absent or
-    empty value contributes nothing. `callback_urls` goes through `_normalized_callback_urls`,
-    alike. `None` is returned for an empty result, leaving the base's own
+    empty value contributes nothing. `None` is returned for an empty result, leaving the base's own
     handling of an absent `extra` untouched.
 
     Args:
         extra: Server-specific extension args from the caller, or None.
-        call: The caller's method, as a refusal names it.
         method_ref: The published method's address, or None.
         method_id: The hosted catalog id, or None.
-        callback_urls: The run's webhook URLs, or None.
 
     Returns:
         The merged extension mapping to hand to the base client, or None if there is nothing.
 
     Raises:
-        RequestArgumentError: If `extra` carries a named arg this client reserves, if a
-            selector is present and is not a string, or if `callback_urls` is no list of strings.
+        RequestArgumentError: If `extra` carries a named arg this client reserves, or if a
+            selector is present and is not a string.
     """
     extensions: dict[str, Any] = dict(extra or {})
     reserved_overlap = extensions.keys() & _RESERVED_RUN_ARGS
@@ -4402,30 +4424,30 @@ def _merge_run_extensions(
     selected_method_id = _normalized_selector(name="method_id", value=method_id)
     if selected_method_id is not None:
         extensions["method_id"] = selected_method_id
-    selected_callback_urls = _normalized_callback_urls(call=call, value=callback_urls)
-    if selected_callback_urls is not None:
-        extensions["callback_urls"] = selected_callback_urls
     return extensions or None
 
 
 def _normalized_callback_urls(*, call: str, value: object) -> list[str] | None:
     """A run's `callback_urls` as the list sent, or `None` when there is none to send.
 
-    `None` or an empty list or tuple is no list to send, as the platform treats an empty list as absent. A value
-    that is not a list or tuple, or one holding anything but strings, is refused before anything is sent; the URLs
-    themselves are the server's to judge, since the hosted API and a self-hosted runner each hold them to their own
-    rules. `@pipelex/sdk` reads the option the same way.
+    `None` or an empty sequence is no list to send, as the platform treats an empty list as absent. Any sequence
+    is taken, as the parameter's `Sequence[str]` says, except text and bytes, which are sequences of characters
+    and of octets rather than of URLs. A value that is no such sequence, or one holding anything but strings, is
+    refused before anything is sent; the URLs themselves are the server's to judge, since the hosted API and a
+    self-hosted runner each hold them to their own rules. `@pipelex/sdk` reads the option the same way.
 
     Raises:
-        RequestArgumentError: `value` is not a list or tuple of strings.
+        RequestArgumentError: `value` is not a sequence of strings.
     """
     if value is None:
         return None
-    if not isinstance(value, list | tuple):
-        msg = f"{call}() takes callback_urls as a list of URLs; got {type(value).__name__}."
+    given_kind = type(value).__name__
+    # Text and bytes are sequences too, of characters and of octets, so they are told apart first.
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
+        msg = f"{call}() takes callback_urls as a list of URLs; got {given_kind}."
         raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="callback_urls", reason="not_a_list"))
     urls: list[str] = []
-    for url in cast("list[object] | tuple[object, ...]", value):
+    for url in cast("Sequence[object]", value):
         if not isinstance(url, str):
             msg = f"{call}() takes each of callback_urls as a string URL."
             raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="callback_urls", reason="not_a_string"))
@@ -4450,10 +4472,18 @@ def _tree_given(*, call: str, files_given: bool, tree: object, contents: object)
     return bool(given)
 
 
+class _RunArguments(NamedTuple):
+    """What a run hands on once checked: the `extra` the base client merges into the run's body, and the
+    `callback_urls` this client adds to it (`_RUN_WEBHOOKS`), or `None` for none.
+    """
+
+    extra: dict[str, Any] | None
+    callback_urls: list[str] | None
+
+
 def _checked_run_extensions(
     *,
     call: str,
-    pipe_code: object,
     files_given: bool,
     tree: object,
     contents: object,
@@ -4461,24 +4491,34 @@ def _checked_run_extensions(
     method_ref: object,
     method_id: object,
     callback_urls: object,
-) -> dict[str, Any] | None:
-    """The `extra` a run hands the base client, once the run's sources are checked, before its tree is prepared.
+) -> _RunArguments:
+    """The arguments a run hands on, once the run's sources and webhooks are checked, before its tree is prepared.
 
-    Folds the named selectors and the run's webhooks into `extra` (`_merge_run_extensions`), then refuses
-    a tree given in two forms (`_tree_given`), a run whose webhooks are all it names
-    (`_assert_webhooks_are_not_all`), a `method_ref` paired with anything
-    (`_assert_method_ref_pairs_with_nothing`) and a suffixed linkage id beside the tree
-    (`_assert_linkage_method_id_is_bare`), so a refused run lists, uploads and sends nothing.
+    Folds the named selectors into `extra` (`_merge_run_extensions`) and reads the run's webhooks
+    (`_normalized_callback_urls`), then refuses a tree given in two forms (`_tree_given`), a `method_ref` paired
+    with anything (`_assert_method_ref_pairs_with_nothing`) and a suffixed linkage id beside the tree
+    (`_assert_linkage_method_id_is_bare`), so a refused run lists, uploads and sends nothing. A run naming nothing
+    to run, whatever webhooks it names, is the base's own precondition to refuse.
 
     Raises:
-        RequestArgumentError: One of those checks refuses the run's sources.
+        RequestArgumentError: One of those checks refuses the run's sources or webhooks.
     """
-    merged_extra = _merge_run_extensions(extra, call=call, method_ref=method_ref, method_id=method_id, callback_urls=callback_urls)
+    merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
+    run_webhooks = _normalized_callback_urls(call=call, value=callback_urls)
     carries_tree = _tree_given(call=call, files_given=files_given, tree=tree, contents=contents)
-    _assert_webhooks_are_not_all(call=call, pipe_code=pipe_code, carries_tree=carries_tree, merged_extra=merged_extra)
     _assert_method_ref_pairs_with_nothing(carries_tree=carries_tree, merged_extra=merged_extra)
     _assert_linkage_method_id_is_bare(carries_tree=carries_tree, merged_extra=merged_extra)
-    return merged_extra
+    return _RunArguments(extra=merged_extra, callback_urls=run_webhooks)
+
+
+def _with_webhooks(content: bytes, callback_urls: list[str]) -> bytes:
+    """A run's body with its `callback_urls` added as its last member.
+
+    The base writes the body with `to_json`: a JSON object with no space in its structure, holding at least the
+    run's source once the base's precondition passed. The member is written into it, after its last, rather than
+    the body being read and written again, which would cost a parse of a method sent inline.
+    """
+    return content.removesuffix(b"}") + b',"callback_urls":' + _json_body(callback_urls) + b"}"
 
 
 def _json_body(body: object) -> bytes:
@@ -4544,25 +4584,6 @@ def _idempotency_key_fault(value: object) -> _KeyFault | None:
     if len(value) > _MAX_IDEMPOTENCY_KEY_LENGTH:
         return _KeyFault(words=f"is {len(value)} characters long", reason="too_long")
     return None
-
-
-def _assert_webhooks_are_not_all(*, call: str, pipe_code: object, carries_tree: bool, merged_extra: dict[str, Any] | None) -> None:
-    """Refuse a run whose `callback_urls` are all it names, as `@pipelex/sdk` does.
-
-    The base client counts every key of `extra` towards its "something to run" precondition without knowing what
-    it means, and `callback_urls` rides `extra` to reach the body, so a run naming its webhooks and nothing to run
-    would pass it. The webhooks are no run source, so such a run is refused here with the base's own reason.
-
-    Raises:
-        RequestArgumentError: The run names its webhooks and nothing to run.
-    """
-    if pipe_code or carries_tree or merged_extra is None or merged_extra.keys() != {"callback_urls"}:
-        return
-    msg = (
-        f"Either pipe_code, the method's tree (files, tree or contents), a method_ref, a hosted method_id or a "
-        f"server-specific extension arg (extra) must be provided to {call}(); callback_urls names no run."
-    )
-    raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="pipe_code", reason="nothing_to_run"))
 
 
 def _assert_method_ref_pairs_with_nothing(*, carries_tree: bool, merged_extra: dict[str, Any] | None) -> None:

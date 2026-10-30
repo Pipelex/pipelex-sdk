@@ -15,10 +15,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import pytest
+from werkzeug.datastructures import EnvironHeaders, Headers
 
 from pipelex_sdk.errors import RequestArgumentError, WebhookEventUnreadableError, WebhookRefusal, WebhookVerificationError
-from pipelex_sdk.webhooks import RunFinishedEvent, UnknownWebhookEvent, verify_webhook
+from pipelex_sdk.webhooks import RunFinishedEvent, UnknownWebhookEvent, WebhookHeaders, verify_webhook
 
 _FIXTURES = Path(__file__).parent.parent / "fixtures"
 _VECTOR_BYTES = (_FIXTURES / "caller-webhooks" / "signature-vectors.json").read_bytes()
@@ -53,6 +55,25 @@ def _signed_call(call: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
 
 def _ids(cases: list[dict[str, Any]]) -> list[str]:
     return [case["name"] for case in cases]
+
+
+def _completed_call() -> tuple[bytes, dict[str, str]]:
+    """The shared case of a completed self-hosted run, signed, its headers named in lowercase."""
+    return _signed_call(next(one for one in _CALLS if one["name"] == "self-hosted/completed"))
+
+
+def _refusal_params(headers: object) -> dict[str, Any]:
+    """The `params` of the argument refusal `verify_webhook` raises for the completed call under `headers`."""
+    body, _ = _completed_call()
+    with pytest.raises(RequestArgumentError) as caught:
+        verify_webhook(body, cast("WebhookHeaders", headers), _CASES["secret"], now=_clock_at(_CASES["receiver_clock"]))
+    assert caught.value.problem.params is not None
+    return caught.value.problem.params.as_wire()
+
+
+# A signature no secret of the case file makes, standing for another sender's or a stale one, padded so that a comma
+# joining a repeated header follows its padding.
+_OTHER_SIGNATURE = "v1,ZmFrZQ=="
 
 
 class TestVerifyWebhook:
@@ -214,3 +235,81 @@ class TestVerifyWebhook:
 
         assert caught.value.problem.params is not None
         assert caught.value.problem.params.as_wire() == {"argument": "now", "reason": "not_a_date"}
+
+    def test_refuses_a_naive_clock(self) -> None:
+        vector = _VERIFICATION[0]
+        naive = _clock_at(vector["receiver_clock"]).replace(tzinfo=None)
+
+        with pytest.raises(RequestArgumentError) as caught:
+            verify_webhook(vector["body"], vector["headers"], vector["secret"], now=naive)
+
+        assert caught.value.problem.params is not None
+        assert caught.value.problem.params.as_wire() == {"argument": "now", "reason": "not_timezone_aware"}
+
+    def test_reads_flasks_request_headers_which_iterate_as_pairs(self) -> None:
+        body, headers = _completed_call()
+        # Flask's `request.headers`: Werkzeug's view of the WSGI environ, which iterates as (name, value) pairs.
+        environ = {f"HTTP_{name.upper().replace('-', '_')}": value for name, value in headers.items()}
+
+        event = verify_webhook(body, EnvironHeaders(environ), _CASES["secret"], now=_clock_at(_CASES["receiver_clock"]))
+
+        assert isinstance(event, RunFinishedEvent)
+
+    def test_reads_a_signature_header_werkzeug_lists_twice(self) -> None:
+        body, headers = _completed_call()
+        werkzeug_headers = Headers(
+            [
+                ("Webhook-Id", headers["webhook-id"]),
+                ("Webhook-Timestamp", headers["webhook-timestamp"]),
+                ("Webhook-Signature", _OTHER_SIGNATURE),
+                ("Webhook-Signature", headers["webhook-signature"]),
+            ]
+        )
+
+        event = verify_webhook(body, werkzeug_headers, _CASES["secret"], now=_clock_at(_CASES["receiver_clock"]))
+
+        assert isinstance(event, RunFinishedEvent)
+
+    def test_reads_a_signature_header_httpx_joins_with_a_comma(self) -> None:
+        body, headers = _completed_call()
+        httpx_headers = httpx.Headers(
+            [
+                ("webhook-id", headers["webhook-id"]),
+                ("webhook-timestamp", headers["webhook-timestamp"]),
+                ("webhook-signature", headers["webhook-signature"]),
+                ("webhook-signature", _OTHER_SIGNATURE),
+            ]
+        )
+        # The matching signature comes first, so the comma httpx writes after it is what the reading must drop.
+        assert httpx_headers["webhook-signature"] == f"{headers['webhook-signature']}, {_OTHER_SIGNATURE}"
+
+        event = verify_webhook(body, httpx_headers, _CASES["secret"], now=_clock_at(_CASES["receiver_clock"]))
+
+        assert isinstance(event, RunFinishedEvent)
+
+    def test_reads_header_values_given_as_bytes_as_latin1_text(self) -> None:
+        body, headers = _completed_call()
+        bytes_headers: dict[str, bytes | list[bytes]] = {
+            "Webhook-Id": headers["webhook-id"].encode("latin-1"),
+            "Webhook-Timestamp": headers["webhook-timestamp"].encode("latin-1"),
+            "Webhook-Signature": [_OTHER_SIGNATURE.encode("latin-1"), headers["webhook-signature"].encode("latin-1")],
+        }
+
+        event = verify_webhook(body, bytes_headers, _CASES["secret"], now=_clock_at(_CASES["receiver_clock"]))
+
+        assert isinstance(event, RunFinishedEvent)
+
+    @pytest.mark.parametrize("value", [1793696104, ["v1,ZmFrZQ==", 5]], ids=["a-number", "a-list-holding-a-number"])
+    def test_refuses_a_header_value_that_is_neither_text_nor_bytes(self, value: object) -> None:
+        _, headers = _completed_call()
+
+        params = _refusal_params({**headers, "webhook-timestamp": value})
+
+        assert params == {"argument": "headers", "reason": "not_text_or_bytes"}
+
+    def test_refuses_headers_that_list_no_pairs(self) -> None:
+        _, headers = _completed_call()
+
+        params = _refusal_params(list(headers))
+
+        assert params == {"argument": "headers", "reason": "not_a_mapping"}

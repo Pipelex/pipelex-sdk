@@ -4,7 +4,7 @@ A run can call webhooks of its caller once it has ended, so the caller learns of
 
 ## Registering the webhooks — `callback_urls`
 
-`execute`, `start` and `start_and_wait` take `callback_urls`, a list or tuple of URLs:
+`execute`, `start` and `start_and_wait` take `callback_urls`, a sequence of URLs such as a list or a tuple:
 
 ```python
 started = await client.start(
@@ -17,7 +17,7 @@ started.callback_urls  # ["https://hooks.example.com/***"]
 
 It is a Pipelex API extension, beside `method_ref`: the hosted API and a self-hosted runner both take it, and `start_and_wait` keeps it on its blocking fallback, so a bare runner calls the same webhooks once its blocking run has ended. Each server holds the URLs to its own rules, which the client does not restate. The hosted API takes at most 5 HTTPS URLs of at most 2,048 characters, none repeated, and refuses a URL whose host resolves to a private, loopback, link-local or metadata address with a `422` `request.invalid` whose `field` names it as `callback_urls.<index>`; a deployment that does not deliver caller webhooks refuses the list with a `422` `request.unsupported`, and a self-hosted runner whose operator configured no signing secret with a `422` `pipelex.webhook.secret_not_configured`.
 
-The client refuses, before anything is sent, a value that is not a list or tuple (`client.argument_invalid`, reason `not_a_list`) or one holding anything but strings (`not_a_string`), and does not send an empty one, which the platform treats as absent. `callback_urls` is no run source: the base client counts every key of `extra` towards its "something to run" precondition, and `callback_urls` reaches the body through `extra`, so this client refuses a run naming its webhooks and nothing to run itself, with the base's reason (`nothing_to_run`). It is reserved on `extra`, as `method_ref` is, so it reaches the body by its named parameter alone.
+The client refuses, before anything is sent, a value that is no sequence, or is text or bytes (`client.argument_invalid`, reason `not_a_list`), or one holding anything but strings (`not_a_string`), and does not send an empty one, which the platform treats as absent. `callback_urls` is no run source: it does not ride `extra`, which the base client counts towards its "something to run" precondition, so a run naming its webhooks and nothing to run is refused as any run with nothing to run is (`nothing_to_run`). It is reserved on `extra`, as `method_ref` is, so it reaches the body by its named parameter alone.
 
 A URL may carry a credential of the receiver's in its path or query string. Every read of the run lists the URLs redacted to their scheme, host and a port other than the scheme's default, with `/***` in place of the rest: the start's acknowledgement (`PipelexRunResultStart.callback_urls`), the status read (`RunRead.callback_urls`) and the run record (`RunDetail.callback_urls`), `None` for a run that registered none.
 
@@ -50,9 +50,9 @@ async def pipelex_webhook(request: Request) -> Response:
 
 It follows the contract's verification procedure, in its order:
 
-1. **The headers.** A call missing `webhook-id`, `webhook-timestamp` or `webhook-signature`, or carrying one empty, is refused with the refusal `WebhookRefusal.MISSING_HEADER`. Header names are matched whatever their case; `headers` is any mapping, a `dict`, Starlette's or httpx's `Headers`, a header given as a list of values being read as those values joined by spaces.
-2. **The timestamp.** A `webhook-timestamp` that is not a whole number of Unix seconds, or is more than five minutes (`WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS`, 300) from the receiver's clock either way, is refused with `TIMESTAMP`; exactly five minutes is accepted. `now`, an aware `datetime`, sets the clock, for a test or a call received earlier.
-3. **The signature.** The signature is computed from the raw body under each secret given and compared in constant time (`hmac.compare_digest`) with every `v1` entry of `webhook-signature`, an entry of another version being ignored. No match is the refusal `SIGNATURE`.
+1. **The headers.** A call missing `webhook-id`, `webhook-timestamp` or `webhook-signature`, or carrying one empty, is refused with the refusal `WebhookRefusal.MISSING_HEADER`. Header names are matched whatever their case. `headers` is a `dict`, a framework's `Headers` (Starlette's and FastAPI's, httpx's, or Werkzeug's, which is Flask's `request.headers`), or any object listing its `(name, value)` pairs through `items()`. A value is text, or bytes read as Latin-1; a header listed more than once, or given as a list of values, is read as those values joined by spaces. Headers with no `items()`, or one of the three headers holding a value that is neither text nor bytes, are refused with a `RequestArgumentError` naming `headers`.
+2. **The timestamp.** A `webhook-timestamp` that is not a whole number of Unix seconds, is past 2**53 - 1 (the largest integer JavaScript holds exactly, so that both SDKs refuse the same calls, however many digits the value has), or is more than five minutes (`WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS`, 300) from the receiver's clock either way, is refused with `TIMESTAMP`; exactly five minutes is accepted. `now` sets the clock, for a test or a call received earlier. It must be a timezone-aware `datetime`, such as `datetime.now(tz=UTC)`: a naive one, whose instant depends on the machine's time zone, is refused with a `RequestArgumentError` naming `now`, reason `not_timezone_aware`.
+3. **The signature.** The signature is computed from the raw body under each secret given and compared in constant time (`hmac.compare_digest`) with every `v1` entry of `webhook-signature`, an entry of another version being ignored. Entries are separated by spaces, and a comma ending one is dropped, since a header sent more than once reaches some receivers joined by a comma and a space, as httpx joins it. No match is the refusal `SIGNATURE`.
 
 Only then is the body read. The body must be the bytes received, as `bytes`, `bytearray`, `memoryview` or their `str`: the same JSON written with other bytes, re-serialized or with its non-ASCII characters escaped, signs differently and is refused. In Flask, read `request.get_data()`.
 
@@ -67,7 +67,7 @@ The secret is the `whsec_` value the runtime signs with, given whole: the organi
 | `WebhookVerificationError`, `refusal` `SIGNATURE` | no signature matches under any secret given | `auth.invalid_credential` |
 | `WebhookEventUnreadableError` | a verified body that is not UTF-8 or not JSON | `request.malformed`, `reason` `not_utf8` or `not_json` |
 | `WebhookEventUnreadableError` | a verified body that is no event this SDK reads | `request.invalid`, `field` the member at fault (`type`, `timestamp`, `attempt`, `data`, `data.pipeline_run_id`, `data.status`) |
-| `RequestArgumentError` | a secret, a body or a clock of the wrong kind | `client.argument_invalid` naming `secret`, `body` or `now` |
+| `RequestArgumentError` | a secret, a body, headers or a clock of the wrong kind | `client.argument_invalid` naming `secret`, `body`, `headers` or `now` |
 
 Answer a `WebhookVerificationError` with a status outside `2xx`, such as `401`: the sender counts it as a failed attempt and retries, and a replay later sends the delivery again. Both webhook errors live in `pipelex_sdk.errors` and derive from `Exception` with a `problem`, as the codegen errors do, never from `PipelexRequestError`, since nothing was requested.
 
@@ -77,7 +77,7 @@ Answer a `WebhookVerificationError` with a status outside `2xx`, such as `401`: 
 
 - `type`, `run.finished` for every ending, the outcome being in `data.status`;
 - `timestamp`, when the run ended (its `finished_at`), not when the call was sent;
-- `attempt`, which attempt of the delivery this call is, from 1. It is informational: it increases with each retry and a replay continues it, but a runtime that runs its delivery step again may skip numbers or start again at 1 under the same `webhook-id`. Deduplicate on the `webhook-id` header, never on `attempt` or the body;
+- `attempt`, which attempt of the delivery this call is, from 1, a number written with a zero fraction such as `2.0` reading as `2`, as JSON reads it. It is informational: it increases with each retry and a replay continues it, but a runtime that runs its delivery step again may skip numbers or start again at 1 under the same `webhook-id`. Deduplicate on the `webhook-id` header, never on `attempt` or the body;
 - `data`, the run as its caller's status read served it when the delivery was created, the same on every attempt and replay.
 
 The event never carries the run's results: fetch them with `get_run_result(event.data.pipeline_run_id)`.

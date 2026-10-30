@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import UserList
 from typing import Any, cast
 
 import httpx
@@ -77,6 +78,22 @@ class TestClientWebhooks:
         assert execute.url.path == "/v1/execute"
         assert _sent_body(execute)["callback_urls"] == WebhookData.URLS
 
+    def test_callback_urls_ride_starts_body_given_as_any_sequence(self) -> None:
+        server = _RecordingServer({"/v1/start": [httpx.Response(202, json=WebhookData.ACK)]})
+
+        asyncio.run(server.client().start(method_id="mt_abc123", callback_urls=UserList(WebhookData.URLS)))
+
+        [request] = server.requests
+        assert _sent_body(request) == {"method_id": "mt_abc123", "callback_urls": WebhookData.URLS}
+
+    def test_callback_urls_ride_beside_an_extension_of_extra(self) -> None:
+        server = _RecordingServer({"/v1/start": [httpx.Response(202, json=WebhookData.ACK)]})
+
+        asyncio.run(server.client().start(pipe_code="summarize", extra={"custom": {"depth": 2}}, callback_urls=WebhookData.URLS))
+
+        [request] = server.requests
+        assert _sent_body(request) == {"pipe_code": "summarize", "custom": {"depth": 2}, "callback_urls": WebhookData.URLS}
+
     @pytest.mark.parametrize("urls", [None, [], ()], ids=["none", "empty-list", "empty-tuple"])
     def test_callback_urls_are_not_sent_when_there_are_none(self, urls: list[str] | tuple[str, ...] | None) -> None:
         server = _RecordingServer({"/v1/start": [httpx.Response(202, json=WebhookData.ACK)]})
@@ -101,16 +118,21 @@ class TestClientWebhooks:
 
     @pytest.mark.parametrize("call", ["execute", "start", "start_and_wait"])
     def test_callback_urls_alone_name_nothing_to_run(self, call: str) -> None:
-        server = _RecordingServer({})
+        # `start_and_wait` asks the version handshake before it starts the run, as with no argument at all, once per client.
+        version = {"protocol_version": "0.6.0", "implementation": "pipelex-api"}
+        server = _RecordingServer({"/v1/version": [httpx.Response(200, json=version), httpx.Response(200, json=version)]})
         client = server.client()
 
         with pytest.raises(RequestArgumentError) as caught:
             asyncio.run(getattr(client, call)(callback_urls=WebhookData.URLS))
+        with pytest.raises(RequestArgumentError) as naming_nothing:
+            asyncio.run(getattr(server.client(), call)())
 
         assert caught.value.problem.params is not None
         assert caught.value.problem.params.as_wire() == {"argument": "pipe_code", "reason": "nothing_to_run"}
-        assert f"{call}()" in str(caught.value)
-        assert server.requests == []
+        # The webhooks are no run source: the run meets the refusal of a run naming nothing.
+        assert str(caught.value) == str(naming_nothing.value)
+        assert [request.url.path for request in server.requests if request.url.path != "/v1/version"] == []
 
     def test_refuses_callback_urls_smuggled_through_extra(self) -> None:
         server = _RecordingServer({})

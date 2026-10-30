@@ -19,14 +19,14 @@ import hmac
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Any, Final, Literal, TypeAlias, cast
+from typing import Annotated, Any, Final, Literal, Protocol, TypeAlias, cast
 
 from mthds.protocol.problem.client_problems import make_client_problem
 from mthds.protocol.problem.registry import CoreCode
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictInt, StrictStr, ValidationError, model_validator
 
 from pipelex_sdk.answer_reading import LenientProblem
 from pipelex_sdk.errors import (
@@ -45,6 +45,19 @@ RUN_FINISHED_EVENT_TYPE: Final = "run.finished"
 WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: Final = 300
 """How far a call's `webhook-timestamp` may be from the receiver's clock, either way, in seconds: five minutes, as the
 contract sets it. A call further away is refused, which bounds how long a captured call can be replayed."""
+
+# The largest integer JavaScript holds exactly, `Number.MAX_SAFE_INTEGER`: an event's `attempt` and a call's
+# `webhook-timestamp` past it are refused, so this package and `@pipelex/sdk` read and refuse the same calls.
+_MAX_SAFE_INTEGER: Final = 2**53 - 1
+
+
+def _whole_number_of(value: object) -> object:
+    """A number written with a zero fraction, such as `2.0`, as the integer it is: JSON does not tell `2` from `2.0`,
+    and `@pipelex/sdk`, which reads both as `2`, accepts either. Anything else is left for the field to judge.
+    """
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
 
 
 class RunFinishedEventData(BaseModel):
@@ -86,7 +99,7 @@ class RunFinishedEvent(BaseModel):
     type: Literal["run.finished"]
     timestamp: StrictStr
     """When the run ended, its `finished_at`, as an RFC 3339 date-time in UTC. Not the call's send time."""
-    attempt: Annotated[StrictInt, Field(ge=1)]
+    attempt: Annotated[StrictInt, BeforeValidator(_whole_number_of), Field(ge=1, le=_MAX_SAFE_INTEGER)]
     """Which attempt of the delivery this call is, from 1. Informational: it increases with each retry and a replay
     continues it, but a runtime that runs its delivery step again may skip numbers or start again at 1 under the same
     `webhook-id`, so never rely on it being unique or gapless."""
@@ -118,19 +131,34 @@ WebhookEvent: TypeAlias = RunFinishedEvent | UnknownWebhookEvent
 
 # ── Verification ──────────────────────────────────────────────────────
 
-WebhookHeaders: TypeAlias = Mapping[str, str] | Mapping[str, str | Sequence[str]]
-"""The headers of a call, as a receiver's framework hands them over: a plain `dict`, Starlette's or httpx's
-`Headers`, or any mapping. Names are matched whatever their case. A header given as several values is read as those
-values joined by spaces, which for `webhook-signature` lists every signature they carry."""
+
+class _ListsHeaderItems(Protocol):
+    """Headers that list their `(name, value)` pairs through `items()`, as every mapping does, and as Werkzeug's
+    `Headers`, Flask's `request.headers`, does without being a mapping.
+    """
+
+    def items(self) -> Iterable[tuple[str, object]]: ...
+
+
+WebhookHeaders: TypeAlias = Mapping[str, str | bytes | Sequence[str | bytes] | None] | _ListsHeaderItems
+"""The headers of a call, as a receiver's framework hands them over: a plain `dict`, Starlette's, httpx's or Werkzeug's
+`Headers` (FastAPI's and Flask's `request.headers`), or any object listing its `(name, value)` pairs through
+`items()`. Names are matched whatever their case. A value may be text or bytes, which are read as Latin-1, as HTTP
+reads a field's octets. A header listed more than once, or given as a list of values, is read as its values joined by
+a space, which for `webhook-signature` lists every signature they carry."""
 
 _SECRET_PREFIX: Final = "whsec_"
 _SIGNATURE_VERSION: Final = "v1"
 _ID_HEADER: Final = "webhook-id"
 _TIMESTAMP_HEADER: Final = "webhook-timestamp"
 _SIGNATURE_HEADER: Final = "webhook-signature"
+_WEBHOOK_HEADERS: Final = frozenset({_ID_HEADER, _TIMESTAMP_HEADER, _SIGNATURE_HEADER})
 _UNIX_SECONDS: Final = re.compile(r"[0-9]+")
-# The largest integer a JSON number carries exactly in JavaScript, so both SDKs read the same `attempt`.
-_MAX_SAFE_INTEGER: Final = 2**53 - 1
+# The digits of `_MAX_SAFE_INTEGER`: a `webhook-timestamp` with more, once its leading zeros are dropped, is past it,
+# which is read without converting a number of any length.
+_MAX_SAFE_INTEGER_DIGITS: Final = len(str(_MAX_SAFE_INTEGER))
+# What separates the entries of a `webhook-signature`: the spaces HTTP allows in a field, a space and a tab.
+_SIGNATURE_ENTRY_SEPARATOR: Final = re.compile(r"[ \t]+")
 
 
 def verify_webhook(
@@ -153,13 +181,15 @@ def verify_webhook(
 
     Args:
         body: The call's raw body.
-        headers: The call's headers.
+        headers: The call's headers: a `dict`, a framework's `Headers` (Starlette's, httpx's or Werkzeug's), or any
+            object listing its `(name, value)` pairs through `items()`; see `WebhookHeaders`.
         secret: The `whsec_` secret the runtime signs with: the organization's, which its admins read with
             `get_webhook_secret`, or the one a self-hosted runner's operator configured. During a rotation give both,
             the call then verifying under either: the hosted plane signs every call with the new secret and the
             previous one for 24 hours.
-        now: The receiver's clock, as an aware `datetime`, which the call's `webhook-timestamp` must be within five
-            minutes of; the current time when `None`. Given for a test, or to verify a call received earlier.
+        now: The receiver's clock, as a timezone-aware `datetime`, which the call's `webhook-timestamp` must be
+            within five minutes of; the current time when `None`. Given for a test, or to verify a call received
+            earlier. A naive `datetime` is refused, since which instant it names depends on the machine's time zone.
 
     Returns:
         The event: a `RunFinishedEvent`, or an `UnknownWebhookEvent` for a `type` this SDK does not read, to
@@ -169,20 +199,18 @@ def verify_webhook(
         WebhookVerificationError: The call is refused; its `refusal` says why. Answer it with a status outside `2xx`.
         WebhookEventUnreadableError: The call is verified but holds no event this SDK reads.
         RequestArgumentError: `secret` is not a `whsec_` secret written in standard base64 with its padding,
-            `body` is neither text nor bytes, or `now` is no `datetime`, before the call is looked at.
+            `body` is neither text nor bytes, `now` is no timezone-aware `datetime`, or `headers` lists no
+            `(name, value)` pairs or gives one of the three headers a value that is neither text nor bytes, before
+            the call is judged.
     """
     keys = _signing_keys(secret)
     body_bytes = _bytes_of(body)
-    # Checked as an `object`: the annotation is a promise to the type checker, not to an untyped caller.
-    given_clock = cast("object", now)
-    if given_clock is not None and not isinstance(given_clock, datetime):
-        msg = "verify_webhook() takes now as a datetime."
-        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="now", reason="not_a_date"))
-    clock = now or datetime.now(tz=UTC)
+    clock = _clock_of(now)
 
-    webhook_id = _header_value(headers, _ID_HEADER)
-    webhook_timestamp = _header_value(headers, _TIMESTAMP_HEADER)
-    webhook_signature = _header_value(headers, _SIGNATURE_HEADER)
+    header_values = _header_values(headers)
+    webhook_id = header_values.get(_ID_HEADER)
+    webhook_timestamp = header_values.get(_TIMESTAMP_HEADER)
+    webhook_signature = header_values.get(_SIGNATURE_HEADER)
     if webhook_id is None or webhook_timestamp is None or webhook_signature is None:
         missing: str
         if webhook_id is None:
@@ -194,10 +222,10 @@ def verify_webhook(
         msg = f"The call carries no {missing} header, so it cannot be verified."
         raise WebhookVerificationError(msg, refusal=WebhookRefusal.MISSING_HEADER)
 
-    if _UNIX_SECONDS.fullmatch(webhook_timestamp) is None:
-        msg = "The call's webhook-timestamp is not a whole number of Unix seconds."
+    sent_at = _unix_seconds_of(webhook_timestamp)
+    if sent_at is None:
+        msg = "The call's webhook-timestamp is not a whole number of Unix seconds this SDK reads."
         raise WebhookVerificationError(msg, refusal=WebhookRefusal.TIMESTAMP)
-    sent_at = int(webhook_timestamp)
     distance = abs(math.floor(clock.timestamp()) - sent_at)
     if distance > WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS:
         msg = (
@@ -220,6 +248,42 @@ def verify_webhook(
         raise WebhookVerificationError(msg, refusal=WebhookRefusal.SIGNATURE)
 
     return _read_webhook_event(body_bytes)
+
+
+def _clock_of(now: datetime | None) -> datetime:
+    """The receiver's clock: `now` when given, the current time otherwise.
+
+    Raises:
+        RequestArgumentError: `now` is no `datetime` (`not_a_date`), or a naive one (`not_timezone_aware`).
+    """
+    # Checked as an `object`: the annotation is a promise to the type checker, not to an untyped caller.
+    given_clock = cast("object", now)
+    if given_clock is None:
+        return datetime.now(tz=UTC)
+    if not isinstance(given_clock, datetime):
+        msg = "verify_webhook() takes now as a datetime."
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="now", reason="not_a_date"))
+    if given_clock.utcoffset() is None:
+        msg = (
+            "verify_webhook() takes now as a timezone-aware datetime, such as datetime.now(tz=UTC): a naive one names "
+            "a different instant on each machine's time zone."
+        )
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="now", reason="not_timezone_aware"))
+    return given_clock
+
+
+def _unix_seconds_of(text: str) -> int | None:
+    """A `webhook-timestamp` as its number of Unix seconds, or `None` when it is not digits alone or is past
+    `_MAX_SAFE_INTEGER`, which `@pipelex/sdk` cannot hold exactly and refuses too. The bound is checked on the digits
+    before any conversion, so a timestamp of any length is refused rather than converted.
+    """
+    if _UNIX_SECONDS.fullmatch(text) is None:
+        return None
+    digits = text.lstrip("0") or "0"
+    if len(digits) > _MAX_SAFE_INTEGER_DIGITS:
+        return None
+    seconds = int(digits)
+    return seconds if seconds <= _MAX_SAFE_INTEGER else None
 
 
 def _signing_keys(secret: object) -> list[bytes]:
@@ -275,29 +339,77 @@ def _bytes_of(body: object) -> bytes:
     raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="body", reason="not_text_or_bytes"))
 
 
-def _header_value(headers: WebhookHeaders, name: str) -> str | None:
-    """A header's value whatever the case of its name, or `None` when it is absent or empty."""
-    value: object = None
-    for key in headers:
-        if key.lower() == name:
-            value = headers[key]
-            break
-    text: str | None
+def _header_values(headers: object) -> dict[str, str]:
+    """The values of the call's three Standard Webhooks headers, by their lowercase names, whatever the case the call
+    writes them in; a header absent or empty is left out.
+
+    The headers are read through `items()`, which lists `(name, value)` pairs for a `dict`, for Starlette's, httpx's
+    and Werkzeug's `Headers` alike, rather than by iterating them, which yields names from a mapping but pairs from
+    Werkzeug. A header listed more than once, or given as a list, is read as its values joined by a space. A value in
+    bytes is decoded as Latin-1, as HTTP reads a field's octets.
+
+    Raises:
+        RequestArgumentError: `headers` has no `items()` (`not_a_mapping`), or one of the three headers holds a value
+            that is neither text nor bytes (`not_text_or_bytes`).
+    """
+    items = getattr(headers, "items", None)
+    if not callable(items):
+        msg = "verify_webhook() takes the call's headers as a mapping of their names to their values, such as a dict or a framework's Headers."
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="headers", reason="not_a_mapping"))
+    found: dict[str, list[str]] = {}
+    for given_name, value in cast("Iterable[tuple[object, object]]", items()):
+        name = _latin1_text(given_name)
+        if name is None or name.lower() not in _WEBHOOK_HEADERS:
+            continue
+        found.setdefault(name.lower(), []).extend(_header_texts(value, name=name.lower()))
+    joined = {name: " ".join(text for text in texts if text) for name, texts in found.items()}
+    return {name: text for name, text in joined.items() if text}
+
+
+def _header_texts(value: object, *, name: str) -> list[str]:
+    """The texts of one header's value: none for `None`, one for text or bytes, one per item for a list of them.
+
+    Raises:
+        RequestArgumentError: The value, or an item of it, is neither text nor bytes.
+    """
+    if value is None:
+        return []
+    parts: list[object] = list(cast("Sequence[object]", value)) if _is_list_of_values(value) else [value]
+    texts: list[str] = []
+    for part in parts:
+        text = _latin1_text(part)
+        if text is None:
+            msg = f"verify_webhook() takes each header's value as text or bytes; the {name} header holds {type(part).__name__}."
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="headers", reason="not_text_or_bytes"))
+        texts.append(text)
+    return texts
+
+
+def _is_list_of_values(value: object) -> bool:
+    """Whether a header's value lists several values, as a sequence that is neither text nor bytes."""
+    return isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray)
+
+
+def _latin1_text(value: object) -> str | None:
+    """Text as given, bytes decoded as Latin-1, which maps each octet to one character, or `None` for anything else."""
     if isinstance(value, str):
-        text = value
-    elif isinstance(value, Sequence):
-        text = " ".join(str(part) for part in cast("Sequence[object]", value))
-    else:
-        text = None
-    return text or None
+        return value
+    if isinstance(value, bytes | bytearray):
+        return bytes(value).decode("latin-1")
+    return None
 
 
 def _given_signatures(header: str) -> list[str]:
-    """The `v1` signatures a `webhook-signature` lists, an entry of any other version ignored."""
+    """The `v1` signatures a `webhook-signature` lists, an entry of any other version ignored.
+
+    Entries are separated by spaces. A comma ending an entry is dropped: a header sent more than once reaches a receiver
+    joined by a comma and a space, as fetch's `Headers`, Node and httpx join a repeated field, and a signature, written
+    in base64, never ends with one.
+    """
     signatures: list[str] = []
-    for entry in header.split(" "):
-        version, comma, signature = entry.partition(",")
-        if comma and version and version == _SIGNATURE_VERSION:
+    for entry in _SIGNATURE_ENTRY_SEPARATOR.split(header):
+        version, comma, signature = entry.removesuffix(",").partition(",")
+        if comma and version == _SIGNATURE_VERSION:
             signatures.append(signature)
     return signatures
 
@@ -320,50 +432,27 @@ def _read_webhook_event(body_bytes: bytes) -> WebhookEvent:
     except ValueError as exc:
         msg = "The verified call's body is not JSON."
         raise WebhookEventUnreadableError(msg, problem=make_client_problem(CoreCode.REQUEST_MALFORMED, params={"reason": "not_json"})) from exc
+    # A body that is no object reads as an empty one, so its fault is its `type`.
     event: dict[str, Any] = cast("dict[str, Any]", parsed) if isinstance(parsed, dict) else {}
     event_type = event.get("type")
     if isinstance(event_type, str) and event_type != RUN_FINISHED_EVENT_TYPE:
         return UnknownWebhookEvent.model_validate(event)
-    fault = _run_finished_fault(event)
-    if fault is not None:
+    try:
+        return RunFinishedEvent.model_validate(event)
+    except ValidationError as exc:
+        fault = _faulty_member(exc)
         msg = f"The verified call's body is not a webhook event this SDK reads: its member `{fault}` is missing or of the wrong type."
-        raise WebhookEventUnreadableError(msg, problem=make_client_problem(CoreCode.REQUEST_INVALID, params={"field": fault}))
-    return RunFinishedEvent.model_validate({**event, "attempt": _attempt_of(event.get("attempt"))})
+        raise WebhookEventUnreadableError(msg, problem=make_client_problem(CoreCode.REQUEST_INVALID, params={"field": fault})) from exc
 
 
-def _run_finished_fault(event: dict[str, Any]) -> str | None:
-    """The first member, as a dotted path, that keeps `event` from being a `run.finished` event, or `None` when it is
-    one. A body that is no object reads as an empty one, so its fault is its `type`.
+def _faulty_member(error: ValidationError) -> str:
+    """The member, as a dotted path such as `data.status`, that the first of `error`'s faults is about.
+
+    The model checks its members in the order it declares them, `type`, `timestamp`, `attempt`, then `data`, and
+    `data`'s own in theirs, so the first fault names the first member that keeps the body from being a `run.finished`
+    event, as `@pipelex/sdk` names it.
     """
-    if not isinstance(event.get("type"), str):
-        return "type"
-    if not isinstance(event.get("timestamp"), str):
-        return "timestamp"
-    if _attempt_of(event.get("attempt")) is None:
-        return "attempt"
-    data = event.get("data")
-    if not isinstance(data, dict):
-        return "data"
-    run_data = cast("dict[str, Any]", data)
-    if not isinstance(run_data.get("pipeline_run_id"), str):
-        return "data.pipeline_run_id"
-    if not isinstance(run_data.get("status"), str):
-        return "data.status"
-    return None
-
-
-def _attempt_of(value: object) -> int | None:
-    """An event's `attempt` as an integer from 1, read as JSON reads a number, or `None` when it is none."""
-    if isinstance(value, bool):
-        return None
-    number: int
-    if isinstance(value, int):
-        number = value
-    elif isinstance(value, float) and value.is_integer():
-        number = int(value)
-    else:
-        return None
-    return number if 1 <= number <= _MAX_SAFE_INTEGER else None
+    return ".".join(str(part) for part in error.errors()[0]["loc"])
 
 
 # ── The hosted delivery log ───────────────────────────────────────────

@@ -47,9 +47,9 @@ export async function POST(request: Request): Promise<Response> {
 
 It follows the contract's verification procedure, in its order:
 
-1. **The headers.** A call missing `webhook-id`, `webhook-timestamp` or `webhook-signature`, or carrying one empty, is refused with the refusal `missing_header`. Header names are matched whatever their case; `headers` is a fetch `Headers` or a plain record such as Node's `IncomingHttpHeaders`, a header given as several values being read as those values joined by spaces.
-2. **The timestamp.** A `webhook-timestamp` that is not a whole number of Unix seconds, or is more than five minutes (`WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS`, 300) from the receiver's clock either way, is refused with `timestamp`; exactly five minutes is accepted. `options.now` sets the clock, for a test or a call received earlier.
-3. **The signature.** The signature is computed from the raw body under each secret given and compared in constant time with every `v1` entry of `webhook-signature`, an entry of another version being ignored. No match is the refusal `signature`.
+1. **The headers.** A call missing `webhook-id`, `webhook-timestamp` or `webhook-signature`, or carrying one empty, is refused with the refusal `missing_header`. Header names are matched whatever their case; `headers` is a fetch `Headers` or a plain record such as Node's `IncomingHttpHeaders`, a header a record gives as several values, or names under several cases, being read as those values joined by spaces.
+2. **The timestamp.** A `webhook-timestamp` that is not a whole number of Unix seconds, is past `Number.MAX_SAFE_INTEGER`, or is more than five minutes (`WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS`, 300) from the receiver's clock either way, is refused with `timestamp`; exactly five minutes is accepted. `options.now` sets the clock, for a test or a call received earlier.
+3. **The signature.** The signature is computed from the raw body under each secret given and compared in constant time with every `v1` entry of `webhook-signature`, an entry of another version being ignored. Entries are separated by spaces, and a comma ending one is dropped, since a header sent more than once reaches a receiver joined by a comma and a space, as fetch's `Headers` and Node join it. No match is the refusal `signature`.
 
 Only then is the body read. The body must be the bytes received, as a `string`, `Uint8Array` or `ArrayBuffer`: the same JSON written with other bytes, re-serialized or with its non-ASCII characters escaped, signs differently and is refused. In a framework that parses JSON bodies by itself, read the raw body instead, such as `express.raw({ type: "application/json" })` in Express.
 
@@ -76,7 +76,7 @@ Answer a `WebhookVerificationError` with a status outside `2xx`, such as `401`: 
 
 - `type`, `run.finished` for every ending, the outcome being in `data.status`;
 - `timestamp`, when the run ended (its `finished_at`), not when the call was sent;
-- `attempt`, which attempt of the delivery this call is, from 1. It is informational: it increases with each retry and a replay continues it, but a runtime that runs its delivery step again may skip numbers or start again at 1 under the same `webhook-id`. Deduplicate on the `webhook-id` header, never on `attempt` or the body;
+- `attempt`, which attempt of the delivery this call is, from 1 to `Number.MAX_SAFE_INTEGER`. It is informational: it increases with each retry and a replay continues it, but a runtime that runs its delivery step again may skip numbers or start again at 1 under the same `webhook-id`. Deduplicate on the `webhook-id` header, never on `attempt` or the body;
 - `data`, the run as its caller's status read served it when the delivery was created, the same on every attempt and replay.
 
 The event never carries the run's results: fetch them with `getRunResult(event.data.pipeline_run_id)`.
