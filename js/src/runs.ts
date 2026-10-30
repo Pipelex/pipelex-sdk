@@ -242,6 +242,13 @@ export interface RunRead extends RunPublic {
    * saved before the platform recorded it; absent on a server that does not serve it.
    */
   request_id?: string | null;
+  /**
+   * The webhook URLs the run registered in `callback_urls`, each redacted to its scheme, its host
+   * and a port other than the scheme's default, with `/***` in place of a path or query string.
+   * `null` for a run that registered none; absent on a server that does not serve it. A run's
+   * `run.finished` event carries this read without it.
+   */
+  callback_urls?: string[] | null;
   /** The `Retry-After` header's delay, in seconds; set when the platform sent one. */
   retry_after_seconds?: number | null;
 }

@@ -34,7 +34,7 @@ import os
 import re
 import secrets
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
@@ -173,9 +173,10 @@ from pipelex_sdk.upload import UploadKindOptions, UploadRecord, UploadSource
 from pipelex_sdk.upload import upload_file as _upload_file_impl
 from pipelex_sdk.user_agent import AppInfo, build_user_agent
 from pipelex_sdk.validation_models import PipelexValidationResultAdapter
+from pipelex_sdk.webhooks import WebhookDeliveryDetail, WebhookDeliveryList, WebhookReplayAccepted, WebhookSecret
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Generator
     from contextlib import AbstractAsyncContextManager
 
     from mthds.method_tree.file_entry import FileEntry, MethodFiles
@@ -253,6 +254,17 @@ _MAY_START_RUN: ContextVar[bool] = ContextVar("_MAY_START_RUN", default=False)
 # the one request `start` or `copy_method` sends.
 _IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar("_IDEMPOTENCY_KEY", default=None)
 
+# The `callback_urls` of the `execute` or `start` in flight, which the `_request` override adds to the run's body.
+# They do not ride `extra`, which the base counts towards its "something to run" precondition, webhooks naming no
+# run: a run naming them and nothing to run is refused by that precondition as one naming nothing, as
+# `@pipelex/sdk` refuses it. The base builds the run's body deep inside its own route, so the URLs travel as a
+# context variable, kept to the task that set it and set only around the one request the route sends, as the key
+# above is.
+_RUN_WEBHOOKS: ContextVar[list[str] | None] = ContextVar("_RUN_WEBHOOKS", default=None)
+
+# The inherited routes whose body carries a run's `callback_urls`.
+_RUN_ROUTES: frozenset[str] = frozenset({"execute", "start"})
+
 # The request header the hosted API reads a request's idempotency key from.
 _IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
@@ -275,6 +287,16 @@ def _creating_run() -> Generator[None, None, None]:
         yield
     finally:
         _MAY_START_RUN.reset(token)
+
+
+@contextmanager
+def _sending_webhooks(callback_urls: list[str] | None) -> Generator[None, None, None]:
+    """Have the run route sent in this block carry `callback_urls` in its body (`_RUN_WEBHOOKS`)."""
+    token = _RUN_WEBHOOKS.set(callback_urls)
+    try:
+        yield
+    finally:
+        _RUN_WEBHOOKS.reset(token)
 
 
 class _ExecuteAcceptance(RunResultStart):
@@ -442,13 +464,16 @@ _BARE_RUNNER_IMPLEMENTATION = "pipelex-api"
 _VALIDATE_MARKDOWN_RENDER_FORMAT = "markdown"
 
 # The PIPELEX API's own run args — the layer-2 extensions the RUNNER reads itself: `method_ref`,
-# a run source in its own right. A named parameter here, travelling to the base client through its
-# generic `extra` passthrough exactly like the hosted args below. Reserved on `extra` for the same
-# reason: a smuggled copy would arrive by a second path with different validation and bypass the
-# selector-exclusivity checks. `mthds_contents`, the inline bundles the protocol carried before it
+# a run source in its own right, and `callback_urls`, the webhooks to call once the run has ended,
+# which is no run source. Named parameters here. `method_ref` travels to the base client through its
+# generic `extra` passthrough exactly like the hosted args below; `callback_urls` does not, since the
+# base counts every key of `extra` as something to run, and is added to the run's body by the
+# `_request` override instead (`_RUN_WEBHOOKS`). Both are reserved on `extra` for the same reason:
+# a smuggled copy would arrive by a second path with different validation, bypassing the
+# selector-exclusivity checks, or counting webhooks as a run source. `mthds_contents`, the inline bundles the protocol carried before it
 # sent a method as its `files` tree, is no longer named: a caller that still needs it while the
 # Pipelex API reads it sends it through `extra`, as any extension this client does not know.
-_PIPELEX_API_RUN_ARGS: frozenset[str] = frozenset({"method_ref"})
+_PIPELEX_API_RUN_ARGS: frozenset[str] = frozenset({"method_ref", "callback_urls"})
 
 # The HOSTED API's own run args — the layer-3 extensions this client names itself, on top of
 # the MTHDS Protocol's basic run args. They are named parameters here and travel to the base
@@ -1095,6 +1120,7 @@ class PipelexAPIClient(MthdsAPIClient):
         contents: Mapping[str, bytes | str] | None = None,
         method_ref: str | None = None,
         method_id: str | None = None,
+        callback_urls: Sequence[str] | None = None,
     ) -> PipelexExecuteResult:
         """Execute a method synchronously and wait for its completion — `POST /v1/execute`.
 
@@ -1169,6 +1195,19 @@ class PipelexAPIClient(MthdsAPIClient):
                 tree is what runs, so a suffix would claim a version that did not, and a
                 suffixed id is refused client-side, mirroring the platform's `422`. An empty
                 string is treated as absent.
+            callback_urls: Webhook URLs to call once the run has ended, each with a signed `run.finished`
+                event whose `data` is the run's status read, so the caller learns of the end without polling;
+                read the call with `pipelex_sdk.webhooks.verify_webhook`, then fetch the results by the event's
+                `pipeline_run_id` (`docs/webhooks.md`). A layer-2 extension the hosted API and a self-hosted
+                runner both take, each holding the URLs to its own rules, which this client does not restate:
+                the hosted API takes at most 5 HTTPS URLs of at most 2,048 characters, none repeated, and
+                refuses a URL whose host resolves to a private, loopback, link-local or metadata address with a
+                `422` `request.invalid` naming it as `callback_urls.<index>`; a deployment that does not
+                deliver caller webhooks refuses the list with a `422` `request.unsupported`, and a self-hosted
+                runner whose operator configured no signing secret with a `422`
+                `pipelex.webhook.secret_not_configured`. No run source: the run still needs something to run.
+                A value that is no sequence of strings, or is text or bytes, is refused before anything is
+                sent, and an empty one is treated as absent.
 
         Raises:
             PipelineExecuteTimeoutError: The blocking request hit the hosted gateway's ~30s
@@ -1178,7 +1217,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 of bytes or text, a `MethodTree` or `contents` holds no file, `contents` holds a lone
                 surrogate, `extra` carries a protocol arg or a reserved named arg, a selector is
                 present and is not a string, `method_ref` is combined with the tree or with
-                `method_id`, or a suffixed `method_id` is combined with the tree.
+                `method_id`, a suffixed `method_id` is combined with the tree, or `callback_urls` is no
+                sequence of strings.
             MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be
                 uploaded, so the run was not started.
             TreeSourceError: A file of `tree` cannot be read, or changed since it was listed
@@ -1191,14 +1231,21 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiUnreachableError: No answer came back (DNS / connect / TLS), or a client-side
                 timeout came before the ~28s the gateway translation waits for.
         """
-        merged_extra = _checked_run_extensions(
-            call="execute", files_given=files is not None, tree=tree, contents=contents, extra=extra, method_ref=method_ref, method_id=method_id
+        run_arguments = _checked_run_extensions(
+            call="execute",
+            files_given=files is not None,
+            tree=tree,
+            contents=contents,
+            extra=extra,
+            method_ref=method_ref,
+            method_id=method_id,
+            callback_urls=callback_urls,
         )
         method_files = await self._method_tree_files(
             call="execute", files=files, files_given=files is not None, tree=tree, contents=contents, unsent=_RUN_NOT_STARTED
         )
         started_at = monotonic()
-        with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="execute"):
+        with _creating_run(), _sending_webhooks(run_arguments.callback_urls), self._reading_inherited_answer(method="POST", endpoint="execute"):
             try:
                 result = await super().execute(
                     pipe_code=pipe_code,
@@ -1207,7 +1254,7 @@ class PipelexAPIClient(MthdsAPIClient):
                     output_name=output_name,
                     output_multiplicity=output_multiplicity,
                     dynamic_output_concept_ref=dynamic_output_concept_ref,
-                    extra=merged_extra,
+                    extra=run_arguments.extra,
                 )
             except (ApiResponseError, ApiUnreachableError) as exc:
                 # A client-side read or write timeout arrives as the `ApiUnreachableError` the `_send` override maps it to,
@@ -1243,6 +1290,7 @@ class PipelexAPIClient(MthdsAPIClient):
         contents: Mapping[str, bytes | str] | None = None,
         method_ref: str | None = None,
         method_id: str | None = None,
+        callback_urls: Sequence[str] | None = None,
         idempotency_key: str | None = None,
     ) -> PipelexRunResultStart:
         """Start a method asynchronously — `POST /v1/start` (202: `pipeline_run_id` only).
@@ -1270,6 +1318,8 @@ class PipelexAPIClient(MthdsAPIClient):
             contents: The method's files, each one's bytes or text by tree path, as on `execute`.
             method_ref: A published method's address, as on `execute`.
             method_id: A stored method's hosted catalog id, as on `execute`.
+            callback_urls: Webhook URLs to call once the run has ended, as on `execute`. The 202 lists them
+                redacted, as its `callback_urls`, so the caller sees at once that they were taken.
             idempotency_key: The start's idempotency key, sent as the `Idempotency-Key` header, and not
                 sent at all when `None`. Generate one per run the caller means to start (a
                 `str(uuid.uuid4())` is a good key), and keep it, with every other argument unchanged,
@@ -1310,8 +1360,15 @@ class PipelexAPIClient(MthdsAPIClient):
             ApiUnreachableError: No answer came back (DNS / connect / TLS / timeout).
         """
         checked_idempotency_key = _idempotency_key_of(idempotency_key)
-        merged_extra = _checked_run_extensions(
-            call="start", files_given=files is not None, tree=tree, contents=contents, extra=extra, method_ref=method_ref, method_id=method_id
+        run_arguments = _checked_run_extensions(
+            call="start",
+            files_given=files is not None,
+            tree=tree,
+            contents=contents,
+            extra=extra,
+            method_ref=method_ref,
+            method_id=method_id,
+            callback_urls=callback_urls,
         )
         # Prepared before the start's own time limit and idempotency key are set: the blob routes and
         # the uploads are requests of their own, which create no run.
@@ -1319,11 +1376,11 @@ class PipelexAPIClient(MthdsAPIClient):
             call="start", files=files, files_given=files is not None, tree=tree, contents=contents, unsent=_RUN_NOT_STARTED
         )
         token = _REQUEST_TIMEOUT_OVERRIDE.set(
-            _start_request_timeout_seconds(self.request_timeout_seconds, merged_extra, carries_tree=method_files is not None)
+            _start_request_timeout_seconds(self.request_timeout_seconds, run_arguments.extra, carries_tree=method_files is not None)
         )
         key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
         try:
-            with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="start"):
+            with _creating_run(), _sending_webhooks(run_arguments.callback_urls), self._reading_inherited_answer(method="POST", endpoint="start"):
                 try:
                     result = await super().start(
                         pipe_code=pipe_code,
@@ -1332,7 +1389,7 @@ class PipelexAPIClient(MthdsAPIClient):
                         output_name=output_name,
                         output_multiplicity=output_multiplicity,
                         dynamic_output_concept_ref=dynamic_output_concept_ref,
-                        extra=merged_extra,
+                        extra=run_arguments.extra,
                     )
                 except ApiResponseError as exc:
                     # The inherited route raised through `_raise_api_response_error`; the error keeps the
@@ -1824,6 +1881,7 @@ class PipelexAPIClient(MthdsAPIClient):
         wait_options: WaitForResultOptions | None = None,
         method_ref: str | None = None,
         method_id: str | None = None,
+        callback_urls: Sequence[str] | None = None,
         artifacts: Sequence[RunArtifact] | None = None,
         on_started: Callable[[PipelexRunResultStart], None] | None = None,
         on_starting: Callable[[], None] | None = None,
@@ -1848,10 +1906,11 @@ class PipelexAPIClient(MthdsAPIClient):
 
         The method's tree, given as `files`, `tree` or `contents` as on `execute`, is prepared once,
         before the version handshake, its missing blobs uploaded then, and the `files` map it makes
-        is what both paths send. That map and the method selectors — `method_ref` and `method_id`,
-        documented on `execute` — are forwarded on BOTH paths: a `method_ref` run must run the same fetched package on the
-        blocking fallback, and dropping `method_id` there would turn a server-side 422 that
-        names the key into a silently different run.
+        is what both paths send. That map, the method selectors — `method_ref` and `method_id`,
+        documented on `execute` — and the run's `callback_urls` are forwarded on BOTH paths: a `method_ref` run must run
+        the same fetched package on the blocking fallback, dropping `method_id` there would turn a server-side 422 that
+        names the key into a silently different run, and a runner calls the webhooks once its blocking run has ended
+        as the platform does.
 
         `artifacts` narrows the hosted results read, as on `get_run_result`. The blocking path
         ignores it: the execute response already holds every artifact, so there is nothing to save
@@ -1915,6 +1974,7 @@ class PipelexAPIClient(MthdsAPIClient):
             extra=extra,
             method_ref=method_ref,
             method_id=method_id,
+            callback_urls=callback_urls,
         )
         method_files = await self._method_tree_files(
             call="start_and_wait", files=files, files_given=files is not None, tree=tree, contents=contents, unsent=_RUN_NOT_STARTED
@@ -1936,6 +1996,7 @@ class PipelexAPIClient(MthdsAPIClient):
                     extra=extra,
                     method_ref=method_ref,
                     method_id=method_id,
+                    callback_urls=callback_urls,
                     idempotency_key=idempotency_key,
                 )
             except RunLifecycleUnavailableError:
@@ -1953,6 +2014,7 @@ class PipelexAPIClient(MthdsAPIClient):
                     extra=extra,
                     method_ref=method_ref,
                     method_id=method_id,
+                    callback_urls=callback_urls,
                 )
             if on_started is not None:
                 on_started(started)
@@ -1971,6 +2033,7 @@ class PipelexAPIClient(MthdsAPIClient):
             extra=extra,
             method_ref=method_ref,
             method_id=method_id,
+            callback_urls=callback_urls,
         )
 
     async def _execute_blocking(
@@ -1985,6 +2048,7 @@ class PipelexAPIClient(MthdsAPIClient):
         extra: dict[str, Any] | None,
         method_ref: str | None = None,
         method_id: str | None = None,
+        callback_urls: Sequence[str] | None = None,
     ) -> RunResults:
         """Blocking `POST /v1/execute` adapted onto `RunResults` — the bare-runner path.
 
@@ -2010,6 +2074,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 extra=extra,
                 method_ref=method_ref,
                 method_id=method_id,
+                callback_urls=callback_urls,
             )
             return results_from_execute(result)
 
@@ -2345,9 +2410,15 @@ class PipelexAPIClient(MthdsAPIClient):
         answers being signed for that scope. The hosted platform's own route reads the caller's
         organization and ignores the query, as it ignores the request's `read_scope`. The base reads the
         answer under the endpoint it named, so an error about it names `/v1/blobs/missing`.
+
+        A run route sent while `execute` or `start` holds the run's `callback_urls` (`_RUN_WEBHOOKS`) carries them
+        in its body, added here because they cannot ride `extra` without counting as something to run.
         """
         if endpoint == _MISSING_BLOBS:
             endpoint = _missing_blobs_endpoint()
+        callback_urls = _RUN_WEBHOOKS.get()
+        if callback_urls is not None and endpoint in _RUN_ROUTES and content is not None:
+            content = _with_webhooks(content, callback_urls)
         return await super()._request(method, endpoint, content=content, creates_run=creates_run)
 
     async def method_tree_limits(self) -> TreeLimits:
@@ -3168,6 +3239,62 @@ class PipelexAPIClient(MthdsAPIClient):
         endpoint = f"organizations/{_id_path_segment(org_id, call='update_organization_branding', what=_ORG_ID_ARGUMENT)}/branding"
         body = update.model_dump(mode="json", exclude_unset=True)
         return await self._request_product("PATCH", endpoint, body=body, read=OrganizationBranding.model_validate)
+
+    async def get_webhook_secret(self, org_id: str) -> WebhookSecret:
+        """The organization's webhook signing secret — `GET /v1/organizations/{org_id}/webhook-secret`.
+
+        The `whsec_` secret every caller webhook of the organization is signed with, which a receiver hands to
+        `pipelex_sdk.webhooks.verify_webhook`. The platform generates it on this first read when the organization has
+        none. Treat the answer as a credential: never log or cache it. An admin's route, from a web session only: the
+        hosted gateway refuses an API key on it.
+
+        Args:
+            org_id: The active organization's `org_id`.
+
+        Returns:
+            The secret, with when it was created and last rotated, and until when the one it replaced still signs.
+
+        Raises:
+            RequestArgumentError: `org_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`; nothing
+                is sent.
+            ApiResponseError: `403` `auth.forbidden` whose `params.requirement` names `admin` for any other role,
+                `403` `pipelex.org.mismatch` for an organization other than the caller's active one, and `404`
+                `pipelex.org.not_found` for one with no record.
+        """
+        endpoint = f"organizations/{_id_path_segment(org_id, call='get_webhook_secret', what=_ORG_ID_ARGUMENT)}/webhook-secret"
+        return await self._request_product("GET", endpoint, read=WebhookSecret.model_validate)
+
+    async def rotate_webhook_secret(self, org_id: str, *, idempotency_key: str | None = None) -> WebhookSecret:
+        """Rotate the organization's webhook signing secret — `POST /v1/organizations/{org_id}/webhook-secret/rotate`.
+
+        A new secret is current at once, and the one it replaces keeps signing beside it for 24 hours, then is
+        dropped, so a receiver has a day to take the new one. An organization with no secret yet gets its first.
+        Answers the new secret, as `get_webhook_secret` does, with its guards and refusals.
+
+        Args:
+            org_id: The active organization's `org_id`.
+            idempotency_key: The rotation's idempotency key, sent as the `Idempotency-Key` header, and not sent at all
+                when `None`. The answer carries a secret, so the platform never replays it: the same key sent again
+                is refused `409` `request.already_executed` and rotates nothing more, and the secret is then read with
+                `get_webhook_secret`. A key is 1 to 255 visible ASCII characters, anything else refused before any
+                request.
+
+        Returns:
+            The new secret.
+
+        Raises:
+            RequestArgumentError: `org_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`, or
+                `idempotency_key` is malformed; nothing is sent.
+            ApiResponseError: The refusals of `get_webhook_secret`, and `409` `request.already_executed` for a key
+                sent again.
+        """
+        endpoint = f"organizations/{_id_path_segment(org_id, call='rotate_webhook_secret', what=_ORG_ID_ARGUMENT)}/webhook-secret/rotate"
+        checked_idempotency_key = _idempotency_key_of(idempotency_key, request="rotate the secret")
+        key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
+        try:
+            return await self._request_product("POST", endpoint, read=WebhookSecret.model_validate)
+        finally:
+            _IDEMPOTENCY_KEY.reset(key_token)
 
     async def get_subscription(self) -> SubscriptionResponse:
         """The active org's subscription state — `GET /v1/billing/subscription`."""
@@ -4096,6 +4223,79 @@ class PipelexAPIClient(MthdsAPIClient):
         query = _product_query({"limit": limit, "cursor": cursor})
         return await self._request_product("GET", f"{_RUNS}/{segment}/files{query}", read=RunFilesPage.model_validate)
 
+    async def list_run_webhook_deliveries(self, run_id: str) -> WebhookDeliveryList:
+        """A run's caller-webhook deliveries — `GET /v1/runs/{id}/webhook-deliveries`.
+
+        One delivery per URL the run registered in `callback_urls`, in their order, once the run has ended, each with
+        its state and every attempt, its URL redacted. A run that registered none, or has not ended, lists none. Any
+        member of the organization reads them, by web session or API key.
+
+        Args:
+            run_id: The run's `pipeline_run_id`.
+
+        Raises:
+            RequestArgumentError: `run_id` is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate;
+                nothing is sent.
+            ApiResponseError: `404` `run.not_found` for a run that is not the organization's, exactly as for one that
+                does not exist.
+        """
+        segment = _id_path_segment(run_id, call="list_run_webhook_deliveries", what=_RUN_ID_ARGUMENT)
+        return await self._request_product("GET", f"{_RUNS}/{segment}/webhook-deliveries", read=WebhookDeliveryList.model_validate)
+
+    async def get_run_webhook_delivery(self, run_id: str, delivery_id: str) -> WebhookDeliveryDetail:
+        """One delivery of a run's webhooks, with its event as sent — `GET /v1/runs/{id}/webhook-deliveries/{delivery_id}`.
+
+        The event is the body of the delivery's latest attempt, which a receiver's log can be matched against byte
+        for byte once written as compact JSON.
+
+        Args:
+            run_id: The run's `pipeline_run_id`.
+            delivery_id: The delivery's `delivery_id`, the receiver's `webhook-id`.
+
+        Raises:
+            RequestArgumentError: An id is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate; nothing
+                is sent.
+            ApiResponseError: `404` `run.not_found` for a run the caller cannot read, and `422` `request.invalid`
+                naming `delivery_id` for a delivery the run does not have.
+        """
+        call = "get_run_webhook_delivery"
+        run_segment = _id_path_segment(run_id, call=call, what=_RUN_ID_ARGUMENT)
+        delivery_segment = _id_path_segment(delivery_id, call=call, what=_DELIVERY_ID_ARGUMENT)
+        endpoint = f"{_RUNS}/{run_segment}/webhook-deliveries/{delivery_segment}"
+        return await self._request_product("GET", endpoint, read=WebhookDeliveryDetail.model_validate)
+
+    async def replay_run_webhook_delivery(self, run_id: str, delivery_id: str) -> WebhookReplayAccepted:
+        """Send a settled delivery again — `POST /v1/runs/{id}/webhook-deliveries/{delivery_id}/replay`.
+
+        One new attempt under the same `webhook-id`, with the same `data`, the next `attempt`, a fresh timestamp, and
+        the signatures of the secrets live when it is sent. A replay the receiver accepts marks the delivery
+        `delivered`; one it does not leaves its state as it was, and the attempt is recorded either way. A replay
+        never returns a delivery to `pending`. Anyone who can read the run asks for one, an API key included, under
+        the organization's replay rate.
+
+        Args:
+            run_id: The run's `pipeline_run_id`.
+            delivery_id: The delivery's `delivery_id`.
+
+        Returns:
+            The attempt number the replay is sent under; a replay asked again before it is sent is that same attempt.
+
+        Raises:
+            RequestArgumentError: An id is not a `str`, or is empty, `.` or `..`, or holds a lone surrogate; nothing
+                is sent.
+            ApiResponseError: `404` `run.not_found` for a run the caller cannot read; `422` `request.invalid` naming
+                `delivery_id` for a delivery the run does not have; `409` `pipelex.org.not_manageable` with the reason
+                `webhook_delivery_pending` for a delivery still on its retry schedule, or
+                `webhook_delivery_attempts_exhausted` for one holding the most attempts a delivery holds; `429`
+                `account.rate_limited`, with its `retry_after`, past the organization's replay rate; and a `500` or
+                `503` when the replay could not be queued, which then counts nothing against the rate.
+        """
+        call = "replay_run_webhook_delivery"
+        run_segment = _id_path_segment(run_id, call=call, what=_RUN_ID_ARGUMENT)
+        delivery_segment = _id_path_segment(delivery_id, call=call, what=_DELIVERY_ID_ARGUMENT)
+        endpoint = f"{_RUNS}/{run_segment}/webhook-deliveries/{delivery_segment}/replay"
+        return await self._request_product("POST", endpoint, read=WebhookReplayAccepted.model_validate)
+
     async def update_run(self, run_id: str, update_input: UpdateRunInput) -> None:
         """Patch a run's status (admin/manual) — `PUT /v1/runs/{id}` (empty body)."""
         body = update_input.model_dump(mode="json", exclude_none=True)
@@ -4186,14 +4386,16 @@ def _normalized_selector(*, name: str, value: object) -> str | None:
 
 
 def _merge_run_extensions(extra: dict[str, Any] | None, *, method_ref: object, method_id: object) -> dict[str, Any] | None:
-    """Fold this client's own named run args into the generic `extra` passthrough handed to
+    """Fold this client's own named run selectors into the generic `extra` passthrough handed to
     the base client.
 
     This is the layering seam: `method_ref` (layer 2 — the Pipelex API's run source, read by the
     runner) and `method_id` (layer 3 — the hosted platform's run arg) are named parameters on this
     client because it is the client that types its own stack's arguments, and each reaches the wire
     as a top-level body property through the protocol client's extension mechanism — which merges it
-    without knowing what it means. See `_PIPELEX_API_RUN_ARGS` / `_HOSTED_RUN_ARGS`.
+    without knowing what it means. See `_PIPELEX_API_RUN_ARGS` / `_HOSTED_RUN_ARGS`. The run's
+    `callback_urls`, reserved on `extra` too, are no run source and reach the body by another path
+    (`_RUN_WEBHOOKS`).
 
     Both selectors go through `_normalized_selector`: a non-string is refused, an absent or
     empty value contributes nothing. `None` is returned for an empty result, leaving the base's own
@@ -4225,6 +4427,34 @@ def _merge_run_extensions(extra: dict[str, Any] | None, *, method_ref: object, m
     return extensions or None
 
 
+def _normalized_callback_urls(*, call: str, value: object) -> list[str] | None:
+    """A run's `callback_urls` as the list sent, or `None` when there is none to send.
+
+    `None` or an empty sequence is no list to send, as the platform treats an empty list as absent. Any sequence
+    is taken, as the parameter's `Sequence[str]` says, except text and bytes, which are sequences of characters
+    and of octets rather than of URLs. A value that is no such sequence, or one holding anything but strings, is
+    refused before anything is sent; the URLs themselves are the server's to judge, since the hosted API and a
+    self-hosted runner each hold them to their own rules. `@pipelex/sdk` reads the option the same way.
+
+    Raises:
+        RequestArgumentError: `value` is not a sequence of strings.
+    """
+    if value is None:
+        return None
+    given_kind = type(value).__name__
+    # Text and bytes are sequences too, of characters and of octets, so they are told apart first.
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
+        msg = f"{call}() takes callback_urls as a list of URLs; got {given_kind}."
+        raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="callback_urls", reason="not_a_list"))
+    urls: list[str] = []
+    for url in cast("Sequence[object]", value):
+        if not isinstance(url, str):
+            msg = f"{call}() takes each of callback_urls as a string URL."
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="callback_urls", reason="not_a_string"))
+        urls.append(url)
+    return urls or None
+
+
 def _tree_given(*, call: str, files_given: bool, tree: object, contents: object) -> bool:
     """Whether the call carries the method's tree, refusing one given in two forms.
 
@@ -4242,6 +4472,15 @@ def _tree_given(*, call: str, files_given: bool, tree: object, contents: object)
     return bool(given)
 
 
+class _RunArguments(NamedTuple):
+    """What a run hands on once checked: the `extra` the base client merges into the run's body, and the
+    `callback_urls` this client adds to it (`_RUN_WEBHOOKS`), or `None` for none.
+    """
+
+    extra: dict[str, Any] | None
+    callback_urls: list[str] | None
+
+
 def _checked_run_extensions(
     *,
     call: str,
@@ -4251,22 +4490,35 @@ def _checked_run_extensions(
     extra: dict[str, Any] | None,
     method_ref: object,
     method_id: object,
-) -> dict[str, Any] | None:
-    """The `extra` a run hands the base client, once the run's sources are checked, before its tree is prepared.
+    callback_urls: object,
+) -> _RunArguments:
+    """The arguments a run hands on, once the run's sources and webhooks are checked, before its tree is prepared.
 
-    Folds the named selectors into `extra` (`_merge_run_extensions`), then refuses a tree given in two
-    forms (`_tree_given`), a `method_ref` paired with anything (`_assert_method_ref_pairs_with_nothing`)
-    and a suffixed linkage id beside the tree (`_assert_linkage_method_id_is_bare`), so a refused run
-    lists, uploads and sends nothing.
+    Folds the named selectors into `extra` (`_merge_run_extensions`) and reads the run's webhooks
+    (`_normalized_callback_urls`), then refuses a tree given in two forms (`_tree_given`), a `method_ref` paired
+    with anything (`_assert_method_ref_pairs_with_nothing`) and a suffixed linkage id beside the tree
+    (`_assert_linkage_method_id_is_bare`), so a refused run lists, uploads and sends nothing. A run naming nothing
+    to run, whatever webhooks it names, is the base's own precondition to refuse.
 
     Raises:
-        RequestArgumentError: One of those checks refuses the run's sources.
+        RequestArgumentError: One of those checks refuses the run's sources or webhooks.
     """
     merged_extra = _merge_run_extensions(extra, method_ref=method_ref, method_id=method_id)
+    run_webhooks = _normalized_callback_urls(call=call, value=callback_urls)
     carries_tree = _tree_given(call=call, files_given=files_given, tree=tree, contents=contents)
     _assert_method_ref_pairs_with_nothing(carries_tree=carries_tree, merged_extra=merged_extra)
     _assert_linkage_method_id_is_bare(carries_tree=carries_tree, merged_extra=merged_extra)
-    return merged_extra
+    return _RunArguments(extra=merged_extra, callback_urls=run_webhooks)
+
+
+def _with_webhooks(content: bytes, callback_urls: list[str]) -> bytes:
+    """A run's body with its `callback_urls` added as its last member.
+
+    The base writes the body with `to_json`: a JSON object with no space in its structure, holding at least the
+    run's source once the base's precondition passed. The member is written into it, after its last, rather than
+    the body being read and written again, which would cost a parse of a method sent inline.
+    """
+    return content.removesuffix(b"}") + b',"callback_urls":' + _json_body(callback_urls) + b"}"
 
 
 def _json_body(body: object) -> bytes:
@@ -4611,6 +4863,9 @@ _ASSISTANT_REVISION_ARGUMENT = _Argument(
 #: What each argument of the files routes is, as a refusal of it names it.
 _FILE_ID_ARGUMENT = _Argument(name="file_id", what="a file id, the file's non-empty `file_id`")
 _ARCHIVE_ID_ARGUMENT = _Argument(name="archive_id", what="an archive id, the archive's non-empty `archive_id`")
+
+#: What a caller-webhook delivery's id is, as a refusal of it names it.
+_DELIVERY_ID_ARGUMENT = _Argument(name="delivery_id", what="a delivery id, the delivery's non-empty `delivery_id`")
 _STORAGE_URI_ARGUMENT = _Argument(name="uri", what="a `pipelex-storage://` address, a non-empty string")
 _RENAME_NAME_ARGUMENT = _Argument(name="name", what="the file's new name, a string")
 _ARCHIVE_FILE_IDS_ARGUMENT = _Argument(name="file_ids", what="file_ids, a non-empty list of the file ids to zip")

@@ -144,6 +144,48 @@ const OTHER_ID_ROUTES: [what: string, ...route: IdRoute][] = [
     (segment) => `${BASE_URL}/v1/organizations/${segment}/branding`,
   ],
   [
+    "an organization id",
+    "getWebhookSecret",
+    (client, id) => client.getWebhookSecret(id),
+    (segment) => `${BASE_URL}/v1/organizations/${segment}/webhook-secret`,
+  ],
+  [
+    "an organization id",
+    "rotateWebhookSecret",
+    (client, id) => client.rotateWebhookSecret(id),
+    (segment) => `${BASE_URL}/v1/organizations/${segment}/webhook-secret/rotate`,
+  ],
+  [
+    "a run id",
+    "listRunWebhookDeliveries",
+    (client, id) => client.listRunWebhookDeliveries(id),
+    (segment) => `${BASE_URL}/v1/runs/${segment}/webhook-deliveries`,
+  ],
+  [
+    "a run id",
+    "getRunWebhookDelivery",
+    (client, id) => client.getRunWebhookDelivery(id, "whd_1"),
+    (segment) => `${BASE_URL}/v1/runs/${segment}/webhook-deliveries/whd_1`,
+  ],
+  [
+    "a delivery id",
+    "getRunWebhookDelivery",
+    (client, id) => client.getRunWebhookDelivery("run-1", id),
+    (segment) => `${BASE_URL}/v1/runs/run-1/webhook-deliveries/${segment}`,
+  ],
+  [
+    "a run id",
+    "replayRunWebhookDelivery",
+    (client, id) => client.replayRunWebhookDelivery(id, "whd_1"),
+    (segment) => `${BASE_URL}/v1/runs/${segment}/webhook-deliveries/whd_1/replay`,
+  ],
+  [
+    "a delivery id",
+    "replayRunWebhookDelivery",
+    (client, id) => client.replayRunWebhookDelivery("run-1", id),
+    (segment) => `${BASE_URL}/v1/runs/run-1/webhook-deliveries/${segment}/replay`,
+  ],
+  [
     "an API key id",
     "revokePipelexApiKey",
     (client, id) => client.revokePipelexApiKey(id),

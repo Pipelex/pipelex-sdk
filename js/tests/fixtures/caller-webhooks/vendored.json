@@ -1,0 +1,18 @@
+{
+  "about": [
+    "The known-answer vectors of the caller-webhook contract, copied verbatim from Pipelex's conformance repository, which specifies the run.finished event a runtime sends a run's caller (specs/pipelex-caller-webhooks.md), and never edited here.",
+    "signature-vectors.json is copied from the path below in that repository, at the commit below. Its verification cases are calls as a receiver checks them: both SDKs' webhook tests (js/tests/webhooks.test.ts, python/tests/unit/test_webhooks.py) verify each one with its clock at the case's receiver_clock and compare the verdict and the refusal. Its signing cases are calls as a sender signs them; the tests verify each under every secret that signed it.",
+    "To refresh it, copy the file from the conformance repository at the commit that last changed it over js/tests/fixtures/caller-webhooks/signature-vectors.json, update the commit and the digest below, then run `make shared-files` at this repository's root, which copies both files into python/. Both suites fail when the file no longer has the digest recorded here, and the conformance repository's drift guard (scripts/check-caller-webhook-vectors.py) holds the copies it lists to its file.",
+    "The source is js/tests/fixtures/caller-webhooks/vendored.json. Its copy, python/tests/fixtures/caller-webhooks/vendored.json, is written by `make shared-files` at the repository root, and is never edited."
+  ],
+  "source": {
+    "repository": "Pipelex/conformance",
+    "commit": "242e162f9b09515f11a95c4e4a19595ad3b28f05"
+  },
+  "files": {
+    "signature-vectors.json": {
+      "path": "tests/caller_webhooks/fixtures/signature-vectors.json",
+      "sha256": "0185db0d6568ea4db61c40eddfefe1a47dd7ebb370dc4161bf759c8a05fd3509"
+    }
+  }
+}
