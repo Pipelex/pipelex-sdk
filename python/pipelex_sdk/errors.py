@@ -45,6 +45,10 @@ The codegen tree errors (`CodegenError`, `CodegenLockError`) are not request err
 `pipelex_sdk.codegen_stamp` over bytes and a directory, so they derive from `Exception` rather than from the
 protocol base, and carry their problem as `problem` all the same, as `@pipelex/sdk`'s `CodegenLockError` does.
 
+The caller-webhook receiver's errors (`WebhookVerificationError`, `WebhookEventUnreadableError`) are not request
+errors either: `pipelex_sdk.webhooks.verify_webhook` raises them over a call the receiver was sent, so they derive
+from `Exception` and carry their `problem` as the codegen errors do. See `docs/webhooks.md`.
+
 `str(exc)` is the SDK's own sentence, rather than the problem's: unlike the `mthds` errors, this module's do not
 append the problem's next step to it. The problem's `detail` and `next_step.detail` are on `problem` for whoever
 renders them. See `docs/errors.md`.
@@ -1335,3 +1339,62 @@ class FieldNotIncludedError(PipelexRequestError):
         msg = f"RunResults field `{field_name}` was not in the results body: the read did not carry it"
         super().__init__(msg, problem=problem or argument_invalid_problem(argument="results", reason="field_not_included"))
         self.field_name = field_name
+
+
+# ── The caller-webhook receiver's errors ─────────────────────────────
+
+
+class WebhookRefusal(StrEnum):
+    """Why `verify_webhook` refused a call, named as the contract's verification procedure names its steps, in the
+    order it takes them.
+
+    - `missing_header`: `webhook-id`, `webhook-timestamp` or `webhook-signature` is absent or empty;
+    - `timestamp`: `webhook-timestamp` is not a whole number of Unix seconds, or is more than five minutes from the
+      receiver's clock, either way;
+    - `signature`: no `v1` signature in `webhook-signature` is the call's under any secret given.
+    """
+
+    MISSING_HEADER = "missing_header"
+    TIMESTAMP = "timestamp"
+    SIGNATURE = "signature"
+
+    @property
+    def problem(self) -> Problem:
+        """The problem a refusal carries: the call's credential absent, or refused."""
+        match self:
+            case WebhookRefusal.MISSING_HEADER:
+                return make_client_problem(CoreCode.AUTH_MISSING_CREDENTIAL)
+            case WebhookRefusal.TIMESTAMP | WebhookRefusal.SIGNATURE:
+                return make_client_problem(CoreCode.AUTH_INVALID_CREDENTIAL)
+
+
+class WebhookVerificationError(Exception):
+    """A call `verify_webhook` refused: it does not come from the runtime holding the secret, or not within the last
+    five minutes, so its body must not be acted on. Answer it with a status outside `2xx`, such as `401`, which the
+    sender counts as a failed attempt and retries.
+
+    Branch on `refusal` (a `WebhookRefusal`). Its `problem` treats the signature as the call's credential:
+    `auth.missing_credential` for a missing header, `auth.invalid_credential` for a timestamp or a signature refused.
+    Nothing was requested, so it derives from `Exception`, as `@pipelex/sdk`'s twin is no `PipelexRequestError`.
+    """
+
+    def __init__(self, message: str, *, refusal: WebhookRefusal) -> None:
+        super().__init__(message)
+        self.refusal = refusal
+        self.problem = refusal.problem
+
+
+class WebhookEventUnreadableError(Exception):
+    """A verified call whose body is not a webhook event this SDK can read: bytes that are not UTF-8, text that is
+    not JSON, JSON that is not an object with a string `type`, or a `run.finished` event missing a member the contract
+    gives it or carrying one of the wrong type. The call does come from the runtime holding the secret, so this is
+    that runtime's fault, never the receiver's.
+
+    Its `problem` is `request.malformed`, whose `reason` is `not_utf8` or `not_json`, for a body that does not parse,
+    and `request.invalid`, whose `field` names the member as a dotted path (`type`, `attempt`, `data.status`), for
+    one that parses but is no event.
+    """
+
+    def __init__(self, message: str, *, problem: Problem) -> None:
+        super().__init__(message)
+        self.problem = problem

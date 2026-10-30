@@ -51,6 +51,21 @@ export const SETS = [
     source: "js/tests/fixtures/malformed-input-forms.json",
     copies: ["python/tests/fixtures/malformed-input-forms.json"],
   },
+  {
+    // The caller-webhook contract's known-answer vectors, vendored from the conformance repository,
+    // and the record of where they come from (js/docs/webhooks.md, python/docs/webhooks.md).
+    source: "js/tests/fixtures/caller-webhooks/signature-vectors.json",
+    copies: ["python/tests/fixtures/caller-webhooks/signature-vectors.json"],
+  },
+  {
+    source: "js/tests/fixtures/caller-webhooks/vendored.json",
+    copies: ["python/tests/fixtures/caller-webhooks/vendored.json"],
+  },
+  {
+    // How both SDKs verify and read a webhook call beyond the vectors (js/docs/webhooks.md, python/docs/webhooks.md).
+    source: "js/tests/fixtures/webhook-events.json",
+    copies: ["python/tests/fixtures/webhook-events.json"],
+  },
 ];
 
 export class SharedFileError extends Error {

@@ -1,6 +1,6 @@
 [project]
 name = "pipelex-sdk"
-version = "0.58.0"
+version = "0.59.0"
 description = "The Python client for the Pipelex hosted API — the MTHDS Protocol surface plus the durable run lifecycle and the Pipelex product surface, built on the `mthds` protocol base."
 authors = [{ name = "Evotis S.A.S.", email = "oss@pipelex.com" }]
 maintainers = [{ name = "Pipelex staff", email = "oss@pipelex.com" }]
@@ -38,6 +38,8 @@ dev = [
   "pytest>=9.0.3",
   "pytest-mock>=3.12.0,<4.0.0",
   "pytest-sugar>=1.0.0",
+  # A real Werkzeug `Headers` in the webhook tests: Flask's headers iterate as (name, value) pairs.
+  "werkzeug>=3.1.0",
 ]
 
 [build-system]

@@ -142,6 +142,48 @@ _ROUTES: list[tuple[str, str, IdRouteCall, IdRouteUrl]] = [
         lambda seg: f"{BASE_URL}/v1/organizations/{seg}/branding",
     ),
     (
+        "an organization id",
+        "get_webhook_secret",
+        lambda client, id_: client.get_webhook_secret(id_),
+        lambda seg: f"{BASE_URL}/v1/organizations/{seg}/webhook-secret",
+    ),
+    (
+        "an organization id",
+        "rotate_webhook_secret",
+        lambda client, id_: client.rotate_webhook_secret(id_),
+        lambda seg: f"{BASE_URL}/v1/organizations/{seg}/webhook-secret/rotate",
+    ),
+    (
+        _A_RUN_ID,
+        "list_run_webhook_deliveries",
+        lambda client, id_: client.list_run_webhook_deliveries(id_),
+        lambda seg: f"{BASE_URL}/v1/runs/{seg}/webhook-deliveries",
+    ),
+    (
+        _A_RUN_ID,
+        "get_run_webhook_delivery",
+        lambda client, id_: client.get_run_webhook_delivery(id_, "whd_1"),
+        lambda seg: f"{BASE_URL}/v1/runs/{seg}/webhook-deliveries/whd_1",
+    ),
+    (
+        "a delivery id",
+        "get_run_webhook_delivery",
+        lambda client, id_: client.get_run_webhook_delivery("run-1", id_),
+        lambda seg: f"{BASE_URL}/v1/runs/run-1/webhook-deliveries/{seg}",
+    ),
+    (
+        _A_RUN_ID,
+        "replay_run_webhook_delivery",
+        lambda client, id_: client.replay_run_webhook_delivery(id_, "whd_1"),
+        lambda seg: f"{BASE_URL}/v1/runs/{seg}/webhook-deliveries/whd_1/replay",
+    ),
+    (
+        "a delivery id",
+        "replay_run_webhook_delivery",
+        lambda client, id_: client.replay_run_webhook_delivery("run-1", id_),
+        lambda seg: f"{BASE_URL}/v1/runs/run-1/webhook-deliveries/{seg}/replay",
+    ),
+    (
         "an API key id",
         "revoke_pipelex_api_key",
         lambda client, id_: client.revoke_pipelex_api_key(id_),

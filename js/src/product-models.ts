@@ -1758,6 +1758,13 @@ export interface RunDetail extends PipelineRun {
   tree_digest?: string | null;
   /** The runner's fingerprint of the crate it loaded the tree into; `null` when it reported none. */
   crate_fingerprint?: string | null;
+  /**
+   * The webhook URLs the run registered in `callback_urls`, each redacted to its scheme, its host
+   * and a port other than the scheme's default, with `/***` in place of a path or query string.
+   * `null` for a run that registered none; absent on a server that does not serve it. Its
+   * deliveries are read with `listRunWebhookDeliveries`.
+   */
+  callback_urls?: string[] | null;
 }
 
 /** Query for one page of run history. */

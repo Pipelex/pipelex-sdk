@@ -1,5 +1,14 @@
 # Changelog
 
+## [v0.59.0] - 2026-10-30
+
+### Added
+
+- **A run can register webhooks to call once it has ended**: `execute`, `start` and `startAndWaitForResult` take `callback_urls`, an array of URLs sent as a Pipelex API extension beside `method_ref`, kept on the blocking fallback and reserved on `extra`; a value that is not an array of strings is a `RequestArgumentError` before anything is sent, an empty array is not sent, and webhooks alone are no run source. The start's acknowledgement, `RunRead` and `RunDetail` gain `callback_urls`, the URLs redacted; for a run that registered none the acknowledgement leaves it out and the two reads answer `null` (`docs/webhooks.md`).
+- **`verifyWebhook` verifies a call to a caller webhook and reads its event**: it checks the `webhook-id`, `webhook-timestamp` and `webhook-signature` headers by the caller-webhook contract's procedure, with Web Crypto, under one secret or the two live during a rotation, and returns the `run.finished` event as a `RunFinishedEvent`, whose `data` accepts both the protocol's status read a self-hosted runner sends and the hosted status read with its uppercase statuses and `null` members, or an `UnknownWebhookEvent` to acknowledge. It reads a `webhook-signature` sent more than once and joined by a comma, as fetch's `Headers` and Node join it, and refuses a `webhook-timestamp` past `Number.MAX_SAFE_INTEGER`. A refused call throws `WebhookVerificationError`, whose `refusal` is `missing_header`, `timestamp` or `signature`, and a verified body that is no event `WebhookEventUnreadableError`. Its tests run a byte-identical copy of the contract's known-answer vectors (`docs/webhooks.md`).
+- **The hosted delivery log**: `listRunWebhookDeliveries`, `getRunWebhookDelivery` and `replayRunWebhookDelivery` read a run's webhook deliveries with every attempt and send a settled one again, typed `WebhookDeliveryList`, `WebhookDeliveryDetail` and `WebhookReplayAccepted` (`docs/webhooks.md`).
+- **The organization's webhook signing secret**: `getWebhookSecret` reads it and `rotateWebhookSecret`, which takes an `idempotencyKey`, rotates it, both answering a `WebhookSecret` (`docs/webhooks.md`).
+
 ## [v0.58.0] - 2026-10-29
 
 ### Added

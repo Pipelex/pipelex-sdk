@@ -1,5 +1,14 @@
 # Changelog
 
+## [v0.59.0] - 2026-10-30
+
+### Added
+
+- **A run can register webhooks to call once it has ended**: `execute`, `start` and `start_and_wait` take `callback_urls`, a sequence of URLs such as a list or a tuple, sent as a Pipelex API extension beside `method_ref`, kept on the blocking fallback and reserved on `extra`; a value that is no sequence of strings, or is text or bytes, raises `RequestArgumentError` before anything is sent, an empty one is not sent, and webhooks alone are no run source, a run naming nothing else meeting the refusal of a run naming nothing. `PipelexRunResultStart`, `RunRead` and `RunDetail` gain `callback_urls`, the URLs redacted, `None` for a run that registered none, whose acknowledgement leaves it out and whose reads answer `null` (`docs/webhooks.md`).
+- **`pipelex_sdk.webhooks.verify_webhook` verifies a call to a caller webhook and reads its event**: it checks the `webhook-id`, `webhook-timestamp` and `webhook-signature` headers by the caller-webhook contract's procedure under one secret or the two live during a rotation, and returns the `run.finished` event as a `RunFinishedEvent`, whose `data` reads both the protocol's status read a self-hosted runner sends and the hosted status read with its uppercase statuses and `null` members, or an `UnknownWebhookEvent` to acknowledge. It reads the headers of a `dict` or of any framework's `Headers`, Werkzeug's for Flask included, a value in bytes as Latin-1, and a `webhook-signature` sent more than once and joined by a comma; it refuses a `webhook-timestamp` past 2**53 - 1 as `@pipelex/sdk` does, whatever its length, and a naive `now` with a `RequestArgumentError`. A refused call raises `WebhookVerificationError`, whose `refusal` is a `WebhookRefusal`, and a verified body that is no event `WebhookEventUnreadableError`, both in `pipelex_sdk.errors`. Its tests run a byte-identical copy of the contract's known-answer vectors (`docs/webhooks.md`).
+- **The hosted delivery log**: `list_run_webhook_deliveries`, `get_run_webhook_delivery` and `replay_run_webhook_delivery` read a run's webhook deliveries with every attempt and send a settled one again, typed `WebhookDeliveryList`, `WebhookDeliveryDetail` and `WebhookReplayAccepted` (`docs/webhooks.md`).
+- **The organization's webhook signing secret**: `get_webhook_secret` reads it and `rotate_webhook_secret`, which takes an `idempotency_key`, rotates it, both answering a `WebhookSecret` that keeps the secret out of its `repr` (`docs/webhooks.md`).
+
 ## [v0.58.0] - 2026-10-29
 
 ### Added

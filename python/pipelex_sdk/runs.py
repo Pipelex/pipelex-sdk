@@ -184,6 +184,13 @@ class PipelexRunResultStart(RunResultStart):
     for any other run, and on a server that does not resolve version selectors. Read strictly: a
     boolean, a numeric string or a float is never coerced into a version."""
 
+    callback_urls: list[str] | None = None
+    """The webhook URLs the run registered in `callback_urls`, each redacted to its scheme, its host and a
+    port other than the scheme's default, with `/***` in place of a path or query string, so a caller sees
+    at once that its webhooks were taken. `None` for a run that registered none, whose acknowledgement leaves
+    the member out (the status read and the run record answer `null` instead), and on a server that does not
+    echo them."""
+
 
 class RunPublic(BaseModel):
     """A run record — the BASE shape of the run-lifecycle read surface.
@@ -308,6 +315,11 @@ class RunRead(RunPublic):
     #: The id of the request that started the run — the one to quote to support. `None` for a run saved
     #: before the platform recorded it, and on a server that does not serve it.
     request_id: str | None = None
+    #: The webhook URLs the run registered in `callback_urls`, each redacted to its scheme, its host and a
+    #: port other than the scheme's default, with `/***` in place of a path or query string. `None` for a
+    #: run that registered none, and on a server that does not serve it. A run's `run.finished` event
+    #: carries this read without it.
+    callback_urls: list[str] | None = None
     #: The `Retry-After` header's delay, in seconds, lifted by the client when the platform sent one.
     retry_after_seconds: int | None = None
 
