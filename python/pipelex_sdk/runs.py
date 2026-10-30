@@ -187,8 +187,9 @@ class PipelexRunResultStart(RunResultStart):
     callback_urls: list[str] | None = None
     """The webhook URLs the run registered in `callback_urls`, each redacted to its scheme, its host and a
     port other than the scheme's default, with `/***` in place of a path or query string, so a caller sees
-    at once that its webhooks were taken. `None` for a run that registered none, and on a server that does
-    not echo them."""
+    at once that its webhooks were taken. `None` for a run that registered none, whose acknowledgement leaves
+    the member out (the status read and the run record answer `null` instead), and on a server that does not
+    echo them."""
 
 
 class RunPublic(BaseModel):

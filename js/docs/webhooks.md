@@ -19,14 +19,19 @@ It is a Pipelex API extension (`PipelexApiRunExtensions`), beside `method_ref`: 
 
 The client refuses, before anything is sent, a value that is not an array (`client.argument_invalid`, reason `not_a_list`) or an array holding anything but strings (`not_a_string`), and does not send an empty array, which the platform treats as absent. `callback_urls` is no run source: a run naming its webhooks and nothing to run is refused as any run with nothing to run is (`nothing_to_run`). It is reserved on `extra`, as `method_ref` is, so it reaches the body by its named option alone.
 
-A URL may carry a credential of the receiver's in its path or query string. Every read of the run lists the URLs redacted to their scheme, host and a port other than the scheme's default, with `/***` in place of the rest: the start's acknowledgement (`PipelexRunResultStart.callback_urls`), the status read (`RunRead.callback_urls`) and the run record (`RunDetail.callback_urls`), `null` for a run that registered none.
+A URL may carry a credential of the receiver's in its path or query string. Every read of the run lists the URLs redacted to their scheme, host and a port other than the scheme's default, with `/***` in place of the rest: the start's acknowledgement (`PipelexRunResultStart.callback_urls`), the status read (`RunRead.callback_urls`) and the run record (`RunDetail.callback_urls`). For a run that registered none the acknowledgement leaves the member out, and the two reads answer `null`.
 
 ## Receiving a call — `verifyWebhook`
 
 A call is a Standard Webhooks v1 `POST`. Its `webhook-id` header names the delivery, the same on every attempt and replay; `webhook-timestamp` is when the attempt was sent, in Unix seconds; and `webhook-signature` lists `v1,` and the base64 HMAC-SHA256 of `{webhook-id}.{webhook-timestamp}.{body}` under each secret live when it was sent. `verifyWebhook(body, headers, secret, options?)` checks all three and returns the event:
 
 ```ts
-import { WebhookVerificationError, isRunFinishedEvent, verifyWebhook } from "@pipelex/sdk";
+import {
+  WebhookEventUnreadableError,
+  WebhookVerificationError,
+  isRunFinishedEvent,
+  verifyWebhook,
+} from "@pipelex/sdk";
 
 export async function POST(request: Request): Promise<Response> {
   const body = await request.text(); // the raw body, never a parsed and re-serialized one
@@ -35,6 +40,11 @@ export async function POST(request: Request): Promise<Response> {
     event = await verifyWebhook(body, request.headers, process.env.PIPELEX_WEBHOOK_SECRET!);
   } catch (err) {
     if (err instanceof WebhookVerificationError) return new Response(null, { status: 401 });
+    if (err instanceof WebhookEventUnreadableError) {
+      // Verified, so sent by the runtime, but no event this SDK reads: every retry carries the same body.
+      console.warn("Unreadable webhook", request.headers.get("webhook-id"), err.problem);
+      return new Response(null, { status: 204 });
+    }
     throw err;
   }
   if (!isRunFinishedEvent(event)) return new Response(null, { status: 204 }); // a type this receiver does not read
@@ -68,7 +78,7 @@ The secret is the `whsec_` value the runtime signs with, given whole: the organi
 | `WebhookEventUnreadableError` | a verified body that is no event this SDK reads | `request.invalid`, `field` the member at fault (`type`, `timestamp`, `attempt`, `data`, `data.pipeline_run_id`, `data.status`) |
 | `RequestArgumentError` | a secret, a body or a clock of the wrong kind | `client.argument_invalid` naming `secret`, `body` or `now` |
 
-Answer a `WebhookVerificationError` with a status outside `2xx`, such as `401`: the sender counts it as a failed attempt and retries, and a replay later sends the delivery again. Both errors are `ProblemError`s, never a `PipelexRequestError`, since nothing was requested.
+Answer a `WebhookVerificationError` with a status outside `2xx`, such as `401`: the sender counts it as a failed attempt and retries, and a replay later sends the delivery again. Answer a `WebhookEventUnreadableError` with a `2xx` instead, and log it, as the example does: the call was verified, so the runtime sent it, and every retry and replay of the delivery carries the same body, so failing it would only spend the delivery's attempts on a body this SDK will never read. Both errors are `ProblemError`s, never a `PipelexRequestError`, since nothing was requested.
 
 ### The event
 

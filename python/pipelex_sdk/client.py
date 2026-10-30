@@ -1206,8 +1206,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 deliver caller webhooks refuses the list with a `422` `request.unsupported`, and a self-hosted
                 runner whose operator configured no signing secret with a `422`
                 `pipelex.webhook.secret_not_configured`. No run source: the run still needs something to run.
-                A value that is not a list or tuple of strings is refused before anything is sent, and an
-                empty one is treated as absent.
+                A value that is no sequence of strings, or is text or bytes, is refused before anything is
+                sent, and an empty one is treated as absent.
 
         Raises:
             PipelineExecuteTimeoutError: The blocking request hit the hosted gateway's ~30s
@@ -1218,7 +1218,7 @@ class PipelexAPIClient(MthdsAPIClient):
                 surrogate, `extra` carries a protocol arg or a reserved named arg, a selector is
                 present and is not a string, `method_ref` is combined with the tree or with
                 `method_id`, a suffixed `method_id` is combined with the tree, or `callback_urls` is no
-                list of strings.
+                sequence of strings.
             MethodFileTransferError: A file of a `tree` or `contents` the API lacks could not be
                 uploaded, so the run was not started.
             TreeSourceError: A file of `tree` cannot be read, or changed since it was listed

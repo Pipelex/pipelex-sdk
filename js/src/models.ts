@@ -103,7 +103,8 @@ export interface PipelexRunResultStart extends RunResultStart {
    * The webhook URLs the run registered in `callback_urls`, each redacted to its scheme, its host
    * and a port other than the scheme's default, with `/***` in place of a path or query string,
    * so a caller sees at once that its webhooks were taken. Absent for a run that registered none,
-   * and on a server that does not echo them.
+   * since the platform leaves a member with no value out of the acknowledgement (the status read
+   * and the run record answer `null` instead), and on a server that does not echo them.
    */
   callback_urls?: string[] | null;
 }

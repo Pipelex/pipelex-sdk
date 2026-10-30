@@ -19,7 +19,7 @@ It is a Pipelex API extension, beside `method_ref`: the hosted API and a self-ho
 
 The client refuses, before anything is sent, a value that is no sequence, or is text or bytes (`client.argument_invalid`, reason `not_a_list`), or one holding anything but strings (`not_a_string`), and does not send an empty one, which the platform treats as absent. `callback_urls` is no run source: it does not ride `extra`, which the base client counts towards its "something to run" precondition, so a run naming its webhooks and nothing to run is refused as any run with nothing to run is (`nothing_to_run`). It is reserved on `extra`, as `method_ref` is, so it reaches the body by its named parameter alone.
 
-A URL may carry a credential of the receiver's in its path or query string. Every read of the run lists the URLs redacted to their scheme, host and a port other than the scheme's default, with `/***` in place of the rest: the start's acknowledgement (`PipelexRunResultStart.callback_urls`), the status read (`RunRead.callback_urls`) and the run record (`RunDetail.callback_urls`), `None` for a run that registered none.
+A URL may carry a credential of the receiver's in its path or query string. Every read of the run lists the URLs redacted to their scheme, host and a port other than the scheme's default, with `/***` in place of the rest: the start's acknowledgement (`PipelexRunResultStart.callback_urls`), the status read (`RunRead.callback_urls`) and the run record (`RunDetail.callback_urls`). For a run that registered none the acknowledgement leaves the member out and the two reads answer `null`, which all three models read as `None`.
 
 ## Receiving a call — `verify_webhook`
 
@@ -28,7 +28,7 @@ A call is a Standard Webhooks v1 `POST`. Its `webhook-id` header names the deliv
 ```python
 from fastapi import Request, Response
 
-from pipelex_sdk.errors import WebhookVerificationError
+from pipelex_sdk.errors import WebhookEventUnreadableError, WebhookVerificationError
 from pipelex_sdk.webhooks import RunFinishedEvent, verify_webhook
 
 
@@ -39,6 +39,10 @@ async def pipelex_webhook(request: Request) -> Response:
         event = verify_webhook(body, request.headers, os.environ["PIPELEX_WEBHOOK_SECRET"])
     except WebhookVerificationError:
         return Response(status_code=401)
+    except WebhookEventUnreadableError as exc:
+        # Verified, so sent by the runtime, but no event this SDK reads: every retry carries the same body.
+        logger.warning("Unreadable webhook %s: %s", request.headers["webhook-id"], exc.problem)
+        return Response(status_code=204)
     if not isinstance(event, RunFinishedEvent):
         return Response(status_code=204)  # a type this receiver does not read
     if await already_handled(request.headers["webhook-id"]):
@@ -69,7 +73,7 @@ The secret is the `whsec_` value the runtime signs with, given whole: the organi
 | `WebhookEventUnreadableError` | a verified body that is no event this SDK reads | `request.invalid`, `field` the member at fault (`type`, `timestamp`, `attempt`, `data`, `data.pipeline_run_id`, `data.status`) |
 | `RequestArgumentError` | a secret, a body, headers or a clock of the wrong kind | `client.argument_invalid` naming `secret`, `body`, `headers` or `now` |
 
-Answer a `WebhookVerificationError` with a status outside `2xx`, such as `401`: the sender counts it as a failed attempt and retries, and a replay later sends the delivery again. Both webhook errors live in `pipelex_sdk.errors` and derive from `Exception` with a `problem`, as the codegen errors do, never from `PipelexRequestError`, since nothing was requested.
+Answer a `WebhookVerificationError` with a status outside `2xx`, such as `401`: the sender counts it as a failed attempt and retries, and a replay later sends the delivery again. Answer a `WebhookEventUnreadableError` with a `2xx` instead, and log it, as the example does: the call was verified, so the runtime sent it, and every retry and replay of the delivery carries the same body, so failing it would only spend the delivery's attempts on a body this SDK will never read. Both webhook errors live in `pipelex_sdk.errors` and derive from `Exception` with a `problem`, as the codegen errors do, never from `PipelexRequestError`, since nothing was requested.
 
 ### The event
 
