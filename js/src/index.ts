@@ -367,6 +367,7 @@ export type {
   WebhookHeaders,
   WebhookRefusal,
   WebhookReplayAccepted,
+  WebhookReplayOptions,
   WebhookSecret,
   WebhookSecretRotateOptions,
 } from "./webhooks.js";

@@ -224,7 +224,7 @@ class RequestArgumentError(PipelexRequestError):
     suffixed `method_id` beside the method's tree, a selector rule of `validate()`, an artifact selection that is
     empty or names an unknown artifact, a suffixed id given to a method route, a `publish_method()` token that is
     not a string, a `get_method_version()` version that is not a positive integer, a value
-    `parse_method_selector()` refuses, a start's `idempotency_key` that is not 1 to 255 visible ASCII characters,
+    `parse_method_selector()` refuses, an `idempotency_key` that is not 1 to 255 visible ASCII characters,
     or a base URL that is not host-only. Nothing reached the API, so the message says what to change.
 
     Its `problem` is `client.argument_invalid` naming the argument and why it was refused

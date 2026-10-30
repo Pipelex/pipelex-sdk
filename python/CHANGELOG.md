@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`replay_run_webhook_delivery` takes an `idempotency_key`**: the new keyword argument is sent as the replay's `Idempotency-Key` header, so a replay sent again under the same key, as after an answer lost to a time limit, gets the stored answer naming the same attempt and the delivery is not sent twice; a key that is not 1 to 255 visible ASCII characters is a `RequestArgumentError` before anything is sent, and without one no header is sent (`docs/webhooks.md`).
+
 ## [v0.58.0] - 2026-10-29
 
 ### Added

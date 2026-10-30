@@ -104,6 +104,8 @@ What the hosted API answers a start sent under a key:
 
 **A copy takes a key too.** `copy_method` sends an `idempotency_key` the same way, held to the same rule, and the hosted API keeps it for the same 24 hours, scoped to the caller and the method's organization. A copy binds no run, so its answers under a key differ from a start's: [method-copy.md](./method-copy.md#retrying-a-copy--idempotency_key) gives them, with the copy's own codes, `MethodErrorCode.ORGANIZATION_NOT_FOUND` and `MethodErrorCode.COPY_TOO_LARGE`.
 
+**So do a secret rotation and a delivery replay.** `rotate_webhook_secret` and `replay_run_webhook_delivery` send an `idempotency_key` the same way, held to the same rule. A rotation's answer carries a secret, so the platform never replays it, while a replay's stored answer is given again: [webhooks.md](./webhooks.md) gives both.
+
 ## Each class's problem
 
 The classes remain, so an `except` can still tell an argument refusal from a refused request or a failed run, but every one carries its failure as its problem, and the code is what a program branches on.
