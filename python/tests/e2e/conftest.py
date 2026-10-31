@@ -1,21 +1,28 @@
 """The live legs' account, checked once before the first live case runs (`tests/e2e/live_account.py`).
 
-The check is a session fixture every live case takes, so it runs when the first case that is not skipped sets up and
-never when every leg skips for want of `PIPELEX_E2E_BASE_URL`. A refusal stops the whole session there, with its one
-message, before any case reaches the platform.
+The check runs once collection is done, before any case and whatever the cases' skip marks say, so a hosted run with
+no key or no expectations stops however the cases were selected, a single file included. It runs only when a live
+case was collected, never under `--collect-only`, and a run with no `PIPELEX_E2E_BASE_URL` has no target to check. A
+refusal stops the whole session there, with its one message, before any case reaches the platform.
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
 from tests.e2e.live_account import PYTHON_E2E_TARGET, check_live_account
 
+LIVE_DIR = Path(__file__).parent
 
-@pytest.fixture(scope="session", autouse=True)
-def live_account() -> str:
-    """The account the live legs act for, confirmed; the session stops on a refusal."""
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Check the account the live legs act for, and stop the session on a refusal."""
+    if session.config.option.collectonly or not any(LIVE_DIR in item.path.parents for item in session.items):
+        return
     verdict = asyncio.run(check_live_account(PYTHON_E2E_TARGET))
     if verdict.verdict == "refused":
         pytest.exit(verdict.said, returncode=1)
-    return verdict.said
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line(verdict.said)

@@ -32,7 +32,7 @@ Nothing is sent, and the run stops, in each of these cases:
 
 A platform whose `/v1/me` answer has no `organization` member predates it. The check reports that as "the platform does not state the key's organization yet" and stops the run, because nothing but the email could then be compared; that is never a pass.
 
-Both SDKs' suites implement the check, `js/tests/e2e/live-account.ts` as the TypeScript suite's global setup and `python/tests/e2e/live_account.py` as a session fixture of the Python legs, and both run the same cases, `js/tests/fixtures/live-account-cases.json`, whose copy in `python/tests/fixtures/` the root's `make shared-files` writes. The root's `make live-starter` runs the Python one as a command, `make -C python live-account`, before a starter's live checks start.
+Both SDKs' suites implement the check, `js/tests/e2e/live-account.ts` as the TypeScript suite's global setup and `python/tests/e2e/live_account.py` through a hook of the Python legs' `conftest.py`, which runs once collection is done, so neither depends on which cases were selected or which of them skip, and both run the same cases, `js/tests/fixtures/live-account-cases.json`, whose copy in `python/tests/fixtures/` the root's `make shared-files` writes. The root's `make live-starter` runs the Python one as a command, `make -C python live-account`, before a starter's live checks start.
 
 ## Why the starters' check lives at the root
 
