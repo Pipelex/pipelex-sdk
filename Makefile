@@ -316,10 +316,14 @@ live-method-app: ## Run a method-app template's live checks as the registered te
 # directory holding a method.json at its root or a .mthds file at any depth, or anything below
 # methods/ that is neither a plain file nor a directory, such as a symbolic link, which they refuse.
 # A plain file at methods/'s root, such as the README that method-apps/webapp-js ships alone, and a
-# directory holding neither, are no method, and the scripts skip both.
-holds_method = [ -n "$$(find "$(1)/methods" -mindepth 1 ! -type f ! -type d 2>/dev/null; \
-	find "$(1)/methods" -mindepth 2 -maxdepth 2 -type f -name method.json 2>/dev/null; \
-	find "$(1)/methods" -mindepth 2 -type f -name '*.mthds' 2>/dev/null)" ]
+# directory holding neither, are no method, and the scripts skip both, as does a template with no
+# methods/ at all. A scan that fails, on a directory it cannot read, counts as holding a method, so
+# that the template's own codegen-verify, which refuses what it cannot read, gives the verdict.
+holds_method = ( [ -d "$(1)/methods" ] || exit 1; \
+	found=$$(find "$(1)/methods" -mindepth 1 ! -type f ! -type d && \
+		find "$(1)/methods" -mindepth 2 -maxdepth 2 -type f -name method.json && \
+		find "$(1)/methods" -mindepth 2 -type f -name '*.mthds') || exit 0; \
+	[ -n "$$found" ] )
 
 # The template's own `make codegen-verify` writes nothing and spends no model call, so nothing asks
 # first. It runs in each narrowed template that holds a method, all of them before the verdict, and
