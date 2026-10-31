@@ -297,6 +297,9 @@ class TestEnvFile:
             ("PIPELEX_API_KEY=pk_above\n", "does not set it, so the CLI uses https://api.pipelex.com"),
             ("PIPELEX_API_KEY=pk_above\nPIPELEX_BASE_URL=https://other.example.com\n", "says https://other.example.com"),
             ("PIPELEX_API_KEY=pk_above\nPIPELEX_BASE_URL=https://api.example.com\n", None),
+            # The SDK refuses an empty base URL, where a line naming the variable with no `=` sets nothing at all.
+            ("PIPELEX_API_KEY=pk_above\nPIPELEX_BASE_URL=\n", "sets it empty, which the CLI refuses, whenever"),
+            ("PIPELEX_API_KEY=pk_above\nPIPELEX_BASE_URL\n", "does not set it, so the CLI uses https://api.pipelex.com"),
         ],
     )
     def test_a_file_left_supplying_the_key_names_a_base_url_it_would_not_reproduce(self, above: str, says: str | None, tmp_path: Path):

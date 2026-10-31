@@ -321,9 +321,10 @@ def unreadable_env_file(path: Path | str, exc: Exception, *, why: str) -> Create
 
 
 def env_file_value(env_file: Path | None, key: str) -> str | None:
-    """What an env file sets `key` to, or `None` when there is no file or it leaves `key` unset or empty.
+    """What an env file sets `key` to, stripped: `""` when it assigns an empty value, `None` when there is no file or no value.
 
-    A file that sets other variables only leaves the base URL to its default, and supplies no key.
+    A file that sets other variables only leaves the base URL to its default, and supplies no key. One
+    that assigns the base URL an empty value does not: the SDK refuses an empty base URL.
 
     Raises:
         CreateError: The file cannot be read.
@@ -331,10 +332,12 @@ def env_file_value(env_file: Path | None, key: str) -> str | None:
     if env_file is None:
         return None
     try:
-        value = dotenv_values(env_file).get(key)
+        values = dotenv_values(env_file)
     except (OSError, UnicodeError) as exc:
         raise unreadable_env_file(env_file, exc, why="the CLI reads it") from exc
-    return (value.strip() or None) if value else None
+    # A line naming the variable with no `=` reads as `None`, and python-dotenv then sets nothing.
+    value = values.get(key)
+    return None if value is None else value.strip()
 
 
 def plan_env_file(root: Path, shell: ShellEnv, env_file: Path | None, base_url: str) -> EnvPlan:
@@ -346,9 +349,10 @@ def plan_env_file(root: Path, shell: ShellEnv, env_file: Path | None, base_url: 
     puts their own key; while a shell exports one, it wins over the file.
 
     python-dotenv reads one env file, the nearest, so a `.env` written here hides any above it. When a
-    `.env` above the project sets the key, the gesture leaves the project without a `.env`, so that the
-    file above keeps supplying it, whether or not the shell also exports one. The gesture refuses a run
-    with no key at all, so a key the shell did not export came from such a file.
+    `.env` above the project sets the key, the gesture leaves the project without a `.env`, even while
+    the shell exports another key, so that the file above still supplies its key whenever the shell
+    exports none. The gesture refuses a run with no key at all, so a key the shell did not export came
+    from such a file.
 
     Raises:
         CreateError: A value cannot be written so that python-dotenv reads it back as it is, or the
@@ -367,13 +371,18 @@ def plan_env_file(root: Path, shell: ShellEnv, env_file: Path | None, base_url: 
                 "the shell does not set it."
             )
         return EnvPlan(action="keep", content=None, notes=tuple(notes))
-    if shell.key is None or env_file_value(env_file, API_KEY_KEY) is not None:
+    if shell.key is None or env_file_value(env_file, API_KEY_KEY):
         where = env_file if env_file is not None else f"a {ENV_FILE} above this project"
         notes = [f"{ENV_FILE} is not written: {where} sets {API_KEY_KEY}, and the CLI reads it only while this project has no {ENV_FILE} of its own."]
         # Without the shell's base URL, the command reads the file's, or the SDK's default: the method was generated against the shell's.
         above = env_file_value(env_file, BASE_URL_KEY)
-        if shell.base_url is not None and (above or DEFAULT_API_BASE_URL) != shell.base_url:
-            says = f"says {above}" if above is not None else f"does not set it, so the CLI uses {DEFAULT_API_BASE_URL}"
+        if shell.base_url is not None and (DEFAULT_API_BASE_URL if above is None else above) != shell.base_url:
+            if above is None:
+                says = f"does not set it, so the CLI uses {DEFAULT_API_BASE_URL}"
+            elif not above:
+                says = "sets it empty, which the CLI refuses,"
+            else:
+                says = f"says {above}"
             notes.append(
                 f"your shell sets {BASE_URL_KEY}={shell.base_url}, the API the method is generated against, but {where} {says} "
                 "whenever the shell does not set it."
@@ -387,7 +396,7 @@ def plan_env_file(root: Path, shell: ShellEnv, env_file: Path | None, base_url: 
     text = set_env_line(text, BASE_URL_KEY, quote_env_value(BASE_URL_KEY, base_url))
     text = set_env_line(text, API_KEY_KEY, "")
     from_shell = shell.base_url is not None
-    from_file = not from_shell and env_file_value(env_file, BASE_URL_KEY) is not None
+    from_file = not from_shell and bool(env_file_value(env_file, BASE_URL_KEY))
     origin = "from your shell" if from_shell else f"from {env_file}" if from_file else "the default"
     notes = [
         f"{ENV_FILE} is written with {BASE_URL_KEY}={base_url} ({origin}) and an empty {API_KEY_KEY} line for your own key, "
