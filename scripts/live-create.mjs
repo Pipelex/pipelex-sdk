@@ -4,8 +4,9 @@
  *
  * The method-app templates ship no method, so their `make create` gesture is proven in two
  * halves: offline, inside each template's `make test`, against recorded API responses, and live,
- * against the hosted API, here. A proof copies the template as HEAD holds it into a temporary
- * directory with a repository of its own, runs the gesture there with the key and the base URL
+ * against the hosted API, here. A proof copies the template as this checkout holds it, what git
+ * tracks or would track, into a temporary directory with a repository of its own, runs the
+ * gesture there with the key and the base URL
  * this process was started with, and checks that the copy is what the gesture promised: the
  * project named after the method, the template's own files gone, an env file holding the base
  * URL the run used and an empty key line, and the project working, a page with the method's form
@@ -22,6 +23,7 @@
  * address. The key is read from PIPELEX_API_KEY only to see that it is set, and never shown; the
  * children inherit it. It exits 0 when every proof passed, 1 when one failed, whose copy is kept
  * and named, and 2 when it cannot start: an unknown argument or template, or no base URL or key.
+ * A Ctrl-C, a SIGTERM or a SIGHUP stops the whole run before its next step, with 130, 143 or 129.
  *
  * Zero dependencies; runs on the Node the templates already need.
  */
@@ -287,32 +289,88 @@ export function childEnv(env) {
   return child;
 }
 
+/** The signals that stop the whole run, each with the exit status it gives it. */
+export const STOP_SIGNALS = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+
+/** The temporary directory of the proof in progress, named when a signal stops the run. */
+let proofInProgress = null;
+
+/**
+ * Stop the run on any of `STOP_SIGNALS`: the dev servers killed, the copy in progress named, and
+ * the process gone with the signal's status. A terminal's Ctrl-C reaches every process of the job,
+ * so it stops the command a step is running and this process alike, and the next proof must not
+ * start: it would spend model calls nobody asked for. Node queues a signal while `spawnSync` holds
+ * the event loop, so every command is followed by `settle()`, which hands the loop one turn.
+ */
+export function stopOnSignals({ onStop = stopServersNow, exit = (code) => process.exit(code) } = {}) {
+  for (const [signal, code] of Object.entries(STOP_SIGNALS)) {
+    process.once(signal, () => {
+      onStop();
+      const kept = proofInProgress === null ? "" : ` The copy of the proof in progress is kept at ${proofInProgress}.`;
+      console.error(`\nlive-create: stopped by ${signal}.${kept}`);
+      exit(code);
+    });
+  }
+}
+
+/** One turn of the event loop, which delivers a signal that arrived while a command ran. */
+export function settle() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 /** Run one command of a proof with its output shown, throwing when it fails. */
-function runShown(command, args, cwd, env) {
+async function runShown(command, args, cwd, env) {
   const result = spawnSync(command, args, { cwd, env, stdio: "inherit", timeout: STEP_TIMEOUT_MS });
+  await settle();
   if (result.error !== undefined) throw new ProofError(`${[command, ...args].join(" ")} could not run: ${result.error.message}`);
   if (result.signal !== null) throw new ProofError(`${[command, ...args].join(" ")} was stopped by ${result.signal}`);
   if (result.status !== 0) throw new ProofError(`${[command, ...args].join(" ")} exited ${result.status}`);
 }
 
 /** Run one command with its output captured. */
-function runCaptured(command, args, cwd, env, timeout = STEP_TIMEOUT_MS) {
+async function runCaptured(command, args, cwd, env, timeout = STEP_TIMEOUT_MS) {
   const result = spawnSync(command, args, { cwd, env, encoding: "utf-8", timeout, maxBuffer: 64 * 1024 * 1024 });
+  await settle();
   if (result.error !== undefined) throw new ProofError(`${[command, ...args].join(" ")} could not run: ${result.error.message}`);
   return result;
 }
 
-/** The template as HEAD holds it, written into `copy` with a repository of its own and its first commit. */
-function copyTemplate(root, template, copy, env) {
+/**
+ * The template as this checkout holds it, as a git tree: its tracked files with their uncommitted
+ * changes and its untracked files git does not ignore, so never an env file or an install. The
+ * bump skills take the proofs before they commit, so `HEAD` alone would prove the template they
+ * started from. The tree is built in an index of its own, which leaves the checkout's untouched.
+ */
+export async function templateTree(root, template, env) {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "live-create-index-"));
+  const indexEnv = { ...env, GIT_INDEX_FILE: path.join(scratch, "index") };
+  try {
+    const added = await runCaptured("git", ["-C", root, "add", "-A", "--", template], root, indexEnv);
+    if (added.status !== 0) throw new ProofError(`git add could not read ${template}: ${added.stderr.trim()}`);
+    const written = await runCaptured("git", ["-C", root, "write-tree", `--prefix=${template}/`], root, indexEnv);
+    if (written.status !== 0) throw new ProofError(`git write-tree could not write ${template}: ${written.stderr.trim()}`);
+    return written.stdout.trim();
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The git `tree` written into `copy`, with a repository of its own and its first commit, as a
+ * project starts. The commit names its own author, since a machine may give git none outside the
+ * repositories it configures.
+ */
+export async function copyTemplate(root, tree, copy, env) {
   fs.mkdirSync(copy);
   const archive = path.join(path.dirname(copy), "template.tar");
-  const archived = runCaptured("git", ["-C", root, "archive", "--format=tar", "-o", archive, `HEAD:${template}`], root, env);
-  if (archived.status !== 0) throw new ProofError(`git archive HEAD:${template} failed: ${archived.stderr.trim()}`);
-  const extracted = runCaptured("tar", ["-x", "-f", archive, "-C", copy], root, env);
+  const archived = await runCaptured("git", ["-C", root, "archive", "--format=tar", "-o", archive, tree], root, env);
+  if (archived.status !== 0) throw new ProofError(`git archive ${tree} failed: ${archived.stderr.trim()}`);
+  const extracted = await runCaptured("tar", ["-x", "-f", archive, "-C", copy], root, env);
   if (extracted.status !== 0) throw new ProofError(`tar could not extract the template: ${extracted.stderr.trim()}`);
   fs.rmSync(archive);
-  for (const args of [["init", "-q"], ["add", "-A"], ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "as copied"]]) {
-    const result = runCaptured("git", args, copy, env);
+  const commit = ["-c", "commit.gpgsign=false", "-c", "user.name=live-create", "-c", "user.email=live-create@localhost"];
+  for (const args of [["init", "-q"], ["add", "-A"], [...commit, "commit", "-q", "-m", "as copied"]]) {
+    const result = await runCaptured("git", args, copy, env);
     if (result.status !== 0) throw new ProofError(`git ${args.join(" ")} failed in the copy: ${result.stderr.trim()}`);
   }
 }
@@ -418,6 +476,7 @@ async function provePage(copy, spec, env) {
       stdio: "inherit",
       timeout: STEP_TIMEOUT_MS,
     });
+    await settle();
     if (playwright.error !== undefined) failures.push(`playwright could not run: ${playwright.error.message}`);
     else if (playwright.status !== 0) failures.push(`e2e/home.spec.ts failed (exit ${playwright.status ?? playwright.signal})`);
     return { failures, said: `serves ${JSON.stringify(title)} with the method's form` };
@@ -427,18 +486,18 @@ async function provePage(copy, spec, env) {
 }
 
 /** The created command: its help offers the method's input, and one run prints its result and its report. */
-function proveCommand(copy, command, env) {
+async function proveCommand(copy, command, env) {
   const run = CLI_RUNS[command];
   if (run === undefined) {
     return { failures: [`no run is recorded for the command ${command}: add one to CLI_RUNS in scripts/live-create.mjs`], said: "" };
   }
   const failures = [];
   const bin = path.join(copy, ".venv", "bin", command);
-  const help = runCaptured(bin, ["--help"], copy, env);
+  const help = await runCaptured(bin, ["--help"], copy, env);
   if (help.status !== 0) failures.push(`${command} --help exited ${help.status}:\n${help.stderr}`);
   else if (!help.stdout.includes(run.option)) failures.push(`${command} --help does not list ${run.option}:\n${help.stdout}`);
   console.log(`── ${command} ${run.args.join(" ")}`);
-  const result = runCaptured(bin, run.args, copy, env, RUN_TIMEOUT_MS);
+  const result = await runCaptured(bin, run.args, copy, env, RUN_TIMEOUT_MS);
   process.stderr.write(result.stderr);
   let said = "";
   if (result.status !== 0) {
@@ -458,17 +517,18 @@ function proveCommand(copy, command, env) {
 }
 
 /** One proof: the template copied, the gesture run with `method`, the copy checked. */
-async function prove({ root, template, spec, method, env, baseUrl }) {
+async function prove({ root, tree, template, spec, method, env, baseUrl }) {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "live-create-"));
   const copy = path.join(parent, "proof");
   const label = `${template}, METHOD=${method}`;
   console.log(`\n── ${label}, in a fresh copy at ${copy}`);
+  proofInProgress = parent;
   const failures = [];
   const said = [];
   try {
-    copyTemplate(root, template, copy, env);
-    if (spec.install !== null) runShown(spec.install[0], spec.install.slice(1), copy, env);
-    runShown("make", ["create", `METHOD=${method}`], copy, env);
+    await copyTemplate(root, tree, copy, env);
+    if (spec.install !== null) await runShown(spec.install[0], spec.install.slice(1), copy, env);
+    await runShown("make", ["create", `METHOD=${method}`], copy, env);
     failures.push(...checkPaths(copy, spec), ...checkEnvFile(copy, spec.envFile, baseUrl));
     if (spec.kind === "webapp") {
       const identity = checkWebappIdentity(copy, spec);
@@ -482,7 +542,7 @@ async function prove({ root, template, spec, method, env, baseUrl }) {
       failures.push(...identity.failures);
       if (identity.command !== undefined) {
         said.push(`named ${identity.command}`);
-        const command = proveCommand(copy, identity.command, env);
+        const command = await proveCommand(copy, identity.command, env);
         failures.push(...command.failures);
         said.push(command.said);
       }
@@ -492,6 +552,7 @@ async function prove({ root, template, spec, method, env, baseUrl }) {
     // manifest the gesture left unreadable, ends it too, with its stack, rather than the run.
     failures.push(error instanceof ProofError ? error.message : `the proof stopped on ${error.stack ?? error}`);
   }
+  proofInProgress = null;
   if (failures.length === 0) {
     fs.rmSync(parent, { recursive: true, force: true });
     console.log(`✓ ${label}: ${said.filter(Boolean).join(", ")}`);
@@ -529,14 +590,28 @@ export async function main(argv, { env = process.env, root = ROOT } = {}) {
     return 2;
   }
   const spec = TEMPLATES[args.template];
-  const head = runCaptured("git", ["-C", root, "rev-parse", "--short", "HEAD"], root, env).stdout.trim();
-  const dirty = runCaptured("git", ["-C", root, "status", "--porcelain", "--", args.template], root, env).stdout.trim();
-  console.log(`Proving ${args.template} as HEAD (${head}) holds it, against ${shownUrl(baseUrl)}.`);
-  if (dirty !== "") console.log(`Note: ${args.template} has changes HEAD does not hold, which the copies leave out; commit them to prove them.`);
   const commandEnv = childEnv(env);
+  let tree;
+  try {
+    tree = await templateTree(root, args.template, commandEnv);
+  } catch (error) {
+    if (!(error instanceof ProofError)) throw error;
+    console.error(`live-create: ${error.message}`);
+    return 2;
+  }
+  const head = (await runCaptured("git", ["-C", root, "rev-parse", "--short", "HEAD"], root, env)).stdout.trim();
+  const headTree = (await runCaptured("git", ["-C", root, "rev-parse", `HEAD:${args.template}`], root, env)).stdout.trim();
+  if (tree === headTree) {
+    console.log(`Proving ${args.template} as HEAD (${head}) holds it, against ${shownUrl(baseUrl)}.`);
+  } else {
+    console.log(
+      `Proving ${args.template} as this checkout holds it, with changes HEAD (${head}) does not hold, against ` +
+        `${shownUrl(baseUrl)}. A release ships what HEAD holds, so commit them before a release's proofs.`,
+    );
+  }
   const verdicts = [];
   for (const method of args.methods) {
-    verdicts.push(await prove({ root, template: args.template, spec, method, env: commandEnv, baseUrl }));
+    verdicts.push(await prove({ root, tree, template: args.template, spec, method, env: commandEnv, baseUrl }));
   }
   const failed = verdicts.filter((ok) => !ok).length;
   console.log(failed === 0 ? `\nEvery create proof of ${args.template} passed.` : `\n${failed} of the create proofs of ${args.template} failed.`);
@@ -544,10 +619,7 @@ export async function main(argv, { env = process.env, root = ROOT } = {}) {
 }
 
 if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.once("SIGINT", () => {
-    stopServersNow();
-    process.exit(130);
-  });
+  stopOnSignals();
   process.once("exit", stopServersNow);
   main(process.argv.slice(2)).then(
     (code) => {

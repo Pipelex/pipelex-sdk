@@ -245,8 +245,8 @@ local-status: ## Say, for every template, whether its Pipelex packages are local
 # - starter-python's tests run through pytest directly, since the template's Makefile includes
 #   its `.env` over the environment; its conftest loads `.env` without overriding a variable
 #   already set.
-# - The create proofs run in fresh copies of a template as HEAD holds it, made by
-#   scripts/live-create.mjs, which no env file of this checkout reaches (docs/live-create-proofs.md).
+# - The create proofs run in fresh copies of what git tracks or would track in a template, made
+#   by scripts/live-create.mjs, which no env file of this checkout reaches (docs/live-create-proofs.md).
 LIVE_STARTERS := starter-js starter-python
 LIVE_STARTER_RUN = test-account run pipelex-sdk-starters -- make live-starter IN=$(in_dir)
 # The method-app templates with a live suite of their own: cli-python has none, and the run in

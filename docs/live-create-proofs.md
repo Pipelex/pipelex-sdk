@@ -22,13 +22,15 @@ test-account run dev-sdk.builder -- make live-create IN=method-apps/cli-python
 
 `METHOD=<method>` takes one proof instead, with any method `make create` accepts, read from the copy's directory when it is a path. A created command's run needs its arguments, which `scripts/live-create.mjs` records by the command's name, so a `cli-python` proof of another method first adds them to its `CLI_RUNS`.
 
-The proofs read the key from the environment `test-account run` hands them, and never from an env file of this checkout or from the shell that started them: `test-account run` takes every Pipelex credential out of the environment before it hands over its own, and a copy is made from git, so no `.env.local` or `.env` of the checkout is in it.
+The proofs read the key from the environment `test-account run` hands them, and never from an env file of this checkout or from the shell that started them: `test-account run` takes every Pipelex credential out of the environment before it hands over its own, and a copy holds only what git tracks or would track, so no `.env.local` or `.env` of the checkout, both of which the templates' `.gitignore` names, is in it.
 
 ## A fresh copy of a template
 
-Each proof runs in a fresh copy of the template, never in the checkout or the worktree itself. `scripts/live-create.mjs` writes the template as `HEAD` holds it, through `git archive`, into a new temporary directory, gives it a repository of its own with a first commit, as a project starts, and runs every command there with the environment it was started with, less the root make's own variables and the template's `APP_HOST` and `APP_PORT`, and with `DO_NOT_TRACK=1`. A release ships what `HEAD` holds, so commit the work first; the script says so when the template has changes `HEAD` does not hold.
+Each proof runs in a fresh copy of the template, never in the checkout or the worktree itself. `scripts/live-create.mjs` takes the template as the checkout holds it: its tracked files with their uncommitted changes, and its untracked files git does not ignore, so never an env file or an install. The bump skills take the proofs before they commit, so `HEAD` alone would prove the template they started from. The script builds that tree in a git index of its own, which leaves the checkout's untouched, writes it through `git archive` into a new temporary directory, gives the copy a repository of its own with a first commit, as a project starts, and runs every command there with the environment it was started with, less the root make's own variables and the template's `APP_HOST` and `APP_PORT`, and with `DO_NOT_TRACK=1`. A release ships what `HEAD` holds, so the script's first line says whether the copies hold changes `HEAD` does not, and a release's proofs are taken once they are committed.
 
 A proof that passes removes its copy. One that fails lists each check that failed and keeps its copy, naming the directory, so it can be read and then removed. A proof stops at the first command that fails, so a gesture that fails is reported with its own output above the verdict.
+
+A Ctrl-C stops the whole run, never only the command it reached: the next step does not start, so neither does the next proof and the model calls it would spend. A SIGTERM or a SIGHUP, as when the terminal closes, stops it the same way. Either way the web app's dev server is stopped and the copy of the proof in progress is kept and named.
 
 ## What `webapp-js`'s proof checks
 

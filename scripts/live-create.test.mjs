@@ -4,16 +4,19 @@
 // root has no dependencies.
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   API_KEY_ENV,
   BASE_URL_ENV,
   CLI_RUNS,
   ROOT,
+  STOP_SIGNALS,
   TEMPLATES,
   checkCliIdentity,
   checkEnvFile,
@@ -21,12 +24,14 @@ import {
   checkPaths,
   checkWebappIdentity,
   childEnv,
+  copyTemplate,
   envAssignments,
   filesHolding,
   main,
   parseArgs,
   pyprojectIdentity,
   shownUrl,
+  templateTree,
 } from "./live-create.mjs";
 
 const BASE_URL = "https://api-dev.pipelex.com";
@@ -286,4 +291,78 @@ describe("the table of templates", () => {
       for (const arg of args.filter((a) => path.isAbsolute(a))) assert.ok(fs.existsSync(arg), arg);
     }
   });
+});
+
+/** A git environment of its own: no system or user configuration, and an author given where needed. */
+function gitEnv(extra = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "live-create-test-home-"));
+  dirs.push(home);
+  return { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(home, "gitconfig"), ...extra };
+}
+
+function git(cwd, env, ...args) {
+  const result = spawnSync("git", args, { cwd, env, encoding: "utf-8" });
+  assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);
+  return result.stdout;
+}
+
+/** A repository whose `tpl/` is committed, then changed: one file edited, one added, an env file beside them. */
+function checkoutWithChanges() {
+  const repo = copyOf({ "tpl/kept.txt": "as committed\n", "tpl/.gitignore": ".env.local\n", "other.txt": "outside\n" }, 0o644);
+  const env = gitEnv();
+  git(repo, env, "init", "-q");
+  git(repo, env, "add", "-A");
+  git(repo, env, "-c", "user.name=test", "-c", "user.email=test@localhost", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base");
+  return { repo, env };
+}
+
+describe("the template a proof copies", () => {
+  it("is the template as HEAD holds it when the checkout holds no change", async () => {
+    const { repo, env } = checkoutWithChanges();
+    assert.equal(await templateTree(repo, "tpl", env), git(repo, env, "rev-parse", "HEAD:tpl").trim());
+  });
+
+  it("holds the checkout's uncommitted changes and untracked files, never an ignored one, and leaves its index alone", async () => {
+    const { repo, env } = checkoutWithChanges();
+    fs.writeFileSync(path.join(repo, "tpl", "kept.txt"), "as bumped\n");
+    fs.writeFileSync(path.join(repo, "tpl", "added.txt"), "new\n");
+    fs.writeFileSync(path.join(repo, "tpl", ".env.local"), "PIPELEX_API_KEY=never-copied\n");
+    const status = git(repo, env, "status", "--porcelain");
+    const tree = await templateTree(repo, "tpl", env);
+    assert.notEqual(tree, git(repo, env, "rev-parse", "HEAD:tpl").trim());
+    assert.equal(git(repo, env, "status", "--porcelain"), status);
+
+    // A machine may give git no author at all outside the repositories it configures.
+    const strict = gitEnv();
+    fs.writeFileSync(strict.GIT_CONFIG_GLOBAL, "[user]\n\tuseConfigOnly = true\n");
+    const copy = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "live-create-test-copy-")), "proof");
+    dirs.push(path.dirname(copy));
+    await copyTemplate(repo, tree, copy, strict);
+    assert.deepEqual(fs.readdirSync(copy).sort(), [".git", ".gitignore", "added.txt", "kept.txt"]);
+    assert.equal(fs.readFileSync(path.join(copy, "kept.txt"), "utf-8"), "as bumped\n");
+    assert.equal(git(copy, strict, "status", "--porcelain"), "");
+    assert.equal(git(copy, strict, "log", "--format=%an %s").trim(), "live-create as copied");
+  });
+});
+
+describe("a signal while a step's command runs", () => {
+  const script = pathToFileURL(path.join(ROOT, "scripts", "live-create.mjs")).href;
+  for (const [signal, code] of Object.entries(STOP_SIGNALS)) {
+    it(`stops the run on ${signal} before the next step, with ${code}`, () => {
+      // A terminal's Ctrl-C reaches the step's command and this process together; the command
+      // here signals its parent, which is the same ordering.
+      const program = [
+        'import { spawnSync } from "node:child_process";',
+        `import { settle, stopOnSignals } from ${JSON.stringify(script)};`,
+        'stopOnSignals({ onStop: () => console.log("servers stopped") });',
+        `spawnSync("sh", ["-c", "kill -${signal.slice(3)} $PPID; sleep 0.2"]);`,
+        "await settle();",
+        'console.log("next step");',
+      ].join("\n");
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", program], { encoding: "utf-8" });
+      assert.equal(result.status, code, result.stderr);
+      assert.equal(result.stdout, "servers stopped\n");
+      assert.match(result.stderr, new RegExp(`stopped by ${signal}`));
+    });
+  }
 });

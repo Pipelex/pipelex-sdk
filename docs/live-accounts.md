@@ -54,7 +54,7 @@ A key parked in an env file must never silently replace the one `test-account ru
 - `make live-starter`, `make live-method-app` and `make live-create` hand the suite or the proof `PIPELEX_BASE_URL` set to the URL the check decided on, the production default included, so no template's env file can point it at a plane the check never saw.
 - `starter-js` and `webapp-js` load `.env.local` the way Next.js does, which never overrides a variable already set. `make live-starter` and `make live-method-app` first refuse a port anything already listens on, since Playwright reuses a server it finds there whatever key it holds, then run the suite with `ALLOW_OWN` empty, so Playwright starts the template's own dev server with the handed key. `webapp-js`'s result-tile spec creates an app of its own from a copy of the template that leaves out `.env` and `.env.local`, and runs it with the same environment.
 - `starter-python`'s `Makefile` includes its `.env` over the environment, so `make live-starter` runs its tests through pytest directly; its `conftest.py` loads `.env` without overriding a variable already set.
-- The create proofs run in copies made from git, which hold no env file of the checkout. The gesture writes the copy's own env file with an empty key line, which the proof checks, and the created web app and command load it without overriding the handed key.
+- The create proofs run in copies of what git tracks or would track in the template, which hold no env file of the checkout, since the templates' `.gitignore` names both. The gesture writes the copy's own env file with an empty key line, which the proof checks, and the created web app and command load it without overriding the handed key.
 
 ## The stored method the `method_id` cases need
 
