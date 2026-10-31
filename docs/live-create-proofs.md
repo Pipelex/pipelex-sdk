@@ -29,7 +29,7 @@ The gesture runs `make all` itself, so a red check fails the run. Then check tha
 
 - `package.json` no longer carries the template's name;
 - the bootstrap skill, `scripts/create.mts` and `docs/create.md` are gone;
-- `.env.local` holds exactly one `PIPELEX_BASE_URL` line, the one the run used;
+- `.env.local` holds exactly one `PIPELEX_BASE_URL` line, the one the run used, and an empty `PIPELEX_API_KEY` line, never the key the run used;
 - `make dev` serves a page titled after the method, showing its form, which `npx playwright test e2e/home.spec.ts` also checks.
 
 The run executes no method, so it spends no model call.

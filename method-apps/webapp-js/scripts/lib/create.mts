@@ -6,7 +6,8 @@
  * name. This gesture takes the method the person has — a bundle path, a catalog
  * id or a published address — and leaves the app for it: the method scaffolded
  * by `add-method`, the project named after the method by the bootstrap, an env
- * file written from the shell, and `make all` green. Everything is decided by
+ * file naming the base URL the gesture ran against, and `make all` green. The
+ * key the gesture runs with is never copied into a file. Everything is decided by
  * this script; nothing asks a question. A value that cannot be derived is a
  * refusal naming the flag that supplies it.
  *
@@ -245,7 +246,11 @@ export interface ShellEnv {
   key?: string;
 }
 
-/** The env file each value was read from, when the shell did not set it. */
+/**
+ * The env file that supplies each value: for the base URL, only when the shell
+ * did not set it; for the key, whether or not the shell set it, since the key
+ * a file holds is the one the project reads once the shell is gone.
+ */
 export interface EnvFiles {
   baseUrl?: string;
   key?: string;
@@ -255,16 +260,17 @@ export interface EnvFiles {
 export interface EnvValues {
   /** The base URL the gesture ran against, whatever set it. */
   baseUrl: string;
-  /** The key, when the shell set it. */
-  key?: string;
-  /** The env file the key was read from, when the shell did not set it. */
+  /** The env file that supplies the key, when one does. */
   keyFile?: string;
 }
 
-/** What the gesture does about `.env.local`. */
+/**
+ * What the gesture does about `.env.local`. A written file whose key line is
+ * empty sets `keyNeeded`, so the closing lines can say where the key goes.
+ */
 export type EnvPlan =
   | { action: "keep"; notes: string[] }
-  | { action: "write"; content: string; notes: string[] };
+  | { action: "write"; content: string; notes: string[]; keyNeeded: boolean };
 
 const BASE_URL_KEY = "PIPELEX_BASE_URL";
 const API_KEY_KEY = "PIPELEX_API_KEY";
@@ -357,15 +363,17 @@ const DEV_KEY_HINT = "put it in .env or .env.development.local before `make dev`
  * assign what another file supplied, or it hides it:
  *
  * - the base URL is always the one the gesture ran against, on exactly one line;
- * - the key is copied when the shell set it; when it came from another env file,
- *   the line is left out so that file keeps supplying it, and the secret is not
- *   copied; otherwise the example's empty line stays.
+ * - the key is never copied, not even the one the shell exports, which is
+ *   whichever key was exported last, often one of another organization: when
+ *   another env file supplies a key, the line is left out so that file keeps
+ *   supplying it; otherwise the key line is written empty, for the person's
+ *   own key.
  */
 export function renderEnvFile(example: string | null, values: EnvValues): string {
   let text = setEnvLine(example ?? MINIMAL_ENV, BASE_URL_KEY, values.baseUrl);
-  if (values.key !== undefined) {
-    text = setEnvLine(text, API_KEY_KEY, values.key);
-  } else if (values.keyFile !== undefined) {
+  if (values.keyFile === undefined) {
+    text = setEnvLine(text, API_KEY_KEY, "");
+  } else {
     const comment = devServerReads(values.keyFile)
       ? `${API_KEY_KEY} is read from ${values.keyFile}; a line here would override it.`
       : `${API_KEY_KEY} is read from ${values.keyFile} by a production build only — ` +
@@ -404,8 +412,8 @@ export async function planEnvFile(
 
   const examplePath = path.join(repoRoot, ENV_EXAMPLE);
   const example = existsSync(examplePath) ? await readFile(examplePath, "utf-8") : null;
-  const keyFile = shell.key === undefined ? files.key : undefined;
-  const content = renderEnvFile(example, { baseUrl: effectiveBaseUrl, key: shell.key, keyFile });
+  const keyFile = files.key;
+  const content = renderEnvFile(example, { baseUrl: effectiveBaseUrl, keyFile });
   const baseOrigin =
     shell.baseUrl !== undefined
       ? "from your shell"
@@ -413,18 +421,19 @@ export async function planEnvFile(
         ? `from ${files.baseUrl}`
         : "the default";
   const keyNote =
-    shell.key !== undefined
-      ? `, and ${API_KEY_KEY} from your shell.`
-      : keyFile === undefined
-        ? `, and an empty ${API_KEY_KEY} — set one before \`make dev\`.`
-        : devServerReads(keyFile)
-          ? `, and no ${API_KEY_KEY} line: the key stays in ${keyFile}, which a line here would hide.`
-          : `, and no ${API_KEY_KEY} line: the key stays in ${keyFile}, which only a production ` +
-            `build reads — ${DEV_KEY_HINT}.`;
+    keyFile === undefined
+      ? `, and an empty ${API_KEY_KEY} line: put your own key there before \`make dev\`` +
+        (shell.key !== undefined
+          ? ". The key your shell exports is used for this run only, and never copied."
+          : ".")
+      : devServerReads(keyFile)
+        ? `, and no ${API_KEY_KEY} line: the key stays in ${keyFile}, which a line here would hide.`
+        : `, and no ${API_KEY_KEY} line: the key stays in ${keyFile}, which only a production ` +
+          `build reads — ${DEV_KEY_HINT}.`;
   const notes = [
     `${ENV_FILE} is written with ${BASE_URL_KEY}=${effectiveBaseUrl} (${baseOrigin})${keyNote}`,
   ];
-  return { action: "write", content, notes };
+  return { action: "write", content, notes, keyNeeded: keyFile === undefined };
 }
 
 // ── The orchestration ───────────────────────────────────────────────────────
@@ -527,9 +536,10 @@ export const runInherited: RunCommand = (command, args, cwd) => {
 
 /**
  * The deps a real run uses. The shell's own values are read first, because the
- * env files loaded next would otherwise be indistinguishable from them — and
- * the gesture copies a key only from the shell. For a value the shell did not
- * set, the file it came from is recorded, so `.env.local` does not hide it.
+ * env files loaded next would otherwise be indistinguishable from them. For a
+ * base URL the shell did not set, and for any key a file holds, the file it
+ * came from is recorded, so `.env.local` does not hide it. The key itself is
+ * only ever used for the run, never written.
  */
 export function resolveCreateDeps(repoRoot: string = REPO_ROOT): CreateDeps {
   const shell: ShellEnv = {
@@ -548,12 +558,12 @@ export function resolveCreateDeps(repoRoot: string = REPO_ROOT): CreateDeps {
   };
   const envFiles: EnvFiles = {
     baseUrl: shell.baseUrl === undefined ? fileOf(BASE_URL_KEY) : undefined,
-    key: shell.key === undefined ? fileOf(API_KEY_KEY) : undefined,
+    key: fileOf(API_KEY_KEY),
   };
   if (!process.env.PIPELEX_API_KEY) {
     throw new CreateError(
-      `${API_KEY_KEY} is not set. Export it in your shell — create copies it into ${ENV_FILE} ` +
-        `— or put it in ${ENV_FILE} yourself.`,
+      `${API_KEY_KEY} is not set. Put your own key in ${ENV_FILE} or .env, or export it in ` +
+        "your shell for this run: create reads it from either, and never copies it into a file.",
     );
   }
   const npmExecPath = process.env.npm_execpath;
@@ -681,6 +691,13 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
       `create: done — ${identity.title} (${identity.name}) runs ${plan.describe}.`,
       "",
       "Nothing is committed: review with `git status` and `git diff`, then commit.",
+      ...(envPlan.action === "write" && envPlan.keyNeeded
+        ? [
+            "",
+            `Put your own ${API_KEY_KEY} in ${ENV_FILE} before \`make dev\`: create never copies ` +
+              "the key your shell exports into the project.",
+          ]
+        : []),
       "",
       "Next:",
       `  make dev                  # ${appUrl(process.env)}`,
