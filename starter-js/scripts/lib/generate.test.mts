@@ -277,7 +277,7 @@ describe("generateMethod", () => {
   const SELECTOR_SOURCE: MethodSource = {
     name: "demo",
     kind: "selector",
-    selector: { method_ref: "github.com/Pipelex/methods/text_stats@v0.1.1" },
+    selector: { method_ref: "github.com/Pipelex/methods/text_stats@v0.2.0" },
     sourceHashes: { "methods/demo/method.json": "abc123" },
   };
 
@@ -372,12 +372,12 @@ describe("generateMethod", () => {
 
     expect(await generateMethod(client, SELECTOR_SOURCE, outDir, "https://api.example")).toBe("ok");
     expect(client.codegen).toHaveBeenCalledWith({
-      method_ref: "github.com/Pipelex/methods/text_stats@v0.1.1",
+      method_ref: "github.com/Pipelex/methods/text_stats@v0.2.0",
       kind: "types",
       target: "ts-zod",
     });
     expect(client.pipeIo).toHaveBeenCalledWith({
-      method_ref: "github.com/Pipelex/methods/text_stats@v0.1.1",
+      method_ref: "github.com/Pipelex/methods/text_stats@v0.2.0",
       all_pipes: true,
       include_files: true,
     });

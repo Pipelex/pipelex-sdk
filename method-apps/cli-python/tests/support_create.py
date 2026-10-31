@@ -2,10 +2,10 @@
 
 The responses under `fixtures/recorded/` are real and complete, stamps included, so nothing in the
 SDK is mocked: the codegen kit's self-check and the offline check that follows run as they do for
-real. They were recorded from the hosted API on 2026-10-06, for the bundle in
-`fixtures/bundles/receipt-review/` (a list of documents in, a list of records out) and for the
-published method `github.com/Pipelex/methods/text_stats@v0.1.1` (a text in, a text out), with the
-requests the gesture sends. A catalog id is answered with the published method's responses and a
+real. They were recorded from the hosted API with the requests the gesture sends, on 2026-10-06 for
+the bundle in `fixtures/bundles/receipt-review/` (a list of documents in, a list of records out),
+and on 2026-10-31 for the published method `github.com/Pipelex/methods/text_stats@v0.2.0` (a text
+in, a text out). A catalog id is answered with the published method's responses and a
 catalog entry made up for the tests, since a stored method belongs to one organization.
 """
 
@@ -28,7 +28,7 @@ RECORDED = FIXTURES / "recorded"
 RECEIPT_REVIEW_BUNDLE = FIXTURES / "bundles" / "receipt-review"
 
 #: The published method the address and catalog-id responses describe.
-TEXT_STATS_REF = "github.com/Pipelex/methods/text_stats@v0.1.1"
+TEXT_STATS_REF = "github.com/Pipelex/methods/text_stats@v0.2.0"
 
 #: A catalog id no organization holds, for the stored method the tests make up.
 STORED_METHOD_ID = "mt_00000000-0000-0000-0000-000000000000"

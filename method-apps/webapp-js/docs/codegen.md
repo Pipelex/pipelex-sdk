@@ -58,7 +58,7 @@ One generated tree per method, mirroring `methods/` one-to-one: each method is i
 A method directory says where its method lives, and there are two answers. It holds either **`.mthds` files** — the bundle is in this repo — or a **`method.json` manifest** naming a method that lives elsewhere:
 
 ```json
-{ "method_ref": "github.com/Pipelex/methods/text_stats@v0.1.1" }
+{ "method_ref": "github.com/Pipelex/methods/text_stats@v0.2.0" }
 ```
 
 Exactly one selector key, `method_ref` (a published package address) or `method_id` (a method saved under your key's organization), as a non-empty string; both keys, neither, an unknown key, or a non-string value is a refusal with no verdict, the way a non-UTF-8 source is. A directory holding **both** kinds is refused naming the two, because they would disagree about where the tree came from; a directory holding neither is skipped, as it always was.

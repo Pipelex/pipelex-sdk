@@ -447,8 +447,8 @@ describe("entry policy at the scanned roots", () => {
 describe("parseManifest", () => {
   it("reads an address manifest as a method_ref selector", () => {
     expect(
-      parseManifest('{"method_ref": "github.com/Pipelex/methods/text_stats@v0.1.1"}', "m"),
-    ).toEqual({ method_ref: "github.com/Pipelex/methods/text_stats@v0.1.1" });
+      parseManifest('{"method_ref": "github.com/Pipelex/methods/text_stats@v0.2.0"}', "m"),
+    ).toEqual({ method_ref: "github.com/Pipelex/methods/text_stats@v0.2.0" });
   });
 
   it("reads a catalog manifest as a method_id selector", () => {
@@ -504,7 +504,7 @@ describe("discoverMethods over the two source kinds", () => {
   }
 
   it("reads a manifest directory as a selector source hashing the manifest", async () => {
-    const body = '{"method_ref": "github.com/Pipelex/methods/text_stats@v0.1.1"}\n';
+    const body = '{"method_ref": "github.com/Pipelex/methods/text_stats@v0.2.0"}\n';
     await method("text-stats", { [MANIFEST_FILENAME]: body });
 
     const methods = await discoverMethods(fixtureDir);
@@ -512,7 +512,7 @@ describe("discoverMethods over the two source kinds", () => {
       {
         name: "text-stats",
         kind: "selector",
-        selector: { method_ref: "github.com/Pipelex/methods/text_stats@v0.1.1" },
+        selector: { method_ref: "github.com/Pipelex/methods/text_stats@v0.2.0" },
         sourceHashes: { "methods/text-stats/method.json": hashSource(body) },
       },
     ]);

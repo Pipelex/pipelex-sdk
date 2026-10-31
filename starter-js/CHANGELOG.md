@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The "Text stats" example runs on today's engines**: `methods/text-stats/method.json` names `github.com/Pipelex/methods/text_stats@v0.2.0`, whose `PipeFunc` names its function by its import path, where `text_stats@v0.1.1`'s flat function name is refused by every engine from pipelex 0.87.0 on, so the tab's run, `make codegen` and `make codegen-verify` all failed on it. Its generated tree is regenerated from the new release, and the docs' published-method examples of `make add-method` name it too.
+
 ## [v0.54.0] - 2026-10-25
 
 ### Changed

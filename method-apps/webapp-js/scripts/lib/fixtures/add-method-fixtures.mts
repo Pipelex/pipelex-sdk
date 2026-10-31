@@ -3,13 +3,15 @@
  *
  * Data, never re-fetched: every value below was measured live on 2026-09-05
  * against `api-dev.pipelex.com` (hosted 0.11.2, engine 0.56.0) and is recorded
- * in the campaign's `measurements.md`. A test that fetched instead would need a
- * key, would cost a round trip, and would go red for a reason that has nothing
- * to do with the code under test.
+ * in the campaign's `measurements.md`, except `text_stats`'s lock, re-recorded
+ * there on 2026-10-31 (hosted 0.83.0, engine 0.95.1) when the template moved to
+ * `text_stats@v0.2.0`. A test that fetched instead would need a key, would cost
+ * a round trip, and would go red for a reason that has nothing to do with the
+ * code under test.
  *
  * The two methods cover the two shapes the scaffold has to handle:
  *
- *  - `github.com/Pipelex/methods/text_stats@v0.1.1` — one pipe, one prose
+ *  - `github.com/Pipelex/methods/text_stats@v0.2.0` — one pipe, one prose
  *    input, a single `native.Text` output. The template's shipped slice.
  *  - `github.com/Pipelex/methods/documents` — several pipes and NO
  *    bundle-level `main_pipe`, a `document` file input, and a plural
@@ -104,14 +106,14 @@ export const TEXT_STATS_OUTPUT_FORM = {
 } as OutputForm;
 
 /**
- * The lock the codegen route returned for `text_stats@v0.1.1`, verbatim.
+ * The lock the codegen route returned for `text_stats@v0.2.0`, verbatim.
  * `crate_fingerprint` is the semantic signal the trust chain turns on.
  */
 export const TEXT_STATS_LOCK = `# codegen.lock — generated artifact set (Pipelex codegen). Do not edit by hand.
 
 lock_version = 1
-crate_fingerprint = "28f776a299e6ab8d2c14fafae459f5daa50bd030ee1191d149e566f0f37d38e2"
-engine_version = "0.56.0"
+crate_fingerprint = "22f8287185c2e84e7d63771b7223da96668e0da787a1dc5895ce6fba854dcc50"
+engine_version = "0.95.1"
 
 [[artifacts]]
 path = "binder.ts"

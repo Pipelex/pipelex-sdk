@@ -55,7 +55,7 @@ const RECEIPTS_DIR = path.join(
   "bundles",
   "receipt-review",
 );
-const TEXT_STATS_REF = "github.com/Pipelex/methods/text_stats@v0.1.1";
+const TEXT_STATS_REF = "github.com/Pipelex/methods/text_stats@v0.2.0";
 const STORED_ID = "mt_00000000-0000-0000-0000-000000000000";
 
 // ── The command line ────────────────────────────────────────────────────────

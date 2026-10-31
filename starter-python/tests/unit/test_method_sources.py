@@ -37,7 +37,7 @@ def load_codegen() -> Any:
 
 codegen = load_codegen()
 
-ADDRESS = "github.com/Pipelex/methods/text_stats@v0.1.1"
+ADDRESS = "github.com/Pipelex/methods/text_stats@v0.2.0"
 
 
 class TestMethodSources:

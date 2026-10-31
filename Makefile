@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install hooks agent-check agent-test workflows check-workflows shared-files check-shared-files lint-workflows install-linters check-versions check-release-versions release-selection test-scripts live-starter live-method-app live-create
+.PHONY: help install hooks agent-check agent-test workflows check-workflows shared-files check-shared-files lint-workflows install-linters check-versions check-release-versions release-selection test-scripts live-starter live-method-app live-codegen-verify live-create
 
 # The root gate. Each package directory is a project of its own, with its own Makefile,
 # manifest and lockfile, installed from the registries exactly as its standalone repository
@@ -217,15 +217,17 @@ local-status: ## Say, for every template, whether its Pipelex packages are local
 
 # ── The templates' live checks and proofs ──────────────────────────────────────────────────
 # Some of the templates' checks call the hosted API: starter-js's and method-apps/webapp-js's
-# `make test-e2e`, their Playwright specs, starter-python's tests marked `pipelex_api`, and the
-# live proofs of the method-app templates' `make create`. In a project made from a template they
-# run on the person's own key, which is the template's to say. Here they run as a registered test
-# account, QA Builder in QA SDK (dev), whose key the workspace's `test-account run` hands over
-# beside what the registry expects of it, with PIPELEX_BASE_URL naming the dev plane
-# (docs/live-accounts.md):
+# `make test-e2e`, their Playwright specs, starter-python's tests marked `pipelex_api`, the
+# JavaScript templates' `make codegen-verify`, which asks the engine whether each committed
+# generated tree is still what its method resolves to, and the live proofs of the method-app
+# templates' `make create`. In a project made from a template they run on the person's own key,
+# which is the template's to say. Here they run as a registered test account, QA Builder in QA SDK
+# (dev), whose key the workspace's `test-account run` hands over beside what the registry expects
+# of it, with PIPELEX_BASE_URL naming the dev plane (docs/live-accounts.md):
 #
 #     test-account run pipelex-sdk-starters -- make live-starter IN=starter-js
 #     test-account run dev-sdk.builder -- make live-method-app IN=method-apps/webapp-js
+#     test-account run dev-sdk.builder -- make live-codegen-verify
 #     test-account run dev-sdk.builder -- make live-create IN=method-apps/cli-python
 #
 # Before anything else starts, python/'s account check reads `/v1/me` with the key and stops on
@@ -241,7 +243,8 @@ local-status: ## Say, for every template, whether its Pipelex packages are local
 #   this checkout started earlier, and the target first refuses a port anything already listens
 #   on: Playwright reuses a server it finds there, whatever key it holds, and the port-check
 #   cannot see every listener (none without lsof, nor one another user owns). Both JavaScript
-#   templates load `.env.local` the way Next.js does, which never overrides a variable set.
+#   templates load `.env.local` the way Next.js does, which never overrides a variable set, and
+#   their codegen scripts load it the same way.
 # - starter-python's tests run through pytest directly, since the template's Makefile includes
 #   its `.env` over the environment; its conftest loads `.env` without overriding a variable
 #   already set.
@@ -253,6 +256,12 @@ LIVE_STARTER_RUN = test-account run pipelex-sdk-starters -- make live-starter IN
 # its create proof takes its place.
 LIVE_METHOD_APPS := method-apps/webapp-js
 LIVE_METHOD_APP_RUN = test-account run dev-sdk.builder -- make live-method-app IN=$(in_dir)
+# The templates with a `make codegen-verify`: every JavaScript template, IN narrowing them as it
+# narrows the switch. One whose methods/ holds no method, as method-apps/webapp-js ships, has no
+# committed tree to verify, and its create proofs run its codegen against today's engine instead.
+LIVE_CODEGEN_TEMPLATES := $(JS_TEMPLATES)
+LIVE_CODEGEN_RUN = test-account run dev-sdk.builder -- make live-codegen-verify$(if $(in_dir), IN=$(in_dir))
+live_codegen = $(call narrowed,$(LIVE_CODEGEN_TEMPLATES))
 LIVE_CREATE_TEMPLATES := method-apps/webapp-js method-apps/cli-python
 LIVE_CREATE_RUN = test-account run dev-sdk.builder -- make live-create IN=$(in_dir)
 # The templates' default plane, which their SDK calls when PIPELEX_BASE_URL is unset.
@@ -301,6 +310,39 @@ live-method-app: ## Run a method-app template's live checks as the registered te
 	@$(live_base_url); \
 	$(call live_port_free,$(in_dir)); \
 	$(MAKE) --no-print-directory -C "$(in_dir)" test-e2e ALLOW_OWN=
+
+# $(call holds_method,<template>): whether the template's methods/ holds what its codegen scripts
+# read as a method or refuse, by their rule (discoverMethods in its scripts/lib/shared.mts): a
+# directory holding a method.json at its root or a .mthds file at any depth, or anything below
+# methods/ that is neither a plain file nor a directory, such as a symbolic link, which they refuse.
+# A plain file at methods/'s root, such as the README that method-apps/webapp-js ships alone, and a
+# directory holding neither, are no method, and the scripts skip both, as does a template with no
+# methods/ at all. A scan that fails, on a directory it cannot read, counts as holding a method, so
+# that the template's own codegen-verify, which refuses what it cannot read, gives the verdict.
+holds_method = ( [ -d "$(1)/methods" ] || exit 1; \
+	found=$$(find "$(1)/methods" -mindepth 1 ! -type f ! -type d && \
+		find "$(1)/methods" -mindepth 2 -maxdepth 2 -type f -name method.json && \
+		find "$(1)/methods" -mindepth 2 -type f -name '*.mthds') || exit 0; \
+	[ -n "$$found" ] )
+
+# The template's own `make codegen-verify` writes nothing and spends no model call, so nothing asks
+# first. It runs in each narrowed template that holds a method, all of them before the verdict, and
+# a run that verified no template fails rather than reading as a pass.
+live-codegen-verify: ## Ask the live engine whether each JavaScript template's committed generated trees are still current, as the registered test account, its account checked first (IN=<dir> to narrow; under test-account run)
+	@$(if $(live_codegen),:,echo "ERROR: IN=$(IN) names none of the templates with a codegen-verify: $(LIVE_CODEGEN_TEMPLATES)."; exit 2)
+	+@$(call live_account,$(LIVE_CODEGEN_RUN))
+	@$(live_base_url); failed=0; verified=0; \
+	for t in $(live_codegen); do \
+		if ! $(call holds_method,$$t); then \
+			echo "── $$t: its methods/ holds no method, so it has no generated tree to verify."; \
+			case " $(LIVE_CREATE_TEMPLATES) " in *" $$t "*) echo "   Its create proofs run its codegen against today's engine: make live-create IN=$$t." ;; esac; \
+			continue; \
+		fi; \
+		echo "── $$t: make codegen-verify"; verified=$$((verified + 1)); \
+		{ $(MAKE) --no-print-directory -C "$$t" install-if-missing && $(MAKE) --no-print-directory -C "$$t" codegen-verify; } || failed=1; \
+	done; \
+	if [ "$$verified" = 0 ]; then echo "ERROR: no template among $(live_codegen) holds a method, so nothing was verified."; exit 2; fi; \
+	exit $$failed
 
 # The create proofs of cli-python run each command they create once, which spends model calls,
 # so they ask first, as a template's own `make test-e2e` does: not in CI, not without a terminal,

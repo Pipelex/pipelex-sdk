@@ -282,7 +282,7 @@ class TestAttended:
         ]
 
     def test_a_manifest_names_the_method_instead_of_sending_it(self, fake_client: FakeClient):
-        address = "github.com/Pipelex/methods/text_stats@v0.1.1"
+        address = "github.com/Pipelex/methods/text_stats@v0.2.0"
         invoke(make_binding(source=MethodSource(method_ref=address)), [])
         assert fake_client.started[0]["method_ref"] == address
         assert fake_client.started[0]["contents"] is None

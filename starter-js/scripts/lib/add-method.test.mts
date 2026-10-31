@@ -89,7 +89,7 @@ vi.mock("@pipelex/sdk", async (importOriginal) => {
   return { ...actual, runCodegenCheck: vi.fn() };
 });
 
-const TEXT_STATS_REF = "github.com/Pipelex/methods/text_stats@v0.1.1";
+const TEXT_STATS_REF = "github.com/Pipelex/methods/text_stats@v0.2.0";
 
 // ── The selector ────────────────────────────────────────────────────────────
 
@@ -1096,8 +1096,8 @@ describe("runAddMethod", () => {
         artifacts: TEXT_STATS_ARTIFACTS,
         lock: TEXT_STATS_LOCK,
         lock_filename: "codegen.lock",
-        crate_fingerprint: "28f776a299e6ab8d2c14fafae459f5daa50bd030ee1191d149e566f0f37d38e2",
-        engine_version: "0.56.0",
+        crate_fingerprint: "22f8287185c2e84e7d63771b7223da96668e0da787a1dc5895ce6fba854dcc50",
+        engine_version: "0.95.1",
       }),
       pipeIo: vi.fn().mockResolvedValue(pipeIoAnswer()),
       ...overrides,
