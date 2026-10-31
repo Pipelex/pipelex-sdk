@@ -10,7 +10,9 @@
  * a refusal that says nothing about the SDK.
  *
  * Every file decides it through this one predicate, so the suite agrees with itself on what a
- * hosted plane is: any origin whose host is not this machine. The suite's runner is a local one
+ * hosted plane is: any origin whose host is not one of the loopback spellings `isLoopbackHost`
+ * knows. Another spelling of this machine, such as `0.0.0.0` or an IPv4-mapped `::ffff:127.0.0.1`,
+ * reads as hosted and skips the runner-only cases. The suite's runner is a local one
  * (`make -C ../../pipelex/api run`, the default `http://localhost:8081`), and every other origin
  * it is pointed at is a deployed plane, `api-dev.pipelex.com` above all.
  */

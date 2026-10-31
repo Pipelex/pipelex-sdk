@@ -2324,7 +2324,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
   // unexposed — see their section above for why that blocks nothing. `pipe-io` is
   // newer: a runner serves it from `pipelex-api` v0.33.0, and codes its selection
   // refusals `request.pipe_not_found`, `request.pipe_unspecified` and
-  // `request.pipe_ambiguous`, and the hosted plane serves it as well, measured on
+  // `request.pipe_ambiguous` from v0.90.0; the dev plane serves it too, measured on
   // api-dev.pipelex.com on 2026-10-31 (see `docs/crate-routes.md`).
   //
   // All three are STATIC routes (no dry-run sweep), so like every static sibling they

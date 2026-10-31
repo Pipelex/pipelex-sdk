@@ -1,7 +1,8 @@
 /**
  * The e2e suite's one predicate for "this origin is a hosted plane" (`tests/e2e/origin.ts`), which
- * decides whether the cases of a bare runner's routes run. Pins: every spelling of this machine is a
- * runner, every other host is a hosted plane, and a value that names no host is neither.
+ * decides whether the cases of a bare runner's routes run. Pins: the loopback spellings it knows
+ * (`localhost`, a subdomain of it, `127.x.x.x`, `::1`) are a runner, every other host is a hosted
+ * plane, and a value that names no host is neither.
  */
 
 import { describe, expect, it } from "vitest";
