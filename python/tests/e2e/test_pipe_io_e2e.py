@@ -4,7 +4,10 @@ Run it with `make e2e-test` against any API that serves the route — a local `p
 hosted platform:
 
     PIPELEX_E2E_BASE_URL=http://127.0.0.1:8082 make e2e-test
-    PIPELEX_E2E_BASE_URL=https://api-dev.pipelex.com PIPELEX_API_KEY=plx_sk_… PIPELEX_E2E_METHOD_ID=mt_… make e2e-test
+    PIPELEX_E2E_METHOD_ID=mt_… test-account run pipelex-sdk-python-e2e -- make -C python e2e-test
+
+Against the hosted platform it acts for the registered test account `test-account run` hands over, which `conftest.py`
+checks before the first case (`live_account.py`, `docs/live-accounts.md` at the repository's root).
 
 The whole module skips when `PIPELEX_E2E_BASE_URL` is unset, so `make agent-test`, which does not
 collect this directory at all, never reaches it. The inline `files` and `method_ref` cases need only

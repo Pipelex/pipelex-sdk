@@ -1,0 +1,569 @@
+{
+  "about": "The account check every live suite of this repository runs before its first case, which both SDKs' suites implement and must agree on (docs/live-accounts.md at the repository's root). Each case names a target from 'targets', the variable naming its base URL, the URL used when that variable is unset or empty, null for none, and the command a refusal tells the person to run; 'env' the environment the check reads; 'me' the answer of GET /v1/me, a 'status' and a JSON 'body', or null when the check must not send it; and 'me_at', beside an answer, the base URL the check must read it from, as the environment or the target's default gives it. 'verdict' is what the check decides: 'no_target' when there is no base URL, so the live legs skip; 'local' when the base URL is a loopback address, which holds no registered test account; 'confirmed' when the account is the one the expectations name; and 'refused' otherwise. Every string of 'mentions' appears in the verdict's line or message, and no string of 'absent' does. The expectations sit beside the key, as the workspace's test-account run sets them: PIPELEX_API_KEY_EXPECTED_ORG_ID, PIPELEX_API_KEY_EXPECTED_ROLE and PIPELEX_API_KEY_EXPECTED_EMAIL. Values are rendered as JSON, so a string reads in double quotes and a missing value as null.",
+  "targets": {
+    "js_e2e": {
+      "base_url_env": "PIPELEX_E2E_BASE_URL",
+      "default_base_url": "http://localhost:8081",
+      "run_command": "test-account run pipelex-sdk-js-e2e -- make -C js test-e2e"
+    },
+    "python_e2e": {
+      "base_url_env": "PIPELEX_E2E_BASE_URL",
+      "default_base_url": null,
+      "run_command": "test-account run pipelex-sdk-python-e2e -- make -C python e2e-test"
+    },
+    "starters": {
+      "base_url_env": "PIPELEX_BASE_URL",
+      "default_base_url": "https://api.pipelex.com",
+      "run_command": "test-account run pipelex-sdk-starters -- make live-starter IN=<starter>"
+    }
+  },
+  "cases": [
+    {
+      "name": "the JavaScript suite's default is a local runner, which needs no account",
+      "target": "js_e2e",
+      "env": {},
+      "me": null,
+      "verdict": "local",
+      "mentions": ["http://localhost:8081", "no registered test account"]
+    },
+    {
+      "name": "a loopback address is a local runner, even with a key",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "http://127.0.0.1:8082",
+        "PIPELEX_API_KEY": "not-a-real-key"
+      },
+      "me": null,
+      "verdict": "local",
+      "mentions": ["http://127.0.0.1:8082"]
+    },
+    {
+      "name": "a localhost subdomain is local",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "http://api.localhost:8080"
+      },
+      "me": null,
+      "verdict": "local",
+      "mentions": ["http://api.localhost:8080"]
+    },
+    {
+      "name": "the IPv6 loopback is local",
+      "target": "python_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "http://[::1]:8081"
+      },
+      "me": null,
+      "verdict": "local",
+      "mentions": ["http://[::1]:8081"]
+    },
+    {
+      "name": "a loopback host with the trailing dot that names it to DNS is local",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "http://localhost.:8081"
+      },
+      "me": null,
+      "verdict": "local",
+      "mentions": ["no registered test account"]
+    },
+    {
+      "name": "the Python suite has no default, so with no base URL its live legs skip",
+      "target": "python_e2e",
+      "env": {
+        "PIPELEX_API_KEY": "not-a-real-key"
+      },
+      "me": null,
+      "verdict": "no_target",
+      "mentions": ["PIPELEX_E2E_BASE_URL is not set"]
+    },
+    {
+      "name": "an empty base URL is an unset one",
+      "target": "python_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": ""
+      },
+      "me": null,
+      "verdict": "no_target",
+      "mentions": ["PIPELEX_E2E_BASE_URL is not set"]
+    },
+    {
+      "name": "a base URL that is not an http or https URL is refused before any request, its value unshown",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "api-dev.pipelex.com"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": [
+        "PIPELEX_E2E_BASE_URL is not an http or https URL",
+        "no request was sent",
+        "Its value is not shown"
+      ],
+      "absent": ["api-dev.pipelex.com"]
+    },
+    {
+      "name": "a URL of another scheme is refused before any request, its value unshown",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "ftp://someone:secret-word@api-dev.pipelex.com"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": ["PIPELEX_E2E_BASE_URL is not an http or https URL", "no request was sent"],
+      "absent": ["secret-word", "api-dev.pipelex.com"]
+    },
+    {
+      "name": "a hosted plane with no key is refused before any request, naming test-account run",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": [
+        "PIPELEX_API_KEY is not set",
+        "no request was sent",
+        "test-account run pipelex-sdk-js-e2e -- make -C js test-e2e"
+      ]
+    },
+    {
+      "name": "a base URL's credentials, path, query and fragment are named, never shown",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://someone:secret-word@api-dev.pipelex.com/v1?token=secret-token#secret-section"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": [
+        "https://api-dev.pipelex.com with credentials, a path, a query and a fragment (not shown) is a hosted plane",
+        "PIPELEX_API_KEY is not set"
+      ],
+      "absent": ["someone", "secret-word", "secret-token", "secret-section"]
+    },
+    {
+      "name": "a key with no expectations is refused before any request, naming test-account run",
+      "target": "python_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": [
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID, PIPELEX_API_KEY_EXPECTED_ROLE and PIPELEX_API_KEY_EXPECTED_EMAIL are not set",
+        "no request was sent",
+        "test-account run pipelex-sdk-python-e2e -- make -C python e2e-test"
+      ]
+    },
+    {
+      "name": "one missing expectation is named alone",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": ["PIPELEX_API_KEY_EXPECTED_ROLE is not set", "test-account run"],
+      "absent": ["PIPELEX_API_KEY_EXPECTED_ORG_ID", "PIPELEX_API_KEY_EXPECTED_EMAIL"]
+    },
+    {
+      "name": "the account the expectations name is confirmed, the email compared ignoring case",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": {
+        "status": 200,
+        "body": {
+          "user_id": "user_1",
+          "email": "QA+Builder@Example.com",
+          "full_name": "QA Builder",
+          "organization": {
+            "org_id": "org_11111111-1111-4111-8111-111111111111",
+            "name": "QA SDK (dev)",
+            "role_in_org": "member"
+          },
+          "api_key": {
+            "id": "apikey_1",
+            "label": "qa.dev.sdk.builder",
+            "created_at": "2026-10-27T03:58:48Z",
+            "expires_at": null
+          }
+        }
+      },
+      "me_at": "https://api-dev.pipelex.com",
+      "verdict": "confirmed",
+      "mentions": [
+        "PIPELEX_API_KEY acts for QA SDK (dev) (org_11111111-1111-4111-8111-111111111111) as member"
+      ]
+    },
+    {
+      "name": "the starters' check reads PIPELEX_BASE_URL",
+      "target": "starters",
+      "env": {
+        "PIPELEX_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": {
+        "status": 200,
+        "body": {
+          "user_id": "user_1",
+          "email": "qa+builder@example.com",
+          "full_name": "QA Builder",
+          "organization": {
+            "org_id": "org_11111111-1111-4111-8111-111111111111",
+            "name": "QA SDK (dev)",
+            "role_in_org": "member"
+          },
+          "api_key": null
+        }
+      },
+      "me_at": "https://api-dev.pipelex.com",
+      "verdict": "confirmed",
+      "mentions": ["QA SDK (dev)", "https://api-dev.pipelex.com"]
+    },
+    {
+      "name": "a key of another organization is refused, naming the variable, the value found, the value expected and the owner",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": {
+        "status": 200,
+        "body": {
+          "user_id": "user_1",
+          "email": "qa+builder@example.com",
+          "full_name": "QA Builder",
+          "organization": {
+            "org_id": "org_22222222-2222-4222-8222-222222222222",
+            "name": "QA Lab (dev)",
+            "role_in_org": "member"
+          },
+          "api_key": {
+            "id": "apikey_2",
+            "label": "qa.dev.lab.builder",
+            "created_at": "2026-10-27T03:58:48Z",
+            "expires_at": null
+          }
+        }
+      },
+      "me_at": "https://api-dev.pipelex.com",
+      "verdict": "refused",
+      "mentions": [
+        "PIPELEX_API_KEY: GET /v1/me states the organization QA Lab (dev) (org_22222222-2222-4222-8222-222222222222), where PIPELEX_API_KEY_EXPECTED_ORG_ID expects \"org_11111111-1111-4111-8111-111111111111\"",
+        "The registry's owner restores the account",
+        "test-account run"
+      ],
+      "absent": ["PIPELEX_API_KEY_EXPECTED_ROLE", "PIPELEX_API_KEY_EXPECTED_EMAIL"]
+    },
+    {
+      "name": "another role is refused",
+      "target": "python_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": {
+        "status": 200,
+        "body": {
+          "user_id": "user_1",
+          "email": "qa+builder@example.com",
+          "full_name": "QA Builder",
+          "organization": {
+            "org_id": "org_11111111-1111-4111-8111-111111111111",
+            "name": "QA SDK (dev)",
+            "role_in_org": "runner"
+          },
+          "api_key": null
+        }
+      },
+      "me_at": "https://api-dev.pipelex.com",
+      "verdict": "refused",
+      "mentions": [
+        "states the role \"runner\" in QA SDK (dev)",
+        "PIPELEX_API_KEY_EXPECTED_ROLE expects \"member\"",
+        "The registry's owner restores the account"
+      ]
+    },
+    {
+      "name": "another account is refused",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": {
+        "status": 200,
+        "body": {
+          "user_id": "user_9",
+          "email": "someone@example.com",
+          "full_name": "Someone",
+          "organization": {
+            "org_id": "org_11111111-1111-4111-8111-111111111111",
+            "name": "QA SDK (dev)",
+            "role_in_org": "member"
+          },
+          "api_key": null
+        }
+      },
+      "me_at": "https://api-dev.pipelex.com",
+      "verdict": "refused",
+      "mentions": [
+        "states the account \"someone@example.com\", where PIPELEX_API_KEY_EXPECTED_EMAIL expects \"qa+builder@example.com\""
+      ]
+    },
+    {
+      "name": "every difference is named at once",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": {
+        "status": 200,
+        "body": {
+          "user_id": "user_1",
+          "email": "qa+builder@example.com",
+          "full_name": "QA Builder",
+          "organization": {
+            "org_id": "org_33333333-3333-4333-8333-333333333333",
+            "name": null,
+            "role_in_org": null
+          },
+          "api_key": null
+        }
+      },
+      "me_at": "https://api-dev.pipelex.com",
+      "verdict": "refused",
+      "mentions": [
+        "states the organization \"org_33333333-3333-4333-8333-333333333333\", where PIPELEX_API_KEY_EXPECTED_ORG_ID expects",
+        "states the role null in \"org_33333333-3333-4333-8333-333333333333\", where PIPELEX_API_KEY_EXPECTED_ROLE expects \"member\""
+      ]
+    },
+    {
+      "name": "a key acting for no organization is refused",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": {
+        "status": 200,
+        "body": {
+          "user_id": "user_1",
+          "email": "qa+builder@example.com",
+          "full_name": "QA Builder",
+          "organization": null,
+          "api_key": null
+        }
+      },
+      "me_at": "https://api-dev.pipelex.com",
+      "verdict": "refused",
+      "mentions": [
+        "states the key acts for no organization, where PIPELEX_API_KEY_EXPECTED_ORG_ID expects \"org_11111111-1111-4111-8111-111111111111\""
+      ]
+    },
+    {
+      "name": "a platform that predates the organization member is reported as such, never as a pass",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": {
+        "status": 200,
+        "body": {
+          "user_id": "user_1",
+          "email": "qa+builder@example.com",
+          "full_name": "QA Builder"
+        }
+      },
+      "me_at": "https://api-dev.pipelex.com",
+      "verdict": "refused",
+      "mentions": [
+        "PIPELEX_API_KEY: the platform does not state the key's organization yet",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID and PIPELEX_API_KEY_EXPECTED_ROLE"
+      ],
+      "absent": ["The registry's owner restores the account"]
+    },
+    {
+      "name": "a key the platform refuses is named with its status and code",
+      "target": "python_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api-dev.pipelex.com",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": {
+        "status": 401,
+        "body": {
+          "code": "auth.invalid_credential"
+        }
+      },
+      "me_at": "https://api-dev.pipelex.com",
+      "verdict": "refused",
+      "mentions": [
+        "PIPELEX_API_KEY: GET /v1/me refused the key: HTTP 401 (auth.invalid_credential)",
+        "The registry's owner restores the account"
+      ]
+    },
+    {
+      "name": "the production API as the default is refused unless asked for",
+      "target": "starters",
+      "env": {
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": [
+        "PIPELEX_BASE_URL is not set",
+        "the production API, https://api.pipelex.com",
+        "PIPELEX_E2E_ALLOW_PRODUCTION=1",
+        "no request was sent"
+      ]
+    },
+    {
+      "name": "the production API named outright is refused unless asked for, whatever its case or port",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://API.pipelex.com:443/",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": [
+        "PIPELEX_E2E_BASE_URL names the production API, https://api.pipelex.com,",
+        "PIPELEX_E2E_ALLOW_PRODUCTION=1"
+      ]
+    },
+    {
+      "name": "the production API with the trailing dot that names it to DNS is refused unless asked for",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api.pipelex.com./",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": [
+        "PIPELEX_E2E_BASE_URL names the production API",
+        "PIPELEX_E2E_ALLOW_PRODUCTION=1",
+        "no request was sent"
+      ]
+    },
+    {
+      "name": "the production API with that dot percent-encoded is refused unless asked for",
+      "target": "python_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api.pipelex.com%2E",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": [
+        "PIPELEX_E2E_BASE_URL names the production API",
+        "PIPELEX_E2E_ALLOW_PRODUCTION=1",
+        "no request was sent"
+      ]
+    },
+    {
+      "name": "the opt-in is the value 1 and nothing else",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api.pipelex.com",
+        "PIPELEX_E2E_ALLOW_PRODUCTION": "true",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": ["PIPELEX_E2E_ALLOW_PRODUCTION=1"]
+    },
+    {
+      "name": "asked for, the production API is checked like any hosted plane",
+      "target": "starters",
+      "env": {
+        "PIPELEX_E2E_ALLOW_PRODUCTION": "1",
+        "PIPELEX_API_KEY": "not-a-real-key",
+        "PIPELEX_API_KEY_EXPECTED_ORG_ID": "org_11111111-1111-4111-8111-111111111111",
+        "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
+        "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com"
+      },
+      "me": {
+        "status": 200,
+        "body": {
+          "user_id": "user_1",
+          "email": "qa+builder@example.com",
+          "full_name": "QA Builder",
+          "organization": {
+            "org_id": "org_11111111-1111-4111-8111-111111111111",
+            "name": "QA Canary (prod)",
+            "role_in_org": "member"
+          },
+          "api_key": null
+        }
+      },
+      "me_at": "https://api.pipelex.com",
+      "verdict": "confirmed",
+      "mentions": ["QA Canary (prod)", "https://api.pipelex.com"]
+    },
+    {
+      "name": "asked for, the production API still needs the expectations",
+      "target": "js_e2e",
+      "env": {
+        "PIPELEX_E2E_BASE_URL": "https://api.pipelex.com",
+        "PIPELEX_E2E_ALLOW_PRODUCTION": "1",
+        "PIPELEX_API_KEY": "not-a-real-key"
+      },
+      "me": null,
+      "verdict": "refused",
+      "mentions": ["are not set", "test-account run"]
+    }
+  ]
+}

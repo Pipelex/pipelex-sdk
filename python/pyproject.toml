@@ -348,6 +348,7 @@ convention = "google"
   "import-private-name",        # Unit tests legitimately import private module helpers under test (e.g. _parse_error_body)
   "unused-method-argument",     # Test-double methods match a Protocol signature; an unused param (e.g. a fake validate ignoring `render`) is intentional
   "float-equality-comparison",  # Tests assert exact float literals that round-trip exactly; `pytest.approx` would only add noise
+  "unused-async",               # Test doubles of an async seam (a fake `/v1/me` reader) are async to fit it, with nothing to await
 ]
 "examples/**/*.py" = [
   "implicit-namespace-package", # Runnable demo scripts, not an importable package

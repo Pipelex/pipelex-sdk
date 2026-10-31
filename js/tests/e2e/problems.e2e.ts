@@ -1,9 +1,12 @@
 /**
  * E2E suite for the problem a refused request carries — exercised against a LIVE hosted
  * platform (no fetch mocks). Run with `make test-e2e` (or `npm run test:e2e`) against a
- * platform that answers problem documents, with `PIPELEX_API_KEY` set for it:
+ * platform that answers problem documents,
+ * as the registered test account the workspace's `test-account run` hands over, which the suite's
+ * global setup checks before the first case (`live-account.ts`, `docs/live-accounts.md` at the
+ * repository's root). From the repository's root:
  *
- *     PIPELEX_E2E_BASE_URL=https://api-dev.pipelex.com PIPELEX_API_KEY=plx_sk_… npm run test:e2e
+ *     test-account run pipelex-sdk-js-e2e -- make -C js test-e2e
  *
  * What the unit suite cannot prove: that the problem on an `ApiResponseError` is the one the
  * server sent. The error reads a problem document as received, and builds one from the status by
