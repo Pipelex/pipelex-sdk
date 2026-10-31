@@ -2,9 +2,11 @@
  * E2E suite for the upload grant — exercised against a LIVE hosted platform (no fetch
  * mocks). Run with `make test-e2e` (or `npm run test:e2e`) against a platform that
  * serves `POST /v1/upload/grant` (platform >= 0.20.0) with the app bucket's CORS rule,
- * with `PIPELEX_API_KEY` set for it:
+ * as the registered test account the workspace's `test-account run` hands over, which the suite's
+ * global setup checks before the first case (`live-account.ts`, `docs/live-accounts.md` at the
+ * repository's root). From the repository's root:
  *
- *     PIPELEX_E2E_BASE_URL=https://api-dev.pipelex.com PIPELEX_API_KEY=plx_sk_… npm run test:e2e
+ *     test-account run pipelex-sdk-js-e2e -- make -C js test-e2e
  *
  * What the unit suite cannot prove: that the PUT `uploadWithGrant` composes is the one
  * S3 accepts for the grant the platform signed — the header names, the body setting a

@@ -1,10 +1,9 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 
-ifeq ($(wildcard .env),.env)
-include .env
-export
-endif
+# No `.env` is read here. An included one would override the environment make was started with,
+# so a key parked in it would silently replace the one the workspace's `test-account run` hands
+# the live e2e legs (../docs/live-accounts.md). The legs read their variables from the environment.
 VIRTUAL_ENV := $(CURDIR)/.venv
 PROJECT_NAME := $(shell grep '^name = ' pyproject.toml | sed -E 's/name = "(.*)"/\1/')
 
@@ -51,7 +50,8 @@ make build                    - Build the wheels
 make test-package             - Build the wheel and run its pipelex-sdk command through uvx, from outside the package
 
 make test                     - Run unit tests
-make e2e-test                 - Run the live e2e legs (needs PIPELEX_E2E_BASE_URL + PIPELEX_API_KEY)
+make e2e-test                 - Run the live e2e legs (PIPELEX_E2E_BASE_URL; a hosted one through test-account run)
+make live-account             - Check a live run's account: BASE_URL_ENV=, DEFAULT_BASE_URL=, RUN_COMMAND= (for the root)
 make test-with-prints         - Run unit tests with prints
 make t                        - Shorthand -> test
 make tp                       - Shorthand -> test-with-prints
@@ -87,7 +87,7 @@ make li                       - Shorthand -> lock install
 endef
 export HELP
 
-.PHONY: all help env env-verbose check-uv check-uv-verbose lock install install-if-missing update build test-package test e2e-test test-with-prints t tp gha-tests agent-test format lint pyright mypy pylint merge-check-ruff-format merge-check-ruff-lint merge-check-pyright merge-check-mypy merge-check-pylint check-unused-imports fix-unused-imports check-TODOs cleanderived cleanenv cleanall c cc li agent-check
+.PHONY: all help env env-verbose check-uv check-uv-verbose lock install install-if-missing update build test-package test e2e-test live-account test-with-prints t tp gha-tests agent-test format lint pyright mypy pylint merge-check-ruff-format merge-check-ruff-lint merge-check-pyright merge-check-mypy merge-check-pylint check-unused-imports fix-unused-imports check-TODOs cleanderived cleanenv cleanall c cc li agent-check
 
 all help:
 	@echo "$$HELP"
@@ -226,10 +226,21 @@ test: env
 		$(VENV_PYTEST) -o log_cli=true -o log_level=WARNING $(if $(filter 1,$(VERBOSE)),-v,$(if $(filter 2,$(VERBOSE)),-vv,$(if $(filter 3,$(VERBOSE)),-vvv,))); \
 	fi
 
+# The live legs skip when PIPELEX_E2E_BASE_URL is unset. Against a hosted plane they act for the
+# registered test account the workspace's `test-account run` hands over, and their conftest checks
+# that account before the first case (tests/e2e/live_account.py, ../docs/live-accounts.md):
+#
+#     test-account run pipelex-sdk-python-e2e -- make -C python e2e-test
 e2e-test: env
 	$(call PRINT_TITLE,"Live e2e legs")
-	@echo "These legs run against a live platform; they skip cleanly when PIPELEX_E2E_BASE_URL and PIPELEX_API_KEY are unset."
+	@echo "These legs run against a live platform; they skip cleanly when PIPELEX_E2E_BASE_URL is unset."
 	$(VENV_PYTEST) tests/e2e -o log_cli=true -o log_level=WARNING -v
+
+# The account check alone, for a live run this directory does not hold: the repository root's
+# `make live-starter` runs it before a starter's live checks. Nothing is sent before the base URL,
+# the production gate, the key and its expectations hold.
+live-account: install-if-missing
+	@$(VENV_PYTHON) -m tests.e2e.live_account --base-url-env "$(BASE_URL_ENV)" $(if $(DEFAULT_BASE_URL),--default-base-url "$(DEFAULT_BASE_URL)") --run-command "$(RUN_COMMAND)"
 
 test-with-prints: env
 	$(call PRINT_TITLE,"Unit testing with prints")

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install hooks agent-check agent-test workflows check-workflows shared-files check-shared-files lint-workflows install-linters check-versions check-release-versions release-selection test-scripts
+.PHONY: help install hooks agent-check agent-test workflows check-workflows shared-files check-shared-files lint-workflows install-linters check-versions check-release-versions release-selection test-scripts live-starter
 
 # The root gate. Each package directory is a project of its own, with its own Makefile,
 # manifest and lockfile, installed from the registries exactly as its standalone repository
@@ -214,3 +214,52 @@ local-status: ## Say, for every template, whether its Pipelex packages are local
 	$(refuse_empty_switch)
 	@for t in $(switched); do echo "── $$t"; (cd "$$t" && $(SOURCE_OF) $(LOCAL_PACKAGES)); done
 	@for t in $(switched_py); do echo "── $$t"; $(MAKE) --no-print-directory -C "$$t" local-status; done
+
+# ── The starters' live checks ──────────────────────────────────────────────────────────────
+# A starter's live checks call the hosted API and spend a model call each: starter-js's
+# `make test-e2e`, its Playwright specs, and starter-python's tests marked `pipelex_api`. In a
+# project made from a starter they run on the person's own key, which is the template's to say.
+# Here they run as a registered test account, QA Builder in QA SDK (dev), whose key the
+# workspace's `test-account run` hands over beside what the registry expects of it, with
+# PIPELEX_BASE_URL naming the dev plane (docs/live-accounts.md):
+#
+#     test-account run pipelex-sdk-starters -- make live-starter IN=starter-js
+#
+# Before the starter's suite starts, python/'s account check reads `/v1/me` with the key and
+# stops on any difference; it refuses the production API, the starters' default, unless
+# PIPELEX_E2E_ALLOW_PRODUCTION=1 asks for it. The check lives in python/ because a template
+# may hold nothing that serves only the maintainers. Three details keep the key and the plane
+# handed over the ones in use:
+#
+# - The starter's suite gets PIPELEX_BASE_URL set to the URL the check decided on, its default
+#   included, since both starters fill a variable left unset from their env files, which would
+#   point the suite at a plane the check never saw.
+# - starter-js's suite runs with ALLOW_OWN empty, so its port-check refuses a server this
+#   checkout started earlier, and the target first refuses a port anything already listens on:
+#   Playwright reuses a server it finds there, whatever key it holds, and the port-check
+#   cannot see every listener (none without lsof, nor one another user owns).
+# - starter-python's tests run through pytest directly, since the template's Makefile includes
+#   its `.env` over the environment; its conftest loads `.env` without overriding a variable
+#   already set.
+LIVE_STARTERS := starter-js starter-python
+LIVE_STARTER_RUN = test-account run pipelex-sdk-starters -- make live-starter IN=$(in_dir)
+# The starters' default plane, which their SDK calls when PIPELEX_BASE_URL is unset.
+LIVE_STARTER_DEFAULT_BASE_URL := https://api.pipelex.com
+# Where starter-js's dev server listens: the template's own defaults, moved by APP_HOST and APP_PORT.
+LIVE_STARTER_JS_ADDRESS = $(or $(APP_HOST),127.0.0.1):$(or $(APP_PORT),4300)
+
+live-starter: ## Run a starter's live checks as the registered test account, its account checked first (IN=starter-js or IN=starter-python, under test-account run)
+	@$(if $(filter $(in_dir),$(LIVE_STARTERS)),:,echo "ERROR: name the starter, IN=starter-js or IN=starter-python."; exit 2)
+	@$(MAKE) --no-print-directory -C python live-account BASE_URL_ENV=PIPELEX_BASE_URL DEFAULT_BASE_URL=$(LIVE_STARTER_DEFAULT_BASE_URL) RUN_COMMAND="$(LIVE_STARTER_RUN)"
+	@$(MAKE) --no-print-directory -C "$(in_dir)" install-if-missing
+	@export PIPELEX_BASE_URL="$${PIPELEX_BASE_URL:-$(LIVE_STARTER_DEFAULT_BASE_URL)}"; \
+	if [ "$(in_dir)" = starter-js ]; then \
+		answered=0; curl -s -o /dev/null --max-time 2 "http://$(LIVE_STARTER_JS_ADDRESS)/" || answered=$$?; \
+		if [ "$$answered" != 7 ]; then \
+			echo "ERROR: something already listens on $(LIVE_STARTER_JS_ADDRESS). make live-starter starts starter-js's own dev server, so that it runs with the key test-account run handed over, and Playwright would reuse a server already there whatever key it holds. Stop that server, or pass a free port, APP_PORT=4301."; \
+			exit 2; \
+		fi; \
+		$(MAKE) --no-print-directory -C starter-js test-e2e ALLOW_OWN=; \
+	else \
+		cd starter-python && .venv/bin/pytest -m pipelex_api -o log_cli=true -o log_level=WARNING; \
+	fi

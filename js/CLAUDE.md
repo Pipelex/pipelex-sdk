@@ -20,7 +20,7 @@ TypeScript SDK for the **Pipelex hosted API**. It owns the Pipelex-branded produ
 make install    # Install the dependencies from the lockfile (npm ci, which never rewrites it)
 make check      # Lockfile check + lint + format check + typecheck + build + depcruise (alias: make c)
 make test       # Run the test suite (alias: make t)
-make test-e2e   # E2E suite against a live pipelex-api (alias: make te) — PIPELEX_E2E_BASE_URL, default http://localhost:8081
+make test-e2e   # E2E suite against a live pipelex-api (alias: make te) — PIPELEX_E2E_BASE_URL, default http://localhost:8081; a hosted one through test-account run (../docs/live-accounts.md)
 make all        # Clean, check, and test
 make build      # TypeScript compilation only
 make clean      # Remove dist/ and tsbuildinfo
