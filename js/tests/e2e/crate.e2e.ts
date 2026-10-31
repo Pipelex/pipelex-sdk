@@ -2,15 +2,16 @@
  * E2E suite for the crate routes — `resolve`, `codegen` and `pipeIo` — exercised
  * against a LIVE pipelex-api server (no fetch mocks).
  *
- * Run with `make test-e2e` (or `npm run test:e2e`) against a local runner:
+ * Run with `make test-e2e` (or `npm run test:e2e`) against a local runner or a hosted
+ * origin, both of which serve every route it calls:
  *
  *     PIPELEX_E2E_BASE_URL=http://localhost:8081 npm run test:e2e
  *
- * The `pipeIo` block needs a runner serving `POST /v1/pipe-io`, and its selection
- * refusal case needs the typed `EntryPipeNotFoundError` on that route's `422`, which
- * pipelex-api sends from v0.33.1. Its `method_id` case runs only when
- * `PIPELEX_E2E_METHOD_ID` names a stored method the key's organization owns, which only
- * a hosted origin can resolve; it is skipped otherwise.
+ * The `pipeIo` block needs a runner serving `POST /v1/pipe-io`, and its refusal cases need
+ * the problem codes of the error registry, `request.pipe_not_found` for a selection and
+ * `request.unsupported` for a registry-form `method_ref`, which pipelex-api sends from
+ * v0.90.0. Its `method_id` case runs only when `PIPELEX_E2E_METHOD_ID` names a stored method
+ * the key's organization owns, which only a hosted origin can resolve; it is skipped otherwise.
  *
  * These are the tests the unit suite cannot write. Every mock in the repo agrees with
  * the client about the field names, so a typo in the request body (`kind`/`target`
@@ -22,7 +23,7 @@
  * The through-line is the verdict discipline the crate routes share with
  * `validate`: an unresolvable CLOSURE is a produced verdict on a **200**
  * (`is_valid: false` + `errors[]`, problem items), while an unresolvable REQUEST — a
- * `pipe_ref` on the concept-set-wide `types` kind, the reserved `method_ref` — is
+ * `pipe_ref` on the concept-set-wide `types` kind, a registry-form `method_ref` — is
  * non-2xx and surfaces as the typed `ApiResponseError`.
  *
  * The last block runs `runCodegenCheck` over what the server just emitted. The unit
@@ -102,6 +103,25 @@ const METHOD_REF = "github.com/Pipelex/methods/documents";
 /** A stored method the key's organization owns — hosted origins only. */
 const METHOD_ID = process.env.PIPELEX_E2E_METHOD_ID || undefined;
 
+/**
+ * A `method_ref` in the registry form, which no server resolves until a method registry
+ * exists. Every origin refuses it the same way, the hosted plane relaying the runner's
+ * refusal: a `422 request.unsupported` naming the field and the form.
+ */
+const REGISTRY_FORM_METHOD_REF = "acme/method@1";
+
+/** The problem a refused registry-form `method_ref` carries, whichever route refused it. */
+const REGISTRY_FORM_REFUSAL = {
+  status: 422,
+  code: "request.unsupported",
+  problem: {
+    domain: "input",
+    retry: "no",
+    params: { field: "method_ref", reason: "registry_form_method_ref" },
+    location: { field: "method_ref" },
+  },
+};
+
 // ── Suite ────────────────────────────────────────────────────────────────
 
 const client = new PipelexApiClient({
@@ -150,10 +170,10 @@ describe("e2e resolve (/v1/resolve)", () => {
     expect(report.errors[0]!.detail).toEqual(expect.any(String));
   });
 
-  it("answers 501 for the reserved method_ref selector", async () => {
-    const failure = client.resolve({ method_ref: "acme/method@1" });
+  it("refuses a registry-form method_ref as a request.unsupported 422", async () => {
+    const failure = client.resolve({ method_ref: REGISTRY_FORM_METHOD_REF });
     await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
-    await expect(failure).rejects.toMatchObject({ status: 501 });
+    await expect(failure).rejects.toMatchObject(REGISTRY_FORM_REFUSAL);
   });
 });
 
@@ -365,20 +385,21 @@ describe("e2e pipe-io (/v1/pipe-io)", () => {
     expect("files" in report).toBe(false);
   });
 
-  it("refuses an unknown pipe_ref with a 422 typed as a selection refusal", async () => {
+  it("refuses an unknown pipe_ref with a 422 coded as a selection refusal, naming the pipe", async () => {
     const failure = client.pipeIo({ files, pipe_ref: "smoke.absent" });
 
     await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
     await expect(failure).rejects.toMatchObject({
       status: 422,
-      errorType: "EntryPipeNotFoundError",
+      code: "request.pipe_not_found",
+      problem: { domain: "input", params: { pipe: "smoke.absent" } },
     });
   });
 
-  it("answers 501 for the reserved registry-form method_ref", async () => {
-    await expect(client.pipeIo({ method_ref: "acme/method@1" })).rejects.toMatchObject({
-      status: 501,
-    });
+  it("refuses a registry-form method_ref as a request.unsupported 422", async () => {
+    const failure = client.pipeIo({ method_ref: REGISTRY_FORM_METHOD_REF });
+    await expect(failure).rejects.toBeInstanceOf(ApiResponseError);
+    await expect(failure).rejects.toMatchObject(REGISTRY_FORM_REFUSAL);
   });
 });
 

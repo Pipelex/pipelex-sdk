@@ -2187,10 +2187,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * The mapping is what makes their no-verdict arms usable: a crate route answers `422`
    * for a request it cannot act on (a pipe selection `pipe-io` refuses; an unknown
-   * `kind`/`target`, or a `pipe_ref` on the concept-set-wide `types` kind, on `codegen`)
-   * and `501` for the reserved registry-form `method_ref` (the address form is resolved
-   * server-side as of pipelex-api 0.21.0). A caller branches on `ApiResponseError.status`,
-   * never on a message.
+   * `kind`/`target`, or a `pipe_ref` on the concept-set-wide `types` kind, on `codegen`;
+   * the reserved registry-form `method_ref`, coded `request.unsupported`, on all three, the
+   * address form being resolved server-side as of pipelex-api 0.21.0). A caller branches on
+   * the problem's `code`, never on a message.
    *
    * All of these are static and inference-free, so they default to the management-call
    * timeout. The internal raise is `crateRequestTimeoutMs`'s: the fetch-sized budget a
@@ -2324,9 +2324,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
   // unexposed — see their section above for why that blocks nothing. `pipe-io` is
   // newer: a runner serves it from `pipelex-api` v0.33.0, and codes its selection
   // refusals `request.pipe_not_found`, `request.pipe_unspecified` and
-  // `request.pipe_ambiguous`, and a hosted origin
-  // serves it once the platform's proxy and the gateway list it (see
-  // `docs/crate-routes.md`).
+  // `request.pipe_ambiguous`, and the hosted plane serves it as well, measured on
+  // api-dev.pipelex.com on 2026-10-31 (see `docs/crate-routes.md`).
   //
   // All three are STATIC routes (no dry-run sweep), so like every static sibling they
   // take no `timeoutMs` — see the policy note on `requestExtension` before adding one
@@ -2356,7 +2355,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * protocol's `files` map or as a `directory`, `tree` or `contents` the client sends
    * inline when small and by hash otherwise (see {@link CrateRequestBase}); an
    * address-form `method_ref` (server-resolved, pipelex-api >= 0.21.0; the registry form
-   * stays a `501`); or a hosted `method_id` (platform-resolved — see
+   * is a `422` `request.unsupported`); or a hosted `method_id` (platform-resolved — see
    * {@link PipelexHostedToolingExtensions}). An empty map or string is absent.
    *
    * `options.signal` stops the call between the steps a `directory`, `tree` or `contents`
@@ -2387,7 +2386,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Same 200-verdict discipline and same three-form closure selector as
    * {@link resolve}. Only a no-verdict condition throws `ApiResponseError`: an
    * unknown `kind`/`target`, a `pipe_ref` on the concept-set-wide `types` kind, or
-   * a malformed selector is a 422; a registry-form `method_ref` is a `501`.
+   * a malformed selector is a 422, and so is a registry-form `method_ref`, coded
+   * `request.unsupported`.
    */
   async codegen(
     request: CodegenRequest,
@@ -2424,9 +2424,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Only a no-verdict condition throws `ApiResponseError`: a malformed selector and an
    * over-limit file are `422` problems; a selection the route refuses is a `422` whose
    * `code` is `request.pipe_not_found` (an unknown `pipe_ref`), `request.pipe_unspecified`
-   * (no entry pipe) or `request.pipe_ambiguous` (an ambiguous code, several entry pipes), the
-   * candidates in its `params`; a registry-form `method_ref` is a `501`; a pipe whose
-   * artifacts cannot be derived is a `500`.
+   * (no entry pipe, or several bundles' `main_pipe` declarations) or `request.pipe_ambiguous`
+   * (an ambiguous bare code), the candidates in its `params`; a registry-form `method_ref` is a
+   * `422` `request.unsupported`; a pipe whose artifacts cannot be derived is a `500`.
    *
    * A `method_ref` gets the fetch-sized budget, as on the other crate routes. On the
    * hosted API the gateway caps a request at about 30 seconds whatever the client allows,

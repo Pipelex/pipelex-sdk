@@ -3,8 +3,8 @@
  *
  * Run with `make test-e2e` (or `npm run test:e2e`) against a runner that serves
  * `POST /v1/pipe-io`, which `prepareInputs` reads its pipe and its signature from. The
- * two refusal cases also need the route's selection `422`s typed `EntryPipeNotFoundError`,
- * which pipelex-api does from v0.33.1:
+ * two refusal cases also need the route's selection `422`s coded `request.pipe_not_found`
+ * and `request.pipe_unspecified`, which pipelex-api sends from v0.90.0:
  *
  *     PIPELEX_E2E_BASE_URL=https://api-dev.pipelex.com npm run test:e2e
  *
@@ -120,14 +120,21 @@ describe("prepareInputs against a live runner", () => {
   it("refuses a closure with one pipe and no main_pipe, which the route will not select", async () => {
     // The run route has no single-pipe fallback: a selector-less run of this bundle is
     // refused, and the route refuses the selection the same way. Preparation stops
-    // there instead of walking the only pipe declared.
+    // there instead of walking the only pipe declared. The registry's sentence for the
+    // refusal names no pipe; the pipes the caller could select ride `params.candidates`.
     const failure = client.prepareInputs({
       files: { "smoke_prepare_no_main.mthds": NO_MAIN_BUNDLE },
       inputs: { doc: REMOTE_DOC },
     });
 
     await expect(failure).rejects.toBeInstanceOf(InputPreparationError);
-    await expect(failure).rejects.toThrow(/main_pipe/);
+    await expect(failure).rejects.toMatchObject({
+      code: "request.pipe_unspecified",
+      problem: {
+        domain: "input",
+        params: { candidates: ["smoke_prepare_no_main.describe_doc"] },
+      },
+    });
   });
 
   it("refuses a pipe_ref the method does not declare, carrying the route's detail", async () => {
@@ -139,6 +146,10 @@ describe("prepareInputs against a live runner", () => {
 
     await expect(failure).rejects.toBeInstanceOf(InputPreparationError);
     await expect(failure).rejects.toThrow(/smoke_prepare\.absent/);
+    await expect(failure).rejects.toMatchObject({
+      code: "request.pipe_not_found",
+      problem: { domain: "input", params: { pipe: "smoke_prepare.absent" } },
+    });
   });
 
   it.skipIf(METHOD_ID === undefined)("prepares from a hosted method_id", async () => {

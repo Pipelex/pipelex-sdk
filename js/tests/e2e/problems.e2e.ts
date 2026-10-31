@@ -83,13 +83,21 @@ describe("the problem of a platform refusal against a live platform", () => {
     expect(readProblemBody(refusal.responseBody)).toMatchObject({ code: refusal.code });
   });
 
-  it("reads a request body the platform's validation refuses as the platform's problem, its items naming the field", async () => {
+  it("reads a request body the platform's validation refuses as the platform's problem, its location naming the field", async () => {
     const refusal = await refusalOf(client.resolveStorageUrl({ uri: OVERLONG_STORAGE_URI }));
 
+    // The body parses and one of its fields fails the route's schema: `request.invalid`, not
+    // `request.malformed`, which is a body that does not parse. A problem with a single fault
+    // names it in its own `location` and `params` and carries no `errors`.
     expect(refusal.status).toBe(422);
-    expect(refusal.code).toBe("request.malformed");
-    expect(refusal.problem.errors?.map((item) => item.location?.field)).toEqual(["uri"]);
-    expect(refusal.problem).toMatchObject({ domain: "input", retry: "no" });
+    expect(refusal.code).toBe("request.invalid");
+    expect(refusal.problem).toMatchObject({
+      domain: "input",
+      retry: "no",
+      params: { field: "uri" },
+      location: { field: "uri" },
+    });
+    expect(refusal.problem.errors).toBeUndefined();
     expect(readProblemBody(refusal.responseBody)).toMatchObject({ code: refusal.code });
   });
 });
