@@ -237,8 +237,9 @@ e2e-test: env
 	$(VENV_PYTEST) tests/e2e -o log_cli=true -o log_level=WARNING -v
 
 # The account check alone, for a live run this directory does not hold: the repository root's
-# `make live-starter`, `make live-method-app` and `make live-create` run it before a template's live
-# checks. Nothing is sent before the base URL, the production gate, the key and its expectations hold.
+# `make live-starter`, `make live-method-app`, `make live-codegen-verify` and `make live-create` run
+# it before a template's live checks. Nothing is sent before the base URL, the production gate, the
+# key and its expectations hold.
 live-account: install-if-missing
 	@$(VENV_PYTHON) -m tests.e2e.live_account --base-url-env "$(BASE_URL_ENV)" $(if $(DEFAULT_BASE_URL),--default-base-url "$(DEFAULT_BASE_URL)") --run-command "$(RUN_COMMAND)"
 
