@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The docs' published-method example runs on today's engines**: `docs/add-method.md` and `docs/codegen.md` name `github.com/Pipelex/methods/text_stats@v0.2.0`, where they named `text_stats@v0.1.1`, whose flat `PipeFunc` function name every engine from pipelex 0.87.0 on refuses, so `make add-method` with the example's address failed.
+
 ## [v0.54.0] - 2026-10-25
 
 ### Changed

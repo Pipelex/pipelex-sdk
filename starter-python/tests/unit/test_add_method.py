@@ -59,7 +59,7 @@ MODE_FILES = {mode: ROOT / f"widget/{mode}/cli.py" for mode in ("blocking", "att
 MANIFEST_IMPORT = "from widget.manifest import MANIFEST_FILENAME, read_manifest"
 
 PIPE_REF = "stats.analyze_text"
-ADDRESS = "github.com/Pipelex/methods/text_stats@v0.1.1"
+ADDRESS = "github.com/Pipelex/methods/text_stats@v0.2.0"
 # The slug every synthetic plan is built under, deliberately not `text-stats`, the one
 # `docs/add-method.md` walks through. `build_plan` refuses a slug whose method directory, generated
 # package or command already exists in the real tree, so a fixture sharing the documented slug would
@@ -162,8 +162,8 @@ class TestAddMethod:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
-            ("github.com/Pipelex/methods/text_stats@v0.1.1", "github.com/Pipelex/methods/text_stats@v0.1.1"),
-            ("https://github.com/Pipelex/methods/text_stats@v0.1.1", "github.com/Pipelex/methods/text_stats@v0.1.1"),
+            ("github.com/Pipelex/methods/text_stats@v0.2.0", "github.com/Pipelex/methods/text_stats@v0.2.0"),
+            ("https://github.com/Pipelex/methods/text_stats@v0.2.0", "github.com/Pipelex/methods/text_stats@v0.2.0"),
             ("github.com/Pipelex/methods/text_stats", "github.com/Pipelex/methods/text_stats"),
             ("github.com/Pipelex/methods", "github.com/Pipelex/methods"),
         ],
