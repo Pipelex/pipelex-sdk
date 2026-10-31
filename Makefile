@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install hooks agent-check agent-test workflows check-workflows shared-files check-shared-files lint-workflows install-linters check-versions check-release-versions release-selection test-scripts live-starter
+.PHONY: help install hooks agent-check agent-test workflows check-workflows shared-files check-shared-files lint-workflows install-linters check-versions check-release-versions release-selection test-scripts live-starter live-method-app live-create
 
 # The root gate. Each package directory is a project of its own, with its own Makefile,
 # manifest and lockfile, installed from the registries exactly as its standalone repository
@@ -215,51 +215,100 @@ local-status: ## Say, for every template, whether its Pipelex packages are local
 	@for t in $(switched); do echo "── $$t"; (cd "$$t" && $(SOURCE_OF) $(LOCAL_PACKAGES)); done
 	@for t in $(switched_py); do echo "── $$t"; $(MAKE) --no-print-directory -C "$$t" local-status; done
 
-# ── The starters' live checks ──────────────────────────────────────────────────────────────
-# A starter's live checks call the hosted API and spend a model call each: starter-js's
-# `make test-e2e`, its Playwright specs, and starter-python's tests marked `pipelex_api`. In a
-# project made from a starter they run on the person's own key, which is the template's to say.
-# Here they run as a registered test account, QA Builder in QA SDK (dev), whose key the
-# workspace's `test-account run` hands over beside what the registry expects of it, with
-# PIPELEX_BASE_URL naming the dev plane (docs/live-accounts.md):
+# ── The templates' live checks and proofs ──────────────────────────────────────────────────
+# Some of the templates' checks call the hosted API: starter-js's and method-apps/webapp-js's
+# `make test-e2e`, their Playwright specs, starter-python's tests marked `pipelex_api`, and the
+# live proofs of the method-app templates' `make create`. In a project made from a template they
+# run on the person's own key, which is the template's to say. Here they run as a registered test
+# account, QA Builder in QA SDK (dev), whose key the workspace's `test-account run` hands over
+# beside what the registry expects of it, with PIPELEX_BASE_URL naming the dev plane
+# (docs/live-accounts.md):
 #
 #     test-account run pipelex-sdk-starters -- make live-starter IN=starter-js
+#     test-account run dev-sdk.builder -- make live-method-app IN=method-apps/webapp-js
+#     test-account run dev-sdk.builder -- make live-create IN=method-apps/cli-python
 #
-# Before the starter's suite starts, python/'s account check reads `/v1/me` with the key and
-# stops on any difference; it refuses the production API, the starters' default, unless
-# PIPELEX_E2E_ALLOW_PRODUCTION=1 asks for it. The check lives in python/ because a template
-# may hold nothing that serves only the maintainers. Three details keep the key and the plane
-# handed over the ones in use:
+# Before anything else starts, python/'s account check reads `/v1/me` with the key and stops on
+# any difference; it refuses the production API, the templates' default, unless
+# PIPELEX_E2E_ALLOW_PRODUCTION=1 asks for it. The check lives in python/ and these targets here
+# because a template may hold nothing that serves only the maintainers. Four details keep the
+# key and the plane handed over the ones in use:
 #
-# - The starter's suite gets PIPELEX_BASE_URL set to the URL the check decided on, its default
-#   included, since both starters fill a variable left unset from their env files, which would
-#   point the suite at a plane the check never saw.
-# - starter-js's suite runs with ALLOW_OWN empty, so its port-check refuses a server this
-#   checkout started earlier, and the target first refuses a port anything already listens on:
-#   Playwright reuses a server it finds there, whatever key it holds, and the port-check
-#   cannot see every listener (none without lsof, nor one another user owns).
+# - The template's suite, or the proof, gets PIPELEX_BASE_URL set to the URL the check decided
+#   on, its default included, since every template fills a variable left unset from its env
+#   files, which would point the suite at a plane the check never saw.
+# - A Playwright suite runs with ALLOW_OWN empty, so the template's port-check refuses a server
+#   this checkout started earlier, and the target first refuses a port anything already listens
+#   on: Playwright reuses a server it finds there, whatever key it holds, and the port-check
+#   cannot see every listener (none without lsof, nor one another user owns). Both JavaScript
+#   templates load `.env.local` the way Next.js does, which never overrides a variable set.
 # - starter-python's tests run through pytest directly, since the template's Makefile includes
 #   its `.env` over the environment; its conftest loads `.env` without overriding a variable
 #   already set.
+# - The create proofs run in fresh copies of a template as HEAD holds it, made by
+#   scripts/live-create.mjs, which no env file of this checkout reaches (docs/live-create-proofs.md).
 LIVE_STARTERS := starter-js starter-python
 LIVE_STARTER_RUN = test-account run pipelex-sdk-starters -- make live-starter IN=$(in_dir)
-# The starters' default plane, which their SDK calls when PIPELEX_BASE_URL is unset.
-LIVE_STARTER_DEFAULT_BASE_URL := https://api.pipelex.com
-# Where starter-js's dev server listens: the template's own defaults, moved by APP_HOST and APP_PORT.
-LIVE_STARTER_JS_ADDRESS = $(or $(APP_HOST),127.0.0.1):$(or $(APP_PORT),4300)
+# The method-app templates with a live suite of their own: cli-python has none, and the run in
+# its create proof takes its place.
+LIVE_METHOD_APPS := method-apps/webapp-js
+LIVE_METHOD_APP_RUN = test-account run dev-sdk.builder -- make live-method-app IN=$(in_dir)
+LIVE_CREATE_TEMPLATES := method-apps/webapp-js method-apps/cli-python
+LIVE_CREATE_RUN = test-account run dev-sdk.builder -- make live-create IN=$(in_dir)
+# The templates' default plane, which their SDK calls when PIPELEX_BASE_URL is unset.
+LIVE_DEFAULT_BASE_URL := https://api.pipelex.com
+# Where a JavaScript template's dev server listens: the templates' own defaults, moved by APP_HOST
+# and APP_PORT.
+LIVE_JS_ADDRESS = $(or $(APP_HOST),127.0.0.1):$(or $(APP_PORT),4300)
+
+# $(call live_account,<the test-account run command a refusal names>): python/'s account check.
+live_account = $(MAKE) --no-print-directory -C python live-account BASE_URL_ENV=PIPELEX_BASE_URL DEFAULT_BASE_URL=$(LIVE_DEFAULT_BASE_URL) RUN_COMMAND="$(1)"
+# The base URL the check decided on, exported for the rest of a recipe's line.
+live_base_url = export PIPELEX_BASE_URL="$${PIPELEX_BASE_URL:-$(LIVE_DEFAULT_BASE_URL)}"
+# $(call live_port_free,<template>): refuse a port anything already listens on, before a
+# template's Playwright suite would reuse what answers there. curl's 7 is "nothing listens".
+live_port_free = answered=0; curl -s -o /dev/null --max-time 2 "http://$(LIVE_JS_ADDRESS)/" || answered=$$?; \
+	if [ "$$answered" != 7 ]; then \
+		echo "ERROR: something already listens on $(LIVE_JS_ADDRESS). make $@ starts $(1)'s own dev server, so that it runs with the key test-account run handed over, and Playwright would reuse a server already there whatever key it holds. Stop that server, or pass a free port, APP_PORT=4301."; \
+		exit 2; \
+	fi
+
+# A value given on the command line, quoted for the shell exactly as typed: METHOD, which a
+# shell may export for reasons of its own, counts only when given to make, as in the templates.
+shq = '$(subst ','\'',$(1))'
+given = $(if $(filter command line,$(origin $(1))),$(strip $(value $(1))))
 
 live-starter: ## Run a starter's live checks as the registered test account, its account checked first (IN=starter-js or IN=starter-python, under test-account run)
 	@$(if $(filter $(in_dir),$(LIVE_STARTERS)),:,echo "ERROR: name the starter, IN=starter-js or IN=starter-python."; exit 2)
-	@$(MAKE) --no-print-directory -C python live-account BASE_URL_ENV=PIPELEX_BASE_URL DEFAULT_BASE_URL=$(LIVE_STARTER_DEFAULT_BASE_URL) RUN_COMMAND="$(LIVE_STARTER_RUN)"
+	+@$(call live_account,$(LIVE_STARTER_RUN))
 	@$(MAKE) --no-print-directory -C "$(in_dir)" install-if-missing
-	@export PIPELEX_BASE_URL="$${PIPELEX_BASE_URL:-$(LIVE_STARTER_DEFAULT_BASE_URL)}"; \
+	@$(live_base_url); \
 	if [ "$(in_dir)" = starter-js ]; then \
-		answered=0; curl -s -o /dev/null --max-time 2 "http://$(LIVE_STARTER_JS_ADDRESS)/" || answered=$$?; \
-		if [ "$$answered" != 7 ]; then \
-			echo "ERROR: something already listens on $(LIVE_STARTER_JS_ADDRESS). make live-starter starts starter-js's own dev server, so that it runs with the key test-account run handed over, and Playwright would reuse a server already there whatever key it holds. Stop that server, or pass a free port, APP_PORT=4301."; \
-			exit 2; \
-		fi; \
+		$(call live_port_free,starter-js); \
 		$(MAKE) --no-print-directory -C starter-js test-e2e ALLOW_OWN=; \
 	else \
 		cd starter-python && .venv/bin/pytest -m pipelex_api -o log_cli=true -o log_level=WARNING; \
 	fi
+
+live-method-app: ## Run a method-app template's live checks as the registered test account, its account checked first (IN=method-apps/webapp-js, under test-account run)
+	@$(if $(filter $(in_dir),$(LIVE_METHOD_APPS)),:,echo "ERROR: name the template, IN=method-apps/webapp-js, the one method-app template with a live suite. cli-python's live proof is its create proof: make live-create IN=method-apps/cli-python."; exit 2)
+	+@$(call live_account,$(LIVE_METHOD_APP_RUN))
+	@$(MAKE) --no-print-directory -C "$(in_dir)" install-if-missing
+	@$(live_base_url); \
+	$(call live_port_free,$(in_dir)); \
+	$(MAKE) --no-print-directory -C "$(in_dir)" test-e2e ALLOW_OWN=
+
+# The create proofs of cli-python run each command they create once, which spends model calls,
+# so they ask first, as a template's own `make test-e2e` does: not in CI, not without a terminal,
+# and not with CONFIRM set. webapp-js's run no method and spend none.
+live_confirm_spend = if [ -z "$$CI" ] && [ -z "$$CONFIRM" ] && [ -t 0 ]; then \
+		printf "The create proofs of $(in_dir) run each command they create once against the live Pipelex API, which spends model calls.\nContinue? [y/N] "; \
+		read ans; case "$$ans" in [yY]*) ;; *) echo "Aborted."; exit 1 ;; esac; \
+	fi
+
+live-create: ## Take a method-app template's live proofs of make create in fresh copies, as the registered test account, its account checked first (IN=method-apps/webapp-js or IN=method-apps/cli-python, METHOD=<method> for one proof; under test-account run)
+	@$(if $(filter $(in_dir),$(LIVE_CREATE_TEMPLATES)),:,echo "ERROR: name the template, IN=method-apps/webapp-js or IN=method-apps/cli-python."; exit 2)
+	+@$(call live_account,$(LIVE_CREATE_RUN))
+	@$(if $(filter method-apps/cli-python,$(in_dir)),$(live_confirm_spend),:)
+	@$(live_base_url); \
+	node scripts/live-create.mjs --template "$(in_dir)"$(if $(call given,METHOD), --method $(call shq,$(value METHOD)))
