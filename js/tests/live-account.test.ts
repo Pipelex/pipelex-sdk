@@ -91,7 +91,7 @@ describe("the live account check, against its shared cases", () => {
 
     expect(verdict.verdict).toBe("refused");
     const message = verdict.verdict === "refused" ? verdict.message : "";
-    expect(message).toContain("GET /v1/me gave no answer: connect ECONNREFUSED");
+    expect(message).toContain("GET /v1/me gave no answer the check can read: connect ECONNREFUSED");
     expect(message).not.toContain("The registry's owner restores the account");
   });
 });
@@ -105,6 +105,37 @@ describe("the SDK's read of /v1/me", () => {
       sdkMeReader({ baseUrl: "https://api-dev.pipelex.com", apiKey: "not-a-real-key" }),
     ).resolves.toEqual({ status: 200, body });
     getMe.mockRestore();
+  });
+
+  it("throws on a 2xx it could not read, which the check reports as unreadable, never as the account", async () => {
+    const unreadable = new ApiResponseError(
+      "The answer to GET /v1/me could not be read",
+      "https://api-dev.pipelex.com/v1/me",
+      200,
+      "OK",
+      "not json",
+    );
+    const getMe = vi.spyOn(PipelexApiClient.prototype, "getMe").mockRejectedValue(unreadable);
+
+    await expect(
+      sdkMeReader({ baseUrl: "https://api-dev.pipelex.com", apiKey: "not-a-real-key" }),
+    ).rejects.toBe(unreadable);
+    const verdict = await checkLiveAccount(JS_E2E_TARGET, {
+      env: {
+        PIPELEX_E2E_BASE_URL: "https://api-dev.pipelex.com",
+        PIPELEX_API_KEY: "not-a-real-key",
+        PIPELEX_API_KEY_EXPECTED_ORG_ID: "org_1",
+        PIPELEX_API_KEY_EXPECTED_ROLE: "member",
+        PIPELEX_API_KEY_EXPECTED_EMAIL: "qa+builder@example.com",
+      },
+    });
+    getMe.mockRestore();
+
+    expect(verdict.verdict).toBe("refused");
+    const message = verdict.verdict === "refused" ? verdict.message : "";
+    expect(message).toContain("PIPELEX_API_KEY: GET /v1/me gave no answer the check can read:");
+    expect(message).not.toContain("states the account");
+    expect(message).not.toContain("The registry's owner restores the account");
   });
 
   it("answers a refusal as its status and code", async () => {
@@ -135,9 +166,19 @@ describe("requireLiveAccount", () => {
     await expect(run).rejects.toThrow(/PIPELEX_API_KEY is not set/);
   });
 
-  it("returns the verdict's line otherwise", async () => {
-    await expect(requireLiveAccount(JS_E2E_TARGET, { env: {} })).resolves.toContain(
-      "http://localhost:8081 is a local runner",
+  it("returns the verdict otherwise, with the base URL the cases call and as its lines show it", async () => {
+    const verdict = await requireLiveAccount(JS_E2E_TARGET, {
+      env: { PIPELEX_E2E_BASE_URL: "http://someone:secret-word@localhost:8081/" },
+    });
+
+    expect(verdict).toMatchObject({
+      verdict: "local",
+      baseUrl: "http://someone:secret-word@localhost:8081/",
+      shown: "http://localhost:8081 with credentials (not shown)",
+    });
+    expect(verdict.line).toContain(
+      "http://localhost:8081 with credentials (not shown) is a local runner",
     );
+    expect(verdict.line).not.toContain("secret-word");
   });
 });

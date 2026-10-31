@@ -30,6 +30,7 @@
 
 import { PipelexApiClient } from "../../src/client.js";
 import { ApiResponseError } from "../../src/errors.js";
+import { isLoopbackHost } from "./origin.js";
 
 /** The variable holding the key the live cases act with. */
 export const API_KEY_ENV = "PIPELEX_API_KEY";
@@ -79,11 +80,15 @@ export interface MeAnswer {
 /** Reads `/v1/me` with a key; injected by the unit tests. */
 export type MeReader = (request: { baseUrl: string; apiKey: string }) => Promise<MeAnswer>;
 
-/** The check's verdict, with the line or the one message it reports. */
+/**
+ * The check's verdict, with the line or the one message it reports. A run that goes ahead also
+ * carries the base URL its cases call and that URL as the check's lines show it, so the global
+ * setup can probe the very URL the check decided on.
+ */
 export type LiveAccountVerdict =
   | { verdict: "no_target"; line: string }
-  | { verdict: "local"; line: string }
-  | { verdict: "confirmed"; line: string }
+  | { verdict: "local"; line: string; baseUrl: string; shown: string }
+  | { verdict: "confirmed"; line: string; baseUrl: string; shown: string }
   | { verdict: "refused"; message: string };
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -101,26 +106,15 @@ function expectationVariable(suffix: string): string {
   return `${API_KEY_ENV}${suffix}`;
 }
 
-/** "A is", "A and B are", "A, B and C are". */
-function listed(names: readonly string[]): string {
-  if (names.length === 1) return `${names[0]} is`;
-  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)} are`;
-}
-
-/** Whether a host is this machine: `localhost`, a subdomain of it, `127.x.x.x` or `::1`. */
-function isLoopback(host: string): boolean {
-  return (
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host === "::1" ||
-    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
-  );
-}
-
 /** "A", "A and B", "A, B and C". */
 function inWords(parts: readonly string[]): string {
   if (parts.length === 1) return parts[0] ?? "";
   return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+}
+
+/** "A is", "A and B are", "A, B and C are". */
+function listed(names: readonly string[]): string {
+  return `${inWords(names)} ${names.length === 1 ? "is" : "are"}`;
 }
 
 /** A base URL the check can call, as it compares it and as its lines show it. */
@@ -128,7 +122,8 @@ interface ParsedBaseUrl {
   /**
    * The host as the check compares it: lowercased, without the brackets of an IPv6 address, and
    * without the trailing dot that names the same host to DNS, so `https://api.pipelex.com.` is
-   * the production API too.
+   * the production API too. Whether it is this machine is `isLoopbackHost`'s to say
+   * (`origin.ts`), the predicate every e2e file asks.
    */
   host: string;
   /**
@@ -271,13 +266,18 @@ function stopMessage(
   return lines.join("\n");
 }
 
-/** The SDK's own read of `/v1/me`: its body on a 2xx, the refusal's status and code otherwise. */
+/**
+ * The SDK's own read of `/v1/me`: its body on a 2xx, the refusal's status and code otherwise. A 2xx
+ * the SDK could not read, such as a body that is not JSON, is thrown on rather than answered: it
+ * says nothing about the account, and as an answer its code would be read as a profile with no
+ * email. The check reports what it throws as an answer it cannot read, with the error's cause.
+ */
 export const sdkMeReader: MeReader = async ({ baseUrl, apiKey }) => {
   const client = new PipelexApiClient({ baseUrl, apiKey });
   try {
     return { status: 200, body: await client.getMe() };
   } catch (err) {
-    if (err instanceof ApiResponseError) {
+    if (err instanceof ApiResponseError && (err.status < 200 || err.status > 299)) {
       return { status: err.status, body: { code: err.code } };
     }
     throw err;
@@ -317,10 +317,12 @@ export async function checkLiveAccount(
     };
   }
   const { host, shown } = parsed;
-  if (isLoopback(host)) {
+  if (isLoopbackHost(host)) {
     return {
       verdict: "local",
       line: `${shown} is a local runner, which holds no registered test account, so the live cases run without an account check.`,
+      baseUrl,
+      shown,
     };
   }
 
@@ -369,7 +371,7 @@ export async function checkLiveAccount(
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     const finding = {
-      text: `${API_KEY_ENV}: ${ME_ROUTE} gave no answer: ${reason}`,
+      text: `${API_KEY_ENV}: ${ME_ROUTE} gave no answer the check can read: ${reason}`,
       ownerRestores: false,
     };
     return { verdict: "refused", message: stopMessage(shown, [finding], target) };
@@ -382,6 +384,8 @@ export async function checkLiveAccount(
   return {
     verdict: "confirmed",
     line: `${reading.confirmed} at ${shown}, as the registry of test accounts expects.`,
+    baseUrl,
+    shown,
   };
 }
 
@@ -398,14 +402,14 @@ export class LiveAccountRefused extends Error {
   }
 }
 
-/** {@link checkLiveAccount}, throwing its message on a refusal and returning its line otherwise. */
+/** {@link checkLiveAccount}, throwing its message on a refusal and returning its verdict otherwise. */
 export async function requireLiveAccount(
   target: LiveTarget,
   options: LiveAccountOptions = {},
-): Promise<string> {
+): Promise<Exclude<LiveAccountVerdict, { verdict: "refused" }>> {
   const verdict = await checkLiveAccount(target, options);
   if (verdict.verdict === "refused") {
     throw new LiveAccountRefused(verdict.message);
   }
-  return verdict.line;
+  return verdict;
 }

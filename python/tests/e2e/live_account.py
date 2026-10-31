@@ -50,6 +50,7 @@ ALLOW_PRODUCTION_VALUE = "1"
 #: The production API's host, which a live run calls only when asked to.
 PRODUCTION_HOST = "api.pipelex.com"
 OK_STATUS = 200
+_SUCCESS_STATUSES = range(200, 300)
 
 _ME_ROUTE = "GET /v1/me"
 _DOC = "docs/live-accounts.md at the repository's root"
@@ -121,9 +122,7 @@ def _rendered(value: object) -> str:
 
 def _listed(names: Sequence[str]) -> str:
     """'A is', 'A and B are', 'A, B and C are'."""
-    if len(names) == 1:
-        return f"{names[0]} is"
-    return f"{', '.join(names[:-1])} and {names[-1]} are"
+    return f"{_in_words(names)} {'is' if len(names) == 1 else 'are'}"
 
 
 def _is_loopback(host: str) -> bool:
@@ -274,11 +273,18 @@ def _stop_message(shown_base_url: str, findings: Sequence[_Finding], target: Liv
 
 
 async def read_me_with_sdk(base_url: str, api_key: str) -> MeAnswer:
-    """The SDK's own read of `/v1/me`: the profile with every member it does not type, or the refusal's status and code."""
+    """The SDK's own read of `/v1/me`: the profile with every member it does not type, or the refusal's status and code.
+
+    A 2xx the SDK could not read as a profile, such as a body that is not JSON or one missing a member the profile
+    requires, is raised rather than answered: it says nothing about the account, and as an answer its code would be
+    read as a profile with no email. The check reports what it raises as an answer it cannot read, with its cause.
+    """
     async with PipelexAPIClient(api_key=api_key, base_url=base_url) as client:
         try:
             profile = await client.get_me()
         except ApiResponseError as exc:
+            if exc.status in _SUCCESS_STATUSES:
+                raise
             return MeAnswer(status=exc.status, body={"code": exc.problem.code})
     return MeAnswer(status=OK_STATUS, body=profile.model_dump(mode="json", exclude_unset=True))
 
@@ -296,8 +302,8 @@ async def check_live_account(
     """Check the account a live run acts for against the expectations its environment carries.
 
     Nothing is sent before the base URL, the production gate, the key and the expectations hold. `read_me` reads
-    `/v1/me` from a base URL with a key, the SDK's own `get_me()` by default; a request that gets no answer, such as one
-    whose platform cannot be reached, is reported as a finding rather than raised.
+    `/v1/me` from a base URL with a key, the SDK's own `get_me()` by default; a request that gets no answer it can read,
+    such as one whose platform cannot be reached or whose 2xx is no profile, is reported as a finding rather than raised.
     """
     env = os.environ if environ is None else environ
     reader = read_me_with_sdk if read_me is None else read_me
@@ -350,7 +356,7 @@ async def check_live_account(
     try:
         answer = await reader(base_url, api_key)
     except PipelexRequestError as exc:
-        finding = _Finding(f"{API_KEY_ENV}: {_ME_ROUTE} gave no answer: {exc}", owner_restores=False)
+        finding = _Finding(f"{API_KEY_ENV}: {_ME_ROUTE} gave no answer the check can read: {exc}", owner_restores=False)
         return _refused(_stop_message(shown, [finding], target))
 
     findings, confirmed = _read_account(

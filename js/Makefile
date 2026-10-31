@@ -88,10 +88,11 @@ t: test
 # Needs a live pipelex-api server (default http://localhost:8081, override with
 # PIPELEX_E2E_BASE_URL). Not part of `make test` / `make all` — CI has no server.
 #
-# The target is resolved ONCE here and exported, so the URL this target preflights is the
-# URL the suites call. Precedence follows the dotenv convention: the shell environment (or a
-# `make test-e2e PIPELEX_E2E_BASE_URL=...` override) wins, then `.env`, then a local runner.
-# `?=` is what enforces it — it only reaches for `.env` when the variable is not already set.
+# The target is resolved ONCE here and exported, so the URL the global setup checks and
+# probes is the URL the suites call. Precedence follows the dotenv convention: the shell
+# environment (or a `make test-e2e PIPELEX_E2E_BASE_URL=...` override) wins, then `.env`,
+# then a local runner. `?=` is what enforces it — it only reaches for `.env` when the
+# variable is not already set.
 #
 # The key is never read from `.env`. Against the hosted plane the suites act for a registered
 # test account, whose key the workspace's `test-account run` hands over beside what the
@@ -102,23 +103,13 @@ test-e2e: export PIPELEX_E2E_BASE_URL ?= $(shell $(DOTENV) printf '%s' "$${PIPEL
 # The stored method the hosted `method_id` cases run against; they skip when it is unset or empty.
 test-e2e: export PIPELEX_E2E_METHOD_ID ?= $(shell $(DOTENV) printf '%s' "$$PIPELEX_E2E_METHOD_ID")
 
-# Trailing slashes are stripped the way the client normalizes `baseUrl` (`src/client.ts`),
-# so a value ending in `/` cannot make the probe `//v1/version` — which a runner does not
-# route — and report a live server as unreachable. It is done here, at the point of use,
-# rather than on the assignment above: `?=` never fires for a value that arrived from the
-# shell environment or the command line, so those two sources would keep their slash.
-E2E_TARGET = $$(printf '%s' "$(PIPELEX_E2E_BASE_URL)" | sed 's:/*$$::')
-
-# `/v1/version` is the one route BOTH a bare runner and a hosted origin serve, and it
-# needs no auth — origin-level `/health` is runner-only and 404s on the hosted plane.
+# The suite's global setup checks the account first, then probes `/v1/version` once
+# (tests/e2e/global-setup.ts): the check refuses a run before any request, the production
+# API and a hosted run with no account included, so nothing here may call the target ahead
+# of it, and every line it prints shows the URL as its scheme and host alone. An origin that
+# answers nothing is reported once, there, rather than by every file's `beforeAll`.
 test-e2e:
 	$(call PRINT_TITLE,"Running E2E Tests against live pipelex-api")
-	@target="$(E2E_TARGET)"; curl -fs --max-time 5 -o /dev/null "$$target/v1/version" || { \
-		echo "$(RED)✗ No pipelex-api reachable at $$target$(NC)"; \
-		echo "  Start one with make -C ../../pipelex/api run, the runner in the workspace's pipelex checkout — or point PIPELEX_E2E_BASE_URL (shell or .env) at a running instance."; \
-		exit 1; \
-	}
-	@echo "$(YELLOW)→ target: $(E2E_TARGET)$(NC)\n"
 	@npm run test:e2e
 	@echo "$(GREEN)✓ All e2e tests passed$(NC)"
 

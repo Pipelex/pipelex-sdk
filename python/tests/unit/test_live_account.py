@@ -14,7 +14,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.errors import ApiUnreachableError
+from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError
 from tests.e2e.live_account import PYTHON_E2E_TARGET, LiveTarget, MeAnswer, check_live_account, main, read_me_with_sdk
 from tests.unit.conftest import problem_document
 
@@ -28,6 +28,25 @@ _HOSTED_ENV = {
     "PIPELEX_API_KEY_EXPECTED_ROLE": "member",
     "PIPELEX_API_KEY_EXPECTED_EMAIL": "qa+builder@example.com",
 }
+
+
+def _answer_me_with(mocker: MockerFixture, *, status: int, content: bytes) -> None:
+    """Make every client the check starts answer `GET /v1/me` with this status and body, and nothing else."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/me"
+        assert request.headers["authorization"] == "Bearer not-a-real-key"
+        return httpx.Response(status, content=content, headers={"content-type": "application/problem+json"}, request=request)
+
+    original_start = PipelexAPIClient.start_client
+
+    def start_with_transport(client: PipelexAPIClient) -> PipelexAPIClient:
+        original_start(client)
+        assert client.client is not None
+        client.client = httpx.AsyncClient(headers=client.client.headers, transport=httpx.MockTransport(answer))
+        return client
+
+    mocker.patch.object(PipelexAPIClient, "start_client", start_with_transport)
 
 
 def _target(name: str) -> LiveTarget:
@@ -73,7 +92,7 @@ class TestLiveAccount:
         verdict = asyncio.run(check_live_account(PYTHON_E2E_TARGET, environ=_HOSTED_ENV, read_me=read_me))
 
         assert verdict.verdict == "refused"
-        assert "GET /v1/me gave no answer: could not reach https://api-dev.pipelex.com" in verdict.said
+        assert "GET /v1/me gave no answer the check can read: could not reach https://api-dev.pipelex.com" in verdict.said
         assert "The registry's owner restores the account" not in verdict.said
 
     @pytest.mark.parametrize(
@@ -97,23 +116,29 @@ class TestLiveAccount:
     )
     def test_reads_me_through_the_sdk(self, mocker: MockerFixture, status: int, body: dict[str, Any], expected: MeAnswer) -> None:
         """The SDK's read hands the check what /v1/me answered, an absent member kept absent."""
-
-        def answer(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/v1/me"
-            assert request.headers["authorization"] == "Bearer not-a-real-key"
-            return httpx.Response(status, json=body, headers={"content-type": "application/problem+json"}, request=request)
-
-        original_start = PipelexAPIClient.start_client
-
-        def start_with_transport(client: PipelexAPIClient) -> PipelexAPIClient:
-            original_start(client)
-            assert client.client is not None
-            client.client = httpx.AsyncClient(headers=client.client.headers, transport=httpx.MockTransport(answer))
-            return client
-
-        mocker.patch.object(PipelexAPIClient, "start_client", start_with_transport)
+        _answer_me_with(mocker, status=status, content=json.dumps(body).encode())
 
         assert asyncio.run(read_me_with_sdk("https://api-dev.pipelex.com", "not-a-real-key")) == expected
+
+    @pytest.mark.parametrize(
+        "content",
+        [b"not json", b"", json.dumps({"user_id": "user_1", "email": "qa+builder@example.com"}).encode()],
+        ids=["a body that is not JSON", "an empty body", "a profile with a required member missing"],
+    )
+    def test_reports_a_2xx_that_is_no_profile_as_unreadable_never_as_the_account(self, mocker: MockerFixture, content: bytes) -> None:
+        """A 2xx the SDK cannot read is raised by the read, and the check names it as unreadable, with no word for the owner."""
+        _answer_me_with(mocker, status=200, content=content)
+
+        with pytest.raises(ApiResponseError) as raised:
+            asyncio.run(read_me_with_sdk("https://api-dev.pipelex.com", "not-a-real-key"))
+        assert raised.value.status == 200
+
+        verdict = asyncio.run(check_live_account(PYTHON_E2E_TARGET, environ=_HOSTED_ENV))
+
+        assert verdict.verdict == "refused"
+        assert "PIPELEX_API_KEY: GET /v1/me gave no answer the check can read:" in verdict.said
+        assert "states the account" not in verdict.said
+        assert "The registry's owner restores the account" not in verdict.said
 
     def test_command_exits_on_a_refusal_with_its_message(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
         """Run as a command, a refusal exits 1 with its message on standard error, before any request."""
