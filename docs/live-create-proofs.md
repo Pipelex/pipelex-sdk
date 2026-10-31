@@ -18,7 +18,7 @@ test-account run dev-sdk.builder -- make live-create IN=method-apps/cli-python
 `make live-create` first runs the account check, which reads `GET /v1/me` with the key and stops before anything else on any difference, and refuses the production API, the templates' default, unless `PIPELEX_E2E_ALLOW_PRODUCTION=1` asks for it. For `cli-python` it then asks before it spends, unless `CONFIRM=1` is set, the shell is not a terminal or `CI` is set. It then takes the template's two proofs, one after the other, each in a fresh copy:
 
 - once with the template's bundle fixture, `scripts/lib/fixtures/bundles/receipt-review` in `webapp-js` and `tests/fixtures/bundles/receipt-review` in `cli-python`;
-- once with a published address, `github.com/Pipelex/methods/text_stats@v0.1.1`.
+- once with a published address, `github.com/Pipelex/methods/text_stats@v0.2.0`, the first release of `Pipelex/methods` today's engines accept, since an engine from pipelex 0.87.0 on refuses the flat function name of v0.1.1, which the templates' own docs still name.
 
 `METHOD=<method>` takes one proof instead, with any method `make create` accepts, read from the copy's directory when it is a path. A created command's run needs its arguments, which `scripts/live-create.mjs` records by the command's name, so a `cli-python` proof of another method first adds them to its `CLI_RUNS`.
 
@@ -51,6 +51,6 @@ The copy runs `make install` before the gesture, as a person does, and the gestu
 - the bootstrap skill, `scripts/create.py`, `scripts/create_plan.py` and `docs/create.md` are gone, and the `bump-sdk` skill is still there;
 - `.env` is readable by its owner alone and holds exactly one `PIPELEX_BASE_URL` line, the one the run used, and one empty `PIPELEX_API_KEY` line, never the key the run used, which the run below reads from the environment;
 - `.venv/bin/<name> --help` offers the method's input as an option;
-- one run prints its JSON result on stdout, and its run id and cost report on stderr: `.venv/bin/text-stats --text "Hello there. Two sentences."`, and for the receipt review `.venv/bin/receipt-review --receipts starter-python/samples/sample-invoice.pdf`, the repository's own sample. Its input is a `Document`, which the plane hands the model as a file, and the model refuses an image there, so a run given a PNG fails at the provider whatever the template does.
+- one run prints its JSON result on stdout, and its run id and cost report on stderr: `.venv/bin/text-stats --text "Hello there. Two sentences."`, and for the receipt review `.venv/bin/receipt-review --receipts <repository>/starter-python/samples/sample-invoice.pdf`, the repository's own sample, named by its absolute path since the run stands in the copy. Its input is a `Document`, which the plane hands the model as a file, and the model refuses an image there, so a run given a PNG fails at the provider whatever the template does.
 
 The runs spend a few model calls.

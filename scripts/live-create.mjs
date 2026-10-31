@@ -41,8 +41,12 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const BASE_URL_ENV = "PIPELEX_BASE_URL";
 export const API_KEY_ENV = "PIPELEX_API_KEY";
 
-/** The address both templates' own proofs use for a published method. */
-const PUBLISHED_ADDRESS = "github.com/Pipelex/methods/text_stats@v0.1.1";
+/**
+ * The address both templates' own proofs use for a published method: the first release of
+ * `Pipelex/methods` whose `PipeFunc` names its function by its import path, which engines from
+ * pipelex 0.87.0 on require. The templates' own docs and recorded responses still name v0.1.1.
+ */
+const PUBLISHED_ADDRESS = "github.com/Pipelex/methods/text_stats@v0.2.0";
 
 /**
  * Each template's proof: what the gesture must leave behind, from its own `docs/create.md`.

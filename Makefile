@@ -278,9 +278,12 @@ live_port_free = answered=0; curl -s -o /dev/null --max-time 2 "http://$(LIVE_JS
 # shell may export for reasons of its own, counts only when given to make, as in the templates.
 shq = '$(subst ','\'',$(1))'
 given = $(if $(filter command line,$(origin $(1))),$(strip $(value $(1))))
+# $(call one_of,<names>): IN when it is exactly one of the names. The names are filter's patterns,
+# so a % in IN is matched as itself, and IN of several words matches nothing.
+one_of = $(and $(filter 1,$(words $(in_dir))),$(filter $(1),$(in_dir)))
 
 live-starter: ## Run a starter's live checks as the registered test account, its account checked first (IN=starter-js or IN=starter-python, under test-account run)
-	@$(if $(filter $(in_dir),$(LIVE_STARTERS)),:,echo "ERROR: name the starter, IN=starter-js or IN=starter-python."; exit 2)
+	@$(if $(call one_of,$(LIVE_STARTERS)),:,echo "ERROR: name the starter, IN=starter-js or IN=starter-python."; exit 2)
 	+@$(call live_account,$(LIVE_STARTER_RUN))
 	@$(MAKE) --no-print-directory -C "$(in_dir)" install-if-missing
 	@$(live_base_url); \
@@ -292,7 +295,7 @@ live-starter: ## Run a starter's live checks as the registered test account, its
 	fi
 
 live-method-app: ## Run a method-app template's live checks as the registered test account, its account checked first (IN=method-apps/webapp-js, under test-account run)
-	@$(if $(filter $(in_dir),$(LIVE_METHOD_APPS)),:,echo "ERROR: name the template, IN=method-apps/webapp-js, the one method-app template with a live suite. cli-python's live proof is its create proof: make live-create IN=method-apps/cli-python."; exit 2)
+	@$(if $(call one_of,$(LIVE_METHOD_APPS)),:,echo "ERROR: name the template, IN=method-apps/webapp-js, the one method-app template with a live suite. cli-python's live proof is its create proof: make live-create IN=method-apps/cli-python."; exit 2)
 	+@$(call live_account,$(LIVE_METHOD_APP_RUN))
 	@$(MAKE) --no-print-directory -C "$(in_dir)" install-if-missing
 	@$(live_base_url); \
@@ -308,7 +311,7 @@ live_confirm_spend = if [ -z "$$CI" ] && [ -z "$$CONFIRM" ] && [ -t 0 ]; then \
 	fi
 
 live-create: ## Take a method-app template's live proofs of make create in fresh copies, as the registered test account, its account checked first (IN=method-apps/webapp-js or IN=method-apps/cli-python, METHOD=<method> for one proof; under test-account run)
-	@$(if $(filter $(in_dir),$(LIVE_CREATE_TEMPLATES)),:,echo "ERROR: name the template, IN=method-apps/webapp-js or IN=method-apps/cli-python."; exit 2)
+	@$(if $(call one_of,$(LIVE_CREATE_TEMPLATES)),:,echo "ERROR: name the template, IN=method-apps/webapp-js or IN=method-apps/cli-python."; exit 2)
 	+@$(call live_account,$(LIVE_CREATE_RUN))
 	@$(if $(filter method-apps/cli-python,$(in_dir)),$(live_confirm_spend),:)
 	@$(live_base_url); \
