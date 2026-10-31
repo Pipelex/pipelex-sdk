@@ -10,13 +10,18 @@
  * found and the value expected. In order, the check:
  *
  * 1. finds the base URL, and does nothing when there is none, or when it is a loopback address,
- *    a local runner or stack, which holds no registered test account;
- * 2. refuses the production API, unless `PIPELEX_E2E_ALLOW_PRODUCTION=1` asks for it;
+ *    a local runner or stack, which holds no registered test account; a base URL that is not an
+ *    http or https URL is refused;
+ * 2. refuses the production API, its host compared without case or a trailing dot, unless
+ *    `PIPELEX_E2E_ALLOW_PRODUCTION=1` asks for it;
  * 3. refuses a run with no key, or with an expectation unset, before any request, naming
  *    `test-account run`;
  * 4. asks `/v1/me` and compares the account's email, ignoring case, its organization by id and its
  *    role there. A platform whose answer has no `organization` member predates it, and is reported
  *    as such, never as a pass.
+ *
+ * Every line and message shows the base URL as its scheme and host alone, naming any credentials,
+ * path, query or fragment it carried without their text.
  *
  * Python's e2e suite runs the same check (`python/tests/e2e/live_account.py`), and both answer
  * the shared cases of `tests/fixtures/live-account-cases.json`. The page for a person is
@@ -102,15 +107,65 @@ function listed(names: readonly string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names.at(-1)} are`;
 }
 
-/** Whether a URL's host is this machine: `localhost`, a subdomain of it, `127.x.x.x` or `::1`. */
-function isLoopback(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, "");
+/** Whether a host is this machine: `localhost`, a subdomain of it, `127.x.x.x` or `::1`. */
+function isLoopback(host: string): boolean {
   return (
     host === "localhost" ||
     host.endsWith(".localhost") ||
     host === "::1" ||
     /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
   );
+}
+
+/** "A", "A and B", "A, B and C". */
+function inWords(parts: readonly string[]): string {
+  if (parts.length === 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+}
+
+/** A base URL the check can call, as it compares it and as its lines show it. */
+interface ParsedBaseUrl {
+  /**
+   * The host as the check compares it: lowercased, without the brackets of an IPv6 address, and
+   * without the trailing dot that names the same host to DNS, so `https://api.pipelex.com.` is
+   * the production API too.
+   */
+  host: string;
+  /**
+   * The base URL as a line or a message shows it: its scheme and its host, then the names of the
+   * parts beyond them it carried, never their text, as the SDK's own refusal of a base URL shows
+   * one (`describeRefusedBaseUrl` in `src/client.ts`). Credentials, a path and a query are where a
+   * secret travels in a URL, and these lines reach a terminal or a CI log.
+   */
+  shown: string;
+}
+
+/** The base URL, or `null` when it is not an http or https URL with a host. */
+function parseBaseUrl(baseUrl: string): ParsedBaseUrl | null {
+  let url: URL;
+  try {
+    // Trailing slashes are stripped first, as the client strips them (`src/client.ts`).
+    url = new URL(baseUrl.replace(/\/+$/, ""));
+  } catch {
+    return null;
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.hostname === "") {
+    return null;
+  }
+  const host = url.hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "");
+  const parts: string[] = [];
+  if (url.username !== "" || url.password !== "") parts.push("credentials");
+  if (url.pathname !== "/" && url.pathname !== "") parts.push("a path");
+  if (url.search !== "") parts.push("a query");
+  if (url.hash !== "") parts.push("a fragment");
+  const origin = `${url.protocol}//${url.host}`;
+  return {
+    host,
+    shown: parts.length === 0 ? origin : `${origin} with ${inWords(parts)} (not shown)`,
+  };
 }
 
 /** One reason the account could not be confirmed, and whether only the registry's owner restores it. */
@@ -196,9 +251,13 @@ function readAccount(
 }
 
 /** The one message a run stops with when its account could not be confirmed. */
-function stopMessage(baseUrl: string, findings: readonly Finding[], target: LiveTarget): string {
+function stopMessage(
+  shownBaseUrl: string,
+  findings: readonly Finding[],
+  target: LiveTarget,
+): string {
   const lines = [
-    `The live cases did not start: the account ${API_KEY_ENV} acts for at ${baseUrl} could not be confirmed as the one the registry of test accounts expects.`,
+    `The live cases did not start: the account ${API_KEY_ENV} acts for at ${shownBaseUrl} could not be confirmed as the one the registry of test accounts expects.`,
     ...findings.map((finding) => `- ${finding.text}`),
   ];
   if (findings.some((finding) => finding.ownerRestores)) {
@@ -250,30 +309,26 @@ export async function checkLiveAccount(
     };
   }
 
-  let hostname: string;
-  try {
-    hostname = new URL(baseUrl).hostname.toLowerCase();
-  } catch {
-    hostname = "";
-  }
-  if (hostname === "") {
+  const parsed = parseBaseUrl(baseUrl);
+  if (parsed === null) {
     return {
       verdict: "refused",
-      message: `The live cases did not start: ${target.baseUrlEnv} holds ${rendered(baseUrl)}, which is not a URL, so no request was sent.`,
+      message: `The live cases did not start: ${target.baseUrlEnv} is not an http or https URL, so no request was sent. Its value is not shown, since nothing says which of its characters are a secret.`,
     };
   }
-  if (isLoopback(hostname)) {
+  const { host, shown } = parsed;
+  if (isLoopback(host)) {
     return {
       verdict: "local",
-      line: `${baseUrl} is a local runner, which holds no registered test account, so the live cases run without an account check.`,
+      line: `${shown} is a local runner, which holds no registered test account, so the live cases run without an account check.`,
     };
   }
 
-  if (hostname === PRODUCTION_HOST && env[ALLOW_PRODUCTION_ENV] !== "1") {
+  if (host === PRODUCTION_HOST && env[ALLOW_PRODUCTION_ENV] !== "1") {
     const where =
       named === undefined
-        ? `${target.baseUrlEnv} is not set, so the live cases would call the production API, ${baseUrl},`
-        : `${target.baseUrlEnv} names the production API, ${baseUrl},`;
+        ? `${target.baseUrlEnv} is not set, so the live cases would call the production API, ${shown},`
+        : `${target.baseUrlEnv} names the production API, ${shown},`;
     return {
       verdict: "refused",
       message:
@@ -287,7 +342,7 @@ export async function checkLiveAccount(
     return {
       verdict: "refused",
       message:
-        `The live cases did not start: ${baseUrl} is a hosted plane and ${API_KEY_ENV} is not set, so no request was sent. ` +
+        `The live cases did not start: ${shown} is a hosted plane and ${API_KEY_ENV} is not set, so no request was sent. ` +
         `Run them through the workspace's \`${target.runCommand}\`, which hands over the key of the test account they act for beside what the registry expects of it (${DOC}).`,
     };
   }
@@ -317,16 +372,16 @@ export async function checkLiveAccount(
       text: `${API_KEY_ENV}: ${ME_ROUTE} gave no answer: ${reason}`,
       ownerRestores: false,
     };
-    return { verdict: "refused", message: stopMessage(baseUrl, [finding], target) };
+    return { verdict: "refused", message: stopMessage(shown, [finding], target) };
   }
 
   const reading = readAccount(answer, expected);
   if (reading.findings.length > 0) {
-    return { verdict: "refused", message: stopMessage(baseUrl, reading.findings, target) };
+    return { verdict: "refused", message: stopMessage(shown, reading.findings, target) };
   }
   return {
     verdict: "confirmed",
-    line: `${reading.confirmed} at ${baseUrl}, as the registry of test accounts expects.`,
+    line: `${reading.confirmed} at ${shown}, as the registry of test accounts expects.`,
   };
 }
 

@@ -38,7 +38,7 @@ def _target(name: str) -> LiveTarget:
 class TestLiveAccount:
     @pytest.mark.parametrize("case", _CASES, ids=[case["name"] for case in _CASES])
     def test_answers_each_shared_case(self, case: dict[str, Any]) -> None:
-        """Each shared case gets its verdict, asks /v1/me only when it must, and says what the case names."""
+        """Each shared case gets its verdict, asks /v1/me only when it must, at the base URL the case names, and says what it names."""
         asked: list[tuple[str, str]] = []
 
         async def read_me(base_url: str, api_key: str) -> MeAnswer:
@@ -53,7 +53,7 @@ class TestLiveAccount:
         assert verdict.verdict == case["verdict"]
         assert len(asked) == (0 if case["me"] is None else 1)
         if asked:
-            assert asked[0][1] == case["env"]["PIPELEX_API_KEY"]
+            assert asked[0] == (case["me_at"], case["env"]["PIPELEX_API_KEY"])
         for mention in case["mentions"]:
             assert mention in verdict.said
         for absent in case.get("absent", []):

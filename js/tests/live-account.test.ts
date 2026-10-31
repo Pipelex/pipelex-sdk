@@ -29,6 +29,7 @@ interface Case {
   target: string;
   env: Record<string, string>;
   me: MeAnswer | null;
+  me_at?: string;
   verdict: "no_target" | "local" | "confirmed" | "refused";
   mentions: string[];
   absent?: string[];
@@ -62,7 +63,10 @@ describe("the live account check, against its shared cases", () => {
 
     expect(verdict.verdict).toBe(c.verdict);
     expect(asked).toHaveLength(c.me === null ? 0 : 1);
-    if (c.me !== null) expect(asked[0]?.apiKey).toBe(c.env.PIPELEX_API_KEY);
+    if (c.me !== null) {
+      expect(c.me_at).toBeDefined();
+      expect(asked[0]).toEqual({ baseUrl: c.me_at, apiKey: c.env.PIPELEX_API_KEY });
+    }
     const said = verdict.verdict === "refused" ? verdict.message : verdict.line;
     for (const mention of c.mentions) expect(said).toContain(mention);
     for (const absent of c.absent ?? []) expect(said).not.toContain(absent);

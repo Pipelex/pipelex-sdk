@@ -7,8 +7,9 @@ bulk resolve route (`POST /v1/resolve-storage-url/bulk`), as the registered test
 
     test-account run pipelex-sdk-python-e2e -- make -C python e2e-test
 
-The whole module skips when either variable is unset, so the unit suite's `make agent-test` never
-reaches it — and `make agent-test` does not collect this directory at all.
+The whole module skips when `PIPELEX_E2E_BASE_URL` is unset, or names a local runner with no `PIPELEX_API_KEY`.
+Against a hosted platform, a missing key or a missing expectation is no skip: `conftest.py` stops the whole run
+before the first case. `make agent-test` does not collect this directory at all.
 
 What the unit suite cannot prove: that the wire shapes the SDK composes — the bulk request, the
 per-item answer, the presigned link the store actually honours, the working-memory echo of an

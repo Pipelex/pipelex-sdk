@@ -8,11 +8,15 @@ and any difference stops the run once, naming each variable, the value found and
 check:
 
 1. finds the base URL, and does nothing when there is none, or when it is a loopback address, a local runner or
-   stack, which holds no registered test account;
-2. refuses the production API, unless `PIPELEX_E2E_ALLOW_PRODUCTION=1` asks for it;
+   stack, which holds no registered test account; a base URL that is not an http or https URL is refused;
+2. refuses the production API, its host compared without case or a trailing dot, unless
+   `PIPELEX_E2E_ALLOW_PRODUCTION=1` asks for it;
 3. refuses a run with no key, or with an expectation unset, before any request, naming `test-account run`;
 4. asks `/v1/me` and compares the account's email, ignoring case, its organization by id and its role there. A
    platform whose answer has no `organization` member predates it, and is reported as such, never as a pass.
+
+Every line and message shows the base URL as its scheme and host alone, naming any credentials, path, query or
+fragment it carried without their text.
 
 `@pipelex/sdk`'s e2e suite runs the same check (`js/tests/e2e/live-account.ts`), and both answer the shared cases of
 `tests/fixtures/live-account-cases.json`. The repository's root runs this module as a command before the starters'
@@ -30,7 +34,7 @@ import os
 import sys
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, PipelexRequestError
@@ -122,23 +126,69 @@ def _listed(names: Sequence[str]) -> str:
     return f"{', '.join(names[:-1])} and {names[-1]} are"
 
 
-def _is_loopback(hostname: str) -> bool:
-    """Whether a URL's host is this machine: `localhost`, a subdomain of it, `127.x.x.x` or `::1`."""
-    if hostname == "localhost" or hostname.endswith(".localhost"):
+def _is_loopback(host: str) -> bool:
+    """Whether a host is this machine: `localhost`, a subdomain of it, `127.x.x.x` or `::1`."""
+    if host == "localhost" or host.endswith(".localhost"):
         return True
     try:
-        return ipaddress.ip_address(hostname).is_loopback
+        return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
 
 
-def _hostname(base_url: str) -> str | None:
-    """The base URL's host, lowercased, or `None` when it is not a URL."""
+def _in_words(parts: Sequence[str]) -> str:
+    """'A', 'A and B', 'A, B and C'."""
+    if len(parts) == 1:
+        return parts[0]
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+class _BaseUrl(NamedTuple):
+    """A base URL the check can call, as it compares it and as its lines show it."""
+
+    #: The host as the check compares it: percent-decoded, lowercased and without the trailing dot that names the same
+    #: host to DNS, so `https://api.pipelex.com.` is the production API too.
+    host: str
+    #: The base URL as a line or a message shows it: its scheme and its host, then the names of the parts beyond them it
+    #: carried, never their text, as the SDK's own refusal of a base URL shows one (`_describe_refused_base_url` in
+    #: `pipelex_sdk/client.py`). Credentials, a path and a query are where a secret travels in a URL, and these lines
+    #: reach a terminal or a CI log.
+    shown: str
+
+
+def _parse_base_url(base_url: str) -> _BaseUrl | None:
+    """The base URL, or `None` when it is not an http or https URL with a host."""
     try:
-        hostname = urlsplit(base_url).hostname
+        # Trailing slashes are stripped first, as the client strips them (`pipelex_sdk/client.py`).
+        parts = urlsplit(base_url.rstrip("/"))
+        hostname = parts.hostname
+        port = parts.port
     except ValueError:
         return None
-    return hostname or None
+    if parts.scheme not in _DEFAULT_PORTS or not hostname:
+        return None
+    carried = [
+        part
+        for part, present in (
+            ("credentials", parts.username is not None or parts.password is not None),
+            ("a path", parts.path not in {"", "/"}),
+            ("a query", bool(parts.query)),
+            ("a fragment", bool(parts.fragment)),
+        )
+        if present
+    ]
+    # Percent-decoded, as a WHATWG URL parser decodes a host, so both SDKs' checks see and show the same host.
+    decoded = unquote(hostname).lower()
+    shown_host = f"[{decoded}]" if ":" in decoded else decoded
+    shown_port = f":{port}" if port is not None and port != _DEFAULT_PORTS[parts.scheme] else ""
+    origin = f"{parts.scheme}://{shown_host}{shown_port}"
+    return _BaseUrl(
+        host=decoded.rstrip("."),
+        shown=f"{origin} with {_in_words(carried)} (not shown)" if carried else origin,
+    )
 
 
 def _organization_label(organization: Mapping[str, object]) -> str:
@@ -210,10 +260,10 @@ def _read_account(answer: MeAnswer, *, org_id: str, role: str, email: str) -> tu
     return findings, f"{API_KEY_ENV} acts for {label} as {stated_role}"
 
 
-def _stop_message(base_url: str, findings: Sequence[_Finding], target: LiveTarget) -> str:
+def _stop_message(shown_base_url: str, findings: Sequence[_Finding], target: LiveTarget) -> str:
     """The one message a run stops with when its account could not be confirmed."""
     headline = (
-        f"The live cases did not start: the account {API_KEY_ENV} acts for at {base_url} could not be confirmed as the one "
+        f"The live cases did not start: the account {API_KEY_ENV} acts for at {shown_base_url} could not be confirmed as the one "
         "the registry of test accounts expects."
     )
     lines = [headline, *(f"- {finding.text}" for finding in findings)]
@@ -257,22 +307,24 @@ async def check_live_account(
     if base_url is None:
         return LiveAccountVerdict(verdict="no_target", said=f"{target.base_url_env} is not set, so the live legs skip and no account is checked.")
 
-    hostname = _hostname(base_url)
-    if hostname is None:
+    parsed = _parse_base_url(base_url)
+    if parsed is None:
         return _refused(
-            f"The live cases did not start: {target.base_url_env} holds {_rendered(base_url)}, which is not a URL, so no request was sent."
+            f"The live cases did not start: {target.base_url_env} is not an http or https URL, so no request was sent. "
+            "Its value is not shown, since nothing says which of its characters are a secret."
         )
-    if _is_loopback(hostname):
+    shown = parsed.shown
+    if _is_loopback(parsed.host):
         return LiveAccountVerdict(
             verdict="local",
-            said=f"{base_url} is a local runner, which holds no registered test account, so the live cases run without an account check.",
+            said=f"{shown} is a local runner, which holds no registered test account, so the live cases run without an account check.",
         )
 
-    if hostname == PRODUCTION_HOST and env.get(ALLOW_PRODUCTION_ENV) != ALLOW_PRODUCTION_VALUE:
+    if parsed.host == PRODUCTION_HOST and env.get(ALLOW_PRODUCTION_ENV) != ALLOW_PRODUCTION_VALUE:
         where = (
-            f"{target.base_url_env} is not set, so the live cases would call the production API, {base_url},"
+            f"{target.base_url_env} is not set, so the live cases would call the production API, {shown},"
             if named is None
-            else f"{target.base_url_env} names the production API, {base_url},"
+            else f"{target.base_url_env} names the production API, {shown},"
         )
         return _refused(
             f"The live cases did not start: {where} which they call only when {ALLOW_PRODUCTION_ENV}={ALLOW_PRODUCTION_VALUE} asks for it, "
@@ -282,7 +334,7 @@ async def check_live_account(
     api_key = env.get(API_KEY_ENV) or None
     if api_key is None:
         return _refused(
-            f"The live cases did not start: {base_url} is a hosted plane and {API_KEY_ENV} is not set, so no request was sent. "
+            f"The live cases did not start: {shown} is a hosted plane and {API_KEY_ENV} is not set, so no request was sent. "
             f"Run them through the workspace's `{target.run_command}`, which hands over the key of the test account they act for "
             f"beside what the registry expects of it ({_DOC})."
         )
@@ -299,7 +351,7 @@ async def check_live_account(
         answer = await reader(base_url, api_key)
     except PipelexRequestError as exc:
         finding = _Finding(f"{API_KEY_ENV}: {_ME_ROUTE} gave no answer: {exc}", owner_restores=False)
-        return _refused(_stop_message(base_url, [finding], target))
+        return _refused(_stop_message(shown, [finding], target))
 
     findings, confirmed = _read_account(
         answer,
@@ -308,8 +360,8 @@ async def check_live_account(
         email=env[Expectation.EMAIL.variable],
     )
     if findings:
-        return _refused(_stop_message(base_url, findings, target))
-    return LiveAccountVerdict(verdict="confirmed", said=f"{confirmed} at {base_url}, as the registry of test accounts expects.")
+        return _refused(_stop_message(shown, findings, target))
+    return LiveAccountVerdict(verdict="confirmed", said=f"{confirmed} at {shown}, as the registry of test accounts expects.")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

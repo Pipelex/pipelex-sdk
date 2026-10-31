@@ -6,8 +6,9 @@ workspace's `test-account run` hands over, which `conftest.py` checks before the
 
     test-account run pipelex-sdk-python-e2e -- make -C python e2e-test
 
-The whole module skips when either variable is unset, so the unit suite's `make agent-test` never
-reaches it — and `make agent-test` does not collect this directory at all.
+The whole module skips when `PIPELEX_E2E_BASE_URL` is unset, or names a local runner with no `PIPELEX_API_KEY`.
+Against a hosted platform, a missing key or a missing expectation is no skip: `conftest.py` stops the whole run
+before the first case. `make agent-test` does not collect this directory at all.
 
 What the unit suite cannot prove: that the problem on an `ApiResponseError` is the one the server
 sent. The error reads a problem document as received, and builds one from the status by the edge's

@@ -25,10 +25,12 @@ The SDK suites also run against a local runner, with no account at all: a base U
 
 Nothing is sent, and the run stops, in each of these cases:
 
-- the base URL is not a URL;
-- the base URL is the production API, `https://api.pipelex.com`, whether a variable names it or the starters fall back to it because `PIPELEX_BASE_URL` is unset, unless `PIPELEX_E2E_ALLOW_PRODUCTION=1` asks for it. Asked for, production is checked like any hosted plane, expectations included, for the day a canary account exists there; no test account exists in production today;
+- the base URL is not an http or https URL. Its value is not shown, since nothing says which of its characters are a secret;
+- the base URL is the production API, `https://api.pipelex.com`, its host compared without case or the trailing dot that names the same host to DNS, whether a variable names it or the starters fall back to it because `PIPELEX_BASE_URL` is unset, unless `PIPELEX_E2E_ALLOW_PRODUCTION=1` asks for it. Asked for, production is checked like any hosted plane, expectations included, for the day a canary account exists there; no test account exists in production today;
 - the base URL is hosted and `PIPELEX_API_KEY` is unset;
 - an expectation is unset. The message names `test-account run`, since a key with no expectations says nothing about which account it must act for.
+
+Every line and message the check prints shows the base URL as its scheme and its host alone, and names any credentials, path, query or fragment it carried without their text, as the SDKs' own refusal of a base URL does: those parts are where a secret travels in a URL, and the lines reach a terminal or a CI log.
 
 A platform whose `/v1/me` answer has no `organization` member predates it. The check reports that as "the platform does not state the key's organization yet" and stops the run, because nothing but the email could then be compared; that is never a pass.
 
@@ -36,7 +38,7 @@ Both SDKs' suites implement the check, `js/tests/e2e/live-account.ts` as the Typ
 
 ## Why the starters' check lives at the root
 
-A starter is a template, and every file in it ships to the projects made from it. In such a project the live checks run on the person's own key, from `.env.local` or `.env`, against production, which is the template's default and the person's only plane. A check against the Pipelex team's registry, or a refusal of production, has no place there. So the maintainers run the starters' live checks through the root's `make live-starter`, which checks the account and then runs the starter's own suite, and the starters themselves are unchanged.
+A starter is a template, and every file in it ships to the projects made from it. In such a project the live checks run on the person's own key, from `.env.local` or `.env`, against the plane `PIPELEX_BASE_URL` names, production by default. A check against the Pipelex team's registry, or a refusal of production, has no place there. So the maintainers run the starters' live checks through the root's `make live-starter`, which checks the account and then runs the starter's own suite, and the starters themselves are unchanged.
 
 ## Keeping the key handed over the one in use
 
@@ -49,4 +51,4 @@ A key parked in an env file must never silently replace the one `test-account ru
 
 ## The stored method the `method_id` cases need
 
-The TypeScript suite's `crate` and `prepare-inputs` files and the Python legs' `pipe-io` file each have a case that runs a method stored in the key's organization, named by `PIPELEX_E2E_METHOD_ID`; it is skipped when that variable is unset. It is not a credential, so `test-account run` neither hands it over nor takes it out. The method is `mt_7a01d1bf-f5cb-4db4-a200-7fa396ac15e8`, `sdk-e2e-document`, saved and published in QA SDK (dev) by QA Builder: one `PipeLLM`, `summarize_document`, whose input `document` is a `Document`. The cases read its contract and prepare its inputs, and none runs it, so they spend no credit. Against another organization, or a local runner, leave the variable unset.
+The TypeScript suite's `crate` and `prepare-inputs` files and the Python legs' `pipe-io` file each have a case that reads the contract of a method stored in the key's organization, or prepares its inputs, the method named by `PIPELEX_E2E_METHOD_ID`; it is skipped when that variable is unset. It is not a credential, so `test-account run` neither hands it over nor takes it out. The method is `mt_7a01d1bf-f5cb-4db4-a200-7fa396ac15e8`, `sdk-e2e-document`, saved and published in QA SDK (dev) by QA Builder: one `PipeLLM`, `summarize_document`, whose input `document` is a `Document`. The cases read its contract and prepare its inputs, and none runs it, so they spend no credit. Against another organization, or a local runner, leave the variable unset.
