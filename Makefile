@@ -258,8 +258,9 @@ LIVE_CREATE_RUN = test-account run dev-sdk.builder -- make live-create IN=$(in_d
 # The templates' default plane, which their SDK calls when PIPELEX_BASE_URL is unset.
 LIVE_DEFAULT_BASE_URL := https://api.pipelex.com
 # Where a JavaScript template's dev server listens: the templates' own defaults, moved by APP_HOST
-# and APP_PORT.
-LIVE_JS_ADDRESS = $(or $(APP_HOST),127.0.0.1):$(or $(APP_PORT),4300)
+# and APP_PORT. The templates take an IPv6 host bare, as Next does, so the address brackets it.
+LIVE_JS_HOST = $(or $(APP_HOST),127.0.0.1)
+LIVE_JS_ADDRESS = $(if $(findstring :,$(LIVE_JS_HOST)),[$(LIVE_JS_HOST)],$(LIVE_JS_HOST)):$(or $(APP_PORT),4300)
 
 # $(call live_account,<the test-account run command a refusal names>): python/'s account check.
 live_account = $(MAKE) --no-print-directory -C python live-account BASE_URL_ENV=PIPELEX_BASE_URL DEFAULT_BASE_URL=$(LIVE_DEFAULT_BASE_URL) RUN_COMMAND="$(1)"
