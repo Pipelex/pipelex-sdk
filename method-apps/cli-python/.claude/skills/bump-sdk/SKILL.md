@@ -38,7 +38,7 @@ Two more seams are not code:
 
 <!-- template-only:begin -->
 
-**Before `make create`, the template carries one more seam**, its create gesture's planning, which the bootstrap removes with the gesture. `scripts/create_plan.py` calls the client's `get_method` and reads its `MethodData`, asks `pipe_io` and `codegen` for the method the gesture writes, and reads their reports; `scripts/create.py` catches `CodegenError`. Their tests answer those calls from API responses recorded under `tests/fixtures/recorded/` and parsed into the SDK's report models by `tests/support_create.py`, and `tests/test_create_tree.py` creates a project from them once per kind of method and type-checks it. A release that reshapes those models fails there, and `docs/ci.md` says how to record the responses again when a change to the API's answers matters to the gesture.
+**Before `make create`, the template carries one more seam**, its create gesture's planning, which the bootstrap removes with the gesture. `scripts/create_plan.py` calls the client's `get_method` and reads its `MethodData`, asks `pipe_io` and `codegen` for the method the gesture writes, and reads their reports; `scripts/create.py` catches `CodegenError` and reads `pipelex_sdk.client`'s `DEFAULT_API_BASE_URL`. Their tests answer those calls from API responses recorded under `tests/fixtures/recorded/` and parsed into the SDK's report models by `tests/support_create.py`, and `tests/test_create_tree.py` creates a project from them once per kind of method and type-checks it. A release that reshapes those models fails there, and `docs/ci.md` says how to record the responses again when a change to the API's answers matters to the gesture.
 
 <!-- template-only:end -->
 

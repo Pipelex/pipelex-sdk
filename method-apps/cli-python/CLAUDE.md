@@ -114,7 +114,7 @@ These are the files a release of `pipelex-sdk` or `mthds` can reach, which the `
 
 <!-- template-only:begin -->
 
-In the template, `scripts/create_plan.py` also calls the client's `get_method` and reads its `MethodData`, and asks `pipe_io` for a named method's files (`include_files`), whose prose names the project; `tests/support_create.py` answers those calls from the recorded fixtures.
+In the template, `scripts/create_plan.py` also calls the client's `get_method` and reads its `MethodData`, and asks `pipe_io` for a named method's files (`include_files`), whose prose names the project; `scripts/create.py` catches `CodegenError` and reads `pipelex_sdk.client`'s `DEFAULT_API_BASE_URL`, the base URL a project's command uses when nothing sets one; `tests/support_create.py` answers those calls from the recorded fixtures.
 
 <!-- template-only:end -->
 

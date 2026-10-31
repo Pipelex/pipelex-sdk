@@ -45,7 +45,7 @@ The gesture runs `make all` itself, so a red check fails the run. Then check tha
 
 - `pyproject.toml`, the package directory under `src/` and the command are named after the method, and `grep -rn pipelex_method_cli_python --exclude-dir=.venv --exclude-dir=.git --exclude-dir=__pycache__ .` finds nothing, the two directories it skips being the copy's own commit of the template and the bytecode the gesture's deleted scripts left behind;
 - the bootstrap skill, `scripts/create.py`, `scripts/create_plan.py` and `docs/create.md` are gone, and the `bump-sdk` skill is still there;
-- `.env` is readable by you alone and holds exactly one `PIPELEX_BASE_URL` line, the one the run used;
+- `.env` is readable by you alone and holds exactly one `PIPELEX_BASE_URL` line, the one the run used, and an empty `PIPELEX_API_KEY` line, never the key the run used, which the run below still reads from your shell;
 - `.venv/bin/<name> --help` lists the method's inputs, one option each;
 - one run prints its JSON result on stdout, and its run id and cost report on stderr: `.venv/bin/text-stats --text "Hello there. Two sentences."`, and for the receipt review a run with a receipt or an invoice as a PDF, such as the repository's own sample, `.venv/bin/receipt-review --receipts <repository>/starter-python/samples/sample-invoice.pdf`. Its input is a `Document`, which the plane hands the model as a file, and the model refuses an image there, so a run given a PNG fails at the provider whatever the template does.
 
