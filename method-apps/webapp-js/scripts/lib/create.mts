@@ -445,7 +445,10 @@ export interface CreateDeps {
   repoRoot: string;
   /** What the shell set, before any env file was read. */
   shell: ShellEnv;
-  /** The env file each value the shell did not set was read from. */
+  /**
+   * The env file that supplies each value: the base URL's only when the shell
+   * did not set it, the key's whether or not it did.
+   */
   envFiles?: EnvFiles;
   /** The client, base URL and bundle-path base `add-method` runs with. */
   addMethod: AddMethodDeps;
