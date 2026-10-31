@@ -311,11 +311,15 @@ live-method-app: ## Run a method-app template's live checks as the registered te
 	$(call live_port_free,$(in_dir)); \
 	$(MAKE) --no-print-directory -C "$(in_dir)" test-e2e ALLOW_OWN=
 
-# $(call holds_method,<template>): whether the template's methods/ holds anything but plain files.
-# Its codegen scripts read each such entry as a method or refuse it, a symbolic link among them,
-# so the template's own verdict decides; a plain file there, such as the README that
-# method-apps/webapp-js ships alone, is no method.
-holds_method = [ -n "$$(find "$(1)/methods" -mindepth 1 -maxdepth 1 ! -type f 2>/dev/null)" ]
+# $(call holds_method,<template>): whether the template's methods/ holds what its codegen scripts
+# read as a method or refuse, by their rule (discoverMethods in its scripts/lib/shared.mts): a
+# directory holding a method.json at its root or a .mthds file at any depth, or anything below
+# methods/ that is neither a plain file nor a directory, such as a symbolic link, which they refuse.
+# A plain file at methods/'s root, such as the README that method-apps/webapp-js ships alone, and a
+# directory holding neither, are no method, and the scripts skip both.
+holds_method = [ -n "$$(find "$(1)/methods" -mindepth 1 ! -type f ! -type d 2>/dev/null; \
+	find "$(1)/methods" -mindepth 2 -maxdepth 2 -type f -name method.json 2>/dev/null; \
+	find "$(1)/methods" -mindepth 2 -type f -name '*.mthds' 2>/dev/null)" ]
 
 # The template's own `make codegen-verify` writes nothing and spends no model call, so nothing asks
 # first. It runs in each narrowed template that holds a method, all of them before the verdict, and
