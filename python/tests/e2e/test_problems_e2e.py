@@ -98,12 +98,19 @@ class TestPlatformRefusalProblemLive:
         assert sent is not None
         assert sent.code == refusal.problem.code
 
-    def test_reads_a_body_the_platforms_validation_refuses_as_the_platforms_problem_its_items_naming_the_field(self) -> None:
+    def test_reads_a_body_the_platforms_validation_refuses_as_the_platforms_problem_its_location_naming_the_field(self) -> None:
         refusal = _refusal_of(lambda client: client.resolve_storage_url(_OVERLONG_STORAGE_URI))
 
+        # The body parses and one of its fields fails the route's schema: `request.invalid`, not `request.malformed`,
+        # which is a body that does not parse. A problem with a single fault names it in its own `location` and
+        # `params` and carries no `errors`.
         assert refusal.status == 422
-        assert refusal.problem.code == "request.malformed"
-        assert [item.location.field if item.location is not None else None for item in refusal.problem.errors or []] == ["uri"]
+        assert refusal.problem.code == "request.invalid"
+        assert refusal.problem.location is not None
+        assert refusal.problem.location.field == "uri"
+        assert refusal.problem.params is not None
+        assert refusal.problem.params.as_wire() == {"field": "uri"}
+        assert refusal.problem.errors is None
         assert (refusal.problem.domain, refusal.problem.retry) == ("input", "no")
         sent = read_problem_document(refusal.response_body, status=refusal.status, headers={})
         assert sent is not None

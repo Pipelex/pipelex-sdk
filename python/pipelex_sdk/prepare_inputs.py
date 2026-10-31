@@ -630,7 +630,7 @@ async def _fetch_signature(client: _PrepareClient, *, request: PipeIORequest) ->
     preparation failure: a `MethodLoadError` carrying the answer's items and its own message.
 
     A refused selection — a problem whose code is one of `_PIPE_SELECTION_CODES` — becomes an
-    `InputPreparationError` carrying the server's problem, whose `detail` names the candidates where
+    `InputPreparationError` carrying the server's problem, whose `params` name the candidates where
     there are any, with the `ApiResponseError` kept as its `__cause__`. Every other non-2xx
     propagates as the `ApiResponseError` it is.
 

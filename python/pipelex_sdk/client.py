@@ -3802,7 +3802,7 @@ class PipelexAPIClient(MthdsAPIClient):
         is `validate`'s vocabulary.
 
         The method arrives in exactly one of three forms — its tree, an address-form
-        `method_ref` (server-resolved; registry form `501`), or a hosted `method_id`
+        `method_ref` (server-resolved; the registry form a `422` `request.unsupported`), or a hosted `method_id`
         (platform-resolved) — enforced at request construction and by the server alike. The
         tree is the protocol's `files` map: `files` is sent as given, and a `tree` or `contents`
         inline when small and by hash otherwise, after uploading the files the API lacks, as
@@ -3847,7 +3847,7 @@ class PipelexAPIClient(MthdsAPIClient):
         `resolve`. A no-verdict condition (an unknown `kind`/`target`, a `pipe_ref` on the
         concept-set-wide `types` kind, a tree the runner cannot read, a malformed selector, a
         selector-resolution failure) raises `ApiResponseError`; a registry-form `method_ref` is a
-        `501`.
+        `422` `request.unsupported`.
 
         Raises:
             RequestArgumentError: `tree` holds no file, or `contents` holds a text no UTF-8 encoder
@@ -3889,8 +3889,8 @@ class PipelexAPIClient(MthdsAPIClient):
         condition raises `ApiResponseError`: a refused selection (an unknown ref, or no
         `pipe_ref` and a chain that finds no entry pipe or several, without `all_pipes`) is a
         `422` whose code is `request.pipe_not_found` (an unknown ref), `request.pipe_unspecified` (no entry
-        pipe) or `request.pipe_ambiguous` (an ambiguous code, several entry pipes), the candidates in its
-        `params`; a malformed request is a request-shape `422`; a tree the runner
+        pipe, or several bundles' `main_pipe` declarations) or `request.pipe_ambiguous` (an ambiguous bare
+        code), the candidates in its `params`; a malformed request is a request-shape `422`; a tree the runner
         cannot read, the `method_ref` fetch failures and the `method_id` resolution failures are
         those of `resolve`; an artifact the server cannot derive is a `500`.
 
