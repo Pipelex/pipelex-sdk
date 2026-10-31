@@ -29,7 +29,7 @@
  * with the rest of what only the template needs, from the project it creates.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -424,7 +424,8 @@ export async function planEnvFile(
     keyFile === undefined
       ? `, and an empty ${API_KEY_KEY} line: put your own key there before \`make dev\`` +
         (shell.key !== undefined
-          ? ". The key your shell exports is used for this run only, and never copied."
+          ? ". The key your shell exports is used for this run only, and never copied; while " +
+            "a shell exports one, it wins over the file, so start the app from one that does not."
           : ".")
       : devServerReads(keyFile)
         ? `, and no ${API_KEY_KEY} line: the key stays in ${keyFile}, which a line here would hide.`
@@ -538,6 +539,22 @@ export const runInherited: RunCommand = (command, args, cwd) => {
 };
 
 /**
+ * `.env.development`, when it assigns a key: the dev server reads it after
+ * `.env.local`, so an empty key line there would hide it, and the production
+ * build's files the gesture loads do not include it.
+ */
+export function devOnlyKeyFile(repoRoot: string): string | undefined {
+  const file = ".env.development";
+  const filePath = path.join(repoRoot, file);
+  if (!existsSync(filePath)) return undefined;
+  const value = new RegExp(`^\\s*(?:export\\s+)?${API_KEY_KEY}\\s*=\\s*(.*)$`, "m")
+    .exec(readFileSync(filePath, "utf-8"))?.[1]
+    ?.trim()
+    .replace(/^["']|["']$/g, "");
+  return value ? file : undefined;
+}
+
+/**
  * The deps a real run uses. The shell's own values are read first, because the
  * env files loaded next would otherwise be indistinguishable from them. For a
  * base URL the shell did not set, and for any key a file holds, the file it
@@ -561,7 +578,7 @@ export function resolveCreateDeps(repoRoot: string = REPO_ROOT): CreateDeps {
   };
   const envFiles: EnvFiles = {
     baseUrl: shell.baseUrl === undefined ? fileOf(BASE_URL_KEY) : undefined,
-    key: fileOf(API_KEY_KEY),
+    key: fileOf(API_KEY_KEY) ?? devOnlyKeyFile(repoRoot),
   };
   if (!process.env.PIPELEX_API_KEY) {
     throw new CreateError(
@@ -698,7 +715,8 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
         ? [
             "",
             `Put your own ${API_KEY_KEY} in ${ENV_FILE} before \`make dev\`: create never copies ` +
-              "the key your shell exports into the project.",
+              "the key your shell exports into the project, and while a shell exports one it " +
+              "wins over the file.",
           ]
         : []),
       "",

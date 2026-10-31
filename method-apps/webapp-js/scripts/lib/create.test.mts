@@ -25,6 +25,7 @@ import {
   appUrl,
   BOOTSTRAP_DIR,
   bootstrapArgs,
+  devOnlyKeyFile,
   deriveIdentity,
   dropEnvLine,
   ENV_FILE,
@@ -323,8 +324,9 @@ describe("the env file", () => {
       expect(said).toContain("(from your shell), and an empty PIPELEX_API_KEY line");
       expect(said).toContain("put your own key there before `make dev`");
       expect(said).toContain(
-        "The key your shell exports is used for this run only, and never copied.",
+        "The key your shell exports is used for this run only, and never copied;",
       );
+      expect(said).toContain("while a shell exports one, it wins over the file");
       if (fromShell.action !== "write") throw new Error("expected a write");
       expect(fromShell.content).toContain("PIPELEX_API_KEY=\n");
       expect(fromShell.content).not.toContain("sk-1");
@@ -380,6 +382,21 @@ describe("resolveCreateDeps", () => {
     if (plan.action !== "write") throw new Error("expected a write");
     expect(plan.content).not.toContain("sk-shell");
     expect(plan.content).not.toContain("sk-file");
+  });
+
+  it("does not hide a key only .env.development holds, which the dev server reads after .env.local", async () => {
+    expect(devOnlyKeyFile(root)).toBeUndefined();
+    await writeFile(path.join(root, ".env.development"), "PIPELEX_API_KEY=\n");
+    expect(devOnlyKeyFile(root)).toBeUndefined();
+    await writeFile(path.join(root, ".env.development"), 'export PIPELEX_API_KEY="sk-dev"\n');
+    expect(devOnlyKeyFile(root)).toBe(".env.development");
+
+    const plan = await planEnvFile(root, { key: "sk-shell" }, "https://api.example", {
+      key: ".env.development",
+    });
+    if (plan.action !== "write") throw new Error("expected a write");
+    expect(plan.content).not.toMatch(/^\s*(export\s+)?PIPELEX_API_KEY\s*=/m);
+    expect(plan.notes.join("\n")).toContain("the key stays in .env.development");
   });
 
   it("says where the person's own key goes when none is set", () => {
@@ -568,7 +585,7 @@ describe("runCreate", () => {
     expect(env.match(/PIPELEX_BASE_URL=/g)).toHaveLength(1);
     expect(output.join("\n")).toContain(
       "Put your own PIPELEX_API_KEY in .env.local before `make dev`: create never copies the " +
-        "key your shell exports into the project.",
+        "key your shell exports into the project, and while a shell exports one it wins over the file.",
     );
 
     expect(existsSync(path.join(root, BOOTSTRAP_DIR))).toBe(false);
