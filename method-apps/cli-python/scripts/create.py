@@ -3,7 +3,8 @@
 A fresh copy of the template is a command with no method, under the template's own name. This
 gesture takes the method the person has, a bundle path, a catalog id or a published address, and
 leaves the command for it: the method written into the package, the project named after the method
-by the bootstrap, `.env` written from the shell, and `make all` green. Everything is decided here and
+by the bootstrap, `.env` written with the base URL it ran against and an empty key line for the
+person's own key, and `make all` green. Everything is decided here and
 nothing asks a question: a value that cannot be derived is a refusal naming the flag that supplies it.
 
 The order is the safety story:
@@ -52,6 +53,7 @@ from typing import Any, Literal, cast
 
 from dotenv import dotenv_values, load_dotenv
 from mthds.protocol.exceptions import PipelineRequestError
+from pipelex_sdk.client import DEFAULT_API_BASE_URL
 from pipelex_sdk.errors import CodegenError
 
 from pipelex_method_cli_python.lib import client as api
@@ -248,7 +250,7 @@ def derive_identity(plan: MethodPlan, args: CreateArgs) -> Identity:
 
 @dataclass(frozen=True)
 class ShellEnv:
-    """What the shell itself set, read before any env file was loaded: the gesture copies a key only from the shell."""
+    """What the shell itself set, read before any env file was loaded, so that a value the shell chose is told apart from one a file supplied."""
 
     base_url: str | None = None
     key: str | None = None
@@ -318,31 +320,35 @@ def unreadable_env_file(path: Path | str, exc: Exception, *, why: str) -> Create
     return CreateError(f"{path} cannot be read ({exc}), and {why}. Fix it or remove it, then run make create again.")
 
 
-def sets_base_url(env_file: Path | None) -> bool:
-    """Whether an env file sets the base URL, which is then where the client read it from when the shell did not set it.
+def env_file_value(env_file: Path | None, key: str) -> str | None:
+    """What an env file sets `key` to, or `None` when there is no file or it leaves `key` unset or empty.
 
-    A file that sets other variables only, the key among them, leaves the base URL to its default.
+    A file that sets other variables only leaves the base URL to its default, and supplies no key.
 
     Raises:
         CreateError: The file cannot be read.
     """
     if env_file is None:
-        return False
+        return None
     try:
-        value = dotenv_values(env_file).get(BASE_URL_KEY)
+        value = dotenv_values(env_file).get(key)
     except (OSError, UnicodeError) as exc:
         raise unreadable_env_file(env_file, exc, why="the CLI reads it") from exc
-    return bool(value and value.strip())
+    return (value.strip() or None) if value else None
 
 
 def plan_env_file(root: Path, shell: ShellEnv, env_file: Path | None, base_url: str) -> EnvPlan:
     """Decide what happens to `.env`. An existing one is the person's and is never touched.
 
-    python-dotenv reads one env file, the nearest, so a `.env` written here hides any above it. The
-    gesture refuses a run with no key at all, so a key the shell did not export came from a `.env`
-    above the project: the gesture then leaves the project without a `.env`, so that the file above
-    keeps supplying it, since it copies a key only from the shell. A `.env` it writes therefore always
-    holds the shell's key.
+    The gesture never copies a key into the project: an exported key is whichever key was exported
+    last, often a test key or one of another organization, and in a file it would outlive the shell it
+    came from. A `.env` it writes therefore holds the base URL and an empty key line, where the person
+    puts their own key; while a shell exports one, it wins over the file.
+
+    python-dotenv reads one env file, the nearest, so a `.env` written here hides any above it. When a
+    `.env` above the project sets the key, the gesture leaves the project without a `.env`, so that the
+    file above keeps supplying it, whether or not the shell also exports one. The gesture refuses a run
+    with no key at all, so a key the shell did not export came from such a file.
 
     Raises:
         CreateError: A value cannot be written so that python-dotenv reads it back as it is, or the
@@ -361,24 +367,32 @@ def plan_env_file(root: Path, shell: ShellEnv, env_file: Path | None, base_url: 
                 "the shell does not set it."
             )
         return EnvPlan(action="keep", content=None, notes=tuple(notes))
-    if shell.key is None:
+    if shell.key is None or env_file_value(env_file, API_KEY_KEY) is not None:
         where = env_file if env_file is not None else f"a {ENV_FILE} above this project"
-        note = (
-            f"{ENV_FILE} is not written: {API_KEY_KEY} comes from {where}, which the CLI reads only while this project has "
-            f"no {ENV_FILE} of its own, and the gesture copies a key only from your shell."
-        )
-        return EnvPlan(action="skip", content=None, notes=(note,))
+        notes = [f"{ENV_FILE} is not written: {where} sets {API_KEY_KEY}, and the CLI reads it only while this project has no {ENV_FILE} of its own."]
+        # Without the shell's base URL, the command reads the file's, or the SDK's default: the method was generated against the shell's.
+        above = env_file_value(env_file, BASE_URL_KEY)
+        if shell.base_url is not None and (above or DEFAULT_API_BASE_URL) != shell.base_url:
+            says = f"says {above}" if above is not None else f"does not set it, so the CLI uses {DEFAULT_API_BASE_URL}"
+            notes.append(
+                f"your shell sets {BASE_URL_KEY}={shell.base_url}, the API the method is generated against, but {where} {says} "
+                "whenever the shell does not set it."
+            )
+        return EnvPlan(action="skip", content=None, notes=tuple(notes))
     example = root / ENV_EXAMPLE
     try:
         text = example.read_text(encoding="utf-8") if example.is_file() else MINIMAL_ENV
     except (OSError, UnicodeError) as exc:
         raise unreadable_env_file(ENV_EXAMPLE, exc, why=f"{ENV_FILE} is written from it") from exc
     text = set_env_line(text, BASE_URL_KEY, quote_env_value(BASE_URL_KEY, base_url))
-    text = set_env_line(text, API_KEY_KEY, quote_env_value(API_KEY_KEY, shell.key))
+    text = set_env_line(text, API_KEY_KEY, "")
     from_shell = shell.base_url is not None
-    from_file = not from_shell and sets_base_url(env_file)
+    from_file = not from_shell and env_file_value(env_file, BASE_URL_KEY) is not None
     origin = "from your shell" if from_shell else f"from {env_file}" if from_file else "the default"
-    notes = [f"{ENV_FILE} is written with {BASE_URL_KEY}={base_url} ({origin}) and {API_KEY_KEY} from your shell, readable by you alone."]
+    notes = [
+        f"{ENV_FILE} is written with {BASE_URL_KEY}={base_url} ({origin}) and an empty {API_KEY_KEY} line for your own key, "
+        "readable by you alone: the gesture never copies the key your shell exports."
+    ]
     if env_file is not None:
         notes.append(f"it hides {env_file} from the CLI, which reads the nearest {ENV_FILE} only.")
     return EnvPlan(action="write", content=text, notes=tuple(notes), chosen_base_url=base_url if from_shell or from_file else None)
@@ -609,7 +623,10 @@ async def plan_create(argv: Sequence[str], given: CreateDeps | None) -> Planned:
     deps = given if given is not None else resolve_deps(root)
     layout = Layout(root / "src" / PACKAGE)
     if not os.environ.get(API_KEY_KEY, "").strip():
-        msg = f"{API_KEY_KEY} is not set. Export it in your shell, and make create copies it into {ENV_FILE}, or put it in {ENV_FILE} yourself."
+        msg = (
+            f"{API_KEY_KEY} is not set. Put your own key in {ENV_FILE}, or export it in your shell for this run: make create reads it "
+            "from either, and never copies it into a file."
+        )
         raise CreateError(msg)
     try:
         client = api.make_client()
@@ -698,6 +715,8 @@ class WriteHalf:
     steps: tuple[str, ...]
     #: How many steps have finished.
     completed: int = 0
+    #: Whether step 3 wrote `.env`, whose empty key line the closing lines then name.
+    env_written: bool = False
 
     @property
     def root(self) -> Path:
@@ -811,6 +830,7 @@ class WriteHalf:
             except OSError as exc:
                 msg = f"writing {ENV_FILE} failed: {exc}. The project is created; fix the cause, then finish by hand, from this directory:\n"
                 raise CreateError(msg + indented(self.commands_left(3))) from exc
+            self.env_written = wrote
             if wrote:
                 print(f"    wrote {ENV_FILE}")
             else:
@@ -850,6 +870,15 @@ class WriteHalf:
                     f"create: done. {identity.title} ({identity.name}) runs the pipe {planned.plan.pipe.ref} of {planned.plan.origin}.",
                     "",
                     "Nothing is committed: review with `git status` and `git diff`, then commit.",
+                    *(
+                        [
+                            "",
+                            f"Put your own {API_KEY_KEY} in {ENV_FILE} before running {command}: create never copies the key your shell "
+                            "exports into the project, and while a shell exports one it wins over the file.",
+                        ]
+                        if self.env_written
+                        else []
+                    ),
                     "",
                     "Next:",
                     f"  {command + ' --help':<34}# the method's inputs, one option each",

@@ -223,7 +223,7 @@ class TestEnvFile:
         # The gesture refuses a run with no key at all, so a key the shell did not export came from an env file above.
         plan = plan_env_file(tmp_path, ShellEnv(), None, "https://api.pipelex.com")
         assert plan.action == "skip"
-        assert "copies a key only from your shell" in plan.notes[0]
+        assert "sets PIPELEX_API_KEY" in plan.notes[0] and "no .env of its own" in plan.notes[0]
 
     @pytest.mark.parametrize("content", [b"PIPELEX_BASE_URL=\xe9\n", None])
     def test_an_example_it_cannot_read_is_refused_naming_it(self, content: bytes | None, tmp_path: Path):
@@ -251,12 +251,19 @@ class TestEnvFile:
         with pytest.raises(CreateError, match=r"\.env cannot be read"):
             resolve_deps(tmp_path)
 
-    def test_is_written_from_the_example_with_one_base_url_and_the_shell_s_key(self, tmp_path: Path):
-        (tmp_path / ".env.example").write_text("# comment\nPIPELEX_BASE_URL=https://api.pipelex.com\nPIPELEX_API_KEY=\n", encoding="utf-8")
+    def test_is_written_from_the_example_with_one_base_url_and_an_empty_key(self, tmp_path: Path):
+        # The shell's key is whichever was exported last: the project gets an empty line for the person's own.
+        (tmp_path / ".env.example").write_text("# comment\nPIPELEX_BASE_URL=https://api.pipelex.com\nPIPELEX_API_KEY=pk_example\n", encoding="utf-8")
         plan = plan_env_file(tmp_path, ShellEnv(key="pk_#1"), None, "https://api.example.com")
         assert plan.action == "write" and plan.content is not None
-        assert plan.content == "# comment\nPIPELEX_BASE_URL='https://api.example.com'\nPIPELEX_API_KEY='pk_#1'\n"
-        assert "(the default)" in plan.notes[0] and "from your shell" in plan.notes[0]
+        assert plan.content == "# comment\nPIPELEX_BASE_URL='https://api.example.com'\nPIPELEX_API_KEY=\n"
+        assert "(the default)" in plan.notes[0] and "an empty PIPELEX_API_KEY line" in plan.notes[0]
+        assert "never copies the key your shell exports" in plan.notes[0]
+        assert not any("pk_#1" in note for note in plan.notes)
+
+    def test_with_no_example_it_is_written_with_an_empty_key(self, tmp_path: Path):
+        plan = plan_env_file(tmp_path, ShellEnv(key="pk_#1"), None, "https://api.pipelex.com")
+        assert plan.content == "PIPELEX_BASE_URL='https://api.pipelex.com'\nPIPELEX_API_KEY=\n"
 
     def test_an_existing_one_is_kept_and_a_disagreement_said(self, tmp_path: Path):
         (tmp_path / ".env").write_text("PIPELEX_BASE_URL=https://other.example.com\n", encoding="utf-8")
@@ -269,7 +276,47 @@ class TestEnvFile:
         project.mkdir()
         plan = plan_env_file(project, ShellEnv(), tmp_path / ".env", "https://api.pipelex.com")
         assert plan == EnvPlan(action="skip", content=None, notes=plan.notes)
-        assert "copies a key only from your shell" in plan.notes[0]
+        assert f"{tmp_path / '.env'} sets PIPELEX_API_KEY" in plan.notes[0]
+
+    def test_a_file_above_that_sets_the_key_keeps_supplying_it_while_the_shell_exports_another(self, tmp_path: Path):
+        # A `.env` in the project would hide the file above, and the empty key line would leave the command with none.
+        project = tmp_path / "project"
+        project.mkdir()
+        above = tmp_path / ".env"
+        above.write_text("PIPELEX_API_KEY=pk_above\n", encoding="utf-8")
+        plan = plan_env_file(project, ShellEnv(key="pk_shell"), above, "https://api.pipelex.com")
+        assert plan == EnvPlan(action="skip", content=None, notes=plan.notes)
+        assert f"{above} sets PIPELEX_API_KEY" in plan.notes[0] and len(plan.notes) == 1
+        # An empty assignment above supplies no key, so the project gets its own `.env`.
+        above.write_text("PIPELEX_API_KEY=\n", encoding="utf-8")
+        assert plan_env_file(project, ShellEnv(key="pk_shell"), above, "https://api.pipelex.com").action == "write"
+
+    @pytest.mark.parametrize(
+        ("above", "says"),
+        [
+            ("PIPELEX_API_KEY=pk_above\n", "does not set it, so the CLI uses https://api.pipelex.com"),
+            ("PIPELEX_API_KEY=pk_above\nPIPELEX_BASE_URL=https://other.example.com\n", "says https://other.example.com"),
+            ("PIPELEX_API_KEY=pk_above\nPIPELEX_BASE_URL=https://api.example.com\n", None),
+        ],
+    )
+    def test_a_file_left_supplying_the_key_names_a_base_url_it_would_not_reproduce(self, above: str, says: str | None, tmp_path: Path):
+        # Without the shell's base URL, the command reads the file's: the method was generated against the shell's.
+        project = tmp_path / "project"
+        project.mkdir()
+        (tmp_path / ".env").write_text(above, encoding="utf-8")
+        plan = plan_env_file(project, ShellEnv(base_url="https://api.example.com", key="k"), tmp_path / ".env", "https://api.example.com")
+        assert plan.action == "skip"
+        if says is None:
+            assert len(plan.notes) == 1
+        else:
+            assert "your shell sets PIPELEX_BASE_URL=https://api.example.com" in plan.notes[1] and says in plan.notes[1]
+
+    def test_a_shell_base_url_that_is_the_default_needs_no_word_when_the_file_above_sets_none(self, tmp_path: Path):
+        project = tmp_path / "project"
+        project.mkdir()
+        (tmp_path / ".env").write_text("PIPELEX_API_KEY=pk_above\n", encoding="utf-8")
+        plan = plan_env_file(project, ShellEnv(base_url="https://api.pipelex.com", key="k"), tmp_path / ".env", "https://api.pipelex.com")
+        assert plan.action == "skip" and len(plan.notes) == 1
 
     def test_the_base_url_is_said_to_come_from_where_it_came_from(self, tmp_path: Path):
         project = tmp_path / "project"
@@ -404,7 +451,8 @@ class TestReadOnlyHalf:
     ):
         monkeypatch.delenv("PIPELEX_API_KEY")
         assert await run_create([TEXT_STATS_REF], deps(template, Runner(), shell=ShellEnv())) == 1
-        assert "PIPELEX_API_KEY is not set" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "PIPELEX_API_KEY is not set" in err and "never copies it into a file" in err
         assert api.calls == []
 
     async def test_refuses_to_send_the_key_in_plaintext_to_another_machine(
@@ -509,8 +557,13 @@ class TestWriteHalf:
         assert stat.S_IMODE(env.stat().st_mode) == 0o600
         lines = env.read_text(encoding="utf-8").splitlines()
         assert [line for line in lines if line.startswith("PIPELEX_BASE_URL")] == ["PIPELEX_BASE_URL='https://api.example.com'"]
-        assert dotenv_values(env)["PIPELEX_API_KEY"] == "pk_test#1"
-        assert "create: done. Receipt Review (receipt-review) runs the pipe receipt_review.review_receipts" in capsys.readouterr().out
+        # The shell's key ran the gesture and never reaches the project: the closing lines say where the person's own goes.
+        assert dotenv_values(env)["PIPELEX_API_KEY"] == ""
+        assert "pk_test#1" not in env.read_text(encoding="utf-8")
+        out = capsys.readouterr().out
+        assert "create: done. Receipt Review (receipt-review) runs the pipe receipt_review.review_receipts" in out
+        assert "Put your own PIPELEX_API_KEY in .env before running .venv/bin/receipt-review" in out
+        assert "pk_test#1" not in out
 
     async def test_a_failed_write_leaves_the_template_as_it_was(self, template: Path, api: RecordedClient, capsys: pytest.CaptureFixture[str]):
         before = tree(template)
