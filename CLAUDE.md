@@ -12,7 +12,7 @@ The Pipelex client surface in one repository: the TypeScript and Python clients 
 | `starter-python/` | The Python starter template, published as `Pipelex/pipelex-starter-python` | `pipelex-sdk/starter-python` |
 | `method-apps/` | The method-app family: the `webapp-js/` and `cli-python/` templates and the `initializers/js/` initializer, `@pipelex/create-method-app` (npm) | `pipelex-sdk/method-apps` |
 
-**Work inside a directory follows that directory's own `CLAUDE.md`**, and its gate runs from inside it. The root holds only what serves the maintainers: the `Makefile`, `VERSION`, the license and contributor agreement, the git hooks (`.githooks/`), the maintainers' skills (`.claude/skills/`), the CI (`.github/workflows/`, described in [`docs/ci.md`](docs/ci.md)), the scripts that check versions, render the workflow twins, copy the shared case files, select a release's packages and take the release workflow's decisions (`scripts/`) and `docs/`.
+**Work inside a directory follows that directory's own `CLAUDE.md`**, and its gate runs from inside it. The root holds only what serves the maintainers: the `Makefile`, `VERSION`, the license and contributor agreement, the git hooks (`.githooks/`), the maintainers' skills (`.claude/skills/`), the CI (`.github/workflows/`, described in [`docs/ci.md`](docs/ci.md)), the scripts that check versions, render the workflow twins, copy the shared case files, select a release's packages, take the release workflow's decisions and take the method-app templates' live proofs of `make create` (`scripts/`) and `docs/`.
 
 ## Rules
 
