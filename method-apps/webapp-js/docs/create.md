@@ -7,7 +7,7 @@ PIPELEX_API_KEY=… make create METHOD=path/to/my_method.mthds
 make dev   # http://127.0.0.1:4300
 ```
 
-When it finishes, the page is your method's input form and result view, the project is named after the method, `.env.local` points at the API the gesture ran against, and `make all` is green. Nothing is committed: the whole result is a working-tree change for you to review.
+When it finishes, the page is your method's input form and result view, the project is named after the method, `.env.local` points at the API the gesture ran against and waits for your own key, and `make all` is green. Nothing is committed: the whole result is a working-tree change for you to review.
 
 This document is part of the template, not of the projects it creates: the gesture is one-shot, and the bootstrap removes it — with this document — once it has run.
 
@@ -47,7 +47,7 @@ The gesture runs in two halves, like `make add-method`, and nothing is written u
 **Read-only.**
 
 1. Refuse anything but the un-bootstrapped template.
-2. Read `PIPELEX_BASE_URL` and `PIPELEX_API_KEY` from the shell first, then load the env files Next.js reads (`.env.local`, `.env`, and their mode-specific variants), noting which file supplied each value the shell did not set. The key must be set by one of them.
+2. Read `PIPELEX_BASE_URL` and `PIPELEX_API_KEY` from the shell first, then load the env files Next.js reads (`.env.local`, `.env`, and their mode-specific variants), noting which file supplied the base URL when the shell did not set it, and which file holds a key whether or not the shell exports one. The key must be set by one of them; it is used for the gesture's own requests and never written.
 3. Run `add-method`'s read-only half: fetch the method, choose the pipe, derive every name, refuse every collision, and render every file in memory.
 4. Derive the project's name, title and description.
 5. Plan `.env.local`.
@@ -71,7 +71,7 @@ A failure after step 1 cannot be undone by running the gesture again, because th
 `.env.local` is written only when it does not exist, from `.env.example`. Next.js reads it before every other env file, and the first file that assigns a variable wins even when the value is empty, so the gesture writes it such that it hides nothing another file supplies:
 
 - **exactly one `PIPELEX_BASE_URL` line**, holding the base URL the gesture ran against — the one your shell exports, the one an env file such as `.env` sets, or the default when neither does. Any other assignment of it is dropped, so the file can never hold two;
-- **`PIPELEX_API_KEY`** set to the value your shell exports. When the key came from another env file instead, `.env.local` carries no `PIPELEX_API_KEY` line at all, only a comment naming that file, so the file keeps supplying it and the secret is not copied a second time. The gesture reads the env files a production build reads, as every script here does, so that file can be `.env.production` or `.env.production.local`, which `make dev` never opens. In that case the comment and the plan say that the dev server will not see the key, and tell you to put it in `.env` or `.env.development.local` before `make dev`.
+- **`PIPELEX_API_KEY` never copied**, not even the one your shell exports: an exported key is whichever key was exported last, often a test key or one of another organization, and copied into the project it would outlive the shell, bill whatever organization it belongs to, and escape every rotation. So `.env.local` carries an empty `PIPELEX_API_KEY` line, and the plan and the closing lines say to put your own key there before `make dev`; a key a shell exports still wins over the file, so start the app from a shell that does not export another. When an env file holds a key, whether or not your shell exports another, `.env.development` included although only the dev server reads it, `.env.local` carries no `PIPELEX_API_KEY` line at all, only a comment naming that file, so the file keeps supplying it. The gesture reads the env files a production build reads, as every script here does, so that file can be `.env.production` or `.env.production.local`, which `make dev` never opens. In that case the comment and the plan say that the dev server will not see the key, and tell you to put it in `.env` or `.env.development.local` before `make dev`.
 
 The file is created readable by you alone. An existing `.env.local` is yours and is never touched; when your shell exports a base URL the file disagrees with, the plan says so, because the app reads the file whenever the shell does not set the variable.
 

@@ -15,7 +15,7 @@ The first command writes the [`webapp-js`](https://github.com/Pipelex/pipelex-sd
 ## What it needs
 
 - **Node.js** at or above the template's floor (22.12 for `webapp-js`), `make`, and `git` unless you pass `--no-git`.
-- **`PIPELEX_API_KEY`** in the environment, since a fresh copy has no `.env.local` for `make create` to read it from. `make create` copies it into the project's `.env.local`. The initializer only checks that it is set, and never prints it.
+- **`PIPELEX_API_KEY`** in the environment, since a fresh copy has no `.env.local` for `make create` to read it from. `make create` runs with it and never copies it into the project: the project's `.env.local` gets an empty `PIPELEX_API_KEY` line, where you put your own key before `make dev`. The initializer only checks that it is set, and never prints it.
 - **A directory that is missing, empty, or holds only `.git`.** Anything else, `.DS_Store` included, is refused, and nothing is written.
 
 The package has no dependency. It carries the template inside it, packed from the family's repository at the commit it was published from, so `@X.Y.Z` writes exactly the X.Y.Z template and nothing is fetched from GitHub.

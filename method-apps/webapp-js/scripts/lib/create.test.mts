@@ -25,6 +25,8 @@ import {
   appUrl,
   BOOTSTRAP_DIR,
   bootstrapArgs,
+  devOnlyKeyFile,
+  envAssignment,
   deriveIdentity,
   dropEnvLine,
   ENV_FILE,
@@ -33,6 +35,7 @@ import {
   devServerReads,
   planEnvFile,
   renderEnvFile,
+  resolveCreateDeps,
   runCreate,
   setEnvLine,
   titleFromName,
@@ -233,21 +236,26 @@ describe("the env file", () => {
 
   const DEV = "https://api-dev.pipelex.com";
 
-  it("copies the shell's base URL and key over the example's lines, in place", () => {
-    expect(renderEnvFile(EXAMPLE, { baseUrl: DEV, key: "sk-1" })).toBe(
+  it("writes the base URL over the example's line, in place, and the key line empty", () => {
+    expect(renderEnvFile(EXAMPLE, { baseUrl: DEV })).toBe(
       [
         "# Pipelex API endpoint and credentials.",
         "PIPELEX_BASE_URL=https://api-dev.pipelex.com",
-        "PIPELEX_API_KEY=sk-1",
+        "PIPELEX_API_KEY=",
         "",
         "NEXT_PUBLIC_EXECUTION_MODE=durable",
         "",
       ].join("\n"),
     );
+    expect(renderEnvFile(EXAMPLE, { baseUrl: "https://api.pipelex.com" })).toBe(EXAMPLE);
   });
 
-  it("leaves the key empty when nothing supplied one", () => {
-    expect(renderEnvFile(EXAMPLE, { baseUrl: "https://api.pipelex.com" })).toBe(EXAMPLE);
+  it("writes no key the example carries, so the person's own key goes there", () => {
+    const carrying = EXAMPLE.replace("PIPELEX_API_KEY=", "export PIPELEX_API_KEY=sk-example");
+    const written = renderEnvFile(carrying, { baseUrl: DEV });
+    expect(written).toContain("\nPIPELEX_API_KEY=\n");
+    expect(written).not.toContain("sk-example");
+    expect(renderEnvFile(null, { baseUrl: DEV })).toContain("\nPIPELEX_API_KEY=\n");
   });
 
   it("leaves out a key another env file supplies, so this one does not hide it", () => {
@@ -309,17 +317,108 @@ describe("the env file", () => {
       expect(fromFiles.notes.join("\n")).toContain(`PIPELEX_BASE_URL=${DEV} (from .env)`);
       expect(fromFiles.notes.join("\n")).toContain("the key stays in .env");
 
+      if (fromFiles.action !== "write") throw new Error("expected a write");
+      expect(fromFiles.keyNeeded).toBe(false);
+
       const fromShell = await planEnvFile(root, { baseUrl: DEV, key: "sk-1" }, DEV, {});
-      expect(fromShell.notes.join("\n")).toContain("(from your shell), and PIPELEX_API_KEY from");
+      const said = fromShell.notes.join("\n");
+      expect(said).toContain("(from your shell), and an empty PIPELEX_API_KEY line");
+      expect(said).toContain("put your own key there before `make dev`");
+      expect(said).toContain(
+        "The key your shell exports is used for this run only, and never copied;",
+      );
+      expect(said).toContain("while a shell exports one, it wins over the file");
       if (fromShell.action !== "write") throw new Error("expected a write");
-      expect(fromShell.content).toContain("PIPELEX_API_KEY=sk-1\n");
+      expect(fromShell.content).toContain("PIPELEX_API_KEY=\n");
+      expect(fromShell.content).not.toContain("sk-1");
+      expect(fromShell.keyNeeded).toBe(true);
+
+      const nowhere = await planEnvFile(root, {}, DEV, {});
+      expect(nowhere.notes.join("\n")).not.toContain("your shell exports");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
+  it("leaves out the key line when a file supplies a key, even when the shell exports another", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "create-env-"));
+    try {
+      const plan = await planEnvFile(root, { baseUrl: DEV, key: "sk-shell" }, DEV, { key: ".env" });
+      if (plan.action !== "write") throw new Error("expected a write");
+      expect(plan.content).not.toMatch(/^\s*(export\s+)?PIPELEX_API_KEY\s*=/m);
+      expect(plan.content).not.toContain("sk-shell");
+      expect(plan.keyNeeded).toBe(false);
+      expect(plan.notes.join("\n")).toContain("the key stays in .env");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads an empty assignment as empty, never as the line after it", () => {
+    expect(
+      envAssignment("PIPELEX_API_KEY=\n\nNEXT_PUBLIC_EXECUTION_MODE=durable\n", "PIPELEX_API_KEY"),
+    ).toBe("");
+    expect(
+      envAssignment("  export PIPELEX_BASE_URL = 'https://a.example'\n", "PIPELEX_BASE_URL"),
+    ).toBe("https://a.example");
+    expect(envAssignment("OTHER=1\n", "PIPELEX_API_KEY")).toBeUndefined();
+  });
+
   it("refuses a value an env file cannot hold", () => {
     expect(() => setEnvLine(EXAMPLE, "PIPELEX_API_KEY", "a\nb")).toThrow(/line break/);
+  });
+});
+
+// ── The key a real run reads ────────────────────────────────────────────────
+
+describe("resolveCreateDeps", () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), "create-deps-"));
+  });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("records the file holding a key even when the shell exports another, and copies neither", async () => {
+    await writeFile(path.join(root, ".env"), "PIPELEX_API_KEY=sk-file\n");
+    vi.stubEnv("PIPELEX_API_KEY", "sk-shell");
+    vi.stubEnv("PIPELEX_BASE_URL", "https://api.example");
+    const resolved = resolveCreateDeps(root);
+    expect(resolved.shell.key).toBe("sk-shell");
+    expect(resolved.envFiles?.key).toBe(".env");
+
+    const plan = await planEnvFile(root, resolved.shell, "https://api.example", resolved.envFiles);
+    if (plan.action !== "write") throw new Error("expected a write");
+    expect(plan.content).not.toContain("sk-shell");
+    expect(plan.content).not.toContain("sk-file");
+  });
+
+  it("does not hide a key only .env.development holds, which the dev server reads after .env.local", async () => {
+    expect(devOnlyKeyFile(root)).toBeUndefined();
+    await writeFile(
+      path.join(root, ".env.development"),
+      "PIPELEX_API_KEY=\n\nNEXT_PUBLIC_EXECUTION_MODE=durable\n",
+    );
+    expect(devOnlyKeyFile(root)).toBeUndefined();
+    await writeFile(path.join(root, ".env.development"), 'export PIPELEX_API_KEY="sk-dev"\n');
+    expect(devOnlyKeyFile(root)).toBe(".env.development");
+
+    const plan = await planEnvFile(root, { key: "sk-shell" }, "https://api.example", {
+      key: ".env.development",
+    });
+    if (plan.action !== "write") throw new Error("expected a write");
+    expect(plan.content).not.toMatch(/^\s*(export\s+)?PIPELEX_API_KEY\s*=/m);
+    expect(plan.notes.join("\n")).toContain("the key stays in .env.development");
+  });
+
+  it("says where the person's own key goes when none is set", () => {
+    vi.stubEnv("PIPELEX_API_KEY", "");
+    expect(() => resolveCreateDeps(root)).toThrow(
+      "PIPELEX_API_KEY is not set. Put your own key in .env.local or .env, or export it in your " +
+        "shell for this run: create reads it from either, and never copies it into a file.",
+    );
   });
 });
 
@@ -494,8 +593,14 @@ describe("runCreate", () => {
 
     const env = await readFile(path.join(root, ENV_FILE), "utf-8");
     expect(env).toContain("PIPELEX_BASE_URL=https://api-dev.pipelex.com\n");
-    expect(env).toContain("PIPELEX_API_KEY=sk-test\n");
+    // The shell exports sk-test, and the file never carries it.
+    expect(env).toContain("PIPELEX_API_KEY=\n");
+    expect(env).not.toContain("sk-test");
     expect(env.match(/PIPELEX_BASE_URL=/g)).toHaveLength(1);
+    expect(output.join("\n")).toContain(
+      "Put your own PIPELEX_API_KEY in .env.local before `make dev`: create never copies the " +
+        "key your shell exports into the project, and while a shell exports one it wins over the file.",
+    );
 
     expect(existsSync(path.join(root, BOOTSTRAP_DIR))).toBe(false);
     expect(existsSync(path.join(root, "methods/receipt-review/main.mthds"))).toBe(true);
@@ -581,6 +686,7 @@ describe("runCreate", () => {
     expect(env).not.toMatch(/^\s*(export\s+)?PIPELEX_API_KEY\s*=/m);
     expect(env).toContain("PIPELEX_BASE_URL=https://api.example\n");
     expect(output.join("\n")).toContain("the key stays in .env");
+    expect(output.join("\n")).not.toContain("Put your own PIPELEX_API_KEY");
   });
 
   it("keeps the bootstrap and names what is left when make all is red", async () => {

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- **The web app template's `make create` no longer copies the shell's key into the project**: the new project's `.env.local` gets the base URL the gesture ran against and an empty `PIPELEX_API_KEY` line, where the plan and the closing lines tell the person to put their own key before `make dev`, because an exported key is whichever key was exported last, often a test key or one of another organization, and copied into a project it would outlive the shell and bill that organization. The gesture still runs its own requests with the key the shell exports, and when an env file holds a key, `.env.local` still leaves the line out so that file keeps supplying it, now also when the shell exports another. `@pipelex/create-method-app`'s refusal for a missing key says so.
+
 ## [v0.54.0] - 2026-10-25
 
 ### Changed
