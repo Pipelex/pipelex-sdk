@@ -26,6 +26,7 @@ import {
   BOOTSTRAP_DIR,
   bootstrapArgs,
   devOnlyKeyFile,
+  envAssignment,
   deriveIdentity,
   dropEnvLine,
   ENV_FILE,
@@ -353,6 +354,16 @@ describe("the env file", () => {
     }
   });
 
+  it("reads an empty assignment as empty, never as the line after it", () => {
+    expect(
+      envAssignment("PIPELEX_API_KEY=\n\nNEXT_PUBLIC_EXECUTION_MODE=durable\n", "PIPELEX_API_KEY"),
+    ).toBe("");
+    expect(
+      envAssignment("  export PIPELEX_BASE_URL = 'https://a.example'\n", "PIPELEX_BASE_URL"),
+    ).toBe("https://a.example");
+    expect(envAssignment("OTHER=1\n", "PIPELEX_API_KEY")).toBeUndefined();
+  });
+
   it("refuses a value an env file cannot hold", () => {
     expect(() => setEnvLine(EXAMPLE, "PIPELEX_API_KEY", "a\nb")).toThrow(/line break/);
   });
@@ -386,7 +397,10 @@ describe("resolveCreateDeps", () => {
 
   it("does not hide a key only .env.development holds, which the dev server reads after .env.local", async () => {
     expect(devOnlyKeyFile(root)).toBeUndefined();
-    await writeFile(path.join(root, ".env.development"), "PIPELEX_API_KEY=\n");
+    await writeFile(
+      path.join(root, ".env.development"),
+      "PIPELEX_API_KEY=\n\nNEXT_PUBLIC_EXECUTION_MODE=durable\n",
+    );
     expect(devOnlyKeyFile(root)).toBeUndefined();
     await writeFile(path.join(root, ".env.development"), 'export PIPELEX_API_KEY="sk-dev"\n');
     expect(devOnlyKeyFile(root)).toBe(".env.development");

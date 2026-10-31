@@ -304,6 +304,18 @@ export function setEnvLine(text: string, key: string, value: string): string {
 }
 
 /**
+ * The value dotenv text gives `key` on its first assignment, unquoted, or
+ * `undefined` when nothing assigns it. Only spaces and tabs are skipped around
+ * the `=`, so an empty assignment reads as empty rather than as the next line.
+ */
+export function envAssignment(text: string, key: string): string | undefined {
+  return new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}[ \\t]*=[ \\t]*(.*)$`, "m")
+    .exec(text)?.[1]
+    ?.trim()
+    .replace(/^["']|["']$/g, "");
+}
+
+/**
  * Replace every assignment of `key` in dotenv text with one comment line, where
  * the first assignment was, so the file no longer sets it at all.
  */
@@ -397,10 +409,7 @@ export async function planEnvFile(
   const envPath = path.join(repoRoot, ENV_FILE);
   if (existsSync(envPath)) {
     const notes = [`${ENV_FILE} exists and is left as it is.`];
-    const fileBase = new RegExp(`^\\s*(?:export\\s+)?${BASE_URL_KEY}\\s*=\\s*(.*)$`, "m")
-      .exec(await readFile(envPath, "utf-8"))?.[1]
-      ?.trim()
-      .replace(/^["']|["']$/g, "");
+    const fileBase = envAssignment(await readFile(envPath, "utf-8"), BASE_URL_KEY);
     if (shell.baseUrl !== undefined && fileBase !== undefined && fileBase !== shell.baseUrl) {
       notes.push(
         `your shell sets ${BASE_URL_KEY}=${shell.baseUrl}, but ${ENV_FILE} says ${fileBase}: ` +
@@ -547,11 +556,7 @@ export function devOnlyKeyFile(repoRoot: string): string | undefined {
   const file = ".env.development";
   const filePath = path.join(repoRoot, file);
   if (!existsSync(filePath)) return undefined;
-  const value = new RegExp(`^\\s*(?:export\\s+)?${API_KEY_KEY}\\s*=\\s*(.*)$`, "m")
-    .exec(readFileSync(filePath, "utf-8"))?.[1]
-    ?.trim()
-    .replace(/^["']|["']$/g, "");
-  return value ? file : undefined;
+  return envAssignment(readFileSync(filePath, "utf-8"), API_KEY_KEY) ? file : undefined;
 }
 
 /**
