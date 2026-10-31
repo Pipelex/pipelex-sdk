@@ -10,8 +10,8 @@ On a laptop, every live run goes through the workspace's `test-account run`, whi
 
 | Suite | Command, from the repository's root |
 | --- | --- |
-| The TypeScript SDK's e2e suite | `test-account run pipelex-sdk-js-e2e -- make -C js test-e2e` |
-| The Python SDK's live legs | `test-account run pipelex-sdk-python-e2e -- make -C python e2e-test` |
+| The TypeScript SDK's e2e suite | `PIPELEX_E2E_METHOD_ID=mt_7a01d1bf-f5cb-4db4-a200-7fa396ac15e8 test-account run pipelex-sdk-js-e2e -- make -C js test-e2e` |
+| The Python SDK's live legs | `PIPELEX_E2E_METHOD_ID=mt_7a01d1bf-f5cb-4db4-a200-7fa396ac15e8 test-account run pipelex-sdk-python-e2e -- make -C python e2e-test` |
 | `starter-js`'s live specs | `test-account run pipelex-sdk-starters -- make live-starter IN=starter-js` |
 | `starter-python`'s live tests | `test-account run pipelex-sdk-starters -- make live-starter IN=starter-python` |
 
@@ -49,4 +49,4 @@ A key parked in an env file must never silently replace the one `test-account ru
 
 ## The stored method the `method_id` cases need
 
-The TypeScript suite's `crate` and `prepare-inputs` files and the Python legs' `pipe-io` file each have a case that runs a method stored in the key's organization, named by `PIPELEX_E2E_METHOD_ID`; it is skipped when that variable is unset. It is not a credential, so `test-account run` neither hands it over nor takes it out, and it names a method saved in QA SDK (dev).
+The TypeScript suite's `crate` and `prepare-inputs` files and the Python legs' `pipe-io` file each have a case that runs a method stored in the key's organization, named by `PIPELEX_E2E_METHOD_ID`; it is skipped when that variable is unset. It is not a credential, so `test-account run` neither hands it over nor takes it out. The method is `mt_7a01d1bf-f5cb-4db4-a200-7fa396ac15e8`, `sdk-e2e-document`, saved and published in QA SDK (dev) by QA Builder: one `PipeLLM`, `summarize_document`, whose input `document` is a `Document`. The cases read its contract and prepare its inputs, and none runs it, so they spend no credit. Against another organization, or a local runner, leave the variable unset.
