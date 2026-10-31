@@ -88,14 +88,17 @@ t: test
 # Needs a live pipelex-api server (default http://localhost:8081, override with
 # PIPELEX_E2E_BASE_URL). Not part of `make test` / `make all` — CI has no server.
 #
-# The target and its key are resolved ONCE here and exported, so the URL this target
-# preflights is the URL the suites call. Precedence follows the dotenv convention: the
-# shell environment (or a `make test-e2e PIPELEX_E2E_BASE_URL=...` override) wins, then
-# `.env`, then a local runner. `?=` is what enforces it — it only reaches for `.env`
-# when the variable is not already set.
+# The target is resolved ONCE here and exported, so the URL this target preflights is the
+# URL the suites call. Precedence follows the dotenv convention: the shell environment (or a
+# `make test-e2e PIPELEX_E2E_BASE_URL=...` override) wins, then `.env`, then a local runner.
+# `?=` is what enforces it — it only reaches for `.env` when the variable is not already set.
+#
+# The key is never read from `.env`. Against the hosted plane the suites act for a registered
+# test account, whose key the workspace's `test-account run` hands over beside what the
+# registry expects of it, and the suite's global setup checks that account before the first
+# case (tests/e2e/live-account.ts, ../docs/live-accounts.md). A local runner needs no key.
 DOTENV = set -a; [ -f .env ] && . ./.env; set +a;
 test-e2e: export PIPELEX_E2E_BASE_URL ?= $(shell $(DOTENV) printf '%s' "$${PIPELEX_E2E_BASE_URL:-http://localhost:8081}")
-test-e2e: export PIPELEX_API_KEY ?= $(shell $(DOTENV) printf '%s' "$$PIPELEX_API_KEY")
 # The stored method the hosted `method_id` cases run against; they skip when it is unset or empty.
 test-e2e: export PIPELEX_E2E_METHOD_ID ?= $(shell $(DOTENV) printf '%s' "$$PIPELEX_E2E_METHOD_ID")
 

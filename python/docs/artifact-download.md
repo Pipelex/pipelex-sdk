@@ -188,4 +188,4 @@ verdict = await download_artifacts(
 # verdict.artifacts finds prepared.uploads[0].uri among the saved files
 ```
 
-That is also the live e2e leg (`tests/e2e/test_artifacts_e2e.py`, run by `make e2e-test`), which needs a platform carrying the bulk route and skips itself when `PIPELEX_E2E_BASE_URL` and `PIPELEX_API_KEY` are unset.
+That is also the live e2e leg (`tests/e2e/test_artifacts_e2e.py`, run by `make e2e-test`), which needs a platform carrying the bulk route and skips itself when `PIPELEX_E2E_BASE_URL` and `PIPELEX_API_KEY` are unset; it acts for the registered test account the workspace's `test-account run` hands over, checked before the first case ([`../../docs/live-accounts.md`](../../docs/live-accounts.md)).

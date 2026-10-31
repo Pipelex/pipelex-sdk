@@ -4,9 +4,12 @@
  * Run with `make test-e2e` (or `npm run test:e2e`) against a runner that serves
  * `POST /v1/pipe-io`, which `prepareInputs` reads its pipe and its signature from. The
  * two refusal cases also need the route's selection `422`s typed `EntryPipeNotFoundError`,
- * which pipelex-api does from v0.33.1:
+ * which pipelex-api does from v0.33.1. Against the hosted platform it acts for the registered
+ * test account the workspace's `test-account run` hands over, which the suite's global setup
+ * checks before the first case (`live-account.ts`, `docs/live-accounts.md` at the repository's
+ * root):
  *
- *     PIPELEX_E2E_BASE_URL=https://api-dev.pipelex.com npm run test:e2e
+ *     test-account run pipelex-sdk-js-e2e -- make -C js test-e2e
  *
  * What the unit suite cannot prove: that the `pipeIo` call this helper composes is one
  * a real server accepts and answers with the descriptor of the pipe it selected. Every

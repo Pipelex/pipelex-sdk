@@ -2,9 +2,12 @@
  * E2E suite for the artifact round trip — exercised against a LIVE hosted platform
  * (no fetch mocks). Run with `make test-e2e` (or `npm run test:e2e`) against a
  * platform that serves upload, the durable run lifecycle and the bulk resolve route
- * (`POST /v1/resolve-storage-url/bulk`), with `PIPELEX_API_KEY` set for it:
+ * (`POST /v1/resolve-storage-url/bulk`),
+ * as the registered test account the workspace's `test-account run` hands over, which the suite's
+ * global setup checks before the first case (`live-account.ts`, `docs/live-accounts.md` at the
+ * repository's root). From the repository's root:
  *
- *     PIPELEX_E2E_BASE_URL=https://api-dev.pipelex.com PIPELEX_API_KEY=plx_sk_… npm run test:e2e
+ *     test-account run pipelex-sdk-js-e2e -- make -C js test-e2e
  *
  * What the unit suite cannot prove: that the wire shapes the SDK composes — the
  * bulk request, the per-item answer, the presigned link the store actually honours,

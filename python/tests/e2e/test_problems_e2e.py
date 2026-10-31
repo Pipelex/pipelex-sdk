@@ -1,8 +1,10 @@
 """The problem a refused request carries, exercised against a LIVE hosted platform (no mocks).
 
-Run it with `make e2e-test` against a platform that answers problem documents, with an API key set for it:
+Run it with `make e2e-test` against a platform that answers problem documents, as the registered test account the
+workspace's `test-account run` hands over, which `conftest.py` checks before the first case (`live_account.py`,
+`docs/live-accounts.md` at the repository's root). From the repository's root:
 
-    PIPELEX_E2E_BASE_URL=https://api-dev.pipelex.com PIPELEX_API_KEY=plx_sk_… make e2e-test
+    test-account run pipelex-sdk-python-e2e -- make -C python e2e-test
 
 The whole module skips when either variable is unset, so the unit suite's `make agent-test` never
 reaches it — and `make agent-test` does not collect this directory at all.
