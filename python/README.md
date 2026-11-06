@@ -163,7 +163,6 @@ if isinstance(result, MethodCopied):
     print(result.method.method_id, result.method.copied_from)
 else:
     print(result.message, [reference.uri for reference in result.references])
-copies = await client.list_method_copies("mt_123")  # where the copies went
 ```
 
 ### Find, link and zip the organization's files

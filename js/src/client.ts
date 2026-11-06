@@ -84,15 +84,12 @@ import type {
   OrganizationBranding,
   OrganizationBrandingUpdate,
   ListFilesQuery,
-  ListMethodCopiesQuery,
   ListMethodExamplesQuery,
   ListMethodsQuery,
   ListMethodVersionsQuery,
   ListRunFilesQuery,
   MethodCopyInput,
-  MethodCopyMarker,
   MethodCopyOutcome,
-  MethodCopyPage,
   MethodCopyResult,
   MethodData,
   MethodDeletionAccepted,
@@ -3690,34 +3687,6 @@ export class PipelexApiClient implements HostedProtocolSurface {
       throw this.unreadableAnswer("POST", `/${API_PREFIX}/${endpoint}`, res, fault);
     }
     return answer as unknown as MethodCopyResult;
-  }
-
-  /**
-   * One page of the copies made of a method, in the order of the copies' ids, which says nothing
-   * of when each was made — `GET /v1/methods/{id}/copies`.
-   *
-   * Each row is the `MethodCopyMarker` the original keeps of a copy: the copy's id, the
-   * destination's id, the member who made it and when. The destination is named by its id alone,
-   * never its name, so a surface shows a destination's name only from the reader's own
-   * memberships, and a copy in an organization the reader does not belong to stays a bare id. A
-   * marker stays when its copy is erased, and the copy then reads as not found. Pass the page's
-   * `nextCursor` back as `cursor` to continue; `null` is the last page. A method never copied,
-   * and a copy itself, answer an empty page. The listing is open to every member of the method's
-   * organization, a runner included, as every read of a method is.
-   *
-   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404`
-   * `pipelex.catalog.not_found` for an unknown method, `409` `pipelex.catalog.being_deleted`, and
-   * `422` `request.invalid` for a cursor the listing did not issue for this method or a `limit`
-   * outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a
-   * string nor `null` is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
-   */
-  async listMethodCopies(
-    methodId: string,
-    query: ListMethodCopiesQuery = {},
-  ): Promise<MethodCopyPage> {
-    const search = productQuery({ limit: query.limit, cursor: query.cursor });
-    const endpoint = `${methodPath(methodId, "listMethodCopies")}/copies`;
-    return this.requestPage<MethodCopyMarker>(`${endpoint}${search}`);
   }
 
   /**

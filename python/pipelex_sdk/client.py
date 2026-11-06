@@ -127,7 +127,6 @@ from pipelex_sdk.product_models import (
     InvoiceView,
     Membership,
     MembershipsResponse,
-    MethodCopyPage,
     MethodCopyResultAdapter,
     MethodData,
     MethodDeletionAccepted,
@@ -2842,35 +2841,6 @@ class PipelexAPIClient(MthdsAPIClient):
             return await self._request_product("POST", endpoint, body=body, read=MethodCopyResultAdapter.validate_python)
         finally:
             _IDEMPOTENCY_KEY.reset(key_token)
-
-    async def list_method_copies(self, method_id: str, *, limit: int | None = None, cursor: str | None = None) -> MethodCopyPage:
-        """List one page of the copies made of a method — `GET /v1/methods/{id}/copies`.
-
-        Each row is the `MethodCopyMarker` the original keeps of a copy: the copy's id, the destination's id, the
-        member who made it and when, in the order of the copies' ids, which says nothing of when each was made.
-        The destination is named by its id alone, never its name, so a surface shows a destination's name only
-        from the reader's own memberships, and a copy in an organization the reader does not belong to stays a
-        bare id. A marker stays when its copy is erased, and the copy then reads as not found. The listing is open
-        to every member of the method's organization, a runner included, as every read of a method is.
-
-        Args:
-            method_id: The method's bare catalog id.
-            limit: Page size, from 1 to 100; the API defaults to 50 and refuses a `limit` outside that range with
-                a `422`.
-            cursor: The `next_cursor` of the previous page, passed back opaquely.
-
-        Returns:
-            A `MethodCopyPage` of `MethodCopyMarker` rows. `next_cursor` is `None` on the last page. A method never
-            copied, and a copy itself, answer an empty page.
-
-        Raises:
-            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown method; `409`
-                `pipelex.catalog.being_deleted`; `422` `request.invalid` for a cursor the listing did not issue
-                for this method or a `limit` outside 1 to 100.
-        """
-        query = _product_query({"limit": limit, "cursor": cursor})
-        endpoint = f"{_method_path(method_id, call='list_method_copies')}/copies{query}"
-        return await self._request_product("GET", endpoint, read=MethodCopyPage.model_validate)
 
     async def delete_method(self, method_id: str) -> MethodDeletionAccepted:
         """Erase a method and everything it produced — `DELETE /v1/methods/{id}`.

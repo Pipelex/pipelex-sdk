@@ -448,11 +448,11 @@ class MethodDeletionAccepted(BaseModel):
     deletion_job_id: str
 
 
-# ── Method copies (`/v1/methods/{id}/copy`, `/v1/methods/{id}/copies`) ──────
+# ── Method copies (`/v1/methods/{id}/copy`) ──────────────────────────────
 #
 # A copy is a new, unpublished method in a destination organization holding the original's draft, its form
 # inputs and its saved examples, each stored file they name copied into the destination. The original stays as
-# it was, and keeps a marker of each copy made of it.
+# it was.
 
 
 class MethodCopyOutcome(StrEnum):
@@ -555,43 +555,6 @@ class MethodCopyLimit(BaseModel):
     name: Literal["max_stored_files", "max_stored_bytes"]
     value: int
     reached: int
-
-
-class MethodCopyMarker(BaseModel):
-    """The original's record of one copy made of it — a row of `list_method_copies`.
-
-    It names the destination by its id alone, never its name, so the listing tells no reader the name of an
-    organization they do not belong to: show a destination's name only from the reader's own memberships. The
-    marker stays when its copy is erased, and the copy then reads as not found.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    copy_method_id: str
-    """The copy's method id, in the destination organization."""
-
-    destination_org_id: str
-    """The canonical id of the organization the copy was made in."""
-
-    copied_by_user_id: str
-    """The canonical id of the member who made the copy."""
-
-    copied_at: str
-    """ISO 8601 UTC instant the copy's row was written."""
-
-
-class MethodCopyPage(BaseModel):
-    """One page of a method's copies — `{items, next_cursor}`, in the order of the copies' ids.
-
-    The order says nothing of when each copy was made. The cursor is opaque: pass it straight back as `cursor`,
-    and treat a `None` as the last page; `next_cursor` is required, as on every page model. A method never copied,
-    and a copy, which names its original through `copied_from` and has no copies of its own, answer an empty page.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    items: list[MethodCopyMarker]
-    next_cursor: str | None
 
 
 # ── Method examples (`/v1/methods/{id}/examples`) ────────────────────────
