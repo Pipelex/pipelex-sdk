@@ -8,7 +8,7 @@
 
 ### Changed
 
-- **Requires `mthds` 0.27.0, the release that accepts a manifest's `categories` and follows MTHDS standard 8.1.0 (Breaking)**: the exact pin moves from `mthds==0.26.0` to `mthds==0.27.0`, so every environment holding this `pipelex-sdk` installs exactly that `mthds`, and a project that also pins `mthds` itself has to move with it. `mthds` 0.27.0 reads the optional `categories` key of a manifest's `[package]`, and reports `MTHDS_STANDARD_VERSION` `8.1.0`, so a manifest's `mthds_version` of an exact `8.0.1` or a `~8.0.0` no longer passes, and the core error registry `8.1.0`, whose codes did not change. Nothing in `pipelex-sdk`'s own surface moves.
+- **Requires `mthds` 0.27.0, the release that accepts a manifest's `categories` and follows MTHDS standard 8.1.0 (Breaking)**: the exact pin moves from `mthds==0.26.0` to `mthds==0.27.0`, so every environment holding this `pipelex-sdk` installs exactly that `mthds`, and a project that also pins `mthds` itself has to move with it. `mthds` 0.27.0 reads the optional `categories` key of a manifest's `[package]`, and reports `MTHDS_STANDARD_VERSION` `8.1.0`, so a manifest's `mthds_version` of an exact `8.0.1` or a `~8.0.0` no longer passes, and reads problems against the core error registry `8.1.0`, whose codes did not change. Nothing in `pipelex-sdk`'s own surface moves.
 
 ### Removed
 
